@@ -1,0 +1,47 @@
+#!/bin/sh
+# One entry point; a missing Node runtime is installed privately, without sudo.
+set -eu
+REACH_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PRIVATE_RUNTIME=0
+for ARG in "$@"; do
+  case "$ARG" in install|--background) PRIVATE_RUNTIME=1 ;; esac
+done
+if [ "$PRIVATE_RUNTIME" = 1 ]; then
+  REACH_INSTALL_PATH=$PATH
+  export REACH_INSTALL_PATH
+fi
+if [ "$PRIVATE_RUNTIME" = 0 ] && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
+  exec node "$REACH_DIR/scripts/bootstrap.mjs" "$@"
+fi
+VERSION=22.23.3
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) TARGET=darwin-arm64; SHA=23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53 ;;
+  Darwin-x86_64) TARGET=darwin-x64; SHA=8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8 ;;
+  Linux-aarch64|Linux-arm64) TARGET=linux-arm64; SHA=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
+  Linux-x86_64) TARGET=linux-x64; SHA=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
+  *) echo 'Reach supports Mac, Windows x64, and Linux x64/arm64.' >&2; exit 1 ;;
+esac
+CACHE="$REACH_DIR/.reach/runtime"
+RUNTIME="$CACHE/node-v$VERSION-$TARGET"
+if [ ! -x "$RUNTIME/bin/node" ]; then
+  mkdir -p "$CACHE"
+  chmod 700 "$REACH_DIR/.reach" "$CACHE"
+  STAGE=$(mktemp -d "$CACHE/download.XXXXXX")
+  trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
+  echo 'Reach: preparing a private Node.js runtime (first run only)…'
+  curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 20 --max-time 300 \
+    "https://nodejs.org/dist/v$VERSION/node-v$VERSION-$TARGET.tar.gz" -o "$STAGE/node.tar.gz"
+  if command -v shasum >/dev/null 2>&1; then
+    ACTUAL=$(shasum -a 256 "$STAGE/node.tar.gz" | cut -d ' ' -f 1)
+  else
+    ACTUAL=$(sha256sum "$STAGE/node.tar.gz" | cut -d ' ' -f 1)
+  fi
+  [ "$ACTUAL" = "$SHA" ] || { echo 'Node.js checksum mismatch; stopping.' >&2; exit 1; }
+  tar -xzf "$STAGE/node.tar.gz" -C "$STAGE"
+  mv "$STAGE/node-v$VERSION-$TARGET" "$RUNTIME"
+  rm -rf "$STAGE"
+  trap - EXIT HUP INT TERM
+fi
+PATH="$RUNTIME/bin:$PATH"
+export PATH
+exec "$RUNTIME/bin/node" "$REACH_DIR/scripts/bootstrap.mjs" "$@"

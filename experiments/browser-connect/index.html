@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reach · Browser connection lab</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="brand">reach<span>·</span></span
+        ><span class="tag">CONNECTION LAB</span>
+      </header>
+      <h1>Your browser.<br />A private connection.</h1>
+      <p class="intro">
+        An experimental Tailscale node inside this page. No separate phone VPN
+        app. Your computer stays private.
+      </p>
+      <section>
+        <h2><span>01</span> Join your Tailscale network</h2>
+        <p id="network" role="status">
+          Ready to load the embedded networking engine.
+        </p>
+        <button id="start">Start browser connection</button>
+        <a
+          id="login"
+          class="button"
+          hidden
+          target="_blank"
+          rel="noopener noreferrer"
+          >Sign in with Tailscale</a
+        >
+        <p id="node" class="muted"></p>
+      </section>
+      <section>
+        <h2><span>02</span> Approve this browser</h2>
+        <label
+          >Computer’s private Reach address<input
+            id="target"
+            type="url"
+            placeholder="https://mac.example.ts.net:8446"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+        /></label>
+        <button id="approve" disabled>Request access</button>
+        <p id="approval" role="status">
+          Sign in above, then request access. Approval happens on the computer.
+        </p>
+      </section>
+      <section id="workspace" hidden>
+        <h2><span>03</span> Try the private connection</h2>
+        <p id="device"></p>
+        <div class="row">
+          <button id="files">Read shared files</button
+          ><button id="terminal">Open terminal</button>
+        </div>
+        <div id="file-list"></div>
+        <pre id="file-content" hidden></pre>
+        <div id="terminal-view" hidden></div>
+        <p id="terminal-status" class="muted" role="status"></p>
+        <button id="revoke" class="secondary">Revoke this Reach session</button>
+      </section>
+      <p id="error" role="alert"></p>
+      <footer>
+        WebAssembly → encrypted Tailscale relay → private Reach server.<br />Experimental
+        · 2 MiB file limit · screen streaming not enabled.<br /><button
+          id="disconnect"
+          class="secondary"
+          hidden
+        >
+          Disconnect browser node
+        </button>
+      </footer>
+    </main>
+    <script src="/wasm_exec.js"></script>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>
