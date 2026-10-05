@@ -950,7 +950,7 @@ export default function AgentSessionView({
   useViewportBox(page, narrow);
 
   const runningHere = live.status === "running" || live.status === "waiting";
-  const runningElsewhere = !runningHere && info.status === "running";
+  const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
 
@@ -1987,7 +1987,7 @@ export default function AgentSessionView({
             </button>
             {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
-            {working && !reviewCount && !text.trim() ? (
+            {working && !text.trim() ? (
               <button
                 className="as-send stop"
                 aria-label="Stop"
