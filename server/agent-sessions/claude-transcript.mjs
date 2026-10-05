@@ -243,7 +243,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           if (!Number.isFinite(when) || (usage && when < usage.at)) {
             /* older than what's known */
           } else if (e.isApiErrorMessage && e.error === "rate_limit" && quota?.status === "rejected" && Number.isFinite(quota.resetsAt))
-            usage = { at: when, limited: true, resetsAt: quota.resetsAt * 1000 };
+            usage = { at: when, limited: true, resetsAt: quota.resetsAt * 1000, text: clip(textOf(e.message?.content).trim(), 300) };
           else if (!e.isApiErrorMessage && e.message?.model && e.message.model !== "<synthetic>") usage = { at: when, limited: false };
         }
         if (e.timestamp) {

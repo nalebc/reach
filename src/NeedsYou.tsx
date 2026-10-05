@@ -25,7 +25,7 @@ export type NeedItem = {
   // Instead of answers: where it is answered ("Answer it on your Mac").
   note?: string;
   // An action may return words to show on its card after (what to do next).
-  actions?: { label: string; primary?: boolean; run: () => unknown }[];
+  actions?: { label: string; primary?: boolean; completes?: boolean; run: () => unknown }[];
   // Shown under the strip when its card is tapped (the Mac's own dialog).
   more?: ReactNode;
   // A password to send instead of buttons (the Mac's password dialog).
@@ -35,26 +35,35 @@ export type NeedItem = {
 
 // The Mac's password, sent once to its password dialog; the field empties
 // at once (nothing of it stays on the phone).
-export function MacPasswordField({ placeholder, submit }: { placeholder: string; submit: (value: string) => Promise<unknown> }) {
+type PasswordState = "idle" | "busy" | "sent" | "error";
+export function MacPasswordField({ placeholder, submit, onState }: { placeholder: string; submit: (value: string) => Promise<unknown>; onState?: (state: PasswordState) => void }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
   const [problem, setProblem] = useState("");
+  const pending = useRef(false);
   return (
     <form
       className="mac-password"
       onClick={(e) => e.stopPropagation()}
       onSubmit={async (e) => {
         e.preventDefault();
-        if (!value || busy) return;
-        const sent = value;
+        if (!value || pending.current || sent) return;
+        const secret = value;
+        pending.current = true;
         setValue("");
         setBusy(true);
         setProblem("");
+        onState?.("busy");
         try {
-          await submit(sent);
+          await submit(secret);
+          setSent(true);
+          onState?.("sent");
         } catch (error) {
           setProblem((error as Error).message);
+          onState?.("error");
         } finally {
+          pending.current = false;
           setBusy(false);
         }
       }}
@@ -68,12 +77,15 @@ export function MacPasswordField({ placeholder, submit }: { placeholder: string;
         aria-label={placeholder}
         placeholder={placeholder}
         value={value}
+        disabled={busy || sent}
         onChange={(e) => setValue(e.target.value)}
       />
-      <button className="primary" disabled={!value || busy}>
-        {busy ? <Loader2 size={14} className="spin" /> : "OK"}
+      <button className="primary" disabled={!value || busy || sent}>
+        {busy ? <><Loader2 size={14} className="spin" /> Authenticating…</> : sent ? "Sent to Mac" : "Authenticate on Mac"}
       </button>
-      {problem && <small className="problem">{problem}</small>}
+      <small className="mac-password-help">Sent only to this Mac's authentication dialog. Not saved by Reach.</small>
+      {problem && <small className="problem" role="alert">{problem}</small>}
+      {sent && <small className="said" role="status">Authentication submitted. Waiting for the request to clear.</small>}
     </form>
   );
 }
@@ -85,19 +97,26 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
   const [busy, setBusy] = useState<string | null>(null);
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [said, setSaid] = useState<Record<string, string>>({});
+  const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  const [passwordStates, setPasswordStates] = useState<Record<string, PasswordState>>({});
+  const pending = useRef(new Set<string>());
   const [opened, setOpened] = useState<string | null>(null);
   const track = useRef<HTMLDivElement>(null);
   if (!items.length) return null;
   const at = Math.min(index, items.length - 1);
   const act = async (item: NeedItem, action: NonNullable<NeedItem["actions"]>[number]) => {
+    if (pending.current.has(item.key) || completed[item.key]) return;
+    pending.current.add(item.key);
     setBusy(item.key);
     setProblems((list) => ({ ...list, [item.key]: "" }));
     try {
       const words = await action.run();
       if (typeof words === "string") setSaid((list) => ({ ...list, [item.key]: words }));
+      if (action.completes) setCompleted((list) => ({ ...list, [item.key]: true }));
     } catch (e) {
       setProblems((list) => ({ ...list, [item.key]: (e as Error).message }));
     } finally {
+      pending.current.delete(item.key);
       setBusy(null);
     }
   };
@@ -120,15 +139,17 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
             <span className="need-icon">{item.icon}</span>
             <div className="need-text">
               <strong>{item.title}</strong>
-              {(problems[item.key] || said[item.key] || item.detail) && (
-                <small className={problems[item.key] ? "problem" : said[item.key] ? "said" : ""}>
-                  {problems[item.key] || said[item.key] || item.detail}
+              {item.detail && <small>{item.detail}</small>}
+              {(problems[item.key] || said[item.key]) && (
+                <small role={problems[item.key] ? "alert" : "status"} className={problems[item.key] ? "problem" : "said"}>
+                  {problems[item.key] || said[item.key]}
                 </small>
               )}
             </div>
             {item.password ? (
               <div className="need-actions">
-                <MacPasswordField placeholder={item.password.placeholder} submit={item.password.submit} />
+                <MacPasswordField placeholder={item.password.placeholder} submit={item.password.submit}
+                  onState={(state) => setPasswordStates((list) => ({ ...list, [item.key]: state }))} />
               </div>
             ) : item.actions?.length ? (
               <div className="need-actions">
@@ -136,13 +157,13 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
                   <button
                     key={a.label}
                     className={a.primary ? "primary" : ""}
-                    disabled={busy === item.key}
+                    disabled={busy === item.key || completed[item.key]}
                     onClick={(e) => {
                       e.stopPropagation();
                       void act(item, a);
                     }}
                   >
-                    {busy === item.key && a.primary ? <Loader2 size={14} className="spin" /> : a.label}
+                    {busy === item.key && a.primary ? <><Loader2 size={14} className="spin" /> Sending…</> : a.label}
                   </button>
                 ))}
               </div>
@@ -151,8 +172,11 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
             ) : null}
             {item.screen && (
               <div className="need-screen">
-                <small>Can't approve here? Open the live screen and respond to the dialog. If macOS blocks remote control, approve on the Mac itself.</small>
-                <button className={!item.actions?.length && !item.password ? "primary" : ""} onClick={(e) => {
+                <small>{problems[item.key] || passwordStates[item.key] === "error"
+                  ? "Couldn't complete this in Reach. Try the live screen. If macOS blocks remote control, approve on the Mac itself."
+                  : !item.actions?.length && !item.password ? "This dialog needs your attention on the live screen." : "You can also respond on the live screen."}</small>
+                <button disabled={busy === item.key || passwordStates[item.key] === "busy"}
+                  className={problems[item.key] || passwordStates[item.key] === "error" || (!item.actions?.length && !item.password) ? "primary" : ""} onClick={(e) => {
                   e.stopPropagation();
                   item.screen?.();
                 }}>Open live screen</button>
@@ -284,11 +308,18 @@ export function agentNeeds({
       more,
     };
     if (p.kind === "password")
-      return { ...base, password: { placeholder: "Your Mac's password", submit: (value: string) => sendMacPassword(peer, p.id, value) } };
+      return { ...base, title: "Your Mac needs authentication", password: { placeholder: "Your Mac's password", submit: async (value: string) => {
+        await sendMacPassword(peer, p.id, value);
+        answered?.();
+      } } };
     if (p.buttons?.length)
       return {
         ...base,
-        actions: p.buttons.map((b) => ({ label: b, primary: b === p.default, run: () => pressMacButton(peer, p.id, b) })),
+        actions: p.buttons.map((b) => ({ label: b, primary: b === p.default, completes: true, run: async () => {
+          await pressMacButton(peer, p.id, b);
+          answered?.();
+          return "Response sent to your Mac. Refreshing the request…";
+        } })),
       };
     // macOS showed no buttons to read: the other ways in, or at the Mac.
     const ways: NonNullable<NeedItem["actions"]> = [];

@@ -204,5 +204,11 @@ test("a Mac dialog is answered with one of its own buttons, or its password; the
     await assert.rejects(prompts.password("52", bad), (e) => e.status === 400);
   reply = { error: "Your Mac's password dialog doesn't have the keyboard. Type it at the Mac.", refused: true };
   await assert.rejects(prompts.password("52", "pw"), /doesn't have the keyboard/);
+  // Empty or mismatched helper output must never be reported as success.
+  for (const invalid of [{}, null, { done: false }, { pressed: "Don’t Allow" }]) {
+    reply = invalid;
+    await assert.rejects(prompts.press("51", "Allow"), (e) => e.status === 502);
+    await assert.rejects(prompts.password("52", "pw"), (e) => e.status === 502);
+  }
   prompts.close();
 });

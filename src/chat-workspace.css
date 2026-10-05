@@ -27,10 +27,14 @@
   color: var(--as-text);
   font: 14px/1.5 var(--as-user-font);
 }
+/* Sized to what the keyboard leaves visible (ChatSheet's useViewportBox). */
 .reach-chat-overlay {
   position: fixed;
   z-index: 100;
-  inset: 0;
+  top: var(--sheet-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--sheet-height, 100dvh);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -39,7 +43,7 @@
 }
 .reach-chat-sheet {
   width: min(100%, 580px);
-  max-height: min(84dvh, 760px);
+  max-height: min(84dvh, 760px, calc(var(--sheet-height, 100dvh) - 48px));
   padding: 20px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -443,7 +447,7 @@
   }
   .reach-chat-sheet {
     width: min(100%, 580px);
-    max-height: 90dvh;
+    max-height: min(90dvh, calc(var(--sheet-height, 100dvh) - 8px));
     padding: 18px 20px max(22px, env(safe-area-inset-bottom));
     border-radius: 18px 18px 0 0;
   }

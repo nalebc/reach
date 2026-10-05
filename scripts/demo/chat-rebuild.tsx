@@ -21,7 +21,9 @@ const peer = {
   token: "sample-only",
   platform: "darwin",
 };
-let macPrompts: MacPrompt[] = new URLSearchParams(location.search).get("permissions") === "mac"
+const permissionPreview = new URLSearchParams(location.search).get("permissions");
+const samplePassword: MacPrompt = { id: "sample-mac-password", kind: "password", title: "Your Mac needs authentication", detail: "", app: null };
+let macPrompts: MacPrompt[] = permissionPreview === "password" ? [samplePassword] : permissionPreview === "mac"
   ? [{
       id: "sample-mac-request",
       kind: "privacy",
@@ -142,13 +144,22 @@ window.fetch = async (input, init = {}) => {
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
   let data: unknown = {};
-  if (path === "/api/sessions/mac-prompts/sample-mac-request/press") {
+  if (path === "/api/sessions/mac-prompts/sample-mac-password/password") {
+    // Any non-empty sample value works; no real password is needed or used.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (new URLSearchParams(location.search).get("answer") === "blocked")
+      return Response.json({ error: "Sample: macOS couldn't complete authentication. Try the live screen." }, { status: 409 });
+    macPrompts = [];
+    window.dispatchEvent(new Event("reach-preview-refresh"));
+    data = { done: true };
+  }
+  else if (path === "/api/sessions/mac-prompts/sample-mac-request/press") {
     if (new URLSearchParams(location.search).get("answer") === "blocked")
       return Response.json({ error: "macOS could not press this button. Open the live screen to review the dialog." }, { status: 409 });
     const body = JSON.parse(String(init.body));
     if (!["Don’t Allow", "Allow"].includes(body.button))
       return Response.json({ error: "Unknown sample action" }, { status: 400 });
-    macPrompts = [];
+    macPrompts = body.button === "Allow" && new URLSearchParams(location.search).get("answer") === "password" ? [samplePassword] : [];
     window.dispatchEvent(new Event("reach-preview-refresh"));
     data = { pressed: body.button };
   }
@@ -284,6 +295,7 @@ function Preview() {
       </aside>
       <div className="main-shell">
         <main className="main-content page-sessions">
+          {(permissionPreview === "password" || new URLSearchParams(location.search).get("answer") === "password") && <p className="muted" style={{ fontSize: 12 }}>Sample authentication · Use any made-up password</p>}
           {screenPrompt ? <>
             <p className="muted">Preview only · No Mac connected</p>
             <button onClick={() => setScreenPrompt(null)}>Back to chats</button>

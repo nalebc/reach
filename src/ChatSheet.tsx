@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useViewportBox } from "./useViewportBox";
 
 // One focused overlay, shared by composing, switching chats, and reviews.
 export default function ChatSheet({
@@ -13,13 +14,16 @@ export default function ChatSheet({
   children: ReactNode;
 }) {
   const surface = useRef<HTMLElement>(null);
+  // The sheet sits in the part of the screen the keyboard leaves visible (it
+  // opened under the keyboard on an iPhone, New chat's composer hidden), and
+  // the page under it stays put.
+  const overlay = useRef<HTMLDivElement>(null);
+  useViewportBox(overlay, true, "sheet");
   // Capture the trigger before a child's autofocus effect can move focus.
   const restoreFocus = useRef(document.activeElement as HTMLElement | null);
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     const controls = () =>
       [
         ...(surface.current?.querySelectorAll<HTMLElement>(
@@ -57,12 +61,12 @@ export default function ChatSheet({
     document.addEventListener("keydown", key);
     return () => {
       document.removeEventListener("keydown", key);
-      document.body.style.overflow = overflow;
       restoreFocus.current?.focus();
     };
   }, []);
   return createPortal(
     <div
+      ref={overlay}
       className="reach-chat-overlay"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();

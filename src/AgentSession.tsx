@@ -832,6 +832,8 @@ export default function AgentSessionView({
   onSignedIn = () => {},
   logos = {},
   onNew,
+  deviceRequests = 0,
+  onReviewDevice,
 }: {
   peer: Peer;
   session: AgentSession;
@@ -843,6 +845,8 @@ export default function AgentSessionView({
   logos?: AgentLogos;
   // A new chat with the same agent (the apps' new-chat button).
   onNew?: () => void;
+  deviceRequests?: number;
+  onReviewDevice?: () => void;
 }) {
   const agent = initial.agent;
   const siblings = useMemo(
@@ -1107,6 +1111,15 @@ export default function AgentSessionView({
         ? `Codex is signed out on your ${word}.`
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
+  // Claude out of usage: the limit it hit, in Claude Code's own words, on
+  // Claude's card above the composer, unless the chat already ends on it.
+  const claudeLimit =
+    agent === "claude" && claudeHealth?.signedIn && claudeHealth.usable === false
+      ? claudeHealth.limit ||
+        `You've hit your usage limit${claudeHealth.resetsAt ? ` · resets ${resetTime(claudeHealth.resetsAt, false)}` : ""}`
+      : "";
+  const lastItem = items?.at(-1);
+  const limitShown = lastItem?.kind === "error" && lastItem.text === claudeLimit;
   // Spends the account's rate-limit reset, only after the person confirms.
   const useReset = async () => {
     setResetting(true);
@@ -1601,6 +1614,14 @@ export default function AgentSessionView({
           />
         </ChatSheet>
       )}
+      {!!deviceRequests && onReviewDevice && (
+        <section className="as-review-dock" aria-label="Computer permissions">
+          <button className="as-review-toggle" onClick={onReviewDevice}>
+            <span><Monitor size={16} />{deviceRequests === 1 ? "Your Mac needs you" : `${deviceRequests} Mac requests need you`}</span>
+            <ChevronRight size={16} />
+          </button>
+        </section>
+      )}
       {!!reviewCount && (
         <section className="as-review-dock" aria-label="Pending decisions">
           <button
@@ -1699,6 +1720,9 @@ export default function AgentSessionView({
           >
             <ChevronDown size={16} /> Latest
           </button>
+        )}
+        {claudeLimit && !limitShown && (
+          <ErrorNote agent="claude" text={claudeLimit} detail="rate_limit" />
         )}
         {outOfUsage && (
           <div className="as-banner codex-usage">

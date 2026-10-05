@@ -155,13 +155,13 @@ export function createClaudeSessions({
       const seen = (await parse(t.file).catch(() => null))?.usage;
       if (seen && (!newest || seen.at > newest.at)) newest = seen;
     }
-    return newest?.limited && newest.resetsAt > now ? { resetsAt: newest.resetsAt } : null;
+    return newest?.limited && newest.resetsAt > now ? { resetsAt: newest.resetsAt, text: newest.text || "" } : null;
   }
   // Signed in, but out of usage until that limit resets.
   async function withUsage(health) {
     if (!health.signedIn) return health;
     const limit = await usage().catch(() => null);
-    return limit ? { ...health, usable: false, resetsAt: limit.resetsAt } : health;
+    return limit ? { ...health, usable: false, resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : health;
   }
   return {
     usage,

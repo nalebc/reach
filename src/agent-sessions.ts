@@ -77,6 +77,8 @@ export type AgentHealth = {
   resetCredits?: number;
   // Claude: its app's own sign-in (the CLI's is `signedIn`).
   app?: { installed: boolean; signedIn: boolean };
+  // Claude, while out of usage: the limit it hit, in Claude Code's own words.
+  limit?: string;
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").

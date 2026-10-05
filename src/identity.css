@@ -136,9 +136,21 @@ body,
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:is([type="checkbox"], [type="radio"], [type="range"], [type="color"]):focus-visible {
   outline: 2px solid var(--lime);
   outline-offset: 4px;
+}
+/* A text field shows its focus on itself, or on the rounded field around it,
+   never as a square ring or shadow box around the bare input (Chat's search
+   wore a mint square inside its round field). */
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--lime) 45%, transparent);
+  box-shadow: none;
 }
 .panel,
 .pair-card,

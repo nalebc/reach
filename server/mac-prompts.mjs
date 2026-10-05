@@ -1,8 +1,8 @@
 // The Mac's own dialogs (privacy prompts such as "… wants access to control
 // …", "downloaded from the internet" warnings, password requests), as
-// scripts/native/mac-prompts.swift reports them. The phone shows them, marked
-// as the Mac's; they're answered at the Mac (they grant privacy access, which
-// macOS leaves to a person there). Nothing here can press their buttons.
+// scripts/native/mac-prompts.swift reports them. Owner devices can send an
+// exact button press or a password to the guarded native helper. macOS may
+// reject either action; callers must retain a live-screen fallback.
 import { spawn as spawnChild } from "node:child_process";
 import { desktopBinary } from "./desktop-native.mjs";
 
@@ -163,7 +163,9 @@ export function createMacPrompts({
       if (typeof button !== "string" || !prompt.buttons?.includes(button))
         throw Object.assign(new Error("That isn't one of the dialog's buttons."), { status: 400 });
       const result = await answer(["--press", "--window", prompt.id, "--button", button]);
-      if (result.error) throw Object.assign(new Error(result.error), { status: result.gone ? 404 : 409, refused: !!result.refused });
+      if (result?.error) throw Object.assign(new Error(result.error), { status: result.gone ? 404 : 409, refused: !!result.refused });
+      if (result?.pressed !== button)
+        throw Object.assign(new Error("Your Mac didn't confirm the response. Check the dialog on the live screen."), { status: 502 });
       return { pressed: button };
     },
     // Types the Mac's password into its password dialog (only while that
@@ -177,7 +179,9 @@ export function createMacPrompts({
       if (typeof secret !== "string" || !secret || secret.length > 256 || /[\u0000-\u001f\u007f]/.test(secret))
         throw Object.assign(new Error("Enter your Mac's password."), { status: 400 });
       const result = await answer(["--password", "--window", prompt.id], `${secret}\n`);
-      if (result.error) throw Object.assign(new Error(result.error), { status: result.gone ? 404 : 409, refused: !!result.refused });
+      if (result?.error) throw Object.assign(new Error(result.error), { status: result.gone ? 404 : 409, refused: !!result.refused });
+      if (result?.done !== true)
+        throw Object.assign(new Error("Your Mac didn't confirm authentication. Check the dialog on the live screen."), { status: 502 });
       return { done: true };
     },
     // Opens the System Settings page a prompt on screen belongs to, so it's

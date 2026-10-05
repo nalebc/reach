@@ -2852,3 +2852,74 @@ test("failed Mac approval keeps a visible live-screen handoff even without dialo
   assert.ok($(".need-card"), "a failed answer does not dismiss the request");
   assert.deepEqual(dom.errors, []);
 });
+
+test("Mac authentication clears the password, prevents duplicate sends, and promotes live screen on failure", async () => {
+  let finish;
+  const shown = [];
+  const route = "/api/sessions/mac-prompts/auth-flow/password";
+  routes[route] = (init) => {
+    mac.sent.push({ route, body: JSON.parse(init.body) });
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  let refreshed = 0;
+  await mount(React.createElement(EverythingChat, {
+    peer,
+    feed: { sessions: [], health: signedIn, errors: {}, failure: "", macPrompts: [{ id: "auth-flow", kind: "password", title: "Password", detail: "", app: null }], reload: async () => refreshed++, recheck: () => {} },
+    showOnScreen: (p) => shown.push(p.id),
+  }));
+  await click($(".chat-review-link"));
+  const field = $(".mac-password input");
+  assert.equal(field.type, "password");
+  const form = $(".mac-password");
+  const submit = () => form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await typeInto(field, "sample-secret");
+  submit(); submit();
+  await dom.waitFor(() => mac.sent.length === 1);
+  assert.equal(field.value, "");
+  assert.equal(field.disabled, true);
+  assert.equal($(".need-screen button").disabled, true);
+  assert.match(form.textContent, /Authenticating/);
+  finish(Response.json({ error: "macOS refused authentication" }, { status: 409 }));
+  await dom.waitFor(() => form.querySelector('[role="alert"]'));
+  assert.equal(field.value, "");
+  assert.equal(field.disabled, false);
+  assert.equal($(".need-screen button").className, "primary");
+  assert.equal(refreshed, 0);
+  await click($(".need-screen button"));
+  assert.deepEqual(shown, ["auth-flow"]);
+  // A retry always needs new input. No password was saved in either storage.
+  submit();
+  await settle(10);
+  assert.equal(mac.sent.length, 1);
+  assert.ok(!JSON.stringify(dom.window.localStorage).includes("sample-secret"));
+  assert.ok(!JSON.stringify(dom.window.sessionStorage).includes("sample-secret"));
+  await typeInto(field, "another-sample");
+  submit();
+  await dom.waitFor(() => mac.sent.length === 2);
+  finish({ done: true });
+  await dom.waitFor(() => form.querySelector('[role="status"]'));
+  assert.equal(refreshed, 1);
+  assert.equal(field.value, "");
+  assert.equal(field.disabled, true);
+  assert.match(form.textContent, /Authentication submitted/);
+  assert.doesNotMatch(form.textContent, /Approved/);
+  assert.deepEqual(dom.errors, []);
+  delete routes[route];
+});
+
+test("an active conversation can review Mac authentication without losing its draft", async () => {
+  await mount(React.createElement(EverythingChat, {
+    peer,
+    feed: { sessions: [codexSession()], health: signedIn, errors: {}, failure: "", macPrompts: [{ id: "active-auth", kind: "password", title: "Password", detail: "", app: null }], reload: async () => {}, recheck: () => {} },
+    showOnScreen: () => {},
+  }));
+  await click($(".chat-card"));
+  await dom.waitFor(() => $("textarea"));
+  await typeInto($("textarea"), "Keep this draft");
+  await click(button("Your Mac needs you"));
+  assert.ok($(".mac-password input"));
+  assert.ok(button("Authenticate on Mac"));
+  await click($("[aria-label='Close needs you']"));
+  assert.equal($("textarea").value, "Keep this draft");
+  assert.deepEqual(dom.errors, []);
+});

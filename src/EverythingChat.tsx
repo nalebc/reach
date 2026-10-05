@@ -634,6 +634,7 @@ export default function EverythingChat({
     ]),
   );
   const status = health.find((h) => h.agent === current);
+  const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
   return (
     <>
       {open ? (
@@ -646,6 +647,8 @@ export default function EverythingChat({
           )}
           health={health}
           logos={logos}
+          deviceRequests={macPrompts.length}
+          onReviewDevice={() => setSheet("review")}
           onSignedIn={recheck}
           onSelect={openChat}
           onBack={() => {
@@ -718,12 +721,12 @@ export default function EverythingChat({
       )}
       {sheet === "review" && (
         <ChatSheet title="Needs you" onClose={() => setSheet("")}>
-          {needs.length ? (
+          {reviewNeeds.length ? (
             <>
               <p className="chat-sheet-intro">
                 Review one request at a time, with its context.
               </p>
-              <NeedsYouStrip items={needs} />
+              <NeedsYouStrip items={reviewNeeds} />
             </>
           ) : (
             <p className="chat-sheet-intro">You’re all caught up.</p>

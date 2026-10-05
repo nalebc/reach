@@ -247,7 +247,10 @@ test("Claude out of usage: the limit Claude Code last hit, until it resets or an
   await fs.writeFile(path.join(dir, `${A}.jsonl`), `${ask(A, "u1", now - 120000)}\n${limit(A, "e1", "u1", now - 60000, resets)}\n`);
   const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records"), run: async () => ({ stdout: '{"loggedIn":true}' }) });
   // Out until it resets: what the Chat tab says, as it does for Codex.
-  assert.deepEqual(await claude.health(), { agent: "claude", installed: true, signedIn: true, usable: false, resetsAt: resets });
+  assert.deepEqual(await claude.health(), {
+    agent: "claude", installed: true, signedIn: true, usable: false, resetsAt: resets,
+    limit: "You've hit your session limit · resets 3:20pm (America/Vancouver)",
+  });
   assert.equal(await claude.usage(resets + 1), null, "the limit has reset");
   // An answer since, in any session: usable again.
   await fs.writeFile(path.join(dir, `${B}.jsonl`), `${ask(B, "u2", now - 40000)}\n${reply(B, "r2", "u2", now - 30000)}\n`);

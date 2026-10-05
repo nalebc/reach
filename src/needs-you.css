@@ -171,6 +171,28 @@
   font: inherit;
   font-size: 14px;
 }
+.mac-password .mac-password-help,
+.mac-password .said {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.mac-password button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.reach-chat-sheet .mac-password input {
+  flex-basis: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.need-screen button:disabled {
+  opacity: .5;
+}
 .mac-password small.problem {
   flex-basis: 100%;
   color: #f0a0a0;
