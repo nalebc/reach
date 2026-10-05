@@ -29,7 +29,13 @@ jobs:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
       - run: npm audit --audit-level=moderate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - run: node scripts/build-tailnet.mjs --required
       - run: npm run package
+      - run: node release/reach/scripts/bootstrap.mjs --help
       - uses: actions/upload-artifact@v4
         with:
           name: reach-${{ matrix.os }}

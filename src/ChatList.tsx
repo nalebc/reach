@@ -151,7 +151,7 @@ export default function ChatList({
             <h1>Conversations</h1>
             <p>Pick up a thought. Keep it moving.</p>
           </div>
-          <button className="chat-create" onClick={onNew}>
+          <button className="chat-create" aria-label="New chat" onClick={onNew}>
             <Plus size={17} />
             <span>New chat</span>
           </button>
