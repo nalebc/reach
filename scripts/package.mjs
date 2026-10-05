@@ -26,6 +26,7 @@ for (const item of [
   "src",
   "public",
   "index.html",
+  "start.html",
   "tsconfig.json",
   "vite.config.mjs",
 ])
