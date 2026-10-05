@@ -29,26 +29,42 @@ export function useViewportBox(
     });
     const viewport = window.visualViewport;
     let frame = 0;
+    let last = "";
+    let still = 0;
     const place = () => {
-      frame = 0;
-      box.style.setProperty("--vv-top", `${viewport?.offsetTop || 0}px`);
-      box.style.setProperty(
-        "--vv-height",
-        `${viewport?.height || window.innerHeight}px`,
-      );
+      const top = viewport?.offsetTop || 0;
+      const height = viewport?.height || window.innerHeight;
+      box.style.setProperty("--vv-top", `${top}px`);
+      box.style.setProperty("--vv-height", `${height}px`);
+      return `${top} ${height}`;
+    };
+    // iOS reports the keyboard's size while it is still sliding in or out and
+    // says nothing once it stops (the view stayed squeezed for seconds after
+    // the keyboard closed): keep reading each frame until it holds still.
+    const settle = () => {
+      const now = place();
+      still = now === last ? still + 1 : 0;
+      last = now;
+      frame = still < 20 ? requestAnimationFrame(settle) : 0;
     };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(place);
+      still = 0;
+      if (!frame) frame = requestAnimationFrame(settle);
     };
-    place();
+    last = place();
     viewport?.addEventListener("resize", schedule);
     viewport?.addEventListener("scroll", schedule);
     window.addEventListener("resize", schedule);
+    // The keyboard starts to close when a field lets go (sending, picking a photo).
+    document.addEventListener("focusin", schedule);
+    document.addEventListener("focusout", schedule);
     return () => {
       cancelAnimationFrame(frame);
       viewport?.removeEventListener("resize", schedule);
       viewport?.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
+      document.removeEventListener("focusin", schedule);
+      document.removeEventListener("focusout", schedule);
       box.style.removeProperty("--vv-top");
       box.style.removeProperty("--vv-height");
       body.style.cssText = saved;

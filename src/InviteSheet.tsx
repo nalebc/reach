@@ -681,7 +681,9 @@ export function InviteSheet({
         <p className="ivt-warn" role="status">
           Invite links are ready. Your Tailscale policy lets every device reach
           everything, so invited people and agents could reach more than Reach.
-          To limit them, change that rule’s “*” to “autogroup:member”.
+          To limit them, change that rule’s “*” to “autogroup:member” (your
+          other tagged devices and people you shared devices with would then
+          need their own rules).
         </p>
       )}
       {keyed === false && (

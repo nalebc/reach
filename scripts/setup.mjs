@@ -15,7 +15,26 @@ import { readPreferences, configure, preferencesFile } from "./configure.mjs";
 // Reach running in the background (optional). `./reach setup` re-runs it;
 // `./reach setup invites` (or account) jumps straight to one step.
 
-export const SETUP_SECTIONS = ["account", "invites", "background"];
+export const SETUP_SECTIONS = ["account", "link", "invites", "background"];
+const DNS_PAGE = "https://login.tailscale.com/admin/dns";
+
+// What still blocks the phone's HTTPS link: MagicDNS (names like
+// mac.tail1.ts.net) and HTTPS certificates, both switches on one Tailscale
+// page. Funnel (the start page for phones without the app) is allowed with
+// one click when Reach first starts, so it doesn't hold setup up.
+export function linkProblem(status) {
+  if (status?.CurrentTailnet?.MagicDNSEnabled === false) return "magicdns";
+  if (!status?.CertDomains?.length) return "https";
+  return null;
+}
+const openPage = (url) =>
+  new Promise((resolve) => {
+    if (process.platform !== "darwin" || !process.stdout.isTTY)
+      return resolve();
+    import("node:child_process").then(({ execFile }) =>
+      execFile("open", [url], () => resolve()),
+    );
+  });
 const onboardingFile = (root) => path.join(stateDir(root), "onboarding.json");
 
 export function readProgress(root) {
@@ -98,7 +117,7 @@ function makeSteps(root, deps) {
     {
       id: "account",
       title: "Tailscale account & sharing",
-      async run({ print, select, ask }) {
+      async run({ print, select, ask, explicit }) {
         const ensureTailscale =
           deps.ensureTailscale ||
           (await import("./tailscale-connect.mjs")).ensureTailscale;
@@ -110,7 +129,47 @@ function makeSteps(root, deps) {
           quiet: true,
           ...deps.configureDeps,
         });
+        if (explicit)
+          print(
+            "  A Reach that's already running keeps its old settings until it restarts.",
+          );
         return { note: prefs?.owner?.login || "connected" };
+      },
+    },
+    {
+      id: "link",
+      title: "HTTPS link for your phone",
+      async run({ print }) {
+        const status =
+          deps.status ||
+          (async () =>
+            (await import("./tailscale.mjs")).tailscaleJson([
+              "status",
+              "--json",
+            ]));
+        const sleep =
+          deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+        const deadline = Date.now() + (deps.waitMs ?? 15 * 60_000);
+        let shown = "";
+        for (;;) {
+          const problem = linkProblem(await status());
+          if (!problem) return { note: "ready" };
+          if (problem !== shown) {
+            shown = problem;
+            print(
+              problem === "magicdns"
+                ? `  Turn on MagicDNS for your tailnet: one switch on this page (opening it):\n  ${DNS_PAGE}`
+                : `  Turn on HTTPS certificates for your tailnet: one click on this page (opening it):\n  ${DNS_PAGE}`,
+            );
+            print("  Waiting… (Ctrl+C to stop; ./reach picks up here)");
+            await (deps.open || openPage)(DNS_PAGE);
+          }
+          if (Date.now() > deadline)
+            throw Error(
+              `${problem === "magicdns" ? "MagicDNS" : "HTTPS certificates"} is still off. Turn it on at ${DNS_PAGE}, then run ${command} again.`,
+            );
+          await sleep(1500);
+        }
       },
     },
     {
@@ -256,3 +315,103 @@ export async function runSetup(root, { only, deps = {} } = {}) {
 }
 const launchOf = (progress) =>
   progress.steps.background === "background" ? "background" : "foreground";
+
+// After a first run moves Reach to the background: wait for it to start, show
+// the link (and QR), then approve the phone right here, by the code it shows,
+// exactly as a Reach in the foreground does.
+export async function connectPhone(root, { since = 0, deps = {} } = {}) {
+  const print = deps.print || console.log;
+  const sleep =
+    deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const hostFile = path.join(stateDir(root), "host-status.json");
+  // Only the background Reach's own, fresh status counts.
+  const readHost =
+    deps.readHost ||
+    (() => {
+      try {
+        if (fs.statSync(hostFile).mtimeMs < since) return null;
+      } catch {
+        return null;
+      }
+      const host = loadJson(hostFile, null);
+      return host?.service ? host : null;
+    });
+  print("\n  Starting Reach in the background…");
+  let host = null;
+  for (
+    const until = Date.now() + (deps.startMs ?? 5 * 60_000);
+    Date.now() < until;
+  ) {
+    host = readHost();
+    if (host?.origin?.startsWith("https://") && host.dataDir) break;
+    host = null;
+    await sleep(1000);
+  }
+  if (!host) {
+    print(
+      `  Reach is still starting. When it's ready: ${command} status, then open its link on your phone and run ${command} approve.`,
+    );
+    return false;
+  }
+  // The start page works for every phone, with or without the Tailscale app.
+  const start = `https://${new URL(host.origin).hostname}`;
+  const reachable =
+    deps.reachable ||
+    ((url) =>
+      fetch(url, { signal: AbortSignal.timeout(3000), redirect: "error" })
+        .then((r) => r.ok)
+        .catch(() => false));
+  const link = (await reachable(`${start}/reach-start.json`))
+    ? start
+    : host.origin;
+  print(`\n  Open on your phone: ${link}\n`);
+  try {
+    const qr = deps.qr || (await import("qrcode-terminal")).default;
+    qr.generate(link, { small: true });
+  } catch {}
+  print(
+    `  Then tap Connect. Waiting for your phone… (Ctrl+C to do it later with ${command} approve)`,
+  );
+  const approvals = await import("./approve-device.mjs");
+  const pending =
+    deps.pending || (() => approvals.pendingApprovals(host.dataDir));
+  const decide =
+    deps.decide || ((code) => approvals.decideApproval(host.dataDir, code));
+  const ask = deps.ask || (await import("./prompts.mjs")).terminalPrompts().ask;
+  const seen = new Set();
+  for (
+    const until = Date.now() + (deps.waitMs ?? 15 * 60_000);
+    Date.now() < until;
+  ) {
+    const request = pending().find((r) => !seen.has(r.id));
+    if (!request) {
+      await sleep(1000);
+      continue;
+    }
+    seen.add(request.id);
+    print(`\n  New device:\n${approvals.describeApproval(request)}`);
+    for (;;) {
+      const answer = (
+        await ask(
+          "  Type the code shown on your phone to approve it (or deny <code>):",
+        )
+      ).trim();
+      try {
+        print(`  ${decide(answer)}`);
+        if (!answer.startsWith("deny ")) {
+          print(
+            "  Your phone is connected. Reach keeps running in the background.\n",
+          );
+          return true;
+        }
+        break; // denied: keep waiting for the right phone
+      } catch (error) {
+        print(`  ${error.message}`);
+      }
+    }
+  }
+  print(
+    `  No phone yet. Later: open ${link} on it, then run ${command} approve.`,
+  );
+  return false;
+}

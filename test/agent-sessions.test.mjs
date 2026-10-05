@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseClaudeTranscript } from "../server/agent-sessions/claude-transcript.mjs";
+import { createClaudeTranscript, parseClaudeTranscript } from "../server/agent-sessions/claude-transcript.mjs";
 import { createClaudeSessions } from "../server/agent-sessions/claude.mjs";
 import { codexItem, codexSession } from "../server/agent-sessions/codex.mjs";
 import {
@@ -89,6 +89,77 @@ test("Claude sessions list transcripts, map app records, page and reject unknown
   assert.ok(!older.items.some((i) => page.items.some((j) => j.id === i.id)));
   await assert.rejects(() => claude.read("../../etc/passwd"), (e) => e.status === 404);
   await fs.rm(root, { recursive: true, force: true });
+});
+
+test("a growing Claude transcript is read from where reading stopped, giving what reading it whole gives", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-"));
+  const dir = path.join(root, "projects", "-work-app");
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${ID}.jsonl`);
+  const base = { sessionId: ID, cwd: "/work/app", entrypoint: "cli" };
+  let n = 0;
+  const turn = (text, parent) => [
+    line({ ...base, type: "user", uuid: `u${++n}`, parentUuid: parent, timestamp: at(n), message: { content: text } }),
+    line({ ...base, type: "assistant", uuid: `a${n}`, parentUuid: `u${n}`, timestamp: at(n), message: { model: "claude-x", content: [{ type: "text", text: `ok ${n}` }] } }),
+  ];
+  // Every reader made, and the text each was given.
+  const readers = [];
+  const reader = () => {
+    const transcript = createClaudeTranscript();
+    const fed = [];
+    readers.push(fed);
+    return { add: (text) => (fed.push(text), transcript.add(text)), view: () => transcript.view() };
+  };
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records"), reader });
+  const whole = async () => parseClaudeTranscript(await fs.readFile(file, "utf8"));
+  await fs.writeFile(file, turn("first", null).join("\n") + "\n");
+  assert.deepEqual((await claude.read(ID)).items.map((i) => i.text), ["first", "ok 1"]);
+  // Two more lines appended: only they are read.
+  const appended = turn("second", "a1").join("\n") + "\n";
+  await fs.appendFile(file, appended);
+  const page = await claude.read(ID);
+  assert.deepEqual(page.items.map((i) => i.text), ["first", "ok 1", "second", "ok 2"]);
+  assert.equal(readers.length, 1);
+  assert.deepEqual(readers[0].at(-1), appended);
+  assert.deepEqual(page.items, (await whole()).items);
+  // A line still being written: shown once whole, never twice.
+  const [user3, reply3] = turn("third", "a2");
+  await fs.appendFile(file, user3);
+  assert.deepEqual((await claude.read(ID)).items.map((i) => i.text).slice(-1), ["third"]);
+  await fs.appendFile(file, "\n" + reply3.slice(0, 40));
+  assert.deepEqual((await claude.read(ID)).items.map((i) => i.text).slice(-1), ["third"]);
+  await fs.appendFile(file, reply3.slice(40) + "\n");
+  assert.deepEqual((await claude.read(ID)).items.map((i) => i.text), ["first", "ok 1", "second", "ok 2", "third", "ok 3"]);
+  assert.deepEqual((await claude.read(ID)).items, (await whole()).items);
+  assert.equal(readers.length, 1, "still the one reader");
+  // Written anew (not appended): read whole again.
+  await fs.writeFile(file, turn("restarted", null).join("\n") + "\n");
+  assert.deepEqual((await claude.read(ID)).items.map((i) => i.text), ["restarted", "ok 4"]);
+  assert.equal(readers.length, 2);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("a transcript is kept as the conversation shows it: big tool inputs, outputs and images don't stay in memory", () => {
+  const base = { sessionId: ID, cwd: "/work/app", entrypoint: "cli" };
+  const big = "x".repeat(200000);
+  const transcript = createClaudeTranscript();
+  transcript.add(
+    [
+      line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { content: [{ type: "text", text: "look" }, { type: "image", source: { type: "base64", data: big } }] } }),
+      line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [
+        { type: "tool_use", id: "w1", name: "Write", input: { file_path: "/work/app/big.txt", content: big } },
+        { type: "tool_use", id: "m1", name: "mcp__thing__do", input: { blob: big } },
+      ] } }),
+      line({ ...base, type: "user", uuid: "r1", parentUuid: "a1", timestamp: at(3), message: { content: [{ type: "tool_result", tool_use_id: "w1", content: big }] } }),
+    ].join("\n"),
+  );
+  const view = transcript.view();
+  assert.equal(view.items[0].images, 1);
+  assert.equal(view.items[1].text, "big.txt");
+  assert.ok(view.items[1].status === "completed");
+  assert.ok(view.items[2].detail.length < 700, "cut to what's shown");
+  // What stays in memory is about what's shown, not the 600 KB the lines held.
+  assert.ok(JSON.stringify(view).length < 20000);
 });
 
 test("Claude sign-in status: signed out exits 1 with JSON on stdout", async () => {

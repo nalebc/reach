@@ -65,7 +65,7 @@ export function consentOf(name, input = {}) {
   }
 }
 
-function toolItem(block, result, cwd, maxOutput) {
+function toolItem(block, result, cwd) {
   const input = block.input || {};
   const consent = consentOf(block.name, input);
   if (consent)
@@ -75,15 +75,13 @@ function toolItem(block, result, cwd, maxOutput) {
       status: result ? (result.is_error ? "failed" : "completed") : "running",
       kind: "tool",
       text: consent.title,
-      detail: result ? clip(textOf(result.content) || String(result.content ?? ""), maxOutput) : "",
+      detail: result ? result.output : "",
       // Kept while the Claude app waits for an answer. Letting Claude use
       // apps (the card Reach knows word for word) can be answered from the
       // phone; its id names the request.
       ...(result ? {} : { consent: { ...consent, ...(consent.kind === "apps" ? { id: `consent:${block.id}` } : {}) } }),
     };
-  const output = result
-    ? clip(textOf(result.content) || String(result.content ?? ""), maxOutput)
-    : "";
+  const output = result ? result.output : "";
   const base = {
     id: block.id,
     role: "tool",
@@ -138,120 +136,186 @@ function toolItem(block, result, cwd, maxOutput) {
         ...base,
         kind: "tool",
         text: block.name,
-        detail: clip(JSON.stringify(input), 600),
+        detail: block.detail ?? clip(JSON.stringify(input), 600),
       };
   }
 }
 
-export function parseClaudeTranscript(source, { maxOutput = 4000 } = {}) {
-  const entries = [];
-  for (const line of String(source).split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-      /* A torn final line while the app is writing: skip it. */
-    }
+// What the conversation shows of a tool call, and nothing bulkier (a Write's
+// whole file, an Edit's old and new text): kept per line as it is read.
+const KEEP = {
+  Bash: ["command"],
+  Edit: ["file_path"],
+  MultiEdit: ["file_path"],
+  Write: ["file_path"],
+  NotebookEdit: ["notebook_path"],
+  Read: ["file_path"],
+  Grep: ["pattern"],
+  Glob: ["pattern"],
+  WebFetch: ["url"],
+  WebSearch: ["query"],
+  AskUserQuestion: ["questions"],
+  Task: ["description"],
+  Agent: ["description"],
+};
+function slimToolUse(b) {
+  const input = b.input && typeof b.input === "object" ? b.input : {};
+  const keep = KEEP[b.name] || (consentOf(b.name, input) ? ["apps", "reason", "path"] : null);
+  if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600) };
+  return { type: "tool_use", id: b.id, name: b.name, input: Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, input[k]])) };
+}
+const FIELDS = ["uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "isSidechain", "isMeta", "isCompactSummary", "isApiErrorMessage", "error", "timestamp"];
+// One transcript line as the conversation needs it; tool results go to
+// `results` by their call's id (already cut to what's shown), images stay
+// only as a count.
+function slimEntry(e, results, maxOutput) {
+  const out = {};
+  for (const key of FIELDS) if (e[key] !== undefined) out[key] = e[key];
+  if (e.type === "attachment") {
+    const a = e.attachment || {};
+    out.attachment = a.type === "queued_command" ? { type: a.type, humanTurn: a.humanTurn, prompt: a.prompt } : { type: a.type };
   }
+  if (e.message && (e.type === "user" || e.type === "assistant")) {
+    const content = e.message.content;
+    let kept = content;
+    if (Array.isArray(content)) {
+      kept = [];
+      for (const b of content) {
+        if (!b) continue;
+        if (b.type === "tool_result") {
+          if (e.type === "user" && b.tool_use_id)
+            results.set(b.tool_use_id, { is_error: !!b.is_error, output: clip(textOf(b.content) || String(b.content ?? ""), maxOutput) });
+        } else if (b.type === "tool_use") kept.push(slimToolUse(b));
+        else if (b.type === "text") kept.push({ type: "text", text: b.text });
+        else if (b.type === "image") kept.push({ type: "image" });
+      }
+    }
+    out.message = { content: kept, ...(e.message.model ? { model: e.message.model } : {}) };
+  }
+  return out;
+}
+
+// A transcript read as it grows: add() takes whole lines (more as they are
+// written), view() is the conversation so far. Reading only what was
+// appended keeps a 70 MB transcript of a working session from being parsed
+// again on every change.
+export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   const byId = new Map();
   const results = new Map();
   const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "" };
-  for (const e of entries) {
-    if (e.uuid) byId.set(e.uuid, e);
-    if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
-    if (e.cwd) meta.cwd = e.cwd;
-    if (e.gitBranch) meta.gitBranch = e.gitBranch;
-    if (e.sessionId && !meta.sessionId) meta.sessionId = e.sessionId;
-    if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
-    if (e.type === "user" && Array.isArray(e.message?.content))
-      for (const b of e.message.content)
-        if (b?.type === "tool_result" && b.tool_use_id) results.set(b.tool_use_id, b);
-  }
-  let last;
-  for (let i = entries.length - 1; i >= 0 && !last; i--) {
-    const e = entries[i];
-    if (e.uuid && (e.type === "user" || e.type === "assistant") && !e.isSidechain)
-      last = e;
-  }
-  const chain = [];
-  const seen = new Set();
-  for (let cur = last; cur && !seen.has(cur.uuid); ) {
-    seen.add(cur.uuid);
-    chain.push(cur);
-    cur = cur.parentUuid
-      ? byId.get(cur.parentUuid)
-      : cur.logicalParentUuid
-        ? byId.get(cur.logicalParentUuid)
-        : undefined;
-  }
-  chain.reverse();
-  const items = [];
-  let model = null; // the latest model that answered
-  let firstUser = "";
-  for (const e of chain) {
-    const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
-    if (e.type === "system" && e.subtype === "compact_boundary") {
-      items.push({ id: e.uuid, role: "system", kind: "compaction", text: "Context compacted", at });
-    } else if (e.type === "attachment") {
-      const a = e.attachment || {};
-      if (a.type === "queued_command" && a.humanTurn && a.prompt)
-        items.push({ id: e.uuid, role: "user", kind: "text", text: String(a.prompt), queued: true, at });
-    } else if (e.type === "user") {
-      if (e.isMeta || e.isCompactSummary) continue;
-      const content = e.message?.content;
-      const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
-      const text = blocks
-        .filter((b) => b && b.type === "text" && b.text)
-        .map((b) => b.text)
-        .join("\n");
-      const images = blocks.filter((b) => b?.type === "image").length;
-      if (!text && !images) continue;
-      if (!firstUser && text) firstUser = text;
-      items.push({
-        id: e.uuid,
-        role: "user",
-        kind: "text",
-        text: text || "",
-        ...(images ? { images } : {}),
-        at,
-      });
-    } else if (e.type === "assistant" && e.isApiErrorMessage) {
-      // API failures (sign-in, limits) show as an error card in the app.
-      const content = Array.isArray(e.message?.content) ? e.message.content : [];
-      const text = content
-        .filter((b) => b?.type === "text")
-        .map((b) => b.text)
-        .join("\n")
-        .trim();
-      items.push({
-        id: `${e.uuid}:${items.length}`,
-        role: "system",
-        kind: "error",
-        text: text || "Claude Code hit an error.",
-        ...(e.error ? { detail: String(e.error) } : {}),
-        at,
-      });
-    } else if (e.type === "assistant") {
-      const content = Array.isArray(e.message?.content) ? e.message.content : [];
-      if (e.message?.model && e.message.model !== "<synthetic>") model = e.message.model;
-      for (const b of content) {
-        if (b?.type === "text" && b.text?.trim())
-          items.push({ id: `${e.uuid}:${items.length}`, role: "assistant", kind: "text", text: b.text, at });
-        else if (b?.type === "tool_use")
-          items.push({ ...toolItem(b, results.get(b.id), meta.cwd, maxOutput), at });
-      }
-    }
-  }
-  const lastEntry = [...entries].reverse().find((e) => e.timestamp);
-  const firstEntry = entries.find((e) => e.timestamp);
+  let last = null;
+  let firstAt = null;
+  let updatedAt = null;
   return {
-    ...meta,
-    model,
-    title: meta.title || firstUser.split("\n")[0].slice(0, 120),
-    // When the session started: matches it to an app process started
-    // without --resume (see processes.mjs).
-    firstAt: firstEntry?.timestamp ? Date.parse(firstEntry.timestamp) : 0,
-    updatedAt: lastEntry?.timestamp ? Date.parse(lastEntry.timestamp) : 0,
-    items,
+    add(source) {
+      for (const line of String(source).split("\n")) {
+        if (!line.trim()) continue;
+        let e;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue; /* A torn final line while the app is writing: skip it. */
+        }
+        if (!e || typeof e !== "object") continue;
+        if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
+        if (e.cwd) meta.cwd = e.cwd;
+        if (e.gitBranch) meta.gitBranch = e.gitBranch;
+        if (e.sessionId && !meta.sessionId) meta.sessionId = e.sessionId;
+        if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
+        const slim = slimEntry(e, results, maxOutput);
+        if (slim.uuid) byId.set(slim.uuid, slim);
+        if (slim.uuid && (slim.type === "user" || slim.type === "assistant") && !slim.isSidechain) last = slim;
+        if (e.timestamp) {
+          firstAt ??= e.timestamp;
+          updatedAt = e.timestamp;
+        }
+      }
+    },
+    view() {
+      const chain = [];
+      const seen = new Set();
+      for (let cur = last; cur && !seen.has(cur.uuid); ) {
+        seen.add(cur.uuid);
+        chain.push(cur);
+        cur = cur.parentUuid
+          ? byId.get(cur.parentUuid)
+          : cur.logicalParentUuid
+            ? byId.get(cur.logicalParentUuid)
+            : undefined;
+      }
+      chain.reverse();
+      const items = [];
+      let model = null; // the latest model that answered
+      let firstUser = "";
+      for (const e of chain) {
+        const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
+        if (e.type === "system" && e.subtype === "compact_boundary") {
+          items.push({ id: e.uuid, role: "system", kind: "compaction", text: "Context compacted", at });
+        } else if (e.type === "attachment") {
+          const a = e.attachment || {};
+          if (a.type === "queued_command" && a.humanTurn && a.prompt)
+            items.push({ id: e.uuid, role: "user", kind: "text", text: String(a.prompt), queued: true, at });
+        } else if (e.type === "user") {
+          if (e.isMeta || e.isCompactSummary) continue;
+          const content = e.message?.content;
+          const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
+          const text = blocks
+            .filter((b) => b && b.type === "text" && b.text)
+            .map((b) => b.text)
+            .join("\n");
+          const images = blocks.filter((b) => b?.type === "image").length;
+          if (!text && !images) continue;
+          if (!firstUser && text) firstUser = text;
+          items.push({
+            id: e.uuid,
+            role: "user",
+            kind: "text",
+            text: text || "",
+            ...(images ? { images } : {}),
+            at,
+          });
+        } else if (e.type === "assistant" && e.isApiErrorMessage) {
+          // API failures (sign-in, limits) show as an error card in the app.
+          const content = Array.isArray(e.message?.content) ? e.message.content : [];
+          const text = content
+            .filter((b) => b?.type === "text")
+            .map((b) => b.text)
+            .join("\n")
+            .trim();
+          items.push({
+            id: `${e.uuid}:${items.length}`,
+            role: "system",
+            kind: "error",
+            text: text || "Claude Code hit an error.",
+            ...(e.error ? { detail: String(e.error) } : {}),
+            at,
+          });
+        } else if (e.type === "assistant") {
+          const content = Array.isArray(e.message?.content) ? e.message.content : [];
+          if (e.message?.model && e.message.model !== "<synthetic>") model = e.message.model;
+          for (const b of content) {
+            if (b?.type === "text" && b.text?.trim())
+              items.push({ id: `${e.uuid}:${items.length}`, role: "assistant", kind: "text", text: b.text, at });
+            else if (b?.type === "tool_use") items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+          }
+        }
+      }
+      return {
+        ...meta,
+        model,
+        title: meta.title || firstUser.split("\n")[0].slice(0, 120),
+        // When the session started: matches it to an app process started
+        // without --resume (see processes.mjs).
+        firstAt: firstAt ? Date.parse(firstAt) : 0,
+        updatedAt: updatedAt ? Date.parse(updatedAt) : 0,
+        items,
+      };
+    },
   };
+}
+
+export function parseClaudeTranscript(source, options) {
+  const transcript = createClaudeTranscript(options);
+  transcript.add(source);
+  return transcript.view();
 }

@@ -174,6 +174,19 @@ const serviceInstalled = () => {
     return false;
   }
 };
+// A Reach started from a terminal (not the background service).
+const runningElsewhere = () => {
+  try {
+    const host = JSON.parse(
+      fs.readFileSync(path.join(state, "host-status.json"), "utf8"),
+    );
+    if (!host.pid || host.service || host.pid === process.pid) return false;
+    process.kill(host.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 async function startInBackground(options) {
   if (locked) {
     fs.rmSync(lockFile, { force: true });
@@ -230,7 +243,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     const result = await runSetup(root, { only: options.setupSection });
     if (result.ran.includes("background")) {
       const installed = serviceInstalled();
-      if (result.launch === "background" && !installed) {
+      if (result.launch === "background" && !installed && runningElsewhere())
+        console.log(
+          `Reach is running in another terminal. Stop it there (Ctrl+C), then run ${command} setup background again to move it to the background.`,
+        );
+      else if (result.launch === "background" && !installed) {
         await ensureTailscale();
         options = applyPreferences(options, readPreferences(root), []);
         await startInBackground(options);
@@ -384,9 +401,13 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       if (!options.service)
         options = applyPreferences(options, preferences, process.argv.slice(2));
     }
-    if (firstRun?.launch === "background" && !serviceInstalled())
+    if (firstRun?.launch === "background" && !serviceInstalled()) {
+      const since = Date.now();
       await startInBackground(options);
-    else {
+      // Setup ends with the phone connected, as in the foreground.
+      const { connectPhone } = await import("./setup.mjs");
+      await connectPhone(root, { since });
+    } else {
       const { launch } = await import("./launch.mjs");
       await launch(options, root);
     }

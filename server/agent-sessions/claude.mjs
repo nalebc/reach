@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parseClaudeTranscript } from "./claude-transcript.mjs";
+import { createClaudeTranscript } from "./claude-transcript.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,15 +25,49 @@ export function createClaudeSessions({
   cli = "claude",
   run = exec,
   env = process.env,
+  // Reads a transcript as it grows (claude-transcript.mjs).
+  reader = createClaudeTranscript,
 } = {}) {
-  const cache = new Map(); // file -> { mtimeMs, size, parsed }
+  // Per transcript: the conversation, and while it is being written to, where
+  // reading stopped. A working session's transcript only grows (one line per
+  // event), so a change means reading what was appended, not the whole file
+  // again (verified: a 70 MB one took half a second each time).
+  const cache = new Map(); // file -> { ino, size, mtimeMs, head, offset, transcript, parsed, at }
+  let swept = 0;
+  const bytes = async (handle, position, length) => {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    return buffer.subarray(0, bytesRead);
+  };
   async function parse(file) {
     const stat = await fs.stat(file);
     const hit = cache.get(file);
     if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.parsed;
-    const parsed = parseClaudeTranscript(await fs.readFile(file, "utf8"));
-    cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, parsed });
-    return parsed;
+    const handle = await fs.open(file, "r");
+    try {
+      // Its first bytes tell a file that grew from one written anew.
+      const head = (await bytes(handle, 0, Math.min(256, stat.size))).toString("latin1");
+      let entry = hit;
+      if (!(hit?.transcript && hit.ino === stat.ino && stat.size >= hit.offset && hit.head === head.slice(0, hit.head.length))) {
+        entry = { ino: stat.ino, head: "", offset: 0, transcript: reader() };
+        cache.set(file, entry);
+      }
+      // A last line without its newline yet is read now if it's whole, and
+      // again next time (reading a line twice changes nothing); reading
+      // resumes after the last newline.
+      const added = await bytes(handle, entry.offset, stat.size - entry.offset);
+      entry.transcript.add(added.toString("utf8"));
+      entry.offset += added.lastIndexOf(10) + 1;
+      Object.assign(entry, { head, size: stat.size, mtimeMs: stat.mtimeMs, parsed: entry.transcript.view(), at: Date.now() });
+      // Transcripts no longer written to keep only their conversation.
+      if (Date.now() - swept > 60 * 1000) {
+        swept = Date.now();
+        for (const other of cache.values()) if (other !== entry && Date.now() - other.at > 10 * 60 * 1000) other.transcript = null;
+      }
+      return entry.parsed;
+    } finally {
+      await handle.close();
+    }
   }
   async function transcripts() {
     const files = [];

@@ -7,8 +7,16 @@ import {
   runSetup,
   needsOnboarding,
   readProgress,
+  linkProblem,
   SETUP_SECTIONS,
 } from "../scripts/setup.mjs";
+
+// A tailnet ready for the phone's HTTPS link.
+const READY = {
+  BackendState: "Running",
+  CurrentTailnet: { MagicDNSEnabled: true },
+  CertDomains: ["mac.tail1.ts.net"],
+};
 
 // The guided first-run setup: a flow that saves each step, resumes after a
 // stop, re-runs a single section, and never bothers a computer already set up.
@@ -38,6 +46,9 @@ function deps(scene, extra = {}) {
     ensureTailscale: async () => (ran.tailscale++, { BackendState: "Running" }),
     configure: async () => (ran.configure++, { owner: { login: "me@x.test" } }),
     setupInvites: async () => (ran.invites++, undefined),
+    status: async () => READY,
+    open: async () => {},
+    sleep: async () => {},
     ...extra,
   };
 }
@@ -64,6 +75,7 @@ test("a fresh run walks every step in order and records each as it finishes", as
   assert.equal(progress.done, true);
   assert.deepEqual(progress.steps, {
     account: "done",
+    link: "done",
     invites: "skipped",
     background: "foreground",
   });
@@ -138,7 +150,7 @@ test("re-running one section redoes only that step and never flips done", async 
     runSetup(root, { only: "nope", deps: deps(scene()) }),
     /Unknown setup section/,
   );
-  assert.deepEqual(SETUP_SECTIONS, ["account", "invites", "background"]);
+  assert.deepEqual(SETUP_SECTIONS, ["account", "link", "invites", "background"]);
 });
 
 test("a computer configured before onboarding is marked done, never prompted", async (t) => {
@@ -213,7 +225,123 @@ test("start over runs every step again; paired phones aren't touched", async (t)
   const d = deps(s);
   const result = await runSetup(root, { deps: d });
   assert.equal(d.ran.configure, 1, "account step ran again");
-  assert.deepEqual(result.ran, ["account", "invites", "background"]);
+  assert.deepEqual(result.ran, ["account", "link", "invites", "background"]);
   assert.ok(fs.existsSync(phones), "pairings untouched");
   assert.equal(readProgress(root).done, true);
+});
+
+test("the HTTPS link step: opens Tailscale's DNS page once per missing switch, waits, goes on", async (t) => {
+  const root = tmp(t);
+  const states = [
+    { ...READY, CurrentTailnet: { MagicDNSEnabled: false }, CertDomains: undefined },
+    { ...READY, CurrentTailnet: { MagicDNSEnabled: false }, CertDomains: undefined },
+    { ...READY, CertDomains: [] },
+    READY,
+  ];
+  const opened = [];
+  const printed = [];
+  const s = scene();
+  const result = await runSetup(root, {
+    only: "link",
+    deps: deps(s, {
+      status: async () => states.shift() || READY,
+      open: async (url) => opened.push(url),
+      print: (m) => printed.push(m),
+    }),
+  });
+  assert.deepEqual(opened, [
+    "https://login.tailscale.com/admin/dns",
+    "https://login.tailscale.com/admin/dns",
+  ], "once for MagicDNS, once for HTTPS, not on every check");
+  assert.match(printed.join("\n"), /Turn on MagicDNS/);
+  assert.match(printed.join("\n"), /Turn on HTTPS certificates/);
+  assert.deepEqual(s.asked, [], "nothing to answer, just a switch to flip");
+  assert.deepEqual(result.ran, ["link"]);
+  assert.equal(readProgress(root).steps.link, "done");
+});
+
+test("the HTTPS link step: already on means no page and no wait; still off gives up clearly", async (t) => {
+  const root = tmp(t);
+  const opened = [];
+  await runSetup(root, { only: "link", deps: deps(scene(), { open: async (u) => opened.push(u) }) });
+  assert.deepEqual(opened, []);
+  assert.equal(linkProblem(READY), null);
+  assert.equal(linkProblem({ CurrentTailnet: { MagicDNSEnabled: false } }), "magicdns");
+  assert.equal(linkProblem({ CurrentTailnet: { MagicDNSEnabled: true } }), "https");
+  await assert.rejects(
+    runSetup(root, {
+      only: "link",
+      deps: deps(scene(), { status: async () => ({ ...READY, CertDomains: [] }), waitMs: -1 }),
+    }),
+    /HTTPS certificates is still off\. Turn it on at https:\/\/login\.tailscale\.com\/admin\/dns/,
+  );
+});
+
+test("background first run ends with the phone: link, then approve by the code it shows", async (t) => {
+  const { connectPhone } = await import("../scripts/setup.mjs");
+  const root = tmp(t);
+  const host = { origin: "https://mac.tail1.ts.net:8443", dataDir: "/x", service: true };
+  const hosts = [null, null, host];
+  const requests = [[], [], [{ id: "a1b2c3d4-0000-0000-0000-000000000000", name: "iPhone", login: "me@x.test", nodeName: "iphone" }]];
+  const printed = [];
+  const answers = ["wrong", "a1b2c3d4"];
+  const decided = [];
+  const qr = [];
+  const ok = await connectPhone(root, {
+    deps: {
+      print: (m) => printed.push(m),
+      sleep: async () => {},
+      readHost: () => hosts.shift() ?? host,
+      reachable: async (url) => url === "https://mac.tail1.ts.net/reach-start.json",
+      qr: { generate: (link) => qr.push(link) },
+      pending: () => requests.shift() ?? [],
+      ask: async () => answers.shift(),
+      decide: (code) => {
+        decided.push(code);
+        if (code !== "a1b2c3d4") throw Error("Enter the eight-character request shown on your phone.");
+        return "Device approved. Your phone will connect automatically.";
+      },
+    },
+  });
+  const text = printed.join("\n");
+  assert.equal(ok, true);
+  assert.match(text, /Open on your phone: https:\/\/mac\.tail1\.ts\.net\n/, "the start page, for any phone");
+  assert.deepEqual(qr, ["https://mac.tail1.ts.net"]);
+  assert.match(text, /New device:/);
+  assert.match(text, /Enter the eight-character request/, "a wrong code says why, then asks again");
+  assert.deepEqual(decided, ["wrong", "a1b2c3d4"]);
+  assert.match(text, /Your phone is connected/);
+});
+
+test("background first run: start page not reachable → private link; deny keeps waiting; gives up clearly", async (t) => {
+  const { connectPhone } = await import("../scripts/setup.mjs");
+  const root = tmp(t);
+  const host = { origin: "https://mac.tail1.ts.net:8443", dataDir: "/x", service: true };
+  const printed = [];
+  let polls = 0;
+  const ok = await connectPhone(root, {
+    deps: {
+      print: (m) => printed.push(m),
+      sleep: async () => {},
+      readHost: () => host,
+      reachable: async () => false,
+      qr: { generate: () => {} },
+      pending: () => (++polls === 1 ? [{ id: "ffffffff-0000-0000-0000-000000000000", name: "Stranger", login: "x", nodeName: "x" }] : []),
+      ask: async () => "deny ffffffff",
+      decide: () => "Connection denied.",
+      waitMs: 5,
+    },
+  });
+  const text = printed.join("\n");
+  assert.equal(ok, false);
+  assert.match(text, /Open on your phone: https:\/\/mac\.tail1\.ts\.net:8443/);
+  assert.match(text, /Connection denied\./);
+  assert.match(text, /No phone yet\. Later: open https:\/\/mac\.tail1\.ts\.net:8443 on it, then run \.\/reach approve/);
+  // Reach never started: say how to finish later.
+  const none = [];
+  assert.equal(
+    await connectPhone(root, { deps: { print: (m) => none.push(m), sleep: async () => {}, readHost: () => null, startMs: 5 } }),
+    false,
+  );
+  assert.match(none.join("\n"), /still starting\. When it's ready: \.\/reach status/);
 });
