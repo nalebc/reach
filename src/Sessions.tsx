@@ -14,11 +14,24 @@ import {
   Copy,
   ArrowLeft,
   ChevronRight,
+  ChevronLeft,
+  ArrowRight,
+  FolderOpen,
+  Monitor,
+  Sparkles,
   Search,
 } from "lucide-react";
+import { arrowKey, controlKey } from "./terminal-keys";
+import { useViewportBox } from "./useViewportBox";
+import {
+  disposeLater,
+  plainKeyboard,
+  terminalOptions,
+} from "./terminal-options";
+import MacTerminalView from "./MacTerminalView";
 import { Peer, Session, Chat, Approval, request, post } from "./api";
 import { parseChatResponse } from "./chat-response";
-import DesktopTerminals, { type MacTerminal } from "./DesktopTerminals";
+import type { MacTerminal } from "./DesktopTerminals";
 import "./terminals.css";
 import ThinkingOrb from "./ThinkingOrb";
 import { ReconnectTimer } from "./reconnect";
@@ -42,6 +55,8 @@ export function TerminalView({
   toast,
   source,
   setSource,
+  onExit,
+  onOpenScreen,
 }: {
   desktopTerminals: boolean;
   peer: Peer;
@@ -53,41 +68,153 @@ export function TerminalView({
   toast: (s: string) => void;
   source: string;
   setSource: (source: string) => void;
+  onExit: () => void;
+  onOpenScreen?: () => void;
 }) {
-  const mount = useRef<HTMLDivElement>(null),
+  const page = useRef<HTMLDivElement>(null),
+    mount = useRef<HTMLDivElement>(null),
     terminal = useRef<XTerm | null>(null),
-    socket = useRef<WebSocket | null>(null);
+    socket = useRef<WebSocket | null>(null),
+    ctrlArmed = useRef(false);
   const [connected, setConnected] = useState(false),
-    [error, setError] = useState("");
-  const current = sessions.find((s) => s.id === selected);
-  // One list for every terminal on the computer: shells started from this
-  // device and tabs already open in Terminal or iTerm2.
-  const showOpenApps = desktopTerminals && peer.platform === "darwin";
-  const [appTerminals, setAppTerminals] = useState<MacTerminal[]>([]),
-    [appSelected, setAppSelected] = useState("");
-  const terminals = [
-    ...sessions.map((s) => ({
-      key: `shell:${s.id}`,
-      name: s.name,
-      detail: s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd,
-      live: s.status === "running",
-      active: !appSelected && s.id === selected,
-      open: () => {
-        setAppSelected("");
-        onSelect(s.id);
-      },
-    })),
-    ...appTerminals.map((t) => ({
-      key: `app:${t.id}`,
-      name: t.name || "Untitled terminal",
-      detail: t.provider === "terminal" ? "Terminal" : "iTerm2",
-      live: true,
-      active: appSelected === t.id,
-      open: () => setAppSelected(t.id),
-    })),
+    [error, setError] = useState(""),
+    [menu, setMenu] = useState<"switch" | "new" | null>(null),
+    [ctrl, setCtrl] = useState(false),
+    [agents, setAgents] = useState<string[] | null>(null),
+    [macTabs, setMacTabs] = useState<MacTerminal[]>([]),
+    [macError, setMacError] = useState(""),
+    // Home opens a Mac tab directly with source "mac:<id>".
+    [macSelected, setMacSelected] = useState(() =>
+      source.startsWith("mac:") ? source.slice(4) : "",
+    ),
+    [macLoaded, setMacLoaded] = useState(false),
+    [slide, setSlide] = useState<"next" | "previous" | "">(""),
+    [starting, setStarting] = useState(false);
+  const showMacTabs = desktopTerminals && peer.platform === "darwin";
+  const macTab = macTabs.find((t) => t.id === macSelected);
+  const current = macTab
+    ? undefined
+    : sessions.find((s) => s.id === selected);
+  // Every terminal in swipe order: shells started here, then Mac tabs.
+  const items = [
+    ...sessions
+      .filter((s) => s.status === "running" || s.id === selected)
+      .map((s) => ({ key: `reach:${s.id}`, reach: s, mac: undefined })),
+    ...macTabs.map((t) => ({ key: `mac:${t.id}`, reach: undefined, mac: t })),
   ];
-  // The terminal mount only exists once the session list includes the selection.
-  const mounted = !!current && !appSelected;
+  const currentKey = macTab
+    ? `mac:${macTab.id}`
+    : current
+      ? `reach:${current.id}`
+      : "";
+  const position = items.findIndex((item) => item.key === currentKey);
+  const choose = (item: (typeof items)[number], direction?: "next" | "previous") => {
+    setSlide(direction ?? "");
+    if (item.mac) setMacSelected(item.mac.id);
+    else if (item.reach) {
+      setMacSelected("");
+      setSource("reach");
+      onSelect(item.reach.id);
+    }
+  };
+  // Tabs already open in Terminal on the Mac, refreshed while this page is open.
+  useEffect(() => {
+    if (!showMacTabs) return;
+    let stopped = false;
+    const list = async () => {
+      if (document.hidden) return;
+      try {
+        const r = await request<{ sessions: MacTerminal[] }>(
+          peer,
+          "/api/terminals/desktop",
+        );
+        if (stopped) return;
+        setMacTabs(r.sessions);
+        setMacLoaded(true);
+        setMacError("");
+      } catch (e) {
+        if (!stopped) setMacError((e as Error).message);
+      }
+    };
+    void list();
+    const timer = setInterval(() => void list(), 5000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [showMacTabs, peer.url, peer.token]);
+  // A shell chosen or started elsewhere (e.g. "In another folder…") comes to
+  // the front. Only a real change counts: opening a Mac tab from Home, or the
+  // newest shell being picked automatically, keeps the Mac tab.
+  const lastSelected = useRef(selected);
+  useEffect(() => {
+    if (lastSelected.current === selected) return;
+    lastSelected.current = selected;
+    if (autoSelected.current) autoSelected.current = false;
+    else setMacSelected("");
+  }, [selected]);
+  // A closed Mac tab drops back to the shells (once the list has loaded).
+  useEffect(() => {
+    if (macLoaded && macSelected && !macTabs.some((t) => t.id === macSelected))
+      setMacSelected("");
+  }, [macTabs, macLoaded]);
+  // Swipe left or right to move between terminals, like stories.
+  const swipe = useRef<{ x: number; y: number; at: number } | null>(null);
+  const swipeHandlers = {
+    onTouchStart: (event: React.TouchEvent) => {
+      const touch = event.touches[0];
+      // Leave the screen edges to the browser's own back gesture.
+      swipe.current =
+        event.touches.length === 1 &&
+        touch.clientX > 24 &&
+        touch.clientX < window.innerWidth - 24
+          ? { x: touch.clientX, y: touch.clientY, at: Date.now() }
+          : null;
+    },
+    onTouchEnd: (event: React.TouchEvent) => {
+      const start = swipe.current;
+      swipe.current = null;
+      const touch = event.changedTouches[0];
+      if (!start || !touch || position < 0) return;
+      const dx = touch.clientX - start.x,
+        dy = touch.clientY - start.y;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (Date.now() - start.at > 700) return;
+      const next = items[position + (dx < 0 ? 1 : -1)];
+      if (next) choose(next, dx < 0 ? "next" : "previous");
+    },
+  };
+  // Same breakpoint as the app's bottom navigation.
+  const query = "(max-width: 1024px), (pointer: coarse)";
+  const [narrow, setNarrow] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const media = matchMedia(query);
+    const change = () => setNarrow(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  // On a phone the terminal takes the whole screen above the keyboard.
+  useViewportBox(page, narrow);
+  // Open the newest terminal when none is chosen. A just-started terminal
+  // stays selected while the list catches up.
+  const autoSelected = useRef(false);
+  useEffect(() => {
+    if (selected || !sessions.length) return;
+    autoSelected.current = true;
+    onSelect(sessions[0].id);
+  }, [selected, sessions.length]);
+  const armCtrl = (value: boolean) => {
+    ctrlArmed.current = value;
+    setCtrl(value);
+  };
+  useEffect(() => {
+    if (!menu) return;
+    if (menu === "new" && !agents)
+      void request<{ agents: string[] }>(peer, "/api/terminals/agents")
+        .then((r) => setAgents(r.agents))
+        .catch(() => setAgents([]));
+  }, [menu]);
+  const mounted = !!current;
   useEffect(() => {
     if (!selected || !mounted || !mount.current) return;
     let stopped = false,
@@ -96,30 +223,11 @@ export function TerminalView({
     let lastSeen = Date.now(),
       retryable = true,
       heartbeatSupported = false;
-    const term = new XTerm({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-      theme: {
-        background: "#0c110f",
-        foreground: "#dce5dd",
-        cursor: "#b9f568",
-        selectionBackground: "#354831",
-        black: "#182019",
-        red: "#f18d8d",
-        green: "#b9f568",
-        yellow: "#e3c67a",
-        blue: "#8fb9f4",
-        magenta: "#c7a8e9",
-        cyan: "#86d0bd",
-        white: "#e5ece6",
-      },
-      scrollback: 5000,
-      convertEol: false,
-    });
+    const term = new XTerm(terminalOptions());
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(mount.current);
+    plainKeyboard(term);
     terminal.current = term;
     const resize = () => {
       try {
@@ -224,7 +332,14 @@ export function TerminalView({
     }, 4000);
     window.addEventListener("online", wake);
     document.addEventListener("visibilitychange", wake);
-    const input = term.onData((data) => {
+    const input = term.onData((typed) => {
+      let data = typed;
+      // Sticky Ctrl from the key row applies to the next typed character.
+      if (ctrlArmed.current) {
+        data = controlKey(typed) ?? typed;
+        ctrlArmed.current = false;
+        setCtrl(false);
+      }
       if (ws?.readyState === WebSocket.OPEN && connectedRef)
         ws.send(JSON.stringify({ type: "input", data }));
     });
@@ -240,139 +355,277 @@ export function TerminalView({
       ro.disconnect();
       input.dispose();
       ws?.close();
-      term.dispose();
+      disposeLater(term);
       terminal.current = null;
       setConnected(false);
     };
   }, [selected, peer.id, peer.url, peer.token, mounted]);
-  const key = (data: string) => {
+  const send = (data: string) => {
     if (socket.current?.readyState === WebSocket.OPEN)
       socket.current.send(JSON.stringify({ type: "input", data }));
-    terminal.current?.focus();
   };
+  const arrow = (direction: "up" | "down" | "left" | "right") =>
+    send(
+      arrowKey(
+        direction,
+        !!terminal.current?.modes.applicationCursorKeysMode,
+      ),
+    );
+  const start = async (run?: string) => {
+    setMenu(null);
+    setStarting(true);
+    try {
+      const created = await post<Session>(peer, "/api/terminals", {
+        root: 0,
+        ...(run ? { run } : {}),
+      });
+      setSource("reach");
+      setMacSelected("");
+      onSelect(created.id);
+      onRefresh();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+  const openMacTab = async (tab: MacTerminal) => {
+    setMenu(null);
+    try {
+      await post(peer, `/api/terminals/desktop/${tab.id}/focus`);
+      if (onOpenScreen) onOpenScreen();
+      else toast("Brought to the front on your Mac. Turn on Screen to see it.");
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
+  const end = async (id: string) => {
+    if (!confirm("End this terminal? Anything running in it will stop."))
+      return;
+    try {
+      await request(peer, `/api/terminals/${id}`, { method: "DELETE" });
+      onRefresh();
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
+  const agentName: Record<string, string> = {
+    codex: "Codex",
+    claude: "Claude Code",
+  };
+  const folder = (cwd: string) =>
+    cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
+  // The key row must not take focus, or the phone keyboard would close.
+  const keep = (event: React.PointerEvent) => event.preventDefault();
   return (
-    <>
-      <PageTitle
-        eyebrow={peer.name}
-        title="Terminals"
-        description={`Every terminal on ${peer.name}, in one place.`}
-      >
-        <button className="button primary" onClick={onNew}>
-          <Plus size={17} />
-          New terminal
+    <div className="terminal-page" ref={page}>
+      <header className="terminal-bar">
+        <button className="terminal-bar-icon" aria-label="Leave terminal" onClick={onExit}>
+          <ChevronLeft size={20} />
         </button>
-      </PageTitle>
-      {terminals.length > 0 && (
-        <div className="session-tabs terminal-picker" aria-label="Terminals">
-          {terminals.map((t) => (
-            <button
-              key={t.key}
-              className={t.active ? "active" : ""}
-              aria-pressed={t.active}
-              onClick={t.open}
-            >
-              <Terminal size={15} />
-              <span className="terminal-picker-label">
-                {t.name}
-                <small>{t.detail}</small>
-              </span>
-              <span className={`status-dot ${t.live ? "" : "off"}`} />
-            </button>
+        <button
+          className="terminal-switch"
+          aria-haspopup="menu"
+          aria-expanded={menu === "switch"}
+          onClick={() => setMenu(menu === "switch" ? null : "switch")}
+        >
+          <i className={`status-dot ${macTab || (current && connected) ? "" : "off"}`} />
+          <span>
+            {macTab
+              ? macTab.name || "Untitled terminal"
+              : current
+                ? current.name
+                : "Terminals"}
+          </span>
+          {macTab ? <small>on your Mac</small> : current && <small>{folder(current.cwd)}</small>}
+          <ChevronDown size={16} />
+        </button>
+        <button
+          className="terminal-bar-icon"
+          aria-label="New terminal"
+          aria-haspopup="menu"
+          aria-expanded={menu === "new"}
+          disabled={starting}
+          onClick={() => setMenu(menu === "new" ? null : "new")}
+        >
+          <Plus size={20} />
+        </button>
+      </header>
+      {items.length > 1 && position >= 0 && (
+        <div className="terminal-segments" aria-hidden="true">
+          {items.map((item, index) => (
+            <span key={item.key} className={index === position ? "active" : ""} />
           ))}
         </div>
       )}
-      {showOpenApps && (
-        <DesktopTerminals
-          key={`${peer.id}:${peer.url}:${peer.token}`}
-          peer={peer}
-          embedded
-          selectedId={appSelected}
-          onInventory={(list) => {
-            setAppTerminals(list);
-            setAppSelected((id) =>
-              id && !list.some((t) => t.id === id) ? "" : id,
-            );
-            // With no shell open here, show an existing terminal by default.
-            if (!sessions.length && list.length)
-              setAppSelected((id) => id || list[0].id);
-          }}
-        />
-      )}
-      {appSelected ? null : !sessions.length ? (
-        <section className="panel">
-          <Empty
-            icon={Terminal}
-            title="A command line, wherever you are"
-            action={
-              <button className="button primary" onClick={onNew}>
-                <Plus size={17} />
-                Open a terminal
-              </button>
-            }
-          >
-            Start a shell on {peer.name}. It stays running when you close this
-            page.
-          </Empty>
-        </section>
-      ) : (
-        <section className="terminal-panel">
-          <div className="terminal-info">
-            <span>{current?.cwd}</span>
-            <span className="connection-label">
-              <i className={`status-dot ${connected ? "" : "off"}`} />
-              {connected ? "Connected" : "Reconnecting"}
-            </span>
-            {current?.status === "running" && (
-              <button
-                className="icon-button"
-                title="End terminal session"
-                onClick={async () => {
-                  if (
-                    !confirm(
-                      "End this terminal? Any commands running in it will stop.",
-                    )
-                  )
-                    return;
-                  try {
-                    await request(peer, `/api/terminals/${selected}`, {
-                      method: "DELETE",
-                    });
-                    onRefresh();
-                  } catch (e) {
-                    toast((e as Error).message);
-                  }
-                }}
-              >
-                <Square size={14} />
-              </button>
+      {error && !macTab && <div className="terminal-error">{error}</div>}
+      {menu && (
+        <>
+          <div className="terminal-menu-scrim" onClick={() => setMenu(null)} />
+          <div className="terminal-menu" role="menu">
+            {menu === "new" ? (
+              <>
+                <button role="menuitem" onClick={() => void start()}>
+                  <Terminal size={17} /> New terminal
+                </button>
+                {(agents ?? []).map((agent) => (
+                  <button key={agent} role="menuitem" onClick={() => void start(agent)}>
+                    <Sparkles size={17} /> {agentName[agent] ?? agent}
+                  </button>
+                ))}
+                {!agents && <span className="terminal-menu-note">Looking for Codex and Claude Code…</span>}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(null);
+                    onNew();
+                  }}
+                >
+                  <FolderOpen size={17} /> In another folder…
+                </button>
+              </>
+            ) : (
+              <>
+                {sessions.map((s) => (
+                  <div className="terminal-menu-row" key={s.id}>
+                    <button
+                      role="menuitem"
+                      aria-current={!macTab && s.id === selected}
+                      onClick={() => {
+                        setMenu(null);
+                        setMacSelected("");
+                        setSource("reach");
+                        onSelect(s.id);
+                      }}
+                    >
+                      <i className={`status-dot ${s.status === "running" ? "" : "off"}`} />
+                      <span>
+                        {s.name}
+                        <small>{folder(s.cwd)}</small>
+                      </span>
+                    </button>
+                    {s.status === "running" && (
+                      <button
+                        className="terminal-menu-end"
+                        aria-label={`End ${s.name}`}
+                        onClick={() => void end(s.id)}
+                      >
+                        <Square size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {!sessions.length && !macTabs.length && (
+                  <span className="terminal-menu-note">No terminals yet. Tap + to start one.</span>
+                )}
+                {showMacTabs && (macTabs.length > 0 || macError) && (
+                  <span className="terminal-menu-heading">Open in Terminal on your Mac</span>
+                )}
+                {showMacTabs && macError && (
+                  <span className="terminal-menu-note">{macError}</span>
+                )}
+                {macTabs.map((tab) => (
+                  <div className="terminal-menu-row" key={tab.id}>
+                    <button
+                      role="menuitem"
+                      aria-current={macSelected === tab.id}
+                      onClick={() => {
+                        setMenu(null);
+                        setMacSelected(tab.id);
+                      }}
+                    >
+                      <i className="status-dot" />
+                      <span>
+                        {tab.name || "Untitled terminal"}
+                        <small>{tab.provider === "terminal" ? "Terminal" : "iTerm2"}</small>
+                      </span>
+                    </button>
+                    {onOpenScreen && (
+                      <button
+                        className="terminal-menu-end"
+                        aria-label={`Show ${tab.name || "this tab"} on Screen`}
+                        onClick={() => void openMacTab(tab)}
+                      >
+                        <Monitor size={15} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </>
             )}
           </div>
-          <ErrorLine error={error} />
-          <div className="terminal-mount" ref={mount} />
-          <div className="terminal-keys">
-            {[
-              ["Esc", "\x1b"],
-              ["Tab", "\t"],
-              ["Ctrl C", "\x03"],
-              ["Ctrl D", "\x04"],
-              ["↑", "\x1b[A"],
-              ["↓", "\x1b[B"],
-              ["←", "\x1b[D"],
-              ["→", "\x1b[C"],
-              ["Enter", "\r"],
-            ].map(([label, data]) => (
-              <button key={label} onClick={() => key(data)}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="terminal-footnote">
-            Session stays on your computer · reconnect anytime while Reach is
-            running
-          </div>
-        </section>
+        </>
       )}
-    </>
+      <div
+        key={currentKey}
+        className={`terminal-stage ${slide ? `slide-${slide}` : ""}`}
+        {...swipeHandlers}
+      >
+      {macTab ? (
+        <MacTerminalView
+          peer={peer}
+          tab={macTab}
+          onGone={() => setMacSelected("")}
+        />
+      ) : current ? (
+        <>
+          <div
+            className="terminal-screen"
+            ref={mount}
+            onClick={() => terminal.current?.focus()}
+          />
+          <div className="terminal-key-row" role="toolbar" aria-label="Terminal keys">
+            <button onPointerDown={keep} onClick={() => send("\x1b")}>esc</button>
+            <button onPointerDown={keep} onClick={() => send("\t")}>tab</button>
+            <button
+              aria-pressed={ctrl}
+              onPointerDown={keep}
+              onClick={() => armCtrl(!ctrl)}
+            >
+              ctrl
+            </button>
+            <button aria-label="Left" onPointerDown={keep} onClick={() => arrow("left")}>
+              <ArrowLeft size={16} />
+            </button>
+            <button aria-label="Up" onPointerDown={keep} onClick={() => arrow("up")}>
+              <ArrowUp size={16} />
+            </button>
+            <button aria-label="Down" onPointerDown={keep} onClick={() => arrow("down")}>
+              <ArrowDown size={16} />
+            </button>
+            <button aria-label="Right" onPointerDown={keep} onClick={() => arrow("right")}>
+              <ArrowRight size={16} />
+            </button>
+            <button aria-label="Enter" onPointerDown={keep} onClick={() => send("\r")}>
+              <CornerDownLeft size={16} />
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="terminal-start">
+          <Terminal size={28} />
+          <h2>A terminal on {peer.name}</h2>
+          <p>Type straight from your phone keyboard. It keeps running when you leave.</p>
+          <button className="button primary" disabled={starting} onClick={() => void start()}>
+            <Plus size={17} /> New terminal
+          </button>
+          <button className="button secondary" onClick={() => setMenu("new")}>
+            Codex or Claude Code…
+          </button>
+          {macTabs.length > 0 && (
+            <div className="terminal-start-tabs">
+              <span>Already open on your Mac</span>
+              {macTabs.map((tab) => (
+                <button key={tab.id} onClick={() => setMacSelected(tab.id)}>
+                  <Terminal size={15} /> {tab.name || "Untitled terminal"}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      </div>
+    </div>
   );
 }
 export function ChatView({

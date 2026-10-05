@@ -1,7 +1,9 @@
-import { Component, type ReactNode } from "react";
+import { Component, Suspense, type ReactNode } from "react";
 import { RefreshCw, House, TriangleAlert } from "lucide-react";
+import { Spinner } from "./ui";
 
-/** Keep navigation mounted when a page fails; retry remounts only its contents. */
+/** Keep navigation mounted when a page fails; retry remounts only its contents.
+ * Pages whose code loads on demand show a spinner here while it arrives. */
 export default class ScreenBoundary extends Component<
   {
     children: ReactNode;
@@ -50,7 +52,9 @@ export default class ScreenBoundary extends Component<
       );
     return (
       <div key={this.state.attempt} className="screen-boundary-content">
-        {this.props.children}
+        <Suspense fallback={<Spinner label="Opening…" />}>
+          {this.props.children}
+        </Suspense>
       </div>
     );
   }

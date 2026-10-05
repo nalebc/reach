@@ -232,21 +232,23 @@ export class ScreenBroadcast {
           if (ready && this.source) {
             const frame = await this.source.next();
             if (generation !== this.generation) return;
-            for (const [ws, v] of this.viewers) {
-              if (!v.authorize()) {
-                this.remove(ws);
-                continue;
+            // One byte from the helper: nothing changed on screen.
+            if (frame.length > 1)
+              for (const [ws, v] of this.viewers) {
+                if (!v.authorize()) {
+                  this.remove(ws);
+                  continue;
+                }
+                if (
+                  ws.readyState === 1 &&
+                  !v.waiting &&
+                  ws.bufferedAmount === 0
+                ) {
+                  v.waiting = true;
+                  v.sentAt = Date.now();
+                  ws.send(frame);
+                }
               }
-              if (
-                ws.readyState === 1 &&
-                !v.waiting &&
-                ws.bufferedAmount === 0
-              ) {
-                v.waiting = true;
-                v.sentAt = Date.now();
-                ws.send(frame);
-              }
-            }
           }
           if (generation === this.generation && this.viewers.size)
             this.timer = setTimeout(

@@ -6,8 +6,8 @@ import UIKit
 class ReachBridgeViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(QRScannerPlugin())
-        bridge?.registerPluginInstance(ReachDesktopPlugin())
         bridge?.registerPluginInstance(RemoteKeyboardPlugin())
+        bridge?.registerPluginInstance(BackgroundTransferPlugin())
     }
 }
 

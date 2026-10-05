@@ -27,10 +27,11 @@ export function getConfig(overrides = {}) {
   const dataDir = path.resolve(
     process.env.REACH_DATA || path.join(process.cwd(), ".reach"),
   );
-  const roots = (process.env.REACH_ROOTS
-    ? process.env.REACH_ROOTS.split(path.delimiter)
-    : defaultFileRoots())
-    .map((p) => fs.realpathSync(p));
+  const roots = (
+    process.env.REACH_ROOTS
+      ? process.env.REACH_ROOTS.split(path.delimiter)
+      : defaultFileRoots()
+  ).map((p) => fs.realpathSync(p));
   return {
     port: Number(process.env.PORT || 4317),
     host: "127.0.0.1",
@@ -51,7 +52,9 @@ export function getConfig(overrides = {}) {
     ...overrides,
   };
 }
-export function safePath(roots, rootIndex = 0, relative = "") {
+// The same checks for safePath and safePathAsync: a valid root, a path that
+// stays inside it, and (after following links) a real target inside it too.
+function locate(roots, rootIndex, relative) {
   const root = roots[Number(rootIndex)];
   if (
     !root ||
@@ -69,15 +72,34 @@ export function safePath(roots, rootIndex = 0, relative = "") {
   };
   if (!within(target))
     throw fail(403, "This path is outside your shared folders.");
+  const inside = (resolved) => {
+    if (!within(resolved))
+      throw fail(403, "This shortcut points outside your shared folders.");
+    return resolved;
+  };
+  return { target, inside };
+}
+const gone = () => fail(404, "This file or folder is no longer available.");
+export function safePath(roots, rootIndex = 0, relative = "") {
+  const { target, inside } = locate(roots, rootIndex, relative);
   let resolved;
   try {
     resolved = fs.realpathSync(target);
   } catch {
-    throw fail(404, "This file or folder is no longer available.");
+    throw gone();
   }
-  if (!within(resolved))
-    throw fail(403, "This shortcut points outside your shared folders.");
-  return resolved;
+  return inside(resolved);
+}
+// For hot paths (folder listings): the same rules without blocking the server.
+export async function safePathAsync(roots, rootIndex = 0, relative = "") {
+  const { target, inside } = locate(roots, rootIndex, relative);
+  let resolved;
+  try {
+    resolved = await fs.promises.realpath(target);
+  } catch {
+    throw gone();
+  }
+  return inside(resolved);
 }
 export function validLeafName(name) {
   return (
@@ -148,9 +170,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   const pairFile = path.join(config.dataDir, "pairing.json");
   if (rotatePairing) atomicJson(pairFile, pairing);
   function verify(token, identity) {
-    clients = loadJson(file, []);
     if (!token || typeof token !== "string" || token.length > 256) return null;
-    const digest = hash(token);
+    return verifyDigest(hash(token), identity);
+  }
+  // Every check `verify` makes, from the credential's stored hash: used by
+  // download links, which must never hold the credential itself.
+  function verifyDigest(digest, identity) {
+    clients = loadJson(file, []);
+    if (typeof digest !== "string" || !digest) return null;
     const client = clients.find(
       (c) =>
         c.hash === digest &&
@@ -382,6 +409,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   }
   return {
     verify,
+    verifyDigest,
     inviteGuest,
     redeemGuest,
     pair,

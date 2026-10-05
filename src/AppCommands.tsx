@@ -5,47 +5,7 @@ import "./app-commands.css";
 
 type Run = (action: ContextAction) => void;
 
-// A slim row of commands for the app in front, shown above the dock.
-export function ContextBar({
-  app,
-  picks,
-  disabled,
-  run,
-  more,
-}: {
-  app: HostApp;
-  picks: ContextAction[];
-  disabled: boolean;
-  run: Run;
-  more: () => void;
-}) {
-  return (
-    <div className="app-context-bar" role="toolbar" aria-label={`${app.name} commands`}>
-      <span className="app-context-name">{app.name}</span>
-      <div className="app-context-chips">
-        {picks.map((action) => (
-          <button
-            key={action.id}
-            disabled={disabled}
-            onPointerDown={(event) => event.preventDefault()}
-            onClick={() => run(action)}
-          >
-            {action.label}
-          </button>
-        ))}
-        <button
-          className="app-context-more"
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={more}
-        >
-          More…
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// "For <app>" section of the Actions panel: top picks plus every menu command.
+// "For <app>" section of the Shortcuts panel: a few picks, every menu command on request.
 export function AppCommandList({
   app,
   picks,
@@ -60,6 +20,7 @@ export function AppCommandList({
   run: Run;
 }) {
   const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
   const needle = query.trim().toLowerCase();
   const matches = needle
     ? all.filter((a) => `${a.group} ${a.label}`.toLowerCase().includes(needle))
@@ -84,7 +45,16 @@ export function AppCommandList({
           ))}
         </div>
       )}
-      {all.length > 0 && (
+      {all.length > 0 && !open && (
+        <button
+          className="button ghost small screen-more-toggle"
+          aria-expanded={false}
+          onClick={() => setOpen(true)}
+        >
+          All {app.name} commands
+        </button>
+      )}
+      {all.length > 0 && open && (
         <>
           <label className="search app-commands-search">
             <Search size={16} />

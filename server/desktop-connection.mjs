@@ -10,7 +10,6 @@ export function desktopConnection(
     create = DesktopInput.create,
     register = () => {},
     unregister = () => {},
-    sessions,
   },
 ) {
   let token,
@@ -35,18 +34,6 @@ export function desktopConnection(
     }
   };
   ws.endControl = close;
-  ws.clipboard = (action) =>
-    new Promise((resolve, reject) => {
-      try {
-        authorize();
-        if (closed || starting || !helper || queue.length >= 8)
-          throw fail(409, "Desktop input is busy.");
-        queue.push({ action, at: Date.now(), resolve, reject });
-        void drain();
-      } catch (e) {
-        reject(e);
-      }
-    });
   const authorize = () => {
     const client = auth.verify(token);
     if (
@@ -119,14 +106,7 @@ export function desktopConnection(
         register(client.id, ws);
         ws.clientId = client.id;
         clearTimeout(deadline);
-        const session = message.desktopSession
-          ? sessions?.attach(message.desktopSession, client, ws)
-          : null;
-        if (message.desktopSession && !session)
-          throw fail(403, "Desktop session unavailable.");
-        const options = streamOptions({
-          display: session?.display || message.display,
-        });
+        const options = streamOptions({ display: message.display });
         if (create === DesktopInput.create) {
           const displays = await desktopDisplays(config);
           if (

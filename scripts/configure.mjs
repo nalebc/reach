@@ -7,9 +7,10 @@ import { promisify } from "node:util";
 import { atomicJson, loadJson } from "../server/core.mjs";
 import { defaultFileRoots } from "../server/file-roots.mjs";
 import { tailscaleJson, tailscaleCli } from "./tailscale.mjs";
+import { stateDir } from "./home.mjs";
 const exec = promisify(execFile);
 export const preferencesFile = (root) =>
-  path.join(root, ".reach/preferences.json");
+  path.join(stateDir(root), "preferences.json");
 export function readPreferences(root) {
   const file = preferencesFile(root);
   if (!fs.existsSync(file)) return null;

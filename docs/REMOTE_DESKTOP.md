@@ -35,7 +35,7 @@ Switching displays, pausing, hiding the app, or leaving the page releases contro
 
 The default automatically targets up to 60 fps at 1600 px wide and 4 Mbps. Congestion reduces delivery rate toward 20 fps; Mac encoding also reduces bitrate toward 750 Kbps without reconnecting. Recovery raises quality gradually after healthy intervals. Slow viewers have individual bounded windows, so one slow viewer does not force faster viewers to degrade. These are targets, not guaranteed rates. Manual legacy API presets remain available for integrations; no bitrate/fps selector is shown in the main UI.
 
-Mac capture uses ScreenCaptureKit NV12 and VideoToolbox H.264 with low-latency rate control and hardware acceleration when available (required for native iPad Desktop mode). Windows H.264 uses an optional FFmpeg executable with the `libx264` encoder on PATH, or at the path configured by `REACH_FFMPEG`. Windows capture currently uses gdigrab and software encoding, so its CPU cost differs from Mac. No FFmpeg download is performed automatically.
+Mac capture uses ScreenCaptureKit NV12 and VideoToolbox H.264 with low-latency rate control and hardware acceleration when available. Windows H.264 uses an optional FFmpeg executable with the `libx264` encoder on PATH, or at the path configured by `REACH_FFMPEG`. Windows capture currently uses gdigrab and software encoding, so its CPU cost differs from Mac. No FFmpeg download is performed automatically.
 
 The browser decodes H.264 with WebCodecs. Unsupported or failed decoding falls back to JPEG; **Use compatibility video** forces that mode. Windows without FFmpeg also uses JPEG. JPEG targets at most 20 fps and generally costs more bandwidth. Real video requires a browser with working H.264 WebCodecs support, so test the actual phone browser.
 
@@ -66,7 +66,7 @@ REACH_TEST_VIDEO_HELPER=/tmp/reach-screen-video-test npm test
 
 For a real end-to-end check, test on the intended phone over cellular: move and resize a harmless window, select text, compare all four click corners before/after zoom, use modifier shortcuts, transfer a test clipboard string both ways, switch monitors, rotate/fullscreen, then hide the phone browser during a drag and verify the mouse releases. Revoke the phone or let a guest expire and verify access ends. Re-enable only the permissions you intend to use.
 
-The browser interface has no audio, image clipboard sync, cross-device drag-and-drop, or unattended login/lock-screen access. The separate [native iPad Desktop mode](IPAD_DESKTOP.md) adds opt-in image clipboard sync and shared-folder file drops. Windows native behavior, Retina/mixed-DPI multi-monitor input, and physical iOS/Android keyboards, dictation, selection menus and multitouch need device validation. The streamed desktop is video, so native phone selection handles apply to the local typing/clipboard text, not arbitrary pixels in the stream. See [Security](SECURITY.md) for trust boundaries.
+The browser interface has no audio, image clipboard sync, cross-device drag-and-drop, or unattended login/lock-screen access. Windows native behavior, Retina/mixed-DPI multi-monitor input, and physical iOS/Android keyboards, dictation, selection menus and multitouch need device validation. The streamed desktop is video, so native phone selection handles apply to the local typing/clipboard text, not arbitrary pixels in the stream. See [Security](SECURITY.md) for trust boundaries.
 
 ### Phone keyboard and fullscreen
 

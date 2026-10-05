@@ -1,10 +1,12 @@
 import { fail } from "./core.mjs";
 export const QUALITY = {
-  desktop: { width: 2752, fps: 60, bitrate: 16000000 },
   auto: { width: 1600, fps: 60, bitrate: 4000000 },
   saver: { width: 1280, fps: 30, bitrate: 2000000 },
   balanced: { width: 1920, fps: 30, bitrate: 6000000 },
   smooth: { width: 1920, fps: 60, bitrate: 9000000 },
+  // The live screen inside Home's laptop: sharp and smooth; the stream lowers
+  // bitrate and frame rate by itself only when the connection struggles.
+  preview: { width: 960, fps: 30, bitrate: 2000000 },
 };
 export const MODIFIERS = ["meta", "alt", "control", "shift", "fn", "caps"];
 export const KEYS = [
@@ -34,17 +36,7 @@ export function streamOptions(value = {}) {
     !["jpeg", "h264"].includes(format)
   )
     throw fail(400, "Invalid display or video settings.");
-  const options = { display, quality, format, ...QUALITY[quality] };
-  if (quality === "desktop" && value.width !== undefined) {
-    if (
-      !Number.isInteger(value.width) ||
-      value.width < 640 ||
-      value.width > 3840
-    )
-      throw fail(400, "Invalid desktop width.");
-    options.width = value.width - (value.width % 2);
-  }
-  return options;
+  return { display, quality, format, ...QUALITY[quality] };
 }
 export function inputAction(value) {
   if (!value || typeof value !== "object")
@@ -78,43 +70,6 @@ export function inputAction(value) {
     return { type, focus, delete: value.delete, text: value.text };
   }
 
-  if (["keyDown", "keyUp"].includes(type)) {
-    const modifiers = value.modifiers ?? [];
-    if (
-      !HID_KEYS.includes(value.usage) ||
-      !Array.isArray(modifiers) ||
-      modifiers.length > 6 ||
-      modifiers.some((m) => !MODIFIERS.includes(m)) ||
-      new Set(modifiers).size !== modifiers.length ||
-      (value.repeat !== undefined && typeof value.repeat !== "boolean")
-    )
-      throw fail(400, "Invalid physical keyboard event.");
-    return {
-      type,
-      usage: value.usage,
-      modifiers,
-      repeat: type === "keyDown" && value.repeat === true,
-    };
-  }
-  if (["mouseMove", "mouseDown", "mouseUp"].includes(type)) {
-    const button = value.button ?? "left";
-    if (!["left", "right", "middle"].includes(button))
-      throw fail(400, "Invalid mouse button.");
-    if (value.relative === true) {
-      if (
-        ![value.dx, value.dy].every(
-          (n) => Number.isFinite(n) && Math.abs(n) <= 2048,
-        )
-      )
-        throw fail(400, "Invalid relative pointer movement.");
-      return { type, relative: true, dx: value.dx, dy: value.dy, button };
-    }
-    if (
-      ![value.x, value.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
-    )
-      throw fail(400, "Invalid pointer coordinates.");
-    return { type, x: value.x, y: value.y, button };
-  }
   if (["move", "down", "up", "click"].includes(type)) {
     if (
       ![value.x, value.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
@@ -199,9 +154,3 @@ export function inputAction(value) {
   }
   throw fail(400, "Unsupported desktop action.");
 }
-
-// USB keyboard page 0x07: supported physical keys only; no consumer/system usages.
-export const HID_KEYS = [
-  ...Array.from({ length: 108 }, (_, i) => i + 4),
-  ...Array.from({ length: 8 }, (_, i) => 224 + i),
-].filter((n) => ![70, 72, 102].includes(n));

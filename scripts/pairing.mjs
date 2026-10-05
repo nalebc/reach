@@ -1,13 +1,14 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { atomicJson, loadJson } from "../server/core.mjs";
+import { stateDir } from "./home.mjs";
 
 export async function pairRunningHost(
   root,
   { env = process.env, fetchHost = fetch, print = console.log, qr } = {},
 ) {
-  const service = loadJson(path.join(root, ".reach/service.json"), null);
-  const host = loadJson(path.join(root, ".reach/host-status.json"), null);
+  const service = loadJson(path.join(stateDir(root), "service.json"), null);
+  const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.localUrl || !host.dataDir || !host.instance)
     throw Error(
       "Reach is not ready. Start ./reach or check ./reach status and its logs.",

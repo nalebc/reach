@@ -1,4 +1,4 @@
-import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 // Implemented in ios/App/App/RemoteKeyboard.swift.
 export interface RemoteKeyboardPlugin {
@@ -16,3 +16,7 @@ export interface RemoteKeyboardPlugin {
 }
 
 export const RemoteKeyboard = registerPlugin<RemoteKeyboardPlugin>("RemoteKeyboard");
+
+// Apps installed before this plugin existed lack it; they keep the web keyboard.
+export const nativeKeyboard =
+  Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("RemoteKeyboard");

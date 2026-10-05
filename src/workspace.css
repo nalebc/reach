@@ -667,7 +667,6 @@
 }
 .panel,
 .settings-panel,
-.file-browser,
 .screen-popup {
   background: #141b23;
   border-color: var(--border);
@@ -708,29 +707,10 @@
   .sidebar.open {
     visibility: visible;
   }
-  .file-locations {
-    display: flex;
-    overflow-x: auto;
-    gap: 9px;
-    margin-bottom: 18px;
-    padding-bottom: 5px;
-    scroll-snap-type: x proximity;
-  }
-  .file-locations .location {
-    flex: 0 0 154px;
-    min-height: 64px;
-    padding: 12px;
-    scroll-snap-align: start;
-  }
   .screen-popup .icon-button,
   .shortcut-intro .button,
   .shortcut-browse,
   .shortcut-editor .button {
-    min-height: 44px;
-    min-width: 44px;
-  }
-  .file-toolbar .icon-button,
-  .file-row > .icon-button {
     min-height: 44px;
     min-width: 44px;
   }
@@ -748,12 +728,10 @@
     font-size: 14px;
     font-weight: 500;
   }
-  .file-locations,
   .reach-home .shortcut-shelf-items,
   .computer-switcher {
     scrollbar-width: none;
   }
-  .file-locations::-webkit-scrollbar,
   .reach-home .shortcut-shelf-items::-webkit-scrollbar,
   .computer-switcher::-webkit-scrollbar {
     display: none;
@@ -1070,7 +1048,9 @@
     border: 1px solid #d1f3fa1c;
     border-radius: 24px;
     background: #101922f2;
-    backdrop-filter: blur(18px);
+    /* 95% opaque, so a blur can't be seen, but it re-renders on every
+       scroll frame on phones. */
+    backdrop-filter: none;
     box-shadow: 0 8px 30px #0005;
   }
   .app-shell .mobile-nav button {
@@ -1368,44 +1348,6 @@
 .agent-jobs .empty {
   padding-block: 42px;
 }
-.file-label {
-  min-width: 0;
-}
-.file-label strong {
-  font-weight: 500;
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.file-label small {
-  display: none;
-}
-.file-locations .location {
-  border-radius: 17px;
-}
-.file-panel {
-  border-radius: 22px;
-}
-.file-toolbar .breadcrumbs {
-  overflow-x: auto;
-}
-.file-toolbar .breadcrumbs > button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
-}
-.file-panel .file-row:not(.file-heading):hover {
-  background: #b9f7e805;
-}
-.file-panel .file-icon {
-  border-radius: 13px;
-  background: #b9f7e80a;
-  color: #9fcbde;
-}
-.file-panel .folder-icon {
-  color: #b9f7e8;
-}
 @media (max-width: 650px) {
   .workspace-segments {
     width: 100%;
@@ -1463,62 +1405,10 @@
   .page-chat .chat-composer textarea {
     font-size: 16px;
   }
-  .page-files .file-locations {
-    margin-bottom: 16px;
-  }
-  .page-files .file-toolbar {
-    flex-direction: row;
-    gap: 8px;
-    padding: 12px;
-  }
-  .page-files .file-toolbar .breadcrumbs {
-    flex: 1;
-    min-width: 0;
-  }
-  .page-files .file-search {
-    padding: 0 12px 12px;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .page-files .file-search .search {
-    width: 100%;
-    flex-basis: 100%;
-  }
-  .page-files .file-heading {
-    display: none;
-  }
-  .page-files .file-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 44px;
-    gap: 6px;
-    min-height: 78px;
-    padding: 8px 12px;
-  }
-  .page-files .file-name {
-    min-width: 0;
-    gap: 12px;
-    padding-block: 7px;
-  }
   .page-files .file-icon {
     width: 43px;
     height: 47px;
     flex-shrink: 0;
-  }
-  .page-files .file-label {
-    text-align: left;
-  }
-  .page-files .file-label strong {
-    font-size: 13px;
-  }
-  .page-files .file-label small {
-    display: block;
-    color: #899cae;
-    font-size: 11px;
-    margin-top: 7px;
-  }
-  .page-files .file-date,
-  .page-files .file-size {
-    display: none;
   }
   .page-files .file-footer {
     padding: 14px;

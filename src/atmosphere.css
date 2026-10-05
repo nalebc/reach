@@ -212,24 +212,10 @@ select:focus {
 .page-title p {
   color: var(--muted);
 }
-.file-heading {
-  background: #1e2528;
-  color: #a5b0b3;
-}
-.file-row {
-  border-color: #ffffff08;
-}
-.file-row:hover {
-  background: #ffffff03;
-}
 .file-icon,
 .activity-icon {
   background: #27312f;
   color: #bbcec3;
-}
-.folder-icon {
-  background: #27332e;
-  color: #c4e2ce;
 }
 .location {
   background: #191f22;
@@ -1802,17 +1788,6 @@ select:focus {
   background: #ffffff08;
   border: 1px solid var(--border);
   border-radius: 12px;
-}
-.shortcut-logo {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-}
-.shortcut-logo img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
 }
 .screen-navigation-helpers {
   display: flex;

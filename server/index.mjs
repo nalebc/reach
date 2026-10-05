@@ -7,11 +7,10 @@ import {
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
 import {
-  DesktopSessions,
-  desktopPreparation,
-  connectionRoute,
-} from "./desktop-session.mjs";
-import { createAppShortcuts } from "./app-shortcuts.mjs";
+  AGENTS,
+  agentCommand,
+  createAppShortcuts,
+} from "./app-shortcuts.mjs";
 import express from "express";
 import http from "node:http";
 import fs from "node:fs";
@@ -19,6 +18,13 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileRootName } from "./file-roots.mjs";
+import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
+import { isIconType, readFileIcons } from "./file-icons.mjs";
+import { compressJson, serveBuild } from "./delivery.mjs";
+import { createUploads } from "./uploads.mjs";
+import { createLinks } from "./links.mjs";
+import { ensurePtyHelper } from "./pty-helper.mjs";
+import { createAppIconCache } from "./app-icons.mjs";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
@@ -30,6 +36,7 @@ import {
   loadJson,
   atomicJson,
   safePath,
+  safePathAsync,
   validOrigin,
   validLeafName,
   hash,
@@ -42,11 +49,20 @@ import { Terminals } from "./terminal.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
 import { ScreenControl } from "./screen.mjs";
 import { RemoteScreenHub } from "./remote-screen.mjs";
+import {
+  AppThreads,
+  AppScreenHub,
+  AppDisplaysHelper,
+  appScreenSource,
+} from "./app-threads.mjs";
 import { desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
+import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createAgentImages } from "./agent-sessions/images.mjs";
+import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import {
   apps,
@@ -58,6 +74,8 @@ import {
 } from "./platform.mjs";
 
 export async function createReach(overrides = {}) {
+  const ptyWarning = ensurePtyHelper();
+  if (ptyWarning) console.warn(`Reach: ${ptyWarning}`);
   const instance = crypto.randomUUID();
   let transportAvailable = true;
   const config = getConfig(overrides);
@@ -123,6 +141,14 @@ export async function createReach(overrides = {}) {
     maxPayload: 65536,
     perMessageDeflate: false,
   });
+  // Every Codex and Claude Code session on this computer (Chat tab).
+  const agentSessions =
+    overrides.agentSessions ||
+    createAgentSessions({ dataDir: config.dataDir });
+  // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
+  // (node --test) never reach for the real agents.
+  if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => agentSessions.warm?.());
   const appShortcuts = createAppShortcuts({
     dataDir: config.dataDir,
     // Terminal shortcuts open a Mac terminal window and run one command.
@@ -144,24 +170,41 @@ export async function createReach(overrides = {}) {
     config,
     overrides.remoteScreenFactory,
   );
+  // Apps on your phone: each runs on its own hidden display on the Mac.
+  const appThreads = new AppThreads({
+    file: path.join(config.dataDir, "app-threads.json"),
+    listApps: overrides.appList || apps,
+    startHelper:
+      overrides.appDisplays ||
+      ((handlers) => AppDisplaysHelper.start(config, handlers)),
+    ...(overrides.appPlatform && { platform: overrides.appPlatform }),
+    onChange: (thread, reason) => {
+      if (reason === "region")
+        appScreens.end(thread.id, "Fitting the app to your screen…", true);
+      else if (
+        ["closed", "released", "removed", "failed", "quit"].includes(reason)
+      )
+        appScreens.end(
+          thread.id,
+          reason === "closed"
+            ? `${thread.name}'s window was closed on the Mac.`
+            : reason === "quit"
+              ? `${thread.name} quit.`
+              : `${thread.name} went back to the Mac.`,
+          false,
+        );
+      if (reason === "opened") record("app", `${thread.name} on phone`);
+    },
+  });
+  const appScreens = new AppScreenHub(
+    appThreads,
+    overrides.appScreenFactory || ((options) => appScreenSource(config, options)),
+  );
   const inputConnections = new Map();
   const closeInput = (clientId) => {
     for (const [id, ws] of inputConnections)
       if (!clientId || id === clientId) ws.endControl?.();
   };
-  const desktopIdentityCleanup = new Map();
-  const desktopSessions = new DesktopSessions(config, {
-    create: overrides.desktopSessionFactory,
-    onEnd: (clientId) => {
-      desktopIdentityCleanup.get(clientId)?.();
-      desktopIdentityCleanup.delete(clientId);
-      screenControl.revoke(clientId);
-      closeInput(clientId);
-    },
-    controls: (clientId) =>
-      screenControl.lease?.clientId === clientId &&
-      screenControl.lease.expiresAt > Date.now(),
-  });
   let captureInFlight;
   let inputInFlight = false;
   const events = [];
@@ -237,7 +280,7 @@ export async function createReach(overrides = {}) {
       res.setHeader("Vary", "Origin");
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type",
+        "Authorization, Content-Type, Range, If-Range",
       );
       res.setHeader(
         "Access-Control-Allow-Methods",
@@ -255,8 +298,8 @@ export async function createReach(overrides = {}) {
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
   });
-  app.use("/api/screen/desktop/clipboard", express.json({ limit: "3mb" }));
   app.use(express.json({ limit: "256kb" }));
+  app.use("/api", compressJson());
   app.use((req, res, next) => {
     if (!transportAvailable)
       return res.status(503).json({
@@ -448,6 +491,8 @@ export async function createReach(overrides = {}) {
       activity: "admin",
       settings: "admin",
       agents: "admin",
+      // Transcripts of every AI session: the owner only.
+      sessions: "admin",
     }[route];
     const allowed = (identity) =>
       identity &&
@@ -555,10 +600,11 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Send screen as true or false.");
     settings.screen = config.screen = req.body.screen;
     if (!config.screen) {
-      desktopSessions.revoke();
       screenControl.clear();
       screenStreams.stop();
       remoteScreens.stop();
+      appScreens.stop();
+      void appThreads.closeAll();
       closeInput();
     }
     atomicJson(settingsFile, settings);
@@ -612,32 +658,45 @@ export async function createReach(overrides = {}) {
   app.delete("/api/clients/:id", (req, res) => {
     auth.revoke(req.params.id);
     presence.removeClient(req.params.id);
-    desktopSessions.revoke(req.params.id);
     screenControl.revoke(req.params.id);
     closeInput(req.params.id);
     for (const ws of wss.clients)
       if (ws.clientId === req.params.id) ws.close(4001, "Access revoked");
     res.type("json").send(JSON.stringify({ ok: true }));
   });
-  const resolve = (root, p, client) => {
-    const target = safePath(client?.agentRoots || config.roots, root, p);
+  // Same order as localeCompare, without building a collator per comparison.
+  const names = new Intl.Collator();
+  const privateRoots = () =>
+    [config.dataDir, ...(config.privatePaths || [])].map((privatePath) =>
+      fs.existsSync(privatePath)
+        ? fs.realpathSync(privatePath)
+        : path.resolve(privatePath),
+    );
+  const notPrivate = (target, privates = privateRoots()) => {
     if (
-      [config.dataDir, ...(config.privatePaths || [])].some((privatePath) => {
-        const absolute = fs.existsSync(privatePath)
-          ? fs.realpathSync(privatePath)
-          : path.resolve(privatePath);
-        return target === absolute || target.startsWith(absolute + path.sep);
-      })
+      privates.some(
+        (absolute) =>
+          target === absolute || target.startsWith(absolute + path.sep),
+      )
     )
       throw fail(403, "Reach’s private companion data is not shared.");
     return target;
   };
+  const resolve = (root, p, client) =>
+    notPrivate(safePath(client?.agentRoots || config.roots, root, p));
+  // Listings check thousands of entries: same rules, without blocking.
+  const resolveAsync = async (root, p, client, privates) =>
+    notPrivate(
+      await safePathAsync(client?.agentRoots || config.roots, root, p),
+      privates,
+    );
   app.get("/api/files", async (req, res) => {
     const dir = resolve(req.query.root, req.query.path || "", req.client);
     const info = await fsp.stat(dir);
     if (!info.isDirectory()) throw fail(400, "Choose a folder.");
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const showHidden = req.query.hidden === "1";
+    const privates = privateRoots();
     const items = (
       await Promise.all(
         entries
@@ -645,10 +704,11 @@ export async function createReach(overrides = {}) {
           .slice(0, 2000)
           .map(async (e) => {
             try {
-              const full = resolve(
+              const full = await resolveAsync(
                 req.query.root,
                 path.join(String(req.query.path || ""), e.name),
                 req.client,
+                privates,
               );
               const s = await fsp.stat(full);
               return {
@@ -671,7 +731,7 @@ export async function createReach(overrides = {}) {
       .sort(
         (a, b) =>
           (a.type === b.type ? 0 : a.type === "directory" ? -1 : 1) ||
-          a.name.localeCompare(b.name),
+          names.compare(a.name, b.name),
       );
     res.json({
       items,
@@ -685,9 +745,22 @@ export async function createReach(overrides = {}) {
     if (!s.isFile()) throw fail(400, "Choose a file.");
     res.setHeader(
       "Access-Control-Expose-Headers",
-      "Content-Disposition, Content-Length",
+      "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
     res.download(file, path.basename(file));
+  });
+  // A short-lived link to one file, for the browser's own download manager.
+  app.get("/api/files/download-link", async (req, res) => {
+    const file = resolve(req.query.root, req.query.path || "", req.client);
+    const stat = await fsp.stat(file);
+    if (!stat.isFile()) throw fail(400, "Choose a file.");
+    const token = links.issue({
+      digest: req.client.hash,
+      root: req.query.root,
+      path: req.query.path || "",
+      mtimeMs: stat.mtimeMs,
+    });
+    res.json({ url: `/download/${token}`, expiresIn: 600 });
   });
   app.get("/api/files/text", async (req, res) => {
     const file = resolve(req.query.root, req.query.path || "", req.client);
@@ -702,6 +775,38 @@ export async function createReach(overrides = {}) {
     if (data.includes(0))
       throw fail(415, "Download this file to open it in a compatible app.");
     res.json({ text: data.toString("utf8"), sha256: hash(data) });
+  });
+  // A Word/RTF/OpenDocument file's text. No sha256: it can't be written back.
+  const documentText = overrides.documentText || readDocumentText;
+  app.get("/api/files/document-text", async (req, res) => {
+    const file = resolve(req.query.root, req.query.path || "", req.client);
+    if (!DOCUMENT_TEXT.test(file))
+      throw fail(415, "Download this file to open it.");
+    const stat = await fsp.stat(file);
+    if (!stat.isFile()) throw fail(400, "Choose a file.");
+    if (stat.size > 25 * 1024 * 1024)
+      throw fail(
+        413,
+        "This document is too large to preview. Download it instead.",
+      );
+    res.json({ text: await documentText(file) });
+  });
+  // The platform's own icon for each file type, e.g. ?types=folder,pdf,docx.
+  const fileIcon = createAppIconCache(overrides.fileIcons || readFileIcons);
+  app.get("/api/files/icons", async (req, res) => {
+    const types = [
+      ...new Set(
+        String(req.query.types || "")
+          .split(",")
+          .filter(Boolean),
+      ),
+    ];
+    if (!types.length || types.length > 64 || !types.every(isIconType))
+      throw fail(400, "Ask for up to 64 file types.");
+    const found = await Promise.all(types.map(fileIcon));
+    res
+      .set("Cache-Control", "no-store")
+      .json({ icons: Object.fromEntries(types.map((t, i) => [t, found[i]])) });
   });
   app.put("/api/files/text", (req, res) => {
     if (
@@ -738,6 +843,12 @@ export async function createReach(overrides = {}) {
   });
   const uploads = path.join(config.dataDir, "uploads");
   fs.mkdirSync(uploads, { recursive: true });
+  const resumable = createUploads({
+    dir: path.join(config.dataDir, "uploads-resumable"),
+    ...(config.maxUploadBytes && { maxBytes: config.maxUploadBytes }),
+    ...(overrides.freeSpace && { freeSpace: overrides.freeSpace }),
+  });
+  const links = createLinks();
   const upload = multer({
     dest: uploads,
     // Browsers send file names as UTF-8; multer's default (latin1) garbles
@@ -763,7 +874,13 @@ export async function createReach(overrides = {}) {
           "Choose a filename without special characters, reserved device names, or leading/trailing dots.",
         );
       const target = path.join(dir, name);
-      fs.copyFileSync(req.file.path, target, fs.constants.COPYFILE_EXCL);
+      // Async (and a copy-on-write clone where the disk supports it), so a
+      // large upload never pauses the screen stream or terminals.
+      await fsp.copyFile(
+        req.file.path,
+        target,
+        fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
+      );
       record("file", `Uploaded ${name}`);
       res.json({ name });
     } catch (e) {
@@ -777,6 +894,72 @@ export async function createReach(overrides = {}) {
       await fsp.unlink(req.file.path).catch(() => {});
     }
   });
+  // Resumable uploads (server/uploads.mjs): create, send chunks at offsets,
+  // ask where to resume, complete. The one-request route above stays for
+  // older apps and computers.
+  const uploadFolder = (req, root, folder) => {
+    const dir = resolve(root, folder || "", req.client);
+    if (!fs.statSync(dir).isDirectory()) throw fail(400, "Choose a folder.");
+    return dir;
+  };
+  const withOffset = (res, e) => {
+    if (e.offset === undefined) throw e;
+    res.status(e.status).json({ error: e.message, offset: e.offset });
+  };
+  app.post("/api/files/uploads", async (req, res) => {
+    const { root, path: folder = "", name, size } = req.body || {};
+    if (!validLeafName(name))
+      throw fail(
+        400,
+        "Choose a filename without special characters, reserved device names, or leading/trailing dots.",
+      );
+    const dir = uploadFolder(req, root, folder);
+    res.json(
+      await resumable.create(req.client, {
+        folder: dir,
+        name,
+        size,
+        root,
+        path: folder,
+      }),
+    );
+  });
+  app.get("/api/files/uploads/:id", (req, res) =>
+    res.json(resumable.status(req.params.id, req.client)),
+  );
+  app.put("/api/files/uploads/:id", async (req, res) => {
+    // Chunks are raw bytes; one that was parsed as JSON lost its contents.
+    if (req.body !== undefined && Object.keys(req.body || {}).length)
+      throw fail(415, "Send chunks as application/octet-stream.");
+    const offset = Number(req.query.offset);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw fail(400, "Send the chunk's offset.");
+    try {
+      res.json(await resumable.write(req.params.id, req.client, offset, req));
+    } catch (e) {
+      // Don't keep reading an oversized body after answering.
+      if (e.status === 413) res.setHeader("Connection", "close");
+      withOffset(res, e);
+    }
+  });
+  app.post("/api/files/uploads/:id/complete", async (req, res) => {
+    resumable.status(req.params.id, req.client);
+    const { root, path: folder } = resumable.get(req.params.id);
+    try {
+      const result = await resumable.complete(
+        req.params.id,
+        req.client,
+        uploadFolder(req, root, folder),
+      );
+      record("file", `Uploaded ${result.name}`);
+      res.json(result);
+    } catch (e) {
+      withOffset(res, e);
+    }
+  });
+  app.delete("/api/files/uploads/:id", async (req, res) =>
+    res.json(await resumable.cancel(req.params.id, req.client)),
+  );
   app.post("/api/files/folder", async (req, res) => {
     const dir = resolve(req.body.root, req.body.path || "", req.client);
     const name = req.body.name;
@@ -872,13 +1055,263 @@ export async function createReach(overrides = {}) {
   app.get("/api/terminals", (req, res) =>
     res.json(terminals.list().filter((s) => mayAccess(req.client, s))),
   );
-  app.post("/api/terminals", (req, res) => {
+  // Which agents (Codex, Claude Code) a new terminal can start; cached briefly.
+  const locateAgent = overrides.agentCommand || agentCommand;
+  let agentsFound = null;
+  const installedAgents = () => {
+    if (!agentsFound || Date.now() - agentsFound.at > 300000)
+      agentsFound = {
+        at: Date.now(),
+        list: Promise.all(
+          Object.keys(AGENTS).map(async (name) =>
+            (await locateAgent(name)) ? name : null,
+          ),
+        ).then((names) => names.filter(Boolean)),
+      };
+    return agentsFound.list;
+  };
+  app.get("/api/terminals/agents", async (req, res) =>
+    res.json({ agents: await installedAgents() }),
+  );
+  // Polls cost a few bytes when nothing changed: the phone sends the version
+  // it already has and gets { unchanged } back instead of the same data.
+  const versioned = (req, res, payload) => {
+    const version = crypto
+      .createHash("sha1")
+      .update(JSON.stringify(payload))
+      .digest("base64url")
+      .slice(0, 16);
+    res.json(
+      req.query.known === version
+        ? { unchanged: true, version }
+        : { ...payload, version },
+    );
+  };
+  app.get("/api/sessions", async (req, res) =>
+    versioned(req, res, await agentSessions.list()),
+  );
+  app.get("/api/sessions/health", async (req, res) =>
+    res.json({ agents: await agentSessions.health() }),
+  );
+  app.get("/api/sessions/:agent/:id", async (req, res) => {
+    const before =
+      typeof req.query.before === "string" ? req.query.before : null;
+    const page = await agentSessions.read(req.params.agent, req.params.id, {
+      limit: Number(req.query.limit) || 200,
+      before,
+      cursor: before,
+    });
+    if (before) res.json(page);
+    else versioned(req, res, page);
+  });
+  app.post("/api/sessions/:agent/:id/open", async (req, res) => {
+    const result = await agentSessions.openInApp(
+      req.params.agent,
+      req.params.id,
+    );
+    record(
+      "session",
+      `Opened a ${req.params.agent === "codex" ? "Codex" : "Claude Code"} session on the Mac`,
+    );
+    res.json(result);
+  });
+  // Replying, approving and starting sessions, as in the agents' own apps.
+  const agentLabel = (agent) => (agent === "codex" ? "Codex" : "Claude Code");
+  const agentImages = createAgentImages({
+    dir: path.join(config.dataDir, "agent-images"),
+  });
+  const imageUpload = multer({
+    dest: path.join(config.dataDir, "agent-images"),
+    limits: {
+      fileSize: 25 * 1024 * 1024,
+      files: 1,
+      fields: 0,
+      parts: 2,
+      headerPairs: 32,
+    },
+  });
+  // Model ids as the agents list them, e.g. "gpt-6-astra", "claude-fable-5-1[1m]".
+  const MODEL = /^[A-Za-z0-9._:[\]-]{1,64}$/;
+  const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  // Permission modes a reply may switch to, in each agent's own terms.
+  const REPLY_MODES = {
+    codex: ["auto", "guardian-approvals", "full-access", "read-only"],
+    claude: ["default", "auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"],
+  };
+  const turnOptions = (body, agent) => {
+    if (body.model !== undefined && body.model !== null && !MODEL.test(body.model))
+      throw fail(400, "Unknown model.");
+    if (body.effort !== undefined && body.effort !== null && !EFFORTS.includes(body.effort))
+      throw fail(400, "Unknown thinking level.");
+    if (agent && body.mode !== undefined && body.mode !== null && !REPLY_MODES[agent]?.includes(body.mode))
+      throw fail(400, "Unknown permission mode.");
+    return {
+      text: typeof body.text === "string" ? body.text : "",
+      images: agentImages.paths(body.images),
+      model: body.model || undefined,
+      effort: body.effort || undefined,
+      ...(agent && body.mode ? { mode: body.mode } : {}),
+    };
+  };
+  // A folder for a new session: an existing directory in the owner's home.
+  const sessionFolder = (value) => {
+    if (typeof value !== "string" || !path.isAbsolute(value))
+      throw fail(400, "Choose a folder.");
+    let real;
+    try {
+      real = fs.realpathSync(value);
+    } catch {
+      throw fail(400, "That folder doesn't exist on your Mac.");
+    }
+    const home = fs.realpathSync(os.homedir());
+    if (
+      !fs.statSync(real).isDirectory() ||
+      !(real === home || real.startsWith(home + path.sep)) ||
+      real === config.dataDir ||
+      real.startsWith(config.dataDir + path.sep)
+    )
+      throw fail(400, "Choose a folder in your home folder.");
+    return real;
+  };
+  // Slash commands the agent offers after "/" in its composer.
+  app.get("/api/sessions/commands", async (req, res) =>
+    res.json({
+      commands: await agentSessions.commands(
+        req.query.agent === "claude" ? "claude" : "codex",
+      ),
+    }),
+  );
+  // The agents' real logos from the apps on this Mac, sent once per version.
+  app.get("/api/sessions/logos", async (req, res) => {
+    const { version, logos } = await agentSessions.logos();
+    res.json(
+      req.query.known === version
+        ? { unchanged: true, version }
+        : { version, logos },
+    );
+  });
+  app.get("/api/sessions/models", async (req, res) =>
+    res.json(
+      await agentSessions.models(
+        req.query.agent === "claude" ? "claude" : "codex",
+      ),
+    ),
+  );
+  // Signing an agent in on the Mac from the phone: Reach relays the link and
+  // the code; the sign-in itself is the agent's own, on the Mac.
+  const signInAgent = (value) => {
+    if (value !== "claude" && value !== "codex")
+      throw fail(404, "Unknown agent.");
+    return value;
+  };
+  app.get("/api/sessions/sign-in", (req, res) =>
+    res.json(agentSessions.signIn.view(signInAgent(req.query.agent))),
+  );
+  app.post("/api/sessions/sign-in", async (req, res) => {
+    const agent = signInAgent(req.body?.agent);
+    const result = await agentSessions.signIn.start(agent);
+    record("session", `Started signing ${agentLabel(agent)} in on the Mac`);
+    res.json(result);
+  });
+  app.post("/api/sessions/sign-in/code", (req, res) =>
+    res.json(
+      agentSessions.signIn.submit(
+        signInAgent(req.body?.agent),
+        req.body?.code,
+      ),
+    ),
+  );
+  app.delete("/api/sessions/sign-in", (req, res) =>
+    res.json(agentSessions.signIn.cancel(signInAgent(req.query.agent))),
+  );
+  app.post(
+    "/api/sessions/images",
+    imageUpload.single("file"),
+    async (req, res) => {
+      if (!req.file) throw fail(400, "Choose an image.");
+      res.json({ id: await agentImages.add(req.file.path) });
+    },
+  );
+  app.post("/api/sessions", async (req, res) => {
+    const body = req.body || {};
+    const agent = String(body.agent || "");
+    // Each agent's own permission modes: the Codex app's menu (sent exactly
+    // as the app sends it) or Claude Code's --permission-mode choices.
+    const modes =
+      agent === "codex"
+        ? CODEX_MODES
+        : Object.fromEntries(
+            ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map(
+              (mode) => [mode, { mode }],
+            ),
+          );
+    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode))
+      throw fail(400, "Unknown permission mode.");
+    const result = await agentSessions.start(agent, {
+      ...turnOptions(body),
+      cwd: sessionFolder(body.cwd),
+      ...(body.mode ? modes[body.mode] : {}),
+      name: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
+    });
+    record("session", `Started a ${agentLabel(agent)} session from Reach`);
+    res.json(result);
+  });
+  app.post("/api/sessions/:agent/:id/messages", async (req, res) => {
+    const result = await agentSessions.send(
+      req.params.agent,
+      req.params.id,
+      turnOptions(req.body || {}, req.params.agent),
+    );
+    record("session", `Sent a message to ${agentLabel(req.params.agent)}`);
+    res.json(result);
+  });
+  app.post("/api/sessions/:agent/:id/prompts/:prompt", async (req, res) => {
+    const result = await agentSessions.respond(
+      req.params.agent,
+      req.params.id,
+      req.params.prompt,
+      req.body || {},
+    );
+    record("session", `Answered ${agentLabel(req.params.agent)} on the phone`);
+    res.json(result);
+  });
+  app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
+    res.json(await agentSessions.stop(req.params.agent, req.params.id)),
+  );
+  // Long poll: answers when the session changes (streamed text, prompts,
+  // status) or after 25 seconds.
+  app.get("/api/sessions/:agent/:id/live", async (req, res) => {
+    const since = Number(req.query.since);
+    const gone = new AbortController();
+    res.on("close", () => gone.abort());
+    if (Number.isFinite(since)) {
+      await agentSessions.changes(
+        req.params.agent,
+        req.params.id,
+        since,
+        25000,
+        gone.signal,
+      );
+      // Let a burst of streamed text arrive together.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    if (!res.writableEnded && !gone.signal.aborted)
+      res.json(agentSessions.view(req.params.agent, req.params.id));
+  });
+  app.post("/api/terminals", async (req, res) => {
+    const run = req.body.run;
+    if (run !== undefined && !Object.hasOwn(AGENTS, run))
+      throw fail(400, "Choose Codex or Claude Code.");
     const cwd = resolve(req.body.root, req.body.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
+    const command = run ? await locateAgent(run) : "";
+    if (run && !command)
+      throw fail(404, `${AGENTS[run]} isn't installed on this computer.`);
     const terminal = terminals.create({
       cwd,
-      name: req.body.name,
+      name: req.body.name || (run ? AGENTS[run] : undefined),
       clientId: req.client.id,
+      command,
     });
     record("terminal", `Started ${terminal.name}`);
     res.json(terminal);
@@ -934,95 +1367,16 @@ export async function createReach(overrides = {}) {
     res.json(result);
   });
   app.get("/api/apps", async (req, res) => res.json(await apps()));
+  // Logos for a screenful of installed apps at once; the phone keeps them.
+  app.post("/api/apps/icons", async (req, res) => {
+    shortcutOwner(req, res);
+    const result = await appShortcuts.icons(req.body?.ids);
+    shortcutOwner(req, res);
+    res.set("Cache-Control", "no-store").json(result);
+  });
   app.post("/api/apps/launch", async (req, res) => {
     const result = await launchApp(req.body.id);
     record("app", `Opened ${result.name}`);
-    res.json(result);
-  });
-  const desktopOwner = (req) => {
-    req.reauthorize();
-    if (!config.screen || !req.client.scopes.includes("admin"))
-      throw fail(403, "Enable screen viewing as an owner first.");
-  };
-  app.get("/api/screen/prepare", async (req, res) => {
-    desktopOwner(req);
-    res.json(await desktopPreparation(config));
-  });
-  app.post("/api/screen/desktop", async (req, res) => {
-    desktopOwner(req);
-    const token = req.headers.authorization?.replace(/^Bearer /, "");
-    const authorize = () => {
-      const client = verify(req, token);
-      if (
-        !transportAvailable ||
-        !config.screen ||
-        !client?.scopes.includes("screen") ||
-        !client.scopes.includes("admin")
-      )
-        throw fail(403, "Desktop access was revoked or disconnected.");
-      return client;
-    };
-    const session = await desktopSessions.open(req.client, req.body, authorize);
-    desktopIdentityCleanup.set(
-      req.client.id,
-      trackIdentity(req, () => desktopSessions.revoke(req.client.id)),
-    );
-    res.json(session);
-  });
-  app.delete("/api/screen/desktop/:id", (req, res) => {
-    desktopOwner(req);
-    desktopSessions.get(req.params.id, req.client);
-    desktopSessions.end(req.params.id);
-    res.json({ ok: true });
-  });
-  app.get("/api/screen/desktop/:id/quality", async (req, res) => {
-    desktopOwner(req);
-    desktopSessions.get(req.params.id, req.client);
-    const route = await connectionRoute(req);
-    req.reauthorize();
-    res.json({ route });
-  });
-  app.post("/api/screen/desktop/clipboard", async (req, res) => {
-    desktopOwner(req);
-    const session = desktopSessions.get(req.body.session, req.client);
-    screenControl.check(req.client);
-    if (!session.options.clipboard)
-      throw fail(403, "Clipboard sync is off for this session.");
-    const socket = inputConnections.get(req.client.id);
-    if (!socket?.clipboard || !session.sockets.has(socket))
-      throw fail(409, "Connect desktop controls first.");
-    let action;
-    if (req.body.operation === "read") {
-      if (
-        req.body.revision !== undefined &&
-        !Number.isSafeInteger(req.body.revision)
-      )
-        throw fail(400, "Invalid clipboard revision.");
-      action = { type: "clipboard-get", revision: req.body.revision };
-    } else if (req.body.operation === "write") {
-      if (
-        typeof req.body.text === "string" &&
-        Buffer.byteLength(req.body.text) <= 16384 &&
-        !req.body.text.includes("\0")
-      )
-        action = { type: "clipboard-set", text: req.body.text };
-      else if (
-        typeof req.body.data === "string" &&
-        req.body.data.length <= 2796204 &&
-        /^[A-Za-z0-9+/]+={0,2}$/.test(req.body.data) &&
-        Buffer.from(req.body.data, "base64")
-          .subarray(0, 8)
-          .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      )
-        action = { type: "clipboard-set", data: req.body.data };
-      else throw fail(400, "Clipboard must be text or PNG under 2 MiB.");
-    } else throw fail(400, "Invalid clipboard operation.");
-    if (Date.now() - (session.clipboardAt || 0) < 250)
-      throw fail(429, "Wait for the previous clipboard sync.");
-    session.clipboardAt = Date.now();
-    const result = await socket.clipboard(action);
-    req.reauthorize();
-    screenControl.check(req.client);
     res.json(result);
   });
   app.get("/api/screen/displays", async (req, res) => {
@@ -1031,10 +1385,46 @@ export async function createReach(overrides = {}) {
       config,
     );
     res.json({
-      displays,
+      displays: displays.filter((d) => !appThreads.ownsDisplay(d.id)),
       video: process.platform === "darwin",
       input: req.client.scopes.includes("admin"),
     });
+  });
+  // Apps on your phone. Owner only: they show and control the computer.
+  const appOwner = (req) => {
+    if (!req.client.scopes.includes("admin"))
+      throw fail(403, "Only a paired person can open apps on their phone.");
+    if (!config.screen) throw fail(403, "Turn on screen viewing first.");
+  };
+  app.get("/api/screen/apps", (req, res) => {
+    appOwner(req);
+    res.set("Cache-Control", "no-store").json(appThreads.list());
+  });
+  app.post("/api/screen/apps", async (req, res) => {
+    appOwner(req);
+    const thread = await appThreads.open(req.body?.appId, req.body);
+    appOwner(req);
+    res.json(thread);
+  });
+  app.patch("/api/screen/apps/:id", async (req, res) => {
+    appOwner(req);
+    res.json(await appThreads.rotate(req.params.id, req.body));
+  });
+  app.post("/api/screen/apps/:id/activate", async (req, res) => {
+    appOwner(req);
+    res.json(await appThreads.activate(req.params.id));
+  });
+  app.delete("/api/screen/apps/:id", async (req, res) => {
+    appOwner(req);
+    res.json(await appThreads.close(req.params.id));
+  });
+  app.post("/api/screen/apps/:id/quit", async (req, res) => {
+    appOwner(req);
+    res.json(await appThreads.quit(req.params.id, req.body?.confirm === true));
+  });
+  app.get("/api/screen/apps/:id/fields", async (req, res) => {
+    appOwner(req);
+    res.set("Cache-Control", "no-store").json(await appThreads.fields(req.params.id));
   });
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body.enabled)
@@ -1122,8 +1512,21 @@ export async function createReach(overrides = {}) {
     res.status(404).json({ error: "This action does not exist." }),
   );
   const dist = fileURLToPath(new URL("../dist/", import.meta.url));
-  app.use(express.static(dist, { index: "index.html" }));
-  app.use((req, res) => res.sendFile(path.join(dist, "index.html")));
+  app.get("/download/:token", async (req, res) => {
+    const link = links.find(req.params.token);
+    if (!link)
+      throw fail(410, "This download link expired. Start the download again.");
+    // Every check the credential would get on /api, including its device.
+    const client = auth.verifyDigest(link.digest, req.reachIdentity);
+    if (!client) throw fail(403, "This download link is no longer valid.");
+    const file = resolve(link.root, link.path, client);
+    const stat = await fsp.stat(file);
+    if (!stat.isFile() || stat.mtimeMs !== link.mtimeMs)
+      throw fail(410, "This file changed. Start the download again.");
+    res.setHeader("Cache-Control", "no-store");
+    res.download(file, path.basename(file));
+  });
+  serveBuild(app, express, dist);
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     res
@@ -1190,6 +1593,36 @@ export async function createReach(overrides = {}) {
       presenceConnection(ws, {
         verify: (token) => verify(req, token),
         presence,
+        changes: (client) => {
+          const scopes = client.scopes || [];
+          const digest = (value) =>
+            crypto
+              .createHash("sha256")
+              .update(JSON.stringify(value))
+              .digest("base64url")
+              .slice(0, 12);
+          // Only lists this client could read anyway.
+          return {
+            ...(scopes.includes("terminal") && {
+              terminals: digest(
+                terminals.list().filter((s) => mayAccess(client, s)),
+              ),
+            }),
+            ...(scopes.includes("codex") && {
+              chats: digest(codex.list().filter((c) => mayAccess(client, c))),
+            }),
+            ...(scopes.includes("admin") &&
+              scopes.includes("screen") && { apps: digest(appThreads.list()) }),
+            ...(scopes.includes("admin") && {
+              activity: digest(events[0]?.id ?? ""), // newest first
+              requests: digest(
+                pendingRequests()
+                  .filter((r) => r.status === "pending")
+                  .map((r) => r.id),
+              ),
+            }),
+          };
+        },
         activity: (clientId) => {
           if (
             screenControl.lease?.clientId === clientId &&
@@ -1214,7 +1647,6 @@ export async function createReach(overrides = {}) {
         config,
         auth: { verify: (token) => verify(req, token) },
         control: screenControl,
-        sessions: desktopSessions,
         create: overrides.desktopInputFactory,
         register: (id, socket) => {
           if (inputConnections.has(id))
@@ -1248,6 +1680,7 @@ export async function createReach(overrides = {}) {
       const reject = (message, status = 403) => {
         screenStreams.remove(ws);
         remoteScreens.remove(ws);
+        appScreens.remove(ws);
         if (ws.readyState === WebSocket.OPEN) {
           const retryable = ![400, 401, 403, 404].includes(status);
           ws.send(
@@ -1299,27 +1732,15 @@ export async function createReach(overrides = {}) {
             expires(client);
             clearTimeout(deadline);
             modern = message.protocol === 2;
-            if (message.desktopSession) {
-              const session = desktopSessions.attach(
-                message.desktopSession,
-                client,
-                ws,
-              );
-              message.display = session.display;
-              message.quality = "desktop";
-              message.width = session.options.width;
-              message.format = "h264";
-            }
             if (modern) {
-              void (async () =>
-                remoteScreens.add(
-                  ws,
-                  authorized,
-                  message,
-                  message.desktopSession
-                    ? await connectionRoute(req)
-                    : "Unknown",
-                ))().catch((e) => reject(e.message, e.status || 503));
+              // An app on the phone streams only its own window.
+              const hub =
+                typeof message.thread === "string"
+                  ? (appOwner({ client }), appScreens)
+                  : remoteScreens;
+              void (async () => hub.add(ws, authorized, message))().catch(
+                (e) => reject(e.message, e.status || 503),
+              );
             } else {
               screenStreams.add(ws, authorized);
               ws.send(
@@ -1335,7 +1756,11 @@ export async function createReach(overrides = {}) {
             if (message.type !== "ack")
               throw fail(400, "Unsupported screen message.");
             if (modern)
-              remoteScreens.ack(ws, message.id, message.keyframe === true);
+              (appScreens.owns(ws) ? appScreens : remoteScreens).ack(
+                ws,
+                message.id,
+                message.keyframe === true,
+              );
             else screenStreams.ack(ws);
           }
         } catch (e) {
@@ -1347,6 +1772,7 @@ export async function createReach(overrides = {}) {
         clearInterval(expiryCheck);
         screenStreams.remove(ws);
         remoteScreens.remove(ws);
+        appScreens.remove(ws);
         if (!inputConnections.has(ws.clientId))
           screenControl.revoke(ws.clientId);
       });
@@ -1458,7 +1884,6 @@ export async function createReach(overrides = {}) {
       if (transportAvailable === value) return;
       transportAvailable = value;
       if (!value) {
-        desktopSessions.revoke();
         screenControl.clear();
         closeInput();
         // Disconnect access without killing terminals, chats or jobs.
@@ -1467,19 +1892,29 @@ export async function createReach(overrides = {}) {
     },
     async close() {
       clearInterval(approvalCleanup);
-      desktopSessions.close();
       screenStreams.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
+      appScreens.stop("Reach is shutting down.", true);
+      // Requests still running (a phone's download, a long poll) get a
+      // moment to finish, then their connections are cut: quitting never
+      // waits on a phone.
+      const servers = [server, privateServer].filter(Boolean);
+      const closed = Promise.all(
+        servers.map((s) => new Promise((r) => s.close(r))),
+      );
+      const cutoff = setTimeout(() => {
+        for (const s of servers) s.closeAllConnections();
+      }, 1000);
+      const apps = appThreads.shutdown();
       closeInput();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
+      agentSessions.close?.();
       terminals.dispose();
       codex.dispose();
       jobs.dispose();
-      await Promise.all([
-        new Promise((r) => server.close(r)),
-        privateServer ? new Promise((r) => privateServer.close(r)) : undefined,
-      ]);
+      await Promise.all([apps, closed]);
+      clearTimeout(cutoff);
     },
   };
 }

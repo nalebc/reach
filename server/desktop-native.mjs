@@ -10,9 +10,7 @@ const exec = promisify(execFile),
 const builds = new Map();
 export async function desktopBinary(config, kind) {
   // Name the cached build after its source, so any helper edit recompiles.
-  const source = await fs.readFile(
-    path.join(native, `${kind}.${kind === "desktop-session" ? "m" : "swift"}`),
-  );
+  const source = await fs.readFile(path.join(native, `${kind}.swift`));
   const file = path.join(
     config.dataDir,
     `reach-${kind}-${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`,
@@ -27,25 +25,10 @@ export async function desktopBinary(config, kind) {
           await exec(
             "/usr/bin/xcrun",
             [
-              ...(kind === "desktop-session"
-                ? [
-                    "clang",
-                    "-fobjc-arc",
-                    "-framework",
-                    "AppKit",
-                    "-framework",
-                    "CoreGraphics",
-                    "-framework",
-                    "IOKit",
-                    "-O2",
-                    path.join(native, `${kind}.m`),
-                  ]
-                : [
-                    "swiftc",
-                    "-parse-as-library",
-                    "-O",
-                    path.join(native, `${kind}.swift`),
-                  ]),
+              "swiftc",
+              "-parse-as-library",
+              "-O",
+              path.join(native, `${kind}.swift`),
               "-o",
               tmp,
             ],

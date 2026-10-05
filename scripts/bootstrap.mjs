@@ -4,19 +4,20 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { parseOptions } from "./launcher-options.mjs";
+import { command, packaged, stateDir } from "./home.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
-const stateDir = path.join(root, ".reach");
+const state = stateDir(root);
 let locked = false;
-const lockFile = path.join(stateDir, "launcher.lock");
+const lockFile = path.join(state, "launcher.lock");
 let child;
 const abort = () => {
   child?.kill();
   process.exit(130);
 };
 function lock() {
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   let bootSession;
   try {
     if (process.platform === "darwin")
@@ -102,7 +103,7 @@ function npmCli() {
   );
 }
 async function npm(args) {
-  const log = path.join(stateDir, "setup.log");
+  const log = path.join(state, "setup.log");
   const fd = fs.openSync(log, "a", 0o600);
   try {
     await new Promise((resolve, reject) => {
@@ -125,29 +126,71 @@ async function npm(args) {
 process.once("exit", () => {
   if (locked) fs.rmSync(lockFile, { force: true });
 });
+const readPackage = () =>
+  JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+// `reach update`: npm replaces the installed package; background mode is
+// reinstalled so it runs the new version.
+async function update() {
+  if (!packaged) {
+    console.log(
+      "This is a source checkout. Update it with git pull, then run ./reach.",
+    );
+    return;
+  }
+  const { name } = readPackage();
+  console.log(`Reach: updating ${name}…`);
+  const run = (args) =>
+    new Promise((resolve, reject) => {
+      child = spawn(process.execPath, args, { stdio: "inherit" });
+      child.once("error", reject);
+      child.once("exit", (code) => (code === 0 ? resolve() : reject(code)));
+    });
+  try {
+    await run([npmCli(), "install", "--global", `${name}@latest`]);
+  } catch {
+    throw Error(
+      `The update didn't finish. Run it yourself: npm install --global ${name}@latest`,
+    );
+  }
+  let service = null;
+  try {
+    service = JSON.parse(
+      fs.readFileSync(path.join(state, "service.json"), "utf8"),
+    );
+  } catch {}
+  if (service?.installed) {
+    console.log("Reach: restarting background mode on the new version…");
+    await run([path.join(root, "scripts/bootstrap.mjs"), "install"]);
+  } else console.log("Reach is up to date. Restart it to use the new version.");
+}
 try {
   let options = parseOptions(process.argv.slice(2));
   const { configure, readPreferences, applyPreferences } =
     await import("./configure.mjs");
-  if (options.help) {
+  if (options.version) {
+    console.log(readPackage().version);
+  } else if (options.help) {
     console.log(`Reach — your computer, within reach.
 
-./reach                     Foreground private Tailscale connection
-./reach configure           Guided Tailscale account and phone setup
-./reach approve             Approve a new phone on this computer
-./reach install             Mac: install a background LaunchAgent
-./reach install --stay-awake Keep system/display awake while plugged in
-./reach uninstall           Stop and remove the service and its own Serve route
-./reach status              Running/stopped, private link, and logs
-./reach pair                Fresh one-use pairing code and QR
-./reach --stay-awake         Stay awake only while plugged in
-./reach --stay-awake-always  Keep system/display awake, including on battery
-./reach --no-stay-awake      Allow normal idle sleep
-./reach --folder /path       Share a folder (repeatable)
-./reach --agent-policy FILE  Agent permission policy
-./reach --local              Local access only
-./reach --port 4318          Local port (service saves a fixed port)
-./reach --https-port 8443    Tailscale HTTPS port
+${command}                     Foreground private Tailscale connection
+${command} configure           Guided Tailscale account and phone setup
+${command} approve             Approve a new phone on this computer
+${command} update              Update to the latest Reach (installed with npm)
+${command} import <folder>     Bring paired phones and settings from another Reach folder
+${command} --version           Show the installed version
+${command} install             Mac: install a background LaunchAgent
+${command} install --stay-awake Keep system/display awake while plugged in
+${command} uninstall           Stop and remove the service and its own Serve route
+${command} status              Running/stopped, private link, and logs
+${command} pair                Fresh one-use pairing code and QR
+${command} --stay-awake         Stay awake only while plugged in
+${command} --stay-awake-always  Keep system/display awake, including on battery
+${command} --no-stay-awake      Allow normal idle sleep
+${command} --folder /path       Share a folder (repeatable)
+${command} --agent-policy FILE  Agent permission policy
+${command} --local              Local access only
+${command} --port 4318          Local port (service saves a fixed port)
+${command} --https-port 8443    Tailscale HTTPS port
 
 Stay-awake uses temporary power assertions; it never changes system settings
 or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
@@ -155,6 +198,14 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
   } else if (options.command === "configure") {
     await configure(root);
+  } else if (options.command === "import") {
+    const { importState } = await import("./import-state.mjs");
+    const copied = importState(options.importFrom, state);
+    console.log(
+      `Reach: imported ${copied.join(", ")} into ${state}.\nStop the Reach you imported from before starting this one.`,
+    );
+  } else if (options.command === "update") {
+    await update();
   } else if (options.command === "approve") {
     const { approveDevice } = await import("./approve-device.mjs");
     await approveDevice(root);
@@ -164,6 +215,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
   } else if (options.command || options.background || options.stopBackground) {
     if (options.command === "install" || options.background) {
       lock();
+      // An installed reach has no ./reach script to fetch the pinned runtime.
+      if (packaged && process.platform === "darwin") {
+        const { ensureRuntime } = await import("./runtime.mjs");
+        await ensureRuntime(state);
+      }
       if (!options.local && process.platform !== "win32") {
         const preferences = readPreferences(root) || (await configure(root));
         options = applyPreferences(options, preferences, process.argv.slice(2));
@@ -174,7 +230,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
   } else {
     if (options.service) {
       const saved = JSON.parse(
-        fs.readFileSync(path.join(stateDir, "service.json"), "utf8"),
+        fs.readFileSync(path.join(state, "service.json"), "utf8"),
       );
       if (
         !saved.installed ||
@@ -183,14 +239,20 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         saved.options.port !== options.port
       )
         throw Error(
-          "Service configuration changed. Reinstall Reach from this checkout.",
+          `Service configuration changed. Run ${command} install again.`,
         );
       process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ""}`;
     }
     lock();
     process.once("SIGINT", abort);
     process.once("SIGTERM", abort);
-    const stampFile = path.join(stateDir, "setup.json");
+    // An installed package ships ready to run; only a checkout installs and
+    // builds itself.
+    if (packaged && !fs.existsSync("dist/index.html"))
+      throw Error(
+        `This installation is incomplete. Reinstall it: npm install -g ${readPackage().name}`,
+      );
+    const stampFile = path.join(state, "setup.json");
     let stamp = {};
     try {
       stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
@@ -204,26 +266,33 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       "tsconfig.json",
     ]);
     if (
-      stamp.dependencies !== dependencies ||
-      !fs.existsSync("node_modules/.package-lock.json")
+      !packaged &&
+      (stamp.dependencies !== dependencies ||
+        !fs.existsSync("node_modules/.package-lock.json"))
     ) {
       console.log("Reach: installing dependencies (first run or update)…");
       await npm(["ci", "--no-audit", "--no-fund"]);
     }
     if (
-      stamp.dependencies !== dependencies ||
-      stamp.source !== source ||
-      !fs.existsSync("dist/index.html")
+      !packaged &&
+      (stamp.dependencies !== dependencies ||
+        stamp.source !== source ||
+        !fs.existsSync("dist/index.html"))
     ) {
       console.log("Reach: preparing the phone interface…");
       await npm(["run", "build"]);
     }
-    fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source }), {
-      mode: 0o600,
-    });
+    if (!packaged)
+      fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source }), {
+        mode: 0o600,
+      });
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     if (!options.local && process.platform !== "win32") {
+      if (packaged && !readPreferences(root))
+        console.log(
+          `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
+        );
       const preferences = readPreferences(root) || (await configure(root));
       // Installed service arguments are its saved folder/port choices.
       if (!options.service)

@@ -1,12 +1,20 @@
-// Read an installed application's icon without opening or automating the app.
+// Read installed applications' icons (absolute paths) or the icon Finder shows
+// for a file type ("folder", "file" or an extension), without opening anything.
+// One line of base64 PNG per argument, in order; an empty line when unreadable.
 ObjC.import("AppKit");
-function run(argv) {
-  var icon = $.NSWorkspace.sharedWorkspace.iconForFile(argv[0]);
+var SIZE = 128; // Retina-sharp at the 48–64pt the phone shows.
+var TYPES = { folder: "public.folder", file: "public.data" };
+function icon(target) {
+  var workspace = $.NSWorkspace.sharedWorkspace;
+  var image =
+    target.charAt(0) === "/"
+      ? workspace.iconForFile(target)
+      : workspace.iconForFileType(TYPES[target] || target);
   var bitmap =
     $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
       null,
-      64,
-      64,
+      SIZE,
+      SIZE,
       8,
       4,
       true,
@@ -19,8 +27,8 @@ function run(argv) {
   $.NSGraphicsContext.setCurrentContext(
     $.NSGraphicsContext.graphicsContextWithBitmapImageRep(bitmap),
   );
-  icon.drawInRectFromRectOperationFractionRespectFlippedHints(
-    $.NSMakeRect(0, 0, 64, 64),
+  image.drawInRectFromRectOperationFractionRespectFlippedHints(
+    $.NSMakeRect(0, 0, SIZE, SIZE),
     $.NSZeroRect,
     $.NSCompositingOperationSourceOver,
     1,
@@ -36,4 +44,15 @@ function run(argv) {
       )
       .base64EncodedStringWithOptions(0),
   );
+}
+function run(argv) {
+  return argv
+    .map(function (file) {
+      try {
+        return icon(file);
+      } catch (e) {
+        return "";
+      }
+    })
+    .join("\n");
 }

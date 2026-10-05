@@ -1,0 +1,420 @@
+/* Chat home: one world per agent, in its own look (colors come from the
+   .chat-home skin in agent-session.css). */
+.chat-home {
+  max-width: 760px;
+  min-height: calc(100dvh - 190px);
+  margin: 0 auto;
+  padding: 14px 14px 22px;
+  border-radius: 24px;
+  background: var(--as-bg);
+  color: var(--as-text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background-color 320ms ease,
+    color 320ms ease;
+}
+
+/* The agents' real icons (agent-logos.tsx); initials when the app is missing. */
+.agent-logo {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 23%;
+  object-fit: cover;
+}
+.agent-logo.text {
+  background: linear-gradient(150deg, #4a4f57, #2c3036);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.agent-logo.text.codex {
+  background: linear-gradient(140deg, #6a8cff, #7b4dff);
+}
+.agent-logo.text.claude {
+  background: #d97757;
+}
+.claude-spark {
+  display: inline-block;
+  flex: 0 0 auto;
+  background: var(--as-accent, #d97757);
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+.claude-spark.spinning {
+  animation: as-spin 2.4s linear infinite;
+}
+
+/* The agent picker: every agent's real icon in a row; the chosen one wears
+   its name on a sliding knob and rolls in. Scrolls when there are many. */
+.agent-picker {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto 14px;
+  padding: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border: 1px solid #ffffff14;
+  border-radius: 18px;
+  background: #ffffff08;
+}
+.agent-picker::-webkit-scrollbar {
+  display: none;
+}
+.agent-picker-knob {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 14px;
+  background: var(--knob, #2e2e2e);
+  box-shadow:
+    inset 0 1px 0 #ffffff14,
+    0 6px 18px #0000005c;
+  pointer-events: none;
+  transition:
+    transform 520ms cubic-bezier(0.3, 1.3, 0.45, 1),
+    width 520ms cubic-bezier(0.3, 1.3, 0.45, 1),
+    background-color 320ms ease;
+}
+.chat-home.claude .agent-picker-knob {
+  --knob: #322b25;
+}
+.agent-picker > button {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--as-text);
+  font: 600 14px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  white-space: nowrap;
+}
+.agent-picker > button[aria-checked="false"] .agent-picker-logo {
+  opacity: 0.55;
+  filter: saturate(0.6);
+  transition:
+    opacity 200ms,
+    filter 200ms;
+}
+.agent-picker > button[aria-checked="true"] {
+  padding-right: 14px;
+}
+.agent-picker > button.soon[aria-checked="false"] .agent-picker-logo {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+.agent-picker > button:focus-visible {
+  outline: 2px solid var(--as-accent);
+  outline-offset: -2px;
+}
+.agent-picker > button .agent-switch-badge {
+  position: absolute;
+  top: 2px;
+  right: 0;
+}
+.agent-picker.from-left [aria-checked="true"] .agent-picker-logo {
+  animation: agent-roll-right 520ms cubic-bezier(0.3, 1.1, 0.45, 1);
+}
+.agent-picker.from-right [aria-checked="true"] .agent-picker-logo {
+  animation: agent-roll-left 520ms cubic-bezier(0.3, 1.1, 0.45, 1);
+}
+@keyframes agent-roll-right {
+  from {
+    transform: translateX(-90%) rotate(-360deg) scale(0.85);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes agent-roll-left {
+  from {
+    transform: translateX(90%) rotate(360deg) scale(0.85);
+  }
+  to {
+    transform: none;
+  }
+}
+.agent-switch-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #f5c451;
+  color: #1d1606;
+  font: 700 11px/18px system-ui, sans-serif;
+  font-style: normal;
+  text-align: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-picker-knob {
+    transition: none;
+  }
+  .agent-picker .agent-picker-logo,
+  .claude-spark.spinning {
+    animation: none !important;
+  }
+}
+
+/* An agent Reach knows but doesn't drive yet. */
+.chat-soon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 24px;
+  text-align: center;
+}
+.chat-soon strong {
+  font-size: 18px;
+}
+.chat-soon p {
+  max-width: 300px;
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+
+/* What stands in the way, said once and quietly. */
+.chat-status {
+  margin: 0 4px 12px;
+  color: var(--as-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.chat-status.signed-out {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--as-card);
+}
+
+/* New chat: one line at rest, the tools while writing. */
+.chat-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.chat-new .as-field textarea {
+  min-height: 50px;
+}
+.chat-new:not(.open) .as-field textarea {
+  padding-right: 112px;
+}
+.chat-new-where {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  max-width: 96px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  color: var(--as-faint);
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.chat-folder span,
+.as-mode-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sessions, listed like the agent's app lists them. */
+.chat-sessions h3 {
+  margin: 16px 6px 4px;
+  color: var(--as-faint);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.chat-session {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 6px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  text-align: left;
+}
+.chat-session:active {
+  background: #ffffff0d;
+}
+.chat-session .claude-spark {
+  margin-top: 4px;
+}
+.chat-session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-session-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.chat-session-top strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 15px;
+  font-weight: 500;
+}
+.chat-session-top time {
+  flex: 0 0 auto;
+  color: var(--as-faint);
+  font-size: 12px;
+}
+.chat-session small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+.chat-session small.chat-session-waiting {
+  color: #f5c451;
+}
+.chat-session small.chat-session-working {
+  color: var(--as-accent);
+}
+.chat-more {
+  margin: 6px 6px 0;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 13px;
+}
+.chat-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 6px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+
+/* Signing an agent in on the Mac from here (AgentSignIn). */
+.sign-in {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+div.sign-in {
+  display: flex;
+  margin: 2px 0 4px;
+}
+.sign-in p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.sign-in ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  text-align: left;
+}
+.sign-in li > span:first-child {
+  display: block;
+  margin-bottom: 4px;
+}
+.sign-in-start,
+.sign-in-open,
+.sign-in-code button,
+.sign-in-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 5px 11px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+.sign-in-cancel {
+  border-color: transparent;
+  font-weight: 400;
+  opacity: 0.75;
+}
+.sign-in-code {
+  display: flex;
+  gap: 6px;
+}
+.sign-in-code input {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid #ffffff2a;
+  border-radius: 10px;
+  background: #00000040;
+  color: inherit;
+  font: 16px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace; /* no zoom on iOS */
+}
+.sign-in-device {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #00000040;
+  font: 600 15px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+.sign-in .bad {
+  color: #f1a08d;
+}
+
+/* Chat tab badge: sessions waiting for an answer. */
+.mobile-nav button:has(> .nav-badge) {
+  position: relative;
+}
+.nav-badge {
+  position: absolute;
+  top: 4px;
+  left: calc(50% + 6px);
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #f5c451;
+  color: #1d1606;
+  font: 700 10.5px/17px system-ui, sans-serif;
+  font-style: normal;
+  text-align: center;
+}

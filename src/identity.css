@@ -427,25 +427,6 @@ select {
   color: #c2eec6;
   border-radius: 12px;
 }
-.files-layout,
-.files-panel,
-.file-browser,
-.files-browser {
-  border-radius: 12px;
-  border-color: var(--border);
-  background: #151f18;
-}
-.files-toolbar,
-.files-path {
-  background: #19251d;
-  border-color: var(--border);
-}
-.file-row {
-  border-color: #dbe9d410;
-}
-.file-row:hover {
-  background: #b9efd408;
-}
 .file-icon {
   background: #263b2b;
   color: #c8e5bb;
@@ -468,11 +449,6 @@ select {
 .chat-item.active {
   background: #b9efd411;
   border-color: #b9efd438;
-}
-.app-card {
-  border-radius: 10px;
-  background: #191e1b;
-  border-color: var(--border);
 }
 .modal::backdrop {
   background: #060e0acf;
@@ -1122,14 +1098,10 @@ select {
   border-color: #b9efd433;
   color: #d4efda;
 }
-.page-files .file-search .search,
 .search {
   background: #111c15;
   border-color: #dbe9d428;
   border-radius: 8px;
-}
-.page-files .file-search .search input {
-  background: transparent;
 }
 .page-files .location {
   border-radius: 9px;

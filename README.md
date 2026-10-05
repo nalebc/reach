@@ -20,12 +20,13 @@ An isolated [browser connection experiment](experiments/browser-connect/README.m
 
 - Pair multiple computers with one-time, expiring codes. Switch between saved connections.
 - A responsive workspace with an interactive device constellation, animated connection paths, and cards for real Codex sessions and terminals. Pause ambient motion from the top bar; Reach remembers the setting, follows reduced-motion preferences, and pauses animation when the page is hidden.
-- Browse configured shared folders, preview text and images, share files to phone apps, download files, upload files up to 100 MB, create folders, and transfer files between paired computers.
+- Browse configured shared folders, preview text and images, share files to phone apps, download files, upload large files (resumable, with progress), create folders, and transfer files between paired computers.
 - Create real PTY terminals (zsh/bash on Mac, PowerShell on Windows). Reconnect to output after closing the browser. Shells survive browser/network disconnects while the companion remains running; they do **not** survive a companion restart or reboot.
 - On Mac, **Terminals** automatically discovers existing Apple Terminal tabs and iTerm2 panes in its default **On your Mac** view. The list updates as tabs open and close; **Reach terminals** contains shells created by Reach. Select one to view its visible text, send text followed by Enter, show it on the Mac, or close it with confirmation. You can also open a new window in either app. macOS may ask for Automation permission for the app running Reach; allow it in **System Settings → Privacy & Security → Automation**. These existing sessions stay owned by their terminal app and are not stopped when Reach shuts down. This is a text view, not a takeover of the terminal's PTY: use Screen for full-screen programs and keyboard shortcuts. VS Code, Cursor, Ghostty, and other terminal apps are not integrated yet. Only full-access paired people can use this feature; scoped agent keys cannot.
 - Launch installed Mac/Windows applications on the computer’s desktop.
 - Start Codex conversations in a folder. View streamed messages, command output, file diffs, and approval requests. Resume Reach-created conversations after companion restarts. Install and sign in to Codex on the computer first.
 - Remote desktop with H.264 video targeting 30 or 60 fps, display selection, trackpad/direct touch, dragging, pinch zoom and pan, a visible cursor, modifier shortcuts, explicit text clipboard transfers, and fullscreen. Mac uses VideoToolbox; Windows video needs FFmpeg with libx264. A JPEG compatibility mode supports browsers without H.264 WebCodecs. Viewing and control are separately enabled; OS permissions are required. See [Remote desktop](docs/REMOTE_DESKTOP.md).
+- Apps on your phone (Mac): tap an app and it runs on the Mac in a window shaped like your phone, on its own hidden display, full screen on the phone with touch, scrolling and the phone keyboard. Several apps can be open at once; the Mac's screen stays untouched. See [Apps on your phone](docs/APP_THREADS.md).
 - Scoped agent credentials, asynchronous command jobs, output polling, timeout/cancellation, a CLI, and a stdio MCP adapter.
 
 Reach adapts to the connected computer and your permissions. Unsupported features are hidden from navigation and Home; Mac-only terminal discovery is limited to owners, and Linux hosts show files/terminals without desktop controls. Codex conversations appear only when a local Codex executable is detected and its account is ready. Optional setup is available in Settings. Capabilities refresh automatically while Reach is open; **Check again** in Settings refreshes readiness. External agent access is independent of Codex.
@@ -35,6 +36,19 @@ Reach adapts to the connected computer and your permissions. Unsupported feature
 Use `./reach-agent` to grant a Bedrock/AgentCore or other cloud agent short-lived read/write access to selected folders. The Mac enforces named profiles, folder limits and expiry. `join` runs an isolated ephemeral Tailscale connection with a dedicated tag, auth-key file or workload identity, and cleanup on exit. CLI and MCP requests use its private proxy. Shell access is disabled in the generated profile.
 
 See [Agent CLI setup](docs/AGENT_CLI.md) for owner commands, restricted tailnet grants, cloud integration, and revocation. A tailnet administrator must review/apply the network policy; the CLI does not modify it automatically.
+
+## Install
+
+With Node.js 22 or newer:
+
+```sh
+npm install --global @nalebc/reach
+reach
+```
+
+`reach` then works from any folder, with the same commands as `./reach` below (`reach configure`, `reach install`, `reach status`, `reach pair`…). It keeps your settings and paired phones in `~/.reach`, so updates (`reach update`) never touch them. The package runs no install script of its own; its terminal component (node-pty) runs its standard one, and on Linux needs a compiler (`build-essential`/Xcode tools) if no prebuilt binary matches.
+
+Moving from a downloaded Reach folder? Stop it (Ctrl+C, and `./reach uninstall` if you used background mode), then run `reach import /path/to/that/folder` before the first `reach`, to keep your paired phones and settings.
 
 ## One-command start
 
@@ -245,9 +259,9 @@ See [the security review and remaining limitations](docs/SECURITY.md).
 - No public package, signed desktop installer, or distributed native phone app yet. The one-command launcher prepares Node.js automatically from a downloaded Reach folder.
 - The computer must be awake and the companion running. Reach does not wake sleeping computers.
 - Terminal output is capped at 256,000 characters for reconnect replay. Job output is capped at 256 KiB; 200 recent jobs are retained. Jobs allow up to eight concurrent executions and a maximum one-hour timeout.
-- In Files, tap the share icon (or **Share** in a preview), wait for preparation, then tap **Share to an app…**. On a supported phone browser, the system share sheet offers compatible installed apps such as Messages, Messenger, and Save to Files. Use the private Tailscale HTTPS link in Safari on iPhone or Chrome on Android. Reach shares the file contents, never your pairing credentials or a private download URL. The original file stays on the computer. Canceling does not download or send anything automatically.
-- Direct sharing is limited to 100 MB and browser-supported file types. Unsupported files or browsers offer **Download a copy** so you can share from Files or Downloads. The iOS app also uses the native share sheet; existing app installations need a new native build with the Share and Filesystem plugins.
-- File downloads are buffered in the browser. Large files can exhaust phone memory. Uploads are capped at 100 MB and cannot overwrite existing files.
+- In Files, tap **⋯** next to a file and choose **Share** (or tap the share icon in a preview) to open the phone's share sheet. In a phone browser, files up to 20 MB are fetched as soon as you open their actions or preview, so the sheet opens on the first tap; for larger files the button changes to **Tap to share** once the file is ready. On a supported phone browser, the system share sheet offers compatible installed apps such as Messages, Messenger, and Save to Files. Use the private Tailscale HTTPS link in Safari on iPhone or Chrome on Android. Reach shares the file contents, never your pairing credentials or a download link. The original file stays on the computer. Canceling does not download or send anything automatically.
+- Direct sharing is limited to 100 MB and browser-supported file types. Share is hidden for larger files and in browsers that can't share files; use **Download**, then share from Files or Downloads. The iOS app also uses the native share sheet; existing app installations need a new native build with the Share and Filesystem plugins.
+- Uploads go in 8 MB chunks with progress in the transfer tray and resume after a dropped connection or when you return to the app; they never overwrite an existing file. The computer checks free space first; the default limit is 50 GB per file. In a browser, **Download** hands the file to the browser's own download manager through a link that works for 10 minutes, for that one file, only from the device that asked for it, and only while its pairing is valid. The iPhone app downloads through an iOS background session: it keeps going when you switch apps or lock the phone (as long as Tailscale stays connected) and offers **Save** when done; swiping Reach away in the app switcher stops it, as iOS does for every app. This needs a new build of the iPhone app. Uploads from the phone pause while Reach is in the background and continue where they stopped when you return (if iOS reloaded Reach in the meantime, start the upload again). Reach doesn't publish links anywhere and never puts one in a share sheet.
 - Remote desktop uses encoded video over an authenticated WebSocket, with JPEG fallback. It does not yet include audio, WebRTC transport, or unattended lock-screen access.
 - Codex controls Reach-created chats. It does not take over arbitrary sessions already open in Terminal or the Codex desktop app.
 - Windows and physical-phone behavior require real-device validation; responsive layout alone does not establish device compatibility.
@@ -257,10 +271,6 @@ See [the security review and remaining limitations](docs/SECURITY.md).
 Tap **Invite** on Home (also in **More → Invite someone**), choose their folders, permissions, and duration, then copy the one-use link. The guest opens it on a device that can already reach your laptop through Tailscale. They see a countdown and are disconnected from Reach when it ends—even if they reload or reconnect. Revoke them earlier from **Settings → Who has access**.
 
 Temporary guests can read or read/write selected folders and optionally view the screen. They cannot run commands or control the laptop. Expiry does not recall downloaded files or remove their Tailscale membership; it ends their Reach access.
-
-## iPad Desktop mode
-
-An updated Reach iPad app can open **Screen → iPad desktop** for native H.264 video, a temporary HiDPI display, physical keyboard/mouse control, opt-in text/image clipboard sync, and file drops into a shared folder. Viewing and control remain separate and Tailscale-only. See [setup, limits, and hardware acceptance](docs/IPAD_DESKTOP.md). This is a development implementation: physical iPad/headless Mac mini latency and input acceptance still need device testing; audio is phase 2.
 
 ## Multiple computers and live connections
 

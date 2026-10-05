@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
 import { ReconnectTimer, screenCanRetry } from "./reconnect";
+import { latestFramePainter } from "./frame-painter";
 export function useRemoteScreen(
   peer: Peer,
   enabled: boolean,
@@ -9,6 +10,8 @@ export function useRemoteScreen(
   quality: string,
   revision: number,
   compatibility: boolean,
+  // An app on the phone: stream only that app's window (server/app-threads.mjs).
+  thread?: string,
 ) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [state, setState] = useState({
@@ -31,7 +34,7 @@ export function useRemoteScreen(
     retry.current.reset();
     setFallback(false);
     setFallbackReason("");
-  }, [peer.url, peer.token, display, quality, revision, compatibility]);
+  }, [peer.url, peer.token, display, quality, revision, compatibility, thread]);
   useEffect(() => {
     if (!enabled || !live) {
       retry.current.cancel();
@@ -83,6 +86,7 @@ export function useRemoteScreen(
       failed = true;
       clearTimeout(watchdog);
       clearInterval(metrics);
+      painter.stop();
       socket.close();
       if (codecFailure && format === "h264" && retryable) {
         setFallbackReason(error);
@@ -135,6 +139,9 @@ export function useRemoteScreen(
         }));
       }
     };
+    const painter = latestFramePainter<VideoFrame>((frame) =>
+      draw(frame, frame.displayWidth, frame.displayHeight),
+    );
     const metrics = setInterval(() => {
       setState((s) => ({
         ...s,
@@ -161,6 +168,7 @@ export function useRemoteScreen(
           display,
           quality,
           format,
+          ...(thread && { thread }),
         }),
       );
     };
@@ -244,13 +252,11 @@ export function useRemoteScreen(
           throw Error("Invalid video format.");
         if (!decoder)
           decoder = new VideoDecoder({
+            // Newest frame per screen refresh: a phone that can't draw every
+            // frame skips some instead of falling further and further behind.
             output: (frame) => {
-              try {
-                if (!stopped && !failed)
-                  draw(frame, frame.displayWidth, frame.displayHeight);
-              } finally {
-                frame.close();
-              }
+              if (stopped || failed) frame.close();
+              else painter.push(frame);
             },
             error: (error) =>
               fail(`Video decoder: ${error.message}`, true, true),
@@ -312,6 +318,7 @@ export function useRemoteScreen(
       document.removeEventListener("visibilitychange", wake);
       clearTimeout(watchdog);
       clearInterval(metrics);
+      painter.stop();
       socket.close();
       if (decoder && decoder.state !== "closed") decoder.close();
     };
@@ -326,6 +333,7 @@ export function useRemoteScreen(
     compatibility,
     fallback,
     attempt,
+    thread,
   ]);
   return { selectedDisplay, canvas, ...state, fallback, fallbackReason };
 }

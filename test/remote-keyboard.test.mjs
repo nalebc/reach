@@ -26,3 +26,22 @@ test("native keyboard plugin is registered and compiled into the app", async () 
     swift.match(/jsName = "(\w+)"/)[1],
   );
 });
+
+test("apps installed without the keyboard plugin keep the web keyboard", async () => {
+  // An older installed app still loads the newest interface from the computer.
+  const js = await read("../src/remote-keyboard.ts");
+  assert.match(js, /isNativePlatform\(\) && Capacitor\.isPluginAvailable\("RemoteKeyboard"\)/);
+  const screen = await read("../src/Screen.tsx");
+  assert.match(screen, /nativeKeyboard \? \(\s*<NativeRemoteTyping/);
+  assert.match(screen, /!nativeKeyboard && mobile/);
+  assert.doesNotMatch(screen, /\bisNative\b/);
+});
+
+test("the phone never rewrites text it already sent", async () => {
+  // Autocorrect and Safari's inline suggestions replace earlier letters,
+  // which reach the computer as deletions ("first letter disappears").
+  const web = await read("../src/RemoteTyping.tsx");
+  assert.match(web, /autoCorrect: "off"/);
+  assert.match(web, /spellCheck: false/);
+  assert.match(web, /writingsuggestions: "false"/);
+});

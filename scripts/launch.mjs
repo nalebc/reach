@@ -27,9 +27,10 @@ import {
   ownsServeRoute,
   checkUnused,
 } from "./tailscale.mjs";
+import { stateDir } from "./home.mjs";
 
 export async function launch(options, root) {
-  const privateDir = path.join(root, ".reach");
+  const privateDir = stateDir(root);
   const dataDir = process.env.REACH_DATA || path.join(privateDir, "quick");
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const httpsPort = options.httpsPort || 8443;
@@ -65,9 +66,12 @@ export async function launch(options, root) {
     publicOrigin: privateOrigin,
     tailscaleOwner: preferences?.owner,
     privatePaths: [privateDir],
+    // Policies live with Reach's state, never inside an installed package.
     ...(options.agentPolicyFile
       ? { agentPolicyFile: options.agentPolicyFile, agentPolicyRequired: true }
-      : {}),
+      : process.env.REACH_AGENT_POLICY
+        ? {}
+        : { agentPolicyFile: path.join(privateDir, "agent-policy.json") }),
     ...(options.folders.length ? { roots: options.folders } : {}),
   });
   let tunnel,
@@ -79,9 +83,21 @@ export async function launch(options, root) {
     finish = resolve;
   });
   let log, monitor, approvalMonitor, recovery, power;
+  const forgetStatus = () => {
+    if (loadJson(statusFile, null)?.instance === reach.instance)
+      fs.rmSync(statusFile, { force: true });
+  };
   const stop = () => {
     if (stopPromise) return stopPromise;
     stopped = true;
+    // Whatever still holds on (a stuck helper, a socket nobody closed), Reach
+    // is gone within seconds of being asked to stop.
+    const deadline = setTimeout(() => {
+      console.error("Reach: shutdown took too long; exiting now.");
+      forgetStatus();
+      process.exit(1);
+    }, 5000);
+    deadline.unref();
     stopPromise = (async () => {
       input?.close();
       clearInterval(monitor);
@@ -97,18 +113,24 @@ export async function launch(options, root) {
         clearTimeout(timer);
       }
       await reach.close();
-      if (loadJson(statusFile, null)?.instance === reach.instance)
-        fs.rmSync(statusFile, { force: true });
+      forgetStatus();
       log?.end();
       finish();
     })();
     return stopPromise;
   };
-  const onSignal = () => {
+  let interrupted = false;
+  const onSignal = (signal) => {
+    // A second Ctrl+C quits at once.
+    if (interrupted) {
+      forgetStatus();
+      process.exit(signal === "SIGTERM" ? 143 : 130);
+    }
+    interrupted = true;
     void stop();
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   try {
     await new Promise((resolve, reject) => {
       reach.server.once("error", reject);

@@ -12,14 +12,10 @@ export class RemoteScreenHub {
     this.groups = new Map();
     this.viewers = new Map();
   }
-  async add(ws, authorize, value, route = "Unknown") {
+  async add(ws, authorize, value) {
     if (this.viewers.size >= 4)
       throw fail(429, "Four screen viewers are already connected.");
     const options = streamOptions(value);
-    if (options.quality === "desktop" && route === "Relayed") {
-      options.fps = 30;
-      options.bitrate = 4000000;
-    }
     let selectedDisplay;
     // Reserve before asynchronous native preparation to enforce the global limit.
     const reservation = {};
@@ -71,7 +67,7 @@ export class RemoteScreenHub {
                     String(options.fps),
                     String(options.width),
                     String(options.bitrate),
-                    options.quality === "desktop" ? "hardware" : "auto",
+                    "auto",
                   ]);
               }
               if (options.format === "h264")
@@ -207,7 +203,7 @@ export class RemoteBroadcast {
             key ||= v.key;
           }
           if (
-            ["auto", "desktop"].includes(this.options.quality) &&
+            ["auto", "preview"].includes(this.options.quality) &&
             start - this.adjustedAt >= 1000
           ) {
             this.adjustedAt = start;
@@ -235,31 +231,34 @@ export class RemoteBroadcast {
           if (ready.length && this.source) {
             const data = await this.source.next(key ? "key" : "frame");
             if (generation !== this.generation) return;
-            const seq = ++this.sequence;
-            const head = Buffer.alloc(4);
-            head.writeUInt32BE(seq);
-            const packet = Buffer.concat([head, data]);
-            for (const [ws, v] of ready) {
-              if (!v.authorize() || ws.readyState !== 1) continue;
-              v.key = false;
-              v.pending.set(seq, Date.now());
-              ws.send(packet);
-              v.bytes += packet.length;
-              v.frames++;
-              const interval = Date.now() - v.statsAt;
-              if (interval >= 1000) {
-                ws.send(
-                  JSON.stringify({
-                    type: "quality",
-                    fps: Math.round((v.frames * 1000) / interval),
-                    bitrate: Math.round((v.bytes * 8000) / interval),
-                    ackLatency: Math.round(v.rtt),
-                    targetFps: this.pacing,
-                  }),
-                );
-                v.bytes = 0;
-                v.frames = 0;
-                v.statsAt = Date.now();
+            // One byte from the helper: nothing changed on screen, send nothing.
+            if (data.length > 1) {
+              const seq = ++this.sequence;
+              const head = Buffer.alloc(4);
+              head.writeUInt32BE(seq);
+              const packet = Buffer.concat([head, data]);
+              for (const [ws, v] of ready) {
+                if (!v.authorize() || ws.readyState !== 1) continue;
+                v.key = false;
+                v.pending.set(seq, Date.now());
+                ws.send(packet);
+                v.bytes += packet.length;
+                v.frames++;
+                const interval = Date.now() - v.statsAt;
+                if (interval >= 1000) {
+                  ws.send(
+                    JSON.stringify({
+                      type: "quality",
+                      fps: Math.round((v.frames * 1000) / interval),
+                      bitrate: Math.round((v.bytes * 8000) / interval),
+                      ackLatency: Math.round(v.rtt),
+                      targetFps: this.pacing,
+                    }),
+                  );
+                  v.bytes = 0;
+                  v.frames = 0;
+                  v.statsAt = Date.now();
+                }
               }
             }
           }

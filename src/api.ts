@@ -65,6 +65,8 @@ export type Session = {
   cwd: string;
   status: string;
   createdAt: string;
+  /** Terminals: last lines printed, or null while a full-screen program runs. */
+  preview?: string[] | null;
 };
 export type Activity = { id: string; kind: string; title: string; at: string };
 export type ChatItem = {
@@ -251,57 +253,142 @@ export async function request<T = any>(
 }
 export const post = <T = any>(peer: Peer, route: string, data: unknown = {}) =>
   request<T>(peer, route, { method: "POST", body: JSON.stringify(data) });
+// Gives up only when nothing arrives for this long, not after a fixed total:
+// a large file over a slow link can take many minutes.
+const IDLE_MS = 45000;
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    });
+  });
+// Wait for a network before retrying. (A phone pauses the whole app while
+// it's in the background, so retries resume by themselves when it's back; a
+// computer keeps transferring in a background tab.)
+export const whenReachable = () =>
+  new Promise<void>((resolve) => {
+    if (typeof window === "undefined") return resolve();
+    const check = () => {
+      if (navigator.onLine === false) return;
+      window.removeEventListener("online", check);
+      resolve();
+    };
+    window.addEventListener("online", check);
+    check();
+  });
+export const retryable = (e: unknown) => {
+  const status = (e as { status?: number })?.status;
+  return !status || status >= 500 || status === 408 || status === 429;
+};
+
+// A file's bytes, resuming where a dropped connection stopped (only if the
+// file is unchanged: If-Range), with progress as it arrives.
 export async function fileBlob(
   peer: Peer,
   path: string,
   root: number,
-  options: { signal?: AbortSignal; maxBytes?: number } = {},
+  options: {
+    signal?: AbortSignal;
+    maxBytes?: number;
+    onProgress?: (received: number, total: number) => void;
+  } = {},
 ) {
-  const response = await fetch(
-    `${peer.url}/api/files/content?${new URLSearchParams({ path, root: String(root) })}`,
-    {
-      headers: { Authorization: `Bearer ${peer.token}` },
-      redirect: "error",
-      signal: options.signal || AbortSignal.timeout(120000),
-    },
-  );
-  if (!response.ok) {
-    const e = await response.json();
-    throw Error(e.error);
-  }
-  if (options.maxBytes !== undefined) {
-    const limit = options.maxBytes;
-    const tooLarge = () =>
+  const url = `${peer.url}/api/files/content?${new URLSearchParams({ path, root: String(root) })}`;
+  const limit = options.maxBytes ?? Infinity;
+  const tooLarge = () =>
+    Object.assign(
       Error(
         "This file is too large to share directly. Download it first, then share from Files or Downloads.",
-      );
-    if (Number(response.headers.get("content-length")) > limit) {
-      await response.body?.cancel();
-      throw tooLarge();
-    }
-    if (!response.body) throw Error("The file could not be read. Try again.");
-    const reader = response.body.getReader();
-    const parts: Uint8Array<ArrayBuffer>[] = [];
-    let size = 0;
+      ),
+      { status: 413 },
+    );
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  let received = 0,
+    total = 0,
+    etag = "",
+    type = "",
+    failures = 0;
+  while (true) {
+    // The caller's signal cancels the request. Nothing arriving for a while
+    // aborts it too: before the response through our own signal (when the
+    // caller didn't pass one), while reading by cancelling the stream.
+    const idle = new AbortController();
+    let reader:
+      ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined;
+    const cancel = () => {
+      idle.abort();
+      void reader?.cancel().catch(() => {});
+    };
+    let timer = setTimeout(cancel, IDLE_MS);
+    const signal = options.signal || idle.signal;
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > limit) {
-          await reader.cancel();
-          throw tooLarge();
-        }
-        parts.push(value);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${peer.token}`,
+      };
+      if (received && etag) {
+        headers.Range = `bytes=${received}-`;
+        headers["If-Range"] = etag;
       }
-    } finally {
-      reader.releaseLock();
+      const response = await fetch(url, { headers, redirect: "error", signal });
+      if (!response.ok) {
+        const e = await response.json().catch(() => ({}));
+        throw Object.assign(
+          Error(e.error || "This computer could not complete the request."),
+          { status: response.status },
+        );
+      }
+      // Changed since the first part (or no resume support): start over.
+      if (received && response.status !== 206) {
+        parts.length = 0;
+        received = 0;
+      }
+      etag = response.headers.get("etag") || etag;
+      type = type || response.headers.get("content-type") || "";
+      const length = Number(response.headers.get("content-length")) || 0;
+      total = response.status === 206 ? received + length : length;
+      if (total > limit) {
+        await response.body?.cancel();
+        throw tooLarge();
+      }
+      if (!response.body) throw Error("The file could not be read. Try again.");
+      reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          clearTimeout(timer);
+          timer = setTimeout(cancel, IDLE_MS);
+          received += value.byteLength;
+          if (received > limit) {
+            await reader.cancel();
+            throw tooLarge();
+          }
+          parts.push(value);
+          failures = 0;
+          options.onProgress?.(received, total);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      clearTimeout(timer);
+      // The connection closed early (or stalled): carry on from here.
+      if (total && received < total) throw Error("The download was cut short.");
+      return new Blob(parts, { type });
+    } catch (e) {
+      clearTimeout(timer);
+      if (options.signal?.aborted || !retryable(e) || ++failures > 6) {
+        if (failures > 6)
+          throw Error(
+            "The download stopped. Check that both devices are online, then try again.",
+          );
+        throw e;
+      }
+      await whenReachable();
+      await pause(Math.min(15000, 1000 * 2 ** (failures - 1)), options.signal);
     }
-    return new Blob(parts, {
-      type: response.headers.get("content-type") || "",
-    });
   }
-  return response.blob();
 }
 export const bytes = (n: number) =>
   n < 1024

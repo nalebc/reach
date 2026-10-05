@@ -11,6 +11,7 @@ import {
   reachOrigin,
 } from "./agent-client.mjs";
 import { networkPolicy, withTailnet } from "./agent-network.mjs";
+import { stateDir } from "./home.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const help = `Reach Agent CLI — private access controlled by your Mac
@@ -39,7 +40,7 @@ Ephemeral cloud connection (does not alter the machine's existing Tailscale):
   reach-agent join --tag tag:reach-agent --auth-key-file /run/secrets/ts-key -- COMMAND ARGS...
   reach-agent join --tag tag:reach-agent --client-id CLIENT_ID --id-token-file /run/secrets/oidc -- COMMAND ARGS...
 
-Options: --data-dir (owner; default .reach/quick), --ttl (seconds), --max-seconds
+Options: --data-dir (owner; default ~/.reach/quick, or .reach/quick in a checkout), --ttl (seconds), --max-seconds
 (join; default 3600), --credential (or REACH_CREDENTIAL), --allow-local (tests).
 JSON results on stdout; diagnostics on stderr. Secret files must be private.
 Network grants are a reviewable fragment, not automatically applied. Review existing
@@ -109,7 +110,7 @@ function hostConfig(options) {
   const dataDir = path.resolve(
     options["data-dir"] ||
       process.env.REACH_DATA ||
-      path.join(root, ".reach/quick"),
+      path.join(stateDir(root), "quick"),
   );
   let host;
   try {

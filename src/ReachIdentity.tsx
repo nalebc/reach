@@ -63,11 +63,32 @@ function Computer({
   x,
   y,
   scale = 1,
+  open = false,
 }: {
   x: number;
   y: number;
   scale?: number;
+  /** Leave the display see-through so a live screen can show beneath it. */
+  open?: boolean;
 }) {
+  if (open)
+    return (
+      <g
+        transform={`translate(${x} ${y}) scale(${scale})`}
+        shapeRendering="crispEdges"
+      >
+        <path
+          d="M8 0H164V5H169V112H3V5H8ZM15 13V99H157V13Z"
+          fill="#71867b"
+          fillRule="evenodd"
+        />
+        <path d="M9 7H163V105H9ZM15 13V99H157V13Z" fill="#101b18" fillRule="evenodd" />
+        <path d="M3 112H169L189 130V135H-17V130Z" fill="#97a697" />
+        <path d="M15 116H157L169 126H3Z" fill="#496153" />
+        <path d="M65 127H106V131H65Z" fill="#c4d0bd" />
+        <path d="M-12 135H184V139H-12Z" fill="#4b6657" />
+      </g>
+    );
   return (
     <g
       transform={`translate(${x} ${y}) scale(${scale})`}
@@ -105,8 +126,11 @@ export const ReachScene = memo(function ReachScene({
   companion = true,
   className = "",
   connected = false,
+  liveScreen = false,
 }: {
   connected?: boolean;
+  /** A live view of the computer is placed under the laptop's display. */
+  liveScreen?: boolean;
   mode?: "journey" | "computer" | "loading";
   companion?: boolean;
   className?: string;
@@ -149,7 +173,7 @@ export const ReachScene = memo(function ReachScene({
     >
       <svg viewBox={single ? "0 -40 400 275" : "0 0 480 265"} fill="none">
         <g className="scene-specks" fill="currentColor">
-          {Array.from({ length: 24 }, (_, i) => (
+          {Array.from({ length: liveScreen ? 0 : 24 }, (_, i) => (
             <rect
               key={i}
               x={25 + ((i * 67) % (single ? 350 : 430))}
@@ -171,7 +195,7 @@ export const ReachScene = memo(function ReachScene({
             <g shapeRendering="crispEdges" fill="#304235">
               <path d="M97 185H331V190H97ZM115 190H121V212H115ZM305 190H311V212H305Z" />
             </g>
-            <Computer x={119} y={32} scale={1.1} />
+            <Computer x={119} y={32} scale={1.1} open={liveScreen} />
             {companion && <CourierActor playing={playing} />}
           </>
         ) : (

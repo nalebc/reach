@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   MoreHorizontal,
   Command,
-  PanelsTopLeft,
   X,
 } from "lucide-react";
 import { Device, Peer, post, request } from "./api";
@@ -28,15 +27,15 @@ import ScreenActions, { type ScreenAction } from "./ScreenActions";
 import { copyRemoteSelection } from "./remote-copy";
 import type { TextTarget } from "./desktop-input-queue";
 import DesktopSurface from "./DesktopSurface";
-import DesktopMode from "./DesktopMode";
 import { useScreenPresentation } from "./useScreenPresentation";
 import { useImmersiveChrome } from "./useImmersiveChrome";
 import NativeRemoteTyping from "./NativeRemoteTyping";
+import ScrollHandle from "./ScrollHandle";
 import { useAppContext } from "./useAppContext";
 import { allCommands, contextPicks, type ContextAction } from "./app-context";
-import { AppCommandList, ContextBar } from "./AppCommands";
+import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
-import { isNative } from "./native";
+import { nativeKeyboard } from "./remote-keyboard";
 import "./screen-immersive.css";
 type Display = {
   id: string;
@@ -73,7 +72,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
   const [clipboard, setClipboard] = useState(""),
     [clipboardBusy, setClipboardBusy] = useState(false);
   const [panel, setPanel] = useState<
-    "shortcuts" | "clipboard" | "more" | "actions" | null
+    "clipboard" | "more" | "actions" | null
   >(null);
   const [helperBusy, setHelperBusy] = useState(false);
   const helperPending = useRef(false);
@@ -372,18 +371,6 @@ export default function Screen({ peer, device, onChanged }: Props) {
         title="Your screen"
         description="Pick up where you left off."
       />
-      {enabled && owner && device.platform === "darwin" && (
-        <DesktopMode
-          peer={peer}
-          device={device}
-          beforeOpen={async () => {
-            release();
-            setLive(false);
-            await post(peer, "/api/screen/control", { enabled: false });
-          }}
-          afterClose={() => setLive(true)}
-        />
-      )}
       <ErrorLine error={error || stream.error} />
       {!enabled ? (
         <section className="panel screen-setup">
@@ -429,18 +416,6 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 if (typing) event.preventDefault();
               }}
             >
-              {owner && device.capabilities.apps && (
-                <button
-                  className="button secondary small"
-                  onClick={() => {
-                    clearTyping();
-                    setPanel("shortcuts");
-                  }}
-                >
-                  <Command size={16} />
-                  Shortcuts
-                </button>
-              )}
               <button
                 className="icon-button"
                 aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
@@ -482,8 +457,11 @@ export default function Screen({ peer, device, onChanged }: Props) {
             typing={typing}
             focusPoint={typing && mobile ? typingTarget?.point : undefined}
           />
+          {control && stream.ready && !typing && !panel && (
+            <ScrollHandle send={send} disabled={!usable} />
+          )}
           {typing && typingTarget && (
-            isNative ? (
+            nativeKeyboard ? (
               <NativeRemoteTyping
                 key={`${typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
@@ -495,6 +473,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
               <RemoteTyping
                 key={`${typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
+                keyRow={mobile}
                 editorRef={typingEditor}
                 send={send}
                 onClose={clearTyping}
@@ -502,34 +481,18 @@ export default function Screen({ peer, device, onChanged }: Props) {
               />
             )
           )}
-          {typing && typingTarget && !isNative && mobile && (
+          {typing && typingTarget && !nativeKeyboard && mobile && (
+            // Its own key: a sibling sharing RemoteTyping's key made React
+            // duplicate the keyboard field and key row, and reset the field
+            // between keystrokes (each next letter then deleted the last).
             <TapToType
-              key={`${typingTarget.focus}:${typingEpoch.current}`}
+              key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
               editorRef={typingEditor}
             />
           )}
           <div className="simple-screen-dock">
-            {control && !typing && appContext.app && contextActions.length > 0 && (
-              <ContextBar
-                app={appContext.app}
-                picks={contextActions}
-                disabled={!usable || helperBusy}
-                run={runContext}
-                more={() => {
-                  clearTyping();
-                  setPanel("actions");
-                }}
-              />
-            )}
             <span className="simple-screen-caption" role="status">
-              {feedback ||
-                (control
-                  ? input.ready
-                    ? typing
-                      ? "Typing on your computer"
-                      : "Tap to click · hold to drag"
-                    : "Connecting controls…"
-                  : "View only")}
+              {feedback || (control && !input.ready ? "Connecting controls…" : "")}
             </span>
             {control && (
               <>
@@ -543,7 +506,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
                   <Keyboard size={17} />
                   Type
                 </button>
-                {typing ? (
+                {typing && (
                   <button
                     className="icon-button"
                     aria-label="Dismiss phone keyboard"
@@ -555,33 +518,21 @@ export default function Screen({ peer, device, onChanged }: Props) {
                   >
                     <X size={19} />
                   </button>
-                ) : (
-                  <button
-                    className="icon-button"
-                    aria-label="Copy selected laptop text to phone"
-                    disabled={
-                      !usable || clipboardBusy || !!typingTarget?.secure
-                    }
-                    onClick={() => void copySelectedText()}
-                  >
-                    <Copy size={18} />
-                  </button>
                 )}
               </>
             )}
-            {control && (
+            {!typing && (control || (owner && device.capabilities.apps)) && (
               <button
                 className="button secondary small screen-actions-trigger"
                 onPointerDown={(event) => event.preventDefault()}
-                disabled={!usable || helperBusy}
-                aria-label="Screen actions"
+                disabled={control && (!usable || helperBusy)}
                 aria-haspopup="dialog"
                 onClick={() => {
                   clearTyping();
                   setPanel("actions");
                 }}
               >
-                <PanelsTopLeft size={16} /> Actions
+                <Command size={16} /> Shortcuts
               </button>
             )}
             {owner && !typing && (
@@ -630,13 +581,11 @@ export default function Screen({ peer, device, onChanged }: Props) {
           {panel && (
             <ScreenPopup
               title={
-                panel === "shortcuts"
-                  ? "Shortcuts"
-                  : panel === "clipboard"
-                    ? "Clipboard"
-                    : panel === "actions"
-                      ? "Screen actions"
-                      : "Screen options"
+                panel === "clipboard"
+                  ? "Clipboard"
+                  : panel === "actions"
+                    ? "Shortcuts"
+                    : "Screen options"
               }
               onClose={() => setPanel(null)}
             >
@@ -656,14 +605,17 @@ export default function Screen({ peer, device, onChanged }: Props) {
                   run={(helper) => void runHelper(helper)}
                 />
               )}
-              {panel === "shortcuts" && owner && (
-                <QuickLauncher
-                  peer={peer}
-                  onDone={(name) => {
-                    setPanel(null);
-                    setFeedback(`${name} opened`);
-                  }}
-                />
+              {panel === "actions" && owner && device.capabilities.apps && (
+                <section className="screen-open-shortcuts">
+                  {control && <h3>Open on {device.name}</h3>}
+                  <QuickLauncher
+                    peer={peer}
+                    onDone={(name) => {
+                      setPanel(null);
+                      setFeedback(`${name} opened`);
+                    }}
+                  />
+                </section>
               )}
               {panel === "clipboard" && <ErrorLine error={error} />}
               {panel === "clipboard" && control && (
@@ -729,17 +681,28 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 <>
                   <p className="screen-popup-hint">
                     Pinch to zoom. Hold and move over text to select it, then
-                    tap Copy. Tap the keyboard button to type directly on your
-                    computer. Extra keys are in Actions. Fullscreen gives you
-                    more room.
+                    tap Copy selected text. Keys and app commands are in
+                    Shortcuts.
                   </p>
                   {control && (
-                    <button
-                      className="button secondary small"
-                      onClick={() => setPanel("clipboard")}
-                    >
-                      <Clipboard size={16} /> Clipboard transfers
-                    </button>
+                    <div className="screen-key-row">
+                      <button
+                        className="button secondary small"
+                        disabled={!usable || clipboardBusy}
+                        onClick={() => {
+                          setPanel(null);
+                          void copySelectedText();
+                        }}
+                      >
+                        <Copy size={16} /> Copy selected text
+                      </button>
+                      <button
+                        className="button secondary small"
+                        onClick={() => setPanel("clipboard")}
+                      >
+                        <Clipboard size={16} /> Clipboard transfers
+                      </button>
+                    </div>
                   )}
                   {displays.length > 1 && (
                     <label className="screen-option">

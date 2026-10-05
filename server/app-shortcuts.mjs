@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { apps, launchApp, exec } from "./platform.mjs";
 import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
-import { createAppIconCache, readAppIcon } from "./app-icons.mjs";
+import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
 
 export function shortcutUrl(value) {
   if (
@@ -141,13 +141,22 @@ const RECIPES = [
     bundled: [],
   },
 ];
+// Agents a Reach terminal can start, by request name.
+export const AGENTS = { codex: "Codex", claude: "Claude Code" };
+// The command that starts an agent CLI, or null when it isn't installed.
+export function agentCommand(name) {
+  const recipe = RECIPES.find((r) => r.cli === name);
+  return recipe ? findCli(recipe.cli, recipe.bundled) : Promise.resolve(null);
+}
 export function createAppShortcuts({
   dataDir,
   listApps = apps,
   launch = launchApp,
   openCodex = () => openUrl("codex://threads/new"),
   openWebsite = openUrl,
-  loadIcon = readAppIcon,
+  // Reads icons for a list of app ids; loadIcon substitutes a one-at-a-time reader.
+  loadIcons = readAppIcons,
+  loadIcon = null,
   // (command, authorize) => opens a Mac terminal window running command.
   macTerminal = null,
   // (root, path) => absolute folder inside the shared folders.
@@ -180,7 +189,20 @@ export function createAppShortcuts({
     }
     return cliCache.commands;
   };
-  const icon = createAppIconCache(loadIcon);
+  const icon = createAppIconCache(
+    loadIcon
+      ? async (ids) => {
+          const found = [];
+          for (const id of ids)
+            found.push(await Promise.resolve(id).then(loadIcon).catch(() => null));
+          return found;
+        }
+      : loadIcons,
+  );
+  const installedIds = async (ids) => {
+    const installed = new Set((await listApps()).map((a) => a.id));
+    return ids.filter((id) => installed.has(id));
+  };
   const file = dataDir ? path.join(dataDir, "shortcuts.json") : null;
   const stored = file ? loadJson(file, []) : [];
   let custom = (Array.isArray(stored) ? stored : [])
@@ -292,6 +314,20 @@ export function createAppShortcuts({
       )
         throw fail(404, "Choose an installed app.");
       return { icon: await icon(appId) };
+    },
+    // Icons for a screenful of apps in one request. Ids that aren't installed
+    // are left out and never reach the native reader.
+    async icons(ids) {
+      if (
+        !Array.isArray(ids) ||
+        !ids.length ||
+        ids.length > 64 ||
+        ids.some((id) => typeof id !== "string" || id.length > 4096)
+      )
+        throw fail(400, "Choose up to 64 installed apps.");
+      const found = await installedIds([...new Set(ids)]);
+      const result = await Promise.all(found.map(icon));
+      return { icons: Object.fromEntries(found.map((id, i) => [id, result[i]])) };
     },
     async customList() {
       const builtins = await catalog();

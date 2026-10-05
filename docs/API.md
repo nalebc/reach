@@ -20,8 +20,15 @@ Device `capabilities` combine credential scopes with host support. `screen` mean
 
 - `GET /api/files?root=0&path=Documents&hidden=0` — `{items, path, truncated}`. Each item includes name, path, type, size, modified. Up to 2,000 directory entries.
 - `GET /api/files/text?root=0&path=Documents/example.txt` — `{text}`, up to 1 MB. Binary previews are rejected.
+- `GET /api/files/icons?types=folder,pdf,docx` — `{icons: {[type]: dataUrl | null}}`: the icon the computer's own file manager shows for each type (Finder on Mac, Explorer on Windows, the desktop icon theme on Linux). Up to 64 types: `folder`, `file`, or a lowercase extension of up to 16 letters/digits. Containers and machines without an icon set return `null`, and clients keep their built-in icons. Clients cache these on the device and refresh weekly.
+- `GET /api/files/document-text?root=0&path=Documents/Contract.docx` — `{text}` extracted from a `.doc`, `.docx`, `.rtf` or `.odt` file (Mac, via `textutil`; 501 elsewhere) for preview and copy. Documents up to 25 MB, text up to 1 MB. Read-only: the response has no `sha256`, so it can never be written back over the document.
 - `PUT /api/files/text?root=0&path=notes.txt` — `{text,sha256}`. The GET response also includes `sha256`; supply that last-read value to avoid overwriting an intervening edit. Existing text files only, new text up to 128 KiB, no NUL bytes. Atomic replacement; changed content returns 409. Concurrent malicious local filesystem races are outside this guarantee.
-- `GET /api/files/content?root=0&path=Documents/example.pdf` — binary attachment.
+- `GET /api/files/content?root=0&path=Documents/example.pdf` — binary attachment. Supports `Range` (206) with `If-Range`, so clients resume a dropped download only while the file is unchanged.
+- `GET /api/files/download-link?root=0&path=Documents/example.pdf` — `{url, expiresIn}`: a `/download/<token>` link for the browser's own download manager. Tokens are 256-bit, in memory only, valid 10 minutes, and name one file. Each use re-verifies the issuing credential from its hash (revocation, expiry, Tailscale identity and node, guest folders, agent policy), re-resolves the path, and refuses a file modified since (410). Responses are `attachment` and `no-store`, and support `Range`.
+- `POST /api/files/uploads` — `{root, path, name, size}` starts a resumable upload: `{id, offset, chunk}`. Checks the name, that it doesn't exist yet (409), and free space on the computer (507). Default limit 50 GB; at most 8 uploads at once per credential.
+- `PUT /api/files/uploads/:id?offset=N` — raw bytes (`application/octet-stream`), up to 16 MB, exactly at the offset the computer has; otherwise 409 with `{offset}` to continue from. Returns `{offset}`.
+- `GET /api/files/uploads/:id` — `{offset, size}`, to resume after a dropped connection.
+- `POST /api/files/uploads/:id/complete` — publishes the file once every byte has arrived; never over an existing file (409); 404 if the folder no longer exists. `DELETE /api/files/uploads/:id` cancels. Upload sessions belong to the credential that started them, and partial files are removed when finished, cancelled, idle for a day, or when Reach restarts.
 - `POST /api/files/upload?root=0&path=Downloads` — multipart field `file`, max 100 MB. Existing names produce 409. Hidden filenames are rejected for uploads.
 - `POST /api/files/folder` — `{root, path, name}`.
 
@@ -81,6 +88,7 @@ Only one native terminal operation runs at a time; concurrent calls receive 409.
 
 - `GET /api/apps` — installed `{id, name}` entries.
 - `POST /api/apps/launch` — `{id}` from the app list. Launches on the computer's desktop.
+- `POST /api/apps/icons` — owner only (`admin` and `apps`). `{ids}`, 1–64 ids from the app list. Returns `{icons: {[id]: dataUrl | null}}` with 128 px PNG logos (Mac only; `null` elsewhere). Ids that aren't installed are omitted and never reach the native reader. Concurrent requests share one native lookup. Clients keep the logos on the device and refresh them weekly.
 
 ## Codex — scope `codex`
 
@@ -124,6 +132,20 @@ Successful actions renew the existing control lease; the browser sends idle hear
 
 Keys: enter, backspace, tab, escape, left, right, up, down. Mac capture needs Screen Recording permission; input also needs Accessibility. Windows needs an unlocked interactive desktop. No lock-screen bypass. Revoke a client or disable screen viewing to invalidate its control grant. Already-dispatched OS input cannot be undone.
 
+### Apps on your phone — scopes `admin` + `screen`, Mac only
+
+Each app opened on the phone runs on the Mac on its own hidden display (macOS `CGVirtualDisplay`, checked at runtime), in a window shaped like the phone. Only that window is streamed. See [Apps on your phone](APP_THREADS.md).
+
+- `GET /api/screen/apps` — this computer's app threads, newest first: `{id,appId,name,state,createdAt}` plus, while `running`, `display`, `region:{x,y,w,h}` (the window, in display points), `size:{w,h}` (the hidden display) and `scale`. States: `starting`, `running`, `paused` (after a restart or "Return all"; reopen with POST), `closed` (the app closed its window).
+- `POST /api/screen/apps` — `{appId,width,height}`: an `id` from `GET /api/apps` and the phone's usable screen in points (200–1000). Opens the app on a hidden display, or resumes its existing thread, and returns the thread. Browsers, Finder and Terminal get a new window; other apps lend their main window and get it back. Up to four threads. 404 for unknown apps, 501 off macOS, 403 with screen viewing off or without Accessibility for Reach.
+- `PATCH /api/screen/apps/:id` — `{width,height}` after the phone rotates: reshapes the window (the display is already sized for both orientations).
+- `POST /api/screen/apps/:id/activate` — brings the app forward on the Mac.
+- `POST /api/screen/apps/:id/quit` — `{confirm}`: quits the app like ⌘Q. Returns `{confirm:true,others}` without quitting when the app also has windows on the Mac's own screens (send again with `confirm:true`), `{quit:true}` once it quit, or `{quit:false,waiting:true}` while it asks something (unsaved work); the thread ends when it quits. Apps that quit on the Mac end their threads too.
+- `GET /api/screen/apps/:id/fields` — `{fields:[{x,y,w,h,secure}],complete}`: the window's visible text fields in points from its top-left (a bounded accessibility walk), so a tap on one can open the phone keyboard within the tap.
+- `DELETE /api/screen/apps/:id` — gives it back: a window Reach opened is closed (if closing is blocked, it moves to the main screen instead), a lent window returns to its exact frame. Returns `{closed,returned}`.
+
+Video: `WS /ws/screen` with `thread:"<id>"` in the auth message streams that window only, at its full Retina resolution, 60 fps and up to 12 Mbps, without the pointer; the usual auto mode lowers frame rate and bitrate on a slow connection. A window change or rotation ends the stream as retryable (reconnect for the new crop); returning the app ends it for good. Input: the existing `WS /ws/screen-input` with the thread's `display`; map 0..1 window coordinates through `region` and `size`. Presence `changes` include `apps` for owners. Hidden displays are omitted from `GET /api/screen/displays`.
+
 ### Temporary guest access
 
 - `POST /api/guests` (admin): `{name, ttlSeconds, roots: [0], write: true, screen: false}`. Returns `{invitation, clientId, expiresAt, scopes, url}`. `roots` uses the owner's `/api/device` root IDs. Duration must be an integer from 60 to 86400 seconds. Only the explicitly selected file permissions and optional view-only screen access are granted.
@@ -146,16 +168,6 @@ Custom shortcut management (all require `admin` and `apps` scopes):
 - `DELETE /api/apps/shortcuts/custom/:id`: remove a saved shortcut.
 
 Definitions persist in private `shortcuts.json`; paired owners on that computer share them. Guests and scoped agents cannot list, create, edit, delete or launch these shortcuts. Authorization is rechecked after discovery and immediately before mutations/dispatch. App discovery is cached for up to 30 seconds. Shell commands, arbitrary URL schemes, app arguments and automatic prompt submission are unsupported.
-
-## Native iPad desktop sessions
-
-Owner + screen scope and enabled viewing are required. `POST /api/screen/desktop` accepts `{mode:"match"|"mirror",width,height,clipboard:false}` and returns `{id,display,virtual,...options}`. Width/height are bounded native pixels. A session ID is not a credential; it is bound to its paired client. `DELETE /api/screen/desktop/:id` disposes of the display and sockets. `GET /api/screen/prepare` returns read-only Mac preparation checks. `GET /api/screen/desktop/:id/quality` returns Direct/Relayed/Unknown for the request's Serve peer.
-
-Authenticate the existing screen WebSocket with `{type:"auth",protocol:2,token,desktopSession:id}`. The server selects the session display, H.264, resolution and adaptive desktop profile. The binary format is unchanged: sequence uint32be, JSON length uint32be, JSON metadata, Annex-B access unit. JSON `quality` messages add `fps`, actual `bitrate`, `ackLatency` (not glass-to-glass), and `targetFps`.
-
-Input uses the separate existing `/api/screen/control` lease and `/ws/screen-input` connection. Add `desktopSession` to input authentication. New validated actions: `keyDown/keyUp` with keyboard-page `usage`, `modifiers` (meta/alt/control/shift/fn/caps), `repeat`; `mouseMove/mouseDown/mouseUp` with absolute normalized `x/y` or `relative:true,dx,dy`, and left/right/middle `button`; scroll adds optional `phase` and `momentum`. No arbitrary macOS keycodes, OS commands, or consumer/system HID usages are accepted.
-
-`POST /api/screen/desktop/clipboard` requires session clipboard opt-in and that same client's active input channel + lease. Read: `{session,operation:"read",revision?}`. Write: `{session,operation:"write",text}` or `{session,operation:"write",data:base64PNG}`. Text is limited to 16 KiB, PNG to 2 MiB and 16 million pixels; image bodies use HTTP rather than the 64 KiB input socket. Results carry a revision; unchanged reads contain `unchanged:true`. Every queued operation rechecks authorization before and after native dispatch.
 
 ## Tailscale owner approval (configured Mac/Linux launcher)
 

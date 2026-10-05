@@ -48,6 +48,8 @@ export type WorkspaceCapabilities = ReturnType<typeof workspaceCapabilities>;
 export function pageAccessible(page: string, features: WorkspaceCapabilities) {
   if (page === "overview") return true;
   if (page === "chat") return features.codex;
+  // Transcripts of every AI session: the owner only (server: admin scope).
+  if (page === "sessions") return features.owner;
   if (page === "terminal") return features.terminal;
   return (
     ["files", "apps", "screen", "agents", "settings", "invite"].includes(

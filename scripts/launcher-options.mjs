@@ -20,9 +20,15 @@ export function parseOptions(args) {
         "pair",
         "configure",
         "approve",
+        "update",
+        "import",
       ].includes(arg)
     )
       options.command = arg;
+    // `reach import <folder>`: the Reach folder whose pairings to bring over.
+    else if (options.command === "import" && i === 1 && !arg.startsWith("--"))
+      options.importFrom = path.resolve(arg);
+    else if (arg === "--version" || arg === "-v") options.version = true;
     else if (arg === "--local") options.local = true;
     else if (arg === "--service") options.service = true;
     else if (arg === "--stay-awake") options.stayAwake = true;
@@ -59,12 +65,14 @@ export function parseOptions(args) {
     (options.service && (options.background || options.stopBackground))
   )
     throw Error("Choose one Reach command.");
+  if (options.command === "import" && !options.importFrom && !options.help)
+    throw Error("Name the Reach folder to import from: reach import <folder>.");
   if (
     options.command &&
     options.command !== "install" &&
-    args.length > 1 &&
+    args.length > (options.command === "import" ? 2 : 1) &&
     !options.help
   )
-    throw Error(`./reach ${options.command} does not accept setup options.`);
+    throw Error(`reach ${options.command} does not accept setup options.`);
   return options;
 }

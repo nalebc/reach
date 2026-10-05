@@ -27,16 +27,10 @@ export {
   Plus,
   ChevronRight,
 };
-import { BrandCourier } from "./ReachIdentity";
+import LivingLogo from "./LivingLogo";
+// The wordmark plays a short random act now and then (LivingLogo).
 export function Logo({ companion = false }: { companion?: boolean }) {
-  return (
-    <div className="brand">
-      <span className="brand-mark">
-        <BrandCourier active={companion} />
-      </span>
-      <span>reach</span>
-    </div>
-  );
+  return <LivingLogo companion={companion} />;
 }
 export function Spinner({
   label = "Connecting to your computer…",

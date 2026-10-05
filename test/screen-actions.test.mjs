@@ -125,7 +125,6 @@ test("macOS helper presses modifiers and marks arrow/navigation keys like real h
   assert.match(swift, /case 114, 115, 116, 117, 119, 121: return \.maskSecondaryFn/);
   assert.match(swift, /for \(modifier, flag\) in Input\.modifierKeys where flags\.contains\(flag\)/);
   assert.match(swift, /e\?\.flags = flags\.union\(Input\.keyFlags\(code\)\)/);
-  assert.match(swift, /e\?\.flags = currentFlags\.union\(Input\.keyFlags\(code\)\)/);
 });
 
 test("Windows helper sends navigation keys and the Windows key as extended keys", () => {

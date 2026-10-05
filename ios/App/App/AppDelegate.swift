@@ -33,6 +33,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
     }
 
+    // iOS relaunches the app to finish background downloads; the session
+    // reconnects and calls this handler when it has delivered everything.
+    func application(_ application: UIApplication,
+                     handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == BackgroundDownloads.identifier else { return completionHandler() }
+        BackgroundDownloads.shared.systemCompletion = completionHandler
+        _ = BackgroundDownloads.shared.session
+    }
+
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {

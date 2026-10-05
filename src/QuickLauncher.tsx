@@ -86,7 +86,7 @@ export default function QuickLauncher({
           onClick={() => void run(a)}
         >
           <span className={`quick-action-icon ${a.kind}`}>
-            <ShortcutIcon peer={peer} shortcut={a} size={32} />
+            <ShortcutIcon peer={peer} shortcut={a} size={40} />
           </span>
           <span>
             <strong>{a.name}</strong>

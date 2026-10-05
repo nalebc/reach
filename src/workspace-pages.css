@@ -8,193 +8,8 @@
   letter-spacing: 1.5px;
   color: #8fa594;
 }
-.sheet-description {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-  margin: 0 0 22px;
-  overflow-wrap: anywhere;
-}
-.action-rows {
-  display: grid;
-  gap: 0;
-}
-.action-rows > button {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  padding: 17px 4px;
-  min-height: 64px;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  color: #d7eada;
-  background: none;
-  text-align: left;
-}
-.action-rows > button > span {
-  flex: 1;
-  min-width: 0;
-}
-.action-rows strong,
-.action-rows small {
-  display: block;
-}
-.action-rows strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-.action-rows small {
-  color: #94a399;
-  font-size: 11px;
-  margin-top: 5px;
-  line-height: 1.5;
-}
-.settings-inline-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  min-height: 58px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.settings-inline-row select {
-  padding: 9px 12px;
-  max-width: 60%;
-}
-.settings-inline-row input[type="checkbox"] {
-  width: 19px;
-  height: 19px;
-  accent-color: var(--lime);
-}
 
 /* Files: location, search, filter, contents. Only the contents have a surface. */
-.files-workspace {
-  max-width: 1020px;
-  margin: 0 auto;
-}
-.files-workspace .page-title {
-  margin-bottom: 24px;
-}
-.files-browser-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.folder-location-button {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  background: none;
-  border: 0;
-  color: #daecdf;
-  font-size: 14px;
-  padding: 8px 0;
-  min-width: 0;
-}
-.folder-location-button > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.folder-location-button > svg {
-  flex-shrink: 0;
-  color: #acc7b2;
-}
-.files-head-actions {
-  display: flex;
-  gap: 6px;
-}
-.files-head-actions .icon-button {
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--border);
-  background: #e2f2e004;
-}
-.files-search-field {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  min-height: 50px;
-  background: #1a211d;
-  border: 1px solid #d1e5cf19;
-  border-radius: 12px;
-  color: #91a698;
-}
-.files-search-field input {
-  border: 0 !important;
-  outline: none;
-  background: transparent !important;
-  flex: 1;
-  min-width: 0;
-  padding: 14px 0;
-  color: #e5eee6;
-  font-size: 14px;
-}
-.files-search-field:focus-within {
-  border-color: #b9efd473;
-}
-.files-search-field button {
-  border: 0;
-  background: none;
-  color: #c2d9c5;
-  font-size: 22px;
-  padding: 5px;
-}
-.files-filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 18px 0;
-}
-.files-filter-bar > button {
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: none;
-  padding: 8px 15px;
-  min-height: 38px;
-  color: #a5b0a8;
-  font-size: 12px;
-}
-.files-filter-bar > button[aria-pressed="true"] {
-  background: #b9efd418;
-  color: #d5f3de;
-  border-color: #b9efd42b;
-}
-.files-filter-bar > span {
-  margin-left: auto;
-  color: #92a197;
-  font:
-    10px ui-monospace,
-    monospace;
-}
-.page-files .file-panel {
-  background: #151c17;
-  border: 1px solid #d3ead219;
-  border-radius: 12px;
-  overflow: hidden;
-}
-.page-files .file-heading {
-  background: #dff1dc03;
-  font:
-    10px ui-monospace,
-    monospace;
-  text-transform: uppercase;
-  letter-spacing: 1.4px;
-  padding-block: 15px;
-}
-.page-files .file-row {
-  border-color: #d3ead212;
-  min-height: 76px;
-}
-.page-files .file-name strong {
-  font-weight: 500;
-  font-size: 14px;
-}
 .page-files .file-icon {
   background: #24332a;
   color: #c2dfc8;
@@ -202,31 +17,6 @@
   border-radius: 9px;
   width: 42px;
   height: 46px;
-}
-.page-files .file-icon.folder-icon {
-  background: #ddd2a412;
-  color: #e4d6ac;
-}
-.page-files .file-row .icon-button {
-  width: 42px;
-  height: 42px;
-  color: #9aac9f;
-}
-.page-files .file-row .icon-button:hover {
-  color: #d1f2da;
-  background: #b9efd40c;
-}
-.page-files .file-breadcrumbs {
-  padding: 15px;
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
-.page-files .panel-footer {
-  color: #83958a;
-  font-size: 10px;
-  background: #dff1dc02;
 }
 
 /* More: one launcher, with descriptions instead of a second navigation rail. */
@@ -780,36 +570,6 @@
   border-radius: 9px;
 }
 @media (max-width: 760px) {
-  .files-workspace .page-title h1 {
-    font-size: 31px;
-  }
-  .files-workspace .page-title .button {
-    min-height: 42px;
-    padding: 10px 13px;
-    font-size: 12px;
-  }
-  .files-workspace .page-title p {
-    display: none;
-  }
-  .files-browser-head {
-    margin-bottom: 14px;
-  }
-  .files-search-field input {
-    font-size: 16px;
-  }
-  .files-workspace .file-row {
-    padding: 12px;
-    min-height: 80px;
-  }
-  .files-workspace .file-name {
-    gap: 13px;
-  }
-  .files-workspace .file-label strong {
-    font-size: 13px;
-  }
-  .files-filter-bar > button {
-    padding: 8px 12px;
-  }
   .settings-workspace .page-title {
     margin-bottom: 16px;
   }
@@ -944,9 +704,7 @@
   }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .explore-grid > button,
-  .folder-location-button,
-  .files-filter-bar > button {
+  .explore-grid > button {
     transition:
       background 140ms,
       border-color 140ms;
@@ -987,20 +745,6 @@
 .screen-popup.workspace-launcher {
   background: #181f1a;
 }
-.page-apps .apps-grid {
-  gap: 12px;
-}
-.page-apps .app-card {
-  min-height: 118px;
-  border-radius: 12px;
-  background: #19231b;
-  border-color: #d3ead21e;
-  padding: 20px;
-}
-.page-apps .app-search {
-  border-radius: 11px;
-  padding: 13px 16px;
-}
 .page-agents .agent-setup,
 .page-agents .agent-jobs {
   border-radius: 12px;
@@ -1022,9 +766,6 @@
   .app-shell:has(.codex-workspace.is-thread) .topbar,
   .app-shell:has(.codex-workspace.is-thread) .fleet-switcher {
     visibility: hidden;
-  }
-  .page-apps .apps-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .page-agents .agents-grid {
     grid-template-columns: 1fr;

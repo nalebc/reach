@@ -1,9 +1,31 @@
 import * as pty from "node-pty";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
+// The last lines a shell printed, as plain text, for the Home cards. Full-screen
+// programs (Codex, vim) redraw with cursor moves, so they get no preview.
+export function terminalPreview(buffer, lines = 2) {
+  const tail = String(buffer || "").slice(-8000);
+  const left = tail.lastIndexOf("\x1b[?1049l");
+  if (tail.lastIndexOf("\x1b[?1049h") > left) return null;
+  // Only what the shell printed after a full-screen program closed.
+  return (left >= 0 ? tail.slice(left + 8) : tail)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .split("\n")
+    .map((line) =>
+      // A carriage return redraws the line; keep what is left visible.
+      (line.split("\r").filter((part) => part.trim()).pop() || "")
+        .replace(/[\x00-\x1f\x7f]/g, "")
+        .trimEnd(),
+    )
+    .filter((line) => /[\p{L}\p{N}]/u.test(line))
+    .slice(-lines)
+    .map((line) => line.slice(0, 120));
+}
 export class Terminals {
   sessions = new Map();
-  create({ cwd, name, clientId, cols = 90, rows = 28 }) {
+  create({ cwd, name, clientId, cols = 90, rows = 28, command = "" }) {
     if (
       [...this.sessions.values()].filter((s) => s.status === "running")
         .length >= 12
@@ -62,6 +84,8 @@ export class Terminals {
       for (const fn of session.listeners) fn({ type: "exit", exitCode });
     });
     this.sessions.set(session.id, session);
+    // Server-resolved agent command (never client text), run once the shell starts.
+    if (command) proc.write(`${command}\r`);
     return this.meta(session);
   }
   meta(s) {
@@ -73,6 +97,7 @@ export class Terminals {
       status: s.status,
       createdAt: s.createdAt,
       exitCode: s.exitCode,
+      preview: terminalPreview(s.buffer),
     };
   }
   list() {

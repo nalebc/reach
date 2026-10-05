@@ -12,11 +12,18 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   let context = CIContext(options: [.cacheIntermediates: false])
   var latest: CVPixelBuffer?
   var wanted = false, keyframe = false, encoding = false
+  // Nothing new since the last frame: reply with one byte so the server sends
+  // nothing, and the phone has nothing to decode or draw. A real frame still
+  // goes out every second to keep the stream alive.
+  var fresh = true, lastSent = Date.distantPast
   var lastKeyTime = Date.distantPast
   var stream: SCStream?, encoder: VTCompressionSession?
   var width = 0, height = 0, frame: Int64 = 0, codec = ""
   let video: Bool, strictHardware: Bool, fps: Int, maxWidth: Int, bitrate: Int,
     displayID: CGDirectDisplayID
+  // Optional "x,y,w,h" in display points: only that part of the display (an
+  // app's window on its hidden display), at full resolution, without a pointer.
+  let region: CGRect?
   init(_ args: [String]) {
     strictHardware = args.count > 5 && args[5] == "hardware"
     displayID = args.count > 0 && args[0] != "primary" ? UInt32(args[0]) ?? 0 : CGMainDisplayID()
@@ -24,6 +31,10 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     fps = args.count > 2 ? Int(args[2]) ?? 30 : 15
     maxWidth = args.count > 3 ? Int(args[3]) ?? 1600 : 1600
     bitrate = args.count > 4 ? Int(args[4]) ?? 6_000_000 : 6_000_000
+    let parts = args.count > 6 ? args[6].split(separator: ",").compactMap { Double($0) } : []
+    region =
+      parts.count == 4 && parts[2] >= 16 && parts[3] >= 16
+      ? CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3]) : nil
   }
   func failure(_ text: String) -> Never {
     FileHandle.standardError.write(Data((text + "\n").utf8))
@@ -99,6 +110,13 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   func emit() {
     guard wanted, !encoding, let buffer = latest else { return }
     wanted = false
+    if !fresh && !keyframe && Date().timeIntervalSince(lastSent) < 1 {
+      write(Data([0]))
+      return
+    }
+    let changed = fresh
+    fresh = false
+    lastSent = Date()
     if !video {
       guard let color = CGColorSpace(name: CGColorSpace.sRGB),
         let data = context.jpegRepresentation(
@@ -112,7 +130,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     guard let encoder = encoder else { return }
     encoding = true
     frame += 1
-    if Date().timeIntervalSince(lastKeyTime) >= 2 { keyframe = true }
+    if changed && Date().timeIntervalSince(lastKeyTime) >= 2 { keyframe = true }
     if keyframe { lastKeyTime = Date() }
     let properties = keyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     keyframe = false
@@ -135,6 +153,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       return
     }
     latest = sample.imageBuffer
+    fresh = true
     emit()
   }
   func configureEncoder() throws {
@@ -220,6 +239,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
           CVPixelBufferUnlockBaseAddress(buffer, [])
           self.wanted = true
           self.keyframe = line == "key"
+          self.fresh = true
           self.emit()
         }
       }
@@ -233,17 +253,25 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       throw NSError(domain: "Display unavailable", code: 1)
     }
     let mode = CGDisplayCopyDisplayMode(displayID)
-    let pixelsWide = mode?.pixelWidth ?? display.width
-    let pixelsHigh = mode?.pixelHeight ?? display.height
+    var pixelsWide = Double(mode?.pixelWidth ?? display.width)
+    var pixelsHigh = Double(mode?.pixelHeight ?? display.height)
     let config = SCStreamConfiguration()
-    let scale = min(1.0, Double(maxWidth) / Double(pixelsWide), 3840.0 / Double(pixelsHigh))
-    width = max(2, Int(Double(pixelsWide) * scale) / 2 * 2)
-    height = max(2, Int(Double(pixelsHigh) * scale) / 2 * 2)
+    if let region = region?.intersection(
+      CGRect(x: 0, y: 0, width: display.width, height: display.height)), !region.isEmpty
+    {
+      let backing = pixelsWide / Double(display.width)
+      config.sourceRect = region
+      pixelsWide = region.width * backing
+      pixelsHigh = region.height * backing
+    }
+    let scale = min(1.0, Double(maxWidth) / pixelsWide, 3840.0 / pixelsHigh)
+    width = max(2, Int(pixelsWide * scale) / 2 * 2)
+    height = max(2, Int(pixelsHigh * scale) / 2 * 2)
     config.width = width
     config.height = height
     config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
     config.queueDepth = 3
-    config.showsCursor = true
+    config.showsCursor = region == nil
     config.pixelFormat =
       video ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA
     if video { try configureEncoder() }

@@ -60,7 +60,13 @@ export class DevicePresence {
   }
 }
 
-export function presenceConnection(ws, { verify, presence, activity }) {
+// `changes(client)` returns short fingerprints of what this client may see
+// (terminals, chats…). They ride along in the snapshot, so the app refetches
+// a list only when it changed instead of polling it.
+export function presenceConnection(
+  ws,
+  { verify, presence, activity, changes = () => undefined },
+) {
   let lastSnapshot = "";
   let token,
     client,
@@ -79,6 +85,7 @@ export function presenceConnection(ws, { verify, presence, activity }) {
     const snapshot = JSON.stringify({
       type: "presence",
       ...presence.snapshot(client, activity),
+      changes: changes(client),
     });
     if (snapshot !== lastSnapshot) {
       ws.send(snapshot);

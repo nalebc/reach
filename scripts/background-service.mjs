@@ -12,6 +12,7 @@ import {
   removePersistentRoute,
   recordedRouteMatches,
 } from "./persistent-serve.mjs";
+import { stateDir } from "./home.mjs";
 
 export const serviceLabel = "com.reach.companion";
 const xml = (value) =>
@@ -34,8 +35,8 @@ export function privateNodePath(root, arch = process.arch) {
   if (!["arm64", "x64"].includes(arch))
     throw Error("Unsupported Mac architecture.");
   const expected = path.join(
-    root,
-    ".reach/runtime",
+    stateDir(root),
+    "runtime",
     `node-v22.23.3-darwin-${arch}`,
     "bin/node",
   );
@@ -134,10 +135,11 @@ export async function backgroundService(options, root, deps = {}) {
   const domain = `gui/${uid}`,
     service = `${domain}/${serviceLabel}`;
   const file = path.join(home, "Library/LaunchAgents", `${serviceLabel}.plist`);
-  const stateFile = path.join(root, ".reach/service.json");
-  const routeFile = path.join(root, ".reach/serve-owner.json");
+  const state = stateDir(root);
+  const stateFile = path.join(state, "service.json");
+  const routeFile = path.join(state, "serve-owner.json");
   const saved = loadJson(stateFile, null);
-  const logDir = path.join(root, ".reach/logs");
+  const logDir = path.join(state, "logs");
   const command =
     options.command || (options.stopBackground ? "uninstall" : "install");
   let loaded = false,
@@ -155,7 +157,7 @@ export async function backgroundService(options, root, deps = {}) {
       `<key>WorkingDirectory</key><string>${xml(root)}</string>`,
     );
   if (command === "status") {
-    const runtime = loadJson(path.join(root, ".reach/host-status.json"), {});
+    const runtime = loadJson(path.join(state, "host-status.json"), {});
     const result = {
       ...status,
       installed: fs.existsSync(file),
@@ -215,9 +217,7 @@ export async function backgroundService(options, root, deps = {}) {
         (config, address) =>
           recordedRouteMatches(routeFile, config, address, target),
       );
-  const dataDir = path.resolve(
-    env.REACH_DATA || path.join(root, ".reach/quick"),
-  );
+  const dataDir = path.resolve(env.REACH_DATA || path.join(state, "quick"));
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(logDir, 0o700);
   fs.mkdirSync(path.dirname(file), { recursive: true });

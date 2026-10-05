@@ -11,6 +11,9 @@ export type ConnectedDevice = {
 export type FleetConnection = {
   state: "connecting" | "connected" | "disconnected" | "denied";
   devices: ConnectedDevice[];
+  // Fingerprints of the computer's lists (terminals, chats…), when it sends
+  // them: a change means refetch that list. Older companions don't.
+  changes?: string;
 };
 export type FleetConnections = Record<string, FleetConnection>;
 export function useFleetConnections(peers: Peer[]) {
@@ -27,9 +30,13 @@ export function useFleetConnections(peers: Peer[]) {
       const update = (
         state: FleetConnection["state"],
         devices: ConnectedDevice[] = [],
+        changes?: string,
       ) => {
         if (!stopped)
-          setConnections((old) => ({ ...old, [peer.id]: { state, devices } }));
+          setConnections((old) => ({
+            ...old,
+            [peer.id]: { state, devices, changes },
+          }));
       };
       const connect = () => {
         clearTimeout(timer);
@@ -77,6 +84,9 @@ export function useFleetConnections(peers: Peer[]) {
                   typeof d.name === "string" &&
                   ["phone", "tablet", "computer"].includes(d.kind),
               ),
+              value.changes && typeof value.changes === "object"
+                ? JSON.stringify(value.changes)
+                : undefined,
             );
           } catch {
             /* Ignore malformed snapshots; never invent connections. */

@@ -1,61 +1,4 @@
-/* Context shortcuts for the app in front on the computer. */
-.simple-screen-dock:has(> .app-context-bar) {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
-.app-context-bar {
-  order: -1;
-  flex: 1 0 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.app-context-name {
-  flex-shrink: 0;
-  max-width: 34%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted, #93a096);
-}
-.app-context-chips {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-  mask-image: linear-gradient(90deg, #000 88%, transparent);
-}
-.app-context-chips::-webkit-scrollbar {
-  display: none;
-}
-.app-context-chips button {
-  flex-shrink: 0;
-  min-height: 36px;
-  padding: 0 13px;
-  border-radius: 999px;
-  border: 1px solid var(--border, #2b332d);
-  background: #ffffff0f;
-  color: var(--text, #e9eee9);
-  font-size: 13px;
-  white-space: nowrap;
-}
-.app-context-chips button:active {
-  background: #ffffff24;
-}
-.app-context-chips button:disabled {
-  opacity: 0.45;
-}
-.app-context-chips .app-context-more {
-  color: var(--muted, #93a096);
-}
-/* Fullscreen: keep zoom clear of the taller dock. */
-.simple-screen.screen-immersive:has(.app-context-bar) .remote-zoom.compact {
-  bottom: calc(124px + env(safe-area-inset-bottom));
-}
+/* Shortcuts panel: commands for the app in front on the computer. */
 .app-commands {
   margin-bottom: 18px;
 }
@@ -100,4 +43,8 @@
 }
 .app-commands-list .muted {
   padding: 12px 4px;
+}
+.screen-more-toggle {
+  margin-top: 8px;
+  color: var(--muted, #93a096);
 }

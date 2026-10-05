@@ -18,9 +18,8 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		AABBCC000000000000000002 /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC000000000000000001; };
 		AABBCC000000000000000012 /* DesktopVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC000000000000000011; };
-		AABBCC000000000000000022 /* DesktopConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC000000000000000021; };
-		AABBCC000000000000000032 /* ReachDesktop.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC000000000000000031; };
 		C1A0DE000000000000000002 /* RemoteKeyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0DE000000000000000001; };
+		B7D10A000000000000000002 /* BackgroundTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D10A000000000000000001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,9 +36,8 @@
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		AABBCC000000000000000001 /* QRScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanner.swift; sourceTree = "<group>"; };
 		AABBCC000000000000000011 /* DesktopVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopVideo.swift; sourceTree = "<group>"; };
-		AABBCC000000000000000021 /* DesktopConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopConnection.swift; sourceTree = "<group>"; };
-		AABBCC000000000000000031 /* ReachDesktop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachDesktop.swift; sourceTree = "<group>"; };
 		C1A0DE000000000000000001 /* RemoteKeyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboard.swift; sourceTree = "<group>"; };
+		B7D10A000000000000000001 /* BackgroundTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTransfer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -77,9 +75,8 @@
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
-				AABBCC000000000000000031 /* ReachDesktop.swift */,
 				C1A0DE000000000000000001 /* RemoteKeyboard.swift */,
-				AABBCC000000000000000021 /* DesktopConnection.swift */,
+				B7D10A000000000000000001 /* BackgroundTransfer.swift */,
 				AABBCC000000000000000011 /* DesktopVideo.swift */,
 				AABBCC000000000000000001 /* QRScanner.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -174,9 +171,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
-				AABBCC000000000000000032 /* ReachDesktop.swift in Sources */,
 				C1A0DE000000000000000002 /* RemoteKeyboard.swift in Sources */,
-				AABBCC000000000000000022 /* DesktopConnection.swift in Sources */,
+				B7D10A000000000000000002 /* BackgroundTransfer.swift in Sources */,
 				AABBCC000000000000000012 /* DesktopVideo.swift in Sources */,
 				AABBCC000000000000000002 /* QRScanner.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,

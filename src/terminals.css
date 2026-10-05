@@ -1,36 +1,295 @@
-/* One list for every terminal on the computer. */
-.terminal-picker {
-  border: 1px solid var(--border, #2b332d);
-  border-radius: 14px;
-  margin-bottom: 12px;
-  scrollbar-width: none;
-}
-.terminal-picker::-webkit-scrollbar {
-  display: none;
-}
-.terminal-picker > button {
-  align-items: center;
-  min-height: 52px;
-}
-.terminal-picker-label {
+/* Full-page terminal: one slim bar, the terminal, and keys above the keyboard. */
+.terminal-page {
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.2;
-  max-width: 180px;
+  height: calc(100dvh - 96px);
+  min-height: 360px;
   overflow: hidden;
+  background: #0c110f;
+  border: 1px solid var(--border, #2b332d);
+  border-radius: 18px;
 }
-.terminal-picker-label,
-.terminal-picker-label small {
+@media (max-width: 1024px), (pointer: coarse) {
+  /* Phones and tablets: cover the app chrome and follow the keyboard. */
+  .terminal-page {
+    position: fixed;
+    z-index: 40;
+    left: 0;
+    right: 0;
+    top: var(--vv-top, 0px);
+    height: var(--vv-height, 100dvh);
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0
+      env(safe-area-inset-left);
+  }
+}
+.terminal-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 46px;
+  padding: 2px 4px;
+  border-bottom: 1px solid #ffffff12;
+}
+.terminal-bar-icon {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: #e9f0ec;
+}
+.terminal-bar-icon:active {
+  background: #ffffff14;
+}
+.terminal-switch {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: #e9f0ec;
+  font: 600 15px system-ui, sans-serif;
+}
+.terminal-switch span,
+.terminal-switch small {
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.terminal-picker-label small {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: 10px;
+.terminal-switch small {
+  font-weight: 400;
+  font-size: 12px;
   color: var(--muted, #93a096);
 }
-.desktop-terminals.embedded {
-  padding-top: 4px;
+.terminal-switch:active {
+  background: #ffffff10;
+}
+.terminal-error {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #f1b48d;
+  background: #2a1b12;
+}
+.terminal-screen {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 0 6px;
+}
+.terminal-screen .xterm {
+  height: 100%;
+}
+.terminal-key-row {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: #0b1012;
+  border-top: 1px solid #ffffff14;
+  touch-action: manipulation;
+}
+.terminal-key-row button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #ffffff1f;
+  border-radius: 9px;
+  background: #ffffff12;
+  color: #e9f0ec;
+  font: 600 13px system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.terminal-key-row button:active,
+.terminal-key-row button[aria-pressed="true"] {
+  background: var(--lime, #b9f568);
+  color: #0b1012;
+}
+.terminal-menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: #0006;
+}
+.terminal-menu {
+  position: absolute;
+  z-index: 3;
+  top: calc(env(safe-area-inset-top) + 50px);
+  left: 8px;
+  right: 8px;
+  max-height: 70%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid #ffffff1f;
+  border-radius: 16px;
+  background: #121a17;
+  box-shadow: 0 18px 50px #000a;
+}
+.terminal-menu button,
+.terminal-menu-row > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: none;
+  color: #e9f0ec;
+  font: 500 15px system-ui, sans-serif;
+  text-align: left;
+}
+.terminal-menu button:active,
+.terminal-menu button[aria-current="true"] {
+  background: #ffffff12;
+}
+.terminal-menu span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.terminal-menu small {
+  font-size: 12px;
+  color: var(--muted, #93a096);
+}
+.terminal-menu-row {
+  display: flex;
+  align-items: center;
+}
+.terminal-menu-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.terminal-menu .terminal-menu-end {
+  width: 44px;
+  justify-content: center;
+  color: var(--muted, #93a096);
+}
+.terminal-menu-heading,
+.terminal-menu-note {
+  padding: 10px 10px 6px;
+  font-size: 12px;
+  color: var(--muted, #93a096);
+}
+.terminal-start {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: #e9f0ec;
+}
+.terminal-start h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+.terminal-start p {
+  margin: 0 0 8px;
+  max-width: 300px;
+  color: var(--muted, #93a096);
+}
+/* Swipe between terminals; the bar shows where you are, like stories. */
+.terminal-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.terminal-stage.slide-next {
+  animation: terminal-in-right 0.2s ease-out;
+}
+.terminal-stage.slide-previous {
+  animation: terminal-in-left 0.2s ease-out;
+}
+@keyframes terminal-in-right {
+  from {
+    transform: translateX(28%);
+    opacity: 0.4;
+  }
+}
+@keyframes terminal-in-left {
+  from {
+    transform: translateX(-28%);
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-stage.slide-next,
+  .terminal-stage.slide-previous {
+    animation: none;
+  }
+}
+.terminal-segments {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 3px;
+  padding: 0 10px 6px;
+}
+.terminal-segments span {
+  flex: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: #ffffff26;
+}
+.terminal-segments span.active {
+  background: #e9f0ec;
+}
+/* Mac tabs: one line at a time, sent with Enter. */
+.terminal-key-row.mac-line {
+  align-items: center;
+}
+.terminal-key-row.mac-line button {
+  flex: 0 0 64px;
+}
+.terminal-line-hint {
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--muted, #93a096);
+}
+.terminal-start-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(320px, 100%);
+  margin-top: 18px;
+}
+.terminal-start-tabs > span {
+  font-size: 12px;
+  color: var(--muted, #93a096);
+}
+.terminal-start-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid #ffffff1f;
+  border-radius: 12px;
+  background: #ffffff0d;
+  color: #e9f0ec;
+  font: 500 14px system-ui, sans-serif;
+  text-align: left;
 }

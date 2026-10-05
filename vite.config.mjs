@@ -13,7 +13,16 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       output: {
-        manualChunks: { terminal: ["@xterm/xterm", "@xterm/addon-fit"] },
+        // xterm loads only with a terminal. Other libraries (React, icons) get
+        // their own chunk, which stays cached across Reach updates. Capacitor's
+        // web shims are loaded on demand, so they stay out of it.
+        manualChunks: (id) =>
+          id.includes("/node_modules/@xterm/")
+            ? "terminal"
+            : (id.includes("/node_modules/") || id.startsWith("\0")) &&
+                !id.includes("/dist/esm/web.js")
+              ? "vendor"
+              : undefined,
       },
     },
   },

@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ChevronDown,
+  CornerDownLeft,
+  Delete,
+} from "lucide-react";
 import { typingEdit, typingTail } from "./typing-edit";
+import "./typing-keys.css";
 import type {
   DesktopAction,
   InputResult,
@@ -13,7 +23,9 @@ export default function RemoteTyping({
   onClose,
   onError,
   editorRef,
+  keyRow = false,
 }: {
+  keyRow?: boolean;
   target: TextTarget;
   send: (action: DesktopAction) => Promise<InputResult>;
   onClose: () => void;
@@ -94,9 +106,13 @@ export default function RemoteTyping({
     "aria-label": "Type directly on your computer",
     value: draft,
     autoComplete: "off",
-    autoCorrect: target.secure ? "off" : "on",
+    // The phone must not rewrite what was already sent: autocorrect and
+    // Safari's inline word suggestions replace earlier letters, which reach
+    // the computer as deletions.
+    autoCorrect: "off",
     autoCapitalize: target.secure ? "off" : "sentences",
-    spellCheck: !target.secure,
+    spellCheck: false,
+    writingsuggestions: "false",
     enterKeyHint: "enter" as const,
     onBlur: onClose,
     onChange: (e: React.ChangeEvent<Editor>) => commit(e.target.value),
@@ -151,7 +167,7 @@ export default function RemoteTyping({
   };
   // iOS requires a rendered editable element for its native keyboard. Keep it
   // within the viewport, visually absent. The remote screen is the text surface.
-  return target.secure ? (
+  const sink = target.secure ? (
     <input
       {...editorProps}
       ref={(el) => {
@@ -171,5 +187,48 @@ export default function RemoteTyping({
       rows={1}
       tabIndex={-1}
     />
+  );
+  if (!keyRow) return sink;
+  // Keys the phone keyboard lacks, right above it. Pressing one keeps the
+  // keyboard open (no focus change).
+  const keep = (event: React.PointerEvent | React.MouseEvent) =>
+    event.preventDefault();
+  return (
+    <>
+      {sink}
+      <div className="typing-keys" role="toolbar" aria-label="Computer keys" data-immersive-keep>
+        <button className="typing-enter" onPointerDown={keep} onMouseDown={keep} onClick={() => key("enter")}>
+          <CornerDownLeft size={16} /> Enter
+        </button>
+        <button onPointerDown={keep} onMouseDown={keep} onClick={() => key("tab")}>Tab</button>
+        <button onPointerDown={keep} onMouseDown={keep} onClick={() => key("escape")}>Esc</button>
+        <button aria-label="Left" onPointerDown={keep} onMouseDown={keep} onClick={() => key("left")}>
+          <ArrowLeft size={16} />
+        </button>
+        <button aria-label="Up" onPointerDown={keep} onMouseDown={keep} onClick={() => key("up")}>
+          <ArrowUp size={16} />
+        </button>
+        <button aria-label="Down" onPointerDown={keep} onMouseDown={keep} onClick={() => key("down")}>
+          <ArrowDown size={16} />
+        </button>
+        <button aria-label="Right" onPointerDown={keep} onMouseDown={keep} onClick={() => key("right")}>
+          <ArrowRight size={16} />
+        </button>
+        <button aria-label="Delete" onPointerDown={keep} onMouseDown={keep} onClick={() => key("backspace")}>
+          <Delete size={16} />
+        </button>
+        <button
+          aria-label="Hide keyboard"
+          onPointerDown={keep}
+          onMouseDown={keep}
+          onClick={() => {
+            editorRef.current?.blur();
+            onClose();
+          }}
+        >
+          <ChevronDown size={18} />
+        </button>
+      </div>
+    </>
   );
 }

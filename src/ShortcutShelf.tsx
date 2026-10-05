@@ -51,7 +51,7 @@ export default function ShortcutShelf({
                 {busy === a.id ? (
                   <Loader2 className="spin" size={19} />
                 ) : (
-                  <ShortcutIcon peer={peer} shortcut={a} size={32} />
+                  <ShortcutIcon peer={peer} shortcut={a} size={40} />
                 )}
                 <ArrowUpRight size={13} />
               </span>

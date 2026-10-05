@@ -14,16 +14,21 @@ import ConnectForm from "./ConnectForm";
 import QuickLauncher from "./QuickLauncher";
 import { ReconnectTimer } from "./reconnect";
 import ScreenPopup from "./ScreenPopup";
-import { useEffect, useState, useCallback, useRef, useContext } from "react";
+import {
+  lazy,
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useContext,
+} from "react";
 import {
   LayoutGrid,
   UserRoundPlus,
   Command,
   Settings,
-  ArrowUpRight,
   HardDrive,
   Clock,
-  Search,
   RefreshCw,
   Link2,
   LogOut,
@@ -44,6 +49,7 @@ import {
   ScanLine,
   Bot,
   X as Close,
+  MessagesSquare,
 } from "lucide-react";
 import {
   isNative,
@@ -88,14 +94,29 @@ import {
   ChevronRight,
 } from "./ui";
 import Files from "./Files";
+import EverythingChat from "./EverythingChat";
+import { useAgentSessions, useChatAgent, type AgentName } from "./agent-sessions";
+import { AgentLogo, useAgentLogos } from "./agent-logos";
+import Apps from "./Apps";
 import { GuestInvite } from "./GuestAccess";
-import WorkspaceHome from "./WorkspaceHome";
+import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
-import Screen from "./Screen";
 import { ReachScene } from "./ReachIdentity";
-import { TerminalView, ChatView } from "./Sessions";
+// Screens with heavy code (remote screen, terminal engine, Codex chat) load
+// when first opened, then quietly in the background once the app is idle.
+const loadScreen = () => import("./Screen");
+const loadSessions = () => import("./Sessions");
+const Screen = lazy(loadScreen);
+const TerminalView = lazy(() =>
+  loadSessions().then((m) => ({ default: m.TerminalView })),
+);
+const ChatView = lazy(() =>
+  loadSessions().then((m) => ({ default: m.ChatView })),
+);
 const pages = [
   { id: "overview", name: "Home", icon: LayoutGrid },
+  // Every Codex and Claude Code session on the computer.
+  { id: "sessions", name: "Chat", icon: MessagesSquare },
   { id: "files", name: "Files", icon: Folder },
   { id: "apps", name: "Apps", icon: AppWindow },
   { id: "terminal", name: "Terminals", icon: Terminal },
@@ -104,6 +125,8 @@ const pages = [
   { id: "agents", name: "Agent access", icon: Bot },
   { id: "invite", name: "Invite someone", icon: UserRoundPlus },
 ];
+// Bottom bar on phones; everything else is under More.
+const mobileOrder = ["overview", "sessions", "screen", "terminal"];
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
   return host.endsWith(".ts.net") ? "Tailscale" : "Direct connection";
@@ -116,6 +139,18 @@ export default function App() {
   );
 }
 function ReachWorkspace() {
+  // Once the app has settled, fetch the screens that load on demand, so
+  // opening them later is instant (and cached for good after that).
+  useEffect(() => {
+    const warm = () =>
+      void Promise.all([loadScreen(), loadSessions()]).catch(() => {});
+    const timer = setTimeout(
+      () =>
+        "requestIdleCallback" in window ? requestIdleCallback(warm) : warm(),
+      3000,
+    );
+    return () => clearTimeout(timer);
+  }, []);
   const [peers, setPeers] = useState(() => compactPeers(readPeers())),
     [active, setActive] = useState(
       () => localStorage.getItem("reach.active") || readPeers()[0]?.id || "",
@@ -171,14 +206,35 @@ function ReachWorkspace() {
   const features = workspaceCapabilities(device, codexStatus);
   const featuresRef = useRef(features);
   featuresRef.current = features;
+  // Every Codex and Claude Code session, found as soon as Reach connects (owner only).
+  const chatPeer =
+    device && peer && pageAccessible("sessions", features) ? peer : null;
+  const agentFeed = useAgentSessions(chatPeer);
+  // The Chat tab wears the logo of the agent it shows (real app icons).
+  const agentLogos = useAgentLogos(chatPeer);
+  const [chatAgent] = useChatAgent();
+  const pageIcon = (p: (typeof pages)[number], size: number) =>
+    p.id === "sessions" && agentLogos[chatAgent] ? (
+      <AgentLogo
+        agent={chatAgent}
+        logos={agentLogos}
+        size={size + 2}
+        className="nav-agent-logo"
+      />
+    ) : (
+      <p.icon size={size} />
+    );
+  const agentsWaiting = (agentFeed.sessions || []).filter(
+    (s) => s.status === "waiting",
+  ).length;
+  const [chatTarget, setChatTarget] = useState<{
+    agent: AgentName;
+    id: string;
+  } | null>(null);
   const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
-    .filter((p) => ["overview", "screen", "files", "chat"].includes(p.id))
-    .sort(
-      (a, b) =>
-        ["overview", "screen", "files", "chat"].indexOf(a.id) -
-        ["overview", "screen", "files", "chat"].indexOf(b.id),
-    );
+    .filter((p) => mobileOrder.includes(p.id))
+    .sort((a, b) => mobileOrder.indexOf(a.id) - mobileOrder.indexOf(b.id));
   const connectionGeneration = useRef(0);
   useEffect(() => {
     if (
@@ -388,7 +444,21 @@ function ReachWorkspace() {
     setCodexRevision((n) => n + 1);
     loadDevice();
   }, [loadDevice]);
+  // The computer's live connection says when its lists change, so they're
+  // refetched then, plus a slow safety refresh. Computers that don't send
+  // that (older Reach) are polled as before.
+  const live = peer ? connections[peer.id]?.changes : undefined;
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const seenChanges = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (!live) return;
+    const previous = seenChanges.current;
+    seenChanges.current = live;
+    if (previous !== undefined && previous !== live) refreshSessions();
+  }, [live, refreshSessions]);
+  useEffect(() => {
+    seenChanges.current = undefined;
     connectionGeneration.current++;
     deviceRetry.current.reset();
     setDevice(null);
@@ -398,7 +468,14 @@ function ReachWorkspace() {
     setRequests([]);
     refreshDevice();
     refreshSessions();
-    const t = setInterval(refreshSessions, 5000);
+    let ticks = 0;
+    const t = setInterval(() => {
+      ticks++;
+      if (document.hidden) return;
+      if (!liveRef.current || ticks % 12 === 0) refreshSessions();
+    }, 5000);
+    const shown = () => !document.hidden && refreshSessions();
+    document.addEventListener("visibilitychange", shown);
     const wake = () => {
       if (!document.hidden) loadDevice(true);
     };
@@ -410,6 +487,7 @@ function ReachWorkspace() {
       deviceRequest.current?.abort();
       window.removeEventListener("online", wake);
       document.removeEventListener("visibilitychange", wake);
+      document.removeEventListener("visibilitychange", shown);
       connectionGeneration.current++;
       clearInterval(t);
       clearInterval(capabilitiesTimer);
@@ -486,7 +564,7 @@ function ReachWorkspace() {
               aria-current={page === p.id ? "page" : undefined}
               onClick={() => navigate(p.id)}
             >
-              <p.icon size={19} />
+              {pageIcon(p, 19)}
               {p.name}
               {p.id === "terminal" &&
                 terminals.filter((s) => s.status === "running").length > 0 && (
@@ -571,7 +649,7 @@ function ReachWorkspace() {
                 <Command size={18} />
               </button>
             )}
-            <MotionToggle />
+            {/* Animation is on/off in Settings and follows Reduce Motion. */}
             <span className="topbar-status">
               <i className={`status-dot ${device ? "" : "off"}`} />
               {device ? "Computer connected" : "Disconnected"}
@@ -644,22 +722,18 @@ function ReachWorkspace() {
             ) : device && peer && pageAccessible(page, features) ? (
               <>
                 {page === "overview" && (
-                  <WorkspaceHome
+                  <HomeLive
                     features={features}
-                    peer={peer}
-                    onShortcuts={() => setQuickLaunch(true)}
                     device={device}
-                    connection={connectionLabel(peer.url)}
-                    peers={peers}
+                    peer={peer}
                     active={peer.id}
                     connections={connections}
+                    connection={connectionLabel(peer.url)}
                     terminals={terminals}
                     chats={chats}
-                    activities={activities}
+                    pending={requests.filter((r) => deferred.includes(r.id))}
+                    decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
-                    choose={choose}
-                    pair={() => setPairing(true)}
-                    session={session}
                     openChat={(id) => {
                       setChatId(id);
                       navigate("chat");
@@ -670,6 +744,22 @@ function ReachWorkspace() {
                       navigate("terminal");
                       setTerminalSource("reach");
                     }}
+                    openMacTab={(id) => {
+                      navigate("terminal");
+                      setTerminalSource(`mac:${id}`);
+                    }}
+                    agentSessions={agentFeed.sessions || []}
+                    openAgentSession={
+                      pageAccessible("sessions", features)
+                        ? (s) => {
+                            setChatTarget({ agent: s.agent, id: s.id });
+                            navigate("sessions");
+                          }
+                        : undefined
+                    }
+                    onShortcuts={() => setQuickLaunch(true)}
+                    refreshSessions={refreshSessions}
+                    toast={toast}
                   />
                 )}
                 {page === "files" && (
@@ -707,6 +797,18 @@ function ReachWorkspace() {
                     onNew={() => session("terminal")}
                     onRefresh={refreshSessions}
                     toast={toast}
+                    onExit={() => navigate("overview")}
+                    onOpenScreen={
+                      features.screen ? () => navigate("screen") : undefined
+                    }
+                  />
+                )}
+                {page === "sessions" && (
+                  <EverythingChat
+                    peer={peer}
+                    feed={agentFeed}
+                    target={chatTarget}
+                    onTargetOpened={() => setChatTarget(null)}
                   />
                 )}
                 {page === "chat" && (
@@ -730,6 +832,7 @@ function ReachWorkspace() {
                     screen={
                       features.screen ? () => navigate("screen") : undefined
                     }
+                    changes={live}
                   />
                 )}
                 {page === "screen" && (
@@ -800,12 +903,17 @@ function ReachWorkspace() {
               key={p.id}
               onClick={() => navigate(p.id)}
             >
-              <p.icon size={20} />
+              {pageIcon(p, 20)}
+              {p.id === "sessions" && agentsWaiting > 0 && (
+                <i className="nav-badge" aria-label={`${agentsWaiting} waiting`}>
+                  {agentsWaiting}
+                </i>
+              )}
               <span>
                 {p.id === "overview"
                   ? "Home"
-                  : p.id === "chat"
-                    ? "Codex"
+                  : p.id === "terminal"
+                    ? "Terminal"
                     : p.name}
               </span>
             </button>
@@ -851,7 +959,7 @@ function ReachWorkspace() {
                   aria-current={page === p.id ? "page" : undefined}
                 >
                   <span className={`explore-icon explore-${p.id}`}>
-                    <p.icon size={23} />
+                    {pageIcon(p, 23)}
                   </span>
                   <span>
                     <strong>{p.name}</strong>
@@ -1438,97 +1546,6 @@ function SessionModal({
         </button>
       </form>
     </Modal>
-  );
-}
-function Apps({
-  peer,
-  device,
-  toast,
-  screen,
-}: {
-  peer: Peer;
-  device: Device;
-  toast: (s: string) => void;
-  screen?: () => void;
-}) {
-  const [apps, setApps] = useState<{ id: string; name: string }[]>([]),
-    [query, setQuery] = useState(""),
-    [loading, setLoading] = useState(true),
-    [busy, setBusy] = useState(""),
-    [error, setError] = useState("");
-  useEffect(() => {
-    request(peer, "/api/apps")
-      .then(setApps)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [peer.id]);
-  return (
-    <>
-      <PageTitle
-        eyebrow={device.name}
-        title="Your apps"
-        description="Open an app on your computer, from right here."
-      >
-        {screen && (
-          <button className="button secondary" onClick={screen}>
-            <Monitor size={17} />
-            View screen
-          </button>
-        )}
-      </PageTitle>
-      <label className="search app-search">
-        <Search size={18} />
-        <input
-          placeholder="Find an app"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </label>
-      <ErrorLine error={error} />
-      {loading ? (
-        <Spinner />
-      ) : (
-        <div className="apps-grid">
-          {apps
-            .filter((a) => a.name.toLowerCase().includes(query.toLowerCase()))
-            .map((a) => (
-              <button
-                className="app-card"
-                disabled={!!busy}
-                key={a.id}
-                onClick={async () => {
-                  setBusy(a.id);
-                  try {
-                    await post(peer, "/api/apps/launch", { id: a.id });
-                    toast(`${a.name} is open on ${device.name}`);
-                  } catch (e) {
-                    toast((e as Error).message);
-                  } finally {
-                    setBusy("");
-                  }
-                }}
-              >
-                <span className="app-monogram">{a.name.slice(0, 1)}</span>
-                <strong>{a.name}</strong>
-                <span>
-                  {busy === a.id ? "Opening…" : "Open on computer"}
-                  <ArrowUpRight size={14} />
-                </span>
-              </button>
-            ))}
-        </div>
-      )}
-      {!loading && !apps.length && (
-        <Empty icon={AppWindow} title="No applications found">
-          App launching is available on Mac and Windows.
-        </Empty>
-      )}
-      <div className="info-strip">
-        <Info size={16} />
-        Apps open on the computer’s desktop.
-        {screen ? " Use Screen to see and interact with them." : ""}
-      </div>
-    </>
   );
 }
 function SettingsPage({

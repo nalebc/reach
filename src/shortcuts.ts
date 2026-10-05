@@ -35,7 +35,20 @@ export const shortcutScore = (a: Shortcut) =>
             : a.kind === "terminal"
               ? 4
               : 5;
+// Home shows shortcuts in more than one place: one request serves them all.
+const recent = new Map<string, { at: number; list: Promise<Shortcut[]> }>();
+function fetchShortcuts(peer: Peer) {
+  const key = JSON.stringify([peer.url, peer.token]);
+  const hit = recent.get(key);
+  if (hit && Date.now() - hit.at < 3000) return hit.list;
+  const list = request<Shortcut[]>(peer, "/api/apps/shortcuts");
+  recent.set(key, { at: Date.now(), list });
+  list.catch(() => recent.delete(key));
+  return list;
+}
 export function shortcutsChanged(peer: Peer) {
+  for (const key of recent.keys())
+    if (JSON.parse(key)[0] === peer.url) recent.delete(key);
   window.dispatchEvent(
     new CustomEvent("reach-shortcuts-changed", { detail: peer.url }),
   );
@@ -53,7 +66,7 @@ export function useShortcuts(peer: Peer) {
     const load = async () => {
       const current = ++sequence;
       try {
-        const result = await request<Shortcut[]>(peer, "/api/apps/shortcuts");
+        const result = [...(await fetchShortcuts(peer))];
         if (active && current === sequence) {
           setItems(
             result.sort(

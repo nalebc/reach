@@ -1,6 +1,6 @@
 import { workspaceCapabilities } from "./capabilities";
 import { useFleetConnections } from "./useFleetConnections";
-import { useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { Clock, Copy, Link2, LogOut } from "lucide-react";
 import {
   ArrowUpRight,
@@ -18,7 +18,8 @@ import "./invite.css";
 import { Device, Peer, post, request } from "./api";
 import { ErrorLine } from "./ui";
 import Files from "./Files";
-import Screen from "./Screen";
+// Loads when a guest opens a shared screen (inside a ScreenBoundary).
+const Screen = lazy(() => import("./Screen"));
 import { tailscaleShareUrl } from "./invitation";
 
 // Invite someone: two calm steps. Reach only works over Tailscale, so the

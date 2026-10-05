@@ -2,6 +2,7 @@ import path from "node:path";
 import { terminalPrompts } from "./prompts.mjs";
 import { loadJson } from "../server/core.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
+import { stateDir } from "./home.mjs";
 export const safeLabel = (value) =>
   String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 export function pendingApprovals(dataDir) {
@@ -33,7 +34,7 @@ export function decideApproval(dataDir, value) {
 }
 export async function approveDevice(root, deps = {}) {
   const print = deps.print || console.log;
-  const host = loadJson(path.join(root, ".reach/host-status.json"), null);
+  const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.tailscaleApproval || !host.dataDir)
     throw Error(
       "Start Reach with ./reach configure completed, then request access on your phone.",
