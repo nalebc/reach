@@ -10,12 +10,6 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      # Avoid Windows 8.3 aliases in test workspaces; production path checks
-      # still cover native canonicalization separately.
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,6 +24,10 @@ jobs:
         if: runner.os == 'Windows'
       - run: npm run build
       - run: npm test
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
       - run: npm audit --audit-level=moderate
       - run: npm run package
       - uses: actions/upload-artifact@v4
