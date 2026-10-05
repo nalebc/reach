@@ -31,7 +31,15 @@ export function useViewportBox(
     let frame = 0;
     let last = "";
     let still = 0;
+    // The page underneath is frozen at its top, but Safari still scrolls it
+    // to show a field (coming back from the photo picker, opening the
+    // keyboard), and then draws this view that far down with taps landing
+    // off it: put the page back at once.
+    const pin = () => {
+      if (window.scrollX || window.scrollY) window.scrollTo({ left: 0, top: 0, behavior: "instant" });
+    };
     const place = () => {
+      pin();
       const top = viewport?.offsetTop || 0;
       const height = viewport?.height || window.innerHeight;
       box.style.setProperty("--vv-top", `${top}px`);
@@ -58,6 +66,10 @@ export function useViewportBox(
     // The keyboard starts to close when a field lets go (sending, picking a photo).
     document.addEventListener("focusin", schedule);
     document.addEventListener("focusout", schedule);
+    window.addEventListener("scroll", pin);
+    // Back from the photo picker or another app.
+    window.addEventListener("focus", schedule);
+    document.addEventListener("visibilitychange", schedule);
     return () => {
       cancelAnimationFrame(frame);
       viewport?.removeEventListener("resize", schedule);
@@ -65,6 +77,9 @@ export function useViewportBox(
       window.removeEventListener("resize", schedule);
       document.removeEventListener("focusin", schedule);
       document.removeEventListener("focusout", schedule);
+      window.removeEventListener("scroll", pin);
+      window.removeEventListener("focus", schedule);
+      document.removeEventListener("visibilitychange", schedule);
       box.style.removeProperty("--vv-top");
       box.style.removeProperty("--vv-height");
       body.style.cssText = saved;

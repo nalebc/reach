@@ -387,6 +387,11 @@ export function createAgentSessions({
       return started;
     },
     stop: async (agent, id) => host(agent).stop(id),
+    // A picture sent in a Claude session (the phone shows it in its message).
+    async image(agent, id, item, n) {
+      if (agent !== "claude") throw Object.assign(new Error("That picture isn't in this session."), { status: 404 });
+      return claude.image(id, item, n);
+    },
     respond: async (agent, id, promptId, answer) =>
       agentAsks.owns?.(promptId)
         ? agentAsks.answer(agent, id, promptId, answer)
@@ -478,7 +483,9 @@ export function createAgentSessions({
       const sessions = [...(c.value || []), ...(k.value || [])];
       try {
         const running = await liveNow();
-        for (const s of sessions) if (s.agent === "claude" && running.has(s.id)) withLive(s, running.get(s.id));
+        // Reach's own reply process isn't where a session lives (it showed as "Terminal").
+        for (const s of sessions)
+          if (s.agent === "claude" && running.has(s.id) && !claudeHost.drives(s.id)) withLive(s, running.get(s.id));
       } catch {
         /* Live status is a hint; the list stands without it. */
       }
@@ -501,8 +508,8 @@ export function createAgentSessions({
       if (agent === "codex" && codexLive.drives(id)) result.session.held = "reach";
       if (agent === "claude") {
         const running = await liveNow().catch(() => new Map());
-        if (running.has(id)) withLive(result.session, running.get(id));
         if (claudeHost.drives(id)) result.session.held = "reach";
+        else if (running.has(id)) withLive(result.session, running.get(id));
       }
       (agent === "claude" ? claudeStatus : codexStatus)(result.session);
       // Waiting on you in another app (the Claude app, a terminal): what it

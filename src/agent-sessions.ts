@@ -114,10 +114,11 @@ export type LiveView = {
   streaming: string;
   activity: string | null;
   items: number;
-  // Claude: messages sent from the phone, waiting their turn on the Mac.
+  // Messages waiting their turn on the Mac: Claude's sent from the phone,
+  // Codex's in the Codex app's own queue.
   outbox?: OutboxMessage[];
 };
-export type OutboxMessage = { id: string; text: string; images: number; at: number; error?: string };
+export type OutboxMessage = { id: string; text: string; images: number; at?: number; error?: string };
 export type AgentModel = {
   id: string;
   name: string;
@@ -375,6 +376,26 @@ export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, bod
     `${sessionPath(s)}/messages`,
     body,
   );
+// A picture sent in a session, fetched once per page (it never changes).
+const pictures = new Map<string, Promise<string>>();
+export function sessionImage(peer: Peer, s: { agent: AgentName; id: string }, item: string, n: number) {
+  const key = `${peer.url}|${s.agent}|${s.id}|${item}|${n}`;
+  let found = pictures.get(key);
+  if (!found) {
+    found = fetch(`${peer.url}${sessionPath(s)}/images/${encodeURIComponent(item)}/${n}`, {
+      headers: { Authorization: `Bearer ${peer.token}` },
+      redirect: "error",
+    })
+      .then((r) => {
+        if (!r.ok) throw Error("That picture isn't available.");
+        return r.blob();
+      })
+      .then((blob) => URL.createObjectURL(blob));
+    found.catch(() => pictures.delete(key));
+    pictures.set(key, found);
+  }
+  return found;
+}
 export const answerPrompt = (
   peer: Peer,
   s: { agent: AgentName; id: string },

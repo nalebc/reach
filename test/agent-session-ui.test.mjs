@@ -222,10 +222,14 @@ test("a Codex chat reads like the Codex app", async () => {
   await dom.waitFor(() => $(".as-model")?.textContent.includes("GPT-6 Astra"));
   assert.equal($(".as-model span").textContent, "Medium");
   assert.equal($(".as-mode").textContent, "Approve for me");
-  // A quiet header: the title, where it lives, and the app's own icon.
+  // ChatGPT's header: round buttons floating over the chat, the title between.
   assert.equal($(".as-title strong").textContent, "Fix login");
   assert.equal($(".as-title small").textContent, "app · Codex app");
-  assert.equal($(".as-bar img.agent-logo").getAttribute("alt"), "Codex");
+  assert.deepEqual(
+    $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
+    ["Back to all sessions", null, "More"],
+  );
+  assert.equal($(".as-bar img.agent-logo"), null);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -670,6 +674,30 @@ test("the Claude app's consent card shows as the app draws it, is answered here 
   assert.deepEqual(dom.errors, []);
 });
 
+test("pictures sent in a Claude session show in their message, above its text, as in the Claude app", async () => {
+  const asked = [];
+  for (const n of [0, 1]) {
+    const route = `/api/sessions/claude/${CLAUDE}/images/u-pic/${n}`;
+    routes[route] = (init) => (asked.push([route, new Headers(init?.headers).get("Authorization")]), {});
+  }
+  mac.pages[`claude:${CLAUDE}`].items = [
+    { id: "u-pic", role: "user", kind: "text", text: "What flower is this?", images: 2, at: Date.now() - 60000 },
+    { id: "a-pic:1", role: "assistant", kind: "text", text: "Ice plants.", at: Date.now() - 50000 },
+  ];
+  await open(claudeSession());
+  await dom.waitFor(() => $$(".as-user-images img").length === 2);
+  const bubble = $(".as-user");
+  assert.ok([...bubble.children].indexOf(bubble.querySelector(".as-user-images")) < [...bubble.children].indexOf(bubble.querySelector("p")?.parentElement || bubble.lastElementChild));
+  assert.ok($$(".as-user-images img").every((img) => img.getAttribute("src").startsWith("blob:")));
+  assert.deepEqual(asked.map(([route]) => route).sort(), [
+    `/api/sessions/claude/${CLAUDE}/images/u-pic/0`,
+    `/api/sessions/claude/${CLAUDE}/images/u-pic/1`,
+  ]);
+  assert.ok(asked.every(([, auth]) => auth === `Bearer ${peer.token}`), "fetched with this device's key");
+  assert.equal($(".as-user .as-tag"), null, "pictures, not a count");
+  assert.deepEqual(dom.errors, []);
+});
+
 test("messages waiting on the Mac for their turn show after the page reloads, saying why one can't go yet", async () => {
   // A fresh page (nothing sent from it): what the Mac's outbox holds.
   mac.live = {
@@ -717,7 +745,7 @@ test("a Claude Code session nobody else holds takes replies from here once signe
   await open(claudeSession({ live: undefined }));
   await dom.waitFor(() => $("textarea") && !$("textarea").disabled);
   assert.equal($(".as-hint"), null);
-  assert.equal($("textarea").placeholder, "Type / for commands");
+  assert.equal($("textarea").placeholder, "Reply to Claude");
   await typeInto($("textarea"), "Refactor the auth module");
   await click(button("Send"));
   assert.deepEqual(mac.sent, [
@@ -942,11 +970,13 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
       feed: { sessions: [claudeSession({ live: undefined })], errors: {}, health: signedIn, failure: "", reload: async () => {}, recheck: () => {} },
     }),
   );
-  assert.equal($(".chat-new-row").textContent, "New");
+  // The Claude app's home: its greeting, then the composer at rest.
+  assert.match($(".chat-greeting h2").textContent, /^(New week|Good (morning|afternoon|evening))$/);
+  assert.equal($(".chat-new-row").textContent, "Chat with Claude");
   await click($(".chat-new-row"));
   globalThis.fetch = fetch;
   const field = () => $("textarea[aria-label='New Claude Code chat']");
-  assert.equal(field().placeholder, "Type / for commands");
+  assert.equal(field().placeholder, "Chat with Claude");
   await typeInto(field(), "Plan the API");
   await dom.waitFor(() => $(".chat-model")?.textContent.includes("Default (recommended)"));
   await click($(".as-mode-pick"));
@@ -1221,4 +1251,98 @@ test("typing / in a Claude Code session offers its commands", async () => {
   assert.equal($("textarea").value, "/compact ");
   assert.equal($(".as-commands"), null);
   assert.deepEqual(dom.errors, []);
+});
+
+test("a Claude chat wears the Claude app's floating buttons; New chat and More work", async () => {
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  const calls = [];
+  await mount(
+    React.createElement(AgentSessionView, {
+      peer,
+      session: claudeSession({ live: undefined }),
+      siblings: [],
+      health: signedIn,
+      logos: { codex: LOGO, claude: LOGO },
+      onSelect() {},
+      onBack: () => calls.push("back"),
+      onNew: () => calls.push("new"),
+    }),
+  );
+  await dom.waitFor(() => $("textarea"));
+  // The list of chats on the left; where it runs, a new chat and more on the right.
+  assert.deepEqual(
+    $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
+    ["Back to all sessions", null, "Where it runs", "New chat", "More"],
+  );
+  assert.ok($(".as-bar .as-bar-pill [aria-label='New chat']"));
+  assert.equal($(".as-bar img.agent-logo"), null);
+  // The title isn't on screen, as in the app; More shows it with the details.
+  assert.equal($(".as-details"), null);
+  await click(button("More"));
+  assert.equal($(".as-details-title").textContent, "Refactor auth");
+  await click(button("New chat"));
+  await click(button("Back to all sessions"));
+  assert.deepEqual(calls, ["new", "back"]);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("the newest reply gets copy and share, and Claude's note; not while it works", async () => {
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  mac.pages[`claude:${CLAUDE}`].items = [
+    { id: "u1", role: "user", kind: "text", text: "Hey", turnId: "t1" },
+    { id: "a1", role: "assistant", kind: "text", text: "Hey! What's **on** your mind?", turnId: "t1" },
+  ];
+  const copied = [];
+  const shared = [];
+  const nav = dom.window.navigator;
+  Object.defineProperty(nav, "clipboard", { configurable: true, value: { writeText: async (t) => copied.push(t) } });
+  Object.defineProperty(nav, "share", { configurable: true, value: async (data) => shared.push(data) });
+  try {
+    await open(claudeSession({ live: undefined }));
+    await dom.waitFor(() => $(".as-reply-actions"));
+    assert.equal($(".as-disclaimer").textContent, "Claude is AI and can make mistakes.");
+    await click(button("Copy"));
+    assert.deepEqual(copied, ["Hey! What's **on** your mind?"], "the reply as written");
+    assert.ok(button("Copied"));
+    await click(button("Share"));
+    assert.deepEqual(shared, [{ text: "Hey! What's **on** your mind?" }]);
+  } finally {
+    delete nav.share;
+  }
+  // No Share where the phone can't share; Codex has no note.
+  mac.pages[`codex:${CODEX}`].items = [{ id: "a2", role: "assistant", kind: "text", text: "Done.", turnId: "t1" }];
+  for (const v of views.splice(0)) await v.unmount();
+  await open(codexSession());
+  await dom.waitFor(() => $(".as-reply-actions"));
+  assert.equal(button("Share"), undefined);
+  assert.equal($(".as-disclaimer"), null);
+  // While it works, the actions wait.
+  for (const v of views.splice(0)) await v.unmount();
+  mac.live = { ...idleLive(), version: 3, status: "running", activity: "Thinking" };
+  await open(codexSession());
+  await dom.waitFor(() => button("Stop"));
+  assert.equal($(".as-reply-actions"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Claude's composer has one round button: Stop while it works, Send once you type", async () => {
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  mac.live = { ...idleLive(), version: 3, status: "running", activity: "Thinking" };
+  await open(claudeSession({ live: undefined }));
+  await dom.waitFor(() => button("Stop"));
+  assert.equal(button("Send"), undefined);
+  assert.equal($(".as-enter"), null, "no second send button in the field");
+  await typeInto($("textarea"), "also add tests");
+  assert.equal(button("Stop"), undefined);
+  assert.ok(button("Send").classList.contains("ready"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Claude's greeting follows the moment", async () => {
+  const { greeting } = await dom.load("/src/EverythingChat.tsx");
+  assert.equal(greeting(new Date(2026, 9, 5, 9)), "New week", "Monday morning");
+  assert.equal(greeting(new Date(2026, 9, 6, 9)), "Good morning");
+  assert.equal(greeting(new Date(2026, 9, 6, 14)), "Good afternoon");
+  assert.equal(greeting(new Date(2026, 9, 6, 21)), "Good evening");
+  assert.equal(greeting(new Date(2026, 9, 6, 2)), "Good evening");
 });

@@ -69,6 +69,7 @@ import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
@@ -207,6 +208,8 @@ export async function createReach(overrides = {}) {
   // (node --test) never reach for the real agents.
   if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => agentSessions.warm?.());
+  // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
+  const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
     dataDir: config.dataDir,
     // Terminal shortcuts open a Mac terminal window and run one command.
@@ -1499,6 +1502,20 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/health", async (req, res) =>
     res.json({ agents: await agentSessions.health() }),
   );
+  // The Claude app's own typefaces from the app on this Mac (none without
+  // it), ahead of the session routes below that would take /fonts/<name>.
+  app.get("/api/sessions/fonts", (req, res) => res.json(agentFonts.list()));
+  app.get("/api/sessions/fonts/:family", (req, res) => {
+    const file = agentFonts.file(req.params.family);
+    if (!file) throw fail(404, "That font isn't on this computer.");
+    res
+      .set({
+        "Content-Type": "font/woff2",
+        "Cache-Control": "private, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+      })
+      .sendFile(file);
+  });
   app.get("/api/sessions/:agent/:id", async (req, res) => {
     const before =
       typeof req.query.before === "string" ? req.query.before : null;
@@ -1509,6 +1526,22 @@ export async function createReach(overrides = {}) {
     });
     if (before) res.json(page);
     else versioned(req, res, page);
+  });
+  // A picture sent in a session, as its transcript holds it (never changes).
+  app.get("/api/sessions/:agent/:id/images/:item/:n", async (req, res) => {
+    const image = await agentSessions.image(
+      req.params.agent,
+      req.params.id,
+      req.params.item,
+      Number(req.params.n),
+    );
+    res
+      .set({
+        "Content-Type": image.type,
+        "Cache-Control": "private, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+      })
+      .send(image.data);
   });
   app.post("/api/sessions/:agent/:id/open", async (req, res) => {
     notPaused();

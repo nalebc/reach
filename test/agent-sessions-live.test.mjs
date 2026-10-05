@@ -537,3 +537,34 @@ test("the agents' logos come from the installed apps, made small once, missing a
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("messages waiting in the Codex app's own queue show on the phone, read when it looks and when Codex says the queue changed", async () => {
+  let queue = [
+    { id: "q1", clientUserMessageId: "c1", input: [{ type: "text", text: "Then run the tests" }, { type: "localImage", path: "/tmp/a.png" }] },
+  ];
+  let clock = 1_000_000;
+  const daemon = fakeDaemon({ "thread/queue/list": () => ({ data: queue }) });
+  const live = createCodexLive({ daemon, queues: true, now: () => clock });
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+  // A fresh page looks: the queue is read, and the view wakes with it.
+  assert.equal(live.view(T).outbox, undefined);
+  const before = live.view(T).version;
+  await settle();
+  assert.deepEqual(live.view(T).outbox, [{ id: "q1", text: "Then run the tests", images: 1 }]);
+  assert.ok(live.view(T).version > before);
+  // Looked at again soon after: not read again.
+  const reads = () => daemon.methods().filter((m) => m === "thread/queue/list").length;
+  assert.equal(reads(), 1);
+  // Codex says the queue changed (the app ran it): read again, and gone.
+  queue = [];
+  daemon.emit("thread/queue/changed", { threadId: T });
+  await settle();
+  assert.equal(reads(), 2);
+  assert.equal(live.view(T).outbox, undefined);
+  // Unreadable (Codex closed): what was shown stays, nothing breaks.
+  clock += 10_000;
+  const failing = createCodexLive({ daemon: fakeDaemon({ "thread/queue/list": new Error("closed") }), queues: true, now: () => clock });
+  failing.view(T);
+  await settle();
+  assert.equal(failing.view(T).outbox, undefined);
+});

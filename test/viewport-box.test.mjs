@@ -70,3 +70,38 @@ test("the view follows the keyboard to where it stops, though iOS reports it onl
   await view.unmount();
   delete window.visualViewport;
 });
+
+test("while the view is open, Safari scrolling the page underneath (back from the photo picker) is undone at once", async () => {
+  const { window } = dom;
+  let y = 0;
+  const moves = [];
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => y });
+  Object.defineProperty(window, "scrollX", { configurable: true, get: () => 0 });
+  window.scrollTo = (o) => {
+    moves.push(o);
+    y = o.top;
+  };
+  function Box() {
+    const ref = React.useRef(null);
+    useViewportBox(ref, true);
+    return React.createElement("div", { ref, className: "box" });
+  }
+  const view = await dom.render(React.createElement(Box));
+  assert.deepEqual(moves, [], "already at the top");
+  // Safari scrolls the frozen page 291 points to show the message box.
+  y = 291;
+  window.dispatchEvent(new window.Event("scroll"));
+  assert.deepEqual(moves, [{ left: 0, top: 0, behavior: "instant" }]);
+  assert.equal(y, 0);
+  // Coming back from the picker: the size is read again, the page kept at its top.
+  y = 120;
+  window.dispatchEvent(new window.Event("focus"));
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(y, 0);
+  await view.unmount();
+  // Closed: the page underneath scrolls freely again.
+  moves.length = 0;
+  y = 500;
+  window.dispatchEvent(new window.Event("scroll"));
+  assert.deepEqual(moves, []);
+});

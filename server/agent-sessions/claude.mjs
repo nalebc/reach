@@ -56,7 +56,7 @@ export function createClaudeSessions({
       // again next time (reading a line twice changes nothing); reading
       // resumes after the last newline.
       const added = await bytes(handle, entry.offset, stat.size - entry.offset);
-      entry.transcript.add(added.toString("utf8"));
+      entry.transcript.add(added.toString("utf8"), { offset: entry.offset });
       entry.offset += added.lastIndexOf(10) + 1;
       Object.assign(entry, { head, size: stat.size, mtimeMs: stat.mtimeMs, parsed: entry.transcript.view(), at: Date.now() });
       // Transcripts no longer written to keep only their conversation.
@@ -163,6 +163,34 @@ export function createClaudeSessions({
         items: parsed.items.slice(start, end),
         before: start > 0 ? String(start) : null,
       };
+    },
+    // A picture sent in a session, read back from the one transcript line
+    // that holds it.
+    async image(id, uuid, n) {
+      const found = await locate(id);
+      const missing = () => Object.assign(new Error("That picture isn't in this session."), { status: 404 });
+      if (!found || typeof uuid !== "string" || uuid.length > 100 || !Number.isInteger(n) || n < 0) throw missing();
+      await parse(found.file);
+      if (!cache.get(found.file)?.transcript) {
+        // Let go of while idle: read it again, this once.
+        cache.delete(found.file);
+        await parse(found.file);
+      }
+      const line = cache.get(found.file).transcript.imageLine(uuid);
+      if (!line) throw missing();
+      const handle = await fs.open(found.file, "r");
+      let entry;
+      try {
+        entry = JSON.parse((await bytes(handle, line.offset, line.length)).toString("utf8"));
+      } catch {
+        throw missing();
+      } finally {
+        await handle.close();
+      }
+      const block = entry?.uuid === uuid ? (entry.message?.content || []).filter((b) => b?.type === "image")[n] : null;
+      const type = block?.source?.media_type;
+      if (block?.source?.type !== "base64" || !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(type)) throw missing();
+      return { type, data: Buffer.from(String(block.source.data), "base64") };
     },
     // Session start times per folder, to match app processes started without
     // --resume (live detection).

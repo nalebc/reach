@@ -185,7 +185,16 @@ export const codexTurnMode = (mode) =>
 
 const finished = (turn) => !!turn?.completedAt || ["completed", "failed"].includes(turn?.status);
 
-export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverMs = 10000, onChange = () => {} }) {
+export function createCodexLive({
+  daemon,
+  now = Date.now,
+  wait = sleep,
+  deliverMs = 10000,
+  onChange = () => {},
+  // Messages waiting in Codex's own queue, shown on the phone (off in tests
+  // that count the calls made to Codex).
+  queues = !process.env.NODE_TEST_CONTEXT,
+}) {
   const threads = new Map();
   const subscribed = new Set();
   const state = (id) => {
@@ -201,6 +210,9 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
         items: 0,
         version: 0,
         waiters: new Set(),
+        queue: null,
+        queueAt: 0,
+        queueReading: null,
       });
     return threads.get(id);
   };
@@ -224,10 +236,35 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
         changed(id);
       }
   });
+  // What waits in Codex's queue for a thread (the Codex app runs it next):
+  // text and a count of pictures, as the phone shows it.
+  const readQueue = (id) => {
+    const t = state(id);
+    t.queueAt = now();
+    t.queueReading ||= daemon
+      .rpc("thread/queue/list", { threadId: id })
+      .then((r) => {
+        const next = (r?.data || []).map((q) => ({
+          id: String(q.id),
+          text: (q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n"),
+          images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length,
+        }));
+        if (JSON.stringify(next) !== JSON.stringify(t.queue || [])) {
+          t.queue = next;
+          changed(id);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        t.queueReading = null;
+      });
+    return t.queueReading;
+  };
   daemon.onNotification((m) => {
     const p = m.params || {};
     const id = p.threadId || p.turn?.threadId;
     if (!id) return;
+    if (m.method === "thread/queue/changed") return void (queues && readQueue(id));
     const t = state(id);
     switch (m.method) {
       case "turn/started":
@@ -319,6 +356,7 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
   async function queueElsewhere(threadId, input) {
     const added = await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input });
     const queued = added?.queuedSubmission?.id;
+    if (queues) void readQueue(threadId);
     const deadline = now() + deliverMs;
     while (now() < deadline) {
       await wait(500);
@@ -432,6 +470,8 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
       return { answered: true };
     },
     view(threadId) {
+      // The phone is looking: what waits in Codex's queue, if not read lately.
+      if (queues && now() - (threads.get(threadId)?.queueAt || 0) > 5000) void readQueue(threadId);
       const t = threads.get(threadId);
       if (!t)
         return { version: 0, status: null, error: null, turnId: null, prompts: [], streaming: "", activity: null, items: 0 };
@@ -446,6 +486,7 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
         streaming: t.streaming?.text || "",
         activity: t.activity,
         items: t.items,
+        ...(t.queue?.length ? { outbox: t.queue } : {}),
       };
     },
     // Resolves when the thread changes (or after `ms`), for long polling.

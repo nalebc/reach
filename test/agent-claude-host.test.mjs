@@ -770,6 +770,43 @@ test("Reach holds a hook's prompt only for sessions the phone lists: the Claude 
   await Promise.all(held.map((h) => h.exited));
 });
 
+test("while Reach replies, its own Claude Code process isn't where the session lives (it read as Terminal)", async () => {
+  // Reach's reply process, as Claude Code's registry lists it: an interactive process.
+  const running = new Map([[ID, { where: "terminal", pid: 5151, tty: null, exact: true, busy: true, waiting: null }]]);
+  let drives = true;
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now(), status: "idle", inApp: true }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle", inApp: true }, items: [], before: null }),
+    },
+    live: async () => running,
+    claudeHost: {
+      onRelease() {},
+      drives: () => drives,
+      running: () => drives,
+      view: () => ({ status: "running", version: 1, prompts: [], streaming: "", activity: null, error: null, items: 0 }),
+    },
+    signIn: {},
+    liveMs: -1,
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  const { session } = await sessions.read("claude", ID);
+  assert.equal(session.held, "reach");
+  assert.equal(session.live, undefined);
+  assert.equal(session.status, "running");
+  const [listed] = (await sessions.list()).sessions;
+  assert.equal(listed.live, undefined);
+  assert.equal(listed.status, "running");
+  // Once Reach lets go, a real terminal holding it reads as one again.
+  drives = false;
+  assert.equal((await sessions.read("claude", ID)).session.live.where, "terminal");
+  sessions.close();
+});
+
 test("a Claude session shows as working only when it is, not merely open in the app", async () => {
   const claude = fakeClaude();
   const claudeHost = host(claude);

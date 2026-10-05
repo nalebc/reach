@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlignLeft,
   ArrowUp,
   Check,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
-  CornerDownLeft,
   FileText,
   Globe,
   Info,
+  Copy,
+  Laptop,
   Loader2,
+  MessageCirclePlus,
   Monitor,
+  MoreHorizontal,
   Plus,
+  Share,
   ShieldCheck,
   Sparkle,
+  SquarePen,
   Square,
   Terminal,
   TriangleAlert,
@@ -26,9 +31,11 @@ import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import { useAppIcon } from "./app-icons";
 import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
+import { useClaudeFonts } from "./agent-fonts";
 import {
   agentLabel,
   answerPrompt,
+  sessionImage,
   effortLabel,
   listCommands,
   listModels,
@@ -62,11 +69,69 @@ import {
 import "./agent-session.css";
 
 
-// Each agent's own words, so the screen reads like its app.
+// ChatGPT's (and Codex's) menu mark: two lines, the lower one shorter.
+function TwoLines({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+      <path d="M4 9h16M4 15h10" />
+    </svg>
+  );
+}
+
+// Each agent's own words and marks, so the screen reads like its phone app
+// (the Claude app; ChatGPT, where Codex lives). The layout is shared; a new
+// agent is a new entry here plus its colors in agent-session.css.
 const SKIN = {
-  codex: { placeholder: "Do anything", app: "Codex app" },
-  claude: { placeholder: "Type / for commands", app: "Claude app" },
+  codex: {
+    placeholder: "Do anything",
+    app: "Codex app",
+    menu: TwoLines,
+    compose: SquarePen,
+    where: null,
+    disclaimer: "",
+  },
+  claude: {
+    placeholder: "Reply to Claude",
+    app: "Claude app",
+    menu: AlignLeft,
+    compose: MessageCirclePlus,
+    where: Laptop,
+    disclaimer: "Claude is AI and can make mistakes.",
+  },
 } as const;
+
+// Under the newest reply, as both apps put them: copy it, share it.
+function ReplyActions({ text, disclaimer }: { text: string; disclaimer: string }) {
+  const [copied, setCopied] = useState(false);
+  const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+  return (
+    <div className="as-reply-actions">
+      <div>
+        <button
+          className="as-icon"
+          aria-label={copied ? "Copied" : "Copy"}
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            } catch {
+              /* nothing to copy into */
+            }
+          }}
+        >
+          {copied ? <Check size={19} /> : <Copy size={19} />}
+        </button>
+        {canShare && (
+          <button className="as-icon" aria-label="Share" onClick={() => void navigator.share({ text }).catch(() => {})}>
+            <Share size={19} />
+          </button>
+        )}
+      </div>
+      {disclaimer && <p className="as-disclaimer">{disclaimer}</p>}
+    </div>
+  );
+}
 
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app writes it.
 const claudeModel = (id?: string | null) => {
@@ -240,6 +305,44 @@ function ErrorNote({ agent, text, detail }: { agent: string; text: string; detai
         </footer>
       )}
     </section>
+  );
+}
+
+// Pictures sent with a message, above its text as the apps show them: from
+// this page's own copy while sending, then from the session's transcript.
+function SentImages({
+  peer,
+  session,
+  item,
+  urls,
+  count,
+}: {
+  peer: Peer;
+  session: { agent: AgentName; id: string };
+  item?: string;
+  urls?: string[];
+  count: number;
+}) {
+  const shownCount = Math.min(count, 4);
+  const [loaded, setLoaded] = useState<(string | null)[]>([]);
+  useEffect(() => {
+    if (urls || !item) return;
+    let active = true;
+    void Promise.all(
+      Array.from({ length: shownCount }, (_, n) => sessionImage(peer, session, item, n).catch(() => null)),
+    ).then((list) => active && setLoaded(list));
+    return () => {
+      active = false;
+    };
+  }, [peer.url, peer.token, session.agent, session.id, item, shownCount, urls]);
+  const sources = urls || loaded;
+  return (
+    <div className="as-user-images">
+      {Array.from({ length: shownCount }, (_, n) =>
+        sources[n] ? <img key={n} src={sources[n]!} alt="" /> : <span key={n} className="as-image-wait" aria-hidden="true" />,
+      )}
+      {count > shownCount && <span className="as-tag">+{count - shownCount}</span>}
+    </div>
   );
 }
 
@@ -555,6 +658,7 @@ export default function AgentSessionView({
   onBack,
   onSignedIn = () => {},
   logos = {},
+  onNew,
 }: {
   peer: Peer;
   session: AgentSession;
@@ -564,9 +668,12 @@ export default function AgentSessionView({
   onBack: () => void;
   onSignedIn?: () => void;
   logos?: AgentLogos;
+  // A new chat with the same agent (the apps' new-chat button).
+  onNew?: () => void;
 }) {
   const agent = initial.agent;
   const skin = SKIN[agent];
+  useClaudeFonts(peer, agent === "claude");
   const [info, setInfo] = useState<AgentSession>(initial);
   const [items, setItems] = useState<SessionItem[] | null>(null);
   const [before, setBefore] = useState<string | null>(null);
@@ -578,7 +685,9 @@ export default function AgentSessionView({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Sent but not yet in the transcript; `seen` counts the same text already there.
   // messageId: where it waits in the Mac's outbox, when it waits there.
-  const [pending, setPending] = useState<{ id: string; text: string; images: number; seen: number; messageId?: string }[]>([]);
+  const [pending, setPending] = useState<
+    { id: string; text: string; images: number; urls?: string[]; seen: number; messageId?: string; at: number }[]
+  >([]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
@@ -666,9 +775,12 @@ export default function AgentSessionView({
   }, [items, pending, live.streaming, live.prompts.length, working]);
   const shown = useRef(attachments);
   shown.current = attachments;
+  // Pictures sent from here stay shown in their message until the page closes.
+  const sentUrls = useRef<string[]>([]);
   useEffect(
     () => () => {
       for (const a of shown.current) URL.revokeObjectURL(a.url);
+      for (const url of sentUrls.current) URL.revokeObjectURL(url);
     },
     [],
   );
@@ -701,6 +813,12 @@ export default function AgentSessionView({
     }
     return out;
   }, [items]);
+  // The newest reply, when the chat ends on one: it gets copy and share.
+  const lastBlock = blocks[blocks.length - 1];
+  const lastReply =
+    lastBlock?.type === "item" && lastBlock.item.role === "assistant" && lastBlock.item.kind === "text"
+      ? lastBlock.item.text
+      : "";
 
   // Why replying isn't possible from here, if it isn't.
   const claudeHealth = health.find((h) => h.agent === "claude");
@@ -804,7 +922,7 @@ export default function AgentSessionView({
     if (!canSend) return;
     const ready = attachments.filter((a) => a.id);
     const seen = (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length;
-    const message = { id: `pending-${Date.now()}`, text, images: ready.length, seen };
+    const message = { id: `pending-${Date.now()}`, text, images: ready.length, urls: ready.map((a) => a.url), seen, at: Date.now() };
     const keep = { text, attachments };
     setSending(true);
     setProblem("");
@@ -820,7 +938,7 @@ export default function AgentSessionView({
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
       });
-      for (const a of ready) URL.revokeObjectURL(a.url);
+      sentUrls.current.push(...ready.map((a) => a.url));
       // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
       if (r.messageId) setPending((list) => list.map((p) => (p === message ? { ...p, messageId: r.messageId } : p)));
       setChoice({});
@@ -873,15 +991,20 @@ export default function AgentSessionView({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [working]);
-  const elapsed = working && lastUser?.at ? Math.max(0, Math.round((now - lastUser.at) / 1000)) : 0;
+  // Since the newest message, one still on its way included (the last one in
+  // the transcript could be a day old: it read "1327m").
+  const since = Math.max(lastUser?.at || 0, ...pending.map((p) => p.at));
+  const elapsed = working && since ? Math.max(0, Math.round((now - since) / 1000)) : 0;
   const elapsedLabel = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`;
   const activity = live.activity || (runningElsewhere ? `Working in the ${skin.app}` : "Working");
 
   return (
     <div ref={page} className={`as-page ${agent} ${keyboard ? "kb-open" : ""}`}>
       <header className="as-bar">
+        {/* The apps' floating round buttons: the list of chats on the left;
+            where it runs, a new chat and more on the right. */}
         <button className="as-icon" aria-label="Back to all sessions" onClick={onBack}>
-          <ChevronLeft size={21} />
+          <skin.menu size={22} />
         </button>
         <button className="as-title" aria-expanded={details} onClick={() => setDetails(!details)}>
           <strong>{info.title}</strong>
@@ -889,10 +1012,25 @@ export default function AgentSessionView({
             {projectName(info.cwd)} · {whereLabel(info)}
           </small>
         </button>
-        <AgentLogo agent={agent} logos={logos} size={24} />
+        {skin.where && (
+          <button className="as-icon" aria-label="Where it runs" onClick={() => setDetails(!details)}>
+            <skin.where size={20} />
+          </button>
+        )}
+        <span className="as-bar-pill">
+          {onNew && (
+            <button className="as-icon" aria-label="New chat" onClick={onNew}>
+              <skin.compose size={19} />
+            </button>
+          )}
+          <button className="as-icon" aria-label="More" aria-expanded={details} onClick={() => setDetails(!details)}>
+            <MoreHorizontal size={20} />
+          </button>
+        </span>
       </header>
       {details && (
         <div className="as-details">
+          <strong className="as-details-title">{info.title}</strong>
           <span>
             {agentLabel(agent)}
             {info.branch ? ` · ${info.branch}` : ""}
@@ -961,12 +1099,16 @@ export default function AgentSessionView({
             ) : b.item.role === "user" ? (
               <div key={b.item.id} className="as-user">
                 {b.item.queued && <span className="as-tag">Sent while working</span>}
-                <AgentMarkdown text={b.item.text} />
                 {b.item.images ? (
-                  <span className="as-tag">
-                    {b.item.images} image{b.item.images === 1 ? "" : "s"}
-                  </span>
+                  agent === "claude" ? (
+                    <SentImages peer={peer} session={initial} item={b.item.id} count={b.item.images} />
+                  ) : (
+                    <span className="as-tag">
+                      {b.item.images} image{b.item.images === 1 ? "" : "s"}
+                    </span>
+                  )
                 ) : null}
+                <AgentMarkdown text={b.item.text} />
               </div>
             ) : b.item.kind === "compaction" ? (
               <div key={b.item.id || `c${i}`} className="as-divider">
@@ -985,16 +1127,15 @@ export default function AgentSessionView({
             ),
           )
         )}
+        {lastReply && !working && !live.streaming && !pending.length && !live.outbox?.length && (
+          <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
+        )}
         {pending
           .filter((p) => !p.messageId || !live.outbox?.some((m) => m.id === p.messageId))
           .map((p) => (
             <div key={p.id} className="as-user pending">
+              {p.images ? <SentImages peer={peer} session={initial} urls={p.urls} count={p.images} /> : null}
               <AgentMarkdown text={p.text} />
-              {p.images ? (
-                <span className="as-tag">
-                  {p.images} image{p.images === 1 ? "" : "s"}
-                </span>
-              ) : null}
             </div>
           ))}
         {/* Waiting on the Mac for their turn: kept there, so a reload or a restart loses none. */}
@@ -1007,7 +1148,7 @@ export default function AgentSessionView({
               </span>
             ) : null}
             <span className={`as-tag ${m.error ? "problem" : ""}`}>
-              {m.error ? `Not sent yet: ${m.error}` : "Sends when Claude finishes"}
+              {m.error ? `Not sent yet: ${m.error}` : agent === "codex" ? "Queued in the Codex app" : "Sends when Claude finishes"}
             </span>
           </div>
         ))}
@@ -1199,11 +1340,6 @@ export default function AgentSessionView({
               }
             }}
           />
-          {agent === "claude" && (
-            <button className="as-enter" aria-label="Send" disabled={!canSend} onClick={() => void send()}>
-              <CornerDownLeft size={16} />
-            </button>
-          )}
         </div>
         <div className="as-tools">
           <button className="as-icon" aria-label="Add images" onClick={() => picker.current?.click()}>
@@ -1230,7 +1366,7 @@ export default function AgentSessionView({
             }}
           >
             {agent === "codex" && <ShieldCheck size={14} />}
-            {modeShown ? modeName(modeShown) : "Default"}
+            <span>{modeShown ? modeName(modeShown) : "Default"}</span>
           </button>
           <span className="as-spacer" />
           {modelLabel && (
@@ -1247,19 +1383,20 @@ export default function AgentSessionView({
               {!heldByApp && models.length > 0 && <ChevronDown size={14} />}
             </button>
           )}
-          {agent === "codex" &&
-            (runningHere && live.status !== "waiting" && !text.trim() ? (
-              <button className="as-send stop" aria-label="Stop" disabled={stopping} onClick={() => void stop()}>
-                <Square size={12} fill="currentColor" />
-              </button>
-            ) : (
-              <button className="as-send" aria-label="Send" disabled={!canSend} onClick={() => void send()}>
-                {sending ? <Loader2 size={16} className="spin" /> : <ArrowUp size={17} />}
-              </button>
-            ))}
-          {agent === "claude" && runningHere && (
-            <button className="as-icon" aria-label="Stop" disabled={stopping} onClick={() => void stop()}>
-              <Square size={14} />
+          {/* One round button, as in both apps: send, or stop while it works
+              and nothing is typed. */}
+          {runningHere && live.status !== "waiting" && !text.trim() ? (
+            <button className="as-send stop" aria-label="Stop" disabled={stopping} onClick={() => void stop()}>
+              <Square size={12} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              className={`as-send ${text.trim() || attachments.length ? "ready" : ""}`}
+              aria-label="Send"
+              disabled={!canSend}
+              onClick={() => void send()}
+            >
+              {sending ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
             </button>
           )}
         </div>

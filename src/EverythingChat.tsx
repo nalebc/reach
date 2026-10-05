@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
-  CornerDownLeft,
   FolderOpen,
   Loader2,
   Plus,
@@ -17,6 +16,7 @@ import AgentSessionView, { ModelPicker, UsageButton } from "./AgentSession";
 import AgentAccess from "./AgentAccess";
 import MacPromptCard from "./MacPrompts";
 import { AgentLogo, ClaudeSpark, useAgentLogos, type AgentLogos } from "./agent-logos";
+import { useClaudeFonts } from "./agent-fonts";
 import {
   CODEX_MODE_CHOICES,
   agentLabel,
@@ -320,6 +320,7 @@ function NewChat({
           }}
         />
       )}
+      <div className="as-box">
       <div className="as-field">
         {images.length > 0 && (
           <div className="as-attachments">
@@ -344,7 +345,7 @@ function NewChat({
           ref={input}
           rows={open ? 3 : 1}
           value={text}
-          placeholder={agent === "codex" ? "Do anything" : "Type / for commands"}
+          placeholder={agent === "codex" ? "Do anything" : "Chat with Claude"}
           aria-label={`New ${agentLabel(agent)} chat`}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
@@ -360,11 +361,6 @@ function NewChat({
           <span className="chat-new-where" aria-hidden="true">
             in {projectName(cwd)}
           </span>
-        )}
-        {agent === "claude" && open && (
-          <button className="as-enter" aria-label="Start" disabled={!ready} onClick={() => void start()}>
-            {busy ? <Loader2 size={15} className="spin" /> : <CornerDownLeft size={16} />}
-          </button>
         )}
       </div>
       {open && (
@@ -413,13 +409,12 @@ function NewChat({
               <ChevronDown size={14} />
             </button>
           )}
-          {agent === "codex" && (
-            <button className="as-send" aria-label="Start" disabled={!ready} onClick={() => void start()}>
-              {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={17} />}
-            </button>
-          )}
+          <button className={`as-send ${ready ? "ready" : ""}`} aria-label="Start" disabled={!ready} onClick={() => void start()}>
+            {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
+          </button>
         </div>
       )}
+      </div>
     </section>
   );
 }
@@ -537,6 +532,16 @@ function SessionList({
   );
 }
 
+// The Claude app greets by the moment: a new week on Monday morning,
+// otherwise the time of day.
+export function greeting(now = new Date()) {
+  const hour = now.getHours();
+  if (now.getDay() === 1 && hour >= 5 && hour < 12) return "New week";
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 function AgentStatus({
   peer,
   agent,
@@ -605,6 +610,7 @@ export default function EverythingChat({
   }, [health]);
   const picked = agents.find((a) => a.agent === agent) || agents[0];
   const [open, setOpen] = useState<AgentSession | null>(null);
+  useClaudeFonts(peer, (open?.agent || picked.agent) === "claude");
   // Opened from Home (a story or "needs you").
   useEffect(() => {
     if (!target) return;
@@ -652,6 +658,12 @@ export default function EverythingChat({
           setOpen(null);
           void reload();
         }}
+        onNew={() => {
+          setAgent(open.agent);
+          setOpen(null);
+          setComposing(true);
+          void reload();
+        }}
       />
     );
   const status = health.find((h) => h.agent === picked.agent);
@@ -678,13 +690,28 @@ export default function EverythingChat({
         <MacPromptCard key={p.id} prompt={p} logos={logos} />
       ))}
       <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} />
+      {/* The Claude app opens on its spark and a greeting in its serif. */}
+      {current === "claude" && (
+        <div className="chat-greeting">
+          <ClaudeSpark logos={logos} size={34} />
+          <h2>{greeting()}</h2>
+        </div>
+      )}
       {(!status || (status.installed && status.signedIn)) &&
         (composing ? (
           <NewChat key={current} peer={peer} agent={current} sessions={sessions || []} onStarted={setOpen} autoFocus />
+        ) : current === "claude" ? (
+          // The Claude app's composer at rest; tapping it starts writing.
+          <button className="chat-new-row claude" onClick={() => setComposing(true)}>
+            <span>Chat with Claude</span>
+            <i className="as-send" aria-hidden="true">
+              <ArrowUp size={18} />
+            </i>
+          </button>
         ) : (
           <button className={`chat-new-row ${current}`} onClick={() => setComposing(true)}>
-            {current === "codex" ? <SquarePen size={17} /> : <Plus size={17} />}
-            <span>{current === "codex" ? "New chat" : "New"}</span>
+            <SquarePen size={17} />
+            <span>New chat</span>
           </button>
         ))}
       {failure && <p className="chat-status">{failure}</p>}

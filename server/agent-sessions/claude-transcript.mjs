@@ -206,9 +206,15 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   let last = null;
   let firstAt = null;
   let updatedAt = null;
+  // Where each line holding pictures sits in the file (when the reader is
+  // told where its text starts), so one picture can be read back alone.
+  const imageLines = new Map();
   return {
-    add(source) {
+    add(source, { offset } = {}) {
+      let position = Number.isFinite(offset) ? offset : null;
       for (const line of String(source).split("\n")) {
+        const at = position;
+        if (position !== null) position += Buffer.byteLength(line) + 1;
         if (!line.trim()) continue;
         let e;
         try {
@@ -224,6 +230,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
         const slim = slimEntry(e, results, maxOutput);
         if (slim.uuid) byId.set(slim.uuid, slim);
+        if (at !== null && slim.uuid && Array.isArray(slim.message?.content) && slim.message.content.some((b) => b.type === "image"))
+          imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant") && !slim.isSidechain) last = slim;
         if (e.timestamp) {
           firstAt ??= e.timestamp;
@@ -231,6 +239,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         }
       }
     },
+    imageLine: (uuid) => imageLines.get(uuid) || null,
     view() {
       const chain = [];
       const seen = new Set();

@@ -139,6 +139,40 @@ test("a growing Claude transcript is read from where reading stopped, giving wha
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("a picture sent in a Claude session is read back from its own line, the transcript growing or not", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-"));
+  const dir = path.join(root, "projects", "-work-app");
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${ID}.jsonl`);
+  const base = { sessionId: ID, cwd: "/work/app", entrypoint: "cli" };
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 9, 9]);
+  const picture = (data, type) => ({ type: "image", source: { type: "base64", media_type: type, data: data.toString("base64") } });
+  // Text with characters of several bytes before it, so its place is counted in bytes.
+  await fs.writeFile(
+    file,
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { content: "héllo — first 🙂" } }) + "\n",
+  );
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  await claude.read(ID);
+  await fs.appendFile(
+    file,
+    line({ ...base, type: "user", uuid: "u2", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "look" }, picture(png, "image/png"), picture(jpeg, "image/jpeg")] } }) + "\n",
+  );
+  assert.equal((await claude.read(ID)).items.at(-1).images, 2);
+  assert.deepEqual(await claude.image(ID, "u2", 0), { type: "image/png", data: png });
+  assert.deepEqual(await claude.image(ID, "u2", 1), { type: "image/jpeg", data: jpeg });
+  // Nothing else is served: no such picture, a line without one, a made-up id.
+  await assert.rejects(claude.image(ID, "u2", 2), (e) => e.status === 404);
+  await assert.rejects(claude.image(ID, "u1", 0), (e) => e.status === 404);
+  await assert.rejects(claude.image(ID, "../u2", 0), (e) => e.status === 404);
+  await assert.rejects(claude.image("22222222-2222-4222-8222-222222222222", "u2", 0), (e) => e.status === 404);
+  // Read whole by a fresh Reach (after a restart): same answer.
+  const fresh = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  assert.deepEqual(await fresh.image(ID, "u2", 1), { type: "image/jpeg", data: jpeg });
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("a transcript is kept as the conversation shows it: big tool inputs, outputs and images don't stay in memory", () => {
   const base = { sessionId: ID, cwd: "/work/app", entrypoint: "cli" };
   const big = "x".repeat(200000);
@@ -291,6 +325,7 @@ test("session routes are owner-only", async () => {
       read: async (agent, id) => ({ session: { agent, id }, items: [], before: null }),
       openInApp: async (agent, id) => (opened.push([agent, id]), { opened: agent }),
       resetUsage: async (agent) => (resets.push(agent), { outcome: "reset" }),
+      image: async () => ({ type: "image/png", data: Buffer.from("png-bytes") }),
     },
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -311,6 +346,13 @@ test("session routes are owner-only", async () => {
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, agent.token, "POST")).status, 403);
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, owner.token, "POST")).status, 200);
     assert.deepEqual(opened, [["codex", ID]]);
+    // A picture from a session: the owner only, as the picture it is.
+    assert.equal((await call(`/api/sessions/claude/${ID}/images/u1/0`, agent.token)).status, 403);
+    const picture = await call(`/api/sessions/claude/${ID}/images/u1/0`, owner.token);
+    assert.equal(picture.status, 200);
+    assert.equal(picture.headers.get("content-type"), "image/png");
+    assert.equal(picture.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(Buffer.from(await picture.arrayBuffer()).toString(), "png-bytes");
     // Spending a rate-limit reset: the owner only.
     const reset = (token) =>
       fetch(`${url}/api/sessions/usage/reset`, {

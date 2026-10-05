@@ -18,9 +18,22 @@
   --as-accent: #ececec;
   --as-plus: #6abf69;
   --as-minus: #e06c6c;
+  /* The phone apps' pieces: floating round buttons, composer chips, the send
+     circle, and the reply's typeface. Codex's from ChatGPT.app's own dark
+     tokens (raised surface #303030), the rest measured from the Codex app. */
+  --as-float: #303030;
+  --as-float-line: rgb(255 255 255 / 0.06);
+  --as-chip: transparent;
+  --as-composer: var(--as-field);
+  --as-composer-line: transparent;
+  --as-send-ready: var(--as-text);
+  --as-send-ready-ink: var(--as-bg);
+  --as-reply-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --as-user-font: var(--as-reply-font);
 }
 /* The session page itself (the skin above is shared with the Chat home). */
 .as-page {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: calc(100dvh - 96px);
@@ -34,22 +47,34 @@
   font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-/* Claude Code's colors as the Claude app draws them now (measured Oct 4). */
+/* The Claude app's dark theme, from the palette it ships (Claude.app,
+   ion-dist: page gray-850, raised gray-800, text gray-20, muted gray-350,
+   clay accent). The bubble and chips are its text at 5% over the page:
+   #212121 here, #efeeec in the light screenshots, both as measured. */
 .as-page.claude,
 .chat-home.claude {
   --as-bg: #151515;
-  --as-text: #e6e6e6;
-  --as-muted: #8f8f8f;
-  --as-faint: #5e5e5e;
-  --as-line: #262626;
+  --as-text: #f9f9f7;
+  --as-muted: #97958d;
+  --as-faint: #7a7874;
+  --as-line: rgb(226 224 217 / 0.12);
   --as-bubble: #212121;
   --as-field: #20201f;
-  --as-field-line: #333332;
+  --as-field-line: rgb(226 224 217 / 0.12);
   --as-card: #20201f;
-  --as-code-bg: #2a2927;
-  --as-code-line: #3a3936;
+  --as-code-bg: #1d1d1c;
+  --as-code-line: rgb(226 224 217 / 0.1);
   --as-inline: #e8806a;
   --as-accent: #d97757;
+  --as-float: #20201f;
+  --as-float-line: rgb(226 224 217 / 0.08);
+  --as-chip: #212121;
+  --as-composer: #151515;
+  --as-composer-line: rgb(226 224 217 / 0.14);
+  --as-send-ready: #d97757;
+  --as-send-ready-ink: #fff;
+  --as-reply-font: "anthropic-serif", ui-serif, "New York", Georgia, "Times New Roman", serif;
+  --as-user-font: "anthropic-sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 @media (max-width: 1024px), (pointer: coarse) {
   .as-page {
@@ -1068,4 +1093,241 @@ button.as-mode:disabled {
 }
 .as-consent-actions button:disabled {
   opacity: 0.6;
+}
+
+/* ── The phone apps' layout, shared by every agent (the colors and type above
+   make it Claude's or Codex's): round buttons floating over the chat, your
+   messages in a bubble, replies as plain text with copy and share beneath,
+   and the composer as one card with a round send button. ── */
+.as-bar {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  right: 0;
+  gap: 8px;
+  min-height: 0;
+  padding: calc(env(safe-area-inset-top) + 8px) 14px 18px;
+  border: 0;
+  background: linear-gradient(to bottom, var(--as-bg) 62%, transparent);
+  pointer-events: none;
+}
+.as-bar > * {
+  pointer-events: auto;
+}
+.as-bar > .as-icon,
+.as-bar-pill {
+  height: 44px;
+  border-radius: 999px;
+  background: var(--as-float);
+  box-shadow:
+    inset 0 0 0 0.5px var(--as-float-line),
+    0 6px 20px -6px rgb(0 0 0 / 0.55);
+  color: var(--as-text);
+}
+.as-bar > .as-icon {
+  width: 44px;
+}
+.as-bar-pill {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+.as-bar-pill .as-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: var(--as-text);
+}
+.as-bar .as-icon:not(:disabled):active {
+  background: color-mix(in srgb, var(--as-text) 10%, var(--as-float));
+}
+/* Codex (ChatGPT) names the chat between its buttons; Claude shows none. */
+.as-bar .as-title {
+  align-items: center;
+  text-align: center;
+}
+.as-bar .as-title small {
+  justify-content: center;
+}
+.as-page.claude .as-bar .as-title {
+  visibility: hidden;
+}
+.as-details {
+  position: absolute;
+  z-index: 3;
+  top: calc(env(safe-area-inset-top) + 60px);
+  left: 14px;
+  right: 14px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--as-float);
+  box-shadow:
+    inset 0 0 0 0.5px var(--as-float-line),
+    0 12px 32px -8px rgb(0 0 0 / 0.6);
+}
+.as-details-title {
+  flex: 1 1 100%;
+  color: var(--as-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-scroll {
+  padding-top: 68px;
+  gap: 18px;
+}
+
+/* Messages */
+.as-user {
+  max-width: 82%;
+  padding: 10px 16px;
+  border-radius: 22px;
+  font-family: var(--as-user-font);
+}
+.claude .as-user {
+  border-radius: 22px;
+}
+.as-assistant {
+  font-family: var(--as-reply-font);
+  line-height: 1.5;
+}
+.as-reply-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: -6px;
+}
+.as-reply-actions > div {
+  display: flex;
+  gap: 6px;
+  margin-left: -8px;
+}
+.as-reply-actions .as-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--as-muted);
+}
+.as-disclaimer {
+  margin: 0 0 4px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+@media (max-width: 1024px), (pointer: coarse) {
+  /* Phone sizes, as the apps set them. */
+  .as-user,
+  .as-assistant {
+    font-size: 17px;
+  }
+}
+
+/* The composer: one card, the text on top, controls beneath. */
+.as-composer {
+  padding: 6px 14px 10px;
+}
+.as-box,
+.codex .as-box {
+  gap: 2px;
+  padding: 4px 8px 8px;
+  border-radius: 26px;
+  background: var(--as-composer);
+  box-shadow:
+    inset 0 0 0 1px var(--as-composer-line),
+    0 8px 28px -10px rgb(0 0 0 / 0.6);
+}
+.as-box .as-field,
+.claude .as-box .as-field {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.as-box .as-field textarea,
+.claude .as-box .as-field textarea {
+  padding: 10px 8px 6px;
+  font-family: var(--as-user-font);
+  font-size: 17px;
+}
+.as-field textarea::placeholder {
+  color: var(--as-muted);
+}
+.as-tools {
+  gap: 8px;
+  min-height: 38px;
+}
+.as-tools > .as-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--as-chip);
+  color: var(--as-text);
+}
+.claude .as-tools > .as-model,
+.claude .as-tools > button.as-mode {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--as-chip);
+  font-size: 15px;
+}
+.as-send {
+  width: 36px;
+  height: 36px;
+}
+.as-send.ready,
+.as-send.ready:disabled {
+  background: var(--as-send-ready);
+  color: var(--as-send-ready-ink);
+}
+.claude .as-send:not(.ready):not(.stop) {
+  background: var(--as-chip);
+  color: var(--as-muted);
+}
+.as-send.stop {
+  background: var(--as-text);
+  color: var(--as-bg);
+}
+/* Chips stay on one line and give way with "…" on a narrow phone; the
+   model chip keeps the room first. Claude's model chip has no chevron. */
+.as-tools > button.as-mode {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  white-space: nowrap;
+}
+.as-tools > button.as-mode > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.as-tools > button.as-mode > svg {
+  flex: 0 0 auto;
+}
+.claude .as-tools > .as-model > svg {
+  display: none;
+}
+.claude .as-tools > .as-model,
+.claude .as-tools > button.as-mode {
+  padding: 0 12px;
+}
+
+/* Pictures sent with a message, above its text as in the apps. */
+.as-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.as-user-images img,
+.as-image-wait {
+  width: 96px;
+  height: 96px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.as-image-wait {
+  background: #ffffff14;
 }
