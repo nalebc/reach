@@ -256,7 +256,8 @@ export async function request<T = any>(
           ? "Pair this device again. Its access has expired or was revoked."
           : body.error,
       ),
-      { status: response.status },
+      // `body`: the rest of the answer (who controls the screen, for one).
+      { status: response.status, body },
     );
   }
   return response.json();

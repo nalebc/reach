@@ -51,6 +51,10 @@ static int hiddenCount = 0, realCount = 0;
 static CGPoint localPoint;
 static BOOL localKnown = NO;
 static CFMachPortRef pointerTap = NULL;
+// When the phone last moved the pointer, and whether it holds a button down
+// (a drag): after a short pause it hands the pointer back (bringPointerHome).
+static CFAbsoluteTime phoneAt = 0;
+static BOOL phoneDown = NO;
 static BOOL fromPhone(pid_t pid) {
   static NSMutableDictionary<NSNumber *, NSNumber *> *known;
   static os_unfair_lock knownLock = OS_UNFAIR_LOCK_INIT;
@@ -86,6 +90,11 @@ static CGEventRef pointerMoved(CGEventTapProxy proxy, CGEventType type, CGEventR
         localPoint = was;
         localKnown = YES;
       }
+    phoneAt = CFAbsoluteTimeGetCurrent();
+    if (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown || type == kCGEventOtherMouseDown)
+      phoneDown = YES;
+    else if (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp || type == kCGEventOtherMouseUp)
+      phoneDown = NO;
     os_unfair_lock_unlock(&pointerLock);
     return event;
   }
@@ -125,6 +134,27 @@ static CGEventRef pointerMoved(CGEventTapProxy proxy, CGEventType type, CGEventR
   os_unfair_lock_unlock(&pointerLock);
   CGEventSetLocation(event, target);
   return event;
+}
+// The phone has let go of the pointer for a moment and it is still on a
+// hidden display: put it back where this Mac's own user left it, so nobody
+// at the Mac finds it gone (two people on one Mac). Never mid-drag, and only
+// while it is still on a hidden display (the Mac's own mouse wins anyway).
+static void bringPointerHome(void) {
+  CGEventRef now = CGEventCreate(NULL);
+  if (!now) return;
+  CGPoint at = CGEventGetLocation(now);
+  CFRelease(now);
+  os_unfair_lock_lock(&pointerLock);
+  BOOL hidden = NO;
+  for (int i = 0; i < hiddenCount; i++)
+    if (CGRectContainsPoint(hiddenScreens[i], at)) hidden = YES;
+  BOOL idle = phoneAt > 0 && CFAbsoluteTimeGetCurrent() - phoneAt > 2.0 && !phoneDown;
+  BOOL known = localKnown && realCount > 0;
+  CGPoint home = localPoint;
+  os_unfair_lock_unlock(&pointerLock);
+  if (!hidden || !idle || !known) return;
+  CGWarpMouseCursorPosition(home);
+  CGAssociateMouseAndMouseCursorPosition(true);
 }
 static void emit(NSDictionary *value) {
   NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
@@ -309,7 +339,16 @@ static void observed(AXObserverRef observer, AXUIElementRef element, CFStringRef
                        CGEventMaskBit(kCGEventScrollWheel);
     CFMachPortRef port = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, mask,
                                           pointerMoved, NULL);
-    if (!port) return;
+    if (!port) {
+      // macOS refused (no Accessibility for Reach's terminal): say so once,
+      // instead of the Mac's mouse quietly getting lost on hidden displays.
+      static BOOL told = NO;
+      if (!told) {
+        told = YES;
+        emit(@{@"event": @"pointer-guard", @"ok": @NO});
+      }
+      return;
+    }
     pointerTap = port;
     NSThread *thread = [[NSThread alloc] initWithBlock:^{
       CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(NULL, port, 0);
@@ -321,6 +360,17 @@ static void observed(AXObserverRef observer, AXUIElementRef element, CFStringRef
     [thread start];
   }
   if (pointerTap) CGEventTapEnable(pointerTap, active);
+  static dispatch_source_t home = NULL;
+  if (active && !home) {
+    home = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                  dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    dispatch_source_set_timer(home, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), NSEC_PER_SEC / 2,
+                              NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(home, ^{
+      bringPointerHome();
+    });
+    dispatch_resume(home);
+  }
 }
 // Retina: the 2x mode at the display's size. macOS sometimes starts at 1x.
 // Retina: the 2x mode at the display's size. macOS can start a display, or

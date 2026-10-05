@@ -38,10 +38,14 @@ const end = (element, animationName) => {
   element.dispatchEvent(event);
 };
 
+// The scene plays in its own layer on the page (it outlives the page that
+// started it), so it's looked for in the document.
+const $ = (selector) => dom.document.querySelector(selector);
+const gone = () => dom.waitFor(() => !$(".mascot-intro"));
+
 test("plays the first time only, and leaves when its fade ends", async () => {
   let view = await dom.render(motion());
-  const intro = view.container.querySelector(".mascot-intro");
-  assert.ok(!!intro, "shown on the first visit");
+  const intro = await dom.waitFor(() => $(".mascot-intro"));
   for (const part of [
     ".intro-walker",
     ".intro-arm",
@@ -49,35 +53,47 @@ test("plays the first time only, and leaves when its fade ends", async () => {
     ".intro-logo",
     ".intro-mac",
   ])
-    assert.ok(!!view.container.querySelector(part), part);
+    assert.ok(!!$(part), part);
   // A part finishing its own animation doesn't end the intro.
-  end(view.container.querySelector(".intro-logo"), "intro-found");
+  end($(".intro-logo"), "intro-found");
   await settle();
-  assert.equal(!!view.container.querySelector(".mascot-intro"), true);
+  assert.equal(!!$(".mascot-intro"), true);
   end(intro, "intro-out");
-  await settle();
-  assert.equal(!!view.container.querySelector(".mascot-intro"), false);
+  await gone();
   await view.unmount();
   view = await dom.render(motion());
-  assert.equal(
-    view.container.querySelector(".mascot-intro"),
-    null,
-    "not again",
-  );
+  await settle(50);
+  assert.equal($(".mascot-intro"), null, "not again");
   await view.unmount();
+});
+
+test("keeps playing when the page that started it goes away (an invitation accepted in a second)", async () => {
+  // The invitation page shows it, then makes way for Reach almost at once.
+  const invitation = await dom.render(motion());
+  const intro = await dom.waitFor(() => $(".mascot-intro"));
+  await invitation.unmount();
+  await settle(50);
+  assert.equal($(".mascot-intro"), intro, "still playing");
+  // Reach's own page doesn't start a second one.
+  const reach = await dom.render(motion());
+  await settle(50);
+  assert.equal(dom.document.querySelectorAll(".mascot-intro").length, 1);
+  end(intro, "intro-out");
+  await gone();
+  await reach.unmount();
+  assert.deepEqual(dom.errors, []);
 });
 
 test("the Skip button, or a tap anywhere, skips it", async () => {
   const view = await dom.render(motion());
-  const intro = view.container.querySelector(".mascot-intro");
-  const skip = view.container.querySelector("button.intro-skip-button");
+  const intro = await dom.waitFor(() => $(".mascot-intro"));
+  const skip = $("button.intro-skip-button");
   assert.equal(skip.textContent, "Skip");
   skip.click();
   await settle();
   assert.match(intro.className, /leaving/);
   end(intro, "intro-skip");
-  await settle();
-  assert.equal(!!view.container.querySelector(".mascot-intro"), false);
+  await gone();
   await view.unmount();
 });
 
@@ -85,7 +101,8 @@ test("never plays with motion turned off or reduced", async () => {
   for (const value of [{ enabled: false }, { reduced: true }]) {
     dom.window.localStorage.clear();
     const view = await dom.render(motion(value));
-    assert.equal(!!view.container.querySelector(".mascot-intro"), false);
+    await settle(50);
+    assert.equal(!!$(".mascot-intro"), false);
     await view.unmount();
   }
   assert.deepEqual(dom.errors, []);

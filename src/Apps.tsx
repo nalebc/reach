@@ -12,7 +12,7 @@ import {
   useAppThreads,
   type AppThread,
 } from "./app-threads";
-import { pausedIn } from "./pause";
+import { controlIn, pausedIn } from "./pause";
 import "./apps.css";
 
 // Loaded when an app is first opened on the phone; the grid stays light.
@@ -90,6 +90,9 @@ export default function Apps({
   const owner =
     !device.access ||
     (device.access.scopes.includes("admin") && device.access.kind !== "guest");
+  // A guest watches the apps the owner has open on their phone; they can't
+  // open others (every tile used to answer "Only the computer's owner…").
+  const watchOnly = onPhone && !owner;
   const {
     threads,
     refresh: refreshThreads,
@@ -294,6 +297,7 @@ export default function Apps({
           </button>
         )}
       </PageTitle>
+      {!watchOnly && (
       <form
         className="apps-search"
         role="search"
@@ -321,8 +325,9 @@ export default function Apps({
           </button>
         )}
       </form>
-      <ErrorLine error={apps.length ? "" : error} />
-      {loading ? (
+      )}
+      <ErrorLine error={apps.length || watchOnly ? "" : error} />
+      {loading && !watchOnly ? (
         <div className="launcher-grid" aria-label="Loading apps">
           {Array.from({ length: 12 }, (_, i) => (
             <span key={i} className="app-tile skeleton">
@@ -415,19 +420,24 @@ export default function Apps({
               </div>
             </section>
           )}
-          {recentApps.length > 0 && (
+          {watchOnly && !threads.length && (
+            <Empty icon={AppWindow} title="No apps open yet">
+              When they open an app on their phone, you can watch it here.
+            </Empty>
+          )}
+          {!watchOnly && recentApps.length > 0 && (
             <section className="apps-section" aria-label="Recently opened">
               <h2>Recent</h2>
               <div className="launcher-grid">{recentApps.map(tile)}</div>
             </section>
           )}
-          {shown.length > 0 && (
+          {!watchOnly && shown.length > 0 && (
             <section className="apps-section" aria-label="All apps">
               {!needle && recentApps.length > 0 && <h2>All apps</h2>}
               <div className="launcher-grid">{shown.map(tile)}</div>
             </section>
           )}
-          {!shown.length && (
+          {!watchOnly && !shown.length && (
             <Empty
               icon={needle ? Search : AppWindow}
               title={needle ? "No matching apps" : "No applications found"}
@@ -457,6 +467,7 @@ export default function Apps({
             onStale={() => void refreshThreads()}
             paused={paused}
             owner={owner}
+            controlKey={controlIn(changes)}
             toast={toast}
           />
         </Suspense>

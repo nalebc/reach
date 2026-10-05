@@ -11,26 +11,72 @@ import { ALL_SCOPES } from "../server/core.mjs";
 test("screen control belongs to one paired person, expires, and can be revoked", () => {
   let now = 100;
   const control = new ScreenControl(() => now);
-  const owner = { id: "owner", scopes: ALL_SCOPES };
-  const other = { id: "other", scopes: ALL_SCOPES };
+  const owner = { id: "owner", name: "Owner's iPhone", scopes: ALL_SCOPES };
+  const other = { id: "other", name: "iPad", scopes: ALL_SCOPES };
   const agent = { id: "agent", scopes: ["screen"] };
   assert.throws(() => control.check(owner), /off or expired/);
   assert.throws(() => control.acquire(agent, true), /paired person/);
   assert.throws(() => control.acquire(owner, "true"), /true or false/);
   control.acquire(owner, true);
   control.check(owner);
-  assert.throws(() => control.check(other), /off or expired/);
-  assert.throws(() => control.acquire(other, true), /Another paired device/);
+  assert.deepEqual(control.holder(), { clientId: "owner", name: "Owner's iPhone", guest: false });
+  // The other device watches and is told who controls.
+  assert.throws(() => control.check(other), /Owner's iPhone is controlling/);
+  assert.throws(() => control.acquire(other, true), /Owner's iPhone is controlling the screen/);
   control.acquire(other, false); // Cannot release someone else's control.
   control.check(owner);
   now += 30001;
   assert.throws(() => control.check(owner), /off or expired/);
+  assert.equal(control.holder(), null);
   control.acquire(other, true);
   control.revoke(other.id);
   assert.throws(() => control.check(other), /off or expired/);
   control.acquire(owner, true);
   control.clear();
   assert.throws(() => control.check(owner), /off or expired/);
+});
+
+test("control never moves silently: only an explicit Take over moves it", () => {
+  let now = 100;
+  const control = new ScreenControl(() => now);
+  const phone = { id: "phone", name: "iPhone", scopes: ALL_SCOPES };
+  const ipad = { id: "ipad", name: "iPad", scopes: ALL_SCOPES };
+  const ali = { id: "ali", name: "Ali", kind: "guest", scopes: ["screen", "screen:control"] };
+  const sam = { id: "sam", name: "Sam", kind: "guest", scopes: ["screen", "screen:control"] };
+  control.acquire(ali, true);
+  // Your own renewals (each action renews) no longer take it from your guest:
+  // the two phones used to take it from each other on every tap.
+  const asked = (() => {
+    try {
+      control.acquire(phone, true);
+    } catch (e) {
+      return e;
+    }
+  })();
+  assert.equal(asked.status, 409);
+  assert.deepEqual(asked.holder, { name: "Ali", guest: true });
+  assert.equal(asked.canTakeOver, true, "you can take it from a guest");
+  control.check(ali);
+  // An explicit Take over moves it, and says from whom.
+  assert.deepEqual(control.acquire(phone, true, { takeover: true }), { enabled: true, expiresAt: 30100, taken: "ali" });
+  assert.throws(() => control.check(ali), /iPhone is controlling/);
+  // A guest never takes it from you, even asking.
+  const refused = (() => {
+    try {
+      control.acquire(ali, true, { takeover: true });
+    } catch (e) {
+      return e;
+    }
+  })();
+  assert.equal(refused.status, 409);
+  assert.equal(refused.canTakeOver, false);
+  // Your other device takes over only when asked.
+  assert.throws(() => control.acquire(ipad, true), /iPhone is controlling/);
+  assert.equal(control.acquire(ipad, true, { takeover: true }).taken, "phone");
+  // Between guests, Take over works both ways.
+  now += 30001;
+  control.acquire(sam, true);
+  assert.equal(control.acquire(ali, true, { takeover: true }).taken, "sam");
 });
 
 test("invalid pointer, scroll and keyboard payloads never reach native input", async () => {
@@ -104,10 +150,11 @@ test("screen HTTP endpoints require viewing plus a separate per-client control g
       (await call("/api/screen/control", other, { enabled: true })).status,
       409,
     );
+    // Someone else controls: the answer says so (not "expired").
     assert.equal(
       (await call("/api/screen/input", other, { type: "key", key: "invalid" }))
         .status,
-      403,
+      409,
     );
     // A granted owner's invalid action reaches validation, never OS execution.
     assert.equal(

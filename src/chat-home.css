@@ -709,14 +709,62 @@ div.sign-in {
   .app-shell .main-content.page-sessions {
     padding: 0;
   }
+  /* One even rhythm, top to bottom: the switcher, what needs you, a notice,
+     the greeting, the composer, then your chats, 12 px apart. The last chat
+     clears the floating bar and Safari's own toolbar. */
   .page-sessions .chat-home {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     max-width: none;
     min-height: 100dvh;
     margin: 0;
     border-radius: 0;
-    padding: calc(env(safe-area-inset-top) + 12px) 16px calc(112px + env(safe-area-inset-bottom));
+    padding: calc(env(safe-area-inset-top) + 12px) 16px calc(150px + env(safe-area-inset-bottom));
   }
+  .page-sessions .chat-home > * {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+  .page-sessions .chat-home > .agent-picker {
+    align-self: center;
+    flex-shrink: 0;
+  }
+  /* The greeting on one line, its mark beside the words. */
   .page-sessions .chat-greeting {
-    margin: 22px 0 20px;
+    flex-direction: row;
+    justify-content: center;
+    gap: 10px;
+    margin: 6px 0 2px;
+  }
+  .page-sessions .chat-greeting h2 {
+    font-size: 26px;
+  }
+  .page-sessions .chat-greeting .chat-greeting-logo {
+    width: 30px !important;
+    height: 30px !important;
+  }
+  /* Out of usage: one quiet line, Upgrade small at its end. */
+  .page-sessions .chat-status.out-of-usage {
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 8px 8px 14px;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--as-text) 6%, transparent);
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  .page-sessions .chat-status.out-of-usage .as-banner-btn {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .page-sessions .chat-sessions h3:first-child {
+    margin-top: 4px;
+  }
+  .page-sessions .chat-sessions .chat-search {
+    margin-bottom: 8px;
   }
 }

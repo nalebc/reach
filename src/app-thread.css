@@ -221,3 +221,35 @@
     transition: none;
   }
 }
+
+/* Someone else controls the Mac: this phone watches, says who, and offers
+   Take over when it may (never taken silently). */
+.app-thread-watching {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 16px;
+  border-radius: 999px;
+  background: rgb(18 23 20 / 0.92);
+  box-shadow:
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.12),
+    0 10px 30px -10px rgb(0 0 0 / 0.8);
+  color: #dfe8e2;
+  font-size: 14px;
+}
+.app-thread-watching span {
+  flex: 1;
+  min-width: 0;
+}
+.app-thread-watching b {
+  font-weight: 600;
+  color: #f1f6f2;
+}
+.app-thread-watching .button {
+  flex: 0 0 auto;
+  border-radius: 999px;
+}

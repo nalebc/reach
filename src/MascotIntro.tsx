@@ -1,4 +1,5 @@
 import { useContext, useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
 import { MotionContext } from "./motion";
 import { Computer, ReachMark } from "./ReachIdentity";
 import "./mascot-intro.css";
@@ -25,15 +26,46 @@ function firstTime() {
   }
 }
 
+// Once it starts, the scene plays in its own layer on the page, so the page
+// that started it can go away underneath: an invitation is accepted in about
+// a second and its page makes way for Reach, which used to cut the scene off
+// (already counted as seen, it never came back).
+let playing = false;
 export default function MascotIntro() {
   const motion = useContext(MotionContext);
-  const [show, setShow] = useState(() => {
+  useEffect(() => {
+    if (playing) return;
     const quiet =
       !motion.enabled ||
       motion.reduced ||
       matchMedia("(prefers-reduced-motion: reduce)").matches;
-    return !quiet && firstTime();
-  });
+    if (quiet || !firstTime()) return;
+    playing = true;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const layer = createRoot(host);
+    layer.render(
+      <IntroScene
+        onDone={() =>
+          setTimeout(() => {
+            layer.unmount();
+            host.remove();
+            playing = false;
+          })
+        }
+      />,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
+function IntroScene({ onDone }: { onDone: () => void }) {
+  const [show, setShow] = useState(true);
+  useEffect(() => {
+    if (!show) onDone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show]);
   const [leaving, setLeaving] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   // It ends with its own fade, so a phone that pauses it in the background

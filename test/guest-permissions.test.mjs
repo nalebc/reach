@@ -155,7 +155,11 @@ test("scopes: invitations get exactly what was chosen; agents never get control"
     assert.deepEqual(scopes({ apps: "all" }), ["device", "apps:open"]);
     assert.deepEqual(scopes({ terminal: true }), ["device", "terminal"]);
     assert.deepEqual(scopes({ agents: true }), ["device", "codex"]);
-    assert.deepEqual(scopes({ full: true }), ALL_SCOPES);
+    // Everything but apps:drive, which only agents are granted, on purpose.
+    assert.deepEqual(
+      scopes({ full: true }),
+      ALL_SCOPES.filter((s) => s !== "apps:drive"),
+    );
     for (const bad of [
       {},
       { screen: "watch" },
@@ -323,27 +327,34 @@ test("screen control can be granted, and you can always take it back", async (t)
   });
   assert.equal(lease.status, 200);
   assert.equal(lease.body.enabled, true);
-  // The owner takes over; the guest can't take it back from the owner.
+  // The owner doesn't take it silently: told who controls, offered Take over.
+  const busy = await call("/api/screen/control", {
+    token: owner.token,
+    method: "POST",
+    body: { enabled: true },
+  });
+  assert.equal(busy.status, 409);
+  assert.equal(busy.body.holder.guest, true);
+  assert.equal(busy.body.canTakeOver, true);
+  // Taking over is explicit; the guest can't take it back from the owner.
   assert.equal(
     (
       await call("/api/screen/control", {
         token: owner.token,
         method: "POST",
-        body: { enabled: true },
+        body: { enabled: true, takeover: true },
       })
     ).status,
     200,
   );
-  assert.equal(
-    (
-      await call("/api/screen/control", {
-        token: controller.token,
-        method: "POST",
-        body: { enabled: true },
-      })
-    ).status,
-    409,
-  );
+  const back = await call("/api/screen/control", {
+    token: controller.token,
+    method: "POST",
+    body: { enabled: true, takeover: true },
+  });
+  assert.equal(back.status, 409);
+  assert.equal(back.body.canTakeOver, false);
+  assert.equal(back.body.holder.guest, false);
   // Control doesn't bring files, terminals or apps with it.
   for (const route of [
     "/api/files?root=0&path=",

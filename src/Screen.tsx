@@ -39,7 +39,7 @@ import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
-import { isPausedMessage, pausedIn } from "./pause";
+import { controlIn, isPausedMessage, pausedIn } from "./pause";
 import "./screen-immersive.css";
 type Display = {
   id: string;
@@ -81,6 +81,9 @@ export default function Screen({
     [control, setControl] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  // Someone else controls the screen (who, and whether this phone may take
+  // over); cleared when control changes hands.
+  const [holder, setHolder] = useState<{ name: string; canTakeOver: boolean } | null>(null);
   const [displays, setDisplays] = useState<Display[]>([]),
     [display, setDisplay] = useState("primary"),
     [quality] = useState("auto"),
@@ -126,6 +129,13 @@ export default function Screen({
   // Paused on the computer: no stream and no control until Resume, when
   // both come back (control only if it was on).
   const paused = pausedIn(changes, device);
+  const controlKey = controlIn(changes);
+  useEffect(() => {
+    setHolder((was) => {
+      if (was) setError("");
+      return null;
+    });
+  }, [controlKey]);
   const controlBeforePause = useRef(false);
   const ended = useCallback(
     (message: string) => {
@@ -273,11 +283,23 @@ export default function Screen({
     setBusy(true);
     setError("");
     try {
-      await post(peer, "/api/screen/control", { enabled: true });
+      // Someone else controls: Control becomes Take over (an explicit tap;
+      // control never moves silently).
+      await post(peer, "/api/screen/control", {
+        enabled: true,
+        ...(holder?.canTakeOver ? { takeover: true } : {}),
+      });
+      setHolder(null);
       if (mounted.current && intent.current && !document.hidden)
         setControl(true);
       else release();
     } catch (e) {
+      const answer = e as { status?: number; body?: { holder?: { name?: string }; canTakeOver?: boolean } };
+      if (answer.status === 409 && answer.body?.holder)
+        setHolder({
+          name: answer.body.holder.name || "Someone",
+          canTakeOver: !!answer.body.canTakeOver,
+        });
       setError((e as Error).message);
     } finally {
       if (mounted.current) setBusy(false);
@@ -632,7 +654,7 @@ export default function Screen({
                 onClick={() => void toggleControl()}
               >
                 <MousePointer2 size={15} />
-                {control ? "Stop" : "Control"}
+                {control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
               </button>
             )}
             {!live && !paused && (
@@ -674,7 +696,7 @@ export default function Screen({
                 onClick={() => void toggleControl()}
               >
                 <MousePointer2 size={17} />
-                {control ? "Stop" : "Control"}
+                {control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
               </button>
             </div>
           )}

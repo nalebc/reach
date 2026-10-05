@@ -565,3 +565,79 @@ test("a phone's video trouble lands in Reach's log, briefly and safely", async (
   assert.equal(ours[0].length, "Reach: phone video: ".length + 300);
   viewer.ws.close();
 });
+
+test("two opens of one app at once share one thread (a double tap, or two of your devices)", async (t) => {
+  // The Mac's app list takes a moment, as it does for real: both opens wait
+  // on it together.
+  const { fake, call } = await start(t, {
+    overrides: {
+      appList: async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        return [
+          { id: CHROME, name: "Google Chrome" },
+          { id: NOTES, name: "Notes" },
+        ];
+      },
+    },
+  });
+  const open = () =>
+    call("/api/screen/apps", {
+      method: "POST",
+      body: { appId: CHROME, width: 393, height: 852 },
+    });
+  const [a, b] = await Promise.all([open(), open()]);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(a.body.id, b.body.id, "one thread");
+  assert.equal(fake.requests.filter((r) => r.cmd === "open").length, 1, "one window moved, one display");
+  assert.equal((await call("/api/screen/apps")).body.length, 1);
+});
+
+test("when macOS won't let Reach watch the Mac's own mouse, Reach's log says so", async (t) => {
+  const { fake, call } = await start(t);
+  await call("/api/screen/apps", {
+    method: "POST",
+    body: { appId: CHROME, width: 393, height: 852 },
+  });
+  const logged = [];
+  const log = console.log;
+  console.log = (...args) => logged.push(args.join(" "));
+  t.after(() => (console.log = log));
+  fake.current.onEvent({ event: "pointer-guard", ok: false });
+  console.log = log;
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /^Reach: macOS didn't let Reach watch this Mac's own mouse/);
+  assert.match(logged[0], /Accessibility/);
+});
+
+test("a guest's phone hears that an app left their list (it used to stay stuck on Opening…)", async (t) => {
+  const { reach, call, url } = await start(t);
+  const ali = reach.auth.redeemGuest(
+    reach.auth.inviteGuest({ name: "Ali", ttlSeconds: 600, screen: "control", apps: "all" }).invitation,
+  );
+  const opened = await call("/api/screen/apps", {
+    method: "POST",
+    body: { appId: CHROME, width: 393, height: 852 },
+  });
+  // Ali's live connection, as the phone keeps it.
+  const ws = new WebSocket(url.replace("http:", "ws:") + "/ws/presence");
+  t.after(() => ws.terminate());
+  const snapshots = [];
+  ws.on("message", (data) => snapshots.push(JSON.parse(data)));
+  await once(ws, "open");
+  ws.send(JSON.stringify({ type: "auth", token: ali.token, kind: "phone" }));
+  const latest = async (test) => {
+    for (let i = 0; i < 60; i++) {
+      const last = snapshots.at(-1);
+      if (last?.changes && test(last.changes)) return last.changes;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw Error("no matching snapshot");
+  };
+  const before = await latest((c) => typeof c.apps === "string");
+  // You give Chrome back to the Mac: Ali's fingerprint changes at once.
+  await call(`/api/screen/apps/${opened.body.id}`, { method: "DELETE" });
+  const after = await latest((c) => c.apps !== before.apps);
+  assert.notEqual(after.apps, before.apps);
+  assert.deepEqual((await call("/api/screen/apps", { token: ali.token })).body, []);
+});

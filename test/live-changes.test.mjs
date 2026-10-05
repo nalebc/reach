@@ -35,6 +35,7 @@ test("devices learn that their lists changed without polling, and only lists the
   const reach = await createReach({
     roots: [dir],
     dataDir: path.join(dir, "private"),
+    screen: true,
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const { port } = reach.server.address();
@@ -53,6 +54,7 @@ test("devices learn that their lists changed without polling, and only lists the
       "activity",
       "apps",
       "chats",
+      "control",
       "requests",
       "terminals",
     ]);
@@ -74,6 +76,18 @@ test("devices learn that their lists changed without polling, and only lists the
     const after = await ownerSocket.next();
     assert.notEqual(after.changes.activity, first.changes.activity);
     assert.equal(after.changes.terminals, first.changes.terminals);
+    // Screen control changes hands: a watching phone hears it at once.
+    const took = await fetch(`http://127.0.0.1:${port}/api/screen/control`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${owner.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ enabled: true }),
+    });
+    assert.equal(took.status, 200);
+    const controlled = await ownerSocket.next();
+    assert.notEqual(controlled.changes.control, after.changes.control);
   } finally {
     ownerSocket.ws.close();
     guestSocket.ws.close();

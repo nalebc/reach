@@ -58,7 +58,7 @@ const at = (u, v) => ({
 let dom, React, AppThread, computer;
 const requests = [];
 // What the Mac answers about text fields and quitting, per test.
-const mac = { fields: [], quits: [] };
+const mac = { fields: [], quits: [], holder: null };
 // Views still on screen; a failed test must not leave its overlay behind
 // for the next one to find.
 const views = new Set();
@@ -73,6 +73,17 @@ before(async () => {
       "/api/screen/control": (init) => {
         const body = JSON.parse(init.body);
         requests.push(["control", body]);
+        // Someone else controls: the Mac says who, unless this is Take over.
+        if (mac.holder && body.enabled && !(body.takeover && mac.holder.canTakeOver))
+          return new Response(
+            JSON.stringify({
+              error: `${mac.holder.name} is controlling the screen. You can watch.`,
+              holder: { name: mac.holder.name, guest: true },
+              canTakeOver: mac.holder.canTakeOver,
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        if (body.takeover) mac.holder = null;
         if (computer.lease !== undefined) computer.lease = body.enabled;
         return { enabled: body.enabled };
       },
@@ -109,6 +120,7 @@ beforeEach(() => {
   requests.length = 0;
   mac.fields = [];
   mac.quits = [];
+  mac.holder = null;
   computer.reset();
   computer.size = { width: 1000, height: 2168 };
   Object.defineProperty(dom.window, "innerWidth", {
@@ -121,14 +133,18 @@ beforeEach(() => {
   });
 });
 
-async function open(thread = chrome, { connects = true } = {}) {
+async function open(thread = chrome, { connects = true, owner = true, controlKey = "" } = {}) {
   const calls = [];
-  let setThread;
+  let setThread, setKey;
   function Host() {
     const [current, set] = React.useState(thread);
+    const [key, setK] = React.useState(controlKey);
     setThread = set;
+    setKey = setK;
     return React.createElement(AppThread, {
       peer,
+      owner,
+      controlKey: key,
       thread: current,
       threads: [chrome, notes],
       onLeave: () => calls.push(["leave"]),
@@ -165,6 +181,11 @@ async function open(thread = chrome, { connects = true } = {}) {
     surface: dom.document.querySelector(".app-surface"),
     switchTo: async (t) => {
       setThread(t);
+      await settle(30);
+    },
+    // The live connection says control changed hands.
+    controlChanged: async (key) => {
+      setKey(key);
       await settle(30);
     },
   };
@@ -661,5 +682,54 @@ test("like a video player: controls fade, and a touch brings them back while sti
   await settle(3200);
   assert.equal(bar().classList.contains("hidden"), true);
   await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
+test("someone else controlling: the app watches and says who, never taking it silently; you can take over", async () => {
+  mac.holder = { name: "Ali", canTakeOver: true };
+  await open(chrome, { connects: false });
+  await dom.waitFor(() => dom.document.querySelector(".app-thread-watching"));
+  const banner = dom.document.querySelector(".app-thread-watching");
+  assert.equal(banner.querySelector("span").textContent, "Ali is controlling · you’re watching");
+  assert.equal(computer.input, null, "no input while watching");
+  assert.equal(dom.document.querySelector(".app-thread-error"), null, "not an error, no Retry");
+  // One polite ask, no fight: no further attempts on its own.
+  await settle(1500);
+  assert.deepEqual(
+    requests.filter(([kind]) => kind === "control"),
+    [["control", { enabled: true }]],
+  );
+  // Take over is explicit, and only then does input connect.
+  dom.document.querySelector(".app-thread-watching button").click();
+  await dom.waitFor(() => computer.input);
+  assert.deepEqual(requests.filter(([kind]) => kind === "control").at(-1), [
+    "control",
+    { enabled: true, takeover: true },
+  ]);
+  assert.equal(dom.document.querySelector(".app-thread-watching"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a guest watching the owner gets no Take over, and tries again when control frees up", async () => {
+  mac.holder = { name: "Owner", canTakeOver: false };
+  const { controlChanged } = await open(chrome, { connects: false, owner: false, controlKey: "k1" });
+  await dom.waitFor(() => dom.document.querySelector(".app-thread-watching"));
+  assert.equal(dom.document.querySelector(".app-thread-watching button"), null);
+  // The owner lets go: the live connection says so, and the guest takes it.
+  mac.holder = null;
+  await controlChanged("k2");
+  await dom.waitFor(() => computer.input);
+  assert.equal(dom.document.querySelector(".app-thread-watching"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a guest turning their phone doesn't try to reshape the owner's window", async () => {
+  await open(chrome, { owner: false });
+  Object.defineProperty(dom.window, "innerWidth", { value: 852, configurable: true });
+  Object.defineProperty(dom.window, "innerHeight", { value: 393, configurable: true });
+  dom.window.dispatchEvent(new dom.window.Event("resize"));
+  await settle(500);
+  assert.deepEqual(requests.filter(([method]) => method === "PATCH"), []);
+  assert.equal(dom.document.querySelector(".app-thread-error"), null);
   assert.deepEqual(dom.errors, []);
 });

@@ -41,7 +41,8 @@ type Target = TextTarget & { point?: Point; focusAt?: number };
 // touches into clicks, scrolls and typing. Like a video player, the controls
 // stay out of the way: touching the app shows a slim bar for a few seconds
 // (the touch still reaches the app), then it fades. Control is taken on
-// open: opening the app is the intent.
+// open (opening the app is the intent), unless someone else controls the
+// Mac: then this phone watches, says who, and offers Take over when it may.
 export default function AppThread({
   peer,
   thread,
@@ -55,6 +56,7 @@ export default function AppThread({
   onStale,
   paused = false,
   owner = false,
+  controlKey = "",
   toast,
 }: {
   peer: Peer;
@@ -72,6 +74,9 @@ export default function AppThread({
   // comes back here by itself.
   paused?: boolean;
   owner?: boolean;
+  // Changes when screen control changes hands (the live connection's
+  // `changes.control`): a watching phone tries again then.
+  controlKey?: string;
   toast?: (message: string) => void;
 }) {
   const shell = useRef<HTMLDivElement>(null);
@@ -81,6 +86,13 @@ export default function AppThread({
   const [controlFor, setControlFor] = useState<string | null>(null);
   const control = controlFor === thread.id;
   const [failures, setFailures] = useState(0);
+  // Someone else controls the Mac: who, whether this phone may take over,
+  // and the control key it was told under (a new key means try again).
+  const [watching, setWatching] = useState<{
+    name: string;
+    canTakeOver: boolean;
+    key: string;
+  } | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [asking, setAsking] = useState<number | null>(null);
@@ -135,6 +147,7 @@ export default function AppThread({
   // again a few times before saying so.
   useEffect(() => {
     if (!running || !visible || control) return;
+    if (watching && watching.key === controlKey) return;
     if (failures >= 3) {
       setError("Controls disconnected. Tap Retry.");
       return;
@@ -147,13 +160,24 @@ export default function AppThread({
           await post(peer, "/api/screen/control", { enabled: true });
           if (!cancelled) {
             setControlFor(id);
+            setWatching(null);
             setError("");
           }
         } catch (e) {
-          if (!cancelled) {
-            setError((e as Error).message);
-            setFailures((n) => n + 1);
+          if (cancelled) return;
+          const answer = (e as { status?: number; body?: { holder?: { name?: string }; canTakeOver?: boolean } });
+          // Someone else controls: watch, never fight for it.
+          if (answer.status === 409 && answer.body?.holder) {
+            setWatching({
+              name: answer.body.holder.name || "Someone",
+              canTakeOver: !!answer.body.canTakeOver,
+              key: controlKey,
+            });
+            setError("");
+            return;
           }
+          setError((e as Error).message);
+          setFailures((n) => n + 1);
         }
       },
       failures ? 600 : 0,
@@ -162,7 +186,18 @@ export default function AppThread({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [running, visible, control, failures, thread.id, peer.url, peer.token]);
+  }, [running, visible, control, failures, watching, controlKey, thread.id, peer.url, peer.token]);
+  const takeOver = async () => {
+    try {
+      await post(peer, "/api/screen/control", { enabled: true, takeover: true });
+      setFailures(0);
+      setControlFor(thread.id);
+      setWatching(null);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   // Working controls clear any earlier failures.
   useEffect(() => {
     if (!input.ready) return;
@@ -207,7 +242,8 @@ export default function AppThread({
   // Safari's toolbar collapsing, are letterboxed instead.
   const shape = useRef(portrait(phoneViewport()));
   useEffect(() => {
-    if (!running) return;
+    // Only the owner reshapes the window; a guest's phone letterboxes it.
+    if (!running || !owner) return;
     let timer: ReturnType<typeof setTimeout>;
     const changed = () => {
       clearTimeout(timer);
@@ -229,7 +265,7 @@ export default function AppThread({
       window.removeEventListener("resize", changed);
       window.removeEventListener("orientationchange", changed);
     };
-  }, [running, thread.id, peer.url, peer.token, onUpdate]);
+  }, [running, owner, thread.id, peer.url, peer.token, onUpdate]);
 
   const usable = control && input.ready && stream.ready;
   // Where the window's text fields are, refreshed shortly after each
@@ -460,6 +496,18 @@ export default function AppThread({
                 }}
               >
                 Retry
+              </button>
+            )}
+          </div>
+        )}
+        {watching && !control && running && (
+          <div className="app-thread-watching" role="status">
+            <span>
+              <b>{watching.name}</b> is controlling · you’re watching
+            </span>
+            {watching.canTakeOver && (
+              <button className="button secondary small" onClick={() => void takeOver()}>
+                Take over
               </button>
             )}
           </div>

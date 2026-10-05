@@ -77,6 +77,8 @@ export async function startDom({
     const href = new URL(url, window.location.href);
     const route = href.pathname;
     const body = (await routes[route]?.(init, href)) ?? {};
+    // A route can answer with its own status (a 409, say).
+    if (body instanceof Response) return body;
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },

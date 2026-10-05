@@ -340,6 +340,10 @@ export class AppThreads {
   event(event) {
     if (event.event === "pause" || event.event === "resume")
       return this.onMenu(event.event === "pause");
+    if (event.event === "pointer-guard")
+      return console.log(
+        "Reach: macOS didn't let Reach watch this Mac's own mouse, so it can get lost on the apps' hidden displays. Allow Terminal in System Settings → Privacy & Security → Accessibility, then restart Reach.",
+      );
     const t = this.get(event.thread);
     if (!t) return;
     if (event.event === "region" && rect(event.region)) {

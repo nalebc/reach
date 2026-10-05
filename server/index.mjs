@@ -1934,9 +1934,28 @@ export async function createReach(overrides = {}) {
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body.enabled)
       throw fail(403, "Turn on screen viewing first.");
-    const lease = screenControl.acquire(req.client, req.body.enabled);
+    let lease;
+    try {
+      lease = screenControl.acquire(req.client, req.body.enabled, {
+        takeover: req.body.takeover === true,
+      });
+    } catch (e) {
+      // Someone else controls: say who, so the phone can watch (or offer
+      // Take over) instead of fighting for it.
+      if (!e.holder) throw e;
+      return res
+        .status(409)
+        .json({ error: e.message, holder: e.holder, canTakeOver: e.canTakeOver });
+    }
     if (!req.body.enabled) closeInput(req.client.id);
-    res.json(lease);
+    for (const nudge of presenceNudges) nudge();
+    const { taken, ...grant } = lease;
+    if (taken) {
+      const message = `${req.client.name || "Someone"} took over control.`;
+      closeInput(taken, message);
+      console.log(`Reach: ${req.client.name || "a device"} took over screen control.`);
+    }
+    res.json(grant);
   });
   app.post("/api/screen/input", async (req, res) => {
     if (!config.screen) throw fail(403, "Screen viewing is off.");
@@ -2145,8 +2164,20 @@ export async function createReach(overrides = {}) {
             ...(scopes.includes("codex") && {
               chats: digest(codex.list().filter((c) => mayAccess(client, c))),
             }),
-            ...(scopes.includes("admin") &&
-              scopes.includes("screen") && { apps: digest(appThreads.list()) }),
+            // The apps on phones, as this device may see them: a guest's list
+            // used to go stale (an app you gave back stayed "on your phone"
+            // for them, its view stuck on "Opening…").
+            ...(scopes.includes("screen") &&
+              (scopes.includes("admin") || scopes.includes("apps:open")) && {
+                apps: digest(
+                  appThreads.list().filter((t) => appAllowed(client, t.appId)),
+                ),
+              }),
+            // Who controls the screen: a watching phone tries again the
+            // moment it's free, without polling.
+            ...(scopes.includes("screen") && {
+              control: digest(screenControl.holder()?.clientId ?? ""),
+            }),
             ...(macTerminals &&
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
