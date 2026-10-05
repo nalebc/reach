@@ -173,6 +173,32 @@ test("a picture sent in a Claude session is read back from its own line, the tra
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("whether the Claude app took a message is read from its transcript: its own entry, or its queue entry while working", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-"));
+  const dir = path.join(root, "projects", "-work-app");
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${ID}.jsonl`);
+  const since = Date.parse(at(5));
+  await fs.writeFile(
+    file,
+    [
+      line({ sessionId: ID, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), entrypoint: "claude-desktop", message: { content: "Run the tests" } }),
+    ].join("\n") + "\n",
+  );
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  // Only what came after it was sent counts.
+  assert.equal(await claude.arrived(ID, "Run the tests", since), false);
+  await fs.appendFile(file, line({ type: "queue-operation", operation: "enqueue", timestamp: at(6), sessionId: ID, content: "Run the tests" }) + "\n");
+  assert.equal(await claude.arrived(ID, "Run the tests", since), true);
+  assert.equal(await claude.arrived(ID, "Something else", since), false);
+  await fs.appendFile(file, line({ sessionId: ID, type: "user", uuid: "u2", parentUuid: "u1", timestamp: at(7), entrypoint: "claude-desktop", message: { content: [{ type: "text", text: "Ship it" }] } }) + "\n");
+  assert.equal(await claude.arrived(ID, "Ship it", since), true);
+  // Written by Reach's own process: not the app taking it.
+  await fs.appendFile(file, line({ sessionId: ID, type: "user", uuid: "u3", parentUuid: "u2", timestamp: at(8), entrypoint: "sdk-cli", message: { content: "From Reach" } }) + "\n");
+  assert.equal(await claude.arrived(ID, "From Reach", since), false);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("a transcript is kept as the conversation shows it: big tool inputs, outputs and images don't stay in memory", () => {
   const base = { sessionId: ID, cwd: "/work/app", entrypoint: "cli" };
   const big = "x".repeat(200000);

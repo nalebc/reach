@@ -117,6 +117,8 @@ export function createClaudeSessions({
       origin: appRecord ? "app" : origins[parsed.entrypoint] || "cli",
       inApp: !!appRecord,
       appSessionId: appRecord?.sessionId || null,
+      // What the Claude app's window header calls it.
+      ...(appRecord ? { appTitle: appRecord.title || "Untitled" } : {}),
       updatedAt: parsed.updatedAt,
       createdAt: parsed.items[0]?.at || 0,
       status: "idle",
@@ -163,6 +165,39 @@ export function createClaudeSessions({
         items: parsed.items.slice(start, end),
         before: start > 0 ? String(start) : null,
       };
+    },
+    // Whether the Claude app took a message after `since`: its own entry for
+    // it (the turn started) or its queue entry (the chat was working).
+    async arrived(id, text, since) {
+      const found = await locate(id);
+      if (!found) return false;
+      const stat = await fs.stat(found.file);
+      const start = Math.max(0, stat.size - 512 * 1024);
+      const handle = await fs.open(found.file, "r");
+      let tail = "";
+      try {
+        tail = (await bytes(handle, start, stat.size - start)).toString("utf8");
+      } finally {
+        await handle.close();
+      }
+      const wanted = String(text || "").trim();
+      for (const line of tail.split("\n").reverse()) {
+        if (!line.includes("queue-operation") && !line.includes("claude-desktop")) continue;
+        let e;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!e?.timestamp || Date.parse(e.timestamp) < since) continue;
+        if (e.type === "queue-operation" && e.operation === "enqueue" && (!wanted || String(e.content ?? "").trim() === wanted)) return true;
+        if (e.type === "user" && e.entrypoint === "claude-desktop") {
+          const content = e.message?.content;
+          const said = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
+          if (wanted ? said.trim() === wanted : Array.isArray(content) && content.some((b) => b?.type === "image")) return true;
+        }
+      }
+      return false;
     },
     // A picture sent in a session, read back from the one transcript line
     // that holds it.

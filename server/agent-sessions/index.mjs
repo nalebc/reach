@@ -12,10 +12,11 @@ import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
-import { claudeAppAccess, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
+import { claudeAppAccess, claudeAppRunning, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createOutbox } from "./outbox.mjs";
+import { createClaudeCompose, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
@@ -155,6 +156,10 @@ export function createAgentSessions({
   outbox = createOutbox({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-outbox.json") }),
   // Apps installed here, to show a consent card's apps with their icons.
   installedApps = platformApps,
+  // Messages to chats the Claude app lists go into the app itself
+  // (claude-compose.mjs); off in tests unless given.
+  claudeCompose: givenCompose = null,
+  claudeOpen = claudeAppRunning,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
   // Seconds since the Mac was last used (agent-asks.mjs reads it by default).
   macIdle,
@@ -313,6 +318,15 @@ export function createAgentSessions({
       throw blocked("This session is open in another Claude Code process on your Mac. Reply there.");
     return holder;
   };
+  const claudeCompose =
+    givenCompose ||
+    (process.env.NODE_TEST_CONTEXT
+      ? null
+      : createClaudeCompose({
+          type: (message) => typeIntoClaude(message, { dataDir }),
+          open,
+          arrived: (id, text, since) => claude.arrived(id, text, since),
+        }));
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
@@ -325,11 +339,18 @@ export function createAgentSessions({
     try {
       while (!closed && outbox.list(id).length) {
         // Waiting never keeps Reach from quitting; after two hours, less often.
-        await new Promise((r) => setTimeout(r, Date.now() - started > 2 * 60 * 60 * 1000 ? 30000 : queueMs).unref?.());
+        // One waiting for the Claude app's window looks again every 5 s.
+        const pause = Date.now() - started > 2 * 60 * 60 * 1000 ? 30000 : outbox.list(id)[0]?.via === "app" && outbox.list(id)[0]?.error ? 5000 : queueMs;
+        await new Promise((r) => setTimeout(r, pause).unref?.());
         if (closed) break;
         const next = outbox.list(id)[0];
         if (!next) break;
         try {
+          if (next.via === "app") {
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images });
+            outbox.remove(id, next.id);
+            continue;
+          }
           const holder = await holderOf(id);
           if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
             outbox.problem(id, next.id, null);
@@ -366,11 +387,19 @@ export function createAgentSessions({
     async send(agent, id, body) {
       // As from the Codex app: without a pick, its composer's current mode.
       if (host(agent) === codexLive) return codexLive.send(id, { ...body, mode: body.mode || codex.appMode?.() || undefined });
-      await signedIn();
       // Claude Code keeps sessions per folder: resume it where it began.
       const { session } = await claude.read(id, { limit: 1 });
       const message = { ...body, cwd: session.cwd };
       const holder = await holderOf(id);
+      // A chat the Claude app lists, with the app open: typed into the app
+      // itself, so its window shows it at once (Reach's own Claude Code
+      // process never showed there). The app signs in on its own.
+      if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+        const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled" });
+        void deliver(id);
+        return { queued: true, delivered: false, messageId: queued.id, via: "app" };
+      }
+      await signedIn();
       // After any still waiting, or while the app is busy: into the outbox.
       if (outbox.list(id).length || (holder && ((await busy(id, holder)) || !(await handOver(holder))))) {
         const queued = outbox.add(id, message);
@@ -410,11 +439,12 @@ export function createAgentSessions({
           ? {
               queued: outbox.list(id).length,
               // Sent from the phone, waiting their turn (shown until they're in the transcript).
-              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error }) => ({
+              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error, via }) => ({
                 id: messageId,
                 text,
                 images: images.length,
                 at,
+                ...(via ? { via } : {}),
                 ...(error ? { error } : {}),
               })),
             }

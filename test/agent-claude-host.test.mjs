@@ -514,6 +514,65 @@ test("a message waiting for the Claude app is never lost: it shows, survives a R
   second.close();
 });
 
+test("a message to a chat the Claude app lists goes into the app itself (its window shows it), never through Reach's own process", async () => {
+  const claude = fakeClaude();
+  const app = { pid: 4747, alive: true, busy: true, signals: [], open: true };
+  const delivered = [];
+  let refuse = "Goes in when you open this chat in the Claude app, or step away from your Mac.";
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [],
+      starts: async () => [],
+      // The CLI is signed out: the app signs in on its own, so it doesn't matter.
+      health: async () => ({ agent: "claude", installed: true, signedIn: false }),
+      read: async (id) => ({
+        session: { agent: "claude", id, cwd: "/work/site", status: "idle", inApp: true, appTitle: "Fix the chart" },
+        items: [],
+        before: null,
+      }),
+    },
+    live: async () => new Map(app.alive ? [[ID, { where: "claude-app", pid: app.pid, tty: null, exact: true, busy: app.busy }]] : []),
+    claudeHost: host(claude),
+    signIn: {},
+    liveMs: -1,
+    queueMs: 10,
+    kill: (pid, signal) => app.signals.push(signal),
+    alive: () => app.alive,
+    takeOverMs: 30,
+    claudeImports: { add: async () => {}, close() {} },
+    claudeOpen: async () => app.open,
+    claudeCompose: {
+      deliver: async (id, message) => {
+        if (refuse) throw Object.assign(new Error(refuse), { waiting: true });
+        delivered.push([id, message]);
+        return { delivered: true };
+      },
+    },
+  });
+  const reply = await sessions.send("claude", ID, { text: "Run the tests", images: ["/data/agent-images/p.png"] });
+  assert.equal(reply.via, "app");
+  assert.equal(reply.queued, true);
+  // Waiting for the window, it says why.
+  await settle(60);
+  const [waiting] = sessions.view("claude", ID).outbox;
+  assert.equal(waiting.via, "app");
+  assert.equal(waiting.error, refuse);
+  // The window can take it: typed into the app, as the app's chat titles it.
+  refuse = null;
+  await settle(5200);
+  assert.deepEqual(delivered, [[ID, { title: "Fix the chart", text: "Run the tests", images: ["/data/agent-images/p.png"] }]]);
+  assert.deepEqual(sessions.view("claude", ID).outbox, []);
+  // Never Reach's own process, never ending the app's.
+  assert.equal(claude.runs.length, 0);
+  assert.deepEqual(app.signals, []);
+  // The Claude app closed: Reach's own way, as before (which needs the CLI signed in).
+  app.open = false;
+  await assert.rejects(sessions.send("claude", ID, { text: "hi" }), /signed out/);
+  sessions.close();
+});
+
 test("a Claude app session waiting on you shows what it asks, and a message from here waits instead of ending it", async () => {
   const claude = fakeClaude();
   const claudeHost = host(claude);

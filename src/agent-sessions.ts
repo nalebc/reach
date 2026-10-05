@@ -118,7 +118,7 @@ export type LiveView = {
   // Codex's in the Codex app's own queue.
   outbox?: OutboxMessage[];
 };
-export type OutboxMessage = { id: string; text: string; images: number; at?: number; error?: string };
+export type OutboxMessage = { id: string; text: string; images: number; at?: number; error?: string; via?: "app" };
 export type AgentModel = {
   id: string;
   name: string;
