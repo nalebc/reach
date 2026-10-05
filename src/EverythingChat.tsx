@@ -208,6 +208,9 @@ function NewChat({
       for (const i of images) URL.revokeObjectURL(i.url);
       setText("");
       setImages([]);
+      try {
+        sessionStorage.removeItem(draftKey);
+      } catch {}
       onStarted({
         agent,
         id: r.threadId,

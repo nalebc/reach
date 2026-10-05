@@ -1374,7 +1374,7 @@ export default function AgentSessionView({
           onClick={() => setSwitching(true)}
         >
           <AgentLogo agent={agent} logos={logos} size={22} />
-          <span>{agentLabel(agent)}</span>
+          <span className="as-app-switch-name">{agentLabel(agent)}</span>
           <ChevronDown size={13} />
         </button>
         <span className="as-bar-pill">

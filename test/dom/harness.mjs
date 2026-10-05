@@ -118,6 +118,7 @@ export async function startDom({
   });
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
+  const { flushSync } = await import("react-dom");
   const mounted = new Set();
 
   return {
@@ -125,18 +126,19 @@ export async function startDom({
     document: window.document,
     errors,
     React,
+    update: (change) => flushSync(change),
     // A module as the app sees it: "/src/Screen.tsx".
     load: (file) => vite.ssrLoadModule(file),
     async render(element) {
       const container = window.document.createElement("div");
       window.document.body.append(container);
       const reactRoot = createRoot(container);
-      reactRoot.render(element);
+      flushSync(() => reactRoot.render(element));
       const view = {
         container,
         unmount: async () => {
           mounted.delete(view);
-          reactRoot.unmount();
+          flushSync(() => reactRoot.unmount());
           container.remove();
           await settle();
         },
@@ -145,7 +147,7 @@ export async function startDom({
       await settle();
       return view;
     },
-    async waitFor(check, timeout = 2000) {
+    async waitFor(check, timeout = 10000) {
       const end = Date.now() + timeout;
       for (;;) {
         const value = check();

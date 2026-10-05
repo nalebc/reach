@@ -143,7 +143,7 @@ export default function ChatList({
     </div>
   );
   return (
-    <div className={`chat-list ${compact ? "compact" : ""}`}>
+    <div className={`chat-library ${compact ? "compact" : ""}`}>
       {!compact && (
         <header className="chat-list-top">
           <div>
@@ -260,7 +260,12 @@ export default function ChatList({
             <section className="chat-group" aria-label="Recent conversations">
               <h2>
                 {active.length ? "Recent conversations" : "Your conversations"}
-                <span>{found.length}</span>
+                <span>
+                  {
+                    found.filter((s) => !needsYou(s) && s.status !== "running")
+                      .length
+                  }
+                </span>
               </h2>
               {cards(recent)}
             </section>

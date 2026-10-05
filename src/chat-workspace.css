@@ -385,7 +385,7 @@
     min-height: 40px;
     padding: 7px 9px;
   }
-  .chat-redesign .as-app-switch > span {
+  .chat-redesign .as-app-switch > .as-app-switch-name {
     display: none;
   }
   .chat-redesign .as-icon {

@@ -2,7 +2,7 @@
 .chat-workspace {
   min-height: 70vh;
 }
-.chat-list {
+.chat-library {
   --chat-ink: #e6eee8;
   --chat-muted: #9baaa0;
   --chat-line: #2c3930;
@@ -321,13 +321,13 @@
   font-size: 11px;
   text-align: center;
 }
-.chat-list.compact {
+.chat-library.compact {
   padding: 0;
 }
-.chat-list.compact .chat-card-grid {
+.chat-library.compact .chat-card-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.chat-list.compact .chat-card {
+.chat-library.compact .chat-card {
   min-height: 175px;
   padding: 16px;
 }
@@ -344,7 +344,7 @@
   .app-shell .main-content.page-sessions {
     padding: 0;
   }
-  .page-sessions .chat-list {
+  .page-sessions .chat-library {
     min-height: 100dvh;
     padding: calc(env(safe-area-inset-top) + 30px) 20px
       calc(100px + env(safe-area-inset-bottom));
@@ -420,7 +420,7 @@
     display: none;
   }
   .chat-card-grid,
-  .chat-list.compact .chat-card-grid {
+  .chat-library.compact .chat-card-grid {
     grid-template-columns: 1fr;
   }
   .chat-card {

@@ -158,8 +158,13 @@ test("the published package ships the app, never sources or private state, and r
     "qrcode-terminal",
     "ws",
   ]);
+  const packArgs = ["pack", "--dry-run", "--json", "--ignore-scripts"];
+  const npm = process.env.npm_execpath;
+  const command = npm ? process.execPath : process.platform === "win32" ? "cmd.exe" : "npm";
+  const args = npm ? [npm, ...packArgs] : process.platform === "win32"
+    ? ["/d", "/s", "/c", "npm pack --dry-run --json --ignore-scripts"] : packArgs;
   const [{ files }] = JSON.parse(
-    execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    execFileSync(command, args, {
       cwd: repo,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
