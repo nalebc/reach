@@ -1,0 +1,240 @@
+/* The Chat tab's list (ChatList.tsx): every agent's chats, as the agents'
+   sidebars list them, in Reach's own ink and mint. Drawer rows with the
+   agent's real icon; what needs you on a faint mint wash; a ring turns
+   around an agent at work. The chats themselves keep their agent's look. */
+.chat-list {
+  --row-line: #8f9a94;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4px 0 24px;
+  color: #eef2ef;
+}
+.chat-list-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.chat-list-top h1 {
+  flex: 1;
+  margin: 0;
+  font:
+    650 26px/1.1 system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: -0.4px;
+  color: #f1f6f2;
+}
+.chat-list-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin: 6px 0 4px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--row-line);
+}
+.chat-list-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: #eef2ef;
+  font-size: 16px;
+  outline: none;
+}
+.chat-list-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 2px;
+  color: var(--row-line);
+  font-size: 14px;
+}
+.chat-list-empty {
+  margin: 48px 8px;
+  text-align: center;
+}
+.chat-list-empty strong {
+  font-size: 18px;
+  font-weight: 600;
+}
+.chat-list-empty p {
+  margin: 6px auto 0;
+  max-width: 300px;
+  color: var(--row-line);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.chat-group h2 {
+  margin: 18px 4px 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--row-line);
+}
+.chat-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 16px;
+}
+.chat-row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 16px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-row-open:active {
+  background: rgb(255 255 255 / 0.06);
+}
+.chat-row-logo {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+}
+.chat-row-logo .agent-logo {
+  border-radius: 9px;
+}
+/* An agent at work: a thin mint arc turning around its icon. */
+.chat-row-logo.working::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 12px;
+  padding: 1.5px;
+  background: conic-gradient(var(--lime) 0 28%, transparent 28%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: chat-row-turn 1.6s linear infinite;
+}
+@keyframes chat-row-turn {
+  to {
+    transform: rotate(1turn);
+  }
+}
+.chat-row-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.chat-row-title,
+.chat-row-line {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-row-title {
+  font-size: 16px;
+  color: #eef2ef;
+}
+.chat-row-line {
+  font-size: 13px;
+  color: var(--row-line);
+}
+.chat-row-when {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--row-line);
+}
+/* Waiting for you: a faint mint wash, its answers as small pills. */
+.chat-group.needs .chat-row {
+  margin: 0 -6px 6px;
+  padding: 0 8px 0 6px;
+  background: color-mix(in srgb, var(--lime) 7%, transparent);
+}
+.chat-group.needs .chat-row-line {
+  color: #c9d6cf;
+}
+.chat-row-answers {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+.chat-row-answers button {
+  min-width: 44px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.08);
+  color: #eef2ef;
+  font-size: 13px;
+}
+.chat-row-answers button.primary {
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+.chat-row-answers button:disabled {
+  opacity: 0.6;
+}
+.chat-list-more {
+  display: block;
+  margin: 10px auto 0;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: #c9d6cf;
+  font-size: 14px;
+}
+/* New chat: a slim glass pill under your thumb, above the bottom bar. */
+.chat-list-new {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 48px;
+  margin: 18px 0 0;
+  padding: 0 16px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #1a211e;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09);
+  color: #a9b6ae;
+  font-size: 15px;
+  text-align: left;
+}
+.chat-list-new .agent-logo {
+  border-radius: 7px;
+}
+@media (max-width: 1024px), (pointer: coarse) {
+  .page-sessions .chat-list {
+    min-height: 100dvh;
+    padding: calc(env(safe-area-inset-top) + 14px) 16px calc(150px + env(safe-area-inset-bottom));
+  }
+  .page-sessions .chat-list-new {
+    position: fixed;
+    z-index: 5;
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-width: 520px;
+    margin: 0 auto;
+    bottom: max(72px, calc(env(safe-area-inset-bottom) + 66px));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-row-logo.working::after {
+    animation: none;
+  }
+}

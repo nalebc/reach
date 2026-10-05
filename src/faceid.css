@@ -1,0 +1,15 @@
+/* Face ID for new browsers (Settings → Access): a short list, one button. */
+.faceid-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+.faceid-row > span {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+.faceid-row small {
+  opacity: 0.7;
+}

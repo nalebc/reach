@@ -1,0 +1,391 @@
+/* The logo's little acts (see LivingLogo.tsx). Sizes follow the wordmark. */
+.living-brand {
+  position: relative;
+}
+.living-brand .brand-mark {
+  position: relative;
+  transform-origin: 50% 90%;
+}
+.brand-word {
+  position: relative;
+  display: inline-grid;
+  align-items: center;
+}
+/* Both layers share one cell, so the word keeps its width during any act. */
+.brand-word-dim,
+.brand-word-lit {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+.brand-word-dim {
+  opacity: 0;
+}
+.brand-word-lit {
+  display: inline-flex;
+  align-items: center;
+}
+.brand-letter {
+  display: inline-block;
+}
+.brand-cursor,
+.brand-z,
+.brand-torch {
+  display: none;
+}
+.brand-beam {
+  position: absolute;
+  left: -0.55em;
+  top: 50%;
+  width: calc(100% + 0.9em);
+  height: 2.3em;
+  transform: translateY(-50%);
+  transform-origin: 0 50%;
+  clip-path: polygon(0 44%, 100% 0, 100% 100%, 0 56%);
+  background: linear-gradient(90deg, #fff3b0, #fff3b033 72%, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 1. Flashlight: the word goes dark, a beam sweeps and reveals letters, then
+   the lights flip on. */
+[data-act="flashlight"] .brand-torch {
+  display: block;
+  position: absolute;
+  left: -0.78em;
+  top: 50%;
+  width: 0.42em;
+  height: 0.24em;
+  transform: translateY(-40%);
+  border-radius: 2px;
+  background: linear-gradient(90deg, #8a968c 70%, #fff3b0 70%);
+  animation: logo-torch 3.4s ease both;
+}
+[data-act="flashlight"] .brand-beam {
+  animation: logo-beam 3.4s ease-in-out both;
+}
+[data-act="flashlight"] .brand-word-dim {
+  animation: logo-dark 3.4s ease both;
+}
+[data-act="flashlight"] .brand-word-lit {
+  -webkit-mask-image: radial-gradient(circle closest-side, #000 55%, transparent);
+  mask-image: radial-gradient(circle closest-side, #000 55%, transparent);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: logo-spot 3.4s ease-in-out both;
+}
+/* The glow sits on the unmasked word, so it follows the letters' shapes. */
+[data-act="flashlight"] .brand-word {
+  animation: logo-lights-on 3.4s ease both;
+}
+[data-act="flashlight"] .brand-mark {
+  animation: logo-lean 3.4s ease-in-out both;
+}
+@keyframes logo-spot {
+  0%,
+  12% {
+    -webkit-mask-size: 1.5em 1.5em;
+    mask-size: 1.5em 1.5em;
+    -webkit-mask-position: -1.6em 50%;
+    mask-position: -1.6em 50%;
+  }
+  42% {
+    -webkit-mask-position: 100% 50%;
+    mask-position: 100% 50%;
+  }
+  60% {
+    -webkit-mask-position: 30% 50%;
+    mask-position: 30% 50%;
+  }
+  76% {
+    -webkit-mask-size: 1.5em 1.5em;
+    mask-size: 1.5em 1.5em;
+    -webkit-mask-position: 75% 50%;
+    mask-position: 75% 50%;
+  }
+  84%,
+  100% {
+    -webkit-mask-size: 14em 14em;
+    mask-size: 14em 14em;
+    -webkit-mask-position: 50% 50%;
+    mask-position: 50% 50%;
+  }
+}
+@keyframes logo-lights-on {
+  0%,
+  80% {
+    filter: none;
+  }
+  86% {
+    filter: brightness(1.7) drop-shadow(0 0 6px #b9efd4);
+  }
+  100% {
+    filter: none;
+  }
+}
+@keyframes logo-dark {
+  0% {
+    opacity: 0;
+  }
+  8%,
+  80% {
+    opacity: 0.13;
+  }
+  88%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes logo-beam {
+  0%,
+  6% {
+    opacity: 0;
+    transform: translateY(-50%) rotate(-3deg) scaleX(0.2);
+  }
+  14% {
+    opacity: 0.55;
+    transform: translateY(-50%) rotate(-3deg) scaleX(1);
+  }
+  42% {
+    transform: translateY(-50%) rotate(3deg);
+  }
+  60% {
+    transform: translateY(-50%) rotate(-2deg);
+  }
+  76% {
+    opacity: 0.55;
+    transform: translateY(-50%) rotate(1deg);
+  }
+  84%,
+  100% {
+    opacity: 0;
+    transform: translateY(-50%) rotate(0deg);
+  }
+}
+@keyframes logo-torch {
+  0%,
+  4% {
+    opacity: 0;
+    transform: translateY(40%) scale(0.4);
+  }
+  12%,
+  80% {
+    opacity: 1;
+    transform: translateY(-40%) scale(1);
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: translateY(40%) scale(0.4);
+  }
+}
+@keyframes logo-lean {
+  0%,
+  100% {
+    transform: none;
+  }
+  14%,
+  76% {
+    transform: rotate(-5deg) translateX(-1px);
+  }
+}
+
+/* 2. Stadium wave: letters jump one after another; the mascot hops. */
+[data-act="wave"] .brand-letter {
+  animation: logo-wave 0.62s ease-in-out both;
+  animation-delay: calc(var(--i) * 90ms + 220ms);
+}
+[data-act="wave"] .brand-mark {
+  animation: logo-hop 1.9s ease-in-out both;
+}
+@keyframes logo-wave {
+  0%,
+  100% {
+    transform: none;
+  }
+  40% {
+    transform: translateY(-0.3em) rotate(-5deg);
+  }
+  70% {
+    transform: translateY(0.04em);
+  }
+}
+@keyframes logo-hop {
+  0%,
+  30%,
+  56%,
+  80%,
+  100% {
+    transform: none;
+  }
+  8% {
+    transform: translateY(1px) scaleY(0.92);
+  }
+  18% {
+    transform: translateY(-7px);
+  }
+  66% {
+    transform: translateY(-4px);
+  }
+}
+
+/* 3. Typewriter: the word retypes itself behind a terminal cursor. */
+[data-act="typewriter"] .brand-letter {
+  overflow: hidden;
+  animation: logo-type 0.01s linear both;
+  animation-delay: calc(var(--i) * 170ms + 600ms);
+}
+[data-act="typewriter"] .brand-cursor {
+  display: inline-block;
+  width: 0.48em;
+  height: 0.9em;
+  margin-left: 0.06em;
+  background: var(--lime, #b9efd4);
+  animation:
+    logo-blink 0.5s steps(1) infinite,
+    logo-cursor-out 2.9s steps(1) both;
+}
+[data-act="typewriter"] .brand-mark {
+  animation: logo-nod 2.9s ease-in-out both;
+}
+@keyframes logo-type {
+  from {
+    max-width: 0;
+  }
+  to {
+    max-width: 1em;
+  }
+}
+@keyframes logo-blink {
+  50% {
+    background: transparent;
+  }
+}
+@keyframes logo-cursor-out {
+  0%,
+  90% {
+    visibility: visible;
+  }
+  100% {
+    visibility: hidden;
+  }
+}
+@keyframes logo-nod {
+  0%,
+  100% {
+    transform: none;
+  }
+  25%,
+  45%,
+  65% {
+    transform: rotate(4deg);
+  }
+  35%,
+  55%,
+  75% {
+    transform: rotate(-2deg);
+  }
+}
+
+/* 4. Snooze: the mascot dozes off, z's float up, then it jolts awake. */
+[data-act="snooze"] .brand-mark {
+  animation: logo-doze 3.6s ease-in-out both;
+}
+[data-act="snooze"] .actor-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: logo-eyes 3.6s steps(1) both;
+}
+[data-act="snooze"] .brand-word-lit {
+  animation: logo-drowsy 3.6s ease-in-out both;
+}
+[data-act="snooze"] .brand-z {
+  display: block;
+  position: absolute;
+  left: 72%;
+  top: 0;
+  font: 700 0.42em system-ui, sans-serif;
+  font-style: normal;
+  color: #cfe8d8;
+  pointer-events: none;
+}
+[data-act="snooze"] .brand-z b {
+  position: absolute;
+  opacity: 0;
+  animation: logo-z 1.7s ease-out both;
+}
+[data-act="snooze"] .brand-z b:nth-child(2) {
+  animation-delay: 0.55s;
+}
+[data-act="snooze"] .brand-z b:nth-child(3) {
+  animation-delay: 1.1s;
+}
+@keyframes logo-doze {
+  0%,
+  92%,
+  100% {
+    transform: none;
+  }
+  16%,
+  70% {
+    transform: rotate(9deg) translateY(1px);
+  }
+  76% {
+    transform: rotate(-9deg) translateY(-4px);
+  }
+  84% {
+    transform: rotate(4deg);
+  }
+}
+@keyframes logo-eyes {
+  0%,
+  74% {
+    transform: scaleY(1);
+  }
+  12% {
+    transform: scaleY(0.15);
+  }
+  76%,
+  100% {
+    transform: scaleY(1);
+  }
+}
+@keyframes logo-drowsy {
+  0%,
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+  18%,
+  70% {
+    opacity: 0.45;
+  }
+  76% {
+    opacity: 1;
+    transform: translateX(1px);
+  }
+  80% {
+    transform: translateX(-1px);
+  }
+  84% {
+    transform: none;
+  }
+}
+@keyframes logo-z {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6);
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0.9em, -1.6em) scale(1.25);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .living-brand *,
+  .living-brand {
+    animation: none !important;
+  }
+}

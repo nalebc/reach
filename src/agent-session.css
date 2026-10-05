@@ -1,0 +1,1371 @@
+/* One agent session, dressed like the agent's own app: .codex follows the
+   Codex app, .claude follows Claude Code. Colors were taken from the apps
+   on this Mac (dark appearance). */
+.as-page,
+.chat-home {
+  --as-bg: #181818;
+  --as-text: #ececec;
+  --as-muted: #8e8e8e;
+  --as-faint: #5c5c5c;
+  --as-line: #2a2a2a;
+  --as-bubble: #2f2f2e;
+  --as-field: #363636;
+  --as-field-line: transparent;
+  --as-card: #212121;
+  --as-code-bg: #262626;
+  --as-code-line: #333333;
+  --as-inline: #ececec;
+  --as-accent: #ececec;
+  --as-plus: #6abf69;
+  --as-minus: #e06c6c;
+  /* The phone apps' pieces: floating round buttons, composer chips, the send
+     circle, and the reply's typeface. Codex's from ChatGPT.app's own dark
+     tokens (raised surface #303030), the rest measured from the Codex app. */
+  --as-float: #303030;
+  --as-float-line: rgb(255 255 255 / 0.06);
+  --as-chip: transparent;
+  --as-composer: var(--as-field);
+  --as-composer-line: transparent;
+  --as-send-ready: var(--as-text);
+  --as-send-ready-ink: var(--as-bg);
+  --as-reply-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --as-user-font: var(--as-reply-font);
+}
+/* The session page itself (the skin above is shared with the Chat home). */
+.as-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 96px);
+  max-width: 860px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--as-line);
+  border-radius: 18px;
+  background: var(--as-bg);
+  color: var(--as-text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+/* The Claude app's dark theme, from the palette it ships (Claude.app,
+   ion-dist: page gray-850, raised gray-800, text gray-20, muted gray-350,
+   clay accent). The bubble and chips are its text at 5% over the page:
+   #212121 here, #efeeec in the light screenshots, both as measured. */
+.as-page.claude,
+.chat-home.claude {
+  --as-bg: #151515;
+  --as-text: #f9f9f7;
+  --as-muted: #97958d;
+  --as-faint: #7a7874;
+  --as-line: rgb(226 224 217 / 0.12);
+  --as-bubble: #212121;
+  --as-field: #20201f;
+  --as-field-line: rgb(226 224 217 / 0.12);
+  --as-card: #20201f;
+  --as-code-bg: #1d1d1c;
+  --as-code-line: rgb(226 224 217 / 0.1);
+  --as-inline: #e8806a;
+  --as-accent: #d97757;
+  --as-float: #20201f;
+  --as-float-line: rgb(226 224 217 / 0.08);
+  --as-chip: #212121;
+  --as-composer: #151515;
+  --as-composer-line: rgb(226 224 217 / 0.14);
+  --as-send-ready: #d97757;
+  --as-send-ready-ink: #fff;
+  --as-reply-font: "anthropic-serif", ui-serif, "New York", Georgia, "Times New Roman", serif;
+  --as-user-font: "anthropic-sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+@media (max-width: 1024px), (pointer: coarse) {
+  .as-page {
+    position: fixed;
+    z-index: 40;
+    left: 0;
+    right: 0;
+    top: var(--vv-top, 0px);
+    height: var(--vv-height, 100dvh);
+    max-width: none;
+    border: 0;
+    border-radius: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  }
+}
+
+/* Header */
+.as-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 50px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--as-line);
+}
+.as-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--as-muted);
+}
+.as-icon:not(:disabled):active {
+  background: #ffffff10;
+}
+.as-icon:disabled {
+  opacity: 0.35;
+}
+.as-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+button.as-title {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.as-title:active {
+  background: #ffffff0d;
+}
+.as-bar .agent-logo {
+  margin-right: 8px;
+}
+.as-details {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 14px 10px;
+  border-bottom: 1px solid var(--as-line);
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+.as-details span {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.as-details-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid #ffffff22;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.as-title strong,
+.as-title small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.as-title strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-title small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--as-muted);
+}
+
+/* Conversation */
+.as-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.as-older {
+  align-self: center;
+  padding: 6px 14px;
+  border: 1px solid var(--as-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 13px;
+}
+.as-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--as-muted);
+  font-size: 13px;
+}
+.as-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 9px 14px;
+  border-radius: 18px;
+  background: var(--as-bubble);
+  overflow-wrap: anywhere;
+}
+.claude .as-user {
+  border-radius: 12px;
+}
+.as-user.pending {
+  opacity: 0.6;
+}
+.as-user.pending .as-tag.problem {
+  color: #f0a0a0;
+}
+.as-assistant {
+  align-self: stretch;
+  overflow-wrap: anywhere;
+}
+.as-assistant.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--as-muted);
+  animation: as-caret 1s steps(2) infinite;
+}
+@keyframes as-caret {
+  50% {
+    opacity: 0;
+  }
+}
+.as-tag {
+  display: inline-block;
+  margin: 2px 0;
+  font-size: 11.5px;
+  color: var(--as-muted);
+}
+.as-divider {
+  align-self: center;
+  margin: 0;
+  font-size: 12px;
+  color: var(--as-muted);
+}
+
+/* Markdown */
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+}
+.md h4 {
+  margin: 14px 0 6px;
+  font-size: 15.5px;
+}
+.md ul,
+.md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.md li + li {
+  margin-top: 3px;
+}
+.md code {
+  padding: 1px 5px;
+  border: 1px solid var(--as-code-line);
+  border-radius: 5px;
+  background: var(--as-code-bg);
+  color: var(--as-inline);
+  font: 0.86em "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+}
+.md pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--as-code-line);
+  border-radius: 10px;
+  background: var(--as-code-bg);
+}
+.md pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--as-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.md u {
+  text-decoration-color: var(--as-faint);
+}
+
+/* Tool steps, folded like the apps fold them */
+.as-run-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.as-run-head span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.as-run-head b {
+  font-weight: 500;
+  font-size: 13px;
+}
+.as-run-head .plus {
+  color: var(--as-plus);
+}
+.as-run-head .minus {
+  color: var(--as-minus);
+}
+.as-run-head em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--as-minus);
+}
+.as-run.open {
+  padding-bottom: 4px;
+}
+.as-step button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 0 5px 4px;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  text-align: left;
+}
+.as-step code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 12px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+}
+.as-step.failed button {
+  color: var(--as-minus);
+}
+.as-step pre {
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0f0f0f;
+  color: #c9c9c9;
+  font: 11.5px/1.45 "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+/* Errors: a quiet line in Codex, a card in Claude Code */
+.as-error.codex {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 8px;
+  color: var(--as-muted);
+  font-size: 14px;
+  text-align: center;
+}
+.as-error.codex p {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+}
+.as-error.codex svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.as-error.claude {
+  overflow: hidden;
+  border: 1px solid var(--as-field-line);
+  border-radius: 12px;
+}
+.as-error.claude header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #ffffff08;
+  font-size: 14px;
+}
+.as-error.claude header svg {
+  color: var(--as-minus);
+}
+.as-error.claude p {
+  margin: 0;
+  padding: 10px 12px 12px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+.as-error.claude footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 12px;
+}
+/* Where to get more usage: a small button, as the apps have. */
+.as-usage {
+  align-self: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--as-text);
+  color: var(--as-bg);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.as-banner .as-usage {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+/* Working */
+.as-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+.as-working small {
+  font-size: 12.5px;
+  color: var(--as-faint);
+}
+@keyframes as-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.as-shimmer {
+  background: linear-gradient(90deg, var(--as-faint) 0%, var(--as-text) 45%, var(--as-faint) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: as-shimmer 1.8s linear infinite;
+}
+@keyframes as-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .as-shimmer,
+  .as-assistant.streaming::after {
+    animation: none;
+  }
+  .as-shimmer {
+    color: var(--as-muted);
+    background: none;
+  }
+}
+
+/* Prompts: what the app would ask on the Mac */
+.as-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--as-field-line);
+  border-radius: 16px;
+  background: var(--as-card);
+}
+.codex .as-prompt {
+  border-color: #3a3a3a;
+}
+.as-prompt header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.as-prompt header svg {
+  color: var(--as-accent);
+}
+.as-prompt p,
+.as-prompt small {
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 13.5px;
+}
+.as-prompt-command {
+  margin: 0;
+  padding: 9px 11px;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: #0f0f0f;
+  font: 12.5px/1.45 "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.as-prompt-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.as-prompt-files li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.as-prompt-reason {
+  font-style: italic;
+}
+.as-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.as-prompt-actions button,
+.as-choices button {
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid #ffffff1f;
+  border-radius: 12px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+}
+.as-prompt-actions button.primary {
+  border-color: transparent;
+  background: var(--as-text);
+  color: var(--as-bg);
+}
+.claude .as-prompt-actions button.primary {
+  background: var(--as-accent);
+  color: #1a1a19;
+}
+.as-prompt-actions button:disabled {
+  opacity: 0.5;
+}
+.as-question b {
+  font-size: 12px;
+  color: var(--as-muted);
+}
+.as-question p {
+  margin: 2px 0 8px;
+  color: var(--as-text);
+}
+.as-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.as-choices button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
+.as-choices button small {
+  font-weight: 400;
+}
+/* Several questions: one per page, the steps on top. */
+.as-steps {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.as-steps button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 12.5px;
+}
+.as-steps button.current {
+  border-color: var(--as-accent);
+  color: var(--as-text);
+}
+.as-steps button.done svg {
+  color: var(--as-accent);
+}
+.as-question-hint {
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+/* A question shown on the Mac: said, not offered as buttons here. */
+.as-prompt.elsewhere .as-asked {
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 13.5px;
+}
+/* Why Claude asks (the Claude app's consent card shows it under the title). */
+.as-prompt.elsewhere .as-reason {
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 13.5px;
+}
+.as-choices button.chosen {
+  border-color: var(--as-accent);
+}
+.as-question input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 11px;
+  border: 1px solid #ffffff1f;
+  border-radius: 10px;
+  background: #0f0f0f;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px;
+}
+
+/* Composer */
+.as-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 12px 10px;
+}
+.as-page:not(.kb-open) .as-composer {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.as-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: var(--as-card);
+  font-size: 13.5px;
+}
+.as-banner > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.as-banner strong {
+  font-weight: 600;
+}
+.as-banner span {
+  color: var(--as-muted);
+}
+/* The Codex app's out-of-usage card: Reset usage, then Upgrade. */
+.as-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.as-banner-actions > span {
+  flex: 1 1 100%;
+  color: var(--as-text);
+}
+.as-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid #ffffff2e;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.as-banner-btn.primary {
+  border-color: transparent;
+  background: #343b43;
+}
+/* The composer: one card holding the text and its controls in Codex; a thin
+   box with the controls beneath in Claude Code. */
+.as-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.codex .as-box {
+  gap: 0;
+  padding: 2px 8px 8px;
+  border-radius: 26px;
+  background: var(--as-field);
+}
+.codex .as-box .as-field {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.codex .as-box .as-field textarea {
+  padding: 10px 6px 6px;
+}
+.as-when {
+  padding: 4px 0 2px;
+}
+.as-hint {
+  margin: 0 4px;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+.as-hint.bad {
+  color: var(--as-minus);
+}
+.as-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--as-field-line);
+  border-radius: 24px;
+  background: var(--as-field);
+}
+.claude .as-field {
+  border-radius: 14px;
+}
+.as-field.off {
+  opacity: 0.55;
+}
+.as-field textarea {
+  width: 100%;
+  min-height: 46px;
+  max-height: 180px;
+  padding: 12px 16px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px; /* no zoom on focus in iOS */
+}
+.claude .as-field textarea {
+  padding-right: 44px;
+}
+.as-field textarea::placeholder {
+  color: var(--as-faint);
+}
+.as-enter {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--as-text);
+}
+.as-enter:disabled {
+  color: var(--as-faint);
+}
+.as-attachments {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 0;
+  overflow-x: auto;
+}
+.as-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #0f0f0f;
+}
+.as-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.as-thumb.bad img {
+  opacity: 0.35;
+}
+.as-thumb .spin {
+  position: relative;
+  color: #fff;
+}
+.as-thumb button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: #000000b0;
+  color: #fff;
+}
+.as-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+}
+.as-spacer {
+  flex: 1;
+}
+.as-model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.as-model span {
+  color: var(--as-muted);
+}
+.as-model:disabled {
+  opacity: 0.85;
+}
+.as-send {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--as-text);
+  color: var(--as-bg);
+}
+.as-send:disabled {
+  background: #9a9a9a;
+  color: #363636;
+}
+.as-send.stop {
+  background: var(--as-text);
+  color: var(--as-bg);
+}
+
+/* Model, thinking and permissions: small chip rows that open above the
+   composer (no popups). */
+.as-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 2px 2px;
+}
+.as-picker-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.as-picker-row::-webkit-scrollbar {
+  display: none;
+}
+.as-picker-row button {
+  flex: 0 0 auto;
+  padding: 6px 11px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.as-picker-row button[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--as-text);
+  color: var(--as-bg);
+  font-weight: 600;
+}
+.claude .as-picker-row button[aria-pressed="true"] {
+  background: var(--as-accent);
+  color: #1a1a19;
+}
+/* Narrow phones: labels shrink, buttons keep their size. */
+.as-tools > .as-icon,
+.as-tools > .as-send {
+  flex-shrink: 0;
+}
+.as-tools > .as-model {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.as-tools > .as-model > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.as-mode-pick {
+  max-width: 42%;
+}
+.as-mode-pick span {
+  color: var(--as-muted);
+}
+@media (max-width: 380px) {
+  .as-tools {
+    gap: 0;
+  }
+  .as-model {
+    padding: 6px 5px;
+    font-size: 13px;
+  }
+}
+/* The permission mode, as a chip that opens the agent's own choices. */
+button.as-mode {
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+}
+button.as-mode:not(:disabled):active {
+  background: #ffffff0d;
+}
+button.as-mode:disabled {
+  opacity: 0.85;
+}
+/* Claude Code's slash commands after "/", like its composer offers them. */
+.as-commands {
+  display: flex;
+  flex-direction: column;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--as-field-line, #ffffff1a);
+  border-radius: 14px;
+  background: var(--as-card);
+}
+.as-commands button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid #ffffff0d;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+}
+.as-commands b {
+  font: 600 13px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+  color: var(--as-accent);
+}
+.as-commands code {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--as-faint);
+  font-size: 12px;
+}
+.as-commands span {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+
+/* The Claude app's own consent card (letting Claude use apps), as the app
+   draws it: colors measured from the app on Oct 5. Its keyboard hints (Esc,
+   ⌘↩) are left out; the phone has no keyboard. */
+.as-consent {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 12px 12px 10px;
+  border: 1px solid #40403e;
+  border-radius: 10px;
+  background: #222221;
+}
+.as-consent strong {
+  color: #f5f5f4;
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-consent p,
+.as-consent small {
+  margin: 0;
+  color: #9b9b98;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.as-consent small {
+  margin-top: 4px;
+  font-size: 13px;
+}
+.as-consent ul {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+}
+.as-consent li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #2b2b2a;
+  color: #f5f5f4;
+  font-size: 14px;
+}
+.as-consent li img,
+.as-consent-noicon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+.as-consent-noicon {
+  background: #40403e;
+}
+.as-consent-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.as-consent-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #40403e;
+  color: #f5f5f4;
+  font: inherit;
+  font-size: 14px;
+}
+.as-consent-actions button.primary {
+  background: #ffffff;
+  color: #0b0b0b;
+}
+.as-consent-actions button:disabled {
+  opacity: 0.6;
+}
+
+/* ── The phone apps' layout, shared by every agent (the colors and type above
+   make it Claude's or Codex's): round buttons floating over the chat, your
+   messages in a bubble, replies as plain text with copy and share beneath,
+   and the composer as one card with a round send button. ── */
+.as-bar {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--as-line);
+  background: var(--as-bg);
+  touch-action: pan-x;
+}
+.as-bar > * {
+  pointer-events: auto;
+}
+.as-bar > .as-icon,
+.as-bar-pill {
+  height: 44px;
+  border-radius: 999px;
+  background: var(--as-float);
+  box-shadow:
+    inset 0 0 0 0.5px var(--as-float-line),
+    0 6px 20px -6px rgb(0 0 0 / 0.55);
+  color: var(--as-text);
+}
+.as-bar > .as-icon {
+  width: 44px;
+}
+.as-bar-pill {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+.as-bar-pill .as-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: var(--as-text);
+}
+.as-bar .as-icon:not(:disabled):active {
+  background: color-mix(in srgb, var(--as-text) 10%, var(--as-float));
+}
+/* Codex (ChatGPT) names the chat between its buttons; Claude shows none. */
+.as-bar .as-title {
+  align-items: center;
+  text-align: center;
+}
+.as-bar .as-title small {
+  justify-content: center;
+}
+.as-page.claude .as-bar .as-title {
+  visibility: visible;
+}
+.as-details {
+  position: absolute;
+  z-index: 3;
+  top: calc(env(safe-area-inset-top) + 60px);
+  left: 14px;
+  right: 14px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--as-float);
+  box-shadow:
+    inset 0 0 0 0.5px var(--as-float-line),
+    0 12px 32px -8px rgb(0 0 0 / 0.6);
+}
+.as-details-title {
+  flex: 1 1 100%;
+  color: var(--as-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-scroll {
+  padding: 20px clamp(16px, 4vw, 32px);
+  gap: 20px;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y pinch-zoom;
+}
+.as-scroll > * {
+  flex-shrink: 0;
+}
+
+/* Messages */
+.as-user {
+  max-width: 82%;
+  padding: 10px 16px;
+  border-radius: 22px;
+  font-family: var(--as-user-font);
+}
+.claude .as-user {
+  border-radius: 22px;
+}
+.as-assistant {
+  font-family: var(--as-reply-font);
+  line-height: 1.5;
+}
+.as-reply-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: -6px;
+}
+.as-reply-actions > div {
+  display: flex;
+  gap: 6px;
+  margin-left: -8px;
+}
+.as-reply-actions .as-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--as-muted);
+}
+.as-disclaimer {
+  margin: 0 0 4px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+@media (max-width: 1024px), (pointer: coarse) {
+  /* Phone sizes, as the apps set them. */
+  .as-user,
+  .as-assistant {
+    font-size: 17px;
+  }
+}
+
+/* The composer: one card, the text on top, controls beneath. */
+.as-composer {
+  position: relative;
+  padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--as-line);
+  background: var(--as-bg);
+}
+.as-box,
+.codex .as-box {
+  gap: 2px;
+  padding: 4px 8px 8px;
+  border-radius: 26px;
+  background: var(--as-composer);
+  box-shadow:
+    inset 0 0 0 1px var(--as-composer-line),
+    0 8px 28px -10px rgb(0 0 0 / 0.6);
+}
+.as-box .as-field,
+.claude .as-box .as-field {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.as-box .as-field textarea,
+.claude .as-box .as-field textarea {
+  padding: 10px 8px 6px;
+  font-family: var(--as-user-font);
+  font-size: 17px;
+}
+.as-field textarea::placeholder {
+  color: var(--as-muted);
+}
+.as-tools {
+  gap: 8px;
+  min-height: 38px;
+}
+.as-tools > .as-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--as-chip);
+  color: var(--as-text);
+}
+.claude .as-tools > .as-model,
+.claude .as-tools > button.as-mode {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--as-chip);
+  font-size: 15px;
+}
+.as-send {
+  width: 36px;
+  height: 36px;
+}
+.as-send.ready,
+.as-send.ready:disabled {
+  background: var(--as-send-ready);
+  color: var(--as-send-ready-ink);
+}
+.claude .as-send:not(.ready):not(.stop) {
+  background: var(--as-chip);
+  color: var(--as-muted);
+}
+.as-send.stop {
+  background: var(--as-text);
+  color: var(--as-bg);
+}
+/* Chips stay on one line and give way with "…" on a narrow phone; the
+   model chip keeps the room first. Claude's model chip has no chevron. */
+.as-tools > button.as-mode {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  white-space: nowrap;
+}
+.as-tools > button.as-mode > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.as-tools > button.as-mode > svg {
+  flex: 0 0 auto;
+}
+.claude .as-tools > .as-model > svg {
+  display: none;
+}
+.claude .as-tools > .as-model,
+.claude .as-tools > button.as-mode {
+  padding: 0 12px;
+}
+
+/* Pictures sent with a message, above its text as in the apps. */
+.as-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.as-user-images img,
+.as-image-wait {
+  width: 96px;
+  height: 96px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.as-image-wait {
+  background: #ffffff14;
+}
+/* A narrow phone: Codex's model chip drops the effort word so the
+   permission chip and the model both read in full. */
+@media (max-width: 430px) {
+  .codex .as-tools > .as-model > span {
+    display: none;
+  }
+}
+
+/* A clear escape from history, without stealing the reader's scroll. */
+.as-latest {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--as-line);
+  background: var(--as-float);
+  color: var(--as-text);
+  box-shadow: 0 4px 16px #0003;
+}
+.as-page.kb-open .as-composer { padding-bottom: 8px; }
+.as-box .as-field textarea { max-height: min(160px, 25dvh); overflow-y: auto; }
+.as-details { max-height: 50%; overflow-y: auto; }
+.as-page[data-compact-viewport="true"] .as-bar { min-height: 44px; padding-block: 0; }
+.as-page[data-compact-viewport="true"] .as-scroll { padding-block: 10px; }

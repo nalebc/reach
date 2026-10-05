@@ -1,0 +1,84 @@
+/* Scroll handle on the right edge of the remote screen: a slight line at
+   rest that opens into a small pill only while it is held. */
+.scroll-handle {
+  /* Invisible touch area, comfortably larger than the visible line. */
+  position: absolute;
+  z-index: 6;
+  right: env(safe-area-inset-right);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: ns-resize;
+}
+.scroll-grip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  width: 5px;
+  height: 56px;
+  border-radius: 999px;
+  background: #ffffff59;
+  box-shadow: 0 0 0 1px #0000004d;
+  overflow: hidden;
+  transition:
+    width 0.18s ease,
+    height 0.18s ease,
+    background 0.18s ease,
+    padding 0.18s ease;
+}
+/* Arrows and thumb only appear once the handle opens. */
+.scroll-grip svg,
+.scroll-thumb {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.scroll-handle[aria-disabled="true"] .scroll-grip {
+  opacity: 0.35;
+}
+.scroll-handle.active {
+  width: 52px;
+  height: 180px;
+}
+.scroll-handle.active .scroll-grip {
+  width: 34px;
+  height: 160px;
+  padding: 6px 0;
+  background: #0b1012d9;
+  box-shadow:
+    0 0 0 1px var(--lime, #b9efd4),
+    0 8px 24px #0007;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.scroll-handle.active .scroll-grip svg,
+.scroll-handle.active .scroll-thumb {
+  opacity: 0.85;
+}
+.scroll-handle.active .scroll-grip svg {
+  color: #e9f0ec;
+}
+.scroll-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--lime, #b9efd4);
+  box-shadow: 0 2px 8px #0008;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-grip,
+  .scroll-grip svg,
+  .scroll-thumb {
+    transition: none;
+  }
+}

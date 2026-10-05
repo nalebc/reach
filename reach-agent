@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+REACH_AGENT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$REACH_AGENT_DIR/scripts/agent-cli.mjs" "$@"
