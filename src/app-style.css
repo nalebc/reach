@@ -516,3 +516,35 @@
     color: var(--muted, #93a096);
   }
 }
+
+/* One header row on phones: your computers sit at the right of Reach's
+   header instead of a second row beneath it (they still scroll sideways
+   when there are several). */
+@media (max-width: 1024px), (pointer: coarse) {
+  .app-shell .main-shell {
+    position: relative;
+  }
+  .app-shell .main-shell > .fleet-switcher {
+    position: absolute;
+    z-index: 6;
+    top: 0;
+    right: 0;
+    max-width: calc(100% - 128px);
+    height: calc(58px + env(safe-area-inset-top));
+    align-items: center;
+    gap: 6px;
+    padding: 0 14px 0 4px;
+    border: 0;
+    background: none;
+  }
+  .app-shell .main-shell > .fleet-switcher button {
+    flex-shrink: 1;
+    min-width: 0;
+    padding: 8px 12px;
+  }
+  .app-shell .main-shell > .fleet-switcher .fleet-add {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+  }
+}

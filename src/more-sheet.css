@@ -206,3 +206,7 @@
     transition: none;
   }
 }
+/* The sheet itself holds focus when it opens (ScreenPopup): no ring. */
+.screen-popup:focus {
+  outline: none;
+}

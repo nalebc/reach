@@ -244,6 +244,22 @@ test("the Codex composer is one card with its controls inside, and the chat open
   assert.deepEqual(dom.errors, []);
 });
 
+test("the working time counts from the message just sent, not from the last one in the transcript (it read 1327m)", async () => {
+  mac.pages[`claude:${CLAUDE}`].items = [
+    { id: "u-old", role: "user", kind: "text", text: "Yesterday's question", at: Date.now() - 22 * 60 * 60 * 1000 },
+    { id: "a-old:1", role: "assistant", kind: "text", text: "Yesterday's answer", at: Date.now() - 22 * 60 * 60 * 1000 },
+  ];
+  await open(claudeSession());
+  await dom.waitFor(() => $(".as-user"));
+  await typeInto($("textarea"), "Run the tests");
+  await click(button("Send"));
+  // Claude Code is now working on it; the transcript doesn't have the message yet.
+  mac.bump({ status: "running" });
+  await dom.waitFor(() => $(".as-working small"), 7000);
+  assert.match($(".as-working small").textContent, /^\d{1,2}s ·$/);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("a sent message shows until the transcript has it, even when it repeats an earlier one", async () => {
   // "continue" was already sent once; the old screen dropped the new bubble at once.
   const items = mac.pages[`codex:${CODEX}`].items;
@@ -897,8 +913,12 @@ test("the agents' real logos show, and a line icon named for the agent when an a
 
 test("a new Codex chat starts in the Codex app's own mode, in the most recent folder", async () => {
   await home([codexSession(), claudeSession({ cwd: "/work/site" })]);
-  // The Codex app's "New chat" row opens the composer, ready to type.
+  // The Codex app's home: "Let's build", then its composer at rest, with
+  // the model it will use; a tap opens the real one, ready to type.
+  assert.equal($(".chat-greeting h2").textContent, "Let’s build");
   assert.equal($("textarea[aria-label='New Codex chat']"), null);
+  assert.equal($(".chat-new-row.resting .chat-new-placeholder").textContent, "Do anything");
+  await dom.waitFor(() => $(".chat-new-model")?.textContent === "GPT-6 Astra Medium");
   await click($(".chat-new-row"));
   assert.equal($(".chat-new-row"), null);
   const field = () => $("textarea[aria-label='New Codex chat']");
@@ -975,7 +995,9 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
   );
   // The Claude app's home: its greeting, then the composer at rest.
   assert.match($(".chat-greeting h2").textContent, /^(New week|Good (morning|afternoon|evening))$/);
-  assert.equal($(".chat-new-row").textContent, "Chat with Claude");
+  assert.equal($(".chat-new-row").getAttribute("aria-label"), "Chat with Claude");
+  assert.equal($(".chat-new-placeholder").textContent, "Chat with Claude");
+  assert.ok($(".chat-new-row .chat-new-plus svg") && $(".chat-new-row .as-send svg"), "+ and send, as at rest in the app");
   await click($(".chat-new-row"));
   globalThis.fetch = fetch;
   const field = () => $("textarea[aria-label='New Claude Code chat']");
@@ -1062,6 +1084,13 @@ test("Chat shows what macOS itself is asking, above the sessions", async () => {
   await home([codexSession()], signedIn, {
     macPrompts: [{ id: "1", kind: "security", title: "“Tool” is an app downloaded from the internet.", detail: "", app: "Tool" }],
   });
+  // Folded to one line here (the chats come first); a tap opens the dialog.
+  assert.equal($(".chat-home .mac-prompt"), null);
+  const row = $(".chat-home .mac-prompt-row");
+  assert.equal(row.querySelector("strong").textContent, "Your Mac is asking");
+  assert.equal(row.querySelector("small").textContent, "“Tool” is an app downloaded from the internet.");
+  await click(row);
+  assert.equal($(".chat-home .mac-prompt-row"), null);
   assert.equal($(".chat-home .mac-prompt .mac-dialog-message").textContent, "“Tool” is an app downloaded from the internet.");
   assert.equal($(".chat-home .mac-prompt button"), null);
   assert.deepEqual(dom.errors, []);
@@ -1533,5 +1562,26 @@ test("without the Claude app's spark on the computer, Claude Code's spark is a l
   assert.equal(spark.tagName.toLowerCase(), "svg");
   assert.deepEqual([...spark.classList].sort(), ["claude-spark", "lucide", "lucide-asterisk", "plain", "spinning"]);
   assert.equal(spark.getAttribute("aria-hidden"), "true");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Claude's new-chat button is the app's filled bubble", async () => {
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  await mount(
+    React.createElement(AgentSessionView, {
+      peer,
+      session: claudeSession({ live: undefined }),
+      siblings: [],
+      health: signedIn,
+      logos: { codex: LOGO, claude: LOGO },
+      onSelect() {},
+      onBack() {},
+      onNew() {},
+    }),
+  );
+  await dom.waitFor(() => button("New chat"));
+  const mark = button("New chat").querySelector("svg path");
+  assert.equal(mark.getAttribute("fill"), "currentColor");
+  assert.equal(mark.getAttribute("fill-rule"), "evenodd", "the plus is cut out of the bubble");
   assert.deepEqual(dom.errors, []);
 });

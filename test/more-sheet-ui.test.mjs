@@ -283,3 +283,11 @@ test("dragging the sheet down by its handle closes it; a short pull springs back
   assert.deepEqual(calls, [["close"]]);
   await view.unmount();
 });
+
+test("opening the sheet focuses the sheet, not its close button (no ring on iPhone)", async () => {
+  const { view } = await sheet();
+  const dialog = dom.window.document.querySelector("dialog.more-sheet");
+  assert.equal(dom.window.document.activeElement, dialog);
+  assert.notEqual(dom.window.document.activeElement, dialog.querySelector(".glass-button"));
+  await view.unmount();
+});

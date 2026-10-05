@@ -8,7 +8,6 @@ import {
   Search,
   ShieldCheck,
   Sparkle,
-  SquarePen,
   X,
 } from "lucide-react";
 import type { Peer } from "./api";
@@ -540,6 +539,46 @@ function SessionList({
   );
 }
 
+// The apps' composer before you tap it: its words, "+", the model it will
+// use, and the send button. A tap opens the real one, ready to type.
+function RestingComposer({ peer, agent, onOpen }: { peer: Peer; agent: AgentName; onOpen: () => void }) {
+  const [model, setModel] = useState<{ name: string; effort: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    setModel(null);
+    listModels(peer, agent).then(
+      (r) => {
+        const first = r.models.find((m) => m.isDefault) || r.models[0];
+        if (live && first) setModel({ name: first.name, effort: effortLabel(first.defaultEffort ?? null, agent) });
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [peer.url, peer.token, agent]);
+  const words = agent === "codex" ? "Do anything" : "Chat with Claude";
+  return (
+    <button className={`chat-new-row resting ${agent}`} aria-label={words} onClick={onOpen}>
+      <span className="chat-new-placeholder">{words}</span>
+      <span className="chat-new-tools" aria-hidden="true">
+        <i className="chat-new-plus">
+          <Plus size={18} />
+        </i>
+        {model && (
+          <i className="chat-new-model">
+            {model.name} <em>{model.effort}</em>
+          </i>
+        )}
+        <i className="as-spacer" />
+        <i className="as-send">
+          <ArrowUp size={18} />
+        </i>
+      </span>
+    </button>
+  );
+}
+
 // The Claude app greets by the moment: a new week on Monday morning,
 // otherwise the time of day.
 export function greeting(now = new Date()) {
@@ -700,32 +739,24 @@ export default function EverythingChat({
     <div className={`chat-home ${current}`}>
       <AgentPicker agents={agents} current={current} onChange={setAgent} logos={logos} waiting={waiting} />
       {macPrompts.map((p) => (
-        <MacPromptCard key={p.id} prompt={p} logos={logos} />
+        <MacPromptCard key={p.id} prompt={p} logos={logos} compact />
       ))}
       <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} />
-      {/* The Claude app opens on its spark and a greeting in its serif. */}
-      {current === "claude" && (
-        <div className="chat-greeting">
+      {/* Each app opens on its own words: Claude's spark and a greeting in
+          its serif; the Codex app's "Let's build". */}
+      <div className="chat-greeting">
+        {current === "claude" ? (
           <ClaudeSpark logos={logos} size={34} />
-          <h2>{greeting()}</h2>
-        </div>
-      )}
+        ) : (
+          <AgentLogo agent={current} logos={logos} size={40} className="chat-greeting-logo" />
+        )}
+        <h2>{current === "claude" ? greeting() : "Let’s build"}</h2>
+      </div>
       {(!status || (status.installed && status.signedIn)) &&
         (composing ? (
           <NewChat key={current} peer={peer} agent={current} sessions={sessions || []} onStarted={setOpen} autoFocus />
-        ) : current === "claude" ? (
-          // The Claude app's composer at rest; tapping it starts writing.
-          <button className="chat-new-row claude" onClick={() => setComposing(true)}>
-            <span>Chat with Claude</span>
-            <i className="as-send" aria-hidden="true">
-              <ArrowUp size={18} />
-            </i>
-          </button>
         ) : (
-          <button className={`chat-new-row ${current}`} onClick={() => setComposing(true)}>
-            <SquarePen size={17} />
-            <span>New chat</span>
-          </button>
+          <RestingComposer peer={peer} agent={current} onOpen={() => setComposing(true)} />
         ))}
       {failure && <p className="chat-status">{failure}</p>}
       {errors[current] && <p className="chat-status">{errors[current]}</p>}

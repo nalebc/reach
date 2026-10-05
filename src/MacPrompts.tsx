@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import type { MacPrompt } from "./agent-sessions";
 import "./mac-prompts.css";
@@ -6,9 +8,31 @@ import "./mac-prompts.css";
 // request), drawn as macOS draws it: its icon, its message in bold, the rest,
 // and its buttons. It is answered at the Mac: these grant privacy access,
 // which macOS leaves to a person there, so its buttons can't be pressed here.
-export default function MacPromptCard({ prompt, logos }: { prompt: MacPrompt; logos: AgentLogos }) {
+// compact: one slim line (where other things come first, like Chat); a tap
+// opens the dialog.
+export default function MacPromptCard({
+  prompt,
+  logos,
+  compact = false,
+}: {
+  prompt: MacPrompt;
+  logos: AgentLogos;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(!compact);
   const [message = prompt.title, ...rest] = prompt.lines?.length ? prompt.lines : [prompt.title];
   const info = prompt.lines?.length ? rest.join(" ") : prompt.detail;
+  if (!open)
+    return (
+      <button className={`mac-prompt-row ${prompt.kind}`} aria-expanded={false} onClick={() => setOpen(true)}>
+        <AgentLogo agent="macos" name="macOS" logos={logos} size={24} />
+        <span>
+          <strong>Your Mac is asking</strong>
+          <small>{message}</small>
+        </span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+    );
   return (
     <section className={`mac-prompt ${prompt.kind}`} aria-label="Your Mac is asking">
       <header>

@@ -25,6 +25,12 @@ export default function ScreenPopup({
       ? dragToClose(element, () => closing.current())
       : () => {};
     element?.showModal();
+    // The browser hands focus to the first button (on iPhone, the close
+    // button then wears a focus ring as the sheet opens): the sheet itself
+    // takes it instead, unless something inside asked for it.
+    const first = document.activeElement;
+    if (element && (!element.contains(first) || first?.tagName === "BUTTON"))
+      element.focus({ preventScroll: true });
     return () => {
       element?.close();
       stopDrag();
@@ -37,6 +43,7 @@ export default function ScreenPopup({
     <dialog
       className={`screen-popup ${className}`}
       ref={dialog}
+      tabIndex={-1}
       onKeyDown={(e) => {
         if (e.key === "Escape") e.stopPropagation();
       }}

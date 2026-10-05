@@ -1331,3 +1331,10 @@ button.as-mode:disabled {
 .as-image-wait {
   background: #ffffff14;
 }
+/* A narrow phone: Codex's model chip drops the effort word so the
+   permission chip and the model both read in full. */
+@media (max-width: 430px) {
+  .codex .as-tools > .as-model > span {
+    display: none;
+  }
+}

@@ -11,7 +11,6 @@ import {
   Copy,
   Laptop,
   Loader2,
-  MessageCirclePlus,
   Monitor,
   MoreHorizontal,
   Plus,
@@ -79,6 +78,19 @@ function TwoLines({ size = 22 }: { size?: number }) {
   );
 }
 
+// The Claude app's new-chat mark: a filled speech bubble with a plus cut out.
+function ClaudeNewChat({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M12 3a9 9 0 0 0-7.9 13.3L3 21l4.8-1.1A9 9 0 1 0 12 3Zm1 5h-2v3H8v2h3v3h2v-3h3v-2h-3V8Z"
+      />
+    </svg>
+  );
+}
+
 // Each agent's own words and marks, so the screen reads like its phone app
 // (the Claude app; ChatGPT, where Codex lives). The layout is shared; a new
 // agent is a new entry here plus its colors in agent-session.css.
@@ -95,7 +107,7 @@ const SKIN = {
     placeholder: "Reply to Claude",
     app: "Claude app",
     menu: AlignLeft,
-    compose: MessageCirclePlus,
+    compose: ClaudeNewChat,
     where: Laptop,
     disclaimer: "Claude is AI and can make mistakes.",
   },
@@ -1153,7 +1165,13 @@ export default function AgentSessionView({
               </span>
             ) : null}
             <span className={`as-tag ${m.error ? "problem" : ""}`}>
-              {m.error ? `Not sent yet: ${m.error}` : agent === "codex" ? "Queued in the Codex app" : "Sends when Claude finishes"}
+              {m.error
+                ? `Not sent yet: ${m.error}`
+                : m.via === "app"
+                  ? "Sending through the Claude app…"
+                  : agent === "codex"
+                    ? "Queued in the Codex app"
+                    : "Sends when Claude finishes"}
             </span>
           </div>
         ))}
