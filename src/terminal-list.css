@@ -198,11 +198,14 @@
   object-fit: contain;
   border-radius: 8px;
 }
-.terminal-list .agent-logo.text {
+.terminal-list .agent-logo.glyph {
   width: 29px;
   height: 29px;
   background: #ffffff14;
-  font-weight: 700;
+}
+.terminal-list .agent-logo.glyph svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* First visit: a small note under the start row, gone once used or tapped. */

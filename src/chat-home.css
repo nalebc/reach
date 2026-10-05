@@ -15,7 +15,8 @@
     color 320ms ease;
 }
 
-/* The agents' real icons (agent-logos.tsx); initials when the app is missing. */
+/* The agents' real icons (agent-logos.tsx); a thin line icon in the text
+   color when the app is missing, with no tile behind it. */
 .agent-logo {
   flex: 0 0 auto;
   display: inline-grid;
@@ -23,17 +24,8 @@
   border-radius: 23%;
   object-fit: cover;
 }
-.agent-logo.text {
-  background: linear-gradient(150deg, #4a4f57, #2c3036);
-  color: #fff;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.agent-logo.text.codex {
-  background: linear-gradient(140deg, #6a8cff, #7b4dff);
-}
-.agent-logo.text.claude {
-  background: #d97757;
+.agent-logo.glyph {
+  color: inherit;
 }
 .claude-spark {
   display: inline-block;

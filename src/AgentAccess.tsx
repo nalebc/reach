@@ -3,6 +3,7 @@ import type { Peer } from "./api";
 import AgentSignIn from "./AgentSignIn";
 import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
 import type { AgentHealth, AgentName } from "./agent-sessions";
+import { computerWord } from "./pause";
 
 // What an agent needs signed in on the Mac, one row each with its logo, shown
 // only when something is missing. Claude: Reach replies through the Claude
@@ -24,7 +25,7 @@ export default function AgentAccess({
   if (!health?.installed || health.signedIn) return null;
   const signIn = <AgentSignIn peer={peer} agent={agent} onDone={onSignedIn} />;
   return (
-    <section className={`access ${agent}`} aria-label="Sign-ins on your Mac">
+    <section className={`access ${agent}`} aria-label={`Sign-ins on your ${computerWord(peer.platform)}`}>
       {agent === "claude" ? (
         <>
           <Row logo={<ClaudeSpark logos={logos} size={18} />} name="Claude Code CLI" ok={false} action={signIn} />

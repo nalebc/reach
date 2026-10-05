@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { agentLabel, type AgentName } from "./agent-sessions";
+import { computerWord } from "./pause";
 
 type SignInView = {
   agent?: AgentName;
@@ -54,6 +55,7 @@ export default function AgentSignIn({
   };
   const start = () => act(() => post<SignInView>(peer, "/api/sessions/sign-in", { agent }));
   const name = agentLabel(agent);
+  const word = computerWord(peer.platform);
 
   if (!view || view.state === "idle" || view.state === "cancelled")
     return (
@@ -68,7 +70,7 @@ export default function AgentSignIn({
     <div className="sign-in" role="group" aria-label={`Sign ${name} in`}>
       {view.state === "starting" && (
         <p>
-          <Loader2 size={13} className="spin" /> Starting sign-in on your Mac…
+          <Loader2 size={13} className="spin" /> Starting sign-in on your {word}…
         </p>
       )}
       {view.state === "link" && view.url && (
@@ -121,7 +123,11 @@ export default function AgentSignIn({
           <Loader2 size={13} className="spin" /> Signing in…
         </p>
       )}
-      {view.state === "done" && <p>{name} is signed in on your Mac.</p>}
+      {view.state === "done" && (
+        <p>
+          {name} is signed in on your {word}.
+        </p>
+      )}
       {view.state === "failed" && (
         <p className="bad">
           {view.error || "Sign-in didn't finish."}{" "}

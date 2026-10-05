@@ -1,4 +1,15 @@
 import { useEffect, useState, type CSSProperties } from "react";
+import {
+  Asterisk,
+  Bot,
+  Monitor,
+  MousePointer2,
+  Orbit,
+  Sparkle,
+  Sparkles,
+  Terminal,
+  type LucideIcon,
+} from "lucide-react";
 import { request, type Peer } from "./api";
 import { agentLabel } from "./agent-sessions";
 
@@ -66,7 +77,20 @@ export function useAgentLogos(peer: Peer | null): AgentLogos {
   return logos;
 }
 
-// An agent's app icon; its initials when the app's icon isn't on the Mac.
+// Stand-ins when an app's icon isn't on the computer: a thin line icon in the
+// text color, one per agent so a row of them still tells them apart (Codex
+// and Claude as HomeLive draws them). Never letters or a colored tile.
+const GLYPHS: Record<string, LucideIcon> = {
+  codex: Sparkles,
+  claude: Asterisk,
+  gemini: Sparkle,
+  cursor: MousePointer2,
+  antigravity: Orbit,
+  terminal: Terminal,
+  macos: Monitor,
+};
+
+// An agent's app icon; its line icon when the app's icon isn't on the computer.
 // `fill`: the icon's own background fills a round frame edge to edge (Mac
 // app icons leave a clear margin around their body; CSS crops it).
 export function AgentLogo({
@@ -88,6 +112,7 @@ export function AgentLogo({
 }) {
   const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent];
   const style: CSSProperties = { width: size, height: size };
+  const Glyph = GLYPHS[agent] || Bot;
   return src ? (
     <img
       className={`agent-logo ${fill ? "fill" : ""} ${className}`}
@@ -97,8 +122,8 @@ export function AgentLogo({
       draggable={false}
     />
   ) : (
-    <span className={`agent-logo text ${agent} ${className}`} style={{ ...style, fontSize: size * 0.4 }} role="img" aria-label={name}>
-      {agent === "codex" ? "Cx" : agent === "claude" ? "Cl" : name.replace(/[^A-Za-z]/g, "").slice(0, 2)}
+    <span className={`agent-logo glyph ${agent} ${className}`} style={style} role="img" aria-label={name}>
+      <Glyph size={Math.round(size * 0.78)} strokeWidth={1.75} absoluteStrokeWidth aria-hidden="true" />
     </span>
   );
 }
