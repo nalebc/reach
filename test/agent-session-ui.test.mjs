@@ -180,10 +180,10 @@ const click = async (element) => {
   element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle();
 };
-const open = (session, health = signedIn) =>
+const open = (session, health = signedIn, on = peer) =>
   mount(
     React.createElement(AgentSessionView, {
-      peer,
+      peer: on,
       session,
       siblings: [],
       health,
@@ -192,11 +192,11 @@ const open = (session, health = signedIn) =>
       onBack() {},
     }),
   );
-const home = (sessions, health = signedIn, extra = {}) =>
+const home = (sessions, health = signedIn, extra = {}, on = peer) =>
   mount(
     React.createElement(EverythingChat, {
-      peer,
-      feed: { sessions, errors: {}, health, failure: "", reload: async () => {}, recheck: () => {}, ...extra },
+      peer: on,
+      feed:{ sessions, errors: {}, health, failure: "", reload: async () => {}, recheck: () => {}, ...extra },
     }),
   );
 const accessRows = () => $$(".access-row").map((r) => [r.querySelector(".access-name").textContent, r.querySelector(".access-state").textContent]);
@@ -872,12 +872,13 @@ test("the switch picks the agent, re-skins the page and remembers the choice", a
   assert.deepEqual(dom.errors, []);
 });
 
-test("the agents' real logos show, and their names when an app isn't installed", async () => {
+test("the agents' real logos show, and a line icon named for the agent when an app isn't installed", async () => {
   await home([codexSession()]);
   await dom.waitFor(() => $(".agent-picker [aria-checked=true] img.agent-logo"));
   assert.equal($(".agent-picker [aria-checked=true] img.agent-logo").getAttribute("src"), LOGO);
   for (const view of views.splice(0)) await view.unmount();
-  // Another Mac without the apps: no request fails, the names stand in.
+  // Another Mac without the apps: no request fails, a line icon stands in
+  // and carries the name; never letters.
   mac.logos = {};
   await mount(
     React.createElement(EverythingChat, {
@@ -886,8 +887,10 @@ test("the agents' real logos show, and their names when an app isn't installed",
     }),
   );
   await settle(50);
-  const mark = $(".agent-picker [aria-checked=true] .agent-logo.text");
-  assert.ok(mark);
+  const mark = $(".agent-picker [aria-checked=true] .agent-logo");
+  assert.ok(mark.querySelector("svg.lucide-sparkles"));
+  assert.equal(mark.textContent, "");
+  assert.equal(mark.getAttribute("role"), "img");
   assert.equal(mark.getAttribute("aria-label"), "Codex");
   assert.deepEqual(dom.errors, []);
 });
@@ -1190,8 +1193,10 @@ test("agents Reach doesn't drive yet are coming soon, installed on the Mac or no
       ["Cursor, coming soon", true],
     ],
   );
-  // No logo for it on the Mac: its initials stand in.
-  assert.equal(radio("Gemini CLI, coming soon").querySelector(".agent-logo.text").textContent, "Ge");
+  // No logo for it on the Mac: a line icon stands in, never its initials.
+  const gemini = radio("Gemini CLI, coming soon").querySelector(".agent-logo");
+  assert.ok(gemini.querySelector("svg.lucide-sparkle"));
+  assert.equal(gemini.textContent, "");
   await click(radio("Gemini CLI, coming soon"));
   assert.equal($(".chat-soon em").textContent, "Coming soon");
   assert.doesNotMatch($(".chat-soon").textContent, /is on your Mac/);
@@ -1345,4 +1350,188 @@ test("Claude's greeting follows the moment", async () => {
   assert.equal(greeting(new Date(2026, 9, 6, 14)), "Good afternoon");
   assert.equal(greeting(new Date(2026, 9, 6, 21)), "Good evening");
   assert.equal(greeting(new Date(2026, 9, 6, 2)), "Good evening");
+});
+
+// A Windows (or Linux) computer: what the agent screens say about where things
+// happen names "your computer"; a Mac keeps "your Mac" (the tests above).
+const pc = { ...peer, id: "pc", name: "Desk", platform: "win32" };
+// Every word on the page and every spoken label that says "Mac".
+const saidMac = () =>
+  [dom.document.body.textContent, ...$$("[aria-label]").map((el) => el.getAttribute("aria-label"))].filter((t) =>
+    /\bMac\b/.test(t),
+  );
+
+test("on a Windows computer, a Claude Code session says computer, never Mac", async () => {
+  // Waiting for an answer in a terminal there.
+  const inTerminal = claudeSession({
+    status: "waiting",
+    live: { where: "terminal", pid: 7, tty: null },
+    asking: { kind: "permission", text: "Run the tests?", command: false },
+  });
+  mac.pages[`claude:${CLAUDE}`].session = inTerminal;
+  await open(inTerminal, signedIn, pc);
+  await dom.waitFor(() => $(".as-prompt.elsewhere"));
+  assert.equal($(".as-prompt.elsewhere header strong").textContent, "Waiting for your answer in the terminal on your computer");
+  assert.equal($(".as-hint").textContent, "Running in a terminal on your computer. Reply there or from the Terminal tab.");
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  // Open in another Claude Code process.
+  const background = claudeSession({ live: { where: "background", pid: 8, tty: null } });
+  mac.pages[`claude:${CLAUDE}`].session = background;
+  await open(background, signedIn, pc);
+  await dom.waitFor(() => $(".as-hint"));
+  assert.equal($(".as-hint").textContent, "Open in another Claude Code process on your computer.");
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  // The Claude app's consent card.
+  const consent = claudeSession({
+    status: "waiting",
+    asking: {
+      kind: "consent",
+      id: "consent:toolu_1",
+      about: "apps",
+      title: "Allow Claude to use Calculator?",
+      apps: [{ name: "Calculator" }],
+      options: ["Deny", "Allow for this session"],
+    },
+  });
+  mac.pages[`claude:${CLAUDE}`].session = consent;
+  await open(consent, signedIn, pc);
+  await dom.waitFor(() => $(".as-consent"));
+  assert.equal(
+    $(".as-consent small").textContent,
+    "Claude will work in these apps in the background while you keep using your computer.",
+  );
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  // A dialog Claude Code can't show here.
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  mac.live = {
+    ...idleLive(),
+    version: 4,
+    status: "waiting",
+    prompts: [{ id: "8", kind: "dialog", title: "Claude Code needs your answer", decisions: ["cancel"] }],
+  };
+  await open(claudeSession({ live: undefined }), signedIn, pc);
+  await dom.waitFor(() => $(".as-prompt.dialog"));
+  assert.deepEqual($$(".as-prompt.dialog .as-prompt-actions button").map((b) => b.textContent), ["Answer on my computer"]);
+  assert.deepEqual(saidMac(), []);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("on a Windows computer, a Codex session says computer: signed out, sent to the app, opened in the app", async () => {
+  await open(codexSession(), [{ agent: "codex", installed: true, signedIn: false }], pc);
+  await dom.waitFor(() => $(".access"));
+  assert.equal($(".as-hint").textContent, "Codex is signed out on your computer.");
+  assert.equal($(".access").getAttribute("aria-label"), "Sign-ins on your computer");
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  // Held by the Codex app: what's sent goes to the app.
+  const held = codexSession({ held: "codex-app" });
+  mac.pages[`codex:${CODEX}`].session = held;
+  const route = `/api/sessions/codex/${CODEX}/messages`;
+  const saved = routes[route];
+  routes[route] = (init) => (saved(init), { queued: true, delivered: true });
+  try {
+    await open(held, signedIn, pc);
+    await dom.waitFor(() => $("textarea"));
+    await typeInto($("textarea"), "hi");
+    await click(button("Send"));
+    await dom.waitFor(() => $(".as-hint"));
+    assert.equal($(".as-hint").textContent, "Sent to the Codex app on your computer.");
+  } finally {
+    routes[route] = saved;
+  }
+  // Opened in the app from the title's details.
+  await click($(".as-title"));
+  await click($(".as-details-open"));
+  await dom.waitFor(() => $(".as-hint")?.textContent.startsWith("Opened"));
+  assert.equal($(".as-hint").textContent, "Opened in the Codex app on your computer.");
+  assert.deepEqual(saidMac(), []);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("on a Windows computer, Chat home says computer: no sessions yet, not installed, signing in", async () => {
+  await home([], signedIn, {}, pc);
+  await dom.waitFor(() => $(".chat-empty"));
+  assert.equal($(".chat-empty").textContent, "No Codex sessions on your computer yet.");
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  await home([], [{ agent: "codex", installed: false, signedIn: false }], {}, pc);
+  assert.equal($(".chat-status").textContent, "Codex isn't installed on this computer.");
+  assert.deepEqual(saidMac(), []);
+  for (const view of views.splice(0)) await view.unmount();
+  // Signing in says where it happens, while it starts and once it's done.
+  const signIn = routes["/api/sessions/sign-in"];
+  routes["/api/sessions/sign-in"] = (init, href) => {
+    if (init?.method !== "POST") return signIn(init, href);
+    mac.signIn = { agent: "codex", state: "starting", url: null, code: null, error: null };
+    return mac.signIn;
+  };
+  try {
+    await home([], [{ agent: "codex", installed: true, signedIn: false }], {}, pc);
+    assert.equal($(".access").getAttribute("aria-label"), "Sign-ins on your computer");
+    await click(button("Sign in"));
+    await dom.waitFor(() => $(".sign-in p"));
+    assert.equal($(".sign-in p").textContent.trim(), "Starting sign-in on your computer…");
+    assert.deepEqual(saidMac(), []);
+    mac.signIn = { ...mac.signIn, state: "done" };
+    await dom.waitFor(() => $(".sign-in p")?.textContent.includes("signed in"), 4000);
+    assert.equal($(".sign-in p").textContent, "Codex is signed in on your computer.");
+    assert.deepEqual(saidMac(), []);
+  } finally {
+    routes["/api/sessions/sign-in"] = signIn;
+  }
+  for (const view of views.splice(0)) await view.unmount();
+  // A Mac keeps its name.
+  await home([], signedIn);
+  await dom.waitFor(() => $(".chat-empty"));
+  assert.equal($(".chat-empty").textContent, "No Codex sessions on your Mac yet.");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("agents without a logo on the computer wear a line icon in the switch, never letter tiles", async () => {
+  mac.logos = {};
+  const health = [
+    ...signedIn,
+    { agent: "gemini", name: "Gemini CLI", installed: true, signedIn: false, supported: false },
+    { agent: "cursor", name: "Cursor", installed: true, signedIn: false, supported: false },
+    { agent: "antigravity", name: "Antigravity", installed: true, signedIn: false, supported: false },
+  ];
+  await home([codexSession()], health, {}, { ...pc, id: "pc-without-logos" });
+  await settle(50);
+  assert.equal($$(".agent-logo.text").length, 0);
+  assert.deepEqual(
+    $$(".agent-picker [role=radio]").map((b) => {
+      const logo = b.querySelector(".agent-logo");
+      return [b.getAttribute("aria-label"), logo.getAttribute("aria-label"), logo.querySelector("svg")?.getAttribute("class"), logo.textContent];
+    }),
+    [
+      ["Codex", "Codex", "lucide lucide-sparkles", ""],
+      ["Claude Code", "Claude Code", "lucide lucide-asterisk", ""],
+      ["Gemini CLI, coming soon", "Gemini CLI", "lucide lucide-sparkle", ""],
+      ["Cursor, coming soon", "Cursor", "lucide lucide-mouse-pointer2", ""],
+      ["Antigravity, coming soon", "Antigravity", "lucide lucide-orbit", ""],
+    ],
+  );
+  // The chosen one still wears its name on the knob.
+  assert.equal($(".agent-picker [aria-checked=true] b").textContent, "Codex");
+  // Coming soon: the large mark is the same line icon.
+  await click(radio("Cursor, coming soon"));
+  const big = $(".chat-soon .agent-logo");
+  assert.equal(big.querySelector("svg")?.getAttribute("class"), "lucide lucide-mouse-pointer2");
+  assert.equal(big.textContent, "");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("without the Claude app's spark on the computer, Claude Code's spark is a line asterisk, never a square", async () => {
+  mac.logos = {};
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  await home([claudeSession({ status: "running" })], signedIn, {}, { ...pc, id: "pc-without-spark" });
+  await dom.waitFor(() => $(".chat-session .claude-spark"));
+  const spark = $(".chat-session .claude-spark");
+  assert.equal(spark.tagName.toLowerCase(), "svg");
+  assert.deepEqual([...spark.classList].sort(), ["claude-spark", "lucide", "lucide-asterisk", "plain", "spinning"]);
+  assert.equal(spark.getAttribute("aria-hidden"), "true");
+  assert.deepEqual(dom.errors, []);
 });

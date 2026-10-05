@@ -17,6 +17,7 @@ import AgentAccess from "./AgentAccess";
 import MacPromptCard from "./MacPrompts";
 import { AgentLogo, ClaudeSpark, useAgentLogos, type AgentLogos } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
+import { computerWord } from "./pause";
 import {
   CODEX_MODE_CHOICES,
   agentLabel,
@@ -429,12 +430,15 @@ function SessionList({
   sessions,
   projects = [],
   logos,
+  word,
   onOpen,
 }: {
   agent: AgentName;
   sessions: AgentSession[];
   projects?: AgentProject[];
   logos: AgentLogos;
+  // "Mac" or "computer" (pause.ts computerWord).
+  word: string;
   onOpen: (s: AgentSession) => void;
 }) {
   const [more, setMore] = useState<Record<string, boolean>>({});
@@ -470,7 +474,11 @@ function SessionList({
     </>
   );
   if (!sessions.length)
-    return <p className="chat-empty">No {agentLabel(agent)} sessions on your Mac yet.</p>;
+    return (
+      <p className="chat-empty">
+        No {agentLabel(agent)} sessions on your {word} yet.
+      </p>
+    );
   if (agent === "codex") {
     const inside = (s: AgentSession, p: AgentProject) =>
       p.roots.some((root) => s.cwd === root || s.cwd.startsWith(`${root}/`));
@@ -557,7 +565,12 @@ function AgentStatus({
 }) {
   if (!health) return null;
   const name = agentLabel(agent);
-  if (!health.installed) return <p className="chat-status">{name} isn't installed on this Mac.</p>;
+  if (!health.installed)
+    return (
+      <p className="chat-status">
+        {name} isn't installed on this {computerWord(peer.platform)}.
+      </p>
+    );
   if (!health.signedIn) return <AgentAccess peer={peer} agent={agent} health={health} logos={logos} onSignedIn={recheck} />;
   if (health.usable === false)
     return (
@@ -721,7 +734,14 @@ export default function EverythingChat({
           <Loader2 size={15} className="spin" /> Looking for your sessions…
         </p>
       ) : (
-        <SessionList agent={current} sessions={mine} projects={projects} logos={logos} onOpen={setOpen} />
+        <SessionList
+          agent={current}
+          sessions={mine}
+          projects={projects}
+          logos={logos}
+          word={computerWord(peer.platform)}
+          onOpen={setOpen}
+        />
       )}
     </div>
   );

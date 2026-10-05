@@ -32,6 +32,7 @@ import AgentAccess from "./AgentAccess";
 import { useAppIcon } from "./app-icons";
 import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
+import { computerWord } from "./pause";
 import {
   agentLabel,
   answerPrompt,
@@ -348,12 +349,13 @@ function SentImages({
 
 // A question or permission request Claude waits on in another app (the
 // Claude app, a terminal), already showing there: said here, answered there.
-function AskingCard({ asking, logos, where }: { asking: AgentAsking; logos: AgentLogos; where: string }) {
+// word: "Mac" or "computer" (pause.ts computerWord).
+function AskingCard({ asking, logos, where, word }: { asking: AgentAsking; logos: AgentLogos; where: string; word: string }) {
   return (
     <section className={`as-prompt ${asking.kind === "question" ? "question" : "tool"} elsewhere`} aria-live="polite">
       <header>
         <AgentLogo agent="claude" logos={logos} size={18} />
-        <strong>Waiting for your answer in the {where} on your Mac</strong>
+        <strong>Waiting for your answer in the {where} on your {word}</strong>
       </header>
       {asking.kind === "question" ? (
         asking.questions.map((q, i) => (
@@ -403,7 +405,7 @@ function ConsentCard({
       <strong>{asking.title}</strong>
       {asking.reason && <p>{asking.reason}</p>}
       {asking.about === "apps" && (
-        <small>Claude will work in these apps in the background while you keep using your Mac.</small>
+        <small>Claude will work in these apps in the background while you keep using your {computerWord(peer.platform)}.</small>
       )}
       {!!asking.apps?.length && (
         <ul>
@@ -438,11 +440,13 @@ function PromptCard({
   prompt,
   agent,
   logos,
+  word,
   onAnswer,
 }: {
   prompt: SessionPrompt;
   agent: AgentName;
   logos: AgentLogos;
+  word: string;
   onAnswer: (answer: { decision?: string; answers?: Record<string, string[]> }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
@@ -579,7 +583,7 @@ function PromptCard({
               {busy === key ? (
                 <Loader2 size={14} className="spin" />
               ) : prompt.kind === "dialog" ? (
-                "Answer on my Mac"
+                `Answer on my ${word}`
               ) : (
                 (prompt.kind === "tool" ? CLAUDE_DECISIONS[key] : DECISIONS[key]) || key
               )}
@@ -674,6 +678,7 @@ export default function AgentSessionView({
   const agent = initial.agent;
   const skin = SKIN[agent];
   useClaudeFonts(peer, agent === "claude");
+  const word = computerWord(peer.platform);
   const [info, setInfo] = useState<AgentSession>(initial);
   const [items, setItems] = useState<SessionItem[] | null>(null);
   const [before, setBefore] = useState<string | null>(null);
@@ -832,9 +837,9 @@ export default function AgentSessionView({
   const blocked =
     agent === "claude"
       ? elsewhere === "terminal"
-        ? "Running in a terminal on your Mac. Reply there or from the Terminal tab."
+        ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
-          ? "Open in another Claude Code process on your Mac."
+          ? `Open in another Claude Code process on your ${word}.`
           : claudeSignedOut
             ? ""
             : elsewhere === "claude-app" && info.status === "waiting"
@@ -843,7 +848,7 @@ export default function AgentSessionView({
                 ? "Claude is working on this in the Claude app. What you send goes next, in this same session."
                 : ""
       : codexHealth && codexHealth.installed && !codexHealth.signedIn
-        ? "Codex is signed out on your Mac."
+        ? `Codex is signed out on your ${word}.`
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
   // Spends the account's rate-limit reset, only after the person confirms.
@@ -945,7 +950,7 @@ export default function AgentSessionView({
       setNote(
         r.queued
           ? r.delivered
-            ? "Sent to the Codex app on your Mac."
+            ? `Sent to the Codex app on your ${word}.`
             : agent === "claude"
               ? "Goes next, when Claude finishes in the Claude app."
               : "Queued in the Codex app. It runs after the current turn."
@@ -1041,7 +1046,7 @@ export default function AgentSessionView({
             onClick={async () => {
               try {
                 await openInApp(peer, info);
-                setNote(`Opened in the ${skin.app} on your Mac.`);
+                setNote(`Opened in the ${skin.app} on your ${word}.`);
                 setDetails(false);
               } catch (e) {
                 setProblem((e as Error).message);
@@ -1187,7 +1192,12 @@ export default function AgentSessionView({
               }}
             />
           ) : (
-            <AskingCard asking={info.asking} logos={logos} where={info.live?.where === "terminal" ? "terminal" : "Claude app"} />
+            <AskingCard
+              asking={info.asking}
+              logos={logos}
+              where={info.live?.where === "terminal" ? "terminal" : "Claude app"}
+              word={word}
+            />
           )
         )}
         {live.prompts.map((p) => (
@@ -1196,6 +1206,7 @@ export default function AgentSessionView({
             prompt={p}
             agent={agent}
             logos={logos}
+            word={word}
             onAnswer={async (answer) => {
               try {
                 await answerPrompt(peer, initial, p.id, answer);
