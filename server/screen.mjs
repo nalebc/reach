@@ -7,7 +7,10 @@ export class ScreenControl {
   }
   lease = null;
   acquire(client, enabled) {
-    if (!client.scopes.includes("admin"))
+    if (
+      !client.scopes.includes("admin") &&
+      !client.scopes.includes("screen:control")
+    )
       throw fail(403, "Only a paired person can enable screen control.");
     if (typeof enabled !== "boolean")
       throw fail(400, "Send enabled as true or false.");
@@ -15,16 +18,23 @@ export class ScreenControl {
       if (this.lease?.clientId === client.id) this.lease = null;
       return { enabled: false };
     }
+    // You can always take control back from someone you invited.
+    const owner = client.kind !== "guest" && client.scopes.includes("admin");
     if (
       this.lease &&
       this.lease.expiresAt > this.now() &&
-      this.lease.clientId !== client.id
+      this.lease.clientId !== client.id &&
+      !(this.lease.guest && owner)
     )
       throw fail(
         409,
         "Another paired device is controlling the screen. Stop control there first.",
       );
-    this.lease = { clientId: client.id, expiresAt: this.now() + 30000 };
+    this.lease = {
+      clientId: client.id,
+      expiresAt: this.now() + 30000,
+      ...(client.kind === "guest" ? { guest: true } : {}),
+    };
     return { enabled: true, expiresAt: this.lease.expiresAt };
   }
   check(client) {

@@ -16,6 +16,8 @@ export const LOGO_SOURCES = {
   "codex-light": { file: "/Applications/ChatGPT.app/Contents/Resources/icon-codex-light.png", size: 128 },
   claude: { file: "/Applications/Claude.app/Contents/Resources/electron.icns", size: 128 },
   "claude-spark": { file: "/Applications/Claude.app/Contents/Resources/TrayIconTemplate@3x.png", size: 72 },
+  // Terminals on Home wear Terminal's own icon.
+  terminal: { file: "/System/Applications/Utilities/Terminal.app/Contents/Resources/Terminal.icns", size: 128 },
   // Agents Reach knows of but doesn't drive yet (index.mjs KNOWN_AGENTS).
   antigravity: { file: "/Applications/Antigravity.app/Contents/Resources/icon.icns", size: 128 },
   cursor: { file: "/Applications/Cursor.app/Contents/Resources/Cursor.icns", size: 128 },

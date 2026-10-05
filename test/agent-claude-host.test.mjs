@@ -8,7 +8,11 @@ import {
   createClaudeHost,
   describeClaudePrompt,
 } from "../server/agent-sessions/claude-host.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
+import { createClaudeImports } from "../server/agent-sessions/claude-import.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -204,6 +208,7 @@ test("Claude's questions are answered with the chosen options", () => {
       ],
       other: true,
       secret: false,
+      multiSelect: false,
     },
   ]);
   assert.deepEqual(claudeAnswer(prompt, { answers: { "Which database?": ["Postgres"] } }), {
@@ -304,6 +309,17 @@ test("Reach lets go of a session before the Claude app takes it, never mid-turn"
   assert.equal(h.drives(ID), false);
 });
 
+test("a session counts as open on the phone while its live view waits, and not after", async () => {
+  const h = host(fakeClaude());
+  assert.equal(h.watched(ID), false);
+  const gone = new AbortController();
+  const waiting = h.changes(ID, h.view(ID).version, 5000, gone.signal);
+  assert.equal(h.watched(ID), true);
+  gone.abort();
+  await waiting;
+  assert.equal(h.watched(ID), false);
+});
+
 test("images go inline as base64, in the order they were added", () => {
   const read = (file) => Buffer.from(`bytes of ${file}`);
   assert.deepEqual(claudeContent({ text: "look", images: ["/i/a.png", "/i/b.jpg"] }, read), [
@@ -334,6 +350,17 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   // The Claude app's process for the session, as Claude Code's registry shows it.
   const app = { pid: 4242, alive: true, busy: false, signals: [] };
   const opened = [];
+  const openLink = async (url, options) => opened.push([url, options]);
+  // Someone is using the Mac until the test says otherwise.
+  let idle = 5;
+  const imports = createClaudeImports({
+    file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-")), "claude-imports.json"),
+    open: openLink,
+    idle: async () => idle,
+    appRunning: async () => true,
+    imported: () => false,
+    resume: false,
+  });
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
@@ -355,7 +382,8 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     },
     alive: () => app.alive,
     takeOverMs: 50,
-    open: async (url, options) => opened.push([url, options]),
+    open: openLink,
+    claudeImports: imports,
   });
   await assert.rejects(sessions.send("claude", ID, { text: "hi" }), /signed out/);
   signedIn = true;
@@ -398,14 +426,207 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   claudeHost.release(ID);
   where = null;
 
-  // Started here: joins the Claude app's list, in the background, once Reach lets go.
+  // Started here: joins the Claude app's list once Reach lets go, but not while
+  // someone is using the Mac (the import switches the app's window).
   const { threadId } = await sessions.start("claude", { cwd: "/work/site", text: "new one" });
   assert.deepEqual(opened, []);
   claude.last().print({ type: "result", is_error: false });
   claudeHost.release(threadId);
+  await settle(20);
+  assert.deepEqual(opened, [], "not while someone is at the Mac");
+  idle = 600;
+  await imports.check();
   assert.deepEqual(opened, [[`claude://resume?session=${threadId}`, { background: true }]]);
   claudeHost.release(threadId);
+  await imports.check();
   assert.equal(opened.length, 1, "imported once");
+  sessions.close();
+});
+
+test("a Claude app session waiting on you shows what it asks, and a message from here waits instead of ending it", async () => {
+  const claude = fakeClaude();
+  const claudeHost = host(claude);
+  const app = { pid: 4343, waiting: "input needed", signals: [] };
+  const question = {
+    question: "Which database?",
+    header: "Database",
+    multiSelect: false,
+    options: [{ label: "Postgres", description: "" }, { label: "SQLite", description: "" }],
+  };
+  const items = [
+    { id: "u1", role: "user", kind: "text", text: "Set up storage" },
+    { id: "q1", role: "tool", kind: "tool", status: "running", text: "Which database?", detail: "", questions: [question] },
+  ];
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now() - 60_000, status: "idle" }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items, before: null }),
+    },
+    live: async () =>
+      new Map([[ID, { where: "claude-app", pid: app.pid, tty: null, exact: true, busy: false, waiting: app.waiting }]]),
+    claudeHost,
+    signIn: {},
+    liveMs: -1,
+    queueMs: 10,
+    kill: (pid, signal) => app.signals.push(signal),
+    alive: () => true,
+    takeOverMs: 30,
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  const { session } = await sessions.read("claude", ID);
+  assert.equal(session.status, "waiting");
+  assert.deepEqual(session.asking, { kind: "question", questions: [question] });
+  assert.equal((await sessions.list()).sessions[0].status, "waiting");
+  // An older page ends wherever it ends, not on what Claude asks now.
+  assert.equal((await sessions.read("claude", ID, { before: "1" })).session.asking, undefined);
+  // Ending the app's process now would drop its question: the message waits.
+  assert.deepEqual(await sessions.send("claude", ID, { text: "use Postgres" }), { queued: true, delivered: false });
+  await settle(40);
+  assert.deepEqual(app.signals, []);
+  assert.equal(claude.runs.length, 0);
+  // A permission request reads as one.
+  app.waiting = "permission prompt";
+  items[1] = { id: "b1", role: "tool", kind: "command", status: "running", text: "rm -rf build", detail: "" };
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "permission", text: "rm -rf build", command: true });
+  sessions.close();
+});
+
+test("a prompt asked through an agent's hook shows in its session, wakes it, and the phone's answer goes back through the hook", async () => {
+  const claude = fakeClaude();
+  const claudeHost = host(claude);
+  const THREAD = "01a10895-1859-7022-8614-f5ef47ab1c66";
+  const held = new Map(); // promptId -> { agent, id, prompt }
+  const versions = new Map();
+  const listeners = new Set();
+  const answered = [];
+  const agentAsks = {
+    has: (agent, id) => [...held.values()].some((h) => h.agent === agent && h.id === id),
+    prompts: (agent, id) => [...held.values()].filter((h) => h.agent === agent && h.id === id).map((h) => h.prompt),
+    owns: (promptId) => held.has(promptId),
+    answer: (agent, id, promptId, answer) => (answered.push([agent, id, promptId, answer]), held.delete(promptId), { answered: true }),
+    version: (agent, id) => versions.get(`${agent}:${id}`) || 0,
+    onChange: (listener) => (listeners.add(listener), () => listeners.delete(listener)),
+    close() {},
+  };
+  const ask = (agent, id, prompt) => {
+    held.set(prompt.id, { agent, id, prompt });
+    versions.set(`${agent}:${id}`, (versions.get(`${agent}:${id}`) || 0) + 1);
+    for (const l of listeners) l(agent, id);
+  };
+  const codexView = { version: 3, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 };
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [{ agent: "codex", id: THREAD, updatedAt: Date.now() - 1, status: "idle" }], health: async () => ({}) },
+    codexLive: {
+      drives: () => false,
+      view: () => codexView,
+      changes: (id, since, ms) => new Promise((r) => setTimeout(r, ms)),
+    },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now(), status: "idle" }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [], before: null }),
+    },
+    live: async () => new Map([[ID, { where: "claude-app", pid: 1, tty: null, exact: true, busy: true, waiting: null }]]),
+    claudeHost,
+    signIn: {},
+    liveMs: -1,
+    agentAsks,
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  const before = sessions.view("claude", ID);
+  assert.deepEqual(before.prompts, []);
+  // The long poll is waiting when Claude asks in the app.
+  const woke = sessions.changes("claude", ID, before.version, 5000);
+  const prompt = { id: "p1", kind: "tool", title: "Allow Bash?", command: "npm test", decisions: ["allow", "deny"] };
+  ask("claude", ID, prompt);
+  await woke;
+  const view = sessions.view("claude", ID);
+  assert.equal(view.status, "waiting");
+  assert.deepEqual(view.prompts, [prompt]);
+  assert.notEqual(view.version, before.version);
+  assert.equal((await sessions.list()).sessions.find((s) => s.id === ID).status, "waiting");
+  assert.deepEqual(await sessions.respond("claude", ID, "p1", { decision: "allow" }), { answered: true });
+  assert.deepEqual(answered, [["claude", ID, "p1", { decision: "allow" }]]);
+  // A prompt of Reach's own session still goes to its own host.
+  await assert.rejects(sessions.respond("claude", ID, "unknown", { decision: "allow" }), (e) => e.status === 409);
+
+  // The same for a thread in the Codex app.
+  const codexBefore = sessions.view("codex", THREAD);
+  const codexWoke = sessions.changes("codex", THREAD, codexBefore.version, 5000);
+  const approval = { id: "c1", kind: "command", title: "Run this command?", command: "npm test", decisions: ["accept", "decline"] };
+  ask("codex", THREAD, approval);
+  await codexWoke;
+  assert.deepEqual(sessions.view("codex", THREAD).prompts, [approval]);
+  assert.equal(sessions.view("codex", THREAD).status, "waiting");
+  assert.equal((await sessions.list()).sessions.find((s) => s.id === THREAD).status, "waiting");
+  await sessions.respond("codex", THREAD, "c1", { decision: "accept" });
+  assert.deepEqual(answered.at(-1), ["codex", THREAD, "c1", { decision: "accept" }]);
+  sessions.close();
+});
+
+test("Reach holds a hook's prompt only for sessions the phone lists: the Claude app's and terminals', Codex threads, not headless runs", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const { agentAskSocket } = await import("../server/agent-sessions/agent-asks.mjs");
+  const hookScript = new URL("../scripts/agent-hook.mjs", import.meta.url).pathname;
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-asks-index-"));
+  const APP = "a1111111-2222-4333-8444-555555555555";
+  const BACKGROUND = "b1111111-2222-4333-8444-555555555555";
+  const UNKNOWN = "c1111111-2222-4333-8444-555555555555";
+  const THREAD = "01a10895-1859-7022-8614-f5ef47ab1c66";
+  const EXEC = "01a10895-1859-7022-8614-f5ef47ab1c67";
+  const sessions = createAgentSessions({
+    dataDir,
+    listenForAsks: true,
+    macIdle: async () => 600, // nobody at the Mac
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: {
+      list: async () => [
+        { agent: "codex", id: THREAD, updatedAt: 1, status: "idle" },
+        { agent: "codex", id: EXEC, updatedAt: 1, status: "idle", headless: true },
+      ],
+      health: async () => ({}),
+    },
+    codexLive: { drives: () => false, watched: () => false, view: () => ({ version: 0, prompts: [] }), changes: async () => {} },
+    claude: { list: async () => [], starts: async () => [], health: async () => ({ signedIn: true }) },
+    live: async () =>
+      new Map([
+        [APP, { where: "claude-app", pid: 1, busy: true }],
+        [BACKGROUND, { where: "background", pid: 2, busy: true }],
+      ]),
+    claudeHost: host(fakeClaude()),
+    signIn: {},
+    liveMs: -1,
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  t.after(() => sessions.close());
+  await new Promise((r) => setTimeout(r, 100)); // the socket opens
+  const ask = (agent, session_id) => {
+    const child = spawn(process.execPath, [hookScript, agent, agentAskSocket(dataDir)], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    const exited = new Promise((resolve) => child.on("exit", () => resolve(out)));
+    child.stdin.end(JSON.stringify({ session_id, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "ls" } }));
+    return { child, exited };
+  };
+  // Headless and unknown sessions go on at once, with no answer from Reach.
+  assert.equal(await ask("claude", BACKGROUND).exited, "");
+  assert.equal(await ask("claude", UNKNOWN).exited, "");
+  assert.equal(await ask("codex", EXEC).exited, "");
+  // The Claude app's session and a Codex thread wait for the phone.
+  const held = [ask("claude", APP), ask("codex", THREAD)];
+  const end = Date.now() + 3000;
+  while (!(sessions.view("claude", APP).prompts.length && sessions.view("codex", THREAD).prompts.length)) {
+    assert.ok(Date.now() < end, "both held");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  for (const h of held) h.child.kill("SIGTERM");
+  await Promise.all(held.map((h) => h.exited));
 });
 
 test("a Claude session shows as working only when it is, not merely open in the app", async () => {

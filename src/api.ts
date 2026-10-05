@@ -101,7 +101,14 @@ export type Chat = Session & {
   error?: string | null;
   updatedAt: string;
 };
+// An invited guest's computers live in this tab only, never in the saved list.
+type GuestHolder = { __reachGuestPeers?: Peer[] };
+export const guestPeers = () => (globalThis as GuestHolder).__reachGuestPeers;
+export const setGuestPeers = (peers: Peer[] | undefined) => {
+  (globalThis as GuestHolder).__reachGuestPeers = peers;
+};
 export const readPeers = (): Peer[] => {
+  if (guestPeers()) return guestPeers()!;
   try {
     const value = JSON.parse(localStorage.getItem("reach.devices") || "[]");
     return Array.isArray(value)
@@ -120,6 +127,7 @@ export const readPeers = (): Peer[] => {
   }
 };
 export function savePeers(peers: Peer[]) {
+  if (guestPeers()) return setGuestPeers(peers);
   localStorage.setItem("reach.devices", JSON.stringify(peers));
 }
 const endpoint = (peer: Peer) => {

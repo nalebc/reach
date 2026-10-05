@@ -8,10 +8,10 @@
   --as-muted: #8e8e8e;
   --as-faint: #5c5c5c;
   --as-line: #2a2a2a;
-  --as-bubble: #2f2f2f;
-  --as-field: #2a2a2a;
+  --as-bubble: #2f2f2e;
+  --as-field: #363636;
   --as-field-line: transparent;
-  --as-card: #222222;
+  --as-card: #212121;
   --as-code-bg: #262626;
   --as-code-line: #333333;
   --as-inline: #ececec;
@@ -34,17 +34,18 @@
   font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+/* Claude Code's colors as the Claude app draws them now (measured Oct 4). */
 .as-page.claude,
 .chat-home.claude {
-  --as-bg: #1a1a19;
-  --as-text: #e8e6e1;
-  --as-muted: #8b8984;
-  --as-faint: #5d5b57;
-  --as-line: #2b2a28;
-  --as-bubble: #2c2b29;
-  --as-field: #21201f;
-  --as-field-line: #3b3a37;
-  --as-card: #21201f;
+  --as-bg: #151515;
+  --as-text: #e6e6e6;
+  --as-muted: #8f8f8f;
+  --as-faint: #5e5e5e;
+  --as-line: #262626;
+  --as-bubble: #212121;
+  --as-field: #20201f;
+  --as-field-line: #333332;
+  --as-card: #20201f;
   --as-code-bg: #2a2927;
   --as-code-line: #3a3936;
   --as-inline: #e8806a;
@@ -360,12 +361,19 @@ button.as-title:active {
 /* Errors: a quiet line in Codex, a card in Claude Code */
 .as-error.codex {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   gap: 8px;
   margin: 2px 8px;
   color: var(--as-muted);
   font-size: 14px;
   text-align: center;
+}
+.as-error.codex p {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
 }
 .as-error.codex svg {
   flex: 0 0 auto;
@@ -392,6 +400,27 @@ button.as-title:active {
   padding: 10px 12px 12px;
   color: var(--as-muted);
   font-size: 14px;
+}
+.as-error.claude footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 12px;
+}
+/* Where to get more usage: a small button, as the apps have. */
+.as-usage {
+  align-self: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--as-text);
+  color: var(--as-bg);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.as-banner .as-usage {
+  align-self: flex-start;
+  margin-top: 6px;
 }
 
 /* Working */
@@ -542,6 +571,43 @@ button.as-title:active {
 .as-choices button small {
   font-weight: 400;
 }
+/* Several questions: one per page, the steps on top. */
+.as-steps {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.as-steps button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 12.5px;
+}
+.as-steps button.current {
+  border-color: var(--as-accent);
+  color: var(--as-text);
+}
+.as-steps button.done svg {
+  color: var(--as-accent);
+}
+.as-question-hint {
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+/* A question shown on the Mac: said, not offered as buttons here. */
+.as-prompt.elsewhere .as-asked {
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 13.5px;
+}
 .as-choices button.chosen {
   border-color: var(--as-accent);
 }
@@ -571,14 +637,76 @@ button.as-title:active {
 .as-banner {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 12px 16px;
-  border-radius: 20px;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 22px;
   background: var(--as-card);
   font-size: 13.5px;
 }
+.as-banner > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.as-banner strong {
+  font-weight: 600;
+}
 .as-banner span {
   color: var(--as-muted);
+}
+/* The Codex app's out-of-usage card: Reset usage, then Upgrade. */
+.as-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.as-banner-actions > span {
+  flex: 1 1 100%;
+  color: var(--as-text);
+}
+.as-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid #ffffff2e;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.as-banner-btn.primary {
+  border-color: transparent;
+  background: #343b43;
+}
+/* The composer: one card holding the text and its controls in Codex; a thin
+   box with the controls beneath in Claude Code. */
+.as-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.codex .as-box {
+  gap: 0;
+  padding: 2px 8px 8px;
+  border-radius: 26px;
+  background: var(--as-field);
+}
+.codex .as-box .as-field {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.codex .as-box .as-field textarea {
+  padding: 10px 6px 6px;
+}
+.as-when {
+  padding: 4px 0 2px;
 }
 .as-hint {
   margin: 0 4px;
@@ -722,8 +850,8 @@ button.as-title:active {
   color: var(--as-bg);
 }
 .as-send:disabled {
-  background: #3a3a3a;
-  color: #7a7a7a;
+  background: #9a9a9a;
+  color: #363636;
 }
 .as-send.stop {
   background: var(--as-text);

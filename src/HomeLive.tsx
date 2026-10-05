@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { macTerminalsFingerprint } from "./mac-terminal-live";
 import {
   Asterisk,
   Bell,
@@ -53,10 +54,12 @@ type Story = {
 };
 const kindOf = (name: string): Story["kind"] =>
   /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : "shell";
-// Codex and Claude Code show their real app icons (from the Mac).
-const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }) =>
-  (kind === "codex" && logos.codex) || (kind === "claude" && logos.claude) ? (
-    <AgentLogo agent={kind as "codex" | "claude"} logos={logos} size={30} />
+// Codex, Claude Code and terminals wear their real app icons (from the Mac),
+// filling the round frame.
+const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }) => {
+  const icon = kind === "shell" ? "terminal" : kind;
+  return logos[icon] && icon !== "chat" ? (
+    <AgentLogo agent={icon} logos={logos} name={icon === "terminal" ? "Terminal" : undefined} fill />
   ) : kind === "codex" ? (
     <Sparkles size={22} />
   ) : kind === "claude" ? (
@@ -66,6 +69,7 @@ const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }
   ) : (
     <Terminal size={22} />
   );
+};
 const ago = (at: number, now: number) => {
   const s = Math.max(0, Math.round((now - at) / 1000));
   return s < 5
@@ -89,14 +93,29 @@ function usePageVisible() {
 
 // Tabs already open in Terminal on the Mac, with their last line. Terminal.app
 // can only be read, not streamed, so tabs are read one after another.
-function useMacTabs(peer: Peer, enabled: boolean, visible: boolean) {
+function useMacTabs(
+  peer: Peer,
+  enabled: boolean,
+  visible: boolean,
+  changes?: string,
+) {
   const [tabs, setTabs] = useState<MacTerminal[]>([]);
   const [peeks, setPeeks] = useState<Record<string, { line: string; at: number }>>({});
   const list = useRef<MacTerminal[]>([]);
+  // A Mac that tells when its Terminal windows change is asked only then
+  // (server/mac-terminal-watch.mjs); others every few seconds, as before.
+  const pushed = macTerminalsFingerprint(changes);
+  const told = pushed !== undefined;
+  // A changed last line counts as new output.
+  const note = (id: string, line: string) =>
+    setPeeks((current) =>
+      current[id]?.line === line
+        ? current
+        : { ...current, [id]: { line, at: current[id] ? Date.now() : 0 } },
+    );
   useEffect(() => {
     if (!enabled || !visible) return;
-    let stopped = false,
-      turn = 0;
+    let stopped = false;
     const refresh = async () => {
       try {
         const r = await request<{ sessions: MacTerminal[] }>(
@@ -110,6 +129,54 @@ function useMacTabs(peer: Peer, enabled: boolean, visible: boolean) {
         /* Permission or app missing: no Mac tabs on Home. */
       }
     };
+    void refresh();
+    const lister = told ? undefined : setInterval(() => void refresh(), 5000);
+    return () => {
+      stopped = true;
+      clearInterval(lister);
+    };
+  }, [enabled, visible, peer.url, peer.token, told, pushed]);
+  useEffect(() => {
+    if (!enabled || !visible) return;
+    let stopped = false;
+    if (told) {
+      // Every tab's last line, answered by the Mac when one changes.
+      const waits = new Set<AbortController>();
+      void (async () => {
+        let version = -1;
+        while (!stopped) {
+          const wait = new AbortController();
+          waits.add(wait);
+          const limit = setTimeout(() => wait.abort(), 30000);
+          try {
+            const r = await request<{
+              version: number;
+              peeks: Record<string, string>;
+            }>(peer, `/api/terminals/desktop/activity?after=${version}`, {
+              signal: wait.signal,
+            });
+            if (stopped) return;
+            // Nothing new right away: never spin.
+            if (r.version === version) await new Promise((r) => setTimeout(r, 1000));
+            version = r.version;
+            for (const [id, line] of Object.entries(r.peeks || {}))
+              note(id, String(line));
+          } catch (e) {
+            if (stopped) return;
+            if ((e as Error).name !== "AbortError")
+              await new Promise((r) => setTimeout(r, 3000));
+          } finally {
+            clearTimeout(limit);
+            waits.delete(wait);
+          }
+        }
+      })();
+      return () => {
+        stopped = true;
+        for (const wait of waits) wait.abort();
+      };
+    }
+    let turn = 0;
     const read = async () => {
       const tab = list.current[turn++ % Math.max(1, list.current.length)];
       if (!tab || stopped) return;
@@ -119,32 +186,22 @@ function useMacTabs(peer: Peer, enabled: boolean, visible: boolean) {
           `/api/terminals/desktop/${tab.id}`,
         );
         if (stopped) return;
-        const line =
+        note(
+          tab.id,
           String(text)
             .split("\n")
             .map((l) => l.trimEnd())
             .filter((l) => /[\p{L}\p{N}]/u.test(l))
-            .pop() || "";
-        // A changed last line counts as new output.
-        setPeeks((current) =>
-          current[tab.id]?.line === line
-            ? current
-            : {
-                ...current,
-                [tab.id]: { line, at: current[tab.id] ? Date.now() : 0 },
-              },
+            .pop() || "",
         );
       } catch {}
     };
-    void refresh().then(read);
-    const lister = setInterval(() => void refresh(), 5000);
     const reader = setInterval(() => void read(), 900);
     return () => {
       stopped = true;
-      clearInterval(lister);
       clearInterval(reader);
     };
-  }, [enabled, visible, peer.url, peer.token]);
+  }, [enabled, visible, peer.url, peer.token, told]);
   return { tabs: enabled ? tabs : [], peeks };
 }
 
@@ -204,7 +261,12 @@ export default function HomeLive({
     false,
   );
   const peeks = useTerminalPeeks(peer, features.terminal ? terminals : []);
-  const mac = useMacTabs(peer, features.desktopTerminals, visible);
+  const mac = useMacTabs(
+    peer,
+    features.desktopTerminals,
+    visible,
+    connections[active]?.changes,
+  );
   // Ages and spinning rings follow the clock.
   const [now, setNow] = useState(Date.now());
   useEffect(() => {

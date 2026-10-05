@@ -8,6 +8,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 // `fakes` swaps chosen source modules (the live video stream, the input
 // socket…) for stand-ins, keyed by repo path: { "src/x.ts": "test/dom/fakes/x.mjs" }.
 // `routes` answers the computer's HTTP API: { "/api/screen/control": () => ({…}) }.
+// Each gets the request's init and its URL (for query strings).
 // Every console.error (React's warnings included) and every jsdom error lands
 // in `errors`, so a test can require that rendering stayed clean.
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -73,8 +74,9 @@ export async function startDom({
   for (const name of ["window", "self", "navigator", "Event", "CustomEvent"])
     define(name, name === "window" || name === "self" ? window : window[name]);
   define("fetch", async (url, init = {}) => {
-    const route = new URL(url, window.location.href).pathname;
-    const body = (await routes[route]?.(init)) ?? {};
+    const href = new URL(url, window.location.href);
+    const route = href.pathname;
+    const body = (await routes[route]?.(init, href)) ?? {};
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -91,6 +93,8 @@ export async function startDom({
     appType: "custom",
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
+    // Faked packages go through the plugin below instead of loading as-is.
+    ssr: { noExternal: Object.keys(fakes).filter((k) => !/^(src|test)\//.test(k)) },
     plugins: [
       {
         name: "reach-test-fakes",
@@ -101,7 +105,10 @@ export async function startDom({
             ...options,
             skipSelf: true,
           });
-          const fake = resolved && fakes[path.relative(root, resolved.id)];
+          // By file, or by package name for packages Vite loads as-is.
+          const fake =
+            fakes[source] ||
+            (resolved && fakes[path.relative(root, resolved.id)]);
           return fake ? path.join(root, fake) : undefined;
         },
       },

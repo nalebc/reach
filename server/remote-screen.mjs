@@ -16,6 +16,12 @@ export class RemoteScreenHub {
     if (this.viewers.size >= 4)
       throw fail(429, "Four screen viewers are already connected.");
     const options = streamOptions(value);
+    // The phone's own resolution (its longest side in pixels): in auto
+    // quality, the stream is as sharp as that screen can show.
+    const cap = value?.maxWidth;
+    if (Number.isInteger(cap) && cap >= 640 && cap <= 3840)
+      options.width =
+        options.quality === "auto" ? cap : Math.min(options.width, cap);
     let selectedDisplay;
     // Reserve before asynchronous native preparation to enforce the global limit.
     const reservation = {};

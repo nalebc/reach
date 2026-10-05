@@ -26,7 +26,7 @@ export const APP_STREAM = {
   quality: "auto",
   width: 2560,
   fps: 60,
-  bitrate: 12000000,
+  bitrate: 16000000,
 };
 
 let building = null;
@@ -494,7 +494,12 @@ export class AppScreenHub {
     const format = message.format === "jpeg" ? "jpeg" : "h264";
     const options = {
       ...APP_STREAM,
-      width: streamWidth(t.phone),
+      width: Math.min(
+        streamWidth(t.phone),
+        Number.isInteger(message.maxWidth) && message.maxWidth >= 640
+          ? message.maxWidth
+          : Infinity,
+      ),
       display: t.display,
       format,
       region: t.region,

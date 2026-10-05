@@ -39,7 +39,10 @@ export function desktopConnection(
     if (
       !client ||
       !config.screen ||
-      !client.scopes.includes("admin") ||
+      !(
+        client.scopes.includes("admin") ||
+        client.scopes.includes("screen:control")
+      ) ||
       !client.scopes.includes("screen")
     )
       throw fail(403, "Desktop control expired or was revoked.");

@@ -3,6 +3,7 @@ import { Link2, ShieldCheck, Smartphone, RefreshCw } from "lucide-react";
 import { Peer, normalizeUrl } from "./api";
 import { isNative } from "./native";
 import { ErrorLine } from "./ui";
+import { homeOrigin } from "./home-origin";
 
 type Method = {
   method: "tailscale" | "pairing";
@@ -61,7 +62,7 @@ export default function ConnectForm({
   name: string;
 }) {
   const [url, setUrl] = useState(
-    initialUrl || (isNative ? "" : location.origin),
+    initialUrl || (isNative ? "" : homeOrigin()),
   );
   const [method, setMethod] = useState<Method | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);

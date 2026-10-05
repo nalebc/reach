@@ -21,6 +21,7 @@
     "!scripts/benchmark-desktop.mjs",
     "!scripts/compress-assets.mjs",
     "dist/",
+    "tailnet/dist/",
     "docs/*.md"
   ],
   "publishConfig": {
@@ -33,7 +34,7 @@
     "go": "node scripts/bootstrap.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs",
-    "prepack": "npm run build",
+    "prepack": "npm run build && node scripts/build-tailnet.mjs",
     "start": "node server/index.mjs",
     "test": "node --test test/*.test.mjs",
     "pair": "node scripts/pair.mjs",

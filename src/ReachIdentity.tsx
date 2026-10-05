@@ -59,7 +59,7 @@ function Courier() {
     </g>
   );
 }
-function Computer({
+export function Computer({
   x,
   y,
   scale = 1,

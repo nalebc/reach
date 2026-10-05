@@ -98,10 +98,15 @@ import EverythingChat from "./EverythingChat";
 import { useAgentSessions, useChatAgent, type AgentName } from "./agent-sessions";
 import { AgentLogo, useAgentLogos } from "./agent-logos";
 import Apps from "./Apps";
-import { GuestInvite } from "./GuestAccess";
+import { InviteSheet } from "./InviteSheet";
 import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
 import { ReachScene } from "./ReachIdentity";
+import MascotIntro from "./MascotIntro";
+import { homeOrigin } from "./home-origin";
+import { tailnetBrowser } from "./tailnet-transport";
+import { useFleetJoin } from "./fleet-join";
+import { groupDevices } from "./device-groups";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
 // when first opened, then quietly in the background once the app is idle.
 const loadScreen = () => import("./Screen");
@@ -129,6 +134,9 @@ const pages = [
 const mobileOrder = ["overview", "sessions", "screen", "terminal"];
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
+  // Signed in from the browser: works anywhere, but the app connects device
+  // to device and is faster.
+  if (tailnetBrowser()) return "Tailscale in browser · faster with the app";
   return host.endsWith(".ts.net") ? "Tailscale" : "Direct connection";
 };
 export default function App() {
@@ -511,6 +519,15 @@ function ReachWorkspace() {
     setPage("overview");
     toast(`${p.name} is within reach`);
   };
+  // Your linked computers join by themselves (src/fleet-join.ts).
+  const waitingComputers = useFleetJoin(peer, peers, deviceLabel(), (p) => {
+    setPeers((old) => {
+      const next = upsertPeer(old, { ...p, pairedAt: Date.now() });
+      savePeers(next);
+      return next;
+    });
+    toast(`${p.name} is within reach`);
+  });
   const choose = (id: string) => {
     if (id === peer?.id) return;
     if (peer)
@@ -672,6 +689,12 @@ function ReachWorkspace() {
           connections={connections}
           choose={choose}
           pair={() => setPairing(true)}
+          waiting={waitingComputers}
+          onWaiting={(c) =>
+            toast(
+              `Link ${c.name}: type "link ${new URL(c.origin).hostname.split(".")[0]}" in Reach on ${peer.name}, and "link ${new URL(peer.url).hostname.split(".")[0]}" in Reach on ${c.name}.`,
+            )
+          }
         />
         <main key={peer?.id} className={`main-content page-${page}`}>
           <ScreenBoundary
@@ -801,6 +824,7 @@ function ReachWorkspace() {
                     onOpenScreen={
                       features.screen ? () => navigate("screen") : undefined
                     }
+                    changes={live}
                   />
                 )}
                 {page === "sessions" && (
@@ -859,11 +883,7 @@ function ReachWorkspace() {
                         title="Invite someone"
                         description="A little access. Only for a little while."
                       />
-                      <GuestInvite
-                        peer={peer}
-                        device={device}
-                        onCreated={() => {}}
-                      />
+                      <InviteSheet peer={peer} device={device} peers={peers} />
                       <button
                         className="button secondary"
                         onClick={() => navigate("settings")}
@@ -1154,6 +1174,7 @@ function Welcome({
 }) {
   return (
     <div className="welcome">
+      <MascotIntro />
       <div className="welcome-brand">
         <Logo />
         <div className="welcome-controls">
@@ -1366,7 +1387,7 @@ function LegacyPairForm({
   compact?: boolean;
 }) {
   const [url, setUrl] = useState(
-      initialUrl || (isNative ? "" : location.origin),
+      initialUrl || (isNative ? "" : homeOrigin()),
     ),
     [code, setCode] = useState(""),
     [name, setName] = useState(deviceLabel),
@@ -1591,6 +1612,8 @@ function SettingsPage({
         expiresAt?: number;
         kind?: string;
         status?: string;
+        deviceGroup?: string;
+        tailscale?: { userId: string; nodeId: string };
       }[]
     >([]),
     [current, setCurrent] = useState("");
@@ -1644,7 +1667,7 @@ function SettingsPage({
           aria-pressed={settingsView === "access"}
           onClick={() => setSettingsView("access")}
         >
-          Access <span>{clients.length}</span>
+          Access <span>{groupDevices(clients).length}</span>
         </button>
       </div>
       <div className="settings-general" hidden={settingsView !== "general"}>
@@ -1786,7 +1809,7 @@ function SettingsPage({
             Revoking access disconnects that client. Already-running work stays
             on the computer.
           </p>
-          {[...clients]
+          {groupDevices(clients)
             .sort((a, b) => {
               const rank = (kind?: string) =>
                 kind === "guest" ? 1 : kind === "agent" ? 2 : 0;
@@ -1808,7 +1831,7 @@ function SettingsPage({
                   <div>
                     <strong>
                       {c.name}
-                      {c.id === current ? " · this device" : ""}
+                      {c.ids.includes(current) ? " · this device" : ""}
                     </strong>
                     <DeviceAccessBadge
                       access={[
@@ -1843,10 +1866,12 @@ function SettingsPage({
                     onClick={async () => {
                       if (!confirm(`Revoke access for ${c.name}?`)) return;
                       try {
-                        await request(peer, `/api/clients/${c.id}`, {
-                          method: "DELETE",
-                        });
-                        if (c.id === current) forget();
+                        // Every browser on that device.
+                        for (const id of c.ids)
+                          await request(peer, `/api/clients/${id}`, {
+                            method: "DELETE",
+                          });
+                        if (c.ids.includes(current)) forget();
                         else load();
                       } catch (e) {
                         toast((e as Error).message);

@@ -22,7 +22,10 @@ export function workspaceCapabilities(
     files,
     writeFiles: files && (allowed("files") || allowed("files:write")),
     terminal: !!device?.capabilities.terminal && allowed("terminal"),
-    apps: desktop && !!device?.capabilities.apps && allowed("apps"),
+    apps:
+      desktop &&
+      !!device?.capabilities.apps &&
+      (allowed("apps") || allowed("apps:open")),
     shortcuts:
       owner && desktop && !!device?.capabilities.apps && allowed("apps"),
     desktopTerminals:

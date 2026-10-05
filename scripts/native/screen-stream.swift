@@ -121,7 +121,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       guard let color = CGColorSpace(name: CGColorSpace.sRGB),
         let data = context.jpegRepresentation(
           of: CIImage(cvPixelBuffer: buffer), colorSpace: color,
-          options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.65]
+          options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8]
         )
       else { return }
       write(data)

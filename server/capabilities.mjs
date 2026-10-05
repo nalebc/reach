@@ -85,7 +85,8 @@ export function deviceCapabilities({
   return {
     terminal: scopes.includes("terminal"),
     files: scopes.some((s) => ["files", "files:read"].includes(s)),
-    apps: desktop && scopes.includes("apps"),
+    // "apps:open": an invitation to watch chosen apps' windows.
+    apps: desktop && (scopes.includes("apps") || scopes.includes("apps:open")),
     screen: desktop && scopes.includes("screen") && screen === true,
     screenSupported: desktop && scopes.includes("screen"),
     codex: scopes.includes("codex") && codexInstalled === true,

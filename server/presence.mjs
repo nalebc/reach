@@ -18,10 +18,14 @@ export class DevicePresence {
   }
   snapshot(viewer, activity = () => "connected") {
     const devices = new Map();
+    // One device per phone: browsers sharing its Tailscale connection, or
+    // approved as the same device (deviceGroup), count once.
     const key = (client) =>
-      client.tailscale
-        ? `node:${hash(`${client.tailscale.userId}:${client.tailscale.nodeId}`)}`
-        : `client:${client.id}`;
+      client.deviceGroup
+        ? `node:${hash(`${client.tailscale?.userId}:${client.deviceGroup}`)}`
+        : client.tailscale
+          ? `node:${hash(`${client.tailscale.userId}:${client.tailscale.nodeId}`)}`
+          : `client:${client.id}`;
     const self = key(viewer);
     for (const { client, kind } of this.sessions.values()) {
       if (client.expiresAt <= Date.now()) continue;
@@ -62,10 +66,17 @@ export class DevicePresence {
 
 // `changes(client)` returns short fingerprints of what this client may see
 // (terminals, chats…). They ride along in the snapshot, so the app refetches
-// a list only when it changed instead of polling it.
+// a list only when it changed instead of polling it. `subscribe(send)` lets
+// a change be sent at once rather than at the next 2-second look.
 export function presenceConnection(
   ws,
-  { verify, presence, activity, changes = () => undefined },
+  {
+    verify,
+    presence,
+    activity,
+    changes = () => undefined,
+    subscribe = () => () => {},
+  },
 ) {
   let lastSnapshot = "";
   let token,
@@ -93,6 +104,7 @@ export function presenceConnection(
     }
   };
   const update = setInterval(send, 2000);
+  const unsubscribe = subscribe(send);
   const heartbeat = setInterval(() => {
     if (!alive) {
       presence.remove(ws);
@@ -128,6 +140,7 @@ export function presenceConnection(
   ws.once("close", () => {
     clearTimeout(deadline);
     clearInterval(update);
+    unsubscribe();
     clearInterval(heartbeat);
     presence.remove(ws);
   });

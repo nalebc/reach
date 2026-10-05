@@ -1,7 +1,28 @@
+import fs from "node:fs";
+import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
-export const tailscaleCli = () => process.env.REACH_TAILSCALE || "tailscale";
+// The Mac App Store and standalone apps carry the CLI inside the app without
+// putting `tailscale` on PATH.
+const MAC_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+export function findTailscaleCli({
+  env = process.env,
+  platform = process.platform,
+  exists = fs.existsSync,
+} = {}) {
+  if (env.REACH_TAILSCALE) return env.REACH_TAILSCALE;
+  const onPath = (env.PATH || "")
+    .split(path.delimiter)
+    .some((dir) => dir && exists(path.join(dir, "tailscale")));
+  return platform === "darwin" && !onPath && exists(MAC_APP_CLI)
+    ? MAC_APP_CLI
+    : "tailscale";
+}
+let cli;
+export const tailscaleCli = () =>
+  process.env.REACH_TAILSCALE ||
+  (cli && cli !== "tailscale" ? cli : (cli = findTailscaleCli()));
 export async function tailscaleJson(args) {
   try {
     const { stdout } = await exec(tailscaleCli(), args, {

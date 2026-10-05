@@ -13,6 +13,7 @@ import {
   recordedRouteMatches,
 } from "./persistent-serve.mjs";
 import { stateDir } from "./home.mjs";
+import { removePersistentFunnel } from "./public-link.mjs";
 
 export const serviceLabel = "com.reach.companion";
 const xml = (value) =>
@@ -191,8 +192,11 @@ export async function backgroundService(options, root, deps = {}) {
     const message = await (deps.removeRoute || removePersistentRoute)({
       file: routeFile,
     });
+    const funnelMessage = await (deps.removeFunnel || removePersistentFunnel)({
+      file: path.join(state, "funnel-owner.json"),
+    });
     (deps.print || console.log)(
-      `Reach stopped and uninstalled. ${message}\nSaved pairings and logs remain in .reach. Running Reach terminals/jobs have ended.`,
+      `Reach stopped and uninstalled. ${message}${funnelMessage ? ` ${funnelMessage}` : ""}\nSaved pairings and logs remain in .reach. Running Reach terminals/jobs have ended.`,
     );
     return;
   }

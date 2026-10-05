@@ -133,6 +133,8 @@ function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
     tty: () => tty,
     customTitle: () => "",
     contents: () => `output:${tty}`,
+    // tty2's command has finished: Terminal keeps the tab, nothing runs in it.
+    processes: () => (tty === "tty2" ? [] : ["login", "-zsh"]),
   }));
   const win = { id: () => 42, name: () => "Window", tabs: () => panes };
   const app = {
@@ -173,6 +175,21 @@ function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
     panes,
   };
 }
+test("Terminal tabs whose command has finished are not listed", async () => {
+  const listed = nativeFixture({ provider: "terminal", action: "list" });
+  assert.deepEqual(
+    listed.result.sessions.map((s) => [s.tty, s.ended]),
+    [
+      ["tty1", false],
+      ["tty2", true],
+    ],
+  );
+  const f = fixture();
+  f.setTabs([tab("/dev/ttys1", "owner — -zsh"), { ...tab("/dev/ttys9", "owner — local.command — 80×24"), ended: true }]);
+  const d = new DesktopTerminals({ platform: "darwin", run: f.run });
+  const { sessions } = await d.list(allow);
+  assert.deepEqual(sessions.map((s) => s.name), ["owner — -zsh"]);
+});
 test("native helper targets the exact tab, never launches apps during discovery, and rejects stale app epochs", () => {
   const absent = nativeFixture(
     { provider: "terminal", action: "list" },

@@ -1,5 +1,7 @@
 node_modules/
 dist/
+tailnet/dist/
+tailnet/.tailnet-build-*/
 .reach/
 *.log
 .DS_Store

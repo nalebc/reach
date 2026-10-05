@@ -167,6 +167,7 @@ try {
   let options = parseOptions(process.argv.slice(2));
   const { configure, readPreferences, applyPreferences } =
     await import("./configure.mjs");
+  const { ensureTailscale } = await import("./tailscale-connect.mjs");
   if (options.version) {
     console.log(readPackage().version);
   } else if (options.help) {
@@ -175,6 +176,7 @@ try {
 ${command}                     Foreground private Tailscale connection
 ${command} configure           Guided Tailscale account and phone setup
 ${command} approve             Approve a new phone on this computer
+${command} invites             Set up invite keys (guests need no Tailscale app)
 ${command} update              Update to the latest Reach (installed with npm)
 ${command} import <folder>     Bring paired phones and settings from another Reach folder
 ${command} --version           Show the installed version
@@ -197,6 +199,7 @@ or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
   } else if (options.command === "configure") {
+    await ensureTailscale();
     await configure(root);
   } else if (options.command === "import") {
     const { importState } = await import("./import-state.mjs");
@@ -206,6 +209,9 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     );
   } else if (options.command === "update") {
     await update();
+  } else if (options.command === "invites") {
+    const { setupInvites } = await import("./invites.mjs");
+    await setupInvites(root);
   } else if (options.command === "approve") {
     const { approveDevice } = await import("./approve-device.mjs");
     await approveDevice(root);
@@ -221,6 +227,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         await ensureRuntime(state);
       }
       if (!options.local && process.platform !== "win32") {
+        await ensureTailscale();
         const preferences = readPreferences(root) || (await configure(root));
         options = applyPreferences(options, preferences, process.argv.slice(2));
       }
@@ -262,6 +269,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       "src",
       "public",
       "index.html",
+      "start.html",
       "vite.config.mjs",
       "tsconfig.json",
     ]);
@@ -286,6 +294,21 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source }), {
         mode: 0o600,
       });
+    // The browser sign-in client, for phones without the Tailscale app.
+    if (!packaged && !options.local) {
+      const { buildTailnet, tailnetCurrent } = await import("./build-tailnet.mjs");
+      if (!tailnetCurrent()) {
+        console.log("Reach: preparing browser sign-in for phones (first run or update, about 2 minutes)…");
+        try {
+          if (!(await buildTailnet()))
+            console.log(
+              "Reach: Go isn't installed, so phones need the Tailscale app. Install Go (https://go.dev/dl) to let phones sign in from the browser.",
+            );
+        } catch (error) {
+          console.log(`Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`);
+        }
+      }
+    }
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     if (!options.local && process.platform !== "win32") {
@@ -293,6 +316,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         console.log(
           `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
         );
+      // A background service can't ask; it reports what's missing instead.
+      await ensureTailscale(options.service ? { interactive: false } : {});
       const preferences = readPreferences(root) || (await configure(root));
       // Installed service arguments are its saved folder/port choices.
       if (!options.service)

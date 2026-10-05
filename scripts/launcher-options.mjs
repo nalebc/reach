@@ -20,6 +20,7 @@ export function parseOptions(args) {
         "pair",
         "configure",
         "approve",
+        "invites",
         "update",
         "import",
       ].includes(arg)

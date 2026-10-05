@@ -9,6 +9,34 @@ import {
 } from "./tailscale-auth.mjs";
 
 const validId = (id) => typeof id === "string" && /^[a-f0-9-]{36}$/.test(id);
+// "iphone-browser-1.tail.ts.net" -> "iphone-browser"
+const baseName = (name) =>
+  String(name || "")
+    .toLowerCase()
+    .split(".")[0]
+    .replace(/-\d+$/, "");
+// The same phone in another browser counts as one device: the same Tailscale
+// device (browsers sharing the Tailscale app), or, signed in from the browser,
+// another browser of the same kind on your account ("iphone-browser").
+export function sameDevice(auth, request) {
+  const devices = auth
+    .list()
+    .filter(
+      (c) =>
+        c.kind === "device" &&
+        c.tailscale?.userId === request.identity.userId &&
+        c.expiresAt > Date.now(),
+    );
+  const twin =
+    devices.find((c) => c.tailscale.nodeId === request.identity.nodeId) ||
+    (/-browser$/.test(baseName(request.nodeName))
+      ? devices.find(
+          (c) =>
+            c.nodeName && baseName(c.nodeName) === baseName(request.nodeName),
+        )
+      : undefined);
+  return twin ? { deviceGroup: twin.deviceGroup || twin.tailscale.nodeId } : {};
+}
 export function approvalStore(dataDir, { now = Date.now } = {}) {
   const dir = path.join(dataDir, "device-requests");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -31,6 +59,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           ...(decision
             ? {
                 status: decision.decision === "approve" ? "approved" : "denied",
+                ...(decision.by ? { approvedBy: decision.by } : {}),
               }
             : {}),
         });
@@ -81,7 +110,8 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         verification: request.id.slice(0, 8),
       };
     },
-    decide(id, decision) {
+    // `by`: the linked computer that approved this device already.
+    decide(id, decision, by) {
       if (!["approve", "deny"].includes(decision))
         throw Error("Choose approve or deny.");
       const request = loadJson(file(id), null);
@@ -91,10 +121,16 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         request.status !== "pending"
       )
         throw Error("This request is no longer pending.");
-      // Local OS action only. No HTTP approval endpoint, even for existing admins.
+      // Decided in this computer's terminal, or, for "approve once", because
+      // a linked computer (or this one, for the same device) approved it
+      // already. No HTTP endpoint lets anyone approve directly.
       fs.writeFileSync(
         file(id) + ".decision",
-        JSON.stringify({ decision, secretHash: request.secretHash }),
+        JSON.stringify({
+          decision,
+          secretHash: request.secretHash,
+          ...(typeof by === "string" ? { by: by.slice(0, 80) } : {}),
+        }),
         { flag: "wx", mode: 0o600 },
       );
     },
@@ -124,6 +160,8 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           atomicJson(file(id), { ...r, status: "issuing" });
           const issued = auth.issue(r.name, ALL_SCOPES, "device", {
             tailscale: r.identity,
+            nodeName: r.nodeName,
+            ...sameDevice(auth, r),
           });
           r.token = issued.token;
         }

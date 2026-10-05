@@ -1590,6 +1590,10 @@
 .fleet-switcher .fleet-add {
   padding: 9px;
 }
+.fleet-switcher .fleet-waiting {
+  border-style: dashed;
+  opacity: 0.6;
+}
 .fleet-mesh {
   overflow: hidden;
   padding: 22px;

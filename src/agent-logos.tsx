@@ -67,12 +67,15 @@ export function useAgentLogos(peer: Peer | null): AgentLogos {
 }
 
 // An agent's app icon; its initials when the app's icon isn't on the Mac.
+// `fill`: the icon's own background fills a round frame edge to edge (Mac
+// app icons leave a clear margin around their body; CSS crops it).
 export function AgentLogo({
   agent,
   logos,
   name = agentLabel(agent),
   size = 28,
   light = false,
+  fill = false,
   className = "",
 }: {
   agent: string;
@@ -80,12 +83,19 @@ export function AgentLogo({
   name?: string;
   size?: number;
   light?: boolean;
+  fill?: boolean;
   className?: string;
 }) {
   const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent];
   const style: CSSProperties = { width: size, height: size };
   return src ? (
-    <img className={`agent-logo ${className}`} src={src} style={style} alt={name} draggable={false} />
+    <img
+      className={`agent-logo ${fill ? "fill" : ""} ${className}`}
+      src={src}
+      style={fill ? undefined : style}
+      alt={name}
+      draggable={false}
+    />
   ) : (
     <span className={`agent-logo text ${agent} ${className}`} style={{ ...style, fontSize: size * 0.4 }} role="img" aria-label={name}>
       {agent === "codex" ? "Cx" : agent === "claude" ? "Cl" : name.replace(/[^A-Za-z]/g, "").slice(0, 2)}

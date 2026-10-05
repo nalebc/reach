@@ -282,7 +282,7 @@ test("app streams show only the app's window, at the highest quality, and follow
     quality: "auto",
     width: 2560,
     fps: 60,
-    bitrate: 12000000,
+    bitrate: 16000000,
   });
   await until(() => viewer.messages.some((m) => Buffer.isBuffer(m)));
 
@@ -535,5 +535,33 @@ test("app streams are as sharp as the phone's screen, never sharper", async (t) 
   const viewer = await stream({ thread: opened.id, format: "h264" });
   await until(() => frames.length === 1);
   assert.equal(frames[0].width, 880);
+  viewer.ws.close();
+});
+
+test("a phone's video trouble lands in Reach's log, briefly and safely", async (t) => {
+  const { call, stream, frames } = await start(t);
+  const opened = (
+    await call("/api/screen/apps", {
+      method: "POST",
+      body: { appId: CHROME, width: 440, height: 956, scale: 3 },
+    })
+  ).body;
+  const logged = [];
+  const warn = console.warn;
+  console.warn = (...args) => logged.push(args.join(" "));
+  t.after(() => (console.warn = warn));
+  const viewer = await stream({ thread: opened.id, format: "h264", maxWidth: 1000 });
+  await until(() => frames.length === 1);
+  // The phone's own cap wins when it's smaller than the app's window.
+  assert.equal(frames[0].width, 1000);
+  viewer.ws.send(JSON.stringify({ type: "diagnostic", text: "decoder reset:\nbad\u0007 " + "x".repeat(400) }));
+  viewer.ws.send(JSON.stringify({ type: "diagnostic", text: "flood" }));
+  viewer.ws.send(JSON.stringify({ type: "ack", id: 1 }));
+  await until(() => logged.length === 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const ours = logged.filter((line) => line.startsWith("Reach: phone video: "));
+  assert.equal(ours.length, 1, "one line per phone every few seconds");
+  assert.match(ours[0], /^Reach: phone video: decoder reset: bad  x+$/);
+  assert.equal(ours[0].length, "Reach: phone video: ".length + 300);
   viewer.ws.close();
 });

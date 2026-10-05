@@ -12,6 +12,8 @@ export default defineConfig({
   build: {
     outDir: "dist",
     rollupOptions: {
+      // start.html: the public start page (server/public-start.mjs).
+      input: { index: "index.html", start: "start.html" },
       output: {
         // xterm loads only with a terminal. Other libraries (React, icons) get
         // their own chunk, which stays cached across Reach updates. Capacitor's
@@ -19,10 +21,13 @@ export default defineConfig({
         manualChunks: (id) =>
           id.includes("/node_modules/@xterm/")
             ? "terminal"
-            : (id.includes("/node_modules/") || id.startsWith("\0")) &&
-                !id.includes("/dist/esm/web.js")
-              ? "vendor"
-              : undefined,
+            : // The public start page needs only this helper, not all libraries.
+              /vite\/(preload-helper|modulepreload-polyfill)/.test(id)
+              ? "preload"
+              : (id.includes("/node_modules/") || id.startsWith("\0")) &&
+                  !id.includes("/dist/esm/web.js")
+                ? "vendor"
+                : undefined,
       },
     },
   },

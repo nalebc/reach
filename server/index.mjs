@@ -6,6 +6,8 @@ import {
   ownerIdentity,
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
+import { createFleet } from "./fleet.mjs";
+import { createGuestKeys } from "./guest-keys.mjs";
 import {
   AGENTS,
   agentCommand,
@@ -41,12 +43,17 @@ import {
   validLeafName,
   hash,
   AGENT_SCOPES,
+  GUEST_BLOCKED_ROUTES,
 } from "./core.mjs";
 import crypto from "node:crypto";
 import { computerIdentity } from "./computer-identity.mjs";
 import { readAgentPolicy, within } from "./agent-policy.mjs";
 import { Terminals } from "./terminal.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
+import {
+  MacTerminalWatch,
+  terminalWatchHelper,
+} from "./mac-terminal-watch.mjs";
 import { ScreenControl } from "./screen.mjs";
 import { RemoteScreenHub } from "./remote-screen.mjs";
 import {
@@ -114,6 +121,53 @@ export async function createReach(overrides = {}) {
     ? setInterval(() => approvals.list(), 30000)
     : null;
   approvalCleanup?.unref();
+  // Your other Reach computers: linked in their terminals, they share
+  // device approvals, and their pages may call this one (server/fleet.mjs).
+  const fleet =
+    config.tailscaleOwner && config.publicOrigin
+      ? createFleet({
+          dataDir: config.dataDir,
+          owner: config.tailscaleOwner,
+          selfOrigin: config.publicOrigin,
+          isApprovedHere: ({ userId, nodeId }) =>
+            auth
+              .list()
+              .some(
+                (c) =>
+                  c.kind === "device" &&
+                  c.tailscale?.userId === userId &&
+                  c.tailscale?.nodeId === nodeId &&
+                  c.expiresAt > Date.now(),
+              ),
+          ...overrides.fleet,
+        })
+      : null;
+  const baseOrigins = [...(config.allowedOrigins || [])];
+  const syncOrigins = () => {
+    config.allowedOrigins = [
+      ...new Set([...baseOrigins, ...(fleet?.origins() || [])]),
+    ];
+  };
+  syncOrigins();
+  fleet?.onChange(syncOrigins);
+  // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
+  // removing guests' devices once their invitation ends.
+  const guestKeys = config.tailscaleOwner
+    ? createGuestKeys({
+        dataDir: config.dataDir,
+        self: device.id,
+        log: (message) => console.log(`Reach: ${message}`),
+        ...overrides.guestKeys,
+      })
+    : null;
+  const tidyGuests = () =>
+    guestKeys?.configured() &&
+    guestKeys.reconcile().catch((e) => console.log(`Reach: ${e.message}`));
+  const guestTimers = [
+    setTimeout(tidyGuests, 20000),
+    setInterval(tidyGuests, 5 * 60000),
+  ];
+  for (const timer of guestTimers) timer.unref();
   const verify = (req, token) => auth.verify(token, req.reachIdentity);
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
   const trackIdentity = (req, end) => {
@@ -163,6 +217,17 @@ export async function createReach(overrides = {}) {
   });
   const screenControl = new ScreenControl();
   const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
+  // The Mac's Terminal windows, told by events while a phone is connected;
+  // changes reach phones at once through their live connection.
+  const presenceNudges = new Set();
+  const macTerminalWatch = new MacTerminalWatch({
+    terminals: desktopTerminals,
+    start: overrides.terminalWatch || terminalWatchHelper(config),
+    onChange: () => {
+      for (const nudge of presenceNudges) nudge();
+    },
+    ...overrides.macTerminalWatch,
+  });
   const screenStreams = new ScreenBroadcast(
     overrides.screenStreamFactory || (() => createScreenSource(config)),
   );
@@ -339,15 +404,35 @@ export async function createReach(overrides = {}) {
         404,
         "Run ./reach configure on the computer to enable device approval.",
       );
-    res
-      .status(202)
-      .json(
-        approvals.request(
-          req.reachIdentity,
-          req.body.name,
-          config.tailscaleOwner,
-        ),
+    const created = approvals.request(
+      req.reachIdentity,
+      req.body.name,
+      config.tailscaleOwner,
+    );
+    // Another browser on a device you approved already (it shares that
+    // device's Tailscale connection): the same device, approved.
+    const known = auth
+      .list()
+      .some(
+        (c) =>
+          c.kind === "device" &&
+          c.tailscale?.userId === req.reachIdentity.userId &&
+          c.tailscale?.nodeId === req.reachIdentity.nodeId &&
+          c.expiresAt > Date.now(),
       );
+    if (known)
+      try {
+        approvals.decide(created.id, "approve", "this same device");
+      } catch {}
+    // Already approved on a linked computer: approve here too.
+    else
+      void fleet?.approvedElsewhere(req.reachIdentity).then((from) => {
+        if (!from) return;
+        try {
+          approvals.decide(created.id, "approve", from);
+        } catch {}
+      });
+    res.status(202).json(created);
   });
   app.post("/api/auth/requests/:id", (req, res) => {
     if (!approvals) throw fail(404, "Device approval is not configured.");
@@ -373,7 +458,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/guest/redeem", (req, res) =>
     res.json({
-      ...auth.redeemGuest(req.body.invitation),
+      ...auth.redeemGuest(req.body.invitation, req.reachIdentity),
       device: {
         id: device.id,
         computerId: device.computerId,
@@ -467,6 +552,47 @@ export async function createReach(overrides = {}) {
     if (r.status === "denied") accessRequests.delete(r.id);
     res.json({ status: r.status });
   });
+  // Asked by linked computers, identified by Tailscale alone.
+  app.post("/api/fleet/approved", (req, res) => {
+    if (!fleet) throw fail(404, "This action does not exist.");
+    res.json(fleet.approvedQuery(req.reachIdentity, req.body));
+  });
+  // A linked computer revoked one of your devices: revoke it here too.
+  app.post("/api/fleet/revoked", (req, res) => {
+    if (!fleet) throw fail(404, "This action does not exist.");
+    const { userId, nodeId } = fleet.revokedQuery(req.reachIdentity, req.body);
+    const ended = auth
+      .list()
+      .filter(
+        (c) =>
+          c.kind === "device" &&
+          c.tailscale?.userId === userId &&
+          c.tailscale?.nodeId === nodeId,
+      );
+    for (const c of ended) endClient(c.id);
+    res.json({ revoked: ended.length });
+  });
+  // The owner's other Reach computers, for the phone's computer switcher.
+  app.get("/api/fleet/computers", async (req, res, next) => {
+    const client = verify(
+      req,
+      req.headers.authorization?.replace(/^Bearer /, ""),
+    );
+    if (!client)
+      return res.status(401).json({ error: "Access expired or was revoked." });
+    if (!client.scopes.includes("admin"))
+      return res
+        .status(403)
+        .json({ error: "This credential does not grant admin access." });
+    try {
+      res.json({
+        computers: fleet ? await fleet.discover() : [],
+        self: config.name,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
   app.use("/api", (req, res, next) => {
     const client = verify(
       req,
@@ -494,9 +620,25 @@ export async function createReach(overrides = {}) {
       // Transcripts of every AI session: the owner only.
       sessions: "admin",
     }[route];
+    // An invitation that may watch chosen apps' windows reaches only those
+    // routes: the app list and the app windows themselves (no quit, no typing).
+    // (The path is read here: later checks run after Express restores /api.)
+    const subpath = req.path;
+    const appWindows = (identity) =>
+      identity.scopes?.includes("apps:open") &&
+      ((route === "screen" &&
+        /^\/screen\/apps(\/[^/]+(\/activate)?)?$/.test(subpath) &&
+        ["GET", "POST", "PATCH", "DELETE"].includes(req.method)) ||
+        (route === "apps" &&
+          ((req.method === "GET" && subpath === "/apps") ||
+            (req.method === "POST" && subpath === "/apps/icons"))));
     const allowed = (identity) =>
       identity &&
+      !(
+        identity.kind === "guest" && GUEST_BLOCKED_ROUTES.includes(route)
+      ) &&
       (route === "device" ||
+        appWindows(identity) ||
         (scope &&
           (identity.scopes?.includes(scope) ||
             (route === "files" &&
@@ -639,8 +781,29 @@ export async function createReach(overrides = {}) {
     res.json({ status: r.status });
   });
   app.get("/api/activity", (req, res) => res.json(events));
-  app.post("/api/guests", (req, res) => {
+  app.get("/api/guests/keys", (req, res) =>
+    res.json({ configured: !!guestKeys?.configured() }),
+  );
+  app.post("/api/guests", async (req, res) => {
     const grant = auth.inviteGuest(req.body);
+    // With an invite key, the guest needs no Tailscale account or app.
+    let key;
+    if (req.body.key === true) {
+      try {
+        if (!guestKeys?.configured())
+          throw fail(
+            409,
+            "Set up invite keys first: run ./reach invites on this computer.",
+          );
+        key = await guestKeys.createInvite({
+          ttlSeconds: req.body.ttlSeconds,
+          clientIds: [grant.clientId],
+        });
+      } catch (error) {
+        auth.revoke(grant.clientId);
+        throw error;
+      }
+    }
     record(
       "guest",
       `Invited ${req.body.name} until ${new Date(grant.expiresAt).toISOString()}`,
@@ -650,18 +813,34 @@ export async function createReach(overrides = {}) {
       config.publicOrigin || `http://${req.headers.host}`,
     );
     url.hash = new URLSearchParams({ invite: grant.invitation }).toString();
-    res.status(201).json({ ...grant, url: url.toString() });
+    res.status(201).json({
+      ...grant,
+      url: url.toString(),
+      ...(key ? { key: key.key, hostname: key.hostname } : {}),
+    });
   });
   app.get("/api/clients", (req, res) =>
     res.json({ current: req.client.id, clients: auth.list() }),
   );
-  app.delete("/api/clients/:id", (req, res) => {
-    auth.revoke(req.params.id);
-    presence.removeClient(req.params.id);
-    screenControl.revoke(req.params.id);
-    closeInput(req.params.id);
+  // Ends a credential now: requests, sockets, screen control.
+  const endClient = (id) => {
+    auth.revoke(id);
+    presence.removeClient(id);
+    screenControl.revoke(id);
+    closeInput(id);
     for (const ws of wss.clients)
-      if (ws.clientId === req.params.id) ws.close(4001, "Access revoked");
+      if (ws.clientId === id) ws.close(4001, "Access revoked");
+  };
+  app.delete("/api/clients/:id", (req, res) => {
+    const client = auth.list().find((c) => c.id === req.params.id);
+    endClient(req.params.id);
+    // A guest who came with an invite key leaves your tailnet too.
+    void guestKeys
+      ?.revokeClient(req.params.id)
+      .catch((e) => console.log(`Reach: ${e.message}`));
+    // Revoke once: your linked computers drop that device too.
+    if (client?.kind === "device" && client.tailscale)
+      void fleet?.revokeElsewhere(client.tailscale);
     res.type("json").send(JSON.stringify({ ok: true }));
   });
   // Same order as localeCompare, without building a collator per comparison.
@@ -1013,7 +1192,11 @@ export async function createReach(overrides = {}) {
       );
   };
   app.get("/api/terminals/desktop", async (req, res) =>
-    res.json(await desktopTerminals.list(authorizeDesktopTerminal(req))),
+    res.json(
+      macTerminalWatch.ready
+        ? macTerminalWatch.list(authorizeDesktopTerminal(req))
+        : await desktopTerminals.list(authorizeDesktopTerminal(req)),
+    ),
   );
   app.post("/api/terminals/desktop", async (req, res) => {
     const result = await desktopTerminals.create(
@@ -1023,7 +1206,35 @@ export async function createReach(overrides = {}) {
     record("terminal", "Opened a Mac terminal");
     res.json(result);
   });
-  app.get("/api/terminals/desktop/:id", async (req, res) =>
+  // Every Mac tab's last line, answered when one changes (Home).
+  app.get("/api/terminals/desktop/activity", async (req, res) => {
+    if (!macTerminalWatch.ready)
+      throw fail(409, "Mac terminals aren't being watched right now.");
+    const after = Number(req.query.after);
+    const left = new AbortController();
+    res.once("close", () => left.abort());
+    const result = await macTerminalWatch.peekAll(
+      Number.isSafeInteger(after) ? after : -1,
+      authorizeDesktopTerminal(req),
+      left.signal,
+    );
+    if (!left.signal.aborted) res.json(result);
+  });
+  app.get("/api/terminals/desktop/:id", async (req, res) => {
+    // `?after=<version>`: answered when the tab prints something new.
+    if (req.query.after !== undefined && macTerminalWatch.ready) {
+      const after = Number(req.query.after);
+      const left = new AbortController();
+      res.once("close", () => left.abort());
+      const result = await macTerminalWatch.text(
+        req.params.id,
+        Number.isSafeInteger(after) ? after : -1,
+        authorizeDesktopTerminal(req),
+        left.signal,
+      );
+      if (!left.signal.aborted) res.json(result);
+      return;
+    }
     res.json(
       await desktopTerminals.action(
         req.params.id,
@@ -1031,8 +1242,8 @@ export async function createReach(overrides = {}) {
         null,
         authorizeDesktopTerminal(req),
       ),
-    ),
-  );
+    );
+  });
   app.post("/api/terminals/desktop/:id/:action", async (req, res) => {
     if (!["send", "focus", "close"].includes(req.params.action))
       throw fail(400, "Unknown terminal action.");
@@ -1224,6 +1435,12 @@ export async function createReach(overrides = {}) {
   app.delete("/api/sessions/sign-in", (req, res) =>
     res.json(agentSessions.signIn.cancel(signInAgent(req.query.agent))),
   );
+  // Spends one of the account's rate-limit resets, only when asked from the phone.
+  app.post("/api/sessions/usage/reset", async (req, res) => {
+    const result = await agentSessions.resetUsage(req.body?.agent);
+    record("session", "Used a Codex rate-limit reset from the phone");
+    res.json(result);
+  });
   app.post(
     "/api/sessions/images",
     imageUpload.single("file"),
@@ -1366,7 +1583,14 @@ export async function createReach(overrides = {}) {
     record("app", result.name);
     res.json(result);
   });
-  app.get("/api/apps", async (req, res) => res.json(await apps()));
+  app.get("/api/apps", async (req, res) => {
+    const list = await apps();
+    res.json(
+      req.client.scopes.includes("admin") || !req.client.guestApps
+        ? list
+        : list.filter((a) => req.client.guestApps.includes(a.id)),
+    );
+  });
   // Logos for a screenful of installed apps at once; the phone keeps them.
   app.post("/api/apps/icons", async (req, res) => {
     shortcutOwner(req, res);
@@ -1387,43 +1611,68 @@ export async function createReach(overrides = {}) {
     res.json({
       displays: displays.filter((d) => !appThreads.ownsDisplay(d.id)),
       video: process.platform === "darwin",
-      input: req.client.scopes.includes("admin"),
+      input:
+        req.client.scopes.includes("admin") ||
+        req.client.scopes.includes("screen:control"),
     });
   });
-  // Apps on your phone. Owner only: they show and control the computer.
-  const appOwner = (req) => {
-    if (!req.client.scopes.includes("admin"))
+  // Apps on your phone. You, or someone you invited to watch these apps.
+  const appAllowed = (client, appId) =>
+    client.scopes.includes("admin") ||
+    (client.scopes.includes("apps:open") &&
+      (!client.guestApps || client.guestApps.includes(appId)));
+  const appOwner = (req, appId) => {
+    const client = req.client;
+    if (
+      !client.scopes.includes("admin") &&
+      !(client.scopes.includes("apps:open") &&
+        (appId === undefined || appAllowed(client, appId)))
+    )
       throw fail(403, "Only a paired person can open apps on their phone.");
     if (!config.screen) throw fail(403, "Turn on screen viewing first.");
   };
+  const threadApp = (id) => appThreads.get(id)?.appId ?? "";
   app.get("/api/screen/apps", (req, res) => {
     appOwner(req);
-    res.set("Cache-Control", "no-store").json(appThreads.list());
+    res
+      .set("Cache-Control", "no-store")
+      .json(appThreads.list().filter((t) => appAllowed(req.client, t.appId)));
   });
   app.post("/api/screen/apps", async (req, res) => {
-    appOwner(req);
+    appOwner(req, String(req.body?.appId ?? ""));
     const thread = await appThreads.open(req.body?.appId, req.body);
     appOwner(req);
     res.json(thread);
   });
   app.patch("/api/screen/apps/:id", async (req, res) => {
-    appOwner(req);
+    appOwner(req, threadApp(req.params.id));
     res.json(await appThreads.rotate(req.params.id, req.body));
   });
   app.post("/api/screen/apps/:id/activate", async (req, res) => {
-    appOwner(req);
+    appOwner(req, threadApp(req.params.id));
     res.json(await appThreads.activate(req.params.id));
   });
   app.delete("/api/screen/apps/:id", async (req, res) => {
-    appOwner(req);
+    appOwner(req, threadApp(req.params.id));
     res.json(await appThreads.close(req.params.id));
   });
+  // Quitting an app, and typing into it, stay with people who control.
+  const appControl = (req) => {
+    if (
+      !req.client.scopes.includes("admin") &&
+      !req.client.scopes.includes("screen:control")
+    )
+      throw fail(403, "This invitation can watch apps, not control them.");
+  };
   app.post("/api/screen/apps/:id/quit", async (req, res) => {
-    appOwner(req);
+    appOwner(req, threadApp(req.params.id));
+    if (!req.client.scopes.includes("admin"))
+      throw fail(403, "Only a paired person can quit apps.");
     res.json(await appThreads.quit(req.params.id, req.body?.confirm === true));
   });
   app.get("/api/screen/apps/:id/fields", async (req, res) => {
-    appOwner(req);
+    appOwner(req, threadApp(req.params.id));
+    appControl(req);
     res.set("Cache-Control", "no-store").json(await appThreads.fields(req.params.id));
   });
   app.post("/api/screen/control", (req, res) => {
@@ -1593,8 +1842,22 @@ export async function createReach(overrides = {}) {
       presenceConnection(ws, {
         verify: (token) => verify(req, token),
         presence,
+        subscribe: (send) => {
+          presenceNudges.add(send);
+          return () => presenceNudges.delete(send);
+        },
         changes: (client) => {
           const scopes = client.scopes || [];
+          // People who may see the Mac's own terminals keep them watched.
+          const macTerminals =
+            desktopTerminals.platform === "darwin" &&
+            scopes.includes("admin") &&
+            scopes.includes("terminal");
+          if (macTerminals && !ws.reachMacTerminals) {
+            ws.reachMacTerminals = true;
+            macTerminalWatch.retain();
+            ws.once("close", () => macTerminalWatch.release());
+          }
           const digest = (value) =>
             crypto
               .createHash("sha256")
@@ -1613,6 +1876,10 @@ export async function createReach(overrides = {}) {
             }),
             ...(scopes.includes("admin") &&
               scopes.includes("screen") && { apps: digest(appThreads.list()) }),
+            ...(macTerminals &&
+              macTerminalWatch.version && {
+                macTerminals: macTerminalWatch.version,
+              }),
             ...(scopes.includes("admin") && {
               activity: digest(events[0]?.id ?? ""), // newest first
               requests: digest(
@@ -1703,7 +1970,13 @@ export async function createReach(overrides = {}) {
           reject("Screen access expired or was revoked.", 401);
           return false;
         }
-        if (!client.scopes.includes("screen") || !config.screen) {
+        const appWindowOk =
+          ws.appThread !== undefined &&
+          appAllowed(client, threadApp(ws.appThread));
+        if (
+          (!client.scopes.includes("screen") && !appWindowOk) ||
+          !config.screen
+        ) {
           reject("Screen access was turned off, expired or revoked.");
           return false;
         }
@@ -1723,12 +1996,20 @@ export async function createReach(overrides = {}) {
               throw fail(401, "Authenticate first.");
             const client = verify(req, message.token);
             if (!client) throw fail(401, "Pair this device again.");
-            if (!client.scopes.includes("screen"))
+            // A whole display needs screen access; one app's window needs
+            // that app (an invitation can be limited to chosen apps).
+            const appWindow =
+              message.protocol === 2 && typeof message.thread === "string";
+            if (
+              !client.scopes.includes("screen") &&
+              !(appWindow && client.scopes.includes("apps:open"))
+            )
               throw fail(403, "Screen access is not granted.");
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
             credential = message.token;
             ws.clientId = client.id;
+            if (appWindow) ws.appThread = message.thread;
             expires(client);
             clearTimeout(deadline);
             modern = message.protocol === 2;
@@ -1736,7 +2017,8 @@ export async function createReach(overrides = {}) {
               // An app on the phone streams only its own window.
               const hub =
                 typeof message.thread === "string"
-                  ? (appOwner({ client }), appScreens)
+                  ? (appOwner({ client }, threadApp(message.thread)),
+                    appScreens)
                   : remoteScreens;
               void (async () => hub.add(ws, authorized, message))().catch(
                 (e) => reject(e.message, e.status || 503),
@@ -1753,6 +2035,20 @@ export async function createReach(overrides = {}) {
             }
           } else {
             if (!authorized()) return;
+            // Why the phone's video changed (decoder trouble): for the log.
+            if (message.type === "diagnostic") {
+              const now = Date.now();
+              if (
+                typeof message.text === "string" &&
+                now - (ws.reachDiagnosticAt || 0) > 5000
+              ) {
+                ws.reachDiagnosticAt = now;
+                console.warn(
+                  `Reach: phone video: ${message.text.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300)}`,
+                );
+              }
+              return;
+            }
             if (message.type !== "ack")
               throw fail(400, "Unsupported screen message.");
             if (modern)
@@ -1866,6 +2162,9 @@ export async function createReach(overrides = {}) {
     server,
     config,
     auth,
+    fleet,
+    approvals,
+    guestKeys,
     terminals,
     codex,
     jobs,
@@ -1892,6 +2191,7 @@ export async function createReach(overrides = {}) {
     },
     async close() {
       clearInterval(approvalCleanup);
+      for (const timer of guestTimers) clearTimeout(timer);
       screenStreams.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);
@@ -1906,6 +2206,7 @@ export async function createReach(overrides = {}) {
         for (const s of servers) s.closeAllConnections();
       }, 1000);
       const apps = appThreads.shutdown();
+      macTerminalWatch.end();
       closeInput();
       for (const ws of wss.clients) ws.terminate();
       wss.close();

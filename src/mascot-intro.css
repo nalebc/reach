@@ -1,0 +1,725 @@
+/* First-time intro (MascotIntro.tsx): one 14.8 s timeline at a calm, human
+   pace. Percentages are of that:
+     0–1 s         black
+     1–2.4 s       a spotlight slowly comes up on an empty floor
+     2–4.6 s       the mascot walks in from the dark into it
+     4.6–5.2 s     it looks at you; clicks on its flashlight
+     5.5–7.6 s     it looks up-left, then up-right (?)
+     7.6–8.7 s     it looks down and finds Reach at its feet (!)
+     8.6–9.4 s     Reach lights up; the lights come on: a laptop beside it
+     9.2–9.8 s     flashlight away; it picks up Reach's plug
+     9.8–11.2 s    it walks the cable over to the laptop
+     11.2–12.1 s   plugged in: a spark, the laptop's screen comes on
+     12.4–13.6 s   it waves at you
+     13.8–14.8 s   fade into the page
+   --spot is the spotlight (0–1), --open the flashlight (0–1), --beam the arm
+   and flashlight direction (0deg = up, clockwise) and --walk how far the
+   mascot is from its spot, in drawing units. */
+@property --beam {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 160deg;
+}
+@property --open {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --spot {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --walk {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: -200;
+}
+.mascot-intro {
+  /* The stage: as wide as fits, centred, drawn in 320 × 280 units. The
+     mascot stands at (88, 200) plus its walk; its shoulder, where the
+     flashlight's beam starts, is at (105.6, 149.4). */
+  --w: min(92vw, 420px);
+  --x: calc(50% + var(--w) * ((105.6 + var(--walk)) / 320 - 0.5));
+  --y: calc(50% + var(--w) * 0.029375);
+  --sx: calc(50% + var(--w) * -0.225);
+  --sy: calc(50% + var(--w) * 0.1875);
+  /* Just under the floor: the spotlight stops there. */
+  --floor: calc(50% + var(--w) * 0.209375);
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #030504;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  animation:
+    intro-beam 14.8s linear both,
+    intro-open 14.8s linear both,
+    intro-spot 14.8s linear both,
+    intro-walk 14.8s linear both,
+    intro-room 14.8s ease both,
+    intro-out 14.8s ease both;
+}
+/* Skipped: the scene keeps playing as it fades. */
+.mascot-intro.leaving {
+  animation:
+    intro-beam 14.8s linear both,
+    intro-open 14.8s linear both,
+    intro-spot 14.8s linear both,
+    intro-walk 14.8s linear both,
+    intro-room 14.8s ease both,
+    intro-skip 0.25s ease forwards;
+}
+.intro-stage {
+  grid-area: 1 / 1;
+  position: relative;
+  z-index: 1;
+  width: var(--w);
+  aspect-ratio: 320 / 280;
+}
+.intro-stage svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The dark covers everything but the light. Its mask (opaque = dark) is
+   the flashlight's cone, near the flashlight, cut together with the
+   spotlight's column and its pool on the floor. */
+.intro-dark,
+.intro-under,
+.intro-haze,
+.intro-torch {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: intro-lights 14.8s ease both;
+}
+.intro-dark {
+  z-index: 2;
+  background: #030504;
+  --pool: radial-gradient(
+    ellipse calc(var(--w) * 0.22) calc(var(--w) * 0.055) at var(--sx) var(--sy),
+    rgb(0 0 0 / calc(1 - 0.92 * var(--spot))) 0%,
+    rgb(0 0 0 / calc(1 - 0.92 * var(--spot))) 55%,
+    #000 100%
+  );
+  --column: conic-gradient(
+    from 168deg at var(--sx) -40px,
+    #000 0deg,
+    rgb(0 0 0 / calc(1 - 0.86 * var(--spot))) 3deg,
+    rgb(0 0 0 / calc(1 - 0.86 * var(--spot))) 21deg,
+    #000 24deg,
+    #000 360deg
+  );
+  --near: radial-gradient(
+    circle at var(--x) var(--y),
+    transparent 0,
+    transparent calc(var(--w) * 0.5),
+    #000 calc(var(--w) * 0.78)
+  );
+  --cone: conic-gradient(
+    from calc(var(--beam) - 17deg * var(--open)) at var(--x) var(--y),
+    transparent 0deg,
+    transparent calc(34deg * var(--open)),
+    #000 calc(39deg * var(--open)),
+    #000 calc(360deg - 5deg * var(--open)),
+    transparent 360deg
+  );
+  -webkit-mask-image: var(--pool), var(--column), var(--near), var(--cone);
+  mask-image: var(--pool), var(--column), var(--near), var(--cone);
+  -webkit-mask-composite: source-in, source-in, source-over, source-over;
+  mask-composite: intersect, intersect, add, add;
+}
+/* Under the floor only the flashlight lights things: what's down there is
+   found, not shown by the spotlight. */
+.intro-under {
+  z-index: 2;
+  background: #030504;
+  clip-path: inset(var(--floor) 0 0 0);
+  --near: radial-gradient(
+    circle at var(--x) var(--y),
+    transparent 0,
+    transparent calc(var(--w) * 0.5),
+    #000 calc(var(--w) * 0.78)
+  );
+  --cone: conic-gradient(
+    from calc(var(--beam) - 17deg * var(--open)) at var(--x) var(--y),
+    transparent 0deg,
+    transparent calc(34deg * var(--open)),
+    #000 calc(39deg * var(--open)),
+    #000 calc(360deg - 5deg * var(--open)),
+    transparent 360deg
+  );
+  -webkit-mask-image: var(--near), var(--cone);
+  mask-image: var(--near), var(--cone);
+  -webkit-mask-composite: source-over, source-over;
+  mask-composite: add, add;
+}
+/* The spotlight's beam in the air, down to the floor, and its pool. */
+.intro-haze {
+  z-index: 3;
+  clip-path: inset(0 0 calc(100% - var(--floor)) 0);
+  background:
+    radial-gradient(
+      ellipse calc(var(--w) * 0.2) calc(var(--w) * 0.045) at var(--sx) var(--sy),
+      rgb(236 246 228 / calc(0.1 * var(--spot))),
+      transparent 100%
+    ),
+    conic-gradient(
+      from 168deg at var(--sx) -40px,
+      transparent 0deg,
+      rgb(236 246 228 / calc(0.06 * var(--spot))) 4deg,
+      rgb(236 246 228 / calc(0.06 * var(--spot))) 20deg,
+      transparent 24deg
+    );
+}
+/* The flashlight's warm beam, fading with distance. */
+.intro-torch {
+  z-index: 3;
+  background: conic-gradient(
+    from calc(var(--beam) - 17deg * var(--open)) at var(--x) var(--y),
+    rgb(255 236 170 / 0.12) 0deg,
+    rgb(255 236 170 / 0.12) calc(34deg * var(--open)),
+    transparent calc(34deg * var(--open))
+  );
+  -webkit-mask-image: radial-gradient(
+    circle at var(--x) var(--y),
+    #000 0,
+    #000 calc(var(--w) * 0.45),
+    transparent calc(var(--w) * 0.75)
+  );
+  mask-image: radial-gradient(
+    circle at var(--x) var(--y),
+    #000 0,
+    #000 calc(var(--w) * 0.45),
+    transparent calc(var(--w) * 0.75)
+  );
+}
+
+/* Reach at its feet, the laptop beside it, and the cable between them. */
+.intro-logo {
+  color: #cfe0d6;
+  fill: #cfe0d6;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: intro-logo 14.8s ease both;
+}
+.intro-logo text {
+  font:
+    700 25px Inter,
+    -apple-system,
+    system-ui,
+    sans-serif;
+  letter-spacing: -0.02em;
+}
+.intro-mac {
+  animation: intro-mac 14.8s ease both;
+}
+.intro-mac-off {
+  animation: intro-mac-off 14.8s linear both;
+}
+.intro-cable-up {
+  animation: intro-cable-up 14.8s linear both;
+}
+.intro-cable-run {
+  stroke-dasharray: 76;
+  animation: intro-cable-run 14.8s linear both;
+}
+.intro-plugged {
+  animation: intro-plugged 14.8s linear both;
+}
+.intro-spark {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: intro-spark 14.8s ease both;
+}
+
+/* The mascot. */
+.intro-walker {
+  transform: translateX(calc(var(--walk) * 1px));
+}
+.intro-body {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: intro-hop 14.8s ease both;
+}
+.intro-leg {
+  transform-box: fill-box;
+  transform-origin: 50% 0;
+}
+/* About two steps a second, as people walk. */
+.intro-leg-back {
+  animation:
+    intro-step 0.52s 2s ease-in-out 5,
+    intro-step 0.4667s 9.8s ease-in-out 3;
+}
+.intro-leg-front {
+  animation:
+    intro-step 0.52s 2s ease-in-out 5 reverse,
+    intro-step 0.4667s 9.8s ease-in-out 3 reverse;
+}
+.intro-bob {
+  animation:
+    intro-bob 0.26s 2s ease-in-out 10 alternate,
+    intro-bob 0.2333s 9.8s ease-in-out 6 alternate;
+}
+.intro-arm {
+  transform-box: view-box;
+  transform-origin: 105.6px 149.4px;
+  transform: rotate(var(--beam));
+}
+.intro-flashlight {
+  animation: intro-flashlight 14.8s linear both;
+}
+.intro-hand-plug {
+  animation: intro-hand-plug 14.8s linear both;
+}
+.intro-eyes {
+  animation: intro-look 14.8s ease both;
+}
+.intro-lens {
+  animation: intro-lens 14.8s linear both;
+}
+.intro-bubble {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  opacity: 0;
+}
+.intro-bubble text {
+  font:
+    800 26px Inter,
+    -apple-system,
+    system-ui,
+    sans-serif;
+  fill: #fff3bf;
+}
+.intro-what {
+  animation: intro-what 14.8s ease both;
+}
+.intro-found {
+  animation: intro-exclaim 14.8s ease both;
+}
+.intro-found text {
+  fill: var(--lime, #b9f568);
+}
+.intro-skip-button {
+  position: absolute;
+  z-index: 4;
+  top: calc(14px + env(safe-area-inset-top));
+  right: 14px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #ffffff2b;
+  border-radius: 999px;
+  background: #ffffff12;
+  color: #e9f0ec;
+  font:
+    600 13px system-ui,
+    sans-serif;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.intro-skip-button:active {
+  background: #ffffff26;
+}
+
+@keyframes intro-spot {
+  0%,
+  6.76% {
+    --spot: 0;
+    animation-timing-function: ease-in;
+  }
+  16.22%,
+  100% {
+    --spot: 1;
+  }
+}
+@keyframes intro-walk {
+  /* 2–4.6 s into the spotlight, slowing to a stop. */
+  0%,
+  13.51% {
+    --walk: -200;
+    animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1);
+  }
+  31.08% {
+    --walk: 0;
+  }
+  /* 9.8–11.2 s to the laptop, at an even pace: the cable keeps up. */
+  66.22% {
+    --walk: 0;
+  }
+  75.68%,
+  100% {
+    --walk: 76;
+  }
+}
+@keyframes intro-beam {
+  /* Arm down while walking, flashlight off. */
+  0%,
+  35.14% {
+    --beam: 160deg;
+    animation-timing-function: ease-out;
+  }
+  /* On: ahead; then slowly up-left, up-right, and down at its feet. */
+  36.49%,
+  37.16% {
+    --beam: 90deg;
+    animation-timing-function: ease-in-out;
+  }
+  41.89%,
+  44.59% {
+    --beam: -50deg;
+    animation-timing-function: ease-in-out;
+  }
+  49.32%,
+  51.35% {
+    --beam: 50deg;
+    animation-timing-function: ease-in-out;
+  }
+  56.08%,
+  62.16% {
+    --beam: 150deg;
+    animation-timing-function: ease-in-out;
+  }
+  /* Reach down for the plug, then hold it toward the laptop's port. */
+  63.85% {
+    --beam: 166deg;
+    animation-timing-function: ease-in-out;
+  }
+  66.22%,
+  77.7% {
+    --beam: 136deg;
+    animation-timing-function: ease-in-out;
+  }
+  79.73% {
+    --beam: 160deg;
+    animation-timing-function: ease-in-out;
+  }
+  /* A wave. */
+  83.78% {
+    --beam: 40deg;
+    animation-timing-function: ease-in-out;
+  }
+  85.81% {
+    --beam: 80deg;
+    animation-timing-function: ease-in-out;
+  }
+  87.84% {
+    --beam: 40deg;
+    animation-timing-function: ease-in-out;
+  }
+  89.86% {
+    --beam: 80deg;
+    animation-timing-function: ease-in-out;
+  }
+  91.89%,
+  100% {
+    --beam: 160deg;
+  }
+}
+/* Click, flicker, on; off when the lights come on. */
+@keyframes intro-open {
+  0%,
+  35.1% {
+    --open: 0;
+  }
+  35.47% {
+    --open: 1;
+  }
+  35.95% {
+    --open: 0.1;
+  }
+  36.49%,
+  59.46% {
+    --open: 1;
+  }
+  63.51%,
+  100% {
+    --open: 0;
+  }
+}
+@keyframes intro-lights {
+  0%,
+  59.46% {
+    opacity: 1;
+  }
+  63.51%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-room {
+  0%,
+  59.46% {
+    background-color: #030504;
+  }
+  63.51%,
+  100% {
+    background-color: var(--bg, #101512);
+  }
+}
+@keyframes intro-step {
+  0%,
+  100% {
+    transform: rotate(-20deg);
+  }
+  50% {
+    transform: rotate(20deg);
+  }
+}
+@keyframes intro-bob {
+  to {
+    transform: translateY(-0.7px);
+  }
+}
+@keyframes intro-look {
+  0%,
+  30% {
+    transform: translate(1.4px, 0);
+  }
+  32.4%,
+  36% {
+    transform: translate(0, 0);
+  }
+  41.89%,
+  44.59% {
+    transform: translate(-1.4px, -0.9px);
+  }
+  49.32%,
+  51.35% {
+    transform: translate(1.4px, -0.9px);
+  }
+  56.08%,
+  62.16% {
+    transform: translate(1px, 1.3px);
+  }
+  66.22%,
+  77.7% {
+    transform: translate(1.4px, 0.2px);
+  }
+  79.73%,
+  82.4% {
+    transform: translate(1.5px, -0.2px);
+  }
+  83.78%,
+  100% {
+    transform: translate(0, 0.3px);
+  }
+}
+@keyframes intro-lens {
+  0%,
+  35.1% {
+    fill: #3a3a2e;
+  }
+  35.47%,
+  59.46% {
+    fill: #fff3bf;
+  }
+  63.51%,
+  100% {
+    fill: #8a8a6e;
+  }
+}
+@keyframes intro-flashlight {
+  0%,
+  62.16% {
+    opacity: 1;
+  }
+  63.51%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-hand-plug {
+  0%,
+  64.5% {
+    opacity: 0;
+  }
+  64.86%,
+  77.36% {
+    opacity: 1;
+  }
+  77.7%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-cable-up {
+  0%,
+  64.5% {
+    opacity: 0;
+  }
+  64.86%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes intro-cable-run {
+  0%,
+  66.22% {
+    stroke-dashoffset: 76;
+  }
+  75.68%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes intro-plugged {
+  0%,
+  77.36% {
+    opacity: 0;
+  }
+  77.7%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes intro-spark {
+  0%,
+  77.36% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  78.38% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  80.4%,
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+@keyframes intro-mac {
+  0%,
+  78.38% {
+    filter: none;
+  }
+  81.76%,
+  100% {
+    filter: drop-shadow(0 0 6px rgb(185 245 104 / 0.35));
+  }
+}
+/* Its screen comes on with a flicker. */
+@keyframes intro-mac-off {
+  0%,
+  78.38% {
+    opacity: 1;
+  }
+  79.05% {
+    opacity: 0.3;
+  }
+  79.4% {
+    opacity: 0.9;
+  }
+  80.07%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-what {
+  0%,
+  45.95% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  47.3% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  48.3%,
+  51.35% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  52.7%,
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@keyframes intro-exclaim {
+  0%,
+  56.08% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  57.43% {
+    opacity: 1;
+    transform: scale(1.3);
+  }
+  58.78%,
+  60.81% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  62.5%,
+  100% {
+    opacity: 0;
+    transform: scale(0.8) translateY(-6px);
+  }
+}
+/* A little hop when it finds Reach; a crouch to pick up the plug. */
+@keyframes intro-hop {
+  0%,
+  56.08% {
+    transform: translateY(0);
+  }
+  57.43% {
+    transform: translateY(-10px);
+    animation-timing-function: ease-in;
+  }
+  58.78%,
+  62.16% {
+    transform: translateY(0);
+  }
+  63.85% {
+    transform: translateY(5px);
+  }
+  65.54%,
+  100% {
+    transform: translateY(0);
+  }
+}
+/* Dim in the beam, then it lights up. */
+@keyframes intro-logo {
+  0%,
+  58.11% {
+    color: #8fa398;
+    fill: #8fa398;
+    transform: scale(0.88);
+    filter: none;
+  }
+  60.14% {
+    color: var(--lime, #b9f568);
+    fill: var(--lime, #b9f568);
+    transform: scale(1.14) translateY(-3px);
+    filter: drop-shadow(0 0 7px rgb(185 245 104 / 0.75));
+  }
+  62.16%,
+  100% {
+    color: var(--lime, #b9f568);
+    fill: var(--lime, #b9f568);
+    transform: scale(1);
+    filter: drop-shadow(0 0 4px rgb(185 245 104 / 0.4));
+  }
+}
+@keyframes intro-out {
+  0%,
+  93.24% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes intro-skip {
+  to {
+    opacity: 0;
+  }
+}

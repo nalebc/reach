@@ -45,24 +45,36 @@ export class DesktopTerminals {
     this.run = run;
   }
   targets = new Map();
+  // false, "user" (a person's action) or "background" (Reach keeping its
+  // list and text current, server/mac-terminal-watch.mjs).
   busy = false;
-  async exclusive(authorize, fn) {
+  current = Promise.resolve();
+  async exclusive(authorize, fn, background = false) {
     authorize();
     if (this.platform !== "darwin")
       throw fail(409, "Desktop terminal discovery currently supports macOS.");
+    // Background work queues; a person's action waits for it rather than
+    // failing, but two of a person's actions still never overlap.
+    while (this.busy === "background" || (background && this.busy))
+      await this.current;
     if (this.busy)
       throw fail(
         409,
         "Another terminal action is in progress. Try again in a moment.",
       );
-    this.busy = true;
+    this.busy = background ? "background" : "user";
+    const running = (async () => fn())();
+    this.current = running.then(
+      () => {},
+      () => {},
+    );
     try {
-      return await fn();
+      return await running;
     } finally {
       this.busy = false;
     }
   }
-  async list(authorize) {
+  async list(authorize, { background = false } = {}) {
     return this.exclusive(authorize, async () => {
       const sessions = [],
         providers = [],
@@ -76,6 +88,8 @@ export class DesktopTerminals {
           });
           authorize();
           for (const session of result.sessions) {
+            // Finished: nothing to watch or type into, so not listed.
+            if (session.ended) continue;
             const id = crypto
               .createHash("sha256")
               .update(JSON.stringify([provider.id, session.target]))
@@ -97,9 +111,9 @@ export class DesktopTerminals {
       authorize();
       this.targets = next;
       return { sessions, providers };
-    });
+    }, background);
   }
-  async action(id, action, body, authorize) {
+  async action(id, action, body, authorize, { background = false } = {}) {
     if (!["read", "send", "focus", "close"].includes(action))
       throw fail(400, "Unknown terminal action.");
     if (
@@ -131,7 +145,7 @@ export class DesktopTerminals {
       if (action === "close") this.targets.delete(id);
       authorize();
       return result;
-    });
+    }, background);
   }
   async create(provider, authorize, command) {
     if (!terminalProviders.some((p) => p.id === provider))

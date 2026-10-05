@@ -173,6 +173,16 @@ export const CODEX_TURN_MODES = {
   "read-only": { approvalPolicy: "on-request", permissions: ":read-only", approvalsReviewer: "user" },
 };
 
+// A mode the phone picked: one of the Codex app's, or a permission profile
+// Codex offers that Reach has no name for ("profile:<id>").
+export const codexTurnMode = (mode) =>
+  !mode
+    ? {}
+    : CODEX_TURN_MODES[mode] ||
+      (/^profile::?[\w.-]+$/.test(mode)
+        ? { approvalPolicy: "on-request", permissions: mode.slice("profile:".length), approvalsReviewer: "user" }
+        : {});
+
 const finished = (turn) => !!turn?.completedAt || ["completed", "failed"].includes(turn?.status);
 
 export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverMs = 10000, onChange = () => {} }) {
@@ -338,6 +348,8 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
   };
   return {
     drives: (threadId) => subscribed.has(threadId),
+    // A phone has the thread open right now (its live view is waiting).
+    watched: (threadId) => !!threads.get(threadId)?.waiters.size,
     async send(threadId, { text, images, model, effort, mode } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const input = codexInput({ text, images });
@@ -363,7 +375,7 @@ export function createCodexLive({ daemon, now = Date.now, wait = sleep, deliverM
           ...(model ? { model } : {}),
           ...(effort ? { effort } : {}),
           // Applies to this turn and the ones after, like the app's menu.
-          ...(mode && CODEX_TURN_MODES[mode] ? CODEX_TURN_MODES[mode] : {}),
+          ...codexTurnMode(mode),
         });
       } catch (e) {
         release(threadId);

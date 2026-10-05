@@ -328,6 +328,23 @@
   background: #18231d;
   color: #dce5dd;
 }
+/* Real app icons fill the round frame: Mac icons keep a clear margin of
+   about a tenth around their body, so they are drawn larger and cropped. */
+.story-ring > span,
+.home-plus-icon {
+  position: relative;
+  overflow: hidden;
+}
+.agent-logo.fill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 126%;
+  height: 126%;
+  max-width: none;
+  border-radius: 0;
+  transform: translate(-50%, -50%);
+}
 .home-plus-icon.send {
   background: var(--lime, #b9f568);
   color: var(--lime-ink, #19250f);

@@ -1,10 +1,15 @@
-import { readPreferences, assertSocketSupport } from "./configure.mjs";
+import {
+  readPreferences,
+  assertSocketSupport,
+  preferencesFile,
+} from "./configure.mjs";
 import { serveSocketPath } from "../server/tailscale-auth.mjs";
 import {
-  pendingApprovals,
   describeApproval,
   decideApproval,
+  safeLabel,
 } from "./approve-device.mjs";
+import { approvalStore } from "../server/device-approval.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -28,13 +33,32 @@ import {
   checkUnused,
 } from "./tailscale.mjs";
 import { stateDir } from "./home.mjs";
+import {
+  createPublicStart,
+  listenPublicSocket,
+} from "../server/public-start.mjs";
+import {
+  PublicLink,
+  ensurePersistentFunnel,
+  startOrigin,
+} from "./public-link.mjs";
 
 export async function launch(options, root) {
+  // When Reach was first set up here (its settings file), for the one link.
+  const setupSince = () => {
+    try {
+      const stat = fs.statSync(preferencesFile(root));
+      return Math.round(stat.birthtimeMs || stat.mtimeMs);
+    } catch {
+      return 0;
+    }
+  };
   const privateDir = stateDir(root);
   const dataDir = process.env.REACH_DATA || path.join(privateDir, "quick");
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const httpsPort = options.httpsPort || 8443;
   const routeFile = path.join(privateDir, "serve-owner.json");
+  const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
   const preferences =
     !options.local && process.platform !== "win32"
@@ -60,10 +84,21 @@ export async function launch(options, root) {
               )
           : undefined,
       );
+  // The public start page (https://<computer>.ts.net) may check whether the
+  // phone already reaches the private address directly (Tailscale app on).
+  const publicStart = socketPath && privateOrigin ? startOrigin(privateOrigin) : "";
   const reach = await createReach({
     dataDir,
     port: options.port,
     publicOrigin: privateOrigin,
+    ...(publicStart
+      ? {
+          allowedOrigins: [
+            ...(process.env.REACH_ALLOWED_ORIGINS || "").split(",").filter(Boolean),
+            publicStart,
+          ],
+        }
+      : {}),
     tailscaleOwner: preferences?.owner,
     privatePaths: [privateDir],
     // Policies live with Reach's state, never inside an installed package.
@@ -83,6 +118,8 @@ export async function launch(options, root) {
     finish = resolve;
   });
   let log, monitor, approvalMonitor, recovery, power;
+  let publicLink, publicMonitor, publicServer, linkMonitor;
+  let startUrl = "";
   const forgetStatus = () => {
     if (loadJson(statusFile, null)?.instance === reach.instance)
       fs.rmSync(statusFile, { force: true });
@@ -102,6 +139,10 @@ export async function launch(options, root) {
       input?.close();
       clearInterval(monitor);
       clearInterval(approvalMonitor);
+      clearInterval(publicMonitor);
+      clearInterval(linkMonitor);
+      await publicLink?.stop();
+      publicServer?.close();
       recovery?.stop();
       power?.stop();
       if (tunnel && tunnel.exitCode === null && tunnel.signalCode === null) {
@@ -163,6 +204,7 @@ export async function launch(options, root) {
         mode: 0o600,
       });
       if (!options.service) await checkUnused(httpsPort);
+      const setupOpened = new Set();
       const startTunnel = async () => {
         if (stopped) return;
         if (options.service) {
@@ -200,7 +242,13 @@ export async function launch(options, root) {
           const setup = chunk
             .toString()
             .match(/https:\/\/(?:login|console)\.tailscale\.com\/[^\s]+/);
-          if (setup) console.log(`Reach: finish Tailscale setup: ${setup[0]}`);
+          if (setup && !setupOpened.has(setup[0])) {
+            setupOpened.add(setup[0]);
+            console.log(`Reach: finish Tailscale setup: ${setup[0]}`);
+            // Usually "turn on HTTPS for your tailnet": one click in the browser.
+            if (process.stdout.isTTY && process.platform === "darwin")
+              spawn("open", [setup[0]], { stdio: "ignore" }).on("error", () => {});
+          }
         };
         tunnel.stdout.on("data", consume);
         tunnel.stderr.on("data", consume);
@@ -254,6 +302,61 @@ export async function launch(options, root) {
         );
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
+      if (publicStart && !stopped) {
+        // One link for every phone: the app path when Tailscale is on, the
+        // browser sign-in otherwise. Only the start page is public.
+        const publicSocket = path.join(path.dirname(socketPath), "p");
+        publicServer = createPublicStart({
+          dist: path.join(root, "dist"),
+          tailnetDir: path.join(root, "tailnet", "dist"),
+          privateOrigin,
+          name: reach.config.name,
+          instance: reach.instance,
+          since: setupSince(),
+        });
+        await listenPublicSocket(publicServer, publicSocket);
+        const target = `unix:${publicSocket}`;
+        if (options.service) {
+          try {
+            await ensurePersistentFunnel({
+              file: funnelFile,
+              origin: publicStart,
+              target,
+            });
+            startUrl = publicStart;
+          } catch (error) {
+            console.log(`Reach: ${error.message}`);
+          }
+        } else {
+          publicLink = new PublicLink({
+            origin: publicStart,
+            target,
+            log,
+            report: (message) => console.log(`Reach: ${message}`),
+            setupUrl: (url) => {
+              if (setupOpened.has(url)) return;
+              setupOpened.add(url);
+              console.log(`Reach: allow the public start page (Tailscale Funnel): ${url}`);
+              if (process.stdout.isTTY && process.platform === "darwin")
+                spawn("open", [url], { stdio: "ignore" }).on("error", () => {});
+            },
+          });
+          const until = Date.now() + 20000;
+          while (!stopped && Date.now() < until && !(await publicLink.check()))
+            await delay(500);
+          if (publicLink.live) startUrl = publicStart;
+          else
+            console.log(
+              "Reach: the public start link isn't up yet. Phones with the Tailscale app can use the private link meanwhile.",
+            );
+          publicMonitor = setInterval(async () => {
+            const wasLive = publicLink.live;
+            if ((await publicLink.check()) && !wasLive && !startUrl)
+              console.log(`Reach: public start link is ready: ${publicStart}`);
+          }, 5000);
+          publicMonitor.unref();
+        }
+      }
     }
     if (stopped) return;
     const showCode = (renew = false) => {
@@ -278,25 +381,67 @@ export async function launch(options, root) {
       console.log("  Code works once and expires in 10 minutes.");
     };
     if (preferences) {
+      // Linked computers share one link: the one where Reach started first.
+      const link = startUrl
+        ? reach.fleet?.homeLink({ start: startUrl, since: setupSince() }) ||
+          startUrl
+        : origin;
       console.log(
-        `\n  REACH · ${reach.config.name}\n  Open on your phone: ${origin}\n  Tailscale account: ${preferences.owner.login}\n`,
+        `\n  REACH · ${reach.config.name}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
-      if (!options.service) qr.generate(origin, { small: true });
+      if (!options.service) qr.generate(link, { small: true });
+      if (startUrl && link !== startUrl)
+        console.log(`  This computer's own link works too: ${startUrl}`);
       console.log(
-        "  The QR contains only your private address. Connect Tailscale on your phone, then tap Connect.\n  Approve new devices here, or run ./reach approve in another terminal.",
+        startUrl
+          ? "  With the Tailscale app on, your phone connects directly (fastest). Without it, sign in to Tailscale in the browser; nothing to install.\n  Approve new devices here, or run ./reach approve in another terminal."
+          : "  The QR contains only your private address. Connect Tailscale on your phone, then tap Connect.\n  Approve new devices here, or run ./reach approve in another terminal.",
       );
       if (!options.service) {
         const seen = new Set();
         approvalMonitor = setInterval(() => {
-          for (const request of pendingApprovals(dataDir))
-            if (!seen.has(request.id)) {
+          const linked = reach.fleet?.links().length > 0;
+          for (const request of approvalStore(dataDir).list()) {
+            if (seen.has(request.id)) continue;
+            if (request.approvedBy) {
               seen.add(request.id);
               console.log(
-                `\nNew device request:\n${describeApproval(request)}\nMatch the code on your phone; type it here to approve (or deny <code>).`,
+                `\n${safeLabel(request.name)} joined: already approved on ${safeLabel(request.approvedBy)}.`,
               );
+              continue;
             }
-        }, 2000);
+            if (request.status !== "pending") continue;
+            // Give linked computers a moment to say they approved it already.
+            if (linked && Date.now() - (request.expiresAt - 300000) < 4000)
+              continue;
+            seen.add(request.id);
+            console.log(
+              `\nNew device request:\n${describeApproval(request)}\nMatch the code on your phone; type it here to approve (or deny <code>).`,
+            );
+          }
+        }, 1000);
         approvalMonitor.unref();
+        if (reach.fleet) {
+          // Other Reach computers on your account: offer to link them, once each.
+          const offered = new Set();
+          const offerLinks = async () => {
+            try {
+              for (const c of await reach.fleet.discover())
+                if (!c.linked && !offered.has(c.nodeId)) {
+                  offered.add(c.nodeId);
+                  console.log(
+                    `\nReach is also running on ${safeLabel(c.name)} (your Tailscale account).\nType "link ${c.short}" to link them: devices you approve on one work on both, and your phone sees both. Do the same in Reach on ${safeLabel(c.name)}.`,
+                  );
+                }
+            } catch {}
+          };
+          void offerLinks();
+          linkMonitor = setInterval(offerLinks, 60000);
+          linkMonitor.unref();
+          const linkedNames = reach.fleet.links().map((l) => safeLabel(l.name));
+          if (linkedNames.length)
+            console.log(`  Linked computers: ${linkedNames.join(", ")}`);
+        }
       }
     } else if (options.service)
       console.log(
@@ -325,7 +470,24 @@ export async function launch(options, root) {
       input.on("line", (line) => {
         if (stopped) return;
         if (!preferences) showCode(true);
-        else if (line.trim()) {
+        else if (/^(un)?link\b/i.test(line.trim()) && reach.fleet) {
+          const [command, name = ""] = line.trim().split(/\s+/);
+          if (command.toLowerCase() === "unlink")
+            try {
+              reach.fleet.unlink(name.toLowerCase());
+              console.log(`Unlinked ${name}.`);
+            } catch (e) {
+              console.log(e.message);
+            }
+          else
+            reach.fleet.link(name).then(
+              (c) =>
+                console.log(
+                  `Linked ${safeLabel(c.name)}. Once it links back, devices approved on either computer work on both.`,
+                ),
+              (e) => console.log(e.message),
+            );
+        } else if (line.trim()) {
           try {
             console.log(decideApproval(dataDir, line.trim()));
           } catch (e) {

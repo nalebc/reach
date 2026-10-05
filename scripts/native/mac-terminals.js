@@ -62,10 +62,19 @@ function run() {
             payload.provider === "terminal"
               ? pane.customTitle() || win.name()
               : pane.name();
+          // A Terminal tab whose command has finished stays open on
+          // "[Process completed]" with nothing running in it.
+          var ended = false;
+          if (payload.action === "list" && payload.provider === "terminal") {
+            try {
+              ended = pane.processes().length === 0;
+            } catch (e) {}
+          }
           sessions.push({
             target: target,
             name: String(name).slice(0, 160),
             tty: tty,
+            ended: ended,
           });
           if (
             payload.target &&

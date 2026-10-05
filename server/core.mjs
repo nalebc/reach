@@ -139,8 +139,25 @@ export const ALL_SCOPES = [
   "device",
   "files:read",
   "files:write",
+  // Control the screen (keyboard and mouse) without owning this computer.
+  "screen:control",
+  // Watch chosen apps' windows on the phone (client.guestApps; all if unset).
+  "apps:open",
 ];
-export const AGENT_SCOPES = ALL_SCOPES.filter((s) => s !== "admin");
+// Agents never control the screen or open app windows.
+export const AGENT_SCOPES = ALL_SCOPES.filter(
+  (s) => !["admin", "screen:control", "apps:open"].includes(s),
+);
+// What an invitation may grant. `full` uses this computer like you do, except
+// managing access (devices, invitations, settings): see GUEST_BLOCKED_ROUTES.
+export const GUEST_BLOCKED_ROUTES = [
+  "clients",
+  "guests",
+  "settings",
+  "agents",
+  "activity",
+  "fleet",
+];
 export function createAuth(config, { rotatePairing = true } = {}) {
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
@@ -265,13 +282,33 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   }
   // A guest invite and its redeemed credential share one absolute deadline.
   // Both transitions use the credential lock, including single-use redemption.
+  // What you choose when inviting someone:
+  //   roots/write  folders, read or read/write
+  //   screen       false | "view" | "control" (true means "view")
+  //   apps         undefined | "all" | [app ids]: watch those apps' windows
+  //   terminal     their own terminals;  agents  AI sessions (Codex)
+  //   full         everything you can do, except managing access
   function inviteGuest({
     name,
     ttlSeconds,
-    roots,
+    roots = [],
     write = false,
     screen = false,
+    apps,
+    terminal = false,
+    agents = false,
+    full = false,
   }) {
+    const screenMode = screen === true ? "view" : screen;
+    const appList =
+      apps === undefined || apps === "all"
+        ? apps
+        : Array.isArray(apps) &&
+            apps.length > 0 &&
+            apps.length <= 100 &&
+            apps.every((a) => typeof a === "string" && a && a.length <= 300)
+          ? [...new Set(apps)]
+          : null;
     if (
       typeof name !== "string" ||
       !name.trim() ||
@@ -282,26 +319,44 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       !Array.isArray(roots) ||
       roots.some((r) => !Number.isInteger(r) || !config.roots[r]) ||
       typeof write !== "boolean" ||
-      typeof screen !== "boolean" ||
-      (!roots.length && !screen)
+      ![false, "view", "control"].includes(screenMode) ||
+      appList === null ||
+      typeof terminal !== "boolean" ||
+      typeof agents !== "boolean" ||
+      typeof full !== "boolean" ||
+      (!full &&
+        !roots.length &&
+        !screenMode &&
+        !appList &&
+        !terminal &&
+        !agents)
     )
       throw fail(
         400,
-        "Choose a guest name, folders or screen viewing, and a duration from 1 minute to 24 hours.",
+        "Choose a guest name, what they may use, and a duration from 1 minute to 24 hours.",
       );
     const token = crypto.randomBytes(32).toString("base64url");
     const client = {
       id: id(),
       kind: "guest",
       name: name.trim(),
-      scopes: [
-        "device",
-        ...(roots.length
-          ? ["files:read", ...(write ? ["files:write"] : [])]
-          : []),
-        ...(screen ? ["screen"] : []),
-      ],
-      guestRoots: [...new Set(roots)].map((r) => config.roots[r]),
+      scopes: full
+        ? [...ALL_SCOPES]
+        : [
+            "device",
+            ...(roots.length
+              ? ["files:read", ...(write ? ["files:write"] : [])]
+              : []),
+            ...(screenMode ? ["screen"] : []),
+            ...(screenMode === "control" ? ["screen:control"] : []),
+            ...(appList ? ["apps:open"] : []),
+            ...(terminal ? ["terminal"] : []),
+            ...(agents ? ["codex"] : []),
+          ],
+      guestRoots: full
+        ? [...config.roots]
+        : [...new Set(roots)].map((r) => config.roots[r]),
+      ...(Array.isArray(appList) && !full ? { guestApps: appList } : {}),
       inviteHash: hash(token),
       createdAt: new Date().toISOString(),
       expiresAt: Date.now() + ttlSeconds * 1000,
@@ -324,7 +379,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       scopes: client.scopes,
     };
   }
-  function redeemGuest(invitation) {
+  // The credential works only on the Tailscale device that redeemed it.
+  function redeemGuest(invitation, identity) {
     if (
       typeof invitation !== "string" ||
       !/^[A-Za-z0-9_-]{43}$/.test(invitation)
@@ -350,6 +406,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       delete client.inviteHash;
       client.hash = hash(token);
       client.redeemedAt = new Date().toISOString();
+      if (identity?.nodeId)
+        client.tailscale = {
+          userId: identity.userId || "",
+          nodeId: identity.nodeId,
+          ...(identity.tagged ? { tagged: true } : {}),
+        };
       result = { token, clientId: client.id, expiresAt: client.expiresAt };
       return latest;
     });
@@ -383,7 +445,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       !Array.isArray(scopes) ||
       !scopes.length ||
       scopes.some((s) => !ALL_SCOPES.includes(s)) ||
-      (kind === "agent" && scopes.includes("admin"))
+      (kind === "agent" && scopes.some((s) => !AGENT_SCOPES.includes(s)))
     )
       throw fail(400, "Invalid credential scopes.");
     const token = crypto.randomBytes(32).toString("base64url");
@@ -397,6 +459,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       expiresAt: Date.now() + ttlSeconds * 1000,
       ...(policy ? { policy } : {}),
       ...(options.tailscale ? { tailscale: options.tailscale } : {}),
+      ...(typeof options.nodeName === "string"
+        ? { nodeName: options.nodeName.slice(0, 160) }
+        : {}),
+      ...(typeof options.deviceGroup === "string"
+        ? { deviceGroup: options.deviceGroup.slice(0, 64) }
+        : {}),
     };
     changeClients((latest) => [...latest, client]);
     return {

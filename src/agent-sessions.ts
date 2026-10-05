@@ -25,7 +25,18 @@ export type AgentSession = {
   held?: "reach" | "codex-app" | "daemon" | "terminal" | "other" | null;
   // Permission mode as the agent's app names it (Codex: auto, guardian-approvals…; Claude: auto, plan…).
   mode?: string | null;
+  // What it waits on you for in another app (the Claude app, a terminal).
+  asking?: AgentAsking;
 };
+export type AgentQuestion = {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+};
+export type AgentAsking =
+  | { kind: "question"; questions: AgentQuestion[] }
+  | { kind: "permission"; text: string; command?: boolean };
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
@@ -48,8 +59,16 @@ export type AgentHealth = {
   signedIn: boolean;
   usable?: boolean;
   resetsAt?: number | null;
+  // Codex: free rate-limit resets the account holds.
+  resetCredits?: number;
   error?: string;
 };
+// Spends one Codex rate-limit reset (the Codex app's "Reset usage").
+export const resetUsage = (peer: Peer, agent: AgentName) =>
+  post<{ outcome: "reset" | "nothingToReset" | "noCredit" | "alreadyRedeemed" }>(peer, "/api/sessions/usage/reset", { agent });
+// "Oct 9, 2026, 9:25 PM", as the Codex app writes a reset time.
+export const resetTime = (at: number, year = true) =>
+  new Date(at).toLocaleString([], { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}), hour: "numeric", minute: "2-digit" });
 export type Decision = string | Record<string, unknown>;
 export type SessionPrompt = {
   id: string;
@@ -70,6 +89,8 @@ export type SessionPrompt = {
     options: { label: string; description: string }[];
     other: boolean;
     secret: boolean;
+    // Several choices may be picked (Claude Code's multiSelect).
+    multiSelect?: boolean;
   }[];
 };
 // What Reach sees live for a session it drives (server/agent-sessions/codex-live).
@@ -85,14 +106,51 @@ export type LiveView = {
 export type AgentModel = {
   id: string;
   name: string;
+  description?: string;
   efforts: string[];
+  // The agent's own words for each effort (Codex: "Extra high reasoning depth…").
+  effortNotes?: Record<string, string>;
   defaultEffort: string | null;
   images: boolean;
   isDefault: boolean;
+  // Claude Code: whether this model takes Auto mode.
+  autoMode?: boolean;
 };
+// A project as the Codex app's sidebar shows it: a name and its folders.
+export type AgentProject = { id: string; name: string; roots: string[] };
+// A permission mode as the agent offers it now (server/agent-sessions:
+// Codex's permission profiles, Claude Code's --permission-mode choices).
+export type AgentMode = { id: string; label: string; note?: string };
+// The modes to offer for a model: the agent's list, without Auto for a
+// Claude model that doesn't take it.
+export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
+  modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
   agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : agent;
+
+// Out of usage: the page each agent sends you to for more, opened on the
+// phone, where you buy it. Codex's own message names its page ("Visit … to
+// purchase more credits"); Claude Code links its usage settings, or the admin
+// page when your organization manages usage. Fixed addresses only: an agent's
+// text never becomes a link.
+export type UsageLink = { label: string; url: string };
+const CODEX_USAGE: UsageLink = { label: "Purchase more credits", url: "https://chatgpt.com/codex/settings/usage" };
+const CLAUDE_USAGE: UsageLink = { label: "Get more usage", url: "https://claude.ai/settings/usage" };
+const CLAUDE_ADMIN_USAGE: UsageLink = { label: "Get more usage", url: "https://claude.ai/admin-settings/usage" };
+export function usageLink(agent: string, error: { text?: string | null; detail?: string | null }): UsageLink | null {
+  const text = error.text || "";
+  if (agent === "codex")
+    return error.detail === "usageLimitExceeded" || /hit your usage limit|purchase more credits/i.test(text) ? CODEX_USAGE : null;
+  if (agent !== "claude") return null;
+  // `rate_limit` alone also covers a brief slowdown ("send a message to
+  // retry"); only a used-up limit or balance gets the link.
+  const outOfUsage =
+    error.detail === "billing_error" ||
+    /hit your [\w' ]{0,30}limit|usage limit|out of (extra )?usage|usage credits|spend limit|credit balance/i.test(text);
+  if (!outOfUsage) return null;
+  return /admin-settings\/usage|your admin/i.test(text) ? CLAUDE_ADMIN_USAGE : CLAUDE_USAGE;
+}
 
 // The agent the Chat tab shows, remembered here and shared with the tab bar
 // (which wears that agent's logo).
@@ -189,6 +247,7 @@ export type AgentFeed = ReturnType<typeof useAgentSessions>;
 export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [projects, setProjects] = useState<AgentProject[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
   const [failure, setFailure] = useState("");
   const alive = useRef(true);
@@ -202,7 +261,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     try {
       const r = await request<
         | { unchanged: true; version: string }
-        | { sessions: AgentSession[]; errors: Record<string, string>; version: string }
+        | { sessions: AgentSession[]; errors: Record<string, string>; projects?: { codex?: AgentProject[] }; version: string }
       >(peer, `/api/sessions${known.current ? `?known=${known.current}` : ""}`);
       if (!alive.current) return;
       known.current = r.version;
@@ -210,6 +269,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
       if ("unchanged" in r) return;
       setSessions(r.sessions);
       setErrors(r.errors || {});
+      setProjects(r.projects?.codex || []);
     } catch (e) {
       if (alive.current) setFailure((e as Error).message);
     }
@@ -247,7 +307,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
       document.removeEventListener("visibilitychange", visible);
     };
   }, [load, everyMs]);
-  return { sessions, errors, health, failure, reload: load, recheck: () => recheck.current() };
+  return { sessions, errors, health, failure, projects, reload: load, recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -293,12 +353,15 @@ export const startSession = (
 ) => post<{ threadId: string; turnId: string | null }>(peer, "/api/sessions", body);
 // Models, and the mode the agent's app starts new chats in. They change
 // rarely, so each Mac's list is fetched once per ten minutes.
-const modelCache = new Map<string, { at: number; value: Promise<{ models: AgentModel[]; mode: string | null }> }>();
+const modelCache = new Map<string, { at: number; value: Promise<{ models: AgentModel[]; mode: string | null; modes?: AgentMode[] }> }>();
 export function listModels(peer: Peer, agent: AgentName) {
   const key = `${peer.url} ${agent}`;
   const hit = modelCache.get(key);
   if (hit && Date.now() - hit.at < 600000) return hit.value;
-  const value = request<{ models: AgentModel[]; mode: string | null }>(peer, `/api/sessions/models?agent=${agent}`);
+  const value = request<{ models: AgentModel[]; mode: string | null; modes?: AgentMode[] }>(
+    peer,
+    `/api/sessions/models?agent=${agent}`,
+  );
   modelCache.set(key, { at: Date.now(), value });
   value.catch(() => modelCache.delete(key));
   return value;

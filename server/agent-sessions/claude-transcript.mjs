@@ -60,6 +60,25 @@ function toolItem(block, result, cwd, maxOutput) {
       return { ...base, kind: "web", text: String(input.url ?? ""), detail: output };
     case "WebSearch":
       return { ...base, kind: "web", text: String(input.query ?? ""), detail: output };
+    case "AskUserQuestion": {
+      // Claude's question with its choices, kept while it waits for an answer.
+      const questions = (Array.isArray(input.questions) ? input.questions : []).slice(0, 4).map((q) => ({
+        question: clip(String(q?.question ?? ""), 600),
+        header: clip(String(q?.header ?? ""), 40),
+        multiSelect: !!q?.multiSelect,
+        options: (Array.isArray(q?.options) ? q.options : []).slice(0, 6).map((o) => ({
+          label: clip(String(o?.label ?? ""), 120),
+          description: clip(String(o?.description ?? ""), 400),
+        })),
+      }));
+      return {
+        ...base,
+        kind: "tool",
+        text: questions[0]?.question || "Asked a question",
+        detail: output,
+        ...(result ? {} : { questions }),
+      };
+    }
     case "Task":
     case "Agent":
       return { ...base, kind: "tool", text: String(input.description ?? block.name), detail: output };

@@ -150,7 +150,11 @@ test("native helpers rebuild whenever their source changes", async () => {
 
 test("guest invites never preselect a folder", async () => {
   // The first shared folder is often the whole home folder.
-  const invite = await read("../src/GuestAccess.tsx");
-  assert.match(invite, /const \[roots, setRoots\] = useState<number\[\]>\(\[\]\);/);
+  const invite = await read("../src/InviteSheet.tsx");
+  // Folders are chosen per computer, starting with none.
+  assert.match(
+    invite,
+    /const \[roots, setRoots\] = useState<Record<string, number\[\]>>\(\{\}\);/,
+  );
   assert.doesNotMatch(invite, /useState<number\[\]>\(\s*device\.roots/);
 });

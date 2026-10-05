@@ -30,10 +30,18 @@ export function useRemoteScreen(
   const [fallbackReason, setFallbackReason] = useState("");
   const retry = useRef(new ReconnectTimer());
   const [attempt, setAttempt] = useState(0);
+  // Real decoder failures in the last minute: H.264 is retried twice before
+  // the stream falls back to still images.
+  const codecFailures = useRef<number[]>([]);
+  // Steps down from this phone's full resolution, only if its decoder can't
+  // keep up.
+  const [step, setStep] = useState(0);
   useEffect(() => {
     retry.current.reset();
+    codecFailures.current = [];
     setFallback(false);
     setFallbackReason("");
+    setStep(0);
   }, [peer.url, peer.token, display, quality, revision, compatibility, thread]);
   useEffect(() => {
     if (!enabled || !live) {
@@ -53,6 +61,7 @@ export function useRemoteScreen(
       configured = "",
       wireFormat = "",
       waitKey = true;
+    let backlogs = 0;
     let last = 0,
       count = 0,
       bytes = 0,
@@ -81,18 +90,36 @@ export function useRemoteScreen(
         socket.send(JSON.stringify({ type: "ack", id, keyframe }));
       }
     };
+    // Tells the computer why the video changed; it lands in Reach's log.
+    const report = (text: string) => {
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify({ type: "diagnostic", text }));
+    };
+    // `codecFailure` only for this phone's video decoder failing: server
+    // messages and garbled packets just reconnect, staying on H.264.
     const fail = (error: string, retryable = true, codecFailure = false) => {
       if (stopped || failed) return;
       failed = true;
       clearTimeout(watchdog);
       clearInterval(metrics);
       painter.stop();
-      socket.close();
       if (codecFailure && format === "h264" && retryable) {
-        setFallbackReason(error);
-        setFallback(true);
-        return;
-      }
+        const now = Date.now();
+        codecFailures.current = [
+          ...codecFailures.current.filter((at) => now - at < 60000),
+          now,
+        ];
+        const giveUp = codecFailures.current.length >= 3;
+        report(
+          `${giveUp ? "switching to still images" : "decoder reset"}: ${error}`,
+        );
+        socket.close();
+        if (giveUp) {
+          setFallbackReason(error);
+          setFallback(true);
+          return;
+        }
+      } else socket.close();
       setState((s) => ({
         ...s,
         ready: false,
@@ -160,6 +187,12 @@ export function useRemoteScreen(
         return;
       }
       deadline(150000);
+      // As sharp as this phone's screen can show, longest side, in pixels.
+      const full = Math.round(
+        Math.max(window.screen?.width || 0, window.screen?.height || 0) *
+          (window.devicePixelRatio || 1),
+      );
+      const maxWidth = Math.round(full * 0.75 ** step);
       socket.send(
         JSON.stringify({
           type: "auth",
@@ -168,6 +201,7 @@ export function useRemoteScreen(
           display,
           quality,
           format,
+          ...(maxWidth >= 640 && { maxWidth: Math.min(3840, maxWidth) }),
           ...(thread && { thread }),
         }),
       );
@@ -201,7 +235,7 @@ export function useRemoteScreen(
         try {
           const message = JSON.parse(event.data);
           if (message.type === "error")
-            fail(message.error, screenCanRetry(message), true);
+            fail(message.error, screenCanRetry(message));
           if (message.type === "ready") {
             wireFormat = message.format;
             setSelectedDisplay(message.display);
@@ -261,7 +295,13 @@ export function useRemoteScreen(
             error: (error) =>
               fail(`Video decoder: ${error.message}`, true, true),
           });
+        // A queue that keeps growing means this phone can't decode this
+        // resolution in time: one step down, then a fresh start.
         if (decoder.decodeQueueSize > 4) {
+          if (++backlogs >= 3 && step < 2) {
+            report(`decoder falling behind at ${meta.width}×${meta.height}`);
+            setStep((n) => n + 1);
+          }
           decoder.reset();
           configured = "";
           waitKey = true;
@@ -276,28 +316,39 @@ export function useRemoteScreen(
             ack(id, true);
             return;
           }
-          decoder.configure({
-            codec: meta.codec,
-            codedWidth: meta.width,
-            codedHeight: meta.height,
-            optimizeForLatency: true,
-          });
+          try {
+            decoder.configure({
+              codec: meta.codec,
+              codedWidth: meta.width,
+              codedHeight: meta.height,
+              optimizeForLatency: true,
+            });
+          } catch (e) {
+            fail(`Video decoder: ${(e as Error).message}`, true, true);
+            return;
+          }
           configured = config;
         }
         waitKey = false;
 
-        decoder.decode(
-          new EncodedVideoChunk({
-            type: meta.key ? "key" : "delta",
-            timestamp: meta.timestamp,
-            data: data.subarray(4 + length),
-          }),
-        );
+        try {
+          decoder.decode(
+            new EncodedVideoChunk({
+              type: meta.key ? "key" : "delta",
+              timestamp: meta.timestamp,
+              data: data.subarray(4 + length),
+            }),
+          );
+        } catch (e) {
+          fail(`Video decoder: ${(e as Error).message}`, true, true);
+          return;
+        }
         // Admit a bounded decode queue without making startup depend on the
         // codec's internal output delay. Frames are drawn as the decoder emits.
         ack(id);
       } catch (e) {
-        fail((e as Error).message, true, true);
+        // A garbled packet: reconnect, still with H.264.
+        fail((e as Error).message, true);
       }
     };
     socket.onerror = () => fail("Could not connect to the screen stream.");
@@ -334,6 +385,7 @@ export function useRemoteScreen(
     fallback,
     attempt,
     thread,
+    step,
   ]);
   return { selectedDisplay, canvas, ...state, fallback, fallbackReason };
 }

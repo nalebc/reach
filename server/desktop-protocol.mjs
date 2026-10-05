@@ -1,6 +1,8 @@
 import { fail } from "./core.mjs";
 export const QUALITY = {
-  auto: { width: 1600, fps: 60, bitrate: 4000000 },
+  // Highest quality: a high bitrate ceiling, lowered only on a struggling
+  // connection. Phones send their own resolution as the width.
+  auto: { width: 1600, fps: 60, bitrate: 16000000 },
   saver: { width: 1280, fps: 30, bitrate: 2000000 },
   balanced: { width: 1920, fps: 30, bitrate: 6000000 },
   smooth: { width: 1920, fps: 60, bitrate: 9000000 },

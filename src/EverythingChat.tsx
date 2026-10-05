@@ -1,7 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, CornerDownLeft, FolderOpen, Loader2, Plus, ShieldCheck, X } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  CornerDownLeft,
+  FolderOpen,
+  Loader2,
+  Plus,
+  Search,
+  ShieldCheck,
+  Sparkle,
+  SquarePen,
+  X,
+} from "lucide-react";
 import type { Peer } from "./api";
-import AgentSessionView, { ModelPicker } from "./AgentSession";
+import AgentSessionView, { ModelPicker, UsageButton } from "./AgentSession";
 import AgentSignIn from "./AgentSignIn";
 import { AgentLogo, ClaudeSpark, useAgentLogos, type AgentLogos } from "./agent-logos";
 import {
@@ -10,15 +22,20 @@ import {
   effortLabel,
   listModels,
   modeLabel,
+  modesFor,
   projectName,
+  resetTime,
   startSession,
   uploadImage,
+  usageLink,
   useAgentSessions,
   useChatAgent,
   whereLabel,
   type AgentFeed,
   type AgentHealth,
+  type AgentMode,
   type AgentModel,
+  type AgentProject,
   type AgentName,
   type AgentSession,
 } from "./agent-sessions";
@@ -81,7 +98,7 @@ function AgentPicker({
           data-agent={a.agent}
           role="radio"
           aria-checked={a.agent === current}
-          aria-label={a.name}
+          aria-label={a.supported ? a.name : `${a.name}, coming soon`}
           className={a.supported ? "" : "soon"}
           onAnimationEnd={() => setRolling("")}
           onClick={() => {
@@ -105,7 +122,8 @@ function AgentPicker({
 
 // Claude Code's --permission-mode choices for a new chat; "Default" leaves
 // Claude Code's own settings in charge.
-const CLAUDE_MODE_CHOICES = ["default", "auto", "manual", "acceptEdits", "plan"];
+// Until Claude Code's own list arrives.
+const CLAUDE_MODE_CHOICES = ["manual", "acceptEdits", "plan", "auto"];
 
 type Attachment = { key: number; url: string; id?: string; error?: string };
 
@@ -116,11 +134,13 @@ function NewChat({
   agent,
   sessions,
   onStarted,
+  autoFocus = false,
 }: {
   peer: Peer;
   agent: AgentName;
   sessions: AgentSession[];
   onStarted: (s: AgentSession) => void;
+  autoFocus?: boolean;
 }) {
   const folders = useMemo(() => {
     const seen: string[] = [];
@@ -133,6 +153,7 @@ function NewChat({
   const [focused, setFocused] = useState(false);
   const [images, setImages] = useState<Attachment[]>([]);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
@@ -141,6 +162,10 @@ function NewChat({
   const [problem, setProblem] = useState("");
   const picker = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
+  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (autoFocus) input.current?.focus();
+  }, []);
   useEffect(() => {
     if (!cwd && folders[0] && !otherFolder) setCwd(folders[0]);
   }, [folders[0]]);
@@ -150,8 +175,10 @@ function NewChat({
     setEffort(null);
     setMode(agent === "codex" ? "auto" : "default");
     setPanel("");
+    setModes(null);
     listModels(peer, agent).then((r) => {
       setModels(r.models);
+      if (r.modes?.length) setModes(r.modes);
       // New chats start the way the agent's app would start them.
       if (agent === "codex" && r.mode) setMode(r.mode);
       const first = r.models.find((m) => m.isDefault) || r.models[0];
@@ -162,15 +189,19 @@ function NewChat({
     }, () => {});
   }, [peer.url, peer.token, agent]);
   const current = models.find((m) => m.id === model);
+  // Permission modes for the new chat, as the agent offers them now. Claude
+  // Code starts in your settings' default unless you pick one.
+  const modeChoices: AgentMode[] =
+    agent === "codex"
+      ? modes || CODEX_MODE_CHOICES
+      : [
+          { id: "default", label: "Default" },
+          ...modesFor(modes || CLAUDE_MODE_CHOICES.map((id) => ({ id, label: modeLabel("claude", id) })), current),
+        ];
   const uploading = images.some((i) => !i.id && !i.error);
   const ready = !busy && !uploading && !!cwd && (text.trim().length > 0 || images.some((i) => i.id));
   const open = focused || !!text || images.length > 0 || !!panel;
-  const modeName =
-    agent === "codex"
-      ? CODEX_MODE_CHOICES.find((m) => m.id === mode)?.label
-      : mode === "default"
-        ? "Default"
-        : modeLabel("claude", mode);
+  const modeName = modeChoices.find((m) => m.id === mode)?.label || modeLabel(agent, mode);
   const addFiles = (files: File[]) => {
     for (const file of files) {
       if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) continue;
@@ -267,9 +298,7 @@ function NewChat({
       )}
       {panel === "mode" &&
         choiceRow(
-          agent === "codex"
-            ? CODEX_MODE_CHOICES.map((m) => ({ id: m.id, label: m.label }))
-            : CLAUDE_MODE_CHOICES.map((m) => ({ id: m, label: m === "default" ? "Default" : modeLabel("claude", m) })),
+          modeChoices.map((m) => ({ id: m.id, label: m.label })),
           mode,
           (id) => {
             setMode(id);
@@ -311,6 +340,7 @@ function NewChat({
           </div>
         )}
         <textarea
+          ref={input}
           rows={open ? 3 : 1}
           value={text}
           placeholder={agent === "codex" ? "Do anything" : "Type / for commands"}
@@ -394,63 +424,114 @@ function NewChat({
 }
 
 // The agent's sessions on the Mac, listed the way its app lists them.
+// The sessions as each app's sidebar lists them. Codex: its projects (from
+// Codex, each with its newest threads), then Recents; a spinner on a thread at
+// work. Claude Code: a search field, then sessions under their folder's name,
+// with the app's dot.
 function SessionList({
   agent,
   sessions,
+  projects = [],
   logos,
   onOpen,
 }: {
   agent: AgentName;
   sessions: AgentSession[];
+  projects?: AgentProject[];
   logos: AgentLogos;
   onOpen: (s: AgentSession) => void;
 }) {
-  const [all, setAll] = useState(false);
-  const working = sessions.filter((s) => s.status === "running" || s.status === "waiting");
-  const rest = sessions.filter((s) => s.status !== "running" && s.status !== "waiting");
-  const shown = all ? rest : rest.slice(0, 25);
+  const [more, setMore] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
+  const state = (s: AgentSession) =>
+    s.status === "waiting" ? "Waiting for you" : s.status === "running" ? "Working" : "";
   const row = (s: AgentSession) => (
-    <button key={s.id} className={`chat-session ${s.status}`} onClick={() => onOpen(s)}>
-      {agent === "claude" && s.status === "running" && <ClaudeSpark logos={logos} size={14} spinning />}
-      <span className="chat-session-main">
-        <span className="chat-session-top">
-          <strong>{s.title}</strong>
-          <time>{ago(s.updatedAt)}</time>
-        </span>
-        {s.status === "waiting" ? (
-          <small className="chat-session-waiting">{agent === "codex" ? "Needs your approval" : "Waiting for you"}</small>
-        ) : s.status === "running" ? (
-          <small className={agent === "codex" ? "as-shimmer" : "chat-session-working"}>Working · {whereLabel(s)}</small>
+    <button
+      key={s.id}
+      className={`chat-session ${s.status}`}
+      aria-label={[s.title, state(s)].filter(Boolean).join(", ")}
+      onClick={() => onOpen(s)}
+    >
+      {agent === "claude" &&
+        (s.status === "running" ? (
+          <ClaudeSpark logos={logos} size={12} spinning />
         ) : (
-          <small>
-            {projectName(s.cwd)}
-            {s.branch ? ` · ${s.branch}` : ""} · {whereLabel(s)}
-          </small>
-        )}
-      </span>
+          <i className={`chat-dot ${s.status}`} aria-hidden="true" />
+        ))}
+      <span className="chat-session-title">{s.title}</span>
+      {agent === "codex" && s.status === "running" && <Loader2 size={13} className="spin" aria-hidden="true" />}
+      {agent === "codex" && s.status === "waiting" && <i className="chat-dot waiting" aria-hidden="true" />}
     </button>
   );
+  const shown = (key: string, list: AgentSession[], first: number) => (
+    <>
+      {list.slice(0, more[key] ? list.length : first).map(row)}
+      {!more[key] && list.length > first && (
+        <button className="chat-more" onClick={() => setMore({ ...more, [key]: true })}>
+          Show more
+        </button>
+      )}
+    </>
+  );
   if (!sessions.length)
-    return <p className="chat-empty">No {agentLabel(agent)} sessions on your Mac yet. Start one above.</p>;
+    return <p className="chat-empty">No {agentLabel(agent)} sessions on your Mac yet.</p>;
+  if (agent === "codex") {
+    const inside = (s: AgentSession, p: AgentProject) =>
+      p.roots.some((root) => s.cwd === root || s.cwd.startsWith(`${root}/`));
+    const groups = projects
+      .map((p) => ({ p, list: sessions.filter((s) => inside(s, p)) }))
+      .filter((g) => g.list.length)
+      .sort((a, b) => b.list[0].updatedAt - a.list[0].updatedAt);
+    return (
+      <div className="chat-sessions codex">
+        {groups.length > 0 && (
+          <section aria-label="Projects">
+            <h3>Projects</h3>
+            {groups.map(({ p, list }) => (
+              <div className="chat-project" key={p.id}>
+                <span className="chat-project-name">
+                  <FolderOpen size={16} /> {p.name}
+                </span>
+                {shown(p.id, list, 5)}
+              </div>
+            ))}
+          </section>
+        )}
+        <section aria-label="Recents">
+          <h3>Recents</h3>
+          {shown("recents", sessions, 15)}
+        </section>
+      </div>
+    );
+  }
+  const q = query.trim().toLowerCase();
+  const found = q ? sessions.filter((s) => s.title.toLowerCase().includes(q)) : sessions;
+  const groups: { name: string; list: AgentSession[] }[] = [];
+  for (const s of found) {
+    const name = projectName(s.cwd) || "Other";
+    const group = groups.find((g) => g.name === name);
+    if (group) group.list.push(s);
+    else groups.push({ name, list: [s] });
+  }
   return (
-    <div className="chat-sessions">
-      {working.length > 0 && (
-        <section aria-label="Working">
-          <h3>Working</h3>
-          {working.map(row)}
+    <div className="chat-sessions claude">
+      <label className="chat-search">
+        <Search size={15} />
+        <input
+          type="search"
+          placeholder="Search"
+          aria-label="Search sessions"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </label>
+      {groups.map((g) => (
+        <section key={g.name} aria-label={g.name}>
+          <h3>{g.name}</h3>
+          {shown(g.name, g.list, q ? g.list.length : 6)}
         </section>
-      )}
-      {rest.length > 0 && (
-        <section aria-label="Recent">
-          <h3>Recent</h3>
-          {shown.map(row)}
-          {!all && rest.length > shown.length && (
-            <button className="chat-more" onClick={() => setAll(true)}>
-              Show {rest.length - shown.length} more
-            </button>
-          )}
-        </section>
-      )}
+      ))}
+      {!groups.length && <p className="chat-empty">No sessions match.</p>}
     </div>
   );
 }
@@ -472,19 +553,29 @@ function AgentStatus({
   if (!health.signedIn)
     return (
       <div className="chat-status signed-out">
-        <span>{name} is signed out on your Mac.</span>
+        <span>
+          {agent === "claude"
+            ? "Claude Code is signed out on your Mac. It's the claude command, which signs in separately from the Claude app."
+            : `${name} is signed out on your Mac.`}
+        </span>
         <AgentSignIn peer={peer} agent={agent} onDone={recheck} />
       </div>
     );
   if (health.usable === false)
     return (
-      <p className="chat-status">
-        Out of {name} usage
-        {health.resetsAt
-          ? ` until ${new Date(health.resetsAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
-          : ""}
-        .
-      </p>
+      <div className="chat-status out-of-usage">
+        <span>
+          You’re out of {name} usage{health.resetsAt ? ` until ${resetTime(health.resetsAt, false)}` : ""}.
+        </span>
+        <a
+          className="as-banner-btn primary"
+          href={usageLink(agent, { detail: "usageLimitExceeded", text: "usage limit" })?.url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Sparkle size={14} fill="currentColor" /> Upgrade
+        </a>
+      </div>
     );
   return null;
 }
@@ -505,13 +596,16 @@ export default function EverythingChat({
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
+  const projects = (shared || own).projects || [];
+  // The apps' "New chat" / "New" row opens the composer for a new session.
+  const [composing, setComposing] = useState(false);
   const logos = useAgentLogos(peer);
   const [agent, setAgent] = useChatAgent();
-  // The two Reach drives, then any other agent found on the Mac.
+  // The two Reach drives, then the agents coming next, installed or not.
   const agents: PickerAgent[] = useMemo(() => {
     const list: PickerAgent[] = AGENTS.map((a) => ({ agent: a, name: agentLabel(a), supported: true }));
     for (const h of health)
-      if (!h.supported && h.installed && !list.some((a) => a.agent === h.agent))
+      if (!h.supported && !list.some((a) => a.agent === h.agent))
         list.push({ agent: h.agent, name: h.name || h.agent, supported: false });
     return list;
   }, [health]);
@@ -574,8 +668,9 @@ export default function EverythingChat({
         <div className="chat-soon">
           <AgentLogo agent={picked.agent} name={picked.name} logos={logos} size={64} />
           <strong>{picked.name}</strong>
+          <em>Coming soon</em>
           <p>
-            {picked.name} is on your Mac. Reach will list its sessions here and let you continue them, like Codex and
+            Reach will list your {picked.name} sessions here and let you continue them from your phone, like Codex and
             Claude Code.
           </p>
         </div>
@@ -586,9 +681,15 @@ export default function EverythingChat({
     <div className={`chat-home ${current}`}>
       <AgentPicker agents={agents} current={current} onChange={setAgent} logos={logos} waiting={waiting} />
       <AgentStatus peer={peer} agent={current} health={status} recheck={recheck} />
-      {(!status || (status.installed && status.signedIn)) && (
-        <NewChat key={current} peer={peer} agent={current} sessions={sessions || []} onStarted={setOpen} />
-      )}
+      {(!status || (status.installed && status.signedIn)) &&
+        (composing ? (
+          <NewChat key={current} peer={peer} agent={current} sessions={sessions || []} onStarted={setOpen} autoFocus />
+        ) : (
+          <button className={`chat-new-row ${current}`} onClick={() => setComposing(true)}>
+            {current === "codex" ? <SquarePen size={17} /> : <Plus size={17} />}
+            <span>{current === "codex" ? "New chat" : "New"}</span>
+          </button>
+        ))}
       {failure && <p className="chat-status">{failure}</p>}
       {errors[current] && <p className="chat-status">{errors[current]}</p>}
       {!sessions ? (
@@ -596,7 +697,7 @@ export default function EverythingChat({
           <Loader2 size={15} className="spin" /> Looking for your sessions…
         </p>
       ) : (
-        <SessionList agent={current} sessions={mine} logos={logos} onOpen={setOpen} />
+        <SessionList agent={current} sessions={mine} projects={projects} logos={logos} onOpen={setOpen} />
       )}
     </div>
   );

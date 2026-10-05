@@ -179,6 +179,14 @@
   padding: 40px 24px;
   text-align: center;
 }
+.chat-soon em {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--as-card);
+  color: var(--as-muted);
+  font-size: 12px;
+  font-style: normal;
+}
 .chat-soon strong {
   font-size: 18px;
 }
@@ -195,6 +203,12 @@
   color: var(--as-muted);
   font-size: 13px;
   text-align: center;
+}
+.chat-status.out-of-usage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 .chat-status.signed-out {
   display: flex;
@@ -239,70 +253,119 @@
 }
 
 /* Sessions, listed like the agent's app lists them. */
+/* The sessions as each app's sidebar lists them. */
 .chat-sessions h3 {
-  margin: 16px 6px 4px;
-  color: var(--as-faint);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  margin: 18px 8px 4px;
+  color: var(--as-muted);
+  font-size: 13px;
+  font-weight: 500;
 }
 .chat-session {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 9px 6px;
+  min-height: 38px;
+  padding: 7px 8px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 10px;
   background: none;
   color: var(--as-text);
   font: inherit;
+  font-size: 15px;
   text-align: left;
 }
 .chat-session:active {
-  background: #ffffff0d;
+  background: #ffffff0f;
+}
+.chat-session-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-session .spin {
+  flex: 0 0 auto;
+  color: var(--as-muted);
+}
+/* Codex: projects with their threads beneath, then Recents. */
+.chat-project-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  color: var(--as-text);
+  font-size: 15px;
+}
+.chat-project-name svg {
+  color: var(--as-muted);
+}
+.chat-project .chat-session {
+  padding-left: 33px;
+  color: #d4d4d4;
+}
+.chat-project .chat-more {
+  margin-left: 33px;
+}
+/* Claude Code: a search field, folders, and the app's dot per session. */
+.chat-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  padding: 3px 10px;
+  border: 1px solid var(--as-field-line);
+  border-radius: 10px;
+  background: var(--as-field);
+  color: var(--as-muted);
+}
+.chat-search input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px; /* no zoom on focus in iOS */
+}
+.chat-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--as-faint);
+  border-radius: 50%;
+}
+.chat-dot.waiting {
+  border-color: transparent;
+  background: var(--as-accent);
+}
+.codex .chat-dot.waiting {
+  background: #5b9cf5;
 }
 .chat-session .claude-spark {
-  margin-top: 4px;
-}
-.chat-session-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.chat-session-top {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.chat-session-top strong {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 15px;
-  font-weight: 500;
-}
-.chat-session-top time {
   flex: 0 0 auto;
-  color: var(--as-faint);
-  font-size: 12px;
 }
-.chat-session small {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--as-muted);
-  font-size: 12.5px;
+/* The apps' "New chat" / "New" row. */
+.chat-new-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
 }
-.chat-session small.chat-session-waiting {
-  color: #f5c451;
-}
-.chat-session small.chat-session-working {
-  color: var(--as-accent);
+.chat-new-row:active {
+  background: #ffffff0f;
 }
 .chat-more {
   margin: 6px 6px 0;

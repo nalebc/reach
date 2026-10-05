@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Share } from "@capacitor/share";
 import { isNative } from "./native";
+import { tailnetBrowser } from "./tailnet-transport";
 import {
   fileBlob,
   post,
@@ -150,6 +151,8 @@ function putChunk(
   onLoaded: (loaded: number) => void,
   signal: AbortSignal,
 ) {
+  if (tailnetBrowser())
+    return putChunkThroughTailnet(peer, id, offset, chunk, onLoaded, signal);
   return new Promise<{ offset: number }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", `${peer.url}/api/files/uploads/${id}?offset=${offset}`);
@@ -193,6 +196,56 @@ function putChunk(
       reject(Error("The connection dropped."));
     };
     xhr.send(chunk);
+  });
+}
+
+// Signed in through the browser (no Tailscale app), requests travel through
+// the page's own tailnet node, which XMLHttpRequest can't use: send the chunk
+// with fetch; progress moves a chunk at a time.
+async function putChunkThroughTailnet(
+  peer: Peer,
+  id: string,
+  offset: number,
+  chunk: Blob,
+  onLoaded: (loaded: number) => void,
+  signal: AbortSignal,
+) {
+  let body: { offset?: number; error?: string } = {};
+  let status = 0;
+  // (AbortSignal.any is missing on older iOS.)
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  const timer = setTimeout(abort, IDLE_MS * 4);
+  signal.addEventListener("abort", abort);
+  try {
+    const response = await fetch(
+      `${peer.url}/api/files/uploads/${id}?offset=${offset}`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${peer.token}`,
+          "Content-Type": "application/octet-stream",
+        },
+        body: chunk,
+        redirect: "error",
+        signal: stop.signal,
+      },
+    );
+    status = response.status;
+    body = await response.json().catch(() => ({}));
+  } catch {
+    throw Error("The connection dropped.");
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+  if (status >= 200 && status < 300 && typeof body.offset === "number") {
+    onLoaded(chunk.size);
+    return { offset: body.offset };
+  }
+  throw Object.assign(Error(body.error || "The upload was interrupted."), {
+    status,
+    offset: body.offset,
   });
 }
 
@@ -400,6 +453,8 @@ export async function downloadThroughBrowser(
   root: number,
   entry: FileEntry,
 ) {
+  // The download manager can't reach the computer without the Tailscale app.
+  if (tailnetBrowser()) return false;
   try {
     const { url } = await request<{ url: string }>(
       peer,

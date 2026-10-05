@@ -6,13 +6,24 @@
 // session id, replayed user messages, API errors, results, set_model and
 // set_permission_mode. Permission requests (can_use_tool) and their answers
 // follow the shapes in the CLI's own code; they need a signed-in turn to see.
-import { spawn as spawnChild } from "node:child_process";
+import { execFile, spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Claude Code's permission modes as it lists them in --help, in the order and
+// with the names its own code gives them (default is "Manual"). A mode it adds
+// later shows under its own id; "dontAsk" is for scripts, not a person.
+const MODE_NAMES = { manual: "Manual", plan: "Plan", acceptEdits: "Accept edits", bypassPermissions: "Bypass Permissions", auto: "Auto" };
+export function claudeModes(help = "") {
+  const choices = help.match(/--permission-mode[\s\S]*?\(choices:([^)]*)\)/)?.[1] || "";
+  const ids = [...choices.matchAll(/"([\w-]+)"/g)].map((m) => m[1]).filter((id) => id !== "dontAsk");
+  const order = Object.keys(MODE_NAMES);
+  const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
+  return ids.sort((a, b) => rank(a) - rank(b)).map((id) => ({ id, label: MODE_NAMES[id] || id }));
+}
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 // --permission-mode choices in 2.1.289; the Claude app records "default" for Manual.
 const MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
@@ -77,6 +88,7 @@ export function describeClaudePrompt(id, request = {}) {
         options: (q.options || []).map((o) => ({ label: o.label, description: o.description || "" })),
         other: true,
         secret: false,
+        multiSelect: !!q.multiSelect,
       })),
     };
   const name = request.display_name || request.tool_name || "a tool";
@@ -134,6 +146,7 @@ export function createClaudeHost({
 }) {
   const sessions = new Map();
   let modelCache = null;
+  let modeList = null;
   // Reach's own environment, never a host app's (a terminal inside Claude Code
   // sets CLAUDECODE) or its own pairing settings.
   const clean = Object.fromEntries(
@@ -353,6 +366,8 @@ export function createClaudeHost({
       released.add(listener);
     },
     running: (id) => !!sessions.get(id)?.turns,
+    // A phone has the session open right now (its live view is waiting).
+    watched: (id) => !!sessions.get(id)?.waiters.size,
     async send(id, { text, images, model, effort, mode, cwd } = {}) {
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const input = claudeContent({ text, images }, readFile);
@@ -439,6 +454,20 @@ export function createClaudeHost({
     },
     async models() {
       return (await this.catalog()).models;
+    },
+    // The permission modes this Claude Code offers (from its --help), kept.
+    async modes() {
+      if (modeList) return modeList;
+      const cli = await locate();
+      if (!cli) return [];
+      const help = await new Promise((resolve) =>
+        execFile(cli, ["--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
+          resolve(String(stdout || "")),
+        ),
+      );
+      const modes = claudeModes(help);
+      if (modes.length) modeList = modes;
+      return modes;
     },
     // Slash commands, as the composer offers them after "/".
     async commands() {

@@ -26,12 +26,17 @@ export function ComputerSwitcher({
   connections,
   choose,
   pair,
+  waiting = [],
+  onWaiting,
 }: {
   peers: Peer[];
   active: string;
   connections: FleetConnections;
   choose: (id: string) => void;
   pair: () => void;
+  // Your other Reach computers that aren't linked yet.
+  waiting?: { origin: string; name: string }[];
+  onWaiting?: (computer: { origin: string; name: string }) => void;
 }) {
   return (
     <nav className="fleet-switcher" aria-label="Your computers">
@@ -46,6 +51,17 @@ export function ComputerSwitcher({
             className={`status-dot ${connections[p.id]?.state === "connected" ? "" : "off"}`}
           />
           <span>{p.name}</span>
+        </button>
+      ))}
+      {waiting.map((c) => (
+        <button
+          key={c.origin}
+          className="fleet-waiting"
+          onClick={() => onWaiting?.(c)}
+          title={`${c.name}: not linked yet`}
+        >
+          <i className="status-dot off" />
+          <span>{c.name}</span>
         </button>
       ))}
       <button className="fleet-add" aria-label="Add a computer" onClick={pair}>

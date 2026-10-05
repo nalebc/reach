@@ -129,6 +129,8 @@ export function readSessionRegistry({
         tty: null,
         exact: true,
         busy: r.status === "busy",
+        // Stopped on you: "input needed" (a question) or "permission prompt".
+        waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
         ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),
       });
     } catch {

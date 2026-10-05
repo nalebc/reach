@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -12,6 +13,7 @@ import {
   Monitor,
   Plus,
   ShieldCheck,
+  Sparkle,
   Square,
   Terminal,
   TriangleAlert,
@@ -30,16 +32,24 @@ import {
   listCommands,
   listModels,
   modeLabel,
+  modesFor,
+  CODEX_MODE_CHOICES,
   openInApp,
   projectName,
+  resetTime,
+  resetUsage,
   readSession,
   sendMessage,
   stopSession,
   uploadImage,
+  usageLink,
   useSessionLive,
   whereLabel,
+  type AgentAsking,
   type AgentHealth,
+  type AgentMode,
   type AgentCommand,
+  type UsageLink,
   type AgentModel,
   type AgentName,
   type AgentSession,
@@ -170,6 +180,93 @@ const DECISIONS: Record<string, string> = {
 const CLAUDE_DECISIONS: Record<string, string> = { allow: "Yes", allowAlways: "Yes, and don't ask again", deny: "No" };
 const decisionKey = (d: Decision) => (typeof d === "string" ? d : Object.keys(d)[0]);
 
+// "Today 12:37 PM", "Yesterday 9:02 AM", "Oct 2 4:10 PM": as the Codex app dates a chat.
+function whenLabel(at: number, now = Date.now()) {
+  const day = (t: number) => new Date(t).toDateString();
+  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (day(at) === day(now)) return `Today ${time}`;
+  if (day(at) === day(now - 86400000)) return `Yesterday ${time}`;
+  return `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+// Where to get more usage, opened in this browser.
+export function UsageButton({ link }: { link: UsageLink | null }) {
+  return link ? (
+    <a className="as-usage" href={link.url} target="_blank" rel="noopener noreferrer">
+      {link.label}
+    </a>
+  ) : null;
+}
+
+// Codex's used-up-limit message in the Codex app's own words, keeping the
+// date the message itself gives ("try again at Oct 9th, 2026 9:25 PM" reads
+// "Oct 9, 2026, 9:25 PM"); null when the message isn't that one.
+export function codexLimitLine(text: string) {
+  const m = text.match(/try again at ([A-Z][a-z]{2,8}) (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? (\d{1,2}:\d{2}\s?[AP]M)/);
+  return m
+    ? `You’ve hit your usage limit. Upgrade your plan or add credits to continue, or try again at ${m[1]} ${m[2]}, ${m[3]}, ${m[4]}.`
+    : null;
+}
+
+// An agent's error, the way its app shows it: a quiet line in Codex (a used-up
+// limit in the Codex app's own words; its card below offers the way out), a
+// card in Claude Code with the way to more usage.
+function ErrorNote({ agent, text, detail }: { agent: string; text: string; detail?: string }) {
+  const link = usageLink(agent, { text, detail });
+  if (agent === "codex")
+    return (
+      <div className="as-error codex">
+        <p>
+          <Info size={15} />{" "}
+          <span>{(link && codexLimitLine(text)) || text}</span>
+        </p>
+      </div>
+    );
+  return (
+    <section className="as-error claude">
+      <header>
+        <TriangleAlert size={15} />{" "}
+        {link
+          ? "Usage limit reached"
+          : detail
+            ? detail.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())
+            : "Error"}
+      </header>
+      <p>{text}</p>
+      {link && (
+        <footer>
+          <UsageButton link={link} />
+        </footer>
+      )}
+    </section>
+  );
+}
+
+// A question or permission request Claude waits on in another app (the
+// Claude app, a terminal), already showing there: said here, answered there.
+function AskingCard({ asking, logos, where }: { asking: AgentAsking; logos: AgentLogos; where: string }) {
+  return (
+    <section className={`as-prompt ${asking.kind === "question" ? "question" : "tool"} elsewhere`} aria-live="polite">
+      <header>
+        <AgentLogo agent="claude" logos={logos} size={18} />
+        <strong>Waiting for your answer in the {where} on your Mac</strong>
+      </header>
+      {asking.kind === "question" ? (
+        asking.questions.map((q, i) => (
+          <div className="as-question" key={i}>
+            <p>{q.question}</p>
+            <p className="as-asked">{q.options.map((o) => o.label).join(" · ")}</p>
+          </div>
+        ))
+      ) : asking.command ? (
+        <pre className="as-prompt-command">{asking.text}</pre>
+      ) : (
+        <p>{asking.text}</p>
+      )}
+    </section>
+  );
+}
+
 function PromptCard({
   prompt,
   agent,
@@ -182,7 +279,27 @@ function PromptCard({
   onAnswer: (answer: { decision?: string; answers?: Record<string, string[]> }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Picked choices per question, and what was typed instead ("Something else").
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [typed, setTyped] = useState<Record<string, string>>({});
+  const answerOf = (id: string) => [...(picked[id] || []), ...(typed[id]?.trim() ? [typed[id].trim()] : [])];
+  // One question per page, as Claude Code and Codex ask them; picking the one
+  // answer of a question moves on to the next.
+  const questions = prompt.questions || [];
+  const [page, setPage] = useState(0);
+  const at = Math.min(page, Math.max(0, questions.length - 1));
+  const current = questions[at];
+  const last = at >= questions.length - 1;
+  const pick = (q: { id: string; multiSelect?: boolean }, label: string) => {
+    const now = picked[q.id] || [];
+    if (q.multiSelect)
+      setPicked({ ...picked, [q.id]: now.includes(label) ? now.filter((l) => l !== label) : [...now, label] });
+    else {
+      setPicked({ ...picked, [q.id]: [label] });
+      setTyped({ ...typed, [q.id]: "" });
+      if (!last) setPage(at + 1);
+    }
+  };
   const act = async (key: string, answer: { decision?: string; answers?: Record<string, string[]> }) => {
     setBusy(key);
     try {
@@ -214,44 +331,73 @@ function PromptCard({
       {prompt.reason && <p className="as-prompt-reason">{prompt.reason}</p>}
       {prompt.kind === "question" ? (
         <>
-          {prompt.questions?.map((q) => (
-            <div className="as-question" key={q.id}>
-              {q.header && <b>{q.header}</b>}
-              <p>{q.question}</p>
+          {questions.length > 1 && (
+            <nav className="as-steps" aria-label="Questions">
+              {questions.map((q, i) => (
+                <button
+                  key={q.id}
+                  className={`${i === at ? "current" : ""} ${answerOf(q.id).length ? "done" : ""}`}
+                  aria-current={i === at ? "step" : undefined}
+                  onClick={() => setPage(i)}
+                >
+                  {answerOf(q.id).length ? <Check size={12} /> : null}
+                  {q.header || `Question ${i + 1}`}
+                </button>
+              ))}
+            </nav>
+          )}
+          {current && (
+            <div className="as-question" key={current.id}>
+              {questions.length === 1 && current.header && <b>{current.header}</b>}
+              <p>{current.question}</p>
+              {current.multiSelect && <small className="as-question-hint">Choose any that apply</small>}
               <div className="as-choices">
-                {q.options.map((o) => (
+                {current.options.map((o) => (
                   <button
                     key={o.label}
-                    className={answers[q.id] === o.label ? "chosen" : ""}
-                    onClick={() => setAnswers({ ...answers, [q.id]: o.label })}
+                    className={picked[current.id]?.includes(o.label) ? "chosen" : ""}
+                    aria-pressed={!!picked[current.id]?.includes(o.label)}
+                    onClick={() => pick(current, o.label)}
                   >
                     {o.label}
                     {o.description && <small>{o.description}</small>}
                   </button>
                 ))}
               </div>
-              {(q.other || !q.options.length) && (
+              {(current.other || !current.options.length) && (
                 <input
-                  type={q.secret ? "password" : "text"}
-                  placeholder={q.options.length ? "Something else…" : "Your answer"}
-                  value={q.options.some((o) => o.label === answers[q.id]) ? "" : answers[q.id] || ""}
-                  onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                  type={current.secret ? "password" : "text"}
+                  placeholder={current.options.length ? "Something else…" : "Your answer"}
+                  value={typed[current.id] || ""}
+                  onChange={(e) => {
+                    setTyped({ ...typed, [current.id]: e.target.value });
+                    // One answer per question unless several may be picked.
+                    if (!current.multiSelect) setPicked({ ...picked, [current.id]: [] });
+                  }}
                 />
               )}
             </div>
-          ))}
+          )}
           <div className="as-prompt-actions">
-            <button
-              className="primary"
-              disabled={!!busy || prompt.questions?.some((q) => !answers[q.id]?.trim())}
-              onClick={() =>
-                void act("answer", {
-                  answers: Object.fromEntries((prompt.questions || []).map((q) => [q.id, [answers[q.id]]])),
-                })
-              }
-            >
-              {busy ? <Loader2 size={14} className="spin" /> : "Answer"}
-            </button>
+            {last ? (
+              <button
+                className="primary"
+                disabled={!!busy || questions.some((q) => !answerOf(q.id).length)}
+                onClick={() =>
+                  void act("answer", { answers: Object.fromEntries(questions.map((q) => [q.id, answerOf(q.id)])) })
+                }
+              >
+                {busy ? <Loader2 size={14} className="spin" /> : "Submit"}
+              </button>
+            ) : (
+              <button
+                className="primary"
+                disabled={!current || !answerOf(current.id).length}
+                onClick={() => setPage(at + 1)}
+              >
+                Next
+              </button>
+            )}
           </div>
         </>
       ) : (
@@ -324,6 +470,7 @@ export function ModelPicker({
             <button
               key={e}
               aria-pressed={e === (effort || current.defaultEffort)}
+              title={current.effortNotes?.[e]}
               onClick={() => onPick({ model: current.id, effort: e }, true)}
             >
               {effortLabel(e, agent)}
@@ -370,6 +517,9 @@ export default function AgentSessionView({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const [modes, setModes] = useState<AgentMode[] | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [choice, setChoice] = useState<{ model?: string; effort?: string; mode?: string }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
@@ -401,7 +551,8 @@ export default function AgentSessionView({
           setLoadError("");
           return;
         }
-        setInfo((old) => ({ ...old, ...r.session }));
+        // A question answered elsewhere is simply gone from the new read.
+        setInfo((old) => ({ ...old, asking: undefined, ...r.session }));
         setItems((current) => {
           if (!current || first) return r.items;
           // Keep older pages already loaded; replace the newest page.
@@ -436,7 +587,13 @@ export default function AgentSessionView({
     if (live.items) void load(false);
   }, [live.items, load]);
   useEffect(() => {
-    listModels(peer, agent).then((r) => setModels(r.models), () => {});
+    listModels(peer, agent).then(
+      (r) => {
+        setModels(r.models);
+        if (r.modes?.length) setModes(r.modes);
+      },
+      () => {},
+    );
   }, [peer.url, peer.token, agent]);
   useEffect(() => {
     const el = scroller.current;
@@ -486,27 +643,52 @@ export default function AgentSessionView({
   // Where the session lives decides what sending does; writing is never
   // switched off, the note just says what will happen.
   const elsewhere = agent === "claude" && info.held !== "reach" ? info.live?.where : undefined;
+  // Reach replies through the claude command on the Mac (Claude Code's CLI),
+  // which signs in on its own: the Claude app's sign-in isn't shared with it.
+  const claudeSignedOut = !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
   const blocked =
     agent === "claude"
-      ? elsewhere === "claude-app"
-        ? info.status === "running"
-          ? "Claude is working on this in the Claude app. What you send goes next, in this same session."
-          : "Same session as in the Claude app: what you send here is there too."
-        : elsewhere === "terminal"
-          ? "Running in a terminal on your Mac. Reply there or from the Terminal tab."
-          : elsewhere
-            ? "Open in another Claude Code process on your Mac."
-            : claudeHealth && !claudeHealth.signedIn
-              ? "Claude Code is signed out on your Mac. Sign in to reply from here."
-              : ""
+      ? elsewhere === "terminal"
+        ? "Running in a terminal on your Mac. Reply there or from the Terminal tab."
+        : elsewhere && elsewhere !== "claude-app"
+          ? "Open in another Claude Code process on your Mac."
+          : claudeSignedOut
+            ? "Sign in to Claude Code on your Mac to reply from here. It's the claude command, which signs in separately from the Claude app."
+            : elsewhere === "claude-app" && info.status === "waiting"
+              ? "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session."
+              : elsewhere === "claude-app" && info.status === "running"
+                ? "Claude is working on this in the Claude app. What you send goes next, in this same session."
+                : ""
       : codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? "Codex is signed out on your Mac."
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
+  // Spends the account's rate-limit reset, only after the person confirms.
+  const useReset = async () => {
+    setResetting(true);
+    try {
+      const { outcome } = await resetUsage(peer, "codex");
+      setNote(
+        outcome === "reset"
+          ? "Your Codex usage is reset."
+          : outcome === "nothingToReset"
+            ? "There's nothing to reset right now."
+            : outcome === "noCredit"
+              ? "There's no reset left on your account."
+              : "This reset was already used.",
+      );
+      setConfirmReset(false);
+      onSignedIn();
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setResetting(false);
+    }
+  };
   // Signing in is what's missing (not an app or terminal holding the session).
   const needsSignIn =
     agent === "claude"
-      ? !elsewhere && !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn
+      ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
       : !!codexHealth && codexHealth.installed && !codexHealth.signedIn;
 
   const modelId = choice.model || info.model || null;
@@ -534,8 +716,17 @@ export default function AgentSessionView({
     });
   const uploading = attachments.some((a) => !a.id && !a.error);
   const canSend = !sending && !uploading && (text.trim().length > 0 || attachments.some((a) => a.id));
-  // Permission modes the session can switch to, in the agent's own words.
-  const modeChoices = agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only"] : ["auto", "manual", "acceptEdits", "plan"];
+  // Permission modes the session can switch to: what the agent offers now, in
+  // its own words (until that arrives, the ones it always has).
+  const modeChoices = modesFor(
+    modes ||
+      (agent === "codex"
+        ? CODEX_MODE_CHOICES.filter((m) => m.id !== "custom")
+        : ["manual", "acceptEdits", "plan", "auto"].map((id) => ({ id, label: modeLabel("claude", id) }))),
+    models.find((m) => m.id === modelId),
+  );
+  const modeName = (id: string | null) =>
+    !id ? "" : modeChoices.find((m) => m.id === id || (id === "default" && m.id === "manual"))?.label || modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
   // Claude Code's slash commands while the message starts with "/".
   const slash = agent === "claude" && /^\/[\w:-]*$/.test(text) ? text.slice(1).toLowerCase() : null;
@@ -690,6 +881,8 @@ export default function AgentSessionView({
           </button>
         )}
         {loadError && <p className="as-note">{loadError}</p>}
+        {/* When the chat began, above its first message, as the Codex app shows it. */}
+        {agent === "codex" && !before && items?.[0]?.at ? <p className="as-divider as-when">{whenLabel(items[0].at)}</p> : null}
         {!items ? (
           <p className="as-note">
             <Loader2 size={15} className="spin" /> Opening…
@@ -713,21 +906,7 @@ export default function AgentSessionView({
                 Context compacted
               </div>
             ) : b.item.kind === "error" ? (
-              agent === "codex" ? (
-                <p key={b.item.id} className="as-error codex">
-                  <Info size={15} /> <span>{b.item.text}</span>
-                </p>
-              ) : (
-                <section key={b.item.id} className="as-error claude">
-                  <header>
-                    <TriangleAlert size={15} />{" "}
-                    {b.item.detail
-                      ? b.item.detail.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())
-                      : "Error"}
-                  </header>
-                  <p>{b.item.text}</p>
-                </section>
-              )
+              <ErrorNote key={b.item.id} agent={agent} text={b.item.text} detail={b.item.detail} />
             ) : b.item.kind === "notice" ? (
               <p key={b.item.id} className="as-divider">
                 {b.item.text}
@@ -754,17 +933,21 @@ export default function AgentSessionView({
             <AgentMarkdown text={live.streaming} />
           </div>
         )}
-        {live.error && !working && (
-          <p className="as-error codex">
-            <Info size={15} /> <span>{live.error}</span>
-          </p>
+        {/* Until the transcript has the turn's error, the live state shows it. */}
+        {live.error && !working && !items?.some((i) => i.kind === "error" && i.text === live.error) && (
+          <ErrorNote agent={agent} text={live.error} />
         )}
         {working && !live.prompts.length && (
           <div className={`as-working ${agent}`} role="status">
             {agent === "claude" ? <ClaudeSpark logos={logos} size={17} spinning /> : null}
+            {/* Claude Code puts the time first: "1h 6m 42s · Almost done thinking…". */}
+            {agent === "claude" && elapsed > 0 && <small>{elapsedLabel} ·</small>}
             <span className={agent === "codex" ? "as-shimmer" : ""}>{activity}</span>
-            {elapsed > 0 && <small>{elapsedLabel}</small>}
+            {agent === "codex" && elapsed > 0 && <small>{elapsedLabel}</small>}
           </div>
+        )}
+        {info.asking && !live.prompts.length && (
+          <AskingCard asking={info.asking} logos={logos} where={info.live?.where === "terminal" ? "terminal" : "Claude app"} />
         )}
         {live.prompts.map((p) => (
           <PromptCard
@@ -784,37 +967,59 @@ export default function AgentSessionView({
       </div>
       <footer className="as-composer">
         {outOfUsage && (
-          <div className="as-banner">
-            <strong>You're out of Codex usage</strong>
-            <span>
-              {codexHealth?.resetsAt
-                ? `Your rate limit resets on ${new Date(codexHealth.resetsAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}.`
-                : "Your rate limit resets soon."}
-            </span>
+          <div className="as-banner codex-usage">
+            <div>
+              <strong>You’re out of Codex usage</strong>
+              <span>
+                {codexHealth?.resetsAt ? `Your rate limit resets on ${resetTime(codexHealth.resetsAt, false)}. ` : ""}
+                {codexHealth?.resetCredits ? "Upgrade or use one of your rate limit resets now." : "Upgrade to keep going."}
+              </span>
+            </div>
+            {confirmReset ? (
+              <div className="as-banner-actions">
+                <span>Use your rate limit reset now? It can’t be undone.</span>
+                <button className="as-banner-btn" onClick={() => setConfirmReset(false)}>
+                  Cancel
+                </button>
+                <button className="as-banner-btn primary" disabled={resetting} onClick={() => void useReset()}>
+                  {resetting ? <Loader2 size={14} className="spin" /> : "Reset usage"}
+                </button>
+              </div>
+            ) : (
+              <div className="as-banner-actions">
+                {!!codexHealth?.resetCredits && (
+                  <button className="as-banner-btn" onClick={() => setConfirmReset(true)}>
+                    Reset usage
+                  </button>
+                )}
+                <a
+                  className="as-banner-btn primary"
+                  href={usageLink("codex", { detail: "usageLimitExceeded" })?.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Sparkle size={14} fill="currentColor" /> Upgrade
+                </a>
+              </div>
+            )}
           </div>
         )}
-        {(problem || note || blocked || heldByApp) && (
-          <p className={`as-hint ${problem ? "bad" : ""}`}>
-            {problem ||
-              blocked ||
-              note ||
-              "This chat is open in the Codex app on your Mac. Your message goes there, with the app's settings; approvals show on your Mac."}
-          </p>
-        )}
+        {(problem || note || blocked) && <p className={`as-hint ${problem ? "bad" : ""}`}>{problem || blocked || note}</p>}
         {needsSignIn && <AgentSignIn peer={peer} agent={agent} onDone={onSignedIn} />}
         {choosingMode && (
           <div className={`as-picker ${agent}`} role="group" aria-label="Permissions">
             <div className="as-picker-row">
               {modeChoices.map((m) => (
                 <button
-                  key={m}
-                  aria-pressed={m === modeShown}
+                  key={m.id}
+                  aria-pressed={m.id === modeShown || (modeShown === "default" && m.id === "manual")}
+                  title={m.note || undefined}
                   onClick={() => {
-                    setChoice({ ...choice, mode: m });
+                    setChoice({ ...choice, mode: m.id });
                     setChoosingMode(false);
                   }}
                 >
-                  {modeLabel(agent, m)}
+                  {m.label}
                 </button>
               ))}
             </div>
@@ -851,6 +1056,7 @@ export default function AgentSessionView({
             }}
           />
         )}
+        <div className="as-box">
         <div className="as-field">
           {attachments.length > 0 && (
             <div className="as-attachments">
@@ -916,7 +1122,7 @@ export default function AgentSessionView({
             }}
           >
             {agent === "codex" && <ShieldCheck size={14} />}
-            {modeShown ? modeLabel(agent, modeShown) : "Default"}
+            {modeShown ? modeName(modeShown) : "Default"}
           </button>
           <span className="as-spacer" />
           {modelLabel && (
@@ -948,6 +1154,7 @@ export default function AgentSessionView({
               <Square size={14} />
             </button>
           )}
+        </div>
         </div>
       </footer>
     </div>

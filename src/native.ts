@@ -12,6 +12,7 @@ const QRScanner = registerPlugin<{ scan(): Promise<{ value: string }> }>(
 );
 
 import { parsePairLink, type PairLink } from "./connection-link";
+import { homeOrigin } from "./home-origin";
 export { parsePairLink, type PairLink } from "./connection-link";
 
 export class ScanCancelled extends Error {}
@@ -48,7 +49,7 @@ export function onPairLink(handle: (link: PairLink) => void) {
         ["localhost", "127.0.0.1"].includes(location.hostname))
     ) {
       handle({
-        url: location.origin,
+        url: homeOrigin(),
         code,
         name: (fragment.get("name") || "your computer").slice(0, 80),
       });

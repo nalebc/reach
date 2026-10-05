@@ -210,6 +210,7 @@ test("the merged list sorts, marks live sessions and survives one agent failing"
 test("session routes are owner-only", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-sessions-"));
   const opened = [];
+  const resets = [];
   const reach = await createReach({
     roots: [root],
     dataDir: path.join(root, ".reach"),
@@ -218,6 +219,7 @@ test("session routes are owner-only", async () => {
       health: async () => [{ agent: "codex", signedIn: true }],
       read: async (agent, id) => ({ session: { agent, id }, items: [], before: null }),
       openInApp: async (agent, id) => (opened.push([agent, id]), { opened: agent }),
+      resetUsage: async (agent) => (resets.push(agent), { outcome: "reset" }),
     },
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -238,6 +240,19 @@ test("session routes are owner-only", async () => {
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, agent.token, "POST")).status, 403);
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, owner.token, "POST")).status, 200);
     assert.deepEqual(opened, [["codex", ID]]);
+    // Spending a rate-limit reset: the owner only.
+    const reset = (token) =>
+      fetch(`${url}/api/sessions/usage/reset`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: "codex" }),
+      });
+    assert.equal((await reset(agent.token)).status, 403);
+    assert.deepEqual(resets, []);
+    const spent = await reset(owner.token);
+    assert.equal(spent.status, 200);
+    assert.deepEqual(await spent.json(), { outcome: "reset" });
+    assert.deepEqual(resets, ["codex"]);
   } finally {
     reach.server.close();
     await reach.close?.();
@@ -254,16 +269,67 @@ test("Claude Code's own registry says which process holds a session and whether 
     await write(12, { sessionId: "app-idle", entrypoint: "claude-desktop", kind: "interactive", status: "idle" });
     await write(13, { sessionId: "term", entrypoint: "cli", kind: "interactive", status: "idle" });
     await write(14, { sessionId: "gone", entrypoint: "cli", kind: "interactive", status: "idle" });
+    await write(16, { sessionId: "app-asking", entrypoint: "claude-desktop", kind: "interactive", status: "waiting", waitingFor: "input needed" });
+    await write(17, { sessionId: "term-allow", entrypoint: "cli", kind: "interactive", status: "waiting", waitingFor: "permission prompt" });
     await fs.writeFile(path.join(dir, "15.json"), "{ half written");
     await fs.writeFile(path.join(dir, "11.abc.key"), "secret");
     const found = readSessionRegistry({ dir, alive: (pid) => pid !== 14 });
     assert.deepEqual(Object.fromEntries(found), {
-      "app-busy": { where: "claude-app", pid: 11, tty: null, exact: true, busy: true, appSessionId: "local_1" },
-      "app-idle": { where: "claude-app", pid: 12, tty: null, exact: true, busy: false },
-      term: { where: "terminal", pid: 13, tty: null, exact: true, busy: false },
+      "app-busy": { where: "claude-app", pid: 11, tty: null, exact: true, busy: true, waiting: null, appSessionId: "local_1" },
+      "app-idle": { where: "claude-app", pid: 12, tty: null, exact: true, busy: false, waiting: null },
+      term: { where: "terminal", pid: 13, tty: null, exact: true, busy: false, waiting: null },
+      // Stopped on the person: a question, or a permission to allow.
+      "app-asking": { where: "claude-app", pid: 16, tty: null, exact: true, busy: false, waiting: "input needed" },
+      "term-allow": { where: "terminal", pid: 17, tty: null, exact: true, busy: false, waiting: "permission prompt" },
     });
     assert.deepEqual([...readSessionRegistry({ dir: path.join(dir, "missing") })], []);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("a question Claude waits on is read from the transcript, with its choices, until it's answered", () => {
+  const base = { sessionId: ID, cwd: "/work/app", entrypoint: "claude-desktop" };
+  const ask = {
+    type: "tool_use",
+    id: "q1",
+    name: "AskUserQuestion",
+    input: {
+      questions: [
+        {
+          question: "Which database?",
+          header: "Database",
+          multiSelect: false,
+          options: [
+            { label: "Postgres (Recommended)", description: "What the app already uses" },
+            { label: "SQLite", description: "One file" },
+          ],
+        },
+      ],
+    },
+  };
+  const lines = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { content: "Set up storage" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [ask] } }),
+  ];
+  const waiting = parseClaudeTranscript(lines.join("\n")).items.at(-1);
+  assert.equal(waiting.status, "running");
+  assert.equal(waiting.text, "Which database?");
+  assert.deepEqual(waiting.questions, [
+    {
+      question: "Which database?",
+      header: "Database",
+      multiSelect: false,
+      options: [
+        { label: "Postgres (Recommended)", description: "What the app already uses" },
+        { label: "SQLite", description: "One file" },
+      ],
+    },
+  ]);
+  lines.push(
+    line({ ...base, type: "user", uuid: "r1", parentUuid: "a1", timestamp: at(3), toolUseResult: {}, message: { content: [{ type: "tool_result", tool_use_id: "q1", content: "Postgres" }] } }),
+  );
+  const answered = parseClaudeTranscript(lines.join("\n")).items.at(-1);
+  assert.equal(answered.status, "completed");
+  assert.equal(answered.questions, undefined);
 });

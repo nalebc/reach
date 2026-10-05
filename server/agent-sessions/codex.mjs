@@ -2,6 +2,7 @@
 // never loads a thread or touches its file (verified); sub-agent threads are
 // not listed by the daemon and stay hidden here too.
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -55,6 +56,8 @@ export function codexSession(thread) {
           : "idle",
     preview: firstLine.slice(0, 200),
     archived: false,
+    // `codex exec` runs: nobody to ask while they run.
+    ...(thread.source === "exec" || thread.originator === "codex_exec" ? { headless: true } : {}),
   };
 }
 
@@ -122,6 +125,35 @@ export const CODEX_MODES = {
   "full-access": { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" },
   custom: {},
 };
+
+// The Codex app's permission menu, built from what Codex offers right now:
+// its permission profiles (only those allowed here) and whether "Approve for
+// me" (the guardian reviewer) is switched on. A profile Codex adds later shows
+// under its own name. Names and notes are the Codex app's.
+const PROFILE_MODES = {
+  ":workspace": [
+    { id: "auto", label: "Ask for approval", note: "Always ask to edit external files and use the internet" },
+    { id: "guardian-approvals", label: "Approve for me", note: "Only ask for actions detected as potentially unsafe", guardian: true },
+  ],
+  ":danger-full-access": [{ id: "full-access", label: "Full access", note: "" }],
+  ":read-only": [{ id: "read-only", label: "Read only", note: "" }],
+};
+const named = (id) => {
+  const words = String(id).replace(/^:/, "").replace(/[-_]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : String(id);
+};
+// The app's order: the workspace's two, full access, read only, then others.
+const ORDER = Object.keys(PROFILE_MODES);
+export function codexModes(profiles = [], { guardian = true } = {}) {
+  const rank = (p) => (ORDER.includes(p.id) ? ORDER.indexOf(p.id) : ORDER.length);
+  const modes = [];
+  for (const p of [...profiles].filter((p) => p?.id && p.allowed !== false).sort((a, b) => rank(a) - rank(b))) {
+    const known = PROFILE_MODES[p.id];
+    if (known) modes.push(...known.filter((m) => guardian || !m.guardian).map(({ guardian: _, ...m }) => m));
+    else modes.push({ id: `profile:${p.id}`, label: named(p.id), note: p.description || "" });
+  }
+  return modes;
+}
 
 // A thread's permissions as the Codex app saved them, named like its menu.
 export function codexMode(p) {
@@ -240,6 +272,17 @@ export function createCodexSessions({
   runningElsewhere = codexRunningElsewhere({ daemon }),
 }) {
   return {
+    // The mode the Codex app's composer is in now; its next message uses it.
+    appMode: () => appState().mode || null,
+    // The Codex app's projects (its sidebar), each with its folders.
+    async projects() {
+      const r = await daemon.rpc("project/list", {});
+      return (r.data || []).map((p) => ({
+        id: p.id,
+        name: p.name || "",
+        roots: (p.roots || []).map((root) => root.path).filter(Boolean),
+      }));
+    },
     async list({ pages = 10 } = {}) {
       const threads = [];
       let cursor = null;
@@ -276,7 +319,9 @@ export function createCodexSessions({
       session.model = thread.model || null;
       session.effort = thread.reasoningEffort || null;
       session.held = held;
-      session.mode = codexMode(appState().threads[id]);
+      // The Codex app's composer shows (and its next message uses) the app's
+      // current mode, not a thread's own; scheduled runs keep theirs apart.
+      session.mode = appState().mode || codexMode(appState().threads[id]);
       // A turn another engine is running reads from its file as
       // "interrupted" with no end time (verified with the Codex app).
       const latest = turns?.data?.[0];
@@ -293,22 +338,37 @@ export function createCodexSessions({
         before: r.nextCursor || null,
       };
     },
-    // Models, and the mode the Codex app starts new chats in.
+    // Models, efforts and permission modes as Codex offers them now, and the
+    // mode the Codex app starts new chats in.
     async models() {
-      const r = await daemon.rpc("model/list", {});
+      const [r, profiles, features] = await Promise.all([
+        daemon.rpc("model/list", {}),
+        daemon.rpc("permissionProfile/list", {}).catch(() => null),
+        daemon.rpc("experimentalFeature/list", {}).catch(() => null),
+      ]);
       const saved = appState().mode;
+      const guardian = (features?.data || []).find((f) => f.name === "guardian_approval");
+      const modes = profiles?.data
+        ? codexModes(profiles.data, { guardian: guardian ? !!guardian.enabled : true })
+        : codexModes([{ id: ":workspace" }, { id: ":danger-full-access" }, { id: ":read-only" }]);
       return {
         models: (r.data || [])
           .filter((m) => !m.hidden)
           .map((m) => ({
             id: m.id,
             name: modelName(m.displayName || m.id),
+            description: m.description || "",
             efforts: (m.supportedReasoningEfforts || []).map((e) => e.reasoningEffort),
+            effortNotes: Object.fromEntries(
+              (m.supportedReasoningEfforts || []).filter((e) => e.description).map((e) => [e.reasoningEffort, e.description]),
+            ),
             defaultEffort: m.defaultReasoningEffort || null,
             images: (m.inputModalities || ["text", "image"]).includes("image"),
             isDefault: !!m.isDefault,
+            speeds: (m.serviceTiers || []).map((t) => ({ id: t.id, name: t.name || t.id, note: t.description || "" })),
           })),
-        mode: Object.hasOwn(CODEX_MODES, saved) ? saved : "auto",
+        modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml" }],
+        mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
       };
     },
     async health() {
@@ -323,7 +383,15 @@ export function createCodexSessions({
         usable: limits ? limits.ordinaryUsageAllowed !== false : true,
         resetsAt: primary?.resetsAt ? primary.resetsAt * 1000 : null,
         usedPercent: primary?.usedPercent ?? null,
+        // Free rate-limit resets the account holds (the app's "Reset usage").
+        resetCredits: limits?.rateLimitResetCredits?.availableCount || 0,
       };
+    },
+    // Spends one rate-limit reset, as the Codex app's "Reset usage" does.
+    // reset | nothingToReset | noCredit | alreadyRedeemed.
+    async resetUsage() {
+      const r = await daemon.rpc("account/rateLimitResetCredit/consume", { idempotencyKey: crypto.randomUUID() });
+      return { outcome: r?.outcome || "reset" };
     },
   };
 }
