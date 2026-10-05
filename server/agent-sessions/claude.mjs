@@ -94,6 +94,8 @@ export function createClaudeSessions({
       mode: appRecord?.permissionMode || null,
       // The transcript ends mid-turn (a prompt or a tool call, no answer yet).
       pending: ["user", "tool"].includes(parsed.items.at(-1)?.role),
+      // The Claude app's own consent card waits on you (claude-transcript.mjs).
+      ...(parsed.items.at(-1)?.consent ? { consent: parsed.items.at(-1).consent } : {}),
     };
   }
   async function locate(id) {

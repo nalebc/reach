@@ -1,45 +1,5 @@
-/* Computer keys docked right above the phone keyboard while typing. */
-.typing-keys {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  padding: 6px;
-  background: #0b1012;
-  border-top: 1px solid #ffffff14;
-  overflow-x: auto;
-  scrollbar-width: none;
-  touch-action: manipulation;
-}
-.typing-keys::-webkit-scrollbar {
-  display: none;
-}
-.typing-keys button {
-  flex: 1 0 auto;
-  min-width: 32px;
-  height: 38px;
-  padding: 0 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 1px solid #ffffff1f;
-  border-radius: 9px;
-  background: #ffffff12;
-  color: #e9f0ec;
-  font: 600 13px system-ui, sans-serif;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.typing-keys button:active {
-  background: #ffffff2e;
-}
-.typing-keys .typing-enter {
-  flex-grow: 2;
-  background: var(--lime, #b9f568);
-  border-color: transparent;
-  color: #0b1012;
-}
-/* While typing on a phone the key row replaces the dock. */
+/* While typing on a phone, the key row (KeyRow, key-row.css) replaces the
+   dock. */
 .simple-screen.screen-typing.screen-expanded:has(> .typing-keys) > .simple-screen-dock {
   display: none;
 }

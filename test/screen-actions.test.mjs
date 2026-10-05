@@ -154,7 +154,7 @@ test("guest invites never preselect a folder", async () => {
   // Folders are chosen per computer, starting with none.
   assert.match(
     invite,
-    /const \[roots, setRoots\] = useState<Record<string, number\[\]>>\(\{\}\);/,
+    /const \[folders, setFolders\] = useState<Record<string, PickedFolder\[\]>>\(\{\}\);/,
   );
   assert.doesNotMatch(invite, /useState<number\[\]>\(\s*device\.roots/);
 });

@@ -16,6 +16,7 @@ import RemoteTyping from "./RemoteTyping";
 import TapToType from "./TapToType";
 import AppSurface from "./AppSurface";
 import AppLogo from "./AppLogo";
+import { PausedCover } from "./PauseControl";
 import { useViewportBox } from "./useViewportBox";
 import { useImmersiveChrome } from "./useImmersiveChrome";
 import {
@@ -52,6 +53,9 @@ export default function AppThread({
   onReopen,
   onUpdate,
   onStale,
+  paused = false,
+  owner = false,
+  toast,
 }: {
   peer: Peer;
   thread: Thread;
@@ -64,6 +68,11 @@ export default function AppThread({
   onUpdate: (thread: Thread) => void;
   // The stream ended for good (the app went back or quit): refresh threads.
   onStale?: () => void;
+  // Reach is paused on the Mac: the app waits there until Resume, then
+  // comes back here by itself.
+  paused?: boolean;
+  owner?: boolean;
+  toast?: (message: string) => void;
 }) {
   const shell = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(!document.hidden);
@@ -353,7 +362,9 @@ export default function AppThread({
   const typing = !!typingTarget && usable;
   const shot = snapshotOf(thread.id);
   const closed = thread.state === "closed";
-  const gone = !running && !closed && thread.state !== "starting";
+  // Held by a pause that has ended: on its way back from the Mac.
+  const returning = !!thread.held && !paused;
+  const gone = !running && !closed && thread.state !== "starting" && !returning;
   // Shown on open and after any touch, then faded; kept up while asking.
   const chrome = useImmersiveChrome(
     shell,
@@ -391,37 +402,50 @@ export default function AppThread({
         {(!stream.ready || !running) && (
           <div className="app-thread-cover">
             {shot && <img src={shot} alt="" />}
-            <div className="app-thread-status" role="status">
-              {closed || gone ? (
-                <>
-                  <p>
-                    {closed
-                      ? `${thread.name}'s window was closed on the Mac.`
-                      : `${thread.name} is back on the Mac.`}
-                  </p>
-                  <button
-                    className="button primary"
-                    onClick={() => onReopen(thread)}
-                  >
-                    <RotateCcw size={16} /> Open again
-                  </button>
-                  <button className="button secondary" onClick={leave}>
-                    Back to Reach
-                  </button>
-                </>
-              ) : (
-                <>
-                  <AppLogo
-                    peer={peer}
-                    appId={thread.appId}
-                    name={thread.name}
-                    size={64}
-                  />
-                  <Loader2 className="spin" size={20} />
-                  <span>{stream.error || `Opening ${thread.name}…`}</span>
-                </>
-              )}
-            </div>
+            {paused && !running ? (
+              <PausedCover
+                peer={peer}
+                platform="darwin"
+                owner={owner}
+                toast={toast}
+              >
+                <button className="button secondary small" onClick={leave}>
+                  Back to Reach
+                </button>
+              </PausedCover>
+            ) : (
+              <div className="app-thread-status" role="status">
+                {closed || gone ? (
+                  <>
+                    <p>
+                      {closed
+                        ? `${thread.name}'s window was closed on the Mac.`
+                        : `${thread.name} is back on the Mac.`}
+                    </p>
+                    <button
+                      className="button primary"
+                      onClick={() => onReopen(thread)}
+                    >
+                      <RotateCcw size={16} /> Open again
+                    </button>
+                    <button className="button secondary" onClick={leave}>
+                      Back to Reach
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <AppLogo
+                      peer={peer}
+                      appId={thread.appId}
+                      name={thread.name}
+                      size={64}
+                    />
+                    <Loader2 className="spin" size={20} />
+                    <span>{stream.error || `Opening ${thread.name}…`}</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
         {(error || notice) && running && (

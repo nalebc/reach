@@ -4,8 +4,8 @@
   --panel: #191d20;
   --border: #30373b;
   --muted: #a0a9ac;
-  --lime: #c4f0d0;
-  --lime-ink: #162a21;
+  --lime: #b9efd4;
+  --lime-ink: #16362a;
   --radius: 18px;
   color: #edf0ee;
   background: var(--bg);
@@ -1695,6 +1695,9 @@ select:focus {
   width: min(480px, calc(100vw - 28px));
   max-height: min(740px, calc(100dvh - 40px));
   box-shadow: 0 24px 100px #0009;
+  /* A tall popup scrolls itself; the swipe never reaches the page. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .screen-popup::backdrop {
   background: #02070888;
@@ -1702,6 +1705,10 @@ select:focus {
 }
 .screen-popup-body {
   padding: 22px;
+}
+/* Shown only on bottom sheets (workspace-pages.css). */
+.sheet-handle {
+  display: none;
 }
 .screen-popup header {
   display: flex;

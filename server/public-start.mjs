@@ -5,7 +5,8 @@ import http from "node:http";
 // The one public part of Reach: the start page a phone opens before it is on
 // the tailnet, through Tailscale Funnel. It serves only fixed files that hold
 // no data: the start page, the app's built code and the browser tailnet
-// client. No API, no WebSockets, no proxying; Reach itself stays private.
+// client, and the agent runtime. No API, no WebSockets, no proxying; Reach
+// itself stays private.
 // With the Tailscale app on, the start page sends the phone straight to the
 // private address; without it, the phone signs in to Tailscale in the browser.
 
@@ -16,6 +17,7 @@ const accepts = (req, encoding) =>
 const TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".json": "application/json",
@@ -145,7 +147,7 @@ export function createPublicStart({
       return res.end();
     }
     const url = (req.url || "/").split("?")[0];
-    if (url === "/" || url === "/guest")
+    if (url === "/" || url === "/guest" || url === "/agent")
       return send(req, res, path.join(dist, "start.html"), "no-cache");
     if (url === "/reach-start.json") {
       const body = config();
@@ -170,7 +172,15 @@ export function createPublicStart({
         path.join(tailnetDir, url.slice(9)),
         "public, max-age=31536000, immutable",
       );
-    if (["/favicon.svg", "/fonts.css", "/manifest.webmanifest"].includes(url))
+    // Reach for agents: an invited agent downloads it to join (no secrets).
+    if (
+      [
+        "/favicon.svg",
+        "/fonts.css",
+        "/manifest.webmanifest",
+        "/agent.mjs",
+      ].includes(url)
+    )
       return send(req, res, path.join(dist, url.slice(1)), "no-cache");
     notFound(res);
   });

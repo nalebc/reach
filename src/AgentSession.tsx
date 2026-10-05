@@ -23,7 +23,8 @@ import {
 import type { Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { useViewportBox } from "./useViewportBox";
-import AgentSignIn from "./AgentSignIn";
+import AgentAccess from "./AgentAccess";
+import { useAppIcon } from "./app-icons";
 import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
@@ -258,12 +259,75 @@ function AskingCard({ asking, logos, where }: { asking: AgentAsking; logos: Agen
             <p className="as-asked">{q.options.map((o) => o.label).join(" · ")}</p>
           </div>
         ))
+      ) : asking.kind === "consent" ? (
+        <>
+          <p>{asking.title}</p>
+          {asking.reason && <p className="as-reason">{asking.reason}</p>}
+          {!!asking.options?.length && <p className="as-asked">{asking.options.join(" · ")}</p>}
+        </>
       ) : asking.command ? (
         <pre className="as-prompt-command">{asking.text}</pre>
       ) : (
         <p>{asking.text}</p>
       )}
     </section>
+  );
+}
+
+// The Claude app's own consent card (letting Claude use apps), drawn as the
+// app draws it and answered here: Reach presses the same button in the app.
+function ConsentCard({
+  asking,
+  peer,
+  onAnswer,
+}: {
+  asking: Extract<AgentAsking, { kind: "consent" }>;
+  peer: Peer;
+  onAnswer: (decision: "deny" | "allow") => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<"deny" | "allow" | null>(null);
+  const [deny = "Deny", allow = "Allow for this session"] = asking.options || [];
+  const act = async (decision: "deny" | "allow") => {
+    setBusy(decision);
+    try {
+      await onAnswer(decision);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="as-consent" aria-live="polite">
+      <strong>{asking.title}</strong>
+      {asking.reason && <p>{asking.reason}</p>}
+      {asking.about === "apps" && (
+        <small>Claude will work in these apps in the background while you keep using your Mac.</small>
+      )}
+      {!!asking.apps?.length && (
+        <ul>
+          {asking.apps.map((app) => (
+            <ConsentApp key={app.name} peer={peer} app={app} />
+          ))}
+        </ul>
+      )}
+      <div className="as-consent-actions">
+        <button disabled={!!busy} onClick={() => void act("deny")}>
+          {busy === "deny" ? <Loader2 size={14} className="spin" /> : deny}
+        </button>
+        <button className="primary" disabled={!!busy} onClick={() => void act("allow")}>
+          {busy === "allow" ? <Loader2 size={14} className="spin" /> : allow}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ConsentApp({ peer, app }: { peer: Peer; app: { name: string; appId?: string } }) {
+  const icon = useAppIcon(peer, app.appId, true);
+  return (
+    <li>
+      {icon ? <img src={icon} alt="" /> : <span className="as-consent-noicon" aria-hidden="true" />}
+      <span>{app.name}</span>
+    </li>
   );
 }
 
@@ -513,7 +577,8 @@ export default function AgentSessionView({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Sent but not yet in the transcript; `seen` counts the same text already there.
-  const [pending, setPending] = useState<{ id: string; text: string; images: number; seen: number }[]>([]);
+  // messageId: where it waits in the Mac's outbox, when it waits there.
+  const [pending, setPending] = useState<{ id: string; text: string; images: number; seen: number; messageId?: string }[]>([]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
@@ -653,7 +718,7 @@ export default function AgentSessionView({
         : elsewhere && elsewhere !== "claude-app"
           ? "Open in another Claude Code process on your Mac."
           : claudeSignedOut
-            ? "Sign in to Claude Code on your Mac to reply from here. It's the claude command, which signs in separately from the Claude app."
+            ? ""
             : elsewhere === "claude-app" && info.status === "waiting"
               ? "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session."
               : elsewhere === "claude-app" && info.status === "running"
@@ -756,6 +821,8 @@ export default function AgentSessionView({
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
       });
       for (const a of ready) URL.revokeObjectURL(a.url);
+      // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
+      if (r.messageId) setPending((list) => list.map((p) => (p === message ? { ...p, messageId: r.messageId } : p)));
       setChoice({});
       setNote(
         r.queued
@@ -918,14 +985,30 @@ export default function AgentSessionView({
             ),
           )
         )}
-        {pending.map((p) => (
-          <div key={p.id} className="as-user pending">
-            <AgentMarkdown text={p.text} />
-            {p.images ? (
+        {pending
+          .filter((p) => !p.messageId || !live.outbox?.some((m) => m.id === p.messageId))
+          .map((p) => (
+            <div key={p.id} className="as-user pending">
+              <AgentMarkdown text={p.text} />
+              {p.images ? (
+                <span className="as-tag">
+                  {p.images} image{p.images === 1 ? "" : "s"}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        {/* Waiting on the Mac for their turn: kept there, so a reload or a restart loses none. */}
+        {(live.outbox || []).map((m) => (
+          <div key={m.id} className="as-user pending queued">
+            <AgentMarkdown text={m.text} />
+            {m.images ? (
               <span className="as-tag">
-                {p.images} image{p.images === 1 ? "" : "s"}
+                {m.images} image{m.images === 1 ? "" : "s"}
               </span>
             ) : null}
+            <span className={`as-tag ${m.error ? "problem" : ""}`}>
+              {m.error ? `Not sent yet: ${m.error}` : "Sends when Claude finishes"}
+            </span>
           </div>
         ))}
         {live.streaming && (
@@ -947,7 +1030,24 @@ export default function AgentSessionView({
           </div>
         )}
         {info.asking && !live.prompts.length && (
-          <AskingCard asking={info.asking} logos={logos} where={info.live?.where === "terminal" ? "terminal" : "Claude app"} />
+          info.asking.kind === "consent" && info.asking.id ? (
+            <ConsentCard
+              asking={info.asking}
+              peer={peer}
+              onAnswer={async (decision) => {
+                const asked = info.asking;
+                if (asked?.kind !== "consent" || !asked.id) return;
+                try {
+                  await answerPrompt(peer, initial, asked.id, { decision });
+                  setInfo((old) => ({ ...old, asking: undefined }));
+                } catch (e) {
+                  setProblem((e as Error).message);
+                }
+              }}
+            />
+          ) : (
+            <AskingCard asking={info.asking} logos={logos} where={info.live?.where === "terminal" ? "terminal" : "Claude app"} />
+          )
         )}
         {live.prompts.map((p) => (
           <PromptCard
@@ -1005,7 +1105,15 @@ export default function AgentSessionView({
           </div>
         )}
         {(problem || note || blocked) && <p className={`as-hint ${problem ? "bad" : ""}`}>{problem || blocked || note}</p>}
-        {needsSignIn && <AgentSignIn peer={peer} agent={agent} onDone={onSignedIn} />}
+        {needsSignIn && (
+          <AgentAccess
+            peer={peer}
+            agent={agent}
+            health={agent === "claude" ? claudeHealth : codexHealth}
+            logos={logos}
+            onSignedIn={onSignedIn}
+          />
+        )}
         {choosingMode && (
           <div className={`as-picker ${agent}`} role="group" aria-label="Permissions">
             <div className="as-picker-row">

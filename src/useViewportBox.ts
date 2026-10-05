@@ -14,11 +14,16 @@ export function useViewportBox(
     const saved = body.style.cssText;
     const x = window.scrollX,
       y = window.scrollY;
+    // iOS Safari draws a fixed element shifted by however far the page was
+    // scrolled once the page underneath is frozen (a chat opened from a list
+    // scrolled down showed up half way down the screen, its composer off it).
+    // Freeze the page from its top instead; it goes back where it was after.
+    if (x || y) window.scrollTo({ left: 0, top: 0, behavior: "instant" });
     // Stop the page underneath from scrolling when the keyboard opens.
     Object.assign(body.style, {
       position: "fixed",
-      top: `${-y}px`,
-      left: `${-x}px`,
+      top: "0px",
+      left: "0px",
       width: "100%",
       overflow: "hidden",
     });

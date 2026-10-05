@@ -202,7 +202,10 @@ export function createClaudeHost({
       proc.stdin.end();
     } catch {}
     setTimeout(() => proc.exitCode === null && proc.kill(), 3000).unref?.();
-    for (const listener of released) listener(s.id);
+    // wrote: Reach added to the session's transcript while it held it.
+    const wrote = !!s.wrote;
+    s.wrote = false;
+    for (const listener of released) listener(s.id, { wrote });
   };
 
   function handle(s, m) {
@@ -353,6 +356,7 @@ export function createClaudeHost({
   function turn(s, input) {
     write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id });
     s.turns++;
+    s.wrote = true;
     s.status = s.status === "waiting" ? "waiting" : "running";
     s.error = null;
     clearTimeout(s.idle);
@@ -361,7 +365,8 @@ export function createClaudeHost({
 
   return {
     drives: (id) => !!sessions.get(id)?.proc,
-    // Called with a session id each time Reach lets go of its process.
+    // Called with a session id (and whether Reach wrote to it) each time
+    // Reach lets go of its process.
     onRelease(listener) {
       released.add(listener);
     },

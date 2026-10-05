@@ -12,6 +12,7 @@ import {
   useAppThreads,
   type AppThread,
 } from "./app-threads";
+import { pausedIn } from "./pause";
 import "./apps.css";
 
 // Loaded when an app is first opened on the phone; the grid stays light.
@@ -84,6 +85,11 @@ export default function Apps({
   // On a Mac with screen viewing on, apps open on the phone, each in its own
   // hidden, phone-shaped display. Elsewhere they open on the computer.
   const onPhone = !!screen && device.platform === "darwin";
+  // Paused on the Mac: apps wait there and come back on Resume.
+  const paused = pausedIn(changes, device);
+  const owner =
+    !device.access ||
+    (device.access.scopes.includes("admin") && device.access.kind !== "guest");
   const {
     threads,
     refresh: refreshThreads,
@@ -119,7 +125,8 @@ export default function Apps({
     }
   };
   const resume = async (thread: AppThread) => {
-    if (thread.state === "running") return setOpenId(thread.id);
+    if (thread.state === "running" || thread.held || paused)
+      return setOpenId(thread.id);
     const app = apps.find((a) => a.id === thread.appId) || {
       id: thread.appId,
       name: thread.name,
@@ -372,9 +379,11 @@ export default function Apps({
                         <span className="apps-running-state">
                           {t.state === "running"
                             ? "Open"
-                            : t.state === "starting"
+                            : t.state === "starting" || (t.held && !paused)
                               ? "Opening…"
-                              : "Tap to reopen"}
+                              : t.held || paused
+                                ? "Paused"
+                                : "Tap to reopen"}
                         </span>
                       </button>
                       {confirmQuit?.id === t.id && (
@@ -446,6 +455,9 @@ export default function Apps({
             onReopen={(t) => void resume({ ...t, state: "paused" })}
             onUpdate={upsert}
             onStale={() => void refreshThreads()}
+            paused={paused}
+            owner={owner}
+            toast={toast}
           />
         </Suspense>
       )}

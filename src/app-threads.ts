@@ -9,6 +9,8 @@ export type AppThread = {
   appId: string;
   name: string;
   state: "starting" | "running" | "paused" | "closed";
+  // Held by a pause on the Mac: comes back to the phone on Resume.
+  held?: boolean;
   createdAt: string;
   display?: string;
   region?: Region;

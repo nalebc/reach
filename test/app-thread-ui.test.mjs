@@ -240,6 +240,13 @@ test("a tap clicks the same spot on the Mac, and a text field opens the phone ke
     1,
   );
   assert.equal(dom.document.querySelectorAll(".typing-keys").length, 1);
+  // The terminal's key row, with ⌘ for the Mac.
+  assert.deepEqual(
+    [...dom.document.querySelectorAll(".typing-keys.key-row button")].map(
+      (b) => b.getAttribute("aria-label") || b.textContent.trim(),
+    ),
+    ["esc", "tab", "⌘", "Left", "Up", "Down", "Right", "Enter"],
+  );
   await typeInto(dom.document.querySelector(".remote-keyboard-sink"), "hi");
   assert.deepEqual(computer.actions.at(-1), {
     type: "type-edit",

@@ -1,3 +1,4 @@
+import { noteBuild } from "./build-reload";
 import { useEffect, useState } from "react";
 import type { Peer } from "./api";
 export type ConnectedDevice = {
@@ -75,6 +76,8 @@ export function useFleetConnections(peers: Peer[]) {
               return;
             clearTimeout(timeout);
             attempts = 0;
+            // The Mac that served this page says which interface it serves now.
+            if (new URL(peer.url).origin === location.origin) noteBuild(value.changes?.build);
             update(
               "connected",
               value.devices.filter(

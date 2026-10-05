@@ -52,6 +52,7 @@ import "./atmosphere.css";
 import "./workspace.css";
 import "./identity.css";
 import "./workspace-pages.css";
+import "./app-style.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ScreenBoundary>

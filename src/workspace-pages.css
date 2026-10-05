@@ -595,14 +595,25 @@
   .workspace-launcher .screen-popup-body {
     padding: 24px 20px max(26px, env(safe-area-inset-bottom));
   }
-  .workspace-launcher .screen-popup-body::before {
+  /* The grab handle (ScreenPopup): a wide, easy target around a small bar. */
+  .workspace-launcher [data-sheet-grab] {
+    touch-action: none;
+  }
+  .workspace-launcher .sheet-handle {
+    display: block;
+    height: 30px;
+    margin: -24px -20px 8px;
+    touch-action: none;
+    cursor: grab;
+  }
+  .workspace-launcher .sheet-handle::after {
     content: "";
     display: block;
-    width: 32px;
-    height: 4px;
-    border-radius: 4px;
-    background: #78927d45;
-    margin: -13px auto 22px;
+    width: 36px;
+    height: 5px;
+    margin: 11px auto 0;
+    border-radius: 5px;
+    background: #78927d55;
   }
   .codex-workspace .chat-layout {
     display: block;

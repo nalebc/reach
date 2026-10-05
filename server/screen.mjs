@@ -1,11 +1,18 @@
 import { fail } from "./core.mjs";
 
+// Paused (the person at the computer has it back): its screen and input
+// aren't lent to any phone until Resume.
+export const pausedMessage = (platform = process.platform) =>
+  `Reach is paused on this ${platform === "darwin" ? "Mac" : "computer"}.`;
+
 // Control is a short-lived grant for one paired browser, never a saved setting.
 export class ScreenControl {
   constructor(now = Date.now) {
     this.now = now;
   }
   lease = null;
+  // While paused nobody gets control, renewals included.
+  paused = false;
   acquire(client, enabled) {
     if (
       !client.scopes.includes("admin") &&
@@ -14,6 +21,7 @@ export class ScreenControl {
       throw fail(403, "Only a paired person can enable screen control.");
     if (typeof enabled !== "boolean")
       throw fail(400, "Send enabled as true or false.");
+    if (enabled && this.paused) throw fail(423, pausedMessage());
     if (!enabled) {
       if (this.lease?.clientId === client.id) this.lease = null;
       return { enabled: false };
@@ -38,6 +46,7 @@ export class ScreenControl {
     return { enabled: true, expiresAt: this.lease.expiresAt };
   }
   check(client) {
+    if (this.paused) throw fail(423, pausedMessage());
     if (
       !this.lease ||
       this.lease.clientId !== client.id ||

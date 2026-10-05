@@ -23,6 +23,7 @@ function fixture() {
   fs.writeFileSync(path.join(dist, "start.html"), "<!doctype html>start");
   fs.writeFileSync(path.join(dist, "index.html"), "<!doctype html>app");
   fs.writeFileSync(path.join(dist, "favicon.svg"), "<svg/>");
+  fs.writeFileSync(path.join(dist, "agent.mjs"), "// reach for agents");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js"), "console.log(1)");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js.br"), "BR");
   fs.writeFileSync(path.join(tailnet, "reach-tailnet.1234.wasm"), "WASM");
@@ -92,7 +93,8 @@ async function serve(t) {
 
 test("serves the start page, its config and the browser client, nothing else", async (t) => {
   const { get } = await serve(t);
-  for (const p of ["/", "/guest", "/?pair=1"]) {
+  // (/agent: an agent's link opened in a browser only says what it's for.)
+  for (const p of ["/", "/guest", "/agent", "/?pair=1"]) {
     const r = await get(p);
     assert.equal(r.status, 200, p);
     assert.equal(r.body, "<!doctype html>start");
@@ -127,6 +129,12 @@ test("serves the start page, its config and the browser client, nothing else", a
   assert.equal(plain.body, "console.log(1)");
   assert.equal(plain.headers["content-encoding"], undefined);
   assert.equal((await get("/favicon.svg")).status, 200);
+  // What an invited agent downloads and runs: always the current one.
+  const agent = await get("/agent.mjs");
+  assert.equal(agent.status, 200);
+  assert.equal(agent.body, "// reach for agents");
+  assert.equal(agent.headers["content-type"], "text/javascript; charset=utf-8");
+  assert.equal(agent.headers["cache-control"], "no-cache");
 });
 
 test("refuses the API, WebSockets, other methods, other hosts and path tricks", async (t) => {

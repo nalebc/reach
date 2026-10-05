@@ -62,11 +62,11 @@
   color: var(--muted, #93a096);
 }
 .invite-card.on {
-  border-color: var(--lime, #b9f568);
-  background: #b9f56814;
+  border-color: var(--lime, #b9efd4);
+  background: #b9efd414;
 }
 .invite-card.on svg {
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
 }
 .invite-folders {
   display: flex;
@@ -87,7 +87,7 @@
 }
 .invite-folder-summary span {
   margin-left: auto;
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
   font-size: 13px;
 }
 .invite-segments {
@@ -153,7 +153,7 @@
   height: 40px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--lime, #b9f568);
+  background: var(--lime, #b9efd4);
   color: var(--lime-ink, #19250f);
 }
 .invite-steps {
@@ -193,8 +193,8 @@
 }
 .invite-steps li.done::before {
   content: "✓";
-  border-color: var(--lime, #b9f568);
-  background: var(--lime, #b9f568);
+  border-color: var(--lime, #b9efd4);
+  background: var(--lime, #b9efd4);
   color: var(--lime-ink, #19250f);
 }
 .invite-steps h3 {

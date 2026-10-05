@@ -98,7 +98,7 @@
   min-width: 0;
 }
 .home-need > strong {
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
   font-size: 13px;
 }
 .home-section > header {
@@ -192,11 +192,11 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: conic-gradient(#b9f568, #3fae7c, #1d3a2d, #b9f568);
+  background: conic-gradient(#b9efd4, #3fae7c, #1d3a2d, #b9efd4);
   animation: story-spin 1.1s linear infinite;
 }
 .story-ring.active > span {
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
 }
 .story-ring.attention {
   background: #fac775;
@@ -263,7 +263,7 @@
 }
 .home-now > svg {
   flex: 0 0 auto;
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
 }
 .home-now strong {
   flex: 0 0 auto;
@@ -346,7 +346,7 @@
   transform: translate(-50%, -50%);
 }
 .home-plus-icon.send {
-  background: var(--lime, #b9f568);
+  background: var(--lime, #b9efd4);
   color: var(--lime-ink, #19250f);
 }
 .home-plus-heading {

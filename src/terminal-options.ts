@@ -10,7 +10,7 @@ export function terminalOptions(): ITerminalOptions {
     theme: {
       background: "#0c110f",
       foreground: "#dce5dd",
-      cursor: "#b9f568",
+      cursor: "#b9efd4",
       selectionBackground: "#354831",
       black: "#182019",
       red: "#f18d8d",

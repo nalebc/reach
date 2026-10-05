@@ -49,6 +49,7 @@ test("joins a linked computer that approves at once", async () => {
   const { fetcher, seen } = computer((route) => {
     if (route === "/api/auth/method")
       return { method: "tailscale", eligible: true };
+    if (route === "/api/auth/vouched") return { approved: true };
     if (route === "/api/auth/requests")
       return { id: "req-1", secret: "s3cret" };
     polls++;
@@ -79,6 +80,7 @@ test("joins a linked computer that approves at once", async () => {
   });
   assert.deepEqual(seen, [
     ["GET", "/api/auth/method", undefined],
+    ["GET", "/api/auth/vouched", undefined],
     ["POST", "/api/auth/requests", { name: "My iPhone" }],
     ["POST", "/api/auth/requests/req-1", { secret: "s3cret" }],
     ["POST", "/api/auth/requests/req-1", { secret: "s3cret" }],
@@ -90,9 +92,11 @@ test("adds nothing when the computer would need its own approval, declines, or i
   const pending = computer((route) =>
     route === "/api/auth/method"
       ? { method: "tailscale", eligible: true }
-      : route === "/api/auth/requests"
-        ? { id: "r", secret: "s" }
-        : { status: "pending" },
+      : route === "/api/auth/vouched"
+        ? { approved: true }
+        : route === "/api/auth/requests"
+          ? { id: "r", secret: "s" }
+          : { status: "pending" },
   );
   assert.equal(
     await joinComputer("https://mac-b.t.ts.net:8443", "My iPhone", {
@@ -103,14 +107,16 @@ test("adds nothing when the computer would need its own approval, declines, or i
     }),
     null,
   );
-  assert.ok(pending.seen.length <= 7, "stops after the wait");
+  assert.ok(pending.seen.length <= 8, "stops after the wait");
 
   const denied = computer((route) =>
     route === "/api/auth/method"
       ? { method: "tailscale", eligible: true }
-      : route === "/api/auth/requests"
-        ? { id: "r", secret: "s" }
-        : { status: "denied" },
+      : route === "/api/auth/vouched"
+        ? { approved: true }
+        : route === "/api/auth/requests"
+          ? { id: "r", secret: "s" }
+          : { status: "denied" },
   );
   assert.equal(
     await joinComputer("https://mac-b.t.ts.net:8443", "x", {
@@ -155,4 +161,22 @@ test("adds nothing when the computer would need its own approval, declines, or i
     null,
   );
   assert.equal(bad.seen.length, 0);
+});
+
+test("never leaves a request waiting when that computer wouldn't let it in by itself", async () => {
+  const unvouched = computer((route) =>
+    route === "/api/auth/method"
+      ? { method: "tailscale", eligible: true }
+      : route === "/api/auth/vouched"
+        ? { approved: false }
+        : { id: "r", secret: "s" },
+  );
+  assert.equal(
+    await joinComputer("https://mac-b.t.ts.net:8443", "x", { fetcher: unvouched.fetcher, ...fast }),
+    null,
+  );
+  assert.deepEqual(
+    unvouched.seen.map(([m, r]) => `${m} ${r}`),
+    ["GET /api/auth/method", "GET /api/auth/vouched"],
+  );
 });

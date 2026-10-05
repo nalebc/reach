@@ -40,6 +40,8 @@ export type Device = {
     codex: boolean;
   };
   tools?: { codex?: { installed: boolean } };
+  // Reach is paused on the computer (src/pause.ts).
+  paused?: boolean;
   host?: {
     screenRecording: boolean;
     accessibility: boolean;

@@ -197,6 +197,15 @@ func (n *node) start(cb js.Value) {
 		})
 		if err != nil {
 			log.Printf("reach-tailnet: start: %v", err)
+			return
+		}
+		// Start alone waits for someone to sign in. A new node with a one-time
+		// key signs in with it now, as tsnet does; one already registered
+		// rejoins by itself and never reuses the (spent) key.
+		if n.authKey != "" && n.lb.State() == ipn.NeedsLogin {
+			if err := n.lb.StartLoginInteractive(context.Background()); err != nil {
+				log.Printf("reach-tailnet: login: %v", err)
+			}
 		}
 	})
 }

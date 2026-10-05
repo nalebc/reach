@@ -33,7 +33,7 @@
   "scripts": {
     "go": "node scripts/bootstrap.mjs",
     "dev": "node scripts/dev.mjs",
-    "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
     "prepack": "npm run build && node scripts/build-tailnet.mjs",
     "start": "node server/index.mjs",
     "test": "node --test test/*.test.mjs",

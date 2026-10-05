@@ -15,7 +15,9 @@ import {
   MoreHorizontal,
   Command,
   X,
+  ClipboardPaste,
 } from "lucide-react";
+import { pasteFromPhone } from "./phone-paste";
 import { Device, Peer, post, request } from "./api";
 import { Empty, ErrorLine, PageTitle } from "./ui";
 import { useRemoteScreen } from "./useRemoteScreen";
@@ -36,6 +38,8 @@ import { allCommands, contextPicks, type ContextAction } from "./app-context";
 import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
+import { PausedCover } from "./PauseControl";
+import { isPausedMessage, pausedIn } from "./pause";
 import "./screen-immersive.css";
 type Display = {
   id: string;
@@ -51,10 +55,27 @@ type Props = {
   device: Device;
   toast: (s: string) => void;
   onChanged: () => void;
+  // The computer's change fingerprints: they say at once when it's paused.
+  changes?: string;
 };
-export default function Screen({ peer, device, onChanged }: Props) {
+export default function Screen({
+  peer,
+  device,
+  toast,
+  onChanged,
+  changes,
+}: Props) {
+  const scopes = device.access?.scopes;
   const enabled = device.capabilities.screen,
-    owner = !device.access || device.access.scopes.includes("admin");
+    // You (setup, permissions), and who may control: you, or someone you
+    // invited with screen control.
+    owner =
+      !device.access ||
+      (!!scopes?.includes("admin") && device.access.kind !== "guest"),
+    canControl =
+      !device.access ||
+      !!scopes?.includes("admin") ||
+      !!scopes?.includes("screen:control");
   const [live, setLive] = useState(enabled),
     [visible, setVisible] = useState(!document.hidden),
     [control, setControl] = useState(false),
@@ -97,14 +118,19 @@ export default function Screen({ peer, device, onChanged }: Props) {
     setControl(false);
     setDrag(false);
     setPanel(null);
-    if (owner)
+    if (canControl)
       void post(peer, "/api/screen/control", { enabled: false }).catch(
         () => {},
       );
-  }, [peer.url, peer.token, owner]);
+  }, [peer.url, peer.token, canControl]);
+  // Paused on the computer: no stream and no control until Resume, when
+  // both come back (control only if it was on).
+  const paused = pausedIn(changes, device);
+  const controlBeforePause = useRef(false);
   const ended = useCallback(
     (message: string) => {
-      setError(message);
+      if (isPausedMessage(message)) controlBeforePause.current = true;
+      else setError(message);
       release();
     },
     [release],
@@ -112,7 +138,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
   const stream = useRemoteScreen(
     peer,
     enabled,
-    live && visible,
+    live && visible && !paused,
     display,
     quality,
     revision,
@@ -182,9 +208,9 @@ export default function Screen({ peer, device, onChanged }: Props) {
       mounted.current = false;
       document.removeEventListener("visibilitychange", hide);
       window.removeEventListener("pagehide", leave);
-      if (owner) leave();
+      if (canControl) leave();
     };
-  }, [release, peer.url, peer.token, owner]);
+  }, [release, peer.url, peer.token, canControl]);
   useEffect(() => {
     if (!enabled) {
       release();
@@ -257,6 +283,20 @@ export default function Screen({ peer, device, onChanged }: Props) {
       if (mounted.current) setBusy(false);
     }
   };
+  // Pause ends control (the computer ends it too); Resume takes it back if
+  // it was on, so everything is where it was.
+  useEffect(() => {
+    if (paused) {
+      if (control || intent.current) controlBeforePause.current = true;
+      if (control) release();
+      return;
+    }
+    if (controlBeforePause.current) {
+      controlBeforePause.current = false;
+      if (canControl && !document.hidden) void toggleControl();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paused]);
   // Must run inside the tap's event handler: iOS only opens the keyboard then.
   const openKeyboard = () => {
     if (typingTarget && typingEditor.current) {
@@ -336,6 +376,29 @@ export default function Screen({ peer, device, onChanged }: Props) {
       setClipboardBusy(false);
     }
   };
+  // One tap: what's on this phone lands where the cursor is on the computer.
+  const pastePhone = async () => {
+    // Read inside the tap: phones refuse a clipboard read that comes later.
+    const reading = navigator.clipboard?.readText?.();
+    if (!reading) {
+      clearTyping();
+      setPanel("clipboard");
+      return;
+    }
+    setClipboardBusy(true);
+    setError("");
+    try {
+      const done = await pasteFromPhone(reading, send, device.platform);
+      if (mounted.current)
+        setFeedback(
+          done === "pasted" ? "Pasted from your phone" : "Nothing to paste on this phone",
+        );
+    } catch (e) {
+      if (mounted.current) setError((e as Error).message);
+    } finally {
+      if (mounted.current) setClipboardBusy(false);
+    }
+  };
   const copySelectedText = async () => {
     setClipboardBusy(true);
     setError("");
@@ -371,7 +434,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
         title="Your screen"
         description="Pick up where you left off."
       />
-      <ErrorLine error={error || stream.error} />
+      <ErrorLine error={paused ? "" : error || stream.error} />
       {!enabled ? (
         <section className="panel screen-setup">
           <Empty
@@ -402,7 +465,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
               <span
                 className={`screen-status-dot ${live && stream.ready ? "active" : ""}`}
               />
-              {!live
+              {!live || paused
                 ? "Paused"
                 : stream.connecting
                   ? "Connecting…"
@@ -435,13 +498,17 @@ export default function Screen({ peer, device, onChanged }: Props) {
               </button>
             </div>
           </div>
-          {expanded && <ErrorLine error={error || stream.error} />}
+          {expanded && (
+            <ErrorLine error={paused ? "" : error || stream.error} />
+          )}
           <DesktopSurface
             canvas={stream.canvas}
             width={stream.width}
             height={stream.height}
             ready={stream.ready}
-            connecting={live && visible && !stream.ready && !stream.error}
+            connecting={
+              live && visible && !paused && !stream.ready && !stream.error
+            }
             canControl={usable}
             initialCursor={input.initialCursor}
             mode={mode}
@@ -456,6 +523,16 @@ export default function Screen({ peer, device, onChanged }: Props) {
             compact
             typing={typing}
             focusPoint={typing && mobile ? typingTarget?.point : undefined}
+            idle={
+              paused && (
+                <PausedCover
+                  peer={peer}
+                  platform={device.platform}
+                  owner={owner}
+                  toast={toast}
+                />
+              )
+            }
           />
           {control && stream.ready && !typing && !panel && (
             <ScrollHandle send={send} disabled={!usable} />
@@ -474,6 +551,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 key={`${typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 keyRow={mobile}
+                modifier={device.platform === "win32" ? "control" : "meta"}
                 editorRef={typingEditor}
                 send={send}
                 onClose={clearTyping}
@@ -506,6 +584,16 @@ export default function Screen({ peer, device, onChanged }: Props) {
                   <Keyboard size={17} />
                   Type
                 </button>
+                <button
+                  className="button secondary small paste-button"
+                  aria-label="Paste from your phone"
+                  onPointerDown={(event) => event.preventDefault()}
+                  disabled={!usable || clipboardBusy}
+                  onClick={() => void pastePhone()}
+                >
+                  <ClipboardPaste size={16} />
+                  Paste
+                </button>
                 {typing && (
                   <button
                     className="icon-button"
@@ -521,21 +609,23 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 )}
               </>
             )}
-            {!typing && (control || (owner && device.capabilities.apps)) && (
-              <button
-                className="button secondary small screen-actions-trigger"
-                onPointerDown={(event) => event.preventDefault()}
-                disabled={control && (!usable || helperBusy)}
-                aria-haspopup="dialog"
-                onClick={() => {
-                  clearTyping();
-                  setPanel("actions");
-                }}
-              >
-                <Command size={16} /> Shortcuts
-              </button>
-            )}
-            {owner && !typing && (
+            {!typing &&
+              !paused &&
+              (control || (canControl && device.capabilities.apps)) && (
+                <button
+                  className="button secondary small screen-actions-trigger"
+                  onPointerDown={(event) => event.preventDefault()}
+                  disabled={control && (!usable || helperBusy)}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    clearTyping();
+                    setPanel("actions");
+                  }}
+                >
+                  <Command size={16} /> Shortcuts
+                </button>
+              )}
+            {canControl && !typing && !paused && (
               <button
                 className={`button ${control ? "secondary" : "primary"} small`}
                 disabled={!stream.ready || busy || !live}
@@ -545,13 +635,13 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 {control ? "Stop" : "Control"}
               </button>
             )}
-            {!live && (
+            {!live && !paused && (
               <button className="button primary small" onClick={reconnect}>
                 Resume
               </button>
             )}
           </div>
-          {fullscreen && !chromeShown && owner && (
+          {fullscreen && !chromeShown && canControl && (
             <div
               className="screen-immersive-pill"
               data-immersive-keep
@@ -565,6 +655,16 @@ export default function Screen({ peer, device, onChanged }: Props) {
                 >
                   <Keyboard size={18} />
                   Type
+                </button>
+              )}
+              {control && (
+                <button
+                  aria-label="Paste from your phone"
+                  disabled={!usable || clipboardBusy}
+                  onClick={() => void pastePhone()}
+                >
+                  <ClipboardPaste size={17} />
+                  Paste
                 </button>
               )}
               <button
@@ -605,7 +705,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
                   run={(helper) => void runHelper(helper)}
                 />
               )}
-              {panel === "actions" && owner && device.capabilities.apps && (
+              {panel === "actions" && canControl && device.capabilities.apps && (
                 <section className="screen-open-shortcuts">
                   {control && <h3>Open on {device.name}</h3>}
                   <QuickLauncher
@@ -725,7 +825,7 @@ export default function Screen({ peer, device, onChanged }: Props) {
                       </select>
                     </label>
                   )}
-                  {owner && (
+                  {canControl && (
                     <>
                       <div className="remote-touch-controls">
                         <label>

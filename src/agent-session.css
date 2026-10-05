@@ -202,6 +202,9 @@ button.as-title:active {
 .as-user.pending {
   opacity: 0.6;
 }
+.as-user.pending .as-tag.problem {
+  color: #f0a0a0;
+}
 .as-assistant {
   align-self: stretch;
   overflow-wrap: anywhere;
@@ -608,6 +611,12 @@ button.as-title:active {
   color: var(--as-muted);
   font-size: 13.5px;
 }
+/* Why Claude asks (the Claude app's consent card shows it under the title). */
+.as-prompt.elsewhere .as-reason {
+  margin: 0;
+  color: var(--as-muted);
+  font-size: 13.5px;
+}
 .as-choices button.chosen {
   border-color: var(--as-accent);
 }
@@ -980,4 +989,83 @@ button.as-mode:disabled {
   text-overflow: ellipsis;
   color: var(--as-muted);
   font-size: 12.5px;
+}
+
+/* The Claude app's own consent card (letting Claude use apps), as the app
+   draws it: colors measured from the app on Oct 5. Its keyboard hints (Esc,
+   ⌘↩) are left out; the phone has no keyboard. */
+.as-consent {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 12px 12px 10px;
+  border: 1px solid #40403e;
+  border-radius: 10px;
+  background: #222221;
+}
+.as-consent strong {
+  color: #f5f5f4;
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-consent p,
+.as-consent small {
+  margin: 0;
+  color: #9b9b98;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.as-consent small {
+  margin-top: 4px;
+  font-size: 13px;
+}
+.as-consent ul {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+}
+.as-consent li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #2b2b2a;
+  color: #f5f5f4;
+  font-size: 14px;
+}
+.as-consent li img,
+.as-consent-noicon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+.as-consent-noicon {
+  background: #40403e;
+}
+.as-consent-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.as-consent-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #40403e;
+  color: #f5f5f4;
+  font: inherit;
+  font-size: 14px;
+}
+.as-consent-actions button.primary {
+  background: #ffffff;
+  color: #0b0b0b;
+}
+.as-consent-actions button:disabled {
+  opacity: 0.6;
 }

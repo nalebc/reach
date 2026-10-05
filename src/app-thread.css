@@ -72,7 +72,7 @@
   width: 56px;
   height: 56px;
   margin: -28px 0 0 -28px;
-  border: 2px solid var(--lime, #b9f568);
+  border: 2px solid var(--lime, #b9efd4);
   border-radius: 50%;
   pointer-events: none;
   animation: app-surface-hold 0.25s ease;

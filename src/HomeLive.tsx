@@ -25,13 +25,16 @@ import type { WorkspaceCapabilities } from "./capabilities";
 import type { FleetConnections } from "./useFleetConnections";
 import type { MacTerminal } from "./DesktopTerminals";
 import { ReachScene } from "./ReachIdentity";
-import type { AgentSession } from "./agent-sessions";
+import type { AgentSession, MacPrompt } from "./agent-sessions";
+import MacPromptCard from "./MacPrompts";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
 import { useRemoteScreen } from "./useRemoteScreen";
 import { useTerminalPeeks } from "./useTerminalPeeks";
 import { useShortcuts } from "./shortcuts";
 import ShortcutIcon from "./ShortcutIcon";
+import { PauseButton } from "./PauseControl";
+import { computerWord, pausedIn } from "./pause";
 import "./home-live.css";
 
 const agentName: Record<string, string> = {
@@ -56,10 +59,21 @@ const kindOf = (name: string): Story["kind"] =>
   /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : "shell";
 // Codex, Claude Code and terminals wear their real app icons (from the Mac),
 // filling the round frame.
-const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }) => {
+const Glyph = ({
+  kind,
+  logos = {},
+}: {
+  kind: Story["kind"];
+  logos?: AgentLogos;
+}) => {
   const icon = kind === "shell" ? "terminal" : kind;
   return logos[icon] && icon !== "chat" ? (
-    <AgentLogo agent={icon} logos={logos} name={icon === "terminal" ? "Terminal" : undefined} fill />
+    <AgentLogo
+      agent={icon}
+      logos={logos}
+      name={icon === "terminal" ? "Terminal" : undefined}
+      fill
+    />
   ) : kind === "codex" ? (
     <Sparkles size={22} />
   ) : kind === "claude" ? (
@@ -100,7 +114,9 @@ function useMacTabs(
   changes?: string,
 ) {
   const [tabs, setTabs] = useState<MacTerminal[]>([]);
-  const [peeks, setPeeks] = useState<Record<string, { line: string; at: number }>>({});
+  const [peeks, setPeeks] = useState<
+    Record<string, { line: string; at: number }>
+  >({});
   const list = useRef<MacTerminal[]>([]);
   // A Mac that tells when its Terminal windows change is asked only then
   // (server/mac-terminal-watch.mjs); others every few seconds, as before.
@@ -157,7 +173,8 @@ function useMacTabs(
             });
             if (stopped) return;
             // Nothing new right away: never spin.
-            if (r.version === version) await new Promise((r) => setTimeout(r, 1000));
+            if (r.version === version)
+              await new Promise((r) => setTimeout(r, 1000));
             version = r.version;
             for (const [id, line] of Object.entries(r.peeks || {}))
               note(id, String(line));
@@ -221,6 +238,7 @@ export default function HomeLive({
   openTerminal,
   openMacTab,
   agentSessions = [],
+  macPrompts = [],
   openAgentSession,
   onShortcuts,
   refreshSessions,
@@ -242,6 +260,8 @@ export default function HomeLive({
   openMacTab: (id: string) => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
+  // What macOS itself is asking right now (answered at the Mac).
+  macPrompts?: MacPrompt[];
   openAgentSession?: (session: AgentSession) => void;
   onShortcuts: () => void;
   refreshSessions: () => void;
@@ -250,11 +270,13 @@ export default function HomeLive({
   const visible = usePageVisible();
   const logos = useAgentLogos(openAgentSession ? peer : null);
   const online = connections[active]?.state === "connected";
+  // Paused on the computer: its screen isn't watched, not even here.
+  const paused = pausedIn(connections[active]?.changes, device);
   // Live screen inside the laptop: the same stream as Screen, at preview size.
   const stream = useRemoteScreen(
     peer,
     features.screen,
-    features.screen && visible,
+    features.screen && visible && !paused,
     "primary",
     "preview",
     0,
@@ -281,6 +303,7 @@ export default function HomeLive({
     ? agentSessions.filter((s) => s.status === "waiting")
     : [];
   const needsYou =
+    macPrompts.length > 0 ||
     waitingChats.length + pending.length + waitingAgents.length > 0;
   const recent = (at: number) => at > 0 && now - at < ACTIVE_MS;
   const stories: Story[] = [
@@ -313,43 +336,41 @@ export default function HomeLive({
       };
     }),
     ...(features.codex ? chats : [])
-      .filter((c) => ["waiting", "running", "starting", "idle"].includes(c.status))
+      .filter((c) =>
+        ["waiting", "running", "starting", "idle"].includes(c.status),
+      )
       .slice(0, 4)
-      .map(
-        (c): Story => ({
-          key: `chat:${c.id}`,
-          name: c.name,
-          kind: "chat",
-          state:
-            c.status === "waiting"
-              ? "attention"
-              : c.status === "idle"
-                ? "idle"
-                : "active",
-          at: 0,
-          open: () => openChat(c.id),
-        }),
-      ),
+      .map((c): Story => ({
+        key: `chat:${c.id}`,
+        name: c.name,
+        kind: "chat",
+        state:
+          c.status === "waiting"
+            ? "attention"
+            : c.status === "idle"
+              ? "idle"
+              : "active",
+        at: 0,
+        open: () => openChat(c.id),
+      })),
     // Agent sessions working anywhere on the Mac: apps, terminals, Reach.
     ...(openAgentSession ? agentSessions : [])
       .filter((s) => !s.archived && (s.live || s.status !== "idle"))
       .slice(0, 6)
-      .map(
-        (s): Story => ({
-          key: `agent:${s.agent}:${s.id}`,
-          name: s.title,
-          kind: s.agent,
-          state:
-            s.status === "waiting"
-              ? "attention"
-              : s.status === "running"
-                ? "active"
-                : "running",
-          line: s.preview,
-          at: s.updatedAt,
-          open: () => openAgentSession!(s),
-        }),
-      ),
+      .map((s): Story => ({
+        key: `agent:${s.agent}:${s.id}`,
+        name: s.title,
+        kind: s.agent,
+        state:
+          s.status === "waiting"
+            ? "attention"
+            : s.status === "running"
+              ? "active"
+              : "running",
+        line: s.preview,
+        at: s.updatedAt,
+        open: () => openAgentSession!(s),
+      })),
   ];
   // What needs you first, then what is printing right now, newest first.
   const rank = { attention: 0, active: 1, running: 2, idle: 3 };
@@ -451,9 +472,18 @@ export default function HomeLive({
           <p>
             <i className={`status-dot ${online ? "" : "off"}`} />
             {online ? "Online" : "Connecting…"} · {connection}
-            {live ? " · live" : ""}
+            {live ? " · live" : paused ? " · paused" : ""}
           </p>
         </div>
+        {features.owner && (
+          <PauseButton
+            peer={peer}
+            paused={paused}
+            platform={device.platform}
+            className="home-pause"
+            toast={toast}
+          />
+        )}
         {features.owner && (
           <button
             className="icon-button home-invite"
@@ -467,22 +497,35 @@ export default function HomeLive({
 
       {needsYou && (
         <section className="home-needs" aria-label="Needs you">
+          {macPrompts.map((p) => (
+            <MacPromptCard key={p.id} prompt={p} logos={logos} />
+          ))}
           {pending.map((r) => (
             <div className="home-need" key={r.id}>
               <Bell size={17} />
               <span>
                 {r.name} wants access to {device.name}
               </span>
-              <button className="button secondary small" onClick={() => decide(r, "deny")}>
+              <button
+                className="button secondary small"
+                onClick={() => decide(r, "deny")}
+              >
                 Deny
               </button>
-              <button className="button primary small" onClick={() => decide(r, "approve")}>
+              <button
+                className="button primary small"
+                onClick={() => decide(r, "approve")}
+              >
                 Allow
               </button>
             </div>
           ))}
           {waitingChats.map((c) => (
-            <button className="home-need" key={c.id} onClick={() => openChat(c.id)}>
+            <button
+              className="home-need"
+              key={c.id}
+              onClick={() => openChat(c.id)}
+            >
               <Bell size={17} />
               <span>{c.name} needs your approval</span>
               <strong>Review</strong>
@@ -506,9 +549,12 @@ export default function HomeLive({
       )}
 
       {(canPlus || stories.length > 0) && (
-        <section className="home-section" aria-label="Live on your Mac">
+        <section
+          className="home-section"
+          aria-label={`Live on your ${computerWord(device.platform)}`}
+        >
           <header>
-            <h2>Live on your Mac</h2>
+            <h2>Live on your {computerWord(device.platform)}</h2>
           </header>
           <div className="home-stories">
             {canPlus && (
@@ -575,7 +621,10 @@ export default function HomeLive({
                 (agents ?? []).map((agent) => (
                   <button key={agent} onClick={() => void start(agent)}>
                     <span className="home-plus-icon">
-                      <Glyph kind={agent === "claude" ? "claude" : "codex"} logos={logos} />
+                      <Glyph
+                        kind={agent === "claude" ? "claude" : "codex"}
+                        logos={logos}
+                      />
                     </span>
                     <span>
                       {agentName[agent] ?? agent}
@@ -627,8 +676,10 @@ export default function HomeLive({
                   Send a file
                   <small>
                     From this phone to{" "}
-                    {device.roots[0]?.path.split(/[\\/]/).filter(Boolean).pop() ||
-                      device.name}
+                    {device.roots[0]?.path
+                      .split(/[\\/]/)
+                      .filter(Boolean)
+                      .pop() || device.name}
                   </small>
                 </span>
               </button>

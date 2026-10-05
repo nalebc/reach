@@ -9,7 +9,10 @@ export function workspaceCapabilities(
 ) {
   const allowed = (scope: string) =>
     !!device && (!device.access || device.access.scopes.includes(scope));
-  const owner = allowed("admin");
+  // `admin`: uses the computer like you (you, or an invitation with full
+  // access). `owner`: you, managing access. Invited people never manage it.
+  const admin = allowed("admin");
+  const owner = admin && device?.access?.kind !== "guest";
   const desktop = !!device && ["darwin", "win32"].includes(device.platform);
   const screenSupported =
     desktop &&
@@ -27,9 +30,9 @@ export function workspaceCapabilities(
       !!device?.capabilities.apps &&
       (allowed("apps") || allowed("apps:open")),
     shortcuts:
-      owner && desktop && !!device?.capabilities.apps && allowed("apps"),
+      admin && desktop && !!device?.capabilities.apps && allowed("apps"),
     desktopTerminals:
-      owner &&
+      admin &&
       device?.platform === "darwin" &&
       !!device?.capabilities.terminal &&
       allowed("terminal"),
@@ -59,4 +62,20 @@ export function pageAccessible(page: string, features: WorkspaceCapabilities) {
       page,
     ) && !!features[page as keyof WorkspaceCapabilities]
   );
+}
+
+// What More lists: the pages not in the phone's bottom bar, in order. Codex
+// keeps its row, waiting, while the computer checks it, so the list doesn't
+// jump when the answer comes.
+export function morePlaces(
+  pages: string[],
+  bar: string[],
+  features: WorkspaceCapabilities,
+  codex?: CodexStatus,
+) {
+  const waiting = (id: string) => id === "chat" && codex?.state === "checking";
+  const places = pages.filter(
+    (id) => !bar.includes(id) && (pageAccessible(id, features) || waiting(id)),
+  );
+  return { places, pending: places.filter(waiting) };
 }

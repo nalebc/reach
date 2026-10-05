@@ -47,7 +47,9 @@ test("devices learn that their lists changed without polling, and only lists the
   const guestSocket = listen(port, guest.token);
   try {
     const first = await ownerSocket.next();
-    assert.deepEqual(Object.keys(first.changes).sort(), [
+    // Which phone interface the Mac serves rides along for everyone (it's no secret).
+    const { build, ...lists } = first.changes;
+    assert.deepEqual(Object.keys(lists).sort(), [
       "activity",
       "apps",
       "chats",
@@ -56,7 +58,9 @@ test("devices learn that their lists changed without polling, and only lists the
     ]);
     const guestFirst = await guestSocket.next();
     // A files-only guest learns nothing about the owner's terminals or chats.
-    assert.deepEqual(guestFirst.changes, {});
+    const { build: guestBuild, ...guestLists } = guestFirst.changes;
+    assert.deepEqual(guestLists, {});
+    assert.equal(guestBuild, build);
     // Something happens on the computer: a folder is created.
     const created = await fetch(`http://127.0.0.1:${port}/api/files/folder`, {
       method: "POST",

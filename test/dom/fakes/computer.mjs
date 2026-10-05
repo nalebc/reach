@@ -26,5 +26,6 @@ export const computer = {
     this.lease = undefined;
     this.connected = null;
     this.refused = 0;
+    this.endInput = null;
   },
 };

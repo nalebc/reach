@@ -78,6 +78,10 @@ export async function joinComputer(
   try {
     const method = await call(fetcher, url, "/api/auth/method");
     if (method?.method !== "tailscale" || !method.eligible) return null;
+    // Only when it would let this device in by itself: never leave a
+    // request waiting in that computer's terminal.
+    const vouched = await call(fetcher, url, "/api/auth/vouched");
+    if (vouched?.approved !== true) return null;
     const pending = await call(fetcher, url, "/api/auth/requests", { name });
     const deadline = now() + waitMs;
     while (now() < deadline) {

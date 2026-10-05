@@ -85,7 +85,9 @@ export async function configure(root, deps = {}) {
   const ask = deps.ask || ui.ask;
   const select = deps.select || ui.select;
   const print = deps.print || console.log;
-  print(
+  // Inside the guided setup (`quiet`), the step list gives the context.
+  const say = deps.quiet ? () => {} : print;
+  say(
     "\nReach setup · private access through Tailscale\nNo Reach account or hosted Reach backend. Tailscale provides identity and connectivity.",
   );
   let owner;
@@ -95,9 +97,7 @@ export async function configure(root, deps = {}) {
         await (deps.status || (() => tailscaleJson(["status", "--json"])))(),
       );
     } catch (error) {
-      print(
-        `${error.message}\nComputer: https://tailscale.com/download\nPhone: install Tailscale and sign into the same account.`,
-      );
+      print(`${error.message}\nTailscale: https://tailscale.com/download`);
       const retry = await select({
         message: "Connect Tailscale to continue",
         choices: [
@@ -212,10 +212,10 @@ export async function configure(root, deps = {}) {
       );
     }
   }
-  print(
+  say(
     "Your approved devices can browse all configured locations using your OS permissions. Guests and agent profiles only receive the access you grant them. Use --folder to restrict file browsing.",
   );
-  print(
+  say(
     "Reach keeps the system and display awake while running, including on battery. Use --no-stay-awake to allow idle sleep. This does not unlock a locked Mac.",
   );
   const preferences = {
@@ -226,8 +226,8 @@ export async function configure(root, deps = {}) {
     httpsPort: old.httpsPort || 8443,
   };
   atomicJson(preferencesFile(root), preferences);
-  print(
-    "\nSaved. On your phone: install Tailscale, sign into the same account, and connect.\nOn iPhone: Tailscale → Settings → VPN On Demand → enable MagicDNS hostname matching for automatic reconnection.\nRun ./reach, scan the address, then approve the matching device request here.\nAn already-running Reach keeps its current settings until restarted. Existing Serve routes are never replaced.",
+  say(
+    "\nSaved. Run ./reach, open its link on your phone (the Tailscale app is optional: it's faster), then approve the request here.\nA Reach that's already running keeps its old settings until it restarts.",
   );
   return preferences;
 }

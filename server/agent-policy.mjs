@@ -101,6 +101,20 @@ export function agentProfile(config, name) {
 }
 export function applyAgentPolicy(client, config) {
   if (client.kind !== "agent") return client;
+  // Invited from the phone: its own folders and limits, chosen by you when
+  // inviting (not a profile in the policy file), still inside what Reach
+  // shares, and never screen control or apps.
+  if (client.policy?.invite) {
+    const roots = client.policy.roots.filter((root) =>
+      config.roots.some((shared) => within(shared, root)),
+    );
+    return {
+      ...client,
+      scopes: client.scopes.filter((s) => POLICY_SCOPES.includes(s) && !["apps", "screen"].includes(s)),
+      agentRoots: roots,
+      maxJobMs: client.policy.maxJobMs,
+    };
+  }
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
   if (!client.policy) {
     // Once an owner enables a policy, old broad credentials cannot bypass it.

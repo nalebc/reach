@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import type { Peer } from "./api";
 import AgentSessionView, { ModelPicker, UsageButton } from "./AgentSession";
-import AgentSignIn from "./AgentSignIn";
+import AgentAccess from "./AgentAccess";
+import MacPromptCard from "./MacPrompts";
 import { AgentLogo, ClaudeSpark, useAgentLogos, type AgentLogos } from "./agent-logos";
 import {
   CODEX_MODE_CHOICES,
@@ -540,27 +541,19 @@ function AgentStatus({
   peer,
   agent,
   health,
+  logos,
   recheck,
 }: {
   peer: Peer;
   agent: AgentName;
   health?: AgentHealth;
+  logos: AgentLogos;
   recheck: () => void;
 }) {
   if (!health) return null;
   const name = agentLabel(agent);
   if (!health.installed) return <p className="chat-status">{name} isn't installed on this Mac.</p>;
-  if (!health.signedIn)
-    return (
-      <div className="chat-status signed-out">
-        <span>
-          {agent === "claude"
-            ? "Claude Code is signed out on your Mac. It's the claude command, which signs in separately from the Claude app."
-            : `${name} is signed out on your Mac.`}
-        </span>
-        <AgentSignIn peer={peer} agent={agent} onDone={recheck} />
-      </div>
-    );
+  if (!health.signedIn) return <AgentAccess peer={peer} agent={agent} health={health} logos={logos} onSignedIn={recheck} />;
   if (health.usable === false)
     return (
       <div className="chat-status out-of-usage">
@@ -597,6 +590,7 @@ export default function EverythingChat({
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
   const projects = (shared || own).projects || [];
+  const macPrompts = (shared || own).macPrompts || [];
   // The apps' "New chat" / "New" row opens the composer for a new session.
   const [composing, setComposing] = useState(false);
   const logos = useAgentLogos(peer);
@@ -680,7 +674,10 @@ export default function EverythingChat({
   return (
     <div className={`chat-home ${current}`}>
       <AgentPicker agents={agents} current={current} onChange={setAgent} logos={logos} waiting={waiting} />
-      <AgentStatus peer={peer} agent={current} health={status} recheck={recheck} />
+      {macPrompts.map((p) => (
+        <MacPromptCard key={p.id} prompt={p} logos={logos} />
+      ))}
+      <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} />
       {(!status || (status.installed && status.signedIn)) &&
         (composing ? (
           <NewChat key={current} peer={peer} agent={current} sessions={sessions || []} onStarted={setOpen} autoFocus />

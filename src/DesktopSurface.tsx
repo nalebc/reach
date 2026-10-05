@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react";
 import type { DesktopAction } from "./useDesktopInput";
@@ -33,6 +34,7 @@ export default function DesktopSurface({
   compact = false,
   focusPoint,
   typing = false,
+  idle,
 }: {
   canvas: RefObject<HTMLCanvasElement | null>;
   width: number;
@@ -53,6 +55,8 @@ export default function DesktopSurface({
   compact?: boolean;
   focusPoint?: Point;
   typing?: boolean;
+  // Shown instead of "Live view is paused" while nothing streams.
+  idle?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null),
     [size, setSize] = useState({ width: 800, height: 450 });
@@ -506,7 +510,7 @@ export default function DesktopSurface({
           }}
         />
         {!ready && !connecting && (
-          <div className="remote-loading">Live view is paused</div>
+          <div className="remote-loading">{idle ?? "Live view is paused"}</div>
         )}
         <ScreenConnection active={connecting} ready={ready} />
         {ripples.map((r) => (

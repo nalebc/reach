@@ -158,10 +158,15 @@ export const guestHash = (invites: GuestLink["invites"]) =>
     ? `#${new URLSearchParams(invites.map((x) => ["i", `${x.origin}~${x.secret}`])).toString()}`
     : "";
 
-export function guestLinkUrl(start: string, link: GuestLink) {
+// An agent's link is the same on /agent: its start page never redeems it.
+export function guestLinkUrl(
+  start: string,
+  link: GuestLink,
+  path: "/guest" | "/agent" = "/guest",
+) {
   const params = new URLSearchParams();
   if (link.key) params.set("k", link.key);
   if (link.hostname) params.set("h", link.hostname);
   for (const x of link.invites) params.append("i", `${x.origin}~${x.secret}`);
-  return `${start}/guest#${params.toString()}`;
+  return `${start}${path}#${params.toString()}`;
 }

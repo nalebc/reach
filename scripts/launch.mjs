@@ -453,6 +453,10 @@ export async function launch(options, root) {
     console.log(
       `  Shared: ${reach.config.roots.join(", ")}${options.service ? "" : "\n  Keep this terminal open."}`,
     );
+    if (reach.paused)
+      console.log(
+        "  Paused: your phone can't see or use this computer until you resume.",
+      );
     if (!options.local && !preferences)
       console.log(
         "  Private Tailscale link · Connect Tailscale on your phone first.\n  Reach pairing is also required. No public internet tunnel is enabled.",
@@ -460,8 +464,8 @@ export async function launch(options, root) {
     if (!options.service) {
       console.log(
         preferences
-          ? "  Type a device request code to approve. Ctrl+C stops Reach.\n"
-          : "  Press Enter for a new pairing code. Ctrl+C stops sharing and Reach.\n",
+          ? "  Type a device request code to approve, or pause. Ctrl+C stops Reach.\n"
+          : "  Press Enter for a new pairing code. Type pause to pause. Ctrl+C stops sharing and Reach.\n",
       );
       input = readline.createInterface({
         input: process.stdin,
@@ -469,7 +473,20 @@ export async function launch(options, root) {
       });
       input.on("line", (line) => {
         if (stopped) return;
-        if (!preferences) showCode(true);
+        // Pause gives this computer back to whoever is at it; resume lends
+        // it to the phone again (also in the Mac's menu bar).
+        if (/^(pause|resume)$/i.test(line.trim())) {
+          const pause = line.trim().toLowerCase() === "pause";
+          reach.setPaused(pause).then(
+            () =>
+              console.log(
+                pause
+                  ? "Reach paused. Your phone can't see or use this computer. Type resume to continue."
+                  : "Reach resumed.",
+              ),
+            (e) => console.log(e.message),
+          );
+        } else if (!preferences) showCode(true);
         else if (/^(un)?link\b/i.test(line.trim()) && reach.fleet) {
           const [command, name = ""] = line.trim().split(/\s+/);
           if (command.toLowerCase() === "unlink")

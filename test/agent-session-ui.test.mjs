@@ -142,7 +142,7 @@ for (const agent of ["codex", "claude"])
     routes[`/api/sessions/${agent}/${id}`] = () => mac.pages[`${agent}:${id}`];
     // The real server holds this request until something changes.
     routes[`/api/sessions/${agent}/${id}/live`] = async () => (await settle(60), mac.live);
-    for (const action of ["messages", "stop", "prompts/7", "prompts/8"])
+    for (const action of ["messages", "stop", "prompts/7", "prompts/8", "prompts/consent%3Atoolu_1"])
       routes[`/api/sessions/${agent}/${id}/${action}`] = record(`/api/sessions/${agent}/${id}/${action}`);
   }
 
@@ -199,6 +199,7 @@ const home = (sessions, health = signedIn, extra = {}) =>
       feed: { sessions, errors: {}, health, failure: "", reload: async () => {}, recheck: () => {}, ...extra },
     }),
   );
+const accessRows = () => $$(".access-row").map((r) => [r.querySelector(".access-name").textContent, r.querySelector(".access-state").textContent]);
 const radio = (name) => $$(".agent-picker [role=radio]").find((b) => b.getAttribute("aria-label") === name);
 
 test("a Codex chat reads like the Codex app", async () => {
@@ -475,12 +476,11 @@ test("a Claude Code chat reads like Claude Code; one open in the Claude app stil
   assert.ok($(".as-page.claude"));
   assert.equal($(".as-error.claude header").textContent.trim(), "Authentication failed");
   assert.equal($(".as-error.claude p").textContent, "Failed to authenticate: OAuth session expired");
-  // Replies go through the claude command, which signs in on its own: say so, offer it.
-  assert.equal(
-    $(".as-hint").textContent,
-    "Sign in to Claude Code on your Mac to reply from here. It's the claude command, which signs in separately from the Claude app.",
-  );
-  assert.ok(button("Sign in"));
+  // Replies go through the Claude Code CLI, which signs in on its own: one clear row, with Sign in.
+  assert.deepEqual(accessRows(), [["Claude Code CLI", "Not signed in"]]);
+  assert.equal($(".access-note").textContent, "Reach replies through the CLI, so only the CLI needs signing in.");
+  assert.equal($(".as-hint"), null);
+  assert.ok($(".access-row .access-action button"));
   assert.equal($("textarea").disabled, false);
   assert.equal($(".as-mode").textContent, "Auto");
   assert.equal($(".as-model").textContent.trim(), "Opus 5.5 Max");
@@ -615,6 +615,80 @@ test("a question Claude asks in the Claude app shows here too, with its choices"
     $(".as-hint").textContent,
     "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session.",
   );
+  assert.deepEqual(dom.errors, []);
+});
+
+test("the Claude app's own consent card (letting Claude use apps) shows here too, as the app says it", async () => {
+  const asking = {
+    kind: "consent",
+    title: "Allow Claude to use Calculator?",
+    reason: "Add up the receipts.",
+    options: ["Deny", "Allow for this session"],
+  };
+  const session = claudeSession({ status: "waiting", asking });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session);
+  await dom.waitFor(() => $(".as-prompt.elsewhere"));
+  const card = $(".as-prompt.elsewhere");
+  assert.equal(card.querySelector("header strong").textContent, "Waiting for your answer in the Claude app on your Mac");
+  assert.deepEqual(
+    [...card.querySelectorAll("p")].map((p) => p.textContent),
+    ["Allow Claude to use Calculator?", "Add up the receipts.", "Deny · Allow for this session"],
+  );
+  // Answered on the Mac: its choices as words, no buttons here.
+  assert.equal(card.querySelector("button, li, [role=button]"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("the Claude app's consent card shows as the app draws it, is answered here with its own buttons, and goes once answered", async () => {
+  const asking = {
+    kind: "consent",
+    id: "consent:toolu_1",
+    about: "apps",
+    title: "Allow Claude to use Calculator?",
+    reason: "Add up the receipts.",
+    apps: [{ name: "Calculator", appId: "/System/Applications/Calculator.app" }],
+    options: ["Deny", "Allow for this session"],
+  };
+  const session = claudeSession({ status: "waiting", asking });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session);
+  await dom.waitFor(() => $(".as-consent"));
+  const card = $(".as-consent");
+  assert.equal(card.querySelector("strong").textContent, "Allow Claude to use Calculator?");
+  assert.equal(card.querySelector("p").textContent, "Add up the receipts.");
+  assert.equal(card.querySelector("small").textContent, "Claude will work in these apps in the background while you keep using your Mac.");
+  assert.deepEqual([...card.querySelectorAll("li")].map((li) => li.textContent), ["Calculator"]);
+  const buttons = [...card.querySelectorAll(".as-consent-actions button")];
+  assert.deepEqual(buttons.map((b) => b.textContent), ["Deny", "Allow for this session"]);
+  assert.ok(buttons[1].classList.contains("primary"));
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ status: "running" });
+  await click(buttons[1]);
+  await dom.waitFor(() => mac.sent.length === 1);
+  assert.deepEqual(mac.sent, [{ route: `/api/sessions/claude/${CLAUDE}/prompts/consent%3Atoolu_1`, body: { decision: "allow" } }]);
+  await dom.waitFor(() => !$(".as-consent"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("messages waiting on the Mac for their turn show after the page reloads, saying why one can't go yet", async () => {
+  // A fresh page (nothing sent from it): what the Mac's outbox holds.
+  mac.live = {
+    ...idleLive(),
+    status: "running",
+    outbox: [
+      { id: "m1", text: "Run the tests", images: 1, at: 1 },
+      { id: "m2", text: "Then commit", images: 0, at: 2, error: "Claude Code is signed out on your Mac." },
+    ],
+  };
+  await open(claudeSession({ status: "running" }));
+  await dom.waitFor(() => $$(".as-user.pending.queued").length === 2);
+  const [first, second] = $$(".as-user.pending.queued");
+  assert.equal(first.querySelector("p").textContent, "Run the tests");
+  assert.deepEqual([...first.querySelectorAll(".as-tag")].map((t) => t.textContent), ["1 image", "Sends when Claude finishes"]);
+  assert.equal(second.querySelector(".as-tag.problem").textContent, "Not sent yet: Claude Code is signed out on your Mac.");
+  // Handed over: it leaves the outbox (and shows from the transcript).
+  mac.bump({ outbox: [mac.live.outbox[1]] });
+  await dom.waitFor(() => $$(".as-user.pending.queued").length === 1);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -923,11 +997,48 @@ test("opening a session from Home lands in it, on its agent's side", async () =>
   assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "claude");
 });
 
+test("each agent shows what it needs signed in, one row each with its logo, and nothing when all is signed in", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  // The Claude app is signed in, its CLI isn't: both said, only the CLI offered.
+  let view = await home([], [{ agent: "claude", installed: true, signedIn: false, app: { installed: true, signedIn: true } }]);
+  assert.deepEqual(accessRows(), [
+    ["Claude Code CLI", "Not signed in"],
+    ["Claude app", "Signed in"],
+  ]);
+  assert.ok($(".access-row .claude-spark"), "the CLI wears Claude Code's spark");
+  await dom.waitFor(() => $(".access-row:nth-child(2) img.agent-logo"));
+  assert.equal($(".access-row:nth-child(2) img.agent-logo").getAttribute("alt"), "Claude app");
+  assert.equal($$(".access-row .access-action").length, 1);
+  assert.equal($(".access-note").textContent, "Reach replies through the CLI, so only the CLI needs signing in.");
+  await view.unmount();
+  views.length = 0;
+  // Codex: its app and CLI share one sign-in, so one row.
+  dom.window.localStorage.setItem("reach.chatAgent", "codex");
+  view = await home([], [{ agent: "codex", installed: true, signedIn: false }]);
+  assert.deepEqual(accessRows(), [["Codex", "Not signed in"]]);
+  assert.equal($(".access-note").textContent, "The Codex app and CLI share this sign-in.");
+  await view.unmount();
+  views.length = 0;
+  // All signed in: nothing to say.
+  await home([], signedIn);
+  assert.equal($(".access"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Chat shows what macOS itself is asking, above the sessions", async () => {
+  await home([codexSession()], signedIn, {
+    macPrompts: [{ id: "1", kind: "security", title: "“Tool” is an app downloaded from the internet.", detail: "", app: "Tool" }],
+  });
+  assert.equal($(".chat-home .mac-prompt .mac-dialog-message").textContent, "“Tool” is an app downloaded from the internet.");
+  assert.equal($(".chat-home .mac-prompt button"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("Claude Code signs in from Chat: the page opens here, the code goes to the Mac", async () => {
   let rechecked = 0;
   dom.window.localStorage.setItem("reach.chatAgent", "claude");
   await home([], [{ agent: "claude", installed: true, signedIn: false }], { recheck: () => rechecked++ });
-  assert.equal($(".chat-status.signed-out span").textContent, "Claude Code is signed out on your Mac. It's the claude command, which signs in separately from the Claude app.");
+  assert.deepEqual(accessRows(), [["Claude Code CLI", "Not signed in"]]);
   // No composer while signed out: signing in comes first.
   assert.equal($("textarea[aria-label='New Claude Code chat']"), null);
   await click(button("Sign in"));
@@ -971,14 +1082,14 @@ test("a session offers sign-in only when signing in is what's missing", async ()
   // Not running anywhere: signing in Claude Code is the way to reply.
   mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
   await open(claudeSession({ live: undefined }), signedOut);
-  await dom.waitFor(() => $(".as-hint"));
-  assert.match($(".as-hint").textContent, /^Sign in to Claude Code on your Mac/);
+  await dom.waitFor(() => $(".access"));
+  assert.deepEqual(accessRows(), [["Claude Code CLI", "Not signed in"]]);
   assert.ok(button("Sign in"));
   for (const view of views.splice(0)) await view.unmount();
   // Open in the Claude app: Reach takes over through the CLI, so signing in is still what's missing.
   mac.pages[`claude:${CLAUDE}`].session = claudeSession();
   await open(claudeSession(), signedOut);
-  await dom.waitFor(() => $(".as-hint"));
+  await dom.waitFor(() => $(".access"));
   assert.ok(button("Sign in"));
   for (const view of views.splice(0)) await view.unmount();
   // Running in a terminal: that's what holds it, not the sign-in.
@@ -987,6 +1098,7 @@ test("a session offers sign-in only when signing in is what's missing", async ()
   await open(inTerminal, signedOut);
   await dom.waitFor(() => $(".as-hint"));
   assert.match($(".as-hint").textContent, /terminal/);
+  assert.equal($(".access"), null);
   assert.equal(button("Sign in"), undefined);
 });
 

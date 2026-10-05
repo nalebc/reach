@@ -58,3 +58,75 @@ test("Home's circles are filled by the real app icons, terminals included", asyn
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });
+
+test("what macOS itself asks shows under Needs you as the Mac's, with its picture, and nothing to press", async () => {
+  const PNG = "data:image/png;base64,iVBORw0KGgo=";
+  const view = await dom.render(
+    React.createElement(HomeLive, {
+      features: { terminal: false, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: false, writeFiles: false },
+      device: { name: "Mac", roots: [] },
+      peer,
+      active: "mac",
+      connections: { mac: { state: "connected" } },
+      connection: "Direct connection",
+      terminals: [],
+      chats: [],
+      pending: [],
+      decide() {},
+      navigate() {},
+      openChat() {},
+      openTerminal() {},
+      openMacTab() {},
+      agentSessions: [],
+      macPrompts: [
+        {
+          id: "166",
+          kind: "privacy",
+          title: "“Claude” wants access to control “Terminal”.",
+          detail: "Allowing control will provide access to documents and data in “Terminal”. Claude needs this to run your scripts.",
+          app: "Claude",
+          buttons: ["Don’t Allow", "Allow"],
+          lines: [
+            "“Claude” wants access to control “Terminal”. Allowing control will provide access to documents and data in “Terminal”.",
+            "Claude needs this to run your scripts.",
+          ],
+          default: "Allow",
+          image: PNG,
+        },
+        { id: "9", kind: "password", title: "Your Mac is asking for your password", detail: "", app: null },
+        // macOS showed no text: its picture is the dialog.
+        { id: "12", kind: "security", title: "Your Mac is asking about an app", detail: "", app: null, buttons: [], lines: [], image: PNG },
+      ],
+      openAgentSession() {},
+      onShortcuts() {},
+      refreshSessions() {},
+      toast() {},
+    }),
+  );
+  const cards = () => [...dom.document.querySelectorAll(".home-needs .mac-prompt")];
+  await dom.waitFor(() => cards().length === 3);
+  const [privacy, password, pictured] = cards();
+  assert.equal(privacy.querySelector("header strong").textContent, "Your Mac is asking");
+  // Drawn as macOS draws the dialog: its message in bold, the rest, its buttons (the default one marked).
+  const dialog = privacy.querySelector(".mac-dialog");
+  assert.equal(
+    dialog.querySelector(".mac-dialog-message").textContent,
+    "“Claude” wants access to control “Terminal”. Allowing control will provide access to documents and data in “Terminal”.",
+  );
+  assert.equal(dialog.querySelector(".mac-dialog-info").textContent, "Claude needs this to run your scripts.");
+  assert.deepEqual([...dialog.querySelectorAll(".mac-dialog-buttons span")].map((b) => [b.textContent, b.className]), [
+    ["Don’t Allow", ""],
+    ["Allow", "default"],
+  ]);
+  assert.equal(privacy.querySelector("img.mac-prompt-image"), null, "drawn, not pictured");
+  assert.equal(privacy.querySelector(".mac-prompt-note").textContent, "Answer it on your Mac.");
+  // Answered at the Mac: nothing to press, on any.
+  assert.equal(dom.document.querySelector(".mac-prompt button, .mac-prompt a"), null);
+  assert.equal(password.querySelector("img.mac-prompt-image"), null);
+  assert.equal(password.querySelector(".mac-dialog-message").textContent, "Your Mac is asking for your password");
+  assert.equal(password.querySelector(".mac-dialog-buttons"), null);
+  assert.equal(pictured.querySelector("img.mac-prompt-image").getAttribute("src"), PNG);
+  assert.equal(pictured.querySelector(".mac-dialog"), null);
+  assert.deepEqual(dom.errors, []);
+  await view.unmount();
+});

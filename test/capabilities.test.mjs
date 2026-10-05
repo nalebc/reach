@@ -19,7 +19,7 @@ const { outputText } = ts.transpileModule(
     },
   },
 );
-const { workspaceCapabilities, pageAccessible } = await import(
+const { workspaceCapabilities, pageAccessible, morePlaces } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scopes = [
@@ -198,4 +198,39 @@ test("device discovery hides inaccessible tools and backend still rejects forbid
   assert.equal(ownerDevice.tools.codex.installed, false);
   assert.equal(ownerDevice.capabilities.codex, false);
   assert.equal(detections, 1);
+});
+
+test("More keeps Codex's row, waiting, while the computer checks it", () => {
+  const pages = [
+    "overview",
+    "sessions",
+    "files",
+    "apps",
+    "terminal",
+    "chat",
+    "screen",
+  ];
+  const bar = ["overview", "sessions", "screen", "terminal"];
+  const checking = { state: "checking" };
+  const caps = workspaceCapabilities(host("darwin"), checking);
+  assert.deepEqual(morePlaces(pages, bar, caps, checking), {
+    places: ["files", "apps", "chat"],
+    pending: ["chat"],
+  });
+  const ready = { state: "ready" };
+  assert.deepEqual(
+    morePlaces(pages, bar, workspaceCapabilities(host("darwin"), ready), ready),
+    { places: ["files", "apps", "chat"], pending: [] },
+  );
+  // Not there at all: no row.
+  const missing = { state: "missing" };
+  assert.deepEqual(
+    morePlaces(
+      pages,
+      bar,
+      workspaceCapabilities(host("darwin"), missing),
+      missing,
+    ),
+    { places: ["files", "apps"], pending: [] },
+  );
 });

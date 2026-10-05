@@ -1,0 +1,518 @@
+/* Reach's shared look, one place for it: app-style icons, inset grouped
+   lists, sentence-case section headings and status text. Used by More,
+   Settings and the rest; any computer (Mac, Windows, Linux), any phone. */
+:root {
+  --group-bg: rgb(255 255 255 / 0.045);
+  --group-edge: rgb(255 255 255 / 0.05);
+  --hairline: rgb(255 255 255 / 0.07);
+  --text-strong: #eef4ef;
+}
+
+/* Icons: glass orbs with thin monochrome line glyphs, as in Claude and
+   Codex, in Reach's dark green with its lime light. Colour comes only from
+   real marks (an agent's logo) and from lime for what's on or active. */
+.app-icon {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  color: #e6efe8;
+  background:
+    radial-gradient(
+      120% 90% at 30% 0%,
+      color-mix(in srgb, var(--lime) 10%, transparent),
+      transparent 60%
+    ),
+    linear-gradient(180deg, rgb(255 255 255 / 0.09), rgb(255 255 255 / 0.025));
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.09),
+    0 10px 24px -14px rgb(0 0 0 / 0.9);
+}
+.app-icon svg {
+  stroke-width: 1.75;
+}
+.app-icon.large {
+  width: 56px;
+  height: 56px;
+}
+/* In lists, just the glyph, like the apps' own menus. */
+.app-icon.small {
+  width: 28px;
+  height: 28px;
+  background: none;
+  box-shadow: none;
+  color: #cdd8d0;
+}
+/* A real mark (an agent's logo) fills its circle. */
+.app-icon.real {
+  overflow: hidden;
+  background: #101512;
+}
+.app-icon.real > img,
+.app-icon.real > .app-logo {
+  width: 118% !important;
+  height: 118% !important;
+  max-width: none;
+  object-fit: cover;
+}
+.app-icon.small.real {
+  width: 24px;
+  height: 24px;
+  margin: 2px;
+  border-radius: 7px;
+}
+/* Something on or active: lime light. */
+.app-icon.lit {
+  color: var(--lime);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--lime) 35%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--lime) 45%, transparent);
+}
+
+/* Online / offline, on a computer's icon. */
+.app-icon-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #6d7a71;
+  box-shadow: 0 0 0 3px #181f1a;
+}
+.app-icon.small .app-icon-dot {
+  width: 8px;
+  height: 8px;
+  right: -1px;
+  bottom: 0;
+  box-shadow: 0 0 0 2px #171d19;
+}
+.app-icon-dot.on {
+  background: var(--lime);
+}
+.status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.status-text::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6d7a71;
+}
+.status-text.on {
+  color: #cfeec0;
+}
+.status-text.on::before {
+  background: var(--lime);
+}
+
+/* Settings and computers: an inset grouped list. */
+.list-heading {
+  margin: 22px 0 8px 4px;
+  font:
+    600 13px system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: 0;
+  color: var(--muted, #93a096);
+}
+.list-group {
+  overflow: hidden;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+}
+.list-row {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.list-row + .list-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 59px;
+  right: 0;
+  border-top: 1px solid rgb(255 255 255 / 0.07);
+}
+.list-row:active {
+  background: rgb(255 255 255 / 0.06);
+}
+.list-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.list-row-text strong,
+.list-row-text small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.list-row-text strong {
+  font:
+    600 15px system-ui,
+    -apple-system,
+    sans-serif;
+  color: #eef4ef;
+}
+.list-row-text small {
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+.list-chevron {
+  flex: 0 0 auto;
+  color: #6f7d73;
+}
+.list-check {
+  flex: 0 0 auto;
+  color: var(--lime);
+}
+
+/* Settings, in the same language: a computer card, then sections as
+   headings over grouped rows, each row with its app-style icon. */
+.settings-workspace .settings-segments {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin: 4px 0 18px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--group-bg);
+  box-shadow: inset 0 0 0 1px var(--group-edge);
+}
+.settings-workspace .settings-segments button {
+  flex: 1;
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted, #93a096);
+  font:
+    600 14px system-ui,
+    -apple-system,
+    sans-serif;
+  box-shadow: none;
+}
+.settings-workspace .settings-segments button[aria-pressed="true"] {
+  background: rgb(255 255 255 / 0.1);
+  color: var(--text-strong);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.settings-workspace .settings-general .settings-panel,
+.settings-workspace .settings-access .settings-panel {
+  margin: 0 0 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.settings-workspace .settings-general .settings-panel > h2,
+.settings-workspace .settings-access .settings-panel > h2,
+.settings-workspace .access-group-title {
+  margin: 0 0 8px 4px;
+  font:
+    600 13px system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted, #93a096);
+}
+.settings-workspace .settings-general .settings-panel > p,
+.settings-workspace .settings-access .settings-panel > p {
+  margin: 8px 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted, #93a096);
+}
+/* The computer: one card, like the top of More. */
+.settings-workspace .settings-general .settings-panel.computer-settings-card {
+  padding: 14px;
+  border-radius: 20px;
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      color-mix(in srgb, var(--lime) 9%, transparent),
+      transparent 55%
+    ),
+    var(--group-bg);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+.settings-workspace .settings-device {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+}
+.settings-workspace .settings-general .settings-device h2 {
+  margin: 0 0 3px;
+  font:
+    650 17px/1.2 system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: 0;
+  color: #f1f6f2;
+}
+.settings-workspace .settings-device-status {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+.settings-workspace .settings-details {
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+.settings-workspace .settings-details summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 4px;
+  border-top: 1px solid var(--hairline);
+  font:
+    500 14px system-ui,
+    -apple-system,
+    sans-serif;
+  color: #dbe6de;
+  list-style: none;
+  cursor: pointer;
+}
+.settings-workspace .settings-details summary::-webkit-details-marker {
+  display: none;
+}
+.settings-workspace .settings-details summary::after {
+  content: "›";
+  margin-left: auto;
+  font-size: 20px;
+  color: #6f7d73;
+  transition: transform 0.15s ease;
+}
+.settings-workspace .settings-details[open] summary::after {
+  transform: rotate(90deg);
+}
+/* Rows: grouped, with an icon, the words, then the control. */
+.settings-workspace .switch-row,
+.settings-workspace .client-row,
+.settings-workspace .settings-access .invite-banner {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 58px;
+  margin: 0;
+  padding: 11px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--group-bg);
+  box-shadow: inset 0 0 0 1px var(--group-edge);
+  color: inherit;
+  text-align: left;
+}
+.settings-workspace .switch-row > div,
+.settings-workspace .client-row > div,
+.settings-workspace .invite-banner > span:not(.app-icon) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-workspace .switch-row strong,
+.settings-workspace .client-row strong,
+.settings-workspace .invite-banner strong {
+  font:
+    600 15px system-ui,
+    -apple-system,
+    sans-serif;
+  color: var(--text-strong);
+}
+.settings-workspace .switch-row small,
+.settings-workspace .client-row small,
+.settings-workspace .invite-banner small {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--muted, #93a096);
+}
+.settings-workspace .switch-row .switch,
+.settings-workspace .switch-row .button {
+  flex: 0 0 auto;
+}
+.settings-workspace .settings-access .invite-banner {
+  width: 100%;
+  margin-bottom: 22px;
+}
+.settings-workspace .settings-access .invite-banner > svg:last-child {
+  flex: 0 0 auto;
+  color: #6f7d73;
+}
+/* People and devices: one group per kind, rows joined by hairlines. */
+.settings-workspace .access-entry {
+  margin: 0;
+}
+.settings-workspace .access-entry .client-row {
+  border-radius: 0;
+  box-shadow: none;
+}
+.settings-workspace .access-entry:has(> .access-group-title) .client-row {
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+}
+.settings-workspace
+  .access-entry:has(+ .access-entry > .access-group-title)
+  .client-row,
+.settings-workspace .access-entry:last-of-type .client-row {
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 16px;
+  margin-bottom: 18px;
+}
+.settings-workspace .access-entry:not(:has(> .access-group-title)) .client-row {
+  border-top: 1px solid var(--hairline);
+}
+.settings-workspace .access-group-title {
+  margin-top: 4px;
+}
+.settings-workspace .invite-banner > .app-icon,
+.settings-workspace .client-row > .app-icon {
+  flex: 0 0 auto;
+}
+/* People rows carry details below the name: icon at the top. */
+.settings-workspace .settings-access .client-row {
+  align-items: flex-start;
+  padding-block: 13px;
+}
+.settings-workspace .settings-access .client-row > .app-icon {
+  margin-top: 1px;
+}
+.settings-workspace .settings-access .client-row small {
+  font-size: 12.5px !important;
+  line-height: 1.45;
+}
+
+/* One look across the pages on phones (the design language): pill text
+   buttons, round glass icon buttons, glass pill search fields and computer
+   chips, one card surface, one section label. Specialized views (a
+   terminal, the full-screen Screen, app threads) keep their own. */
+@media (max-width: 1024px), (pointer: coarse) {
+  .app-shell main .button:not(:is(.screen-expanded, .app-thread) *) {
+    border-radius: 999px;
+    padding-inline: 16px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .app-shell
+    main
+    .button.secondary:not(:is(.screen-expanded, .app-thread) *) {
+    border-color: transparent;
+    background: rgb(255 255 255 / 0.06);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    color: var(--text-strong);
+  }
+  .app-shell main .button.secondary:not(:is(.screen-expanded, .app-thread) *):active {
+    background: rgb(255 255 255 / 0.11);
+  }
+
+  /* Icon-only actions: round glass. */
+  .app-shell .files-tool {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    padding: 0;
+    border-color: transparent;
+    border-radius: 50%;
+    background: rgb(255 255 255 / 0.06);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    color: var(--text-strong);
+  }
+  /* In a list, a row's action is a bare icon; glass is for the header. */
+  .app-shell .files-tool.file-more {
+    background: none;
+    box-shadow: none;
+    color: #8d9a91;
+  }
+  .app-shell .files-tool.is-primary {
+    background: var(--lime);
+    color: var(--lime-ink);
+    box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--lime) 70%, transparent);
+  }
+
+  /* Search: a glass pill. */
+  .app-shell .apps-search,
+  .app-shell .files-header input {
+    border-color: transparent;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.05);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .app-shell .apps-search {
+    padding-inline: 16px;
+  }
+
+  /* The computer chips: glass pills; the one you're on lit softly. */
+  .app-shell .fleet-switcher button {
+    border-color: transparent;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.04);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    color: #b9c6bd;
+  }
+  .app-shell .fleet-switcher button[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--lime) 9%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime) 22%, transparent);
+    color: var(--text-strong);
+  }
+  .app-shell .fleet-switcher .fleet-add {
+    width: 37px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+  }
+
+  /* Cards: one dark green-black glass surface, no blue tint. */
+  .app-shell .home-hero {
+    border-color: transparent;
+    border-radius: 24px;
+    background:
+      radial-gradient(
+        ellipse at 50% 70%,
+        color-mix(in srgb, var(--lime) 9%, transparent),
+        transparent 65%
+      ),
+      #121714;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .app-shell main .simple-screen:not(.screen-expanded) {
+    border-color: transparent;
+    border-radius: 22px;
+    background: #121714;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+
+  /* Section labels: small, sentence case, quiet. */
+  .app-shell .apps-section h2,
+  .app-shell .home-live .home-section h2 {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--muted, #93a096);
+  }
+}

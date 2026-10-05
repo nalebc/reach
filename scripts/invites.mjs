@@ -1,21 +1,24 @@
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { loadJson } from "../server/core.mjs";
-import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
+import {
+  createGuestKeys,
+  guestPolicy,
+  GUEST_TAG,
+} from "../server/guest-keys.mjs";
 import { tailscaleJson } from "./tailscale.mjs";
 import { readPreferences } from "./configure.mjs";
 import { terminalPrompts } from "./prompts.mjs";
 import { stateDir } from "./home.mjs";
 
-// `reach invites`: one-time setup so invitations carry their own Tailscale
-// key (guests just open the link). Prints the exact policy lines for this
-// tailnet, then checks and saves the OAuth client.
+// `reach invites` (also a step of `reach setup`): one-time setup so
+// invitations carry their own Tailscale key; people and agents just open the
+// link. The easy way: paste one Tailscale access token and Reach adds its
+// rules to your policy and makes its own limited key (the token is used once,
+// never kept). Or do those two things by hand.
 
-export function guestPolicy({ addresses, port }) {
-  return {
-    tagOwners: { [GUEST_TAG]: ["autogroup:admin"] },
-    grants: [{ src: [GUEST_TAG], dst: addresses, ip: [`tcp:${port}`] }],
-  };
-}
+export { guestPolicy };
+export const KEYS_PAGE = "https://login.tailscale.com/admin/settings/keys";
 
 export async function setupInvites(root, deps = {}) {
   const print = deps.print || console.log;
@@ -42,20 +45,78 @@ export async function setupInvites(root, deps = {}) {
     ),
   ].filter(Boolean);
   const port = preferences.httpsPort || 8443;
+  const ui = deps.select && deps.ask ? null : terminalPrompts();
+  const select = deps.select || ui.select;
+  const ask = deps.ask || ui.ask;
+  const secret = deps.secret || ((m) => hiddenAsk(m));
+  const keys = createGuestKeys({ dataDir, self: device.id, ...deps.guestKeys });
+  print(
+    "\nInvite links · one-time setup\nPeople and agents you invite then join with just the link: no Tailscale app or account.",
+  );
+  const how = await select({
+    message: "How do you want to set this up?",
+    choices: [
+      {
+        value: "token",
+        label: "Paste one access token",
+        description:
+          "Reach adds its rules to your Tailscale policy and makes its own key.",
+        recommended: true,
+      },
+      {
+        value: "manual",
+        label: "Do it by hand",
+        description:
+          "Edit the policy and create the key in Tailscale yourself.",
+      },
+    ],
+  });
+  if (how === "token") {
+    print(
+      `\n1. On the page that opens: Generate access token (1 day is enough), then copy it.\n   ${KEYS_PAGE}\n2. Paste it below. Reach uses it once and doesn't keep it.`,
+    );
+    await (deps.open || openPage)(KEYS_PAGE);
+    const accessToken = (await secret("Access token (hidden):")).trim();
+    print("Checking your Tailscale policy…");
+    const result = await keys.setupFromAccessToken({
+      accessToken,
+      addresses,
+      port,
+      confirm: async (plan) => {
+        print(
+          `\nReach will add to your Tailscale policy (nothing else changes):\n${plan.added.map((l) => `  + ${l}`).join("\n")}`,
+        );
+        return (
+          (await select({
+            message: "Add these?",
+            choices: [
+              { value: "yes", label: "Add them", recommended: true },
+              {
+                value: "no",
+                label: "Cancel",
+                description: "Nothing is changed.",
+              },
+            ],
+          })) === "yes"
+        );
+      },
+    });
+    if (!result.added.length) print("Your policy already had Reach's rules.");
+    if (result.allowAll.length) print(allowAllWarning);
+    print(
+      "Invite links are ready. You can delete that access token in Tailscale now, or let it expire.",
+    );
+    return;
+  }
   const policy = guestPolicy({ addresses, port });
   print(`
-Invite keys · one-time setup (about 3 minutes)
-Guests then just open your link: no Tailscale account or app.
-
 1. Tailscale admin → Access controls (https://login.tailscale.com/admin/acls).
    Add these to your policy file (merge with what's there):
 
 ${JSON.stringify(policy, null, 2).replace(/^/gm, "   ")}
 
-   This lets guests reach Reach (port ${port}) on ${addresses.length > 1 ? "your linked computers" : "this computer"} and nothing else.
-   Important: Tailscale rules only ever allow. If your policy has a rule with
-   "src": ["*"], guests could reach every device and port it allows. Change
-   that "*" to "autogroup:member" (your own devices keep working).
+   This lets guests reach Reach (port ${port}) on ${addresses.length > 1 ? "your linked computers" : "this computer"}.
+${allowAllWarning.replace(/^/gm, "   ")}
 
 2. Tailscale admin → Settings → Trust credentials
    (https://console.tailscale.com/admin/settings/trust-credentials):
@@ -66,18 +127,29 @@ ${JSON.stringify(policy, null, 2).replace(/^/gm, "   ")}
 3. Paste the client ID and secret below. They stay on this computer (owner-only
    file), and are never sent to a phone or browser.
 `);
-  const ui = terminalPrompts();
-  const ask = deps.ask || ui.ask;
-  const secret = deps.secret || ((m) => hiddenAsk(m));
   const clientId = (await ask("OAuth client ID:")).trim();
   const clientSecret = (await secret("OAuth client secret (hidden):")).trim();
-  const keys = createGuestKeys({ dataDir, self: device.id, ...deps.guestKeys });
   print("Checking with Tailscale…");
   await keys.setup({ clientId, clientSecret });
   print(
     "Invite keys are ready. New invitations from your phone include a key; a running Reach uses it right away.",
   );
 }
+
+// Tailscale rules only ever allow: an "everyone reaches everything" rule
+// covers guest devices too. Reach doesn't change your rules; it says so.
+export const allowAllWarning = `Heads up: your policy has a rule letting every device reach everything ("src": ["*"]).
+Invited people and agents fall under it too, so they could reach more than Reach.
+To keep them to Reach, change that rule's "*" to "autogroup:member": your own
+devices keep working; other tagged devices and people you shared devices with
+would need their own rules.`;
+
+const openPage = (url) =>
+  new Promise((resolve) => {
+    if (process.platform !== "darwin" || !process.stdout.isTTY)
+      return resolve();
+    execFile("open", [url], () => resolve());
+  });
 
 // Read a line without echoing it.
 function hiddenAsk(message) {

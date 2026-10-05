@@ -8,12 +8,17 @@ import { createCodexDaemon } from "./codex-daemon.mjs";
 import { createCodexSessions } from "./codex.mjs";
 import { createCodexLive } from "./codex-live.mjs";
 import { createClaudeSessions } from "./claude.mjs";
-import { liveClaudeSessions } from "./processes.mjs";
+import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
-import { createClaudeImports } from "./claude-import.mjs";
+import { claudeAppAccess, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
+import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
+import { createOutbox } from "./outbox.mjs";
+import { createMacPrompts } from "../mac-prompts.mjs";
+import { apps as platformApps } from "../platform.mjs";
+import { desktopBinary } from "../desktop-native.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,13 +130,40 @@ export function createAgentSessions({
     open,
     resume: !process.env.NODE_TEST_CONTEXT,
   }),
+  // The Claude app's window, reloaded once nobody is at the Mac after Reach
+  // replies in a session it has shown (claude-import.mjs); never in tests.
+  claudeRefresh = process.env.NODE_TEST_CONTEXT
+    ? { add: async () => {}, close() {} }
+    : createClaudeRefresh({
+        file: path.join(dataDir, "claude-refresh.json"),
+        open,
+        asking: () => [...readSessionRegistry().values()].some((e) => e.where === "claude-app" && e.waiting),
+      }),
   // Claude Code's and Codex's prompts in any session (their apps' too),
   // answered from the phone through their PermissionRequest hooks
   // (agent-asks.mjs); made below when not given.
   agentAsks: givenAsks = null,
+  // Pressing a button on the Claude app's own consent card (claude-consent.mjs); never in tests.
+  pressConsent = process.env.NODE_TEST_CONTEXT
+    ? async () => {
+        throw Object.assign(new Error("Not in tests."), { status: 409 });
+      }
+    : (choice, expect) => pressClaudeConsent(choice, { dataDir, expect }),
+  claudeShown,
+  // Messages waiting for a busy Claude app session, kept until handed over
+  // (outbox.mjs); in memory only in tests.
+  outbox = createOutbox({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-outbox.json") }),
+  // Apps installed here, to show a consent card's apps with their icons.
+  installedApps = platformApps,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
   // Seconds since the Mac was last used (agent-asks.mjs reads it by default).
   macIdle,
+  // Whether the Claude app is installed and signed in (it signs in apart
+  // from the CLI Reach replies through).
+  claudeApp = () => claudeAppAccess({ registry: readSessionRegistry }),
+  // The Mac's own dialogs (privacy prompts, password requests), shown on the
+  // phone and answered at the Mac (mac-prompts.mjs).
+  macPrompts = createMacPrompts({ dataDir }),
 } = {}) {
   const adapters = { codex, claude };
   const adapter = (agent) => {
@@ -153,6 +185,19 @@ export function createAgentSessions({
       throw e;
     }
   };
+  // The Claude app's own consent card, answered from the phone when the app
+  // holds the session and its transcript still waits on the card.
+  const claudeConsent = createClaudeConsent({
+    press: pressConsent,
+    open,
+    ...(claudeShown ? { shown: claudeShown } : {}),
+    pending: async (id) => {
+      const { session } = await claude.read(id, { limit: 1 });
+      if (!session?.consent) return null;
+      const running = await liveNow().catch(() => new Map());
+      return running.get(id)?.where === "claude-app" ? session.consent : null;
+    },
+  });
   // Prompts wait for the phone only in sessions it can show: the Claude app's
   // and terminals', and Codex threads in its list. Headless runs (claude -p,
   // codex exec) and sessions Reach drives itself step aside at once.
@@ -172,7 +217,10 @@ export function createAgentSessions({
         return !!thread && !thread.headless;
       },
     });
-  if (listenForAsks) agentAsks.listen?.().catch(() => {});
+  if (listenForAsks) {
+    agentAsks.listen?.().catch(() => {});
+    macPrompts.start?.();
+  }
   // Working, not merely open: Reach's own turn, or an open process whose
   // transcript is mid-turn (recently) or just changed. The Claude app keeps a
   // process for every open session, so a process alone means nothing.
@@ -183,6 +231,12 @@ export function createAgentSessions({
     }
     if (claudeHost.running(s.id)) {
       s.status = claudeHost.view(s.id).status === "waiting" ? "waiting" : "running";
+      return;
+    }
+    // The Claude app's own consent card (its computer use, a folder): the
+    // registry says busy, the transcript's open call says what it waits on.
+    if (s.consent && s.live?.where === "claude-app") {
+      s.status = "waiting";
       return;
     }
     // Claude Code's own registry knows (busy, waiting on you, or idle).
@@ -259,33 +313,50 @@ export function createAgentSessions({
       throw blocked("This session is open in another Claude Code process on your Mac. Reply there.");
     return holder;
   };
-  // Messages waiting for the Claude app to finish its turn, in order.
-  const waiting = new Map(); // id -> [message]
+  // Messages waiting for the Claude app to finish its turn, in order, kept in
+  // the outbox until each is handed to Claude Code: never dropped, and one
+  // that can't go yet says why.
   let closed = false;
+  const delivering = new Set();
   const deliver = async (id) => {
-    const until = Date.now() + 2 * 60 * 60 * 1000;
-    while (!closed && waiting.get(id)?.length && Date.now() < until) {
-      // Waiting never keeps Reach from quitting.
-      await new Promise((r) => setTimeout(r, queueMs).unref?.());
-      if (closed) break;
-      try {
-        const holder = await holderOf(id);
-        if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) continue;
-        const list = waiting.get(id) || [];
-        waiting.delete(id);
-        for (const message of list) await claudeHost.send(id, message);
-      } catch {
-        /* try again on the next round */
+    if (delivering.has(id)) return;
+    delivering.add(id);
+    const started = Date.now();
+    try {
+      while (!closed && outbox.list(id).length) {
+        // Waiting never keeps Reach from quitting; after two hours, less often.
+        await new Promise((r) => setTimeout(r, Date.now() - started > 2 * 60 * 60 * 1000 ? 30000 : queueMs).unref?.());
+        if (closed) break;
+        const next = outbox.list(id)[0];
+        if (!next) break;
+        try {
+          const holder = await holderOf(id);
+          if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
+            outbox.problem(id, next.id, null);
+            continue;
+          }
+          const { id: messageId, at, error, ...message } = next;
+          await claudeHost.send(id, message);
+          outbox.remove(id, messageId);
+        } catch (e) {
+          outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
+        }
       }
+    } finally {
+      delivering.delete(id);
     }
-    waiting.delete(id);
   };
+  // Left waiting when Reach last stopped: on their way again.
+  for (const id of outbox.sessions()) void deliver(id);
   // Claude sessions started here join the Claude app's list once Reach lets
   // go of them, through the app's own import, when nobody is at the Mac (the
   // import switches the app's window), so they're there when you get to it.
   const startedHere = new Set();
-  claudeHost.onRelease?.((id) => {
+  // Sessions the app already lists get its window reloaded instead (it
+  // doesn't see what Reach added otherwise).
+  claudeHost.onRelease?.((id, { wrote } = {}) => {
     if (startedHere.delete(id)) void claudeImports.add(id);
+    else if (wrote) void claudeRefresh.add(id);
   });
   const host = (agent) => (adapter(agent), agent === "codex" ? codexLive : claudeHost);
   return {
@@ -300,14 +371,11 @@ export function createAgentSessions({
       const { session } = await claude.read(id, { limit: 1 });
       const message = { ...body, cwd: session.cwd };
       const holder = await holderOf(id);
-      if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
-        const list = waiting.get(id) || [];
-        list.push(message);
-        if (list.length === 1) {
-          waiting.set(id, list);
-          void deliver(id);
-        }
-        return { queued: true, delivered: false };
+      // After any still waiting, or while the app is busy: into the outbox.
+      if (outbox.list(id).length || (holder && ((await busy(id, holder)) || !(await handOver(holder))))) {
+        const queued = outbox.add(id, message);
+        void deliver(id);
+        return { queued: true, delivered: false, messageId: queued.id };
       }
       return claudeHost.send(id, message);
     },
@@ -322,30 +390,44 @@ export function createAgentSessions({
     respond: async (agent, id, promptId, answer) =>
       agentAsks.owns?.(promptId)
         ? agentAsks.answer(agent, id, promptId, answer)
-        : host(agent).respond(id, promptId, answer),
+        : agent === "claude" && claudeConsent.owns(promptId)
+          ? claudeConsent.answer(id, promptId, answer)
+          : host(agent).respond(id, promptId, answer),
     view(agent, id) {
       const view = host(agent).view(id);
       const asked = agentAsks.prompts?.(agent, id) || [];
       return {
         ...view,
         // One version for both, so the long poll wakes on either.
-        version: view.version + (agentAsks.version?.(agent, id) || 0),
+        version: view.version + (agentAsks.version?.(agent, id) || 0) + outbox.version(),
         ...(asked.length ? { status: "waiting", prompts: [...view.prompts, ...asked] } : {}),
-        ...(agent === "claude" ? { queued: waiting.get(id)?.length || 0 } : {}),
+        ...(agent === "claude"
+          ? {
+              queued: outbox.list(id).length,
+              // Sent from the phone, waiting their turn (shown until they're in the transcript).
+              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error }) => ({
+                id: messageId,
+                text,
+                images: images.length,
+                at,
+                ...(error ? { error } : {}),
+              })),
+            }
+          : {}),
       };
     },
     // Long poll: resolves when the session changes, or after `ms`.
     changes(agent, id, since, ms, signal) {
-      if (!agentAsks.onChange) return host(agent).changes(id, since, ms, signal);
       const hostVersion = host(agent).view(id).version;
-      if (hostVersion + agentAsks.version(agent, id) !== Number(since)) return Promise.resolve();
+      if (hostVersion + (agentAsks.version?.(agent, id) || 0) + outbox.version() !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
-        let stop = () => {};
+        const stops = [];
         const done = () => {
-          stop();
+          for (const stop of stops) stop();
           resolve();
         };
-        stop = agentAsks.onChange((a, sessionId) => a === agent && sessionId === id && done());
+        if (agentAsks.onChange) stops.push(agentAsks.onChange((a, sessionId) => a === agent && sessionId === id && done()));
+        stops.push(outbox.onChange((sessionId) => agent === "claude" && sessionId === id && done()));
         host(agent).changes(id, hostVersion, ms, signal).then(done);
       });
     },
@@ -383,11 +465,12 @@ export function createAgentSessions({
     // the Codex daemon (its open socket would keep Reach running).
     close() {
       closed = true;
-      waiting.clear();
       for (const agent of ["claude", "codex"]) signIn?.cancel?.(agent);
       claudeHost?.close?.();
       claudeImports?.close?.();
+      claudeRefresh?.close?.();
       agentAsks?.close?.();
+      macPrompts?.close?.();
       daemon.close?.();
     },
     async list() {
@@ -405,6 +488,8 @@ export function createAgentSessions({
         sessions,
         // The Codex app's projects, so its threads group as in its sidebar.
         projects: { codex: p.status === "fulfilled" ? p.value : [] },
+        // What the Mac itself is asking right now (answered at the Mac).
+        macPrompts: macPrompts.current?.().prompts || [],
         errors: {
           ...(c.status === "rejected" ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
           ...(k.status === "rejected" ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
@@ -424,7 +509,30 @@ export function createAgentSessions({
       // asks, from the transcript, where it was written before you answer.
       // Only the newest page ends where Claude is now.
       const newest = options?.before == null;
-      if (agent === "claude" && newest && result.session.held !== "reach" && result.session.live?.waiting) {
+      if (agent === "claude" && newest && result.session.status === "waiting" && result.session.consent) {
+        const { id: consentId, kind: about, title, reason, options, apps: names = [] } = result.session.consent;
+        // Built while the card is read (not at start: the compiler would hold
+        // up quitting), so the answer is quick.
+        if (listenForAsks && process.platform === "darwin") desktopBinary({ dataDir }, "claude-consent").catch(() => {});
+        const installed = names.length ? await Promise.resolve(installedApps()).catch(() => []) : [];
+        result.session.asking = {
+          kind: "consent",
+          id: consentId,
+          about,
+          title,
+          reason,
+          // As the app lists them, with the installed app's icon when found.
+          ...(names.length
+            ? {
+                apps: names.map((name) => {
+                  const app = installed.find((a) => [a.name, a.id].some((n) => n?.toLowerCase() === name.toLowerCase()));
+                  return { name: app?.name || name, ...(app ? { appId: app.id } : {}) };
+                }),
+              }
+            : {}),
+          ...(options ? { options } : {}),
+        };
+      } else if (agent === "claude" && newest && result.session.held !== "reach" && result.session.live?.waiting) {
         const tool = [...(result.items || [])].reverse().find((i) => i.role === "tool");
         if (tool?.status === "running")
           result.session.asking = tool.questions
@@ -436,13 +544,15 @@ export function createAgentSessions({
     // The agents on this Mac: the two Reach drives, then others it knows of
     // (installed, not yet supported), so the phone can show where it's going.
     async health() {
-      const results = await Promise.allSettled([codex.health(), claude.health()]);
-      const driven = results.map((r, i) => ({
+      const results = await Promise.allSettled([codex.health(), claude.health(), claudeApp()]);
+      const driven = results.slice(0, 2).map((r, i) => ({
         ...(r.status === "fulfilled"
           ? r.value
           : { agent: ["codex", "claude"][i], installed: false, signedIn: false, error: r.reason?.message }),
         name: ["Codex", "Claude Code"][i],
         supported: true,
+        // Claude: its app's own sign-in, shown next to the CLI's.
+        ...(i === 1 && results[2].status === "fulfilled" ? { app: results[2].value } : {}),
       }));
       const others = await detect().catch(() => []);
       return [...driven, ...others];

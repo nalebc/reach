@@ -45,7 +45,7 @@
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: #b9f56826;
+  background: #b9efd426;
   color: #dcfab3;
 }
 .transfer-tray.is-failed .transfer-icon {
@@ -134,7 +134,7 @@
 .transfer-actions .transfer-action {
   width: auto;
   padding: 0 12px;
-  border: 1px solid #b9f56855;
+  border: 1px solid #b9efd455;
   border-radius: 999px;
   color: #dcfab3;
   font-size: 13px;

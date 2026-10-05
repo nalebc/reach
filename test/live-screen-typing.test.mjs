@@ -174,21 +174,12 @@ test("in a field the computer identified, corrections and Enter go to that field
 
 test("each key in the row above the phone keyboard is sent once", async () => {
   const { sent, view } = await typingField();
-  for (const label of [
-    "Enter",
-    "Tab",
-    "Esc",
-    "Left",
-    "Up",
-    "Down",
-    "Right",
-    "Delete",
-  ])
+  for (const label of ["Enter", "tab", "esc", "Left", "Up", "Down", "Right"])
     button(label).click();
   await settle();
   assert.deepEqual(
     sent.map((a) => a.key),
-    ["enter", "tab", "escape", "left", "up", "down", "right", "backspace"],
+    ["enter", "tab", "escape", "left", "up", "down", "right"],
   );
   assert.deepEqual(dom.errors, []);
   await view.unmount();
@@ -221,10 +212,9 @@ async function openKeyboard() {
 const keyboardParts = () => ({
   fields: count(".remote-keyboard-sink"),
   keyRows: count(".typing-keys"),
-  hideButtons: count('[aria-label="Hide keyboard"]'),
   tapToType: count(".tap-to-type"),
 });
-const oneOfEach = { fields: 1, keyRows: 1, hideButtons: 1, tapToType: 1 };
+const oneOfEach = { fields: 1, keyRows: 1, tapToType: 1 };
 
 test("typing on the live screen sends exactly what was typed while frames keep arriving", async () => {
   const view = await controlledScreen();
@@ -260,7 +250,8 @@ test("the typing field and key row exist once, however often the keyboard opens"
     computer.frame();
     await settle(30);
     assert.deepEqual({ round, ...keyboardParts() }, { round, ...oneOfEach });
-    button("Hide keyboard").click();
+    // Done on the phone keyboard: the field loses focus.
+    dom.document.querySelector(".remote-keyboard-sink").blur();
     await settle(30);
     computer.frame();
     await settle(30);
@@ -273,6 +264,67 @@ test("the typing field and key row exist once, however often the keyboard opens"
       { round, fields: 0, keyRows: 0 },
     );
   }
+  assert.deepEqual(dom.errors, []);
+  await view.unmount();
+});
+
+test("Screen types with the terminal's key row: esc, tab, a sticky ⌘, arrows, Return", async () => {
+  const view = await controlledScreen();
+  const field = await openKeyboard();
+  const row = dom.document.querySelector(".typing-keys");
+  assert.equal(row.classList.contains("key-row"), true, "the shared key row");
+  assert.deepEqual(
+    [...row.querySelectorAll("button")].map(
+      (b) => b.getAttribute("aria-label") || b.textContent.trim(),
+    ),
+    ["esc", "tab", "⌘", "Left", "Up", "Down", "Right", "Enter"],
+  );
+  const tap = async (label) => {
+    button(label).click();
+    await settle();
+  };
+  await tap("esc");
+  await tap("Enter");
+  // ⌘ then a letter: a shortcut, not text; it lets go after one use.
+  await tap("⌘");
+  assert.equal(button("⌘").getAttribute("aria-pressed"), "true");
+  await typeInto(field, "c");
+  assert.equal(button("⌘").getAttribute("aria-pressed"), "false");
+  await typeInto(field, "x");
+  // ⌘ then an arrow: to the start of the line.
+  await tap("⌘");
+  await tap("Left");
+  await settle(30);
+  assert.deepEqual(typed(), [
+    { type: "key", key: "escape", modifiers: [] },
+    { type: "key", key: "enter", modifiers: [] },
+    { type: "key", key: "c", modifiers: ["meta"] },
+    { type: "text", text: "x" },
+    { type: "key", key: "left", modifiers: ["meta"] },
+  ]);
+  assert.deepEqual(dom.errors, []);
+  await view.unmount();
+});
+
+test("Paste puts the phone's clipboard where the cursor is on the computer, in one tap", async () => {
+  const view = await controlledScreen();
+  const clipboard = { text: "hello from the phone" };
+  Object.defineProperty(dom.window.navigator, "clipboard", {
+    configurable: true,
+    value: { readText: async () => clipboard.text, writeText: async () => {} },
+  });
+  button("Paste from your phone").click();
+  await dom.waitFor(() => typed().length === 2);
+  assert.deepEqual(typed(), [
+    { type: "clipboard-write", text: "hello from the phone" },
+    { type: "key", key: "v", modifiers: ["meta"] },
+  ]);
+  // Nothing copied: nothing is sent.
+  clipboard.text = "";
+  computer.reset();
+  button("Paste from your phone").click();
+  await settle(50);
+  assert.deepEqual(typed(), []);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });

@@ -224,6 +224,8 @@ See [Remote desktop setup, gestures, limits, and validation](docs/REMOTE_DESKTOP
 
 ## Agents
 
+**Invite an agent from your phone:** Share → **Agent**, name it, choose a folder and what it may do (read, edit, or run commands) and for how long, then **Invite**. Give it the one command shown (it needs Node 18+). It joins your tailnet by itself, even from a machine without Tailscale (once invite links are set up), and prints the line that adds Reach to Claude Code or Codex as an MCP server. It shows in **People with access**, where you can end it. On the agent's side: `node ~/.reach-agent/agent.mjs status | tools | call | leave`.
+
 For the one-command launcher, use `node scripts/agent.mjs connect --name MyAgent --scopes files,exec` with `REACH_URL` set to the printed private URL, then approve on your paired phone. The local `agent-token` command below uses the legacy `.reach` store unless you set `REACH_DATA=.reach/quick`.
 
 Create a credential **on the target computer**:

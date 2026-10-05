@@ -305,7 +305,7 @@
   animation: intro-exclaim 14.8s ease both;
 }
 .intro-found text {
-  fill: var(--lime, #b9f568);
+  fill: var(--lime, #b9efd4);
 }
 .intro-skip-button {
   position: absolute;
@@ -602,7 +602,7 @@
   }
   81.76%,
   100% {
-    filter: drop-shadow(0 0 6px rgb(185 245 104 / 0.35));
+    filter: drop-shadow(0 0 6px rgb(185 239 212 / 0.35));
   }
 }
 /* Its screen comes on with a flicker. */
@@ -696,17 +696,17 @@
     filter: none;
   }
   60.14% {
-    color: var(--lime, #b9f568);
-    fill: var(--lime, #b9f568);
+    color: var(--lime, #b9efd4);
+    fill: var(--lime, #b9efd4);
     transform: scale(1.14) translateY(-3px);
-    filter: drop-shadow(0 0 7px rgb(185 245 104 / 0.75));
+    filter: drop-shadow(0 0 7px rgb(185 239 212 / 0.75));
   }
   62.16%,
   100% {
-    color: var(--lime, #b9f568);
-    fill: var(--lime, #b9f568);
+    color: var(--lime, #b9efd4);
+    fill: var(--lime, #b9efd4);
     transform: scale(1);
-    filter: drop-shadow(0 0 4px rgb(185 245 104 / 0.4));
+    filter: drop-shadow(0 0 4px rgb(185 239 212 / 0.4));
   }
 }
 @keyframes intro-out {

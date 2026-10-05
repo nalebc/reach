@@ -49,10 +49,10 @@ before(async () => {
 after(async () => dom?.close());
 beforeEach(() => dom.window.localStorage.clear());
 
-const page = (source = "mac") =>
+const page = (source = "mac", on = peer) =>
   React.createElement(TerminalView, {
-    desktopTerminals: true,
-    peer,
+    desktopTerminals: on.platform === "darwin",
+    peer: on,
     sessions: [],
     selected: "",
     onSelect() {},
@@ -155,4 +155,16 @@ test("the swipe hand shows once, only with another terminal to go to", async () 
   );
   await view.unmount();
   assert.deepEqual(dom.errors, []);
+});
+
+test("on a Windows computer the note says computer, not Mac", async () => {
+  tabs = [];
+  const view = await dom.render(
+    page("reach", { ...peer, id: "pc", platform: "win32" }),
+  );
+  const hint = await dom.waitFor(() =>
+    view.container.querySelector(".terminal-hint"),
+  );
+  assert.match(hint.textContent, /open a terminal on your computer\./);
+  await view.unmount();
 });

@@ -36,7 +36,17 @@ export type AgentQuestion = {
 };
 export type AgentAsking =
   | { kind: "question"; questions: AgentQuestion[] }
-  | { kind: "permission"; text: string; command?: boolean };
+  | { kind: "permission"; text: string; command?: boolean }
+  // The Claude app's own consent card (using apps, a folder).
+  | {
+      kind: "consent";
+      id?: string;
+      about?: "apps" | "screen" | "teach" | "folder";
+      title: string;
+      reason?: string;
+      apps?: { name: string; appId?: string }[];
+      options?: string[];
+    };
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
@@ -61,6 +71,8 @@ export type AgentHealth = {
   resetsAt?: number | null;
   // Codex: free rate-limit resets the account holds.
   resetCredits?: number;
+  // Claude: its app's own sign-in (the CLI's is `signedIn`).
+  app?: { installed: boolean; signedIn: boolean };
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
@@ -102,7 +114,10 @@ export type LiveView = {
   streaming: string;
   activity: string | null;
   items: number;
+  // Claude: messages sent from the phone, waiting their turn on the Mac.
+  outbox?: OutboxMessage[];
 };
+export type OutboxMessage = { id: string; text: string; images: number; at: number; error?: string };
 export type AgentModel = {
   id: string;
   name: string;
@@ -115,6 +130,19 @@ export type AgentModel = {
   isDefault: boolean;
   // Claude Code: whether this model takes Auto mode.
   autoMode?: boolean;
+};
+// A dialog macOS itself shows (server/mac-prompts.mjs), answered at the Mac.
+export type MacPrompt = {
+  id: string;
+  kind: "privacy" | "security" | "password";
+  title: string;
+  detail: string;
+  app: string | null;
+  buttons?: string[];
+  // The dialog's own lines (its message first) and the button Return presses.
+  lines?: string[];
+  default?: string;
+  image?: string;
 };
 // A project as the Codex app's sidebar shows it: a name and its folders.
 export type AgentProject = { id: string; name: string; roots: string[] };
@@ -248,6 +276,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<AgentProject[]>([]);
+  const [macPrompts, setMacPrompts] = useState<MacPrompt[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
   const [failure, setFailure] = useState("");
   const alive = useRef(true);
@@ -261,7 +290,13 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     try {
       const r = await request<
         | { unchanged: true; version: string }
-        | { sessions: AgentSession[]; errors: Record<string, string>; projects?: { codex?: AgentProject[] }; version: string }
+        | {
+            sessions: AgentSession[];
+            errors: Record<string, string>;
+            projects?: { codex?: AgentProject[] };
+            macPrompts?: MacPrompt[];
+            version: string;
+          }
       >(peer, `/api/sessions${known.current ? `?known=${known.current}` : ""}`);
       if (!alive.current) return;
       known.current = r.version;
@@ -270,6 +305,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
       setSessions(r.sessions);
       setErrors(r.errors || {});
       setProjects(r.projects?.codex || []);
+      setMacPrompts(r.macPrompts || []);
     } catch (e) {
       if (alive.current) setFailure((e as Error).message);
     }
@@ -307,7 +343,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
       document.removeEventListener("visibilitychange", visible);
     };
   }, [load, everyMs]);
-  return { sessions, errors, health, failure, projects, reload: load, recheck: () => recheck.current() };
+  return { sessions, errors, health, failure, projects, macPrompts, reload: load, recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -334,7 +370,7 @@ export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
 
 export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; mode?: string };
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
-  post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean }>(
+  post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
     peer,
     `${sessionPath(s)}/messages`,
     body,

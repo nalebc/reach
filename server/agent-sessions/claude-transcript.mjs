@@ -28,8 +28,59 @@ const relative = (file, cwd) =>
     ? file.slice(cwd.length + 1)
     : file;
 
+// The Claude app's own consent cards: letting Claude use apps (computer use)
+// or a folder. They show in its window while the call waits, with no hook and
+// no "waiting" in Claude Code's registry, so the waiting call is the sign.
+const CONSENT = /^mcp__(?:computer[-_]use__(request_access|request_full_control|request_teach_access)|ccd_directory__(request_directory))$/;
+const appNames = (apps) => (Array.isArray(apps) ? apps : []).map((a) => clip(String(a), 60)).filter(Boolean).slice(0, 8);
+const appList = (apps) => {
+  const names = appNames(apps);
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] || "apps";
+};
+export function consentOf(name, input = {}) {
+  const m = CONSENT.exec(String(name));
+  if (!m) return null;
+  const reason = clip(String(input.reason ?? ""), 400);
+  // Worded as the app's card (verified for apps: "Allow Claude to use
+  // Calculator?", then Deny or Allow for this session).
+  switch (m[1] || m[2]) {
+    case "request_access":
+      return {
+        kind: "apps",
+        title: `Allow Claude to use ${appList(input.apps)}?`,
+        reason,
+        apps: appNames(input.apps),
+        options: ["Deny", "Allow for this session"],
+      };
+    case "request_full_control":
+      return { kind: "screen", title: "Allow Claude to take over the screen?", reason };
+    case "request_teach_access":
+      return { kind: "teach", title: `Allow Claude to guide you through ${appList(input.apps)}?`, reason, apps: appNames(input.apps) };
+    default:
+      return {
+        kind: "folder",
+        title: input.path ? `Allow Claude to access ${clip(String(input.path), 200)}?` : "Claude wants you to pick a folder",
+        reason: "",
+      };
+  }
+}
+
 function toolItem(block, result, cwd, maxOutput) {
   const input = block.input || {};
+  const consent = consentOf(block.name, input);
+  if (consent)
+    return {
+      id: block.id,
+      role: "tool",
+      status: result ? (result.is_error ? "failed" : "completed") : "running",
+      kind: "tool",
+      text: consent.title,
+      detail: result ? clip(textOf(result.content) || String(result.content ?? ""), maxOutput) : "",
+      // Kept while the Claude app waits for an answer. Letting Claude use
+      // apps (the card Reach knows word for word) can be answered from the
+      // phone; its id names the request.
+      ...(result ? {} : { consent: { ...consent, ...(consent.kind === "apps" ? { id: `consent:${block.id}` } : {}) } }),
+    };
   const output = result
     ? clip(textOf(result.content) || String(result.content ?? ""), maxOutput)
     : "";

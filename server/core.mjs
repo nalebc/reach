@@ -282,8 +282,45 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   }
   // A guest invite and its redeemed credential share one absolute deadline.
   // Both transitions use the credential lock, including single-use redemption.
+  // Folders chosen by browsing (for guests and agents): real folders inside
+  // what Reach shares, never Reach's own private data.
+  function chooseFolders(folders) {
+    const chosen = [];
+    if (!Array.isArray(folders) || folders.length > 20)
+      throw fail(400, "Choose up to 20 folders.");
+    for (const f of folders) {
+      if (
+        !f ||
+        !Number.isInteger(f.root) ||
+        !config.roots[f.root] ||
+        typeof f.path !== "string" ||
+        f.path.length > 4096
+      )
+        throw fail(400, "Choose folders on this computer.");
+      const dir = safePath(config.roots, f.root, f.path);
+      if (!fs.statSync(dir).isDirectory())
+        throw fail(400, "Choose a folder, not a file.");
+      // (A folder that contains it is fine: its files stay hidden there.)
+      const real = (p) => {
+        try {
+          return fs.realpathSync(p);
+        } catch {
+          return path.resolve(p);
+        }
+      };
+      if (
+        [config.dataDir, ...(config.privatePaths || [])].some((p) =>
+          within(real(p), dir),
+        )
+      )
+        throw fail(403, "Reach's own private folder can't be shared.");
+      chosen.push(dir);
+    }
+    return chosen;
+  }
   // What you choose when inviting someone:
-  //   roots/write  folders, read or read/write
+  //   roots/write  shared folders by index, read or read/write
+  //   folders      any folder inside them: [{ root, path }] (path relative)
   //   screen       false | "view" | "control" (true means "view")
   //   apps         undefined | "all" | [app ids]: watch those apps' windows
   //   terminal     their own terminals;  agents  AI sessions (Codex)
@@ -292,6 +329,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     name,
     ttlSeconds,
     roots = [],
+    folders = [],
     write = false,
     screen = false,
     apps,
@@ -300,6 +338,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     full = false,
   }) {
     const screenMode = screen === true ? "view" : screen;
+    const chosen = chooseFolders(folders);
     const appList =
       apps === undefined || apps === "all"
         ? apps
@@ -326,6 +365,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       typeof full !== "boolean" ||
       (!full &&
         !roots.length &&
+        !chosen.length &&
         !screenMode &&
         !appList &&
         !terminal &&
@@ -344,7 +384,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         ? [...ALL_SCOPES]
         : [
             "device",
-            ...(roots.length
+            ...(roots.length || chosen.length
               ? ["files:read", ...(write ? ["files:write"] : [])]
               : []),
             ...(screenMode ? ["screen"] : []),
@@ -355,7 +395,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           ],
       guestRoots: full
         ? [...config.roots]
-        : [...new Set(roots)].map((r) => config.roots[r]),
+        : [
+            ...new Set([
+              ...roots.map((r) => config.roots[r]),
+              ...chosen,
+            ]),
+          ],
       ...(Array.isArray(appList) && !full ? { guestApps: appList } : {}),
       inviteHash: hash(token),
       createdAt: new Date().toISOString(),
@@ -379,7 +424,75 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       scopes: client.scopes,
     };
   }
-  // The credential works only on the Tailscale device that redeemed it.
+  // Invite an agent: its own folders and access, for up to 90 days, joined
+  // within a short window (a pasted but unused command stops working).
+  // Agents never get screen or app control, or manage access.
+  function inviteAgent({
+    name,
+    ttlSeconds,
+    joinSeconds = 900,
+    folders = [],
+    write = false,
+    exec = false,
+    terminal = false,
+    codex = false,
+  }) {
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 80 ||
+      !Number.isInteger(ttlSeconds) ||
+      ttlSeconds < 60 ||
+      ttlSeconds > 90 * 86400 ||
+      !Number.isInteger(joinSeconds) ||
+      joinSeconds < 60 ||
+      joinSeconds > 86400 ||
+      [write, exec, terminal, codex].some((v) => typeof v !== "boolean")
+    )
+      throw fail(
+        400,
+        "Name the agent and choose how long it may use this computer (up to 90 days).",
+      );
+    // At least one folder: it's where the agent's files, commands and
+    // sessions start.
+    const roots = chooseFolders(folders);
+    if (!roots.length)
+      throw fail(400, "Choose at least one folder for the agent.");
+    const scopes = [
+      "device",
+      "files:read",
+      ...(write ? ["files:write"] : []),
+      ...(exec ? ["exec"] : []),
+      ...(terminal ? ["terminal"] : []),
+      ...(codex ? ["codex"] : []),
+    ];
+    if (scopes.some((s) => !AGENT_SCOPES.includes(s)))
+      throw fail(400, "Invalid agent access.");
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const client = {
+      id: id(),
+      kind: "agent",
+      name: name.trim(),
+      scopes,
+      // Its own folders and limits, not a profile in the agent policy file.
+      policy: { invite: true, roots, maxJobMs: 30 * 60000 },
+      inviteHash: hash(token),
+      inviteExpiresAt: now + joinSeconds * 1000,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: now + ttlSeconds * 1000,
+    };
+    changeClients((latest) => [...latest, client]);
+    return {
+      invitation: token,
+      clientId: client.id,
+      expiresAt: client.expiresAt,
+      joinBy: client.inviteExpiresAt,
+      scopes,
+    };
+  }
+  // A guest or agent invitation, used once. The credential works only on the
+  // Tailscale device that redeemed it.
   function redeemGuest(invitation, identity) {
     if (
       typeof invitation !== "string" ||
@@ -393,9 +506,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     changeClients((latest) => {
       const client = latest.find(
         (c) =>
-          c.kind === "guest" &&
+          ["guest", "agent"].includes(c.kind) &&
           c.inviteHash === hash(invitation) &&
-          c.expiresAt > Date.now(),
+          c.expiresAt > Date.now() &&
+          !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
       );
       if (!client)
         throw fail(
@@ -412,7 +526,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           nodeId: identity.nodeId,
           ...(identity.tagged ? { tagged: true } : {}),
         };
-      result = { token, clientId: client.id, expiresAt: client.expiresAt };
+      delete client.inviteExpiresAt;
+      result = {
+        token,
+        clientId: client.id,
+        expiresAt: client.expiresAt,
+        kind: client.kind,
+        scopes: client.scopes,
+      };
       return latest;
     });
     return result;
@@ -479,16 +600,19 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verify,
     verifyDigest,
     inviteGuest,
+    inviteAgent,
     redeemGuest,
     pair,
     issue,
     list: () =>
       loadJson(file, []).map(({ hash, inviteHash, ...rest }) => ({
         ...rest,
-        ...(rest.kind === "guest"
+        ...(rest.kind === "guest" || rest.policy?.invite
           ? {
+              // An agent that never joined in time can't anymore.
               status:
-                rest.expiresAt <= Date.now()
+                rest.expiresAt <= Date.now() ||
+                (inviteHash && rest.inviteExpiresAt <= Date.now())
                   ? "expired"
                   : inviteHash
                     ? "invited"

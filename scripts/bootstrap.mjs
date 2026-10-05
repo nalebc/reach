@@ -163,6 +163,29 @@ async function update() {
     await run([path.join(root, "scripts/bootstrap.mjs"), "install"]);
   } else console.log("Reach is up to date. Restart it to use the new version.");
 }
+// Hand Reach over to background mode. The LaunchAgent starts its own Reach,
+// which takes its own launcher lock, so this process lets go of it first.
+const serviceInstalled = () => {
+  try {
+    return !!JSON.parse(
+      fs.readFileSync(path.join(state, "service.json"), "utf8"),
+    ).installed;
+  } catch {
+    return false;
+  }
+};
+async function startInBackground(options) {
+  if (locked) {
+    fs.rmSync(lockFile, { force: true });
+    locked = false;
+  }
+  if (process.platform === "darwin") {
+    const { ensureRuntime } = await import("./runtime.mjs");
+    await ensureRuntime(state);
+  }
+  const { backgroundService } = await import("./background-service.mjs");
+  await backgroundService({ ...options, command: "install" }, root);
+}
 try {
   let options = parseOptions(process.argv.slice(2));
   const { configure, readPreferences, applyPreferences } =
@@ -173,10 +196,12 @@ try {
   } else if (options.help) {
     console.log(`Reach — your computer, within reach.
 
-${command}                     Foreground private Tailscale connection
-${command} configure           Guided Tailscale account and phone setup
+${command}                     Start Reach (the first run walks you through setup)
+${command} setup [section]     Change your setup: account, invites, background
+${command} configure           Tailscale account and file sharing (part of setup)
 ${command} approve             Approve a new phone on this computer
 ${command} invites             Set up invite keys (guests need no Tailscale app)
+${command} link [name]         Link another Reach computer (approve phones once)
 ${command} update              Update to the latest Reach (installed with npm)
 ${command} import <folder>     Bring paired phones and settings from another Reach folder
 ${command} --version           Show the installed version
@@ -198,6 +223,22 @@ Stay-awake uses temporary power assertions; it never changes system settings
 or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
+  } else if (options.command === "setup") {
+    if (!process.stdin.isTTY)
+      throw Error(`Run ${command} setup in an interactive terminal.`);
+    const { runSetup } = await import("./setup.mjs");
+    const result = await runSetup(root, { only: options.setupSection });
+    if (result.ran.includes("background")) {
+      const installed = serviceInstalled();
+      if (result.launch === "background" && !installed) {
+        await ensureTailscale();
+        options = applyPreferences(options, readPreferences(root), []);
+        await startInBackground(options);
+      } else if (result.launch === "foreground" && installed)
+        console.log(
+          `Reach still runs in the background. To stop that: ${command} uninstall (ends its terminals and jobs).`,
+        );
+    }
   } else if (options.command === "configure") {
     await ensureTailscale();
     await configure(root);
@@ -209,6 +250,9 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     );
   } else if (options.command === "update") {
     await update();
+  } else if (options.command === "link") {
+    const { linkComputers } = await import("./link.mjs");
+    await linkComputers(root, options.linkName);
   } else if (options.command === "invites") {
     const { setupInvites } = await import("./invites.mjs");
     await setupInvites(root);
@@ -272,6 +316,10 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       "start.html",
       "vite.config.mjs",
       "tsconfig.json",
+      // Reach for agents, bundled into dist/agent.mjs.
+      "scripts/agent-remote.mjs",
+      "scripts/mcp-server.mjs",
+      "scripts/agent-client.mjs",
     ]);
     if (
       !packaged &&
@@ -285,7 +333,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       !packaged &&
       (stamp.dependencies !== dependencies ||
         stamp.source !== source ||
-        !fs.existsSync("dist/index.html"))
+        !fs.existsSync("dist/index.html") ||
+        !fs.existsSync("dist/agent.mjs"))
     ) {
       console.log("Reach: preparing the phone interface…");
       await npm(["run", "build"]);
@@ -296,26 +345,38 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       });
     // The browser sign-in client, for phones without the Tailscale app.
     if (!packaged && !options.local) {
-      const { buildTailnet, tailnetCurrent } = await import("./build-tailnet.mjs");
+      const { buildTailnet, tailnetCurrent } =
+        await import("./build-tailnet.mjs");
       if (!tailnetCurrent()) {
-        console.log("Reach: preparing browser sign-in for phones (first run or update, about 2 minutes)…");
+        console.log(
+          "Reach: preparing browser sign-in for phones (first run or update, about 2 minutes)…",
+        );
         try {
           if (!(await buildTailnet()))
             console.log(
               "Reach: Go isn't installed, so phones need the Tailscale app. Install Go (https://go.dev/dl) to let phones sign in from the browser.",
             );
         } catch (error) {
-          console.log(`Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`);
+          console.log(
+            `Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`,
+          );
         }
       }
     }
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
+    let firstRun = null;
     if (!options.local && process.platform !== "win32") {
       if (packaged && !readPreferences(root))
         console.log(
           `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
         );
+      // First run in a terminal: the guided setup, start to finish. A
+      // computer already set up (or a background service) never sees it.
+      if (!options.service && process.stdin.isTTY) {
+        const { needsOnboarding, runSetup } = await import("./setup.mjs");
+        if (needsOnboarding(root)) firstRun = await runSetup(root);
+      }
       // A background service can't ask; it reports what's missing instead.
       await ensureTailscale(options.service ? { interactive: false } : {});
       const preferences = readPreferences(root) || (await configure(root));
@@ -323,10 +384,18 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       if (!options.service)
         options = applyPreferences(options, preferences, process.argv.slice(2));
     }
-    const { launch } = await import("./launch.mjs");
-    await launch(options, root);
+    if (firstRun?.launch === "background" && !serviceInstalled())
+      await startInBackground(options);
+    else {
+      const { launch } = await import("./launch.mjs");
+      await launch(options, root);
+    }
   }
 } catch (error) {
-  console.error(`\nReach: ${error.message}`);
-  process.exitCode = 1;
+  // A paused setup already said how to continue.
+  if (error.paused) process.exitCode = 130;
+  else {
+    console.error(`\nReach: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

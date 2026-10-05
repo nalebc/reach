@@ -99,35 +99,7 @@
 .terminal-screen .xterm {
   height: 100%;
 }
-.terminal-key-row {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  padding: 6px;
-  background: #0b1012;
-  border-top: 1px solid #ffffff14;
-  touch-action: manipulation;
-}
-.terminal-key-row button {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #ffffff1f;
-  border-radius: 9px;
-  background: #ffffff12;
-  color: #e9f0ec;
-  font: 600 13px system-ui, sans-serif;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.terminal-key-row button:active,
-.terminal-key-row button[aria-pressed="true"] {
-  background: var(--lime, #b9f568);
-  color: #0b1012;
-}
+/* The key row itself is KeyRow (key-row.css), shared with Screen and apps. */
 .terminal-menu-scrim {
   position: absolute;
   inset: 0;
@@ -310,7 +282,7 @@ h1.terminal-switch {
   left: 50%;
   top: 6px;
   margin-left: -15px;
-  color: var(--lime, #b9f568);
+  color: var(--lime, #b9efd4);
   animation: terminal-swipe-hand 1.7s 0.6s ease-in-out infinite both;
 }
 @keyframes terminal-swipe-in {

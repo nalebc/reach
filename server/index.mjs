@@ -7,7 +7,8 @@ import {
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
 import { createFleet } from "./fleet.mjs";
-import { createGuestKeys } from "./guest-keys.mjs";
+import { createGuestKeys, guestPolicy } from "./guest-keys.mjs";
+import { tailscaleJson } from "../scripts/tailscale.mjs";
 import {
   AGENTS,
   agentCommand,
@@ -54,7 +55,7 @@ import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
-import { ScreenControl } from "./screen.mjs";
+import { ScreenControl, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub } from "./remote-screen.mjs";
 import {
   AppThreads,
@@ -150,6 +151,9 @@ export async function createReach(overrides = {}) {
   };
   syncOrigins();
   fleet?.onChange(syncOrigins);
+  // Links made from another terminal (./reach link) apply within 30 s.
+  const originSync = fleet ? setInterval(syncOrigins, 30000) : null;
+  originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
   const guestKeys = config.tailscaleOwner
@@ -266,10 +270,75 @@ export async function createReach(overrides = {}) {
     overrides.appScreenFactory || ((options) => appScreenSource(config, options)),
   );
   const inputConnections = new Map();
-  const closeInput = (clientId) => {
+  const closeInput = (clientId, message) => {
     for (const [id, ws] of inputConnections)
-      if (!clientId || id === clientId) ws.endControl?.();
+      if (!clientId || id === clientId) ws.endControl?.(message);
   };
+  // Pause: the person at the computer gets it back. Streams end, nobody
+  // controls it, and apps on the phone come back to its own screens (none
+  // closed). Terminals, agents and files keep running out of sight. Resume
+  // puts the apps back on the phone; screens reconnect by themselves.
+  let paused = settings.paused === true;
+  screenControl.paused = appThreads.paused = paused;
+  const PAUSED = pausedMessage();
+  const notPaused = () => {
+    if (paused) throw fail(423, PAUSED);
+  };
+  let pausing = Promise.resolve();
+  // One at a time, in order; one that fails doesn't stop the next.
+  const setPaused = (value) =>
+    (pausing = pausing.catch(() => {}).then(async () => {
+      if (value === paused) return { paused };
+      paused = screenControl.paused = appThreads.paused = value;
+      settings.paused = value;
+      atomicJson(settingsFile, settings);
+      if (value) {
+        screenControl.clear();
+        // The phone takes control back on Resume when it hears why.
+        closeInput(undefined, PAUSED);
+        // Retryable: a phone that doesn't know about pausing reconnects by
+        // itself once the computer resumes.
+        screenStreams.stop(PAUSED);
+        remoteScreens.stop(PAUSED, true);
+        appScreens.stop(PAUSED, true);
+      }
+      for (const nudge of presenceNudges) nudge();
+      // The menu bar's helper hears it before resuming apps (it refuses to
+      // lend windows while it thinks Reach is paused), after holding them.
+      const menu = () =>
+        appThreads.resident && appThreads.showMenu().catch(() => {});
+      if (!value) await menu();
+      try {
+        await (value ? appThreads.hold() : appThreads.resumeAll());
+      } catch (e) {
+        console.warn(`Reach: ${value ? "pause" : "resume"}: ${e.message}`);
+      }
+      if (value) await menu();
+      record("settings", value ? "Paused" : "Resumed");
+      for (const nudge of presenceNudges) nudge();
+      return { paused };
+    }));
+  appThreads.onMenu = (value) =>
+    void setPaused(value).catch((e) =>
+      console.warn(`Reach: ${e.message}`),
+    );
+  // Reach's item in the Mac's menu bar, with Pause and Resume. Tests never
+  // start the real helper.
+  if (
+    overrides.menuBar ||
+    (process.platform === "darwin" &&
+      !overrides.appDisplays &&
+      !process.env.NODE_TEST_CONTEXT)
+  )
+    server.once("listening", () =>
+      appThreads
+        .showMenu()
+        .catch(
+          (e) =>
+            appThreads.stopping ||
+            console.warn(`Reach: menu bar item: ${e.message}`),
+        ),
+    );
   let captureInFlight;
   let inputInFlight = false;
   const events = [];
@@ -456,7 +525,8 @@ export async function createReach(overrides = {}) {
         : {}),
     });
   });
-  app.post("/api/guest/redeem", (req, res) =>
+  // An invitation (a guest's or an agent's), used once.
+  app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) =>
     res.json({
       ...auth.redeemGuest(req.body.invitation, req.reachIdentity),
       device: {
@@ -552,6 +622,24 @@ export async function createReach(overrides = {}) {
     if (r.status === "denied") accessRequests.delete(r.id);
     res.json({ status: r.status });
   });
+  // Would this computer let the asking device in by itself (approved here
+  // already, or on a linked computer)? A phone joining your linked computers
+  // asks first, so it never leaves a request waiting in a terminal.
+  app.get("/api/auth/vouched", async (req, res) => {
+    const id = req.reachIdentity;
+    if (!ownerIdentity(id, config.tailscaleOwner))
+      return res.json({ approved: false });
+    const here = auth
+      .list()
+      .some(
+        (c) =>
+          c.kind === "device" &&
+          c.tailscale?.userId === id.userId &&
+          c.tailscale?.nodeId === id.nodeId &&
+          c.expiresAt > Date.now(),
+      );
+    res.json({ approved: here || !!(await fleet?.approvedElsewhere(id)) });
+  });
   // Asked by linked computers, identified by Tailscale alone.
   app.post("/api/fleet/approved", (req, res) => {
     if (!fleet) throw fail(404, "This action does not exist.");
@@ -580,7 +668,8 @@ export async function createReach(overrides = {}) {
     );
     if (!client)
       return res.status(401).json({ error: "Access expired or was revoked." });
-    if (!client.scopes.includes("admin"))
+    // Your computers: you only, never an invited guest.
+    if (!client.scopes.includes("admin") || client.kind === "guest")
       return res
         .status(403)
         .json({ error: "This credential does not grant admin access." });
@@ -730,6 +819,7 @@ export async function createReach(overrides = {}) {
       }),
       ...(tools && { tools }),
       host: loadJson(hostFile, null),
+      ...(paused && { paused: true }),
     });
   });
   app.delete("/api/device/access", (req, res) => {
@@ -737,6 +827,11 @@ export async function createReach(overrides = {}) {
     res.type("json").send(JSON.stringify({ ok: true }));
   });
   app.get("/api/settings", (req, res) => res.json(settings));
+  app.post("/api/settings/pause", async (req, res) => {
+    if (typeof req.body.paused !== "boolean")
+      throw fail(400, "Send paused as true or false.");
+    res.json(await setPaused(req.body.paused));
+  });
   app.post("/api/settings", (req, res) => {
     if (typeof req.body.screen !== "boolean")
       throw fail(400, "Send screen as true or false.");
@@ -781,9 +876,105 @@ export async function createReach(overrides = {}) {
     res.json({ status: r.status });
   });
   app.get("/api/activity", (req, res) => res.json(events));
-  app.get("/api/guests/keys", (req, res) =>
-    res.json({ configured: !!guestKeys?.configured() }),
-  );
+  // Invite keys: whether they're set up here, and the policy lines for this
+  // tailnet (this computer and the linked ones, on Reach's port).
+  const readStatus =
+    overrides.tailscaleStatus || (() => tailscaleJson(["status", "--json"]));
+  app.get("/api/guests/keys", async (req, res) => {
+    let policy = null;
+    try {
+      const st = await readStatus();
+      const peers = Object.values(st?.Peer || {});
+      const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
+      const addresses = [
+        v4(st?.Self),
+        ...(fleet?.links() || []).map((l) =>
+          v4(peers.find((p) => p.ID === l.nodeId)),
+        ),
+      ].filter(Boolean);
+      if (addresses.length)
+        policy = guestPolicy({
+          addresses,
+          port: Number(new URL(config.publicOrigin).port || 443),
+        });
+    } catch {}
+    res.json({ configured: !!guestKeys?.configured(), policy });
+  });
+  // One-time setup from your phone: the credential is checked with Tailscale
+  // and kept on this computer only; it's never sent back.
+  app.post("/api/guests/keys", async (req, res) => {
+    if (!guestKeys)
+      throw fail(404, "Invite links need Tailscale device approval here.");
+    // The easy way: one access token (used once, never kept). Reach adds its
+    // rules to the tailnet policy and makes its own limited key.
+    if (req.body?.accessToken) {
+      const st = await readStatus();
+      const peers = Object.values(st?.Peer || {});
+      const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
+      const result = await guestKeys.setupFromAccessToken({
+        accessToken: req.body.accessToken,
+        addresses: [
+          v4(st?.Self),
+          ...(fleet?.links() || []).map((l) =>
+            v4(peers.find((p) => p.ID === l.nodeId)),
+          ),
+        ].filter(Boolean),
+        port: Number(new URL(config.publicOrigin).port || 443),
+      });
+      return res.json({
+        configured: true,
+        added: result.added,
+        allowAll: result.allowAll.length > 0,
+      });
+    }
+    await guestKeys.setup({
+      clientId: req.body?.clientId,
+      clientSecret: req.body?.clientSecret,
+    });
+    res.json({ configured: true });
+  });
+  // An invite key for one invitation, whichever computers it covers: made by
+  // the computer holding the OAuth client. `clientIds`: its invitations here
+  // (revoking one of them ends the key and the guest's device).
+  app.post("/api/guests/key", async (req, res) => {
+    if (!guestKeys?.configured())
+      throw fail(
+        409,
+        "Set up invite keys first: run ./reach invites on this computer.",
+      );
+    const ttl = req.body?.ttlSeconds;
+    if (!Number.isInteger(ttl) || ttl < 60 || ttl > 90 * 86400)
+      throw fail(400, "Choose a duration from 1 minute to 90 days.");
+    // An agent's key only needs to live until it joins.
+    const keySeconds = req.body?.keySeconds;
+    if (
+      keySeconds !== undefined &&
+      (!Number.isInteger(keySeconds) || keySeconds < 60 || keySeconds > ttl)
+    )
+      throw fail(400, "Invalid key lifetime.");
+    const guests = new Set(
+      auth
+        .list()
+        .filter((c) => c.kind === "guest" || c.policy?.invite)
+        .map((c) => c.id),
+    );
+    const key = await guestKeys.createInvite({
+      ttlSeconds: ttl,
+      keySeconds,
+      clientIds: (Array.isArray(req.body.clientIds) ? req.body.clientIds : [])
+        .filter((id) => typeof id === "string" && guests.has(id))
+        .slice(0, 10),
+    });
+    res.status(201).json({ key: key.key, hostname: key.hostname });
+  });
+  // Invite an agent: its folders and access, one-time join (see inviteAgent).
+  app.post("/api/agents/invitations", (req, res) => {
+    if (req.client.kind === "guest")
+      throw fail(403, "Only the computer's owner can invite agents.");
+    const grant = auth.inviteAgent(req.body || {});
+    record("agent", `Invited agent ${req.body.name}`);
+    res.status(201).json(grant);
+  });
   app.post("/api/guests", async (req, res) => {
     const grant = auth.inviteGuest(req.body);
     // With an invite key, the guest needs no Tailscale account or app.
@@ -1199,6 +1390,7 @@ export async function createReach(overrides = {}) {
     ),
   );
   app.post("/api/terminals/desktop", async (req, res) => {
+    notPaused();
     const result = await desktopTerminals.create(
       req.body.provider,
       authorizeDesktopTerminal(req),
@@ -1247,6 +1439,9 @@ export async function createReach(overrides = {}) {
   app.post("/api/terminals/desktop/:id/:action", async (req, res) => {
     if (!["send", "focus", "close"].includes(req.params.action))
       throw fail(400, "Unknown terminal action.");
+    // Typing into a tab doesn't touch the screen; bringing one forward or
+    // closing it does.
+    if (req.params.action !== "send") notPaused();
     const result = await desktopTerminals.action(
       req.params.id,
       req.params.action,
@@ -1316,6 +1511,7 @@ export async function createReach(overrides = {}) {
     else versioned(req, res, page);
   });
   app.post("/api/sessions/:agent/:id/open", async (req, res) => {
+    notPaused();
     const result = await agentSessions.openInApp(
       req.params.agent,
       req.params.id,
@@ -1577,6 +1773,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/apps/shortcuts", async (req, res) => {
     shortcutOwner(req, res);
+    notPaused();
     const result = await appShortcuts.run(req.body.id, () =>
       shortcutOwner(req, res),
     );
@@ -1599,6 +1796,7 @@ export async function createReach(overrides = {}) {
     res.set("Cache-Control", "no-store").json(result);
   });
   app.post("/api/apps/launch", async (req, res) => {
+    notPaused();
     const result = await launchApp(req.body.id);
     record("app", `Opened ${result.name}`);
     res.json(result);
@@ -1638,22 +1836,45 @@ export async function createReach(overrides = {}) {
       .set("Cache-Control", "no-store")
       .json(appThreads.list().filter((t) => appAllowed(req.client, t.appId)));
   });
+  // Guests watch apps you've opened on your phone; only you (or someone
+  // with full access) open, resize or close them: opening can move an app's
+  // window off your screen.
+  const appManager = (req) => {
+    if (!req.client.scopes.includes("admin"))
+      throw fail(
+        403,
+        "Only the computer's owner can open or close apps. Ask them to open it; you can watch it then.",
+      );
+  };
   app.post("/api/screen/apps", async (req, res) => {
     appOwner(req, String(req.body?.appId ?? ""));
+    notPaused();
+    if (!req.client.scopes.includes("admin")) {
+      const open = appThreads
+        .list()
+        .find((t) => t.appId === req.body?.appId && t.state === "running");
+      if (!open) appManager(req);
+      return res.json(open);
+    }
     const thread = await appThreads.open(req.body?.appId, req.body);
     appOwner(req);
     res.json(thread);
   });
   app.patch("/api/screen/apps/:id", async (req, res) => {
     appOwner(req, threadApp(req.params.id));
+    appManager(req);
+    notPaused();
     res.json(await appThreads.rotate(req.params.id, req.body));
   });
   app.post("/api/screen/apps/:id/activate", async (req, res) => {
     appOwner(req, threadApp(req.params.id));
+    notPaused();
     res.json(await appThreads.activate(req.params.id));
   });
   app.delete("/api/screen/apps/:id", async (req, res) => {
     appOwner(req, threadApp(req.params.id));
+    appManager(req);
+    notPaused();
     res.json(await appThreads.close(req.params.id));
   });
   // Quitting an app, and typing into it, stay with people who control.
@@ -1668,11 +1889,13 @@ export async function createReach(overrides = {}) {
     appOwner(req, threadApp(req.params.id));
     if (!req.client.scopes.includes("admin"))
       throw fail(403, "Only a paired person can quit apps.");
+    notPaused();
     res.json(await appThreads.quit(req.params.id, req.body?.confirm === true));
   });
   app.get("/api/screen/apps/:id/fields", async (req, res) => {
     appOwner(req, threadApp(req.params.id));
     appControl(req);
+    notPaused();
     res.set("Cache-Control", "no-store").json(await appThreads.fields(req.params.id));
   });
   app.post("/api/screen/control", (req, res) => {
@@ -1709,6 +1932,7 @@ export async function createReach(overrides = {}) {
   app.get("/api/screen", async (req, res) => {
     if (!config.screen)
       throw fail(403, "Screen viewing is off. Turn it on in Reach first.");
+    notPaused();
     // Share simultaneous captures instead of spawning a process per viewer.
     if (!captureInFlight)
       captureInFlight = screenCapture(config).finally(() => {
@@ -1761,6 +1985,18 @@ export async function createReach(overrides = {}) {
     res.status(404).json({ error: "This action does not exist." }),
   );
   const dist = fileURLToPath(new URL("../dist/", import.meta.url));
+  // Which phone interface this Reach serves: an open page on an older one
+  // reloads itself when it's idle (src/build-reload.ts).
+  let build = "";
+  try {
+    build = crypto
+      .createHash("sha256")
+      .update(fs.readFileSync(path.join(dist, "index.html")))
+      .digest("base64url")
+      .slice(0, 12);
+  } catch {
+    /* no build (development): nothing to compare */
+  }
   app.get("/download/:token", async (req, res) => {
     const link = links.find(req.params.token);
     if (!link)
@@ -1866,6 +2102,8 @@ export async function createReach(overrides = {}) {
               .slice(0, 12);
           // Only lists this client could read anyway.
           return {
+            ...(build && { build }),
+            ...(paused && { paused: true }),
             ...(scopes.includes("terminal") && {
               terminals: digest(
                 terminals.list().filter((s) => mayAccess(client, s)),
@@ -1980,6 +2218,11 @@ export async function createReach(overrides = {}) {
           reject("Screen access was turned off, expired or revoked.");
           return false;
         }
+        // Also a stream that was still starting when Reach paused.
+        if (paused) {
+          reject(PAUSED, 423);
+          return false;
+        }
         return true;
       };
       const deadline = setTimeout(() => ws.terminate(), 5000);
@@ -2007,6 +2250,7 @@ export async function createReach(overrides = {}) {
               throw fail(403, "Screen access is not granted.");
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
+            notPaused();
             credential = message.token;
             ws.clientId = client.id;
             if (appWindow) ws.appThread = message.thread;
@@ -2169,6 +2413,11 @@ export async function createReach(overrides = {}) {
     codex,
     jobs,
     instance,
+    // Pause or resume from the computer itself (its terminal).
+    setPaused,
+    get paused() {
+      return paused;
+    },
     async listenPrivate(socketPath) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
@@ -2192,6 +2441,7 @@ export async function createReach(overrides = {}) {
     async close() {
       clearInterval(approvalCleanup);
       for (const timer of guestTimers) clearTimeout(timer);
+      clearInterval(originSync);
       screenStreams.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);

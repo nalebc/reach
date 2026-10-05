@@ -8,14 +8,11 @@ import {
   Check,
   X,
   ArrowUp,
-  ArrowDown,
-  CornerDownLeft,
   ChevronDown,
   Copy,
   ArrowLeft,
   ChevronRight,
   ChevronLeft,
-  ArrowRight,
   FolderOpen,
   Search,
   Pointer,
@@ -29,6 +26,7 @@ import {
 } from "./terminal-options";
 import MacTerminalView from "./MacTerminalView";
 import TerminalList from "./TerminalList";
+import KeyRow from "./KeyRow";
 import { describeMacTerminal } from "./terminal-titles";
 import { macTerminalsFingerprint } from "./mac-terminal-live";
 import { useFirstTime } from "./first-time";
@@ -486,8 +484,6 @@ export function TerminalView({
     codex: "Codex",
     claude: "Claude Code",
   };
-  // The key row must not take focus, or the phone keyboard would close.
-  const keep = (event: React.PointerEvent) => event.preventDefault();
   return (
     <div className="terminal-page" ref={page}>
       <header className="terminal-bar">
@@ -604,32 +600,22 @@ export function TerminalView({
             ref={mount}
             onClick={() => terminal.current?.focus()}
           />
-          <div className="terminal-key-row" role="toolbar" aria-label="Terminal keys">
-            <button onPointerDown={keep} onClick={() => send("\x1b")}>esc</button>
-            <button onPointerDown={keep} onClick={() => send("\t")}>tab</button>
-            <button
-              aria-pressed={ctrl}
-              onPointerDown={keep}
-              onClick={() => armCtrl(!ctrl)}
-            >
-              ctrl
-            </button>
-            <button aria-label="Left" onPointerDown={keep} onClick={() => arrow("left")}>
-              <ArrowLeft size={16} />
-            </button>
-            <button aria-label="Up" onPointerDown={keep} onClick={() => arrow("up")}>
-              <ArrowUp size={16} />
-            </button>
-            <button aria-label="Down" onPointerDown={keep} onClick={() => arrow("down")}>
-              <ArrowDown size={16} />
-            </button>
-            <button aria-label="Right" onPointerDown={keep} onClick={() => arrow("right")}>
-              <ArrowRight size={16} />
-            </button>
-            <button aria-label="Enter" onPointerDown={keep} onClick={() => send("\r")}>
-              <CornerDownLeft size={16} />
-            </button>
-          </div>
+          <KeyRow
+            className="terminal-key-row"
+            label="Terminal keys"
+            modifier="ctrl"
+            armed={ctrl}
+            onArm={armCtrl}
+            onKey={(key) =>
+              key === "escape"
+                ? send("\x1b")
+                : key === "tab"
+                  ? send("\t")
+                  : key === "enter"
+                    ? send("\r")
+                    : arrow(key)
+            }
+          />
         </>
       ) : (
         <TerminalList

@@ -190,11 +190,26 @@ test("an invitation to watch one app: that app's window only, nothing else", asy
     listed.body.every((a) => a.id === CHROME),
     "only the invited app",
   );
+  // Guests don't open apps (that can move your window off your screen):
+  // Chrome isn't open yet, so they're told to ask you.
+  const early = await as("/api/screen/apps", {
+    method: "POST",
+    body: { appId: CHROME, width: 393, height: 852 },
+  });
+  assert.equal(early.status, 403);
+  assert.match(early.body.error, /Only the computer's owner can open or close apps/);
+  // You open Chrome on your phone; now they can watch it.
+  const yours = await call("/api/screen/apps", {
+    method: "POST",
+    body: { appId: CHROME, width: 393, height: 852 },
+  });
+  assert.equal(yours.status, 200);
   const opened = await as("/api/screen/apps", {
     method: "POST",
     body: { appId: CHROME, width: 393, height: 852 },
   });
   assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  assert.equal(opened.body.id, yours.body.id, "the same window you opened");
   assert.equal(await stream(guest.token, { thread: opened.body.id }), "open");
   assert.equal(
     (
@@ -261,11 +276,20 @@ test("an invitation to watch one app: that app's window only, nothing else", asy
       403,
       `${method} ${route}`,
     );
-  // Closing their own app window is fine.
+  // Nor can they close or resize it: it's yours.
   assert.equal(
     (await as(`/api/screen/apps/${opened.body.id}`, { method: "DELETE" }))
       .status,
-    200,
+    403,
+  );
+  assert.equal(
+    (
+      await as(`/api/screen/apps/${opened.body.id}`, {
+        method: "PATCH",
+        body: { width: 852, height: 393 },
+      })
+    ).status,
+    403,
   );
 });
 
@@ -390,4 +414,69 @@ test("terminal and AI invitations: only their own sessions, nothing of yours", a
     (await call("/api/screen/displays", { token: guest.token })).status,
     403,
   );
+});
+
+test("folders chosen by browsing: exactly that folder, nothing beside or above it", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-perm-folders-"));
+  const files = path.join(dir, "files");
+  for (const d of ["Projects/acme/designs", "Projects/other", "Taxes", "state/inside"])
+    fs.mkdirSync(path.join(files, d), { recursive: true });
+  fs.writeFileSync(path.join(files, "Projects/acme/brief.txt"), "brief");
+  fs.writeFileSync(path.join(files, "Projects/other/secret.txt"), "secret");
+  fs.writeFileSync(path.join(files, "Taxes/2025.pdf"), "taxes");
+  const reach = await createReach({
+    roots: [files],
+    dataDir: path.join(dir, "private"),
+    privatePaths: [path.join(files, "state")],
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  t.after(async () => {
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const call = (route, { token = owner.token, method = "GET", body } = {}) =>
+    fetch(url + route, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const invite = (folders, extra = {}) =>
+    call("/api/guests", { method: "POST", body: { name: "Sam", ttlSeconds: 900, folders, ...extra } });
+
+  // Refused: a file, a path outside, Reach's private folder, too many, bad shapes.
+  assert.equal((await invite([{ root: 0, path: "Projects/acme/brief.txt" }])).status, 400);
+  assert.equal((await invite([{ root: 0, path: "../" }])).status, 403);
+  assert.equal((await invite([{ root: 0, path: "state/inside" }])).status, 403);
+  assert.equal((await invite([{ root: 0, path: "state" }])).status, 403);
+  assert.equal((await invite([{ root: 5, path: "" }])).status, 400);
+  assert.equal((await invite([{ root: 0, path: 42 }])).status, 400);
+  assert.equal((await invite(Array(21).fill({ root: 0, path: "Taxes" }))).status, 400);
+
+  // Shared: Projects/acme only, read-only.
+  const created = await invite([{ root: 0, path: "Projects/acme" }]);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.scopes, ["device", "files:read"]);
+  const guest = (
+    await call("/api/guest/redeem", { token: "", method: "POST", body: { invitation: created.body.invitation } })
+  ).body;
+  const as = (route, opts = {}) => call(route, { token: guest.token, ...opts });
+  const device = (await as("/api/device")).body;
+  assert.deepEqual(device.roots.map((r) => [r.name, r.path]), [["acme", fs.realpathSync(path.join(files, "Projects/acme"))]]);
+  const listing = await as("/api/files?root=0&path=");
+  assert.deepEqual(listing.body.items.map((i) => i.name), ["designs", "brief.txt"]);
+  assert.equal((await as("/api/files/content?root=0&path=brief.txt")).status, 200);
+  // Nothing beside or above it.
+  assert.equal((await as("/api/files?root=0&path=..")).status, 403);
+  assert.equal((await as("/api/files/content?root=0&path=../other/secret.txt")).status, 403);
+  assert.equal((await as("/api/files?root=1&path=")).status, 400);
+  // Read-only: no uploads, no new folders.
+  assert.equal((await as("/api/files/folder", { method: "POST", body: { root: 0, path: "", name: "x" } })).status, 403);
+
+  // Editable, and several folders (and old-style shared roots still work).
+  const both = await invite([{ root: 0, path: "Projects/acme" }, { root: 0, path: "Taxes" }], { write: true });
+  assert.deepEqual(both.body.scopes, ["device", "files:read", "files:write"]);
+  const legacy = await call("/api/guests", { method: "POST", body: { name: "Old", ttlSeconds: 900, roots: [0] } });
+  assert.equal(legacy.status, 201);
 });

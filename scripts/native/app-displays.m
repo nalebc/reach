@@ -7,6 +7,11 @@
 // JSON lines on stdin/stdout. Requests {"id":n,"cmd":...} get {"re":n,...} or
 // {"re":n,"error":...}; events are {"event":...}. Closing a thread, "Return all"
 // in the menu bar, stdin EOF or SIGTERM give every window back first.
+//
+// Pause ("pause", or Pause Reach in the menu bar) gives this Mac back to
+// whoever is at it: every window comes back to the real screens, none is
+// closed, the hidden displays go, and the threads are held. "resume" puts each
+// held window back on a hidden display for the phone.
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <IOKit/pwr_mgt/IOPMLib.h>
@@ -23,6 +28,7 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
 @end
 
 static const int MAX_THREADS = 4;
+static NSString *const PAUSED = @"Reach is paused on this Mac.";
 // macOS only runs a desktop on modes of at least 640×600 points, and only
 // starts a display in Retina (2x) by itself from 800 points wide; narrower ones
 // came up at 1x, streaming blurry. A phone-width window therefore sits inside a
@@ -209,6 +215,9 @@ static double num(id value, double fallback) { return [value isKindOfClass:NSNum
 @property CGRect original, region;
 @property AXObserverRef observer;
 @property BOOL settling, quitting;
+// Paused: the window is back on this Mac's screens and belongs to it until
+// Resume. Nothing closes or moves it meanwhile.
+@property BOOL held;
 @end
 @implementation Thread
 @end
@@ -217,6 +226,9 @@ static double num(id value, double fallback) { return [value isKindOfClass:NSNum
 @property(strong) NSMutableDictionary<NSString *, Thread *> *threads;
 @property(strong) NSMutableArray *queue;
 @property BOOL busy, ending, endRequested;
+// `resident`: Reach asked for its menu bar item to stay while it runs (the
+// "state" command), with Pause or Resume in it.
+@property BOOL paused, resident;
 @property(strong) NSStatusItem *item;
 @end
 
@@ -487,7 +499,7 @@ static CGSize windowSize(CGSize phone, CGSize minimum) {
 }
 // The app moved or resized its own window, or closed it.
 - (void)changed:(Thread *)t closed:(BOOL)closed {
-  if (self.threads[t.key] != t || t.settling) return;
+  if (self.threads[t.key] != t || t.settling || t.held) return;
   if (closed) {
     [self unobserve:t];
     t.window = nil;
@@ -537,7 +549,9 @@ static id commandN(NSArray *items, int depth) {
   NSString *key = str(request[@"thread"]), *path = str(request[@"path"]);
   NSDictionary *phone = request[@"phone"];
   if (!key || !path || ![phone isKindOfClass:NSDictionary.class]) return @{@"error": @"Invalid request."};
-  if (self.threads[key]) return [self describe:self.threads[key]];
+  if (self.paused) return @{@"error": PAUSED};
+  if (self.threads[key] && !self.threads[key].held) return [self describe:self.threads[key]];
+  if (self.threads[key]) return [self resume:request];
   if (![self available]) return @{@"error": @"This Mac can't create hidden displays."};
   if (!AXIsProcessTrusted())
     return @{@"error": @"Allow Accessibility for Reach in System Settings → Privacy & Security → Accessibility.", @"code": @"accessibility"};
@@ -649,6 +663,7 @@ static id commandN(NSArray *items, int depth) {
   Thread *t = self.threads[str(request[@"thread"]) ?: @""];
   NSDictionary *phone = request[@"phone"];
   if (!t || ![phone isKindOfClass:NSDictionary.class]) return @{@"error": @"That app isn't open on your phone."};
+  if (t.held) return @{@"error": PAUSED};
   if (!t.window) return @{@"error": @"That window was closed on the Mac."};
   t.phone = CGSizeMake(MIN(1000, MAX(200, num(phone[@"w"], t.phone.width))), MIN(1000, MAX(200, num(phone[@"h"], t.phone.height))));
   t.settling = YES;
@@ -663,6 +678,7 @@ static id commandN(NSArray *items, int depth) {
 - (NSDictionary *)fields:(NSDictionary *)request {
   Thread *t = self.threads[str(request[@"thread"]) ?: @""];
   if (!t || !t.window) return @{@"error": @"That app isn't open on your phone."};
+  if (t.held) return @{@"error": PAUSED};
   static NSSet *editable;
   static NSArray *names;
   static dispatch_once_t once;
@@ -723,6 +739,7 @@ static id commandN(NSArray *items, int depth) {
 - (NSDictionary *)quit:(NSDictionary *)request {
   Thread *t = self.threads[str(request[@"thread"]) ?: @""];
   if (!t) return @{@"quit": @YES};
+  if (t.held) return @{@"error": PAUSED};
   NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:t.pid];
   if (!app || app.terminated) {
     [self ended:t.pid];
@@ -759,6 +776,7 @@ static id commandN(NSArray *items, int depth) {
 - (NSDictionary *)activate:(NSDictionary *)request {
   Thread *t = self.threads[str(request[@"thread"]) ?: @""];
   if (!t) return @{@"error": @"That app isn't open on your phone."};
+  if (t.held) return @{@"error": PAUSED};
   [[NSRunningApplication runningApplicationWithProcessIdentifier:t.pid] activateWithOptions:0];
   if (t.window) {
     setAttr(t.window, kAXMainAttribute, kCFBooleanTrue);
@@ -766,11 +784,43 @@ static id commandN(NSArray *items, int depth) {
   }
   return @{@"ok": @YES};
 }
+// The window back on this Mac's own screens: a borrowed one where it was
+// (minimized or full screen again if it was), one Reach opened, or one whose
+// place is gone, centered near the top of the main screen.
+- (BOOL)bringBack:(Thread *)t {
+  id window = t.window;
+  if (!window) return NO;
+  CGRect main = CGDisplayBounds(CGMainDisplayID());
+  CGRect target = t.original;
+  BOOL onScreen = NO;
+  CGDirectDisplayID online[32];
+  uint32_t count = 0;
+  CGGetOnlineDisplayList(32, online, &count);
+  for (uint32_t i = 0; i < count; i++)
+    if (online[i] != t.displayID && ![self threadForDisplay:online[i]] && CGRectIntersectsRect(CGDisplayBounds(online[i]), target))
+      onScreen = YES;
+  if (t.created || CGRectIsEmpty(target) || !onScreen) {
+    CGSize size = frameOf(window).size;
+    size.width = MIN(size.width, main.size.width - 80);
+    size.height = MIN(size.height, main.size.height - 120);
+    target = CGRectMake(CGRectGetMidX(main) - size.width / 2, main.origin.y + 60, size.width, size.height);
+  }
+  BOOL returned = near(setFrame(window, target), target);
+  if (t.wasMinimized) setAttr(window, kAXMinimizedAttribute, kCFBooleanTrue);
+  if (t.wasFullScreen) setAttr(window, CFSTR("AXFullScreen"), kCFBooleanTrue);
+  return returned;
+}
 // A window Reach opened is closed; one it borrowed goes back where it was.
 // If closing is blocked (unsaved changes, "close 5 tabs?"), the window comes
-// back to the main screen instead of vanishing with the display.
+// back to the main screen instead of vanishing with the display. A held
+// (paused) window is already this Mac's and stays exactly as it is: Reach
+// quitting while paused never closes what someone is using.
 - (NSDictionary *)giveBack:(Thread *)t {
   [self unobserve:t];
+  if (t.held) {
+    t.window = nil;
+    return @{@"closed": @NO, @"returned": @YES};
+  }
   BOOL closed = NO, returned = NO;
   id window = t.window;
   if (window && t.created) {
@@ -782,35 +832,15 @@ static id commandN(NSArray *items, int depth) {
       for (id w in windowsOf(t.app)) if (windowNumber(w) == t.windowID) closed = NO;
     }
   }
-  if (window && !closed) {
-    CGRect main = CGDisplayBounds(CGMainDisplayID());
-    CGRect target = t.original;
-    BOOL onScreen = NO;
-    CGDirectDisplayID online[32];
-    uint32_t count = 0;
-    CGGetOnlineDisplayList(32, online, &count);
-    for (uint32_t i = 0; i < count; i++)
-      if (online[i] != t.displayID && ![self threadForDisplay:online[i]] && CGRectIntersectsRect(CGDisplayBounds(online[i]), target))
-        onScreen = YES;
-    if (t.created || CGRectIsEmpty(target) || !onScreen) {
-      CGSize size = frameOf(window).size;
-      size.width = MIN(size.width, main.size.width - 80);
-      size.height = MIN(size.height, main.size.height - 120);
-      target = CGRectMake(CGRectGetMidX(main) - size.width / 2, main.origin.y + 60, size.width, size.height);
-    }
-    returned = near(setFrame(window, target), target);
-    if (t.wasMinimized) setAttr(window, kAXMinimizedAttribute, kCFBooleanTrue);
-    if (t.wasFullScreen) setAttr(window, CFSTR("AXFullScreen"), kCFBooleanTrue);
-  }
+  if (window && !closed) returned = [self bringBack:t];
   t.window = nil;
   return @{@"closed": @(closed), @"returned": @(returned)};
 }
-- (void)destroy:(Thread *)t {
-  [self unobserve:t];
+// The hidden display goes; the thread may stay (paused).
+- (void)dropDisplay:(Thread *)t {
   BOOL had = t.display != nil;
   t.display = nil;
   t.displayID = 0;
-  [self.threads removeObjectForKey:t.key];
   if (had) {
     // WindowServer can defer removing a display while the real screens
     // sleep. A short activity assertion lets it finish; it changes no setting.
@@ -820,8 +850,82 @@ static id commandN(NSArray *items, int depth) {
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ IOPMAssertionRelease(wake); });
     }
   }
+}
+- (void)destroy:(Thread *)t {
+  [self unobserve:t];
+  [self dropDisplay:t];
+  [self.threads removeObjectForKey:t.key];
   [self arrange];
   [self updateMenu];
+}
+// Pause: every app's window comes back to this Mac's screens (none is
+// closed), the hidden displays go, and the threads are held for Resume.
+- (NSDictionary *)hold {
+  NSMutableArray *held = [NSMutableArray array];
+  for (Thread *t in self.threads.allValues) {
+    [held addObject:t.key];
+    if (t.held) continue;
+    [self unobserve:t];
+    // Held first: a move reported just before must not reach the phone.
+    t.held = YES;
+    [self bringBack:t];
+    [self dropDisplay:t];
+  }
+  [self arrange];
+  [self updateMenu];
+  return @{@"held": held};
+}
+// Resume: a held window goes back onto a fresh hidden display at the phone's
+// shape, from wherever it is now. If it was closed meanwhile (or its app
+// quit), the reply says "gone" and the phone's app opens anew.
+- (NSDictionary *)resume:(NSDictionary *)request {
+  Thread *t = self.threads[str(request[@"thread"]) ?: @""];
+  if (!t) return @{@"error": @"That app isn't waiting for your phone.", @"code": @"gone"};
+  if (!t.held) return [self describe:t];
+  if (!AXIsProcessTrusted())
+    return @{@"error": @"Allow Accessibility for Reach in System Settings → Privacy & Security → Accessibility.", @"code": @"accessibility"};
+  NSRunningApplication *running = [NSRunningApplication runningApplicationWithProcessIdentifier:t.pid];
+  BOOL present = NO;
+  if (t.window && running && !running.terminated)
+    for (id w in windowsOf(t.app)) if (windowNumber(w) == t.windowID) present = YES;
+  if (!present) {
+    t.window = nil;
+    [self.threads removeObjectForKey:t.key];
+    [self updateMenu];
+    return @{@"error": [NSString stringWithFormat:@"%@'s window was closed on the Mac.", t.name], @"code": @"gone"};
+  }
+  BOOL minimized = [attr(t.window, kAXMinimizedAttribute) boolValue];
+  BOOL full = [attr(t.window, CFSTR("AXFullScreen")) boolValue];
+  if (minimized) { setAttr(t.window, kAXMinimizedAttribute, kCFBooleanFalse); pump(0.4); }
+  if (full) { setAttr(t.window, CFSTR("AXFullScreen"), kCFBooleanFalse); pump(1.2); }
+  // A borrowed window will go back to where it is now, as it is now.
+  if (!t.created) {
+    t.wasMinimized = minimized;
+    t.wasFullScreen = full;
+    t.original = frameOf(t.window);
+  }
+  t.held = NO;
+  t.slot = 0;
+  t.size = [self displayFor:t menuBar:30];
+  NSString *failure = [self createDisplay:t];
+  if (failure) {
+    // The window never left this Mac's screens.
+    t.window = nil;
+    [self destroy:t];
+    return @{@"error": failure};
+  }
+  t.settling = YES;
+  NSDictionary *error = [self fit:t];
+  t.settling = NO;
+  if (error) {
+    [self bringBack:t];
+    t.window = nil;
+    [self destroy:t];
+    return error;
+  }
+  [self observe:t];
+  [self updateMenu];
+  return [self describe:t];
 }
 - (NSDictionary *)close:(NSDictionary *)request {
   Thread *t = self.threads[str(request[@"thread"]) ?: @""];
@@ -840,26 +944,54 @@ static id commandN(NSArray *items, int depth) {
     emit(@{@"event": @"released", @"thread": t.key});
   }
 }
+- (void)pauseClicked:(id)sender {
+  emit(@{@"event": @"pause"});
+}
+- (void)resumeClicked:(id)sender {
+  emit(@{@"event": @"resume"});
+}
 // The Mac always shows that apps are on a phone, and can take them back.
+// While Reach runs it also keeps a small item of its own: Pause gives this
+// Mac back to whoever is at it; Resume lends it to the phone again.
 - (void)updateMenu {
-  if (!self.threads.count) {
+  NSMutableArray *names = [NSMutableArray array];
+  for (Thread *t in self.threads.allValues)
+    if (!t.held) [names addObject:t.name ?: @"App"];
+  [names sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+  if (!names.count && !self.resident) {
     if (self.item) [NSStatusBar.systemStatusBar removeStatusItem:self.item];
     self.item = nil;
     return;
   }
   if (!self.item) self.item = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
-  NSArray *names = [[self.threads.allValues valueForKey:@"name"] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-  self.item.button.title = self.threads.count == 1 ? [NSString stringWithFormat:@"Reach · %@", names.firstObject]
-                                                   : [NSString stringWithFormat:@"Reach · %lu apps", (unsigned long)self.threads.count];
-  self.item.button.toolTip = @"Open on a phone through Reach";
+  NSString *symbol = self.paused ? @"iphone.slash" : @"iphone.radiowaves.left.and.right";
+  NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:@"Reach"];
+  image.template = YES;
+  self.item.button.image = names.count ? nil : image;
+  self.item.button.title = names.count == 1 ? [NSString stringWithFormat:@"Reach · %@", names.firstObject]
+                           : names.count ? [NSString stringWithFormat:@"Reach · %lu apps", (unsigned long)names.count]
+                           : image ? @"" : self.paused ? @"Reach · Paused" : @"Reach";
+  self.item.button.toolTip = self.paused ? @"Reach is paused" : @"Open on a phone through Reach";
   NSMenu *menu = [NSMenu new];
-  NSMenuItem *heading = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"On your phone: %@", [names componentsJoinedByString:@", "]]
-                                                   action:nil keyEquivalent:@""];
+  NSString *title = self.paused ? @"Paused · your phone can't see or use this Mac"
+                    : names.count ? [NSString stringWithFormat:@"On your phone: %@", [names componentsJoinedByString:@", "]]
+                                  : @"Reach is on";
+  NSMenuItem *heading = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
   heading.enabled = NO;
   [menu addItem:heading];
-  NSMenuItem *give = [[NSMenuItem alloc] initWithTitle:@"Return all to this Mac" action:@selector(returnAllClicked:) keyEquivalent:@""];
-  give.target = self;
-  [menu addItem:give];
+  if (names.count) {
+    NSMenuItem *give = [[NSMenuItem alloc] initWithTitle:@"Return all to this Mac" action:@selector(returnAllClicked:) keyEquivalent:@""];
+    give.target = self;
+    [menu addItem:give];
+  }
+  if (self.resident) {
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *toggle = self.paused
+        ? [[NSMenuItem alloc] initWithTitle:@"Resume Reach" action:@selector(resumeClicked:) keyEquivalent:@""]
+        : [[NSMenuItem alloc] initWithTitle:@"Pause Reach" action:@selector(pauseClicked:) keyEquivalent:@""];
+    toggle.target = self;
+    [menu addItem:toggle];
+  }
   self.item.menu = menu;
 }
 - (void)end {
@@ -889,6 +1021,14 @@ static id commandN(NSArray *items, int depth) {
     else if ([cmd isEqual:@"close"]) result = [self close:request];
     else if ([cmd isEqual:@"fields"]) result = [self fields:request];
     else if ([cmd isEqual:@"quit"]) result = [self quit:request];
+    else if ([cmd isEqual:@"pause"]) result = [self hold];
+    else if ([cmd isEqual:@"resume"]) result = [self resume:request];
+    else if ([cmd isEqual:@"state"]) {
+      self.resident = YES;
+      self.paused = [request[@"paused"] boolValue];
+      [self updateMenu];
+      result = @{@"paused": @(self.paused)};
+    }
     else if ([cmd isEqual:@"ended"]) {
       [self ended:(pid_t)[request[@"pid"] intValue]];
       return;
@@ -898,7 +1038,8 @@ static id commandN(NSArray *items, int depth) {
     }
     else if ([cmd isEqual:@"list"]) {
       NSMutableArray *list = [NSMutableArray array];
-      for (Thread *t in self.threads.allValues) [list addObject:[self describe:t]];
+      for (Thread *t in self.threads.allValues)
+        if (!t.held) [list addObject:[self describe:t]];
       result = @{@"threads": list};
     } else result = @{@"error": @"Unknown command."};
   } @catch (NSException *e) {

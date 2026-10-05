@@ -386,6 +386,61 @@
 }
 
 /* Signing an agent in on the Mac from here (AgentSignIn). */
+/* What each agent needs signed in on the Mac: one row per sign-in. */
+.access {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 10px;
+  padding: 6px 12px 10px;
+  border: 1px solid var(--as-line);
+  border-radius: 16px;
+  background: var(--as-card);
+}
+.access-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 42px;
+}
+.access-logo {
+  display: grid;
+  place-items: center;
+}
+.access-name {
+  min-width: 0;
+  color: var(--as-text);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+.access-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--as-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.access-state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e5484d;
+}
+.access-state.ok::before {
+  background: #3fb950;
+}
+.access-action {
+  grid-column: 2 / -1;
+  padding-bottom: 6px;
+}
+.access-note {
+  margin: 4px 0 0;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
 .sign-in {
   display: inline-flex;
   flex-direction: column;

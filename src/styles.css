@@ -14,8 +14,8 @@
   --panel: #171e19;
   --border: #2b332d;
   --muted: #93a096;
-  --lime: #b9f568;
-  --lime-ink: #19250f;
+  --lime: #b9efd4;
+  --lime-ink: #16362a;
   --radius: 14px;
 }
 * {
@@ -57,7 +57,7 @@ textarea:focus,
 select:focus {
   outline: none;
   border-color: #8dc447;
-  box-shadow: 0 0 0 3px #b9f56815;
+  box-shadow: 0 0 0 3px #b9efd415;
 }
 input,
 textarea,

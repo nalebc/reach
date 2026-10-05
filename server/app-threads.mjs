@@ -9,6 +9,7 @@ import { fail } from "./core.mjs";
 import { RemoteBroadcast } from "./remote-screen.mjs";
 import { NativeScreenSource } from "./screen-stream.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
+import { pausedMessage } from "./screen.mjs";
 
 // Apps on your phone: each app runs on the Mac, on its own hidden display, in
 // a window shaped like the phone (scripts/native/app-displays.m). Its video
@@ -31,8 +32,9 @@ export const APP_STREAM = {
 
 let building = null;
 // Built from source on first use and cached under its hash, like the other
-// native helpers; any edit to the source recompiles it.
-export async function appDisplaysBinary(config) {
+// native helpers; any edit to the source recompiles it. Quitting Reach
+// (`signal`) stops a build still running, so Ctrl+C never waits for it.
+export async function appDisplaysBinary(config, { signal } = {}) {
   const code = await fsp.readFile(helperSource);
   const file = path.join(
     config.dataDir,
@@ -55,12 +57,13 @@ export async function appDisplaysBinary(config) {
           "-o",
           tmp,
         ],
-        { timeout: 120000, maxBuffer: 1024 * 1024 },
+        { timeout: 120000, maxBuffer: 1024 * 1024, signal },
       );
       await fsp.chmod(tmp, 0o700);
       await fsp.rename(tmp, file);
-    } catch {
+    } catch (e) {
       await fsp.rm(tmp, { force: true });
+      if (signal?.aborted) throw e;
       throw fail(
         503,
         "Could not prepare the app display helper. Install Apple Command Line Tools.",
@@ -119,7 +122,7 @@ export class AppDisplaysHelper {
     });
   }
   static async start(config, handlers) {
-    const binary = await appDisplaysBinary(config);
+    const binary = await appDisplaysBinary(config, handlers);
     return new AppDisplaysHelper(
       spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] }),
       handlers,
@@ -204,26 +207,40 @@ export class AppThreads {
     this.minimums = {};
     this.helper = null;
     this.starting = null;
+    // Reach paused on the Mac: no app opens; running ones are held.
+    this.paused = false;
+    // The helper's menu bar item stays while Reach runs (showMenu).
+    this.resident = false;
+    this.onMenu = () => {};
+    this.restartedAt = 0;
+    this.stopping = false;
+    this.quitting = new AbortController();
     this.load();
   }
   load() {
     try {
       const data = JSON.parse(fs.readFileSync(this.file, "utf8"));
       // Hidden displays never outlive Reach: saved threads come back paused,
-      // one tap reopens them.
+      // one tap reopens them. Ones held by a pause still come back on Resume.
       for (const t of Array.isArray(data.threads) ? data.threads : [])
         if (
           typeof t?.id === "string" &&
           typeof t.appId === "string" &&
           typeof t.name === "string"
-        )
+        ) {
+          let phone;
+          try {
+            if (t.held) phone = phoneViewport(t.phone);
+          } catch {}
           this.threads.set(t.id, {
             id: t.id,
             appId: t.appId,
             name: t.name,
             createdAt: t.createdAt,
             state: "paused",
+            ...(phone && { held: true, phone }),
           });
+        }
       if (data.minimums && typeof data.minimums === "object")
         this.minimums = data.minimums;
     } catch {}
@@ -231,7 +248,13 @@ export class AppThreads {
   save() {
     const data = {
       threads: [...this.threads.values()].map(
-        ({ id, appId, name, createdAt }) => ({ id, appId, name, createdAt }),
+        ({ id, appId, name, createdAt, held, phone }) => ({
+          id,
+          appId,
+          name,
+          createdAt,
+          ...(held && { held, phone }),
+        }),
       ),
       minimums: this.minimums,
     };
@@ -250,6 +273,7 @@ export class AppThreads {
       name: t.name,
       state: t.state,
       createdAt: t.createdAt,
+      ...(t.held && { held: true }),
       ...(t.state === "running" && {
         display: t.display,
         region: t.region,
@@ -274,14 +298,37 @@ export class AppThreads {
   }
   async ready() {
     if (this.helper && !this.helper.stopped) return this.helper;
+    if (this.stopping) throw fail(503, "Reach is quitting.");
     this.starting ??= this.startHelper({
       onEvent: (event) => this.event(event),
       onExit: () => this.exited(),
-    }).finally(() => {
-      this.starting = null;
-    });
+      signal: this.quitting.signal,
+    })
+      .then((helper) => {
+        // Up only after Reach began quitting: it gives everything back.
+        if (this.stopping) {
+          void helper.stop();
+          throw fail(503, "Reach is quitting.");
+        }
+        // A fresh helper shows Reach's menu bar item again.
+        if (this.resident)
+          helper.request("state", { paused: this.paused }).catch(() => {});
+        return helper;
+      })
+      .finally(() => {
+        this.starting = null;
+      });
     this.helper = await this.starting;
     return this.helper;
+  }
+  // Reach's own item in the Mac's menu bar, with Pause or Resume, for as
+  // long as Reach runs. Its clicks arrive as `onMenu(paused)`.
+  async showMenu() {
+    this.resident = true;
+    // A helper starting now shows it as soon as it's up (ready).
+    const fresh = !this.helper || this.helper.stopped;
+    const helper = await this.ready();
+    if (!fresh) await helper.request("state", { paused: this.paused });
   }
   pause(t) {
     t.state = "paused";
@@ -291,6 +338,8 @@ export class AppThreads {
     delete t.scale;
   }
   event(event) {
+    if (event.event === "pause" || event.event === "resume")
+      return this.onMenu(event.event === "pause");
     const t = this.get(event.thread);
     if (!t) return;
     if (event.event === "region" && rect(event.region)) {
@@ -313,15 +362,86 @@ export class AppThreads {
   }
   exited() {
     this.helper = null;
+    // Held threads stay held: Resume reopens them.
     for (const t of this.threads.values())
       if (t.state !== "paused") {
         this.pause(t);
         this.onChange(t, "released");
       }
+    // The menu bar item comes back, unless the helper keeps failing.
+    if (
+      this.resident &&
+      !this.stopping &&
+      Date.now() - this.restartedAt > 30000
+    ) {
+      this.restartedAt = Date.now();
+      setTimeout(() => {
+        if (!this.stopping) this.ready().catch(() => {});
+      }, 2000).unref?.();
+    }
+  }
+  // Pause: every app on the phone goes back to the Mac's own screens, its
+  // window kept open as it is, and is held to come back on Resume.
+  async hold() {
+    this.paused = true;
+    if (![...this.threads.values()].some((t) => t.state !== "paused")) return;
+    const helper = await this.ready();
+    const result = await helper.request("pause");
+    for (const id of Array.isArray(result.held) ? result.held : []) {
+      const t = this.get(id);
+      if (t?.state === "running") {
+        this.pause(t);
+        t.held = true;
+        this.onChange(t, "held");
+      } else
+        // Its window was already closed on the Mac: nothing to bring back,
+        // so the helper lets go of it now ("Open again" still works).
+        await helper.request("close", { thread: id }).catch(() => {});
+    }
+    this.save();
+  }
+  // Resume: each held app's window goes back to the phone. One closed on the
+  // Mac meanwhile opens again, as a fresh tap on it would.
+  async resumeAll() {
+    this.paused = false;
+    const held = [...this.threads.values()].filter((t) => t.held);
+    if (!held.length) return;
+    const helper = await this.ready();
+    // Each stays held (the phone shows it coming back) until it's back.
+    for (const t of held) {
+      if (this.paused) break;
+      if (this.threads.get(t.id) !== t || !t.held) continue;
+      try {
+        const result = await helper.request("resume", { thread: t.id });
+        t.held = false;
+        this.started(t, result);
+        this.onChange(t, "opened");
+      } catch (e) {
+        if (e.code === "gone" && t.phone && !this.paused)
+          await this.open(t.appId, t.phone).catch(() => {});
+        if (t.held) {
+          t.held = false;
+          this.onChange(t, "failed");
+        }
+      }
+    }
+    this.save();
+  }
+  started(t, result) {
+    Object.assign(t, {
+      state: "running",
+      name: result.app?.name || t.name,
+      display: String(result.display),
+      region: rect(result.region),
+      size: result.size,
+      scale: result.scale,
+    });
+    if (result.minimum?.w > 0) this.minimums[t.appId] = result.minimum;
   }
   async open(appId, viewport) {
     if (this.platform !== "darwin")
       throw fail(501, "Apps on your phone need a Mac for now.");
+    if (this.paused) throw fail(423, pausedMessage(this.platform));
     const phone = phoneViewport(viewport);
     const app = (await this.listApps()).find((a) => a.id === appId);
     if (!app) throw fail(404, "Choose an app from this computer’s app list.");
@@ -357,25 +477,20 @@ export class AppThreads {
       this.threads.set(t.id, t);
     }
     t.state = "starting";
+    t.held = false;
     this.onChange(t, "starting");
     try {
       const helper = await this.ready();
+      // Paused while the helper started: nothing moves off the Mac's screen.
+      if (this.paused) throw fail(423, pausedMessage(this.platform));
       const result = await helper.request("open", {
         thread: t.id,
         path: app.id,
         phone: { w: phone.width, h: phone.height },
         ...(this.minimums[appId] && { minimum: this.minimums[appId] }),
       });
-      Object.assign(t, {
-        state: "running",
-        name: result.app?.name || t.name,
-        display: String(result.display),
-        region: rect(result.region),
-        size: result.size,
-        scale: result.scale,
-        phone,
-      });
-      if (result.minimum?.w > 0) this.minimums[appId] = result.minimum;
+      this.started(t, result);
+      t.phone = phone;
       this.save();
       this.onChange(t, "opened");
       return this.view(t);
@@ -474,6 +589,8 @@ export class AppThreads {
       }
   }
   async shutdown() {
+    this.stopping = true;
+    this.quitting.abort();
     await this.helper?.stop();
   }
 }

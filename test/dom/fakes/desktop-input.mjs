@@ -11,6 +11,9 @@ import { computer } from "./computer.mjs";
 export function useDesktopInput(peer, enabled, display, ended) {
   const [connected, setConnected] = useState(false);
   if (enabled) computer.input = { display };
+  // The computer ending control with a reason, as its input socket's
+  // error message does (e.g. Reach paused on the Mac).
+  if (enabled) computer.endInput = (message) => ended?.(message);
   useEffect(() => {
     if (!enabled || computer.lease === undefined) return;
     let open = true;

@@ -1,3 +1,4 @@
+import { computerWord } from "./pause";
 import type { ReactNode } from "react";
 import { FolderOpen, Monitor, Square, Check } from "lucide-react";
 import type { Peer, Session } from "./api";
@@ -172,8 +173,8 @@ export default function TerminalList({
       )}
       {onStart && hint && (
         <button className="terminal-hint" onClick={hintSeen}>
-          Tap one to open a terminal on your Mac. It keeps running when you
-          leave.
+          Tap one to open a terminal on your {computerWord(peer.platform)}. It
+          keeps running when you leave.
         </button>
       )}
       {shells.length > 0 && (

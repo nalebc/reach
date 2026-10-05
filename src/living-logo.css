@@ -116,7 +116,7 @@
     filter: none;
   }
   86% {
-    filter: brightness(1.7) drop-shadow(0 0 6px #b9f568);
+    filter: brightness(1.7) drop-shadow(0 0 6px #b9efd4);
   }
   100% {
     filter: none;
@@ -239,7 +239,7 @@
   width: 0.48em;
   height: 0.9em;
   margin-left: 0.06em;
-  background: var(--lime, #b9f568);
+  background: var(--lime, #b9efd4);
   animation:
     logo-blink 0.5s steps(1) infinite,
     logo-cursor-out 2.9s steps(1) both;

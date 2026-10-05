@@ -5,6 +5,7 @@ import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
   pageAccessible,
+  morePlaces,
   type WorkspaceCapabilities,
   type CodexStatus,
 } from "./capabilities";
@@ -38,7 +39,6 @@ import {
   Shield,
   KeyRound,
   Cpu,
-  MoreHorizontal,
   Activity as ActivityIcon,
   Smartphone,
   Server,
@@ -103,6 +103,10 @@ import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
 import { ReachScene } from "./ReachIdentity";
 import MascotIntro from "./MascotIntro";
+import MoreSheet from "./MoreSheet";
+import MobileNav from "./MobileNav";
+import { AppIcon, ComputerIcon } from "./AppIcon";
+import { Sparkles as SparklesIcon, MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
 import { useFleetJoin } from "./fleet-join";
@@ -772,6 +776,7 @@ function ReachWorkspace() {
                       setTerminalSource(`mac:${id}`);
                     }}
                     agentSessions={agentFeed.sessions || []}
+                    macPrompts={agentFeed.macPrompts}
                     openAgentSession={
                       pageAccessible("sessions", features)
                         ? (s) => {
@@ -865,6 +870,7 @@ function ReachWorkspace() {
                     device={device}
                     toast={toast}
                     onChanged={refreshDevice}
+                    changes={live}
                   />
                 )}
                 {page === "agents" && (
@@ -877,7 +883,8 @@ function ReachWorkspace() {
                 )}
                 {page === "invite" &&
                   (!device.access ||
-                    device.access.scopes.includes("admin")) && (
+                    (device.access.scopes.includes("admin") &&
+                      device.access.kind !== "guest")) && (
                     <>
                       <PageTitle
                         title="Invite someone"
@@ -914,138 +921,47 @@ function ReachWorkspace() {
             ) : null}
           </ScreenBoundary>
         </main>
-        <nav className="mobile-nav" aria-label="Main navigation">
-          {mobilePages.map((p) => (
-            <button
-              className={page === p.id ? "active" : ""}
-              aria-label={p.name}
-              aria-current={page === p.id ? "page" : undefined}
-              key={p.id}
-              onClick={() => navigate(p.id)}
-            >
-              {pageIcon(p, 20)}
-              {p.id === "sessions" && agentsWaiting > 0 && (
-                <i className="nav-badge" aria-label={`${agentsWaiting} waiting`}>
-                  {agentsWaiting}
-                </i>
-              )}
-              <span>
-                {p.id === "overview"
-                  ? "Home"
-                  : p.id === "terminal"
-                    ? "Terminal"
-                    : p.name}
-              </span>
-            </button>
-          ))}
-          <button
-            aria-label="More workspace options"
-            aria-haspopup="dialog"
-            aria-expanded={mobileMenu}
-            onClick={() => setMobileMenu(true)}
-          >
-            <MoreHorizontal size={20} />
-            <span>More</span>
-          </button>
-        </nav>
+        <MobileNav
+          items={mobilePages.map((p) => ({
+            id: p.id,
+            label:
+              p.id === "overview"
+                ? "Home"
+                : p.id === "terminal"
+                  ? "Terminal"
+                  : p.name,
+            icon: pageIcon(p, 20),
+            badge: p.id === "sessions" ? agentsWaiting : 0,
+          }))}
+          current={page}
+          moreOpen={mobileMenu}
+          onNavigate={navigate}
+          onMore={() => setMobileMenu(true)}
+        />
       </div>
-      {mobileMenu && (
-        <ScreenPopup
-          title="Explore"
-          className="workspace-launcher"
+      {mobileMenu && peer && (
+        <MoreSheet
+          peer={peer}
+          device={device}
+          {...morePlaces(
+            pages.map((p) => p.id),
+            mobileOrder,
+            features,
+            codexStatus,
+          )}
+          current={page}
+          settings={!!features.settings}
+          peers={peers}
+          active={active}
+          connections={connections}
+          onNavigate={navigate}
+          onChoose={choose}
+          onAdd={() => {
+            setMobileMenu(false);
+            setPairing(true);
+          }}
           onClose={() => setMobileMenu(false)}
-        >
-          <div className="explore-computer">
-            <span>
-              <Monitor size={23} />
-            </span>
-            <div>
-              <strong>{device?.name || peer.name}</strong>
-              <small>
-                {platform(device?.platform || peer.platform || "")} · your
-                current workspace
-              </small>
-            </div>
-            <i className="status-dot" />
-          </div>
-          <p className="section-kicker">DO MORE ON YOUR COMPUTER</p>
-          <div className="explore-grid">
-            {visiblePages
-              .filter((p) => !mobilePages.some((m) => m.id === p.id))
-              .map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => navigate(p.id)}
-                  aria-current={page === p.id ? "page" : undefined}
-                >
-                  <span className={`explore-icon explore-${p.id}`}>
-                    {pageIcon(p, 23)}
-                  </span>
-                  <span>
-                    <strong>{p.name}</strong>
-                    <small>
-                      {
-                        {
-                          apps: "Launch your favorites",
-                          terminal: "Keep commands running",
-                          agents: "Manage agent access",
-                          invite: "Let someone in, temporarily",
-                          screen: "See your desktop",
-                          files: "Browse and share files",
-                          chat: "Continue with Codex",
-                          overview: "Your connected world",
-                        }[p.id]
-                      }
-                    </small>
-                  </span>
-                  <ChevronRight size={16} />
-                </button>
-              ))}
-            {features.settings && (
-              <button
-                className="explore-settings"
-                onClick={() => navigate("settings")}
-              >
-                <Settings size={21} />
-                <span>
-                  <strong>Settings</strong>
-                  <small>Preferences, people & permissions</small>
-                </span>
-                <ChevronRight size={16} />
-              </button>
-            )}
-          </div>
-          <h3 className="section-kicker">SWITCH COMPUTER</h3>
-          <div className="mobile-workspace-options">
-            {peers.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => choose(p.id)}
-                aria-pressed={p.id === active}
-              >
-                <Monitor size={21} />
-                <span>
-                  <strong>{p.name}</strong>
-                  <small>
-                    {connections[p.id]?.state === "connected"
-                      ? "Connected"
-                      : "Not connected"}
-                  </small>
-                </span>
-                {p.id === active && <Check size={16} />}
-              </button>
-            ))}
-            <button
-              onClick={() => {
-                setMobileMenu(false);
-                setPairing(true);
-              }}
-            >
-              <Plus size={21} />
-              <span>Add a computer</span>
-            </button>
-          </div>
-        </ScreenPopup>
+        />
       )}
       {pairing && (
         <Modal title="Add a computer" onClose={() => setPairing(false)}>
@@ -1588,6 +1504,8 @@ function SettingsPage({
   codexStatus: CodexStatus;
   onChanged: () => void;
 }) {
+  // Codex wears its real logo, as in More.
+  const settingsLogos = useAgentLogos(peer);
   const [settingsView, setSettingsView] = useState("general");
   const motion = useContext(MotionContext);
   const toggleScreen = async () => {
@@ -1673,13 +1591,12 @@ function SettingsPage({
       <div className="settings-general" hidden={settingsView !== "general"}>
         <section className="panel settings-panel computer-settings-card">
           <div className="settings-device">
-            <span className="settings-device-icon">
-              <Monitor size={24} />
-            </span>
+            <ComputerIcon platform={device.platform} size="large" />
             <div>
               <h2>{device.name}</h2>
-              <span className="muted">
-                {platform(device.platform)} · Connected
+              <span className="muted settings-device-status">
+                <span className="status-text on">Connected</span>
+                <span>{platform(device.platform)}</span>
               </span>
             </div>
           </div>
@@ -1711,6 +1628,9 @@ function SettingsPage({
           <section className="panel settings-panel">
             <h2>Screen & control</h2>
             <div className="switch-row">
+              <AppIcon tone="screen" size="small">
+                <MonitorPlay size={17} strokeWidth={2} />
+              </AppIcon>
               <div>
                 <strong>Screen viewing</strong>
                 <small>
@@ -1734,6 +1654,13 @@ function SettingsPage({
           <section className="panel settings-panel optional-tool">
             <h2>Optional tools</h2>
             <div className="switch-row">
+              <AppIcon tone="codex" size="small" real={!!settingsLogos.codex}>
+                {settingsLogos.codex ? (
+                  <AgentLogo agent="codex" logos={settingsLogos} size={40} />
+                ) : (
+                  <Code2 size={17} strokeWidth={2} />
+                )}
+              </AppIcon>
               <div>
                 <strong>Codex</strong>
                 <small>
@@ -1766,6 +1693,9 @@ function SettingsPage({
         <section className="panel settings-panel appearance-settings">
           <h2>Make it yours</h2>
           <div className="switch-row">
+            <AppIcon tone="motion" size="small">
+              <SparklesIcon size={17} strokeWidth={2} />
+            </AppIcon>
             <div>
               <strong>Living companion</strong>
               <small>
@@ -1789,7 +1719,9 @@ function SettingsPage({
       </div>
       <div className="settings-access" hidden={settingsView !== "access"}>
         <button className="invite-banner" onClick={invite}>
-          <UserRoundPlus size={23} />
+          <AppIcon tone="invite" size="small">
+            <UserRoundPlus size={17} strokeWidth={2} />
+          </AppIcon>
           <span>
             <strong>Invite someone</strong>
             <small>Share selected folders or your screen, temporarily.</small>
@@ -1827,7 +1759,24 @@ function SettingsPage({
                   </h3>
                 )}
                 <div className="client-row">
-                  <KeyRound size={18} />
+                  <AppIcon
+                    tone={
+                      c.kind === "guest"
+                        ? "people"
+                        : c.kind === "agent"
+                          ? "agents"
+                          : "device"
+                    }
+                    size="small"
+                  >
+                    {c.kind === "guest" ? (
+                      <KeyRound size={16} strokeWidth={2} />
+                    ) : c.kind === "agent" ? (
+                      <Bot size={17} strokeWidth={2} />
+                    ) : (
+                      <Smartphone size={17} strokeWidth={2} />
+                    )}
+                  </AppIcon>
                   <div>
                     <strong>
                       {c.name}

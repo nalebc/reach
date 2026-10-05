@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import {
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
-  ChevronDown,
-  CornerDownLeft,
-  Delete,
-} from "lucide-react";
 import { typingEdit, typingTail } from "./typing-edit";
+import KeyRow, { type RowKey } from "./KeyRow";
 import "./typing-keys.css";
 import type {
   DesktopAction,
@@ -24,8 +16,11 @@ export default function RemoteTyping({
   onError,
   editorRef,
   keyRow = false,
+  modifier = "meta",
 }: {
   keyRow?: boolean;
+  // The key row's sticky modifier: ⌘ on a Mac, ctrl on Windows.
+  modifier?: "meta" | "control";
   target: TextTarget;
   send: (action: DesktopAction) => Promise<InputResult>;
   onClose: () => void;
@@ -37,6 +32,13 @@ export default function RemoteTyping({
     valid = useRef(true);
   const beforeInput = useRef<(e: InputEvent) => void>(() => {});
   const [draft, setDraft] = useState("");
+  // Armed by the key row: the next letter or key goes with the modifier.
+  const [armed, setArmed] = useState(false);
+  const armedRef = useRef(false);
+  const arm = (value: boolean) => {
+    armedRef.current = value;
+    setArmed(value);
+  };
   useEffect(() => {
     valid.current = true;
     const element = editorRef.current;
@@ -74,6 +76,25 @@ export default function RemoteTyping({
     if (composing.current || !valid.current) return;
     try {
       const edit = typingEdit(shadow.current, next);
+      // ⌘ (or ctrl) armed: the letter typed is a shortcut, not text.
+      if (armedRef.current && edit.text && !edit.delete) {
+        arm(false);
+        const letter = [...edit.text].at(-1)!;
+        const name = letter === " " ? "space" : letter.toLowerCase();
+        if (/^([a-z0-9]|space)$/.test(name)) {
+          shadow.current = "";
+          setDraft("");
+          dispatch({
+            type: "key",
+            key: name,
+            modifiers: [
+              modifier,
+              ...(letter !== name && name !== "space" ? ["shift"] : []),
+            ],
+          });
+          return;
+        }
+      }
       // Retain enough context for autocorrection without silently stopping long
       // typing sessions at an invisible maxlength. Never copy host text here.
       shadow.current = typingTail(next);
@@ -189,46 +210,23 @@ export default function RemoteTyping({
     />
   );
   if (!keyRow) return sink;
-  // Keys the phone keyboard lacks, right above it. Pressing one keeps the
-  // keyboard open (no focus change).
-  const keep = (event: React.PointerEvent | React.MouseEvent) =>
-    event.preventDefault();
+  // The terminal's key row, right above the phone keyboard.
+  const rowKey = (name: RowKey) => {
+    const modifiers = armedRef.current ? [modifier] : [];
+    arm(false);
+    key(name, modifiers);
+  };
   return (
     <>
       {sink}
-      <div className="typing-keys" role="toolbar" aria-label="Computer keys" data-immersive-keep>
-        <button className="typing-enter" onPointerDown={keep} onMouseDown={keep} onClick={() => key("enter")}>
-          <CornerDownLeft size={16} /> Enter
-        </button>
-        <button onPointerDown={keep} onMouseDown={keep} onClick={() => key("tab")}>Tab</button>
-        <button onPointerDown={keep} onMouseDown={keep} onClick={() => key("escape")}>Esc</button>
-        <button aria-label="Left" onPointerDown={keep} onMouseDown={keep} onClick={() => key("left")}>
-          <ArrowLeft size={16} />
-        </button>
-        <button aria-label="Up" onPointerDown={keep} onMouseDown={keep} onClick={() => key("up")}>
-          <ArrowUp size={16} />
-        </button>
-        <button aria-label="Down" onPointerDown={keep} onMouseDown={keep} onClick={() => key("down")}>
-          <ArrowDown size={16} />
-        </button>
-        <button aria-label="Right" onPointerDown={keep} onMouseDown={keep} onClick={() => key("right")}>
-          <ArrowRight size={16} />
-        </button>
-        <button aria-label="Delete" onPointerDown={keep} onMouseDown={keep} onClick={() => key("backspace")}>
-          <Delete size={16} />
-        </button>
-        <button
-          aria-label="Hide keyboard"
-          onPointerDown={keep}
-          onMouseDown={keep}
-          onClick={() => {
-            editorRef.current?.blur();
-            onClose();
-          }}
-        >
-          <ChevronDown size={18} />
-        </button>
-      </div>
+      <KeyRow
+        className="typing-keys"
+        label="Computer keys"
+        modifier={modifier === "meta" ? "⌘" : "ctrl"}
+        armed={armed}
+        onArm={arm}
+        onKey={rowKey}
+      />
     </>
   );
 }

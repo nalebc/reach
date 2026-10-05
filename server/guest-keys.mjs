@@ -1,6 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { atomicJson, loadJson, fail, hash } from "./core.mjs";
+import { addGuestRules } from "./tailnet-policy.mjs";
 
 // Invite keys: each invitation carries a one-time Tailscale key, so the guest
 // just opens the link: their browser joins your tailnet as a tag:reach-guest
@@ -13,6 +14,14 @@ import { atomicJson, loadJson, fail, hash } from "./core.mjs";
 // 0600, never sent to any phone or browser).
 
 export const GUEST_TAG = "tag:reach-guest";
+// The policy lines for your tailnet: the guest tag, and a rule that lets
+// guest devices reach Reach's port on your computers and nothing else.
+export function guestPolicy({ addresses, port }) {
+  return {
+    tagOwners: { [GUEST_TAG]: ["autogroup:admin"] },
+    grants: [{ src: [GUEST_TAG], dst: addresses, ip: [`tcp:${port}`] }],
+  };
+}
 const API = "https://api.tailscale.com";
 const ID = /^[a-z0-9]{10}$/;
 
@@ -155,15 +164,144 @@ export function createGuestKeys({
     atomicJson(credentialFile, { version: 1, ...creds });
   }
 
+  // The easy way: one Tailscale API access token, used once and never kept.
+  // Reach adds its tag and one grant to your policy (your comments and rules
+  // stay; Tailscale checks the result first; nothing is written if the policy
+  // changed meanwhile), then makes its own limited OAuth client (guest keys
+  // and guest devices only) and saves just that. `confirm(plan)` sees the
+  // exact lines before anything changes.
+  async function setupFromAccessToken({
+    accessToken,
+    addresses,
+    port,
+    confirm = async () => true,
+  }) {
+    const secret = String(accessToken || "").trim();
+    if (!/^tskey-api-[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(secret))
+      throw fail(
+        400,
+        "Paste a Tailscale API access token (it starts with tskey-api-).",
+      );
+    if (!addresses?.length || !Number.isInteger(port))
+      throw fail(409, "This computer's Tailscale address isn't known yet.");
+    const as = (method, route, { body, type, headers = {} } = {}) =>
+      request(`${api}/api/v2${route}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          ...(body !== undefined
+            ? { "Content-Type": type || "application/json" }
+            : {}),
+          ...headers,
+        },
+        body:
+          body === undefined
+            ? undefined
+            : typeof body === "string"
+              ? body
+              : JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+    const reason = async (response) => {
+      const detail = await response.json().catch(() => ({}));
+      return String(detail.message || response.status).slice(0, 300);
+    };
+    // 1. Your policy, exactly as written.
+    const got = await as("GET", "/tailnet/-/acl", {
+      headers: { Accept: "application/hujson" },
+    });
+    if (got.status === 401 || got.status === 403)
+      throw fail(
+        400,
+        "Tailscale didn't accept that token: it may have expired, or your account isn't an admin of this tailnet.",
+      );
+    if (!got.ok)
+      throw fail(
+        502,
+        `Tailscale couldn't read your policy: ${await reason(got)}`,
+      );
+    const etag = got.headers?.get?.("etag");
+    let plan;
+    try {
+      plan = addGuestRules(await got.text(), {
+        tag: GUEST_TAG,
+        addresses,
+        port,
+      });
+    } catch (error) {
+      throw fail(409, error.message);
+    }
+    if (plan.added.length) {
+      // 2. Tailscale checks the new policy (and your tests) first.
+      const check = await as("POST", "/tailnet/-/acl/validate", {
+        body: plan.text,
+        type: "application/hujson",
+      });
+      const verdict = check.ok ? (await check.text()).trim() : "";
+      const problem = !check.ok
+        ? await reason(check)
+        : verdict && JSON.parse(verdict).message;
+      if (problem)
+        throw fail(
+          409,
+          `Tailscale wouldn't accept the change, so nothing was changed: ${String(problem).slice(0, 300)}`,
+        );
+      if (!(await confirm(plan)))
+        throw fail(409, "Cancelled. Your Tailscale policy wasn't changed.");
+      // 3. Written only if nobody changed the policy meanwhile.
+      const put = await as("POST", "/tailnet/-/acl", {
+        body: plan.text,
+        type: "application/hujson",
+        headers: etag ? { "If-Match": etag } : {},
+      });
+      if (put.status === 412)
+        throw fail(
+          409,
+          "Your Tailscale policy changed while Reach was adding its rules. Nothing was changed; try again.",
+        );
+      if (!put.ok)
+        throw fail(
+          502,
+          `Tailscale didn't save the policy: ${await reason(put)}`,
+        );
+    }
+    // 4. Reach's own key: makes guest keys, removes guest devices. Nothing else.
+    const made = await as("POST", "/tailnet/-/keys", {
+      body: {
+        keyType: "client",
+        description: "Reach invite links",
+        scopes: ["auth_keys", "devices:core"],
+        tags: [GUEST_TAG],
+      },
+    });
+    if (!made.ok)
+      throw fail(
+        502,
+        `Tailscale didn't create Reach's key: ${await reason(made)}`,
+      );
+    const client = await made.json();
+    try {
+      await setup({ clientId: client.id, clientSecret: client.key });
+    } catch (error) {
+      // Don't leave an unused credential behind.
+      await as(
+        "DELETE",
+        `/tailnet/-/keys/${encodeURIComponent(client.id)}`,
+      ).catch(() => {});
+      throw error;
+    }
+    return { added: plan.added, allowAll: plan.allowAll };
+  }
+
   // A key for one invitation; the guest's device will be named `hostname`.
-  async function createInvite({ ttlSeconds, clientIds = [] }) {
+  async function createInvite({ ttlSeconds, keySeconds, clientIds = [] }) {
     const id = Array.from(
       crypto.randomBytes(10),
       (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36],
     ).join("");
     const expiresAt = now() + ttlSeconds * 1000;
     const created = await createKey(
-      Math.max(300, Math.min(ttlSeconds, 90 * 86400)),
+      Math.max(300, Math.min(keySeconds ?? ttlSeconds, 90 * 86400)),
       `Reach guest ${id}`,
     );
     if (!created?.key) throw fail(502, "Tailscale didn't return a key.");
@@ -177,13 +315,22 @@ export function createGuestKeys({
   // Revoking a guest on this computer ends its invite here: its device goes.
   async function revokeClient(clientId) {
     const list = records();
-    if (!list.some((r) => r.clientIds?.includes(clientId))) return 0;
+    const ending = list.filter((r) => r.clientIds?.includes(clientId));
+    if (!ending.length) return 0;
     // Ended now (kept as known, so its device goes without the grace period).
     saveRecords(
       list.map((r) =>
         r.clientIds?.includes(clientId) ? { ...r, expiresAt: 0 } : r,
       ),
     );
+    // A link not opened yet must not let anyone in afterwards: its unused
+    // key goes too (a used one is already spent).
+    for (const r of ending)
+      if (r.keyId)
+        await call(
+          "DELETE",
+          `/tailnet/-/keys/${encodeURIComponent(r.keyId)}`,
+        ).catch(() => {});
     return reconcile();
   }
 
@@ -224,6 +371,7 @@ export function createGuestKeys({
   return {
     configured: () => !!credentials(),
     setup,
+    setupFromAccessToken,
     createInvite,
     revokeClient,
     reconcile,

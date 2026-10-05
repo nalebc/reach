@@ -19,8 +19,10 @@ export function parseOptions(args) {
         "status",
         "pair",
         "configure",
+        "setup",
         "approve",
         "invites",
+        "link",
         "update",
         "import",
       ].includes(arg)
@@ -29,6 +31,12 @@ export function parseOptions(args) {
     // `reach import <folder>`: the Reach folder whose pairings to bring over.
     else if (options.command === "import" && i === 1 && !arg.startsWith("--"))
       options.importFrom = path.resolve(arg);
+    // `reach link <name>`: link another Reach computer on your tailnet.
+    else if (options.command === "link" && i === 1 && !arg.startsWith("--"))
+      options.linkName = arg;
+    // `reach setup <section>`: redo one part of setup (account, invites, …).
+    else if (options.command === "setup" && i === 1 && !arg.startsWith("--"))
+      options.setupSection = arg;
     else if (arg === "--version" || arg === "-v") options.version = true;
     else if (arg === "--local") options.local = true;
     else if (arg === "--service") options.service = true;
@@ -71,7 +79,8 @@ export function parseOptions(args) {
   if (
     options.command &&
     options.command !== "install" &&
-    args.length > (options.command === "import" ? 2 : 1) &&
+    args.length >
+      (["import", "link", "setup"].includes(options.command) ? 2 : 1) &&
     !options.help
   )
     throw Error(`reach ${options.command} does not accept setup options.`);

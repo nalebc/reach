@@ -410,3 +410,42 @@ test("one link for the tailnet: the computer where Reach was set up first", asyn
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("reach link: lists your Reach computers and links one from any terminal", async () => {
+  const { linkComputers } = await import("../scripts/link.mjs");
+  const { stateDir } = await import("../scripts/home.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-link-cli-"));
+  try {
+    const state = stateDir(root);
+    const dataDir = path.join(state, "quick");
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      path.join(state, "preferences.json"),
+      JSON.stringify({ version: 1, owner, folders: [root] }),
+    );
+    await fs.writeFile(
+      path.join(state, "host-status.json"),
+      JSON.stringify({ origin: "https://mac-a.t.ts.net:8443", dataDir }),
+    );
+    const printed = [];
+    const deps = {
+      print: (line) => printed.push(line),
+      fleet: {
+        status: async () => status({ ID: "nB", DNSName: "mac-b.t.ts.net." }),
+        request: async () => ({ product: "Reach", origin: "https://mac-b.t.ts.net:8443", name: "Mac B" }),
+      },
+    };
+    await linkComputers(root, undefined, deps);
+    await linkComputers(root, "mac-b", deps);
+    await linkComputers(root, undefined, deps);
+    assert.deepEqual(printed, [
+      "  not linked · Mac B · reach link mac-b",
+      'Linked Mac B. Run "reach link mac-a" on Mac B too; then a phone approved on either works on both.',
+      "✓ linked · Mac B",
+    ]);
+    const links = JSON.parse(await fs.readFile(path.join(dataDir, "links.json"), "utf8"));
+    assert.deepEqual(links.computers.map((c) => c.nodeId), ["nB"]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

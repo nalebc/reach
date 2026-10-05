@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import { createClaudeImports } from "../server/agent-sessions/claude-import.mjs";
+import { createOutbox } from "../server/agent-sessions/outbox.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -341,6 +342,12 @@ test("models come from a handshake that starts no session, and are kept a while"
   assert.ok(!claude.runs[0].args.includes("--resume") && !claude.runs[0].args.includes("--session-id"));
 });
 
+// A message that waits its turn: queued, with the id it waits under.
+const queuedReply = ({ messageId, ...reply }) => {
+  assert.match(messageId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  return reply;
+};
+
 test("one Claude session everywhere: Reach continues it, waits its turn when the app is busy, never makes a copy", async () => {
   const claude = fakeClaude();
   const claudeHost = host(claude);
@@ -353,6 +360,8 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   const openLink = async (url, options) => opened.push([url, options]);
   // Someone is using the Mac until the test says otherwise.
   let idle = 5;
+  // Sessions whose Claude app window is to be reloaded (claude-import.mjs).
+  const refreshed = [];
   const imports = createClaudeImports({
     file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-")), "claude-imports.json"),
     open: openLink,
@@ -384,6 +393,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     takeOverMs: 50,
     open: openLink,
     claudeImports: imports,
+    claudeRefresh: { add: async (id) => refreshed.push(id), close() {} },
   });
   await assert.rejects(sessions.send("claude", ID, { text: "hi" }), /signed out/);
   signedIn = true;
@@ -396,8 +406,8 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
 
   // Busy in the app: the message waits its turn, nothing is ended.
   app.busy = true;
-  assert.deepEqual(await sessions.send("claude", ID, { text: "first" }), { queued: true, delivered: false });
-  assert.deepEqual(await sessions.send("claude", ID, { text: "second" }), { queued: true, delivered: false });
+  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "first" })), { queued: true, delivered: false });
+  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "second" })), { queued: true, delivered: false });
   assert.equal(sessions.view("claude", ID).queued, 2);
   await settle(40);
   assert.deepEqual(app.signals, []);
@@ -414,7 +424,10 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   assert.equal(sessions.view("claude", ID).queued, 0);
   claude.last().print({ type: "result", is_error: false });
   claude.last().print({ type: "result", is_error: false });
+  assert.deepEqual(refreshed, []);
   claudeHost.release(ID);
+  // The app's window doesn't see what Reach added: it's reloaded (when nobody is at the Mac).
+  assert.deepEqual(refreshed, [ID]);
 
   // Idle in the app: handed over at once, never with SIGTERM (the app logs that as an error).
   app.alive = true;
@@ -440,7 +453,65 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   claudeHost.release(threadId);
   await imports.check();
   assert.equal(opened.length, 1, "imported once");
+  // Imported, not reloaded: the import shows it afresh.
+  assert.deepEqual(refreshed, [ID, ID]);
   sessions.close();
+});
+
+test("a message waiting for the Claude app is never lost: it shows, survives a Reach restart, says why it can't go yet, and goes once it can", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-outbox-")), "agent-outbox.json");
+  // The Claude app's process for the session, busy with a turn.
+  const app = { pid: 4646, alive: true, busy: true, where: "claude-app" };
+  const make = (claude) =>
+    createAgentSessions({
+      daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+      codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+      claude: {
+        list: async () => [],
+        starts: async () => [],
+        health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+        read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [], before: null }),
+      },
+      live: async () =>
+        new Map(app.alive ? [[ID, { where: app.where, pid: app.pid, tty: null, exact: true, busy: app.busy }]] : []),
+      claudeHost: host(claude),
+      signIn: {},
+      liveMs: -1,
+      queueMs: 10,
+      kill: () => {
+        if (!app.busy) app.alive = false; // an idle process ends on SIGINT
+      },
+      alive: () => app.alive,
+      takeOverMs: 30,
+      claudeImports: { add: async () => {}, close() {} },
+      outbox: createOutbox({ file }),
+    });
+  const first = make(fakeClaude());
+  await first.send("claude", ID, { text: "keep me", images: [] });
+  const [waiting] = first.view("claude", ID).outbox;
+  assert.equal(waiting.text, "keep me");
+  assert.equal(waiting.images, 0);
+  // Reach restarts while it waits.
+  first.close();
+  const claude = fakeClaude();
+  const second = make(claude);
+  assert.deepEqual(second.view("claude", ID).outbox.map((m) => m.text), ["keep me"], "still there after the restart");
+  // Moved to a terminal: it can't go from here, and says so.
+  app.where = "terminal";
+  await settle(60);
+  assert.match(second.view("claude", ID).outbox[0].error, /open in a terminal/);
+  assert.equal(claude.runs.length, 0);
+  // Back in the app and done with its turn: it goes, in the same session, and leaves the outbox.
+  app.where = "claude-app";
+  app.busy = false;
+  await settle(120);
+  assert.deepEqual(
+    claude.last().lines.filter((l) => l.type === "user").map((l) => l.message.content[0].text),
+    ["keep me"],
+  );
+  assert.deepEqual(second.view("claude", ID).outbox, []);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, "utf8"))), []);
+  second.close();
 });
 
 test("a Claude app session waiting on you shows what it asks, and a message from here waits instead of ending it", async () => {
@@ -484,7 +555,7 @@ test("a Claude app session waiting on you shows what it asks, and a message from
   // An older page ends wherever it ends, not on what Claude asks now.
   assert.equal((await sessions.read("claude", ID, { before: "1" })).session.asking, undefined);
   // Ending the app's process now would drop its question: the message waits.
-  assert.deepEqual(await sessions.send("claude", ID, { text: "use Postgres" }), { queued: true, delivered: false });
+  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "use Postgres" })), { queued: true, delivered: false });
   await settle(40);
   assert.deepEqual(app.signals, []);
   assert.equal(claude.runs.length, 0);
@@ -492,6 +563,76 @@ test("a Claude app session waiting on you shows what it asks, and a message from
   app.waiting = "permission prompt";
   items[1] = { id: "b1", role: "tool", kind: "command", status: "running", text: "rm -rf build", detail: "" };
   assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "permission", text: "rm -rf build", command: true });
+  sessions.close();
+});
+
+test("the Claude app's own consent card makes its session wait on you, said as the app asks it, only while the app holds it", async () => {
+  const consent = {
+    kind: "apps",
+    id: "consent:toolu_1",
+    title: "Allow Claude to use Calculator?",
+    reason: "Add up the receipts.",
+    apps: ["calculator", "Unknown Tool"],
+    options: ["Deny", "Allow for this session"],
+  };
+  const items = [
+    { id: "u1", role: "user", kind: "text", text: "Add these up" },
+    { id: "c1", role: "tool", kind: "tool", status: "running", text: consent.title, detail: "", consent },
+  ];
+  // What the transcript says now (the card's call, until it's answered).
+  const answered = { consent };
+  const pressed = [];
+  // The registry says busy: the card isn't a Claude Code prompt.
+  let running = new Map([[ID, { where: "claude-app", pid: 4545, tty: null, exact: true, busy: true, waiting: null }]]);
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now() - 60_000, status: "idle", ...answered }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle", ...answered }, items, before: null }),
+    },
+    live: async () => running,
+    claudeHost: host(fakeClaude()),
+    signIn: {},
+    liveMs: -1,
+    claudeImports: { add: async () => {}, close() {} },
+    installedApps: async () => [{ id: "/System/Applications/Calculator.app", name: "Calculator" }],
+    // The phone's answer: pressed in the app, then the transcript has it.
+    claudeShown: () => [{ id: ID, session: `local_${ID}`, at: 1 }],
+    pressConsent: async (choice, expect) => {
+      pressed.push(choice, expect);
+      delete items[1].consent;
+      items[1].status = "completed";
+      delete answered.consent;
+    },
+  });
+  assert.equal((await sessions.list()).sessions[0].status, "waiting");
+  const { session } = await sessions.read("claude", ID);
+  assert.equal(session.status, "waiting");
+  assert.deepEqual(session.asking, {
+    kind: "consent",
+    id: "consent:toolu_1",
+    about: "apps",
+    title: "Allow Claude to use Calculator?",
+    reason: "Add up the receipts.",
+    // As the app lists them, with the installed app when there is one.
+    apps: [{ name: "Calculator", appId: "/System/Applications/Calculator.app" }, { name: "Unknown Tool" }],
+    options: ["Deny", "Allow for this session"],
+  });
+  assert.equal((await sessions.read("claude", ID, { before: "1" })).session.asking, undefined);
+  // Answered from the phone: the app's own button is pressed.
+  await assert.rejects(sessions.respond("claude", ID, "consent:toolu_1", { decision: "maybe" }), (e) => e.status === 400);
+  assert.deepEqual(await sessions.respond("claude", ID, "consent:toolu_1", { decision: "deny" }), { answered: true });
+  assert.deepEqual(pressed, ["Deny", ["Allow Claude to use", "calculator", "Unknown Tool"]]);
+  await assert.rejects(sessions.respond("claude", ID, "consent:toolu_1", { decision: "deny" }), /already answered/);
+  Object.assign(answered, { consent });
+  items[1] = { ...items[1], status: "running", consent };
+  // The app's process is gone: nothing shows that card any more.
+  running = new Map();
+  assert.notEqual((await sessions.list()).sessions[0].status, "waiting");
+  assert.equal((await sessions.read("claude", ID)).session.asking, undefined);
   sessions.close();
 });
 

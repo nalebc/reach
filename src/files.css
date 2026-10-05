@@ -130,8 +130,8 @@
 .files-tool.is-done,
 .files-tool.is-ready,
 .file-actions button.is-ready {
-  background: #b9f56826;
-  border-color: #b9f56866;
+  background: #b9efd426;
+  border-color: #b9efd466;
   color: #dcfab3;
 }
 
@@ -485,7 +485,7 @@
 }
 .file-name mark {
   border-radius: 3px;
-  background: #b9f56840;
+  background: #b9efd440;
   color: inherit;
 }
 .file-meta {
@@ -621,7 +621,7 @@
 }
 .file-tile-name mark {
   border-radius: 3px;
-  background: #b9f56840;
+  background: #b9efd440;
   color: inherit;
 }
 .file-tile-meta {
@@ -730,7 +730,7 @@
 /* Dropping files from the desktop. */
 .files-view.is-dropping .files-list {
   border-radius: 14px;
-  outline: 2px dashed #b9f56899;
+  outline: 2px dashed #b9efd499;
   outline-offset: 6px;
 }
 .files-drop {

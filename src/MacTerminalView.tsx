@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CornerDownLeft } from "lucide-react";
 import { Peer, post, request } from "./api";
 import type { MacTerminal } from "./DesktopTerminals";
+import "./key-row.css";
 import {
   disposeLater,
   plainKeyboard,
@@ -201,7 +202,7 @@ export default function MacTerminalView({
         ref={mount}
         onClick={() => terminal.current?.focus()}
       />
-      <div className="terminal-key-row mac-line" role="toolbar" aria-label="Terminal keys">
+      <div className="key-row terminal-key-row mac-line" role="toolbar" aria-label="Terminal keys">
         <span className="terminal-line-hint">
           {hint || "Type, then Enter sends the line to this Mac tab."}
         </span>

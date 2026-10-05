@@ -1,0 +1,56 @@
+/* Pause (PauseControl.tsx): one small round button, and a quiet cover where
+   the screen or an app would be while Reach is paused. */
+.pause-button.is-paused {
+  color: var(--lime);
+}
+
+.paused-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  background: rgb(9 13 11 / 0.82);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  color: #dbe5de;
+}
+.paused-cover-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: rgb(185 239 212 / 0.12);
+  box-shadow: inset 0 0 0 1px rgb(185 239 212 / 0.22);
+  color: var(--lime);
+}
+.paused-cover strong {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+.paused-cover small {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.paused-cover .button {
+  margin-top: 6px;
+  gap: 6px;
+}
+
+/* Home: top left of the computer card, across from Invite. */
+.home-pause {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 10px;
+}

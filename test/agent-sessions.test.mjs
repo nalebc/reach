@@ -333,3 +333,52 @@ test("a question Claude waits on is read from the transcript, with its choices, 
   assert.equal(answered.status, "completed");
   assert.equal(answered.questions, undefined);
 });
+
+test("the Claude app's own consent card (using apps, a folder) is read from its waiting call, and the session's entry carries it", async () => {
+  const base = { sessionId: ID, cwd: "/work/app", entrypoint: "claude-desktop" };
+  const call = (name, input) => [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { content: "Check the calculator" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "tool_use", id: "c1", name, input }] } }),
+  ];
+  const last = (lines) => parseClaudeTranscript(lines.join("\n")).items.at(-1);
+  const access = call("mcp__computer-use__request_access", { apps: ["Calculator", "Notes"], reason: "Add up the receipts." });
+  // Worded as the app's own card.
+  assert.deepEqual(last(access).consent, {
+    kind: "apps",
+    title: "Allow Claude to use Calculator and Notes?",
+    reason: "Add up the receipts.",
+    apps: ["Calculator", "Notes"],
+    options: ["Deny", "Allow for this session"],
+    // Names the request when the phone answers it.
+    id: "consent:c1",
+  });
+  assert.equal(last(access).text, "Allow Claude to use Calculator and Notes?");
+  assert.equal(last(call("mcp__computer-use__request_full_control", {})).consent.title, "Allow Claude to take over the screen?");
+  // Only the card Reach knows word for word (using apps) is answered from the phone.
+  assert.equal(last(call("mcp__computer-use__request_full_control", {})).consent.id, undefined);
+  assert.equal(last(call("mcp__computer-use__request_teach_access", { apps: ["Notes"], reason: "" })).consent.title, "Allow Claude to guide you through Notes?");
+  assert.equal(last(call("mcp__ccd_directory__request_directory", { path: "/work/docs" })).consent.title, "Allow Claude to access /work/docs?");
+  assert.equal(last(call("mcp__ccd_directory__request_directory", {})).consent.title, "Claude wants you to pick a folder");
+  // Other tools, even long ones, aren't consent cards.
+  assert.equal(last(call("Bash", { command: "sleep 600" })).consent, undefined);
+  assert.equal(last(call("mcp__computer-use__screenshot", {})).consent, undefined);
+  // Answered: no longer waiting.
+  const answered = [
+    ...access,
+    line({ ...base, type: "user", uuid: "r1", parentUuid: "a1", timestamp: at(3), message: { content: [{ type: "tool_result", tool_use_id: "c1", content: "granted" }] } }),
+  ];
+  assert.equal(last(answered).consent, undefined);
+  assert.equal(last(answered).status, "completed");
+
+  // The list entry carries it while it waits.
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-"));
+  const projects = path.join(root, "projects", "-work-app");
+  await fs.mkdir(projects, { recursive: true });
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), access.join("\n"));
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  assert.equal((await claude.list())[0].consent.title, "Allow Claude to use Calculator and Notes?");
+  assert.equal((await claude.read(ID)).session.consent.kind, "apps");
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), answered.join("\n"));
+  assert.equal((await claude.list())[0].consent, undefined);
+  await fs.rm(root, { recursive: true, force: true });
+});

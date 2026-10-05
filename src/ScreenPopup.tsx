@@ -1,5 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { holdPage, holdTouches } from "./page-hold";
+import { dragToClose } from "./sheet-drag";
 export default function ScreenPopup({
   title,
   onClose,
@@ -12,12 +14,22 @@ export default function ScreenPopup({
   className?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const closing = useRef(onClose);
+  closing.current = onClose;
   useEffect(() => {
     const element = dialog.current;
     const focus = document.activeElement as HTMLElement | null;
+    const letGo = holdPage();
+    const letTouchesGo = element ? holdTouches(element) : () => {};
+    const stopDrag = element
+      ? dragToClose(element, () => closing.current())
+      : () => {};
     element?.showModal();
     return () => {
       element?.close();
+      stopDrag();
+      letTouchesGo();
+      letGo();
       focus?.focus?.({ preventScroll: true });
     };
   }, []);
@@ -38,7 +50,9 @@ export default function ScreenPopup({
       aria-label={title}
     >
       <div className="screen-popup-body">
-        <header>
+        {/* Bottom sheets on phones: drag it down to close. */}
+        <div className="sheet-handle" aria-hidden="true" />
+        <header data-sheet-grab>
           <h2>{title}</h2>
           <button
             className="icon-button"

@@ -356,6 +356,16 @@ async function browserMode(
 }
 
 async function main() {
+  // An agent's invitation opened in a browser: it stays unused, for the agent.
+  if (location.pathname === "/agent") {
+    history.replaceState(null, "", "/agent");
+    render({
+      title: "This link is for an AI agent",
+      detail:
+        "Give it to your agent (Claude Code, Codex…) with the command Reach showed you. It joins by itself.",
+    });
+    return;
+  }
   render({ title: "Opening Reach…" });
   const config = await loadConfig();
   if (!config) {
@@ -381,6 +391,13 @@ async function main() {
       : null;
   if (guest)
     history.replaceState(null, "", `/guest${guestHash(guest.invites)}`);
+  // A new invitation is a new guest device: forget an earlier guest's one
+  // in this browser, so its old (maybe removed) device isn't resumed.
+  if (guest?.key)
+    try {
+      for (const k of Object.keys(localStorage))
+        if (k.startsWith("reach.guest:")) localStorage.removeItem(k);
+    } catch {}
   const first = guest?.invites[0]?.origin;
   const target =
     first && first !== config.origin
