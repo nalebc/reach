@@ -1399,3 +1399,15 @@ test("agents without a logo on the computer wear a line icon in the switch, neve
   assert.equal(big.textContent, "");
   assert.deepEqual(dom.errors, []);
 });
+
+test("without the Claude app's spark on the computer, Claude Code's spark is a line asterisk, never a square", async () => {
+  mac.logos = {};
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  await home([claudeSession({ status: "running" })], signedIn, {}, { ...pc, id: "pc-without-spark" });
+  await dom.waitFor(() => $(".chat-session .claude-spark"));
+  const spark = $(".chat-session .claude-spark");
+  assert.equal(spark.tagName.toLowerCase(), "svg");
+  assert.deepEqual([...spark.classList].sort(), ["claude-spark", "lucide", "lucide-asterisk", "plain", "spinning"]);
+  assert.equal(spark.getAttribute("aria-hidden"), "true");
+  assert.deepEqual(dom.errors, []);
+});

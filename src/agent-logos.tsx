@@ -129,16 +129,24 @@ export function AgentLogo({
 }
 
 // Claude's spark, tinted and turning while Claude works, as in Claude Code.
+// Without the Claude app's spark on the computer: a line asterisk in the same
+// tint, never a filled square.
 export function ClaudeSpark({ logos, size = 16, spinning = false }: { logos: AgentLogos; size?: number; spinning?: boolean }) {
   const mask = logos["claude-spark"];
+  if (!mask)
+    return (
+      <Asterisk
+        className={spinning ? "claude-spark plain spinning" : "claude-spark plain"}
+        size={size}
+        strokeWidth={2}
+        absoluteStrokeWidth
+        aria-hidden="true"
+      />
+    );
   return (
     <span
-      className={`claude-spark ${spinning ? "spinning" : ""} ${mask ? "" : "plain"}`}
-      style={{
-        width: size,
-        height: size,
-        ...(mask ? { WebkitMaskImage: `url(${mask})`, maskImage: `url(${mask})` } : {}),
-      }}
+      className={`claude-spark ${spinning ? "spinning" : ""}`}
+      style={{ width: size, height: size, WebkitMaskImage: `url(${mask})`, maskImage: `url(${mask})` }}
       aria-hidden="true"
     />
   );
