@@ -344,3 +344,8 @@ h1.terminal-switch {
     animation: none;
   }
 }
+/* Keyboard closed: the keys sit clear of the iPhone's home indicator, where
+   Safari takes taps for its own toolbar. */
+.terminal-page:not(.kb-open) .terminal-key-row {
+  padding-bottom: calc(6px + env(safe-area-inset-bottom));
+}

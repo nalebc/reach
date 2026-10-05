@@ -222,6 +222,24 @@ export function TerminalView({
   }, []);
   // On a phone the terminal takes the whole screen above the keyboard.
   useViewportBox(page, narrow);
+  // With the keyboard closed, the key row stays clear of the iPhone's home
+  // indicator, where Safari takes taps for its own toolbar; with it open,
+  // the row sits right on the keyboard.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () =>
+      page.current?.classList.toggle(
+        "kb-open",
+        window.innerHeight - (viewport?.height || window.innerHeight) > 120,
+      );
+    update();
+    viewport?.addEventListener("resize", update);
+    window.addEventListener("resize", update);
+    return () => {
+      viewport?.removeEventListener("resize", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   // Open the newest terminal when none is chosen. A just-started terminal
   // stays selected while the list catches up.
   const autoSelected = useRef(false);

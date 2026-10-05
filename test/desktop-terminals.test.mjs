@@ -64,7 +64,6 @@ test("desktop commands validate input, close confirmation, provider and platform
   const before = f.calls.length;
   for (const text of [
     undefined,
-    "",
     " ",
     "x".repeat(16001),
     "\0",
@@ -74,10 +73,14 @@ test("desktop commands validate input, close confirmation, provider and platform
     await assert.rejects(d.action(s.id, "send", { text }, allow), {
       status: 400,
     });
+  // Return on its own (accepting a prompt) goes through as an empty line.
+  await d.action(s.id, "send", { text: "" }, allow);
+  assert.equal(f.calls.at(-1).action, "send");
+  assert.equal(f.calls.at(-1).text, "");
   await assert.rejects(d.action(s.id, "close", {}, allow), { status: 400 });
   await assert.rejects(d.action(s.id, "arbitrary", {}, allow), { status: 400 });
   await assert.rejects(d.create("some-user-app", allow), { status: 400 });
-  assert.equal(f.calls.length, before);
+  assert.equal(f.calls.length, before + 1);
   await d.action(s.id, "close", { confirm: true }, allow);
   assert.equal(f.calls.at(-1).action, "close");
   await assert.rejects(d.action(s.id, "read", {}, allow), { status: 404 });

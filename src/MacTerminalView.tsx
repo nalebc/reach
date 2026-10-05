@@ -143,8 +143,9 @@ export default function MacTerminalView({
       soon = setTimeout(() => void read(), 350);
     };
     submit.current = async () => {
-      const text = pending.current;
-      if (!text.trim()) return;
+      // Nothing typed: Return on its own, as on the Mac (to accept a
+      // prompt or answer with the default).
+      const text = pending.current.trim() ? pending.current : "";
       try {
         await post(peer, `/api/terminals/desktop/${tab.id}/send`, { text });
         pending.current = "";

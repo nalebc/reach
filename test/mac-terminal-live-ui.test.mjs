@@ -21,7 +21,14 @@ const tabs = [
     tty: "/dev/ttys007",
   },
 ];
-const state = { requests: [], lists: 0, mode: "push", gate: null, waits: [] };
+const state = {
+  requests: [],
+  lists: 0,
+  mode: "push",
+  gate: null,
+  waits: [],
+  sent: [],
+};
 let dom, React, TerminalView, Terminal;
 before(async () => {
   dom = await startDom({
@@ -36,6 +43,10 @@ before(async () => {
         return { sessions: tabs, providers: [] };
       },
       "/api/terminals/agents": () => ({ agents: [] }),
+      "/api/terminals/desktop/a2/send": (init) => {
+        state.sent.push(JSON.parse(init.body));
+        return { ok: true };
+      },
       "/api/terminals/desktop/a2": async (init, url) => {
         const after = url.searchParams.get("after");
         state.requests.push(after);
@@ -139,4 +150,33 @@ test("the Terminal page refetches Mac windows when told, not every five seconds"
     globalThis.setInterval = real;
   }
   assert.deepEqual(dom.errors, []);
+});
+
+test("Return on an empty line in a Mac tab is sent, so prompts can be answered", async () => {
+  Object.assign(state, {
+    requests: [],
+    mode: "push",
+    gate: null,
+    waits: [],
+    sent: [],
+  });
+  const view = await dom.render(
+    React.createElement(Host, {
+      source: "mac:a2",
+      changes: '{"macTerminals":"v1"}',
+    }),
+  );
+  const enter = await dom.waitFor(() =>
+    view.container.querySelector(".mac-line button[aria-label=Enter]"),
+  );
+  enter.click();
+  await dom.waitFor(() => state.sent.length);
+  assert.deepEqual(state.sent, [{ text: "" }]);
+  // Spaces alone are a slip: still just Return.
+  const term = Terminal.instances.at(-1);
+  term.type("  ");
+  enter.click();
+  await dom.waitFor(() => state.sent.length === 2);
+  assert.deepEqual(state.sent[1], { text: "" });
+  await view.unmount();
 });

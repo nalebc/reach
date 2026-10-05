@@ -119,13 +119,15 @@ export class DesktopTerminals {
     if (
       action === "send" &&
       (typeof body?.text !== "string" ||
-        !body.text.trim() ||
+        // "" is Return on its own (accepting a prompt, an empty line); a
+        // line of only spaces is more likely a slip.
+        (body.text !== "" && !body.text.trim()) ||
         body.text.length > 16000 ||
         /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body.text))
     )
       throw fail(
         400,
-        "Send between 1 and 16,000 characters of text, without control codes.",
+        "Send up to 16,000 characters of text, without control codes.",
       );
     if (action === "close" && body?.confirm !== true)
       throw fail(

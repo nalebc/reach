@@ -17,8 +17,15 @@ export class Terminal {
     this.written = [];
   }
   focus() {}
-  onData() {
-    return { dispose() {} };
+  onData(listener) {
+    (this.listeners ??= []).push(listener);
+    return {
+      dispose: () => this.listeners.splice(this.listeners.indexOf(listener), 1),
+    };
+  }
+  // What typing on the phone keyboard does: the terminal hears it.
+  type(data) {
+    for (const listener of this.listeners ?? []) listener(data);
   }
   attachCustomKeyEventHandler() {}
   dispose() {}
