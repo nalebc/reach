@@ -10,6 +10,8 @@ export const POLICY_SCOPES = [
   "codex",
   "apps",
   "screen",
+  // Use apps on hidden displays and hand them to you (server/agent-apps.mjs).
+  "apps:drive",
 ];
 const invalid = (message) => Object.assign(Error(message), { status: 403 });
 export const within = (root, file) => {
@@ -60,7 +62,7 @@ export function readAgentPolicy(file) {
       if (typeof root !== "string" || !path.isAbsolute(root))
         throw invalid("Agent folders must be absolute paths.");
       try {
-        const real = fs.realpathSync(root);
+        const real = fs.realpathSync.native(root);
         if (!fs.statSync(real).isDirectory()) throw Error();
         return real;
       } catch {
@@ -110,7 +112,7 @@ export function applyAgentPolicy(client, config) {
     );
     return {
       ...client,
-      scopes: client.scopes.filter((s) => POLICY_SCOPES.includes(s) && !["apps", "screen"].includes(s)),
+      scopes: client.scopes.filter((s) => POLICY_SCOPES.includes(s) && !["apps", "screen", "apps:drive"].includes(s)),
       agentRoots: roots,
       maxJobMs: client.policy.maxJobMs,
     };

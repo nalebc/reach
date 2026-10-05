@@ -150,7 +150,7 @@ test("Backspace removes one character, whether the field has text or is empty", 
     { type: "text", text: "hi" },
     { type: "key", key: "backspace" },
     { type: "key", key: "backspace" },
-    { type: "key", key: "backspace", modifiers: [] },
+    { type: "key", key: "backspace" },
   ]);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
@@ -167,8 +167,39 @@ test("in a field the computer identified, corrections and Enter go to that field
     { type: "type-edit", delete: 2, text: "he", focus: "field-1" },
     { type: "key", key: "enter", modifiers: [], focus: "field-1" },
   ]);
-  assert.equal(field.value, "");
+  assert.equal(field.value.replace(/\u200b/g, ""), "");
   assert.deepEqual(dom.errors, []);
+  await view.unmount();
+});
+
+test("phone Delete repeats through an empty local buffer without cancelling native editing", async () => {
+  const { sent, field, view } = await typingField({ focus: "field-1" });
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set;
+  // iOS emits repeated beforeinput/input events; it need not emit keydown.
+  for (let i = 0; i < 40; i++) {
+    const before = new dom.window.InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward" });
+    assert.equal(field.dispatchEvent(before), true);
+    assert.ok(field.value.length > 0, "native keyboard must have text to delete");
+    setter.call(field, field.value.slice(0, -1));
+    field.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+  }
+  await settle();
+  assert.equal(sent.length, 40);
+  for (const action of sent) assert.deepEqual(action, { type: "type-edit", delete: 1, text: "", focus: "field-1" });
+  assert.equal(dom.document.activeElement, field);
+  await view.unmount();
+});
+
+test("multiline paste reaches the computer intact and subsequent typing uses the last line", async () => {
+  const { sent, field, view } = await typingField({ focus: "field-1" });
+  const paste = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, "clipboardData", { value: { getData: () => "first\nsecond" } });
+  field.dispatchEvent(paste);
+  await typeInto(field, "!");
+  assert.deepEqual(sent, [
+    { type: "type-edit", delete: 0, text: "first\nsecond", focus: "field-1" },
+    { type: "type-edit", delete: 0, text: "!", focus: "field-1" },
+  ]);
   await view.unmount();
 });
 

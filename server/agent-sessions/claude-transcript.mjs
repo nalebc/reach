@@ -206,6 +206,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   let last = null;
   let firstAt = null;
   let updatedAt = null;
+  // Claude's usage as this session last saw it (see add()).
+  let usage = null;
   // Where each line holding pictures sits in the file (when the reader is
   // told where its text starts), so one picture can be read back alone.
   const imageLines = new Map();
@@ -233,6 +235,17 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (at !== null && slim.uuid && Array.isArray(slim.message?.content) && slim.message.content.some((b) => b.type === "image"))
           imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant") && !slim.isSidechain) last = slim;
+        // Claude's usage as this session last saw it: a limit it hit (Claude
+        // Code writes it here, with when the limit resets) or an answer since.
+        if (e.type === "assistant" && e.timestamp) {
+          const when = Date.parse(e.timestamp);
+          const quota = e.quotaLimits;
+          if (!Number.isFinite(when) || (usage && when < usage.at)) {
+            /* older than what's known */
+          } else if (e.isApiErrorMessage && e.error === "rate_limit" && quota?.status === "rejected" && Number.isFinite(quota.resetsAt))
+            usage = { at: when, limited: true, resetsAt: quota.resetsAt * 1000 };
+          else if (!e.isApiErrorMessage && e.message?.model && e.message.model !== "<synthetic>") usage = { at: when, limited: false };
+        }
         if (e.timestamp) {
           firstAt ??= e.timestamp;
           updatedAt = e.timestamp;
@@ -317,6 +330,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         // without --resume (see processes.mjs).
         firstAt: firstAt ? Date.parse(firstAt) : 0,
         updatedAt: updatedAt ? Date.parse(updatedAt) : 0,
+        usage,
         items,
       };
     },

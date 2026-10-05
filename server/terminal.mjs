@@ -67,6 +67,7 @@ export class Terminals {
       cwd,
       createdAt: new Date().toISOString(),
       status: "running",
+      closing: false,
       buffer: "",
       proc,
       listeners: new Set(),
@@ -78,7 +79,10 @@ export class Terminals {
       for (const fn of session.listeners)
         fn({ type: "data", data, seq: session.seq });
     });
+    let finished;
+    session.ended = new Promise((resolve) => { finished = resolve; });
     proc.onExit(({ exitCode }) => {
+      finished();
       session.status = "exited";
       session.exitCode = exitCode;
       for (const fn of session.listeners) fn({ type: "exit", exitCode });
@@ -114,10 +118,22 @@ export class Terminals {
   }
   close(id) {
     const s = this.get(id);
-    if (s.status === "running") s.proc.kill();
+    // DELETE followed immediately by shutdown must not kill the same native
+    // ConPTY handle twice. That can crash the Windows companion.
+    if (s.status === "running" && !s.closing) {
+      s.closing = true;
+      s.proc.kill();
+    }
+    return s.ended;
   }
-  dispose() {
-    for (const s of this.sessions.values())
-      if (s.status === "running") s.proc.kill();
+  async dispose() {
+    const ended = [...this.sessions.keys()].map((id) => this.close(id));
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(ended),
+        new Promise((resolve) => { timer = setTimeout(resolve, 6000); timer.unref(); }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 }

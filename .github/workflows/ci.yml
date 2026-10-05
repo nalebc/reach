@@ -9,12 +9,14 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - run: node scripts/check-release.mjs
       - run: npm ci
       - run: ./reach --help
         if: runner.os != 'Windows'
@@ -22,8 +24,20 @@ jobs:
         if: runner.os == 'Windows'
       - run: npm run build
       - run: npm test
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
       - run: npm audit --audit-level=moderate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - run: node scripts/build-tailnet.mjs --required
       - run: npm run package
+      - run: npm run build
+        working-directory: release/reach
+      - run: node release/reach/scripts/bootstrap.mjs --help
       - uses: actions/upload-artifact@v4
         with:
           name: reach-${{ matrix.os }}

@@ -33,7 +33,10 @@ type Guest = {
   scopes?: string[];
   expiresAt?: number;
   status?: string;
-  policy?: { invite?: boolean };
+  policy?: { invite?: boolean; roots?: string[] };
+  guestRoots?: string[];
+  // The same invitation on your other computers carries the same group.
+  group?: string;
 };
 const ROLES: {
   value: Role;
@@ -106,6 +109,77 @@ const AGENT_DAYS = [
   { days: 30, label: "30 days" },
   { days: 90, label: "90 days" },
 ];
+// Changing what someone may use later, from their row: no new link. The
+// computer checks it as it checks an invitation (POST /api/guests/:id/access).
+type Level =
+  | "watch"
+  | "control"
+  | "open"
+  | "edit"
+  | "work"
+  | "full"
+  | "read"
+  | "run";
+const LEVELS: {
+  value: Level;
+  label: string;
+  description: string;
+  screen?: true;
+  folders?: true;
+}[] = [
+  { ...ROLES[0], value: "watch" },
+  { ...ROLES[1], value: "control" },
+  {
+    value: "open",
+    label: "Can open files",
+    description: "Open the folders you chose.",
+    folders: true,
+  },
+  {
+    value: "edit",
+    label: "Can edit files",
+    description: "Open and change the folders you chose.",
+    folders: true,
+  },
+  { ...ROLES[3], value: "work", folders: true },
+  { ...ROLES[4], value: "full" },
+];
+const AGENT_LEVELS: typeof LEVELS = AGENT_ROLES.map((r) => ({
+  ...r,
+  folders: true,
+}));
+// What their access is now, as one of those (or none: chosen piece by piece).
+export function levelOf(g: Pick<Guest, "kind" | "scopes">): Level | "" {
+  const s = new Set(g.scopes || []);
+  if (g.kind === "agent")
+    return s.has("exec") ? "run" : s.has("files:write") ? "edit" : "read";
+  if (s.has("admin")) return "full";
+  const files = s.has("files:read"),
+    extras = s.has("terminal") || s.has("codex");
+  if (s.has("screen") && !files && !extras)
+    return s.has("screen:control") ? "control" : "watch";
+  if (s.has("screen")) return "";
+  if (files && s.has("files:write") && s.has("terminal") && s.has("codex"))
+    return "work";
+  if (files && !extras) return s.has("files:write") ? "edit" : "open";
+  return "";
+}
+// What to ask the computer for: their folders are kept where they have some.
+const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
+  watch: { screen: "view", apps: "all" },
+  control: { screen: "control", apps: "all" },
+  open: { folders: "keep", write: false },
+  edit: { folders: "keep", write: true },
+  work: { folders: "keep", write: true, terminal: true, agents: true },
+  full: { full: true },
+  read: { folders: "keep", write: false },
+  run: { folders: "keep", write: true, exec: true },
+};
+// Folders they have now, to keep (full access had "everything": not a choice).
+const hasFolders = (g: Guest) =>
+  g.kind === "agent"
+    ? (g.policy?.roots?.length || 0) > 0
+    : !(g.scopes || []).includes("admin") && (g.guestRoots?.length || 0) > 0;
 const startOf = (peer: Peer) => `https://${new URL(peer.url).hostname}`;
 // What an agent runs, once: Reach for agents from the computer's start page,
 // then join with its link.
@@ -312,6 +386,16 @@ export function InviteSheet({
   const [now, setNow] = useState(Date.now);
   // A new link scrolls into view once (not on every clock tick).
   const linkCard = useRef<HTMLElement>(null);
+  // Changing someone's access: the folders to choose first, where they have
+  // none to keep (on each computer their invitation covers).
+  const [picking, setPicking] = useState<{
+    guest: Guest;
+    level: Level;
+    all: { peer: Peer; guest: Guest }[];
+    need: string[];
+  } | null>(null);
+  const [picked, setPicked] = useState<Record<string, PickedFolder[]>>({});
+  const [changed, setChanged] = useState("");
 
   const loadGuests = () =>
     request<{ clients: Guest[] }>(peer, "/api/clients")
@@ -362,11 +446,18 @@ export function InviteSheet({
   }, [peer.url, peer.token]);
   useEffect(() => {
     for (const p of peers)
-      if (computers.includes(p.id) && !devices[p.id])
+      if (
+        (computers.includes(p.id) || picking?.need.includes(p.id)) &&
+        !devices[p.id]
+      )
         request<Device>(p, "/api/device")
           .then((d) => setDevices((old) => ({ ...old, [p.id]: d })))
           .catch(() => {});
-  }, [computers.join(","), peers.map((p) => p.id).join(",")]);
+  }, [
+    computers.join(","),
+    peers.map((p) => p.id).join(","),
+    picking?.need.join(","),
+  ]);
   useEffect(() => {
     if (apps !== "pick" || appList.length) return;
     request<{ id: string; name: string }[]>(peer, "/api/apps")
@@ -485,12 +576,16 @@ export function InviteSheet({
     setError("");
     setNote("");
     const created: Created[] = [];
+    // One id for this invitation on every computer it covers, so changing
+    // their access later changes it everywhere.
+    const group = crypto.randomUUID();
     try {
       // Each chosen computer makes its own invitation…
       for (const p of chosen) {
         const g = await post(p, "/api/guests", {
           name: who,
           ttlSeconds: minutes * 60,
+          group,
           ...body(p),
         });
         created.push({
@@ -639,6 +734,93 @@ export function InviteSheet({
     } catch (e) {
       if (!/cancel|abort/i.test((e as Error).message || (e as Error).name))
         setNote("Couldn’t open sharing. Copy the link instead.");
+    }
+  };
+  // Their invitation on this computer, and on your other computers it covers.
+  const sameInvitation = async (g: Guest) => {
+    const all = [{ peer, guest: g }];
+    if (g.group)
+      for (const p of peers) {
+        if (p.id === peer.id) continue;
+        try {
+          const r = await request<{ clients: Guest[] }>(p, "/api/clients");
+          const twin = (r.clients || []).find(
+            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now(),
+          );
+          if (twin) all.push({ peer: p, guest: twin });
+        } catch {}
+      }
+    return all;
+  };
+  // Computer by computer: one that says no is named (the ones before it
+  // stay changed).
+  const applyLevel = async (
+    g: Guest,
+    level: Level,
+    all: { peer: Peer; guest: Guest }[],
+    folders: Record<string, PickedFolder[]> = {},
+  ) => {
+    for (const x of all)
+      try {
+        await post(x.peer, `/api/guests/${x.guest.id}/access`, {
+          ...LEVEL_BODY[level],
+          ...(folders[x.peer.id]
+            ? {
+                folders: folders[x.peer.id].map(({ root, path }) => ({
+                  root,
+                  path,
+                })),
+              }
+            : {}),
+        });
+      } catch (e) {
+        throw Error(
+          all.length > 1
+            ? `${x.peer.name}: ${(e as Error).message}`
+            : (e as Error).message,
+        );
+      }
+    const label = (g.kind === "agent" ? AGENT_LEVELS : LEVELS).find(
+      (l) => l.value === level,
+    )!.label;
+    setChanged(`${g.name}: ${label.toLowerCase()} now. No new link needed.`);
+  };
+  const changeLevel = async (g: Guest, level: Level) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setChanged("");
+    try {
+      const all = await sameInvitation(g);
+      const levels = g.kind === "agent" ? AGENT_LEVELS : LEVELS;
+      const need = levels.find((l) => l.value === level)?.folders
+        ? all.filter((x) => !hasFolders(x.guest)).map((x) => x.peer.id)
+        : [];
+      if (need.length) {
+        setPicked({});
+        setPicking({ guest: g, level, all, need });
+        return;
+      }
+      await applyLevel(g, level, all);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+      void loadGuests();
+    }
+  };
+  const savePicked = async () => {
+    if (!picking || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await applyLevel(picking.guest, picking.level, picking.all, picked);
+      setPicking(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+      void loadGuests();
     }
   };
   const end = async (g: Guest) => {
@@ -1197,6 +1379,59 @@ export function InviteSheet({
 
       <section className="ivt-people" aria-label="People with access">
         <h3>People with access</h3>
+        {changed && (
+          <p className="ivt-quiet" role="status">
+            {changed}
+          </p>
+        )}
+        {picking && (
+          <div
+            className="ivt-panel"
+            aria-label={`Folders for ${picking.guest.name}`}
+          >
+            <p className="ivt-quiet">
+              Choose the folders {picking.guest.name} may use
+              {picking.need.length > 1 ? " on each computer" : ""}.
+            </p>
+            {picking.need.map((id) => {
+              const p = peers.find((x) => x.id === id);
+              return (
+                p && (
+                  <div key={id}>
+                    {picking.need.length > 1 && <strong>{p.name}</strong>}
+                    <FolderBrowser
+                      peer={p}
+                      device={devices[p.id]}
+                      picked={picked[p.id] || []}
+                      onChange={(next) =>
+                        setPicked((old) => ({ ...old, [p.id]: next }))
+                      }
+                    />
+                  </div>
+                )
+              );
+            })}
+            <div className="ivt-pick-actions">
+              <button
+                type="button"
+                className="ivt-secondary"
+                onClick={() => setPicking(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="ivt-primary small"
+                disabled={
+                  busy || picking.need.some((id) => !(picked[id] || []).length)
+                }
+                onClick={() => void savePicked()}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        )}
         <div className="ivt-person owner">
           <span className="ivt-avatar">You</span>
           <span className="ivt-who">
@@ -1216,13 +1451,42 @@ export function InviteSheet({
             </span>
             <span className="ivt-who">
               <strong>{g.name}</strong>
-              <small>{accessLabel(g.scopes)}</small>
               <small>
                 {g.kind === "agent" && g.status === "expired"
                   ? "Didn’t join in time"
                   : `${g.status === "accepted" ? "Joined" : g.kind === "agent" ? "Not joined yet" : "Not opened yet"} · ${left(g.expiresAt || 0, now)}`}
               </small>
             </span>
+            {/* Their access: change it here, no new link. */}
+            <Menu
+              label={
+                (g.kind === "agent" ? AGENT_LEVELS : LEVELS).find(
+                  (l) => l.value === levelOf(g),
+                )?.label || accessLabel(g.scopes)
+              }
+              wide
+              className="ivt-access"
+            >
+              {(close) =>
+                (g.kind === "agent" ? AGENT_LEVELS : LEVELS)
+                  .filter(
+                    (l) => !l.screen || workspaceCapabilities(device).screen,
+                  )
+                  .map((l) => (
+                    <Item
+                      key={l.value}
+                      on={levelOf(g) === l.value}
+                      label={l.label}
+                      description={l.description}
+                      onClick={() => {
+                        close();
+                        if (levelOf(g) !== l.value)
+                          void changeLevel(g, l.value);
+                      }}
+                    />
+                  ))
+              }
+            </Menu>
             {links[g.id] && (
               <button
                 className="ivt-icon"

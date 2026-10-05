@@ -54,6 +54,8 @@ test("new terminals start only server-known agents, never client commands", asyn
   } finally {
     reach.server.close();
     await reach.close?.();
-    await fs.rm(root, { recursive: true, force: true });
+    // ConPTY may release its final directory handles just after shell exit.
+    // Retry only transient filesystem errors, and still fail on a leaked handle.
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

@@ -103,7 +103,7 @@ test("setup confirms a personal Tailscale identity, saves privately, honors CLI 
         true,
       );
     }
-    assert.equal(
+    if (process.platform !== "win32") assert.equal(
       (await fs.stat(path.join(root, ".reach/preferences.json"))).mode & 0o777,
       0o600,
     );
@@ -123,7 +123,7 @@ test("setup confirms a personal Tailscale identity, saves privately, honors CLI 
       9999,
     );
     assert.equal(applyPreferences(explicit, result).stayAwake, true);
-    assert.deepEqual(applyPreferences(explicit, result).folders, ["/tmp"]);
+    assert.deepEqual(applyPreferences(explicit, result).folders, [path.resolve("/tmp")]);
     await assert.rejects(
       assertSocketSupport(async () => ({ stdout: "old Serve version" })),
       /Update Tailscale/,
@@ -410,8 +410,8 @@ test(
       return ws;
     };
     try {
-      assert.equal((await fs.stat(socketDir)).mode & 0o777, 0o700);
-      assert.equal((await fs.stat(socketPath)).mode & 0o777, 0o600);
+      if (process.platform !== "win32") assert.equal((await fs.stat(socketDir)).mode & 0o777, 0o700);
+      if (process.platform !== "win32") assert.equal((await fs.stat(socketPath)).mode & 0o777, 0o600);
       await assert.rejects(
         listenPrivateIngress({
           socketPath,
@@ -444,13 +444,33 @@ test(
         ).status,
         403,
       );
-      assert.equal(
-        (
-          await call("/api/auth/method", null, {
-            "Tailscale-Funnel-Request": "?1",
-          })
-        ).status,
-        403,
+      // From the internet (Funnel-marked): stopped by the listener before
+      // Reach (no start page here), and Reach itself refuses it too.
+      const internet = await new Promise((resolve, reject) =>
+        http
+          .get(
+            {
+              socketPath,
+              path: "/api/auth/method",
+              headers: { ...headers, "Tailscale-Funnel-Request": "?1" },
+            },
+            (res) => {
+              let body = "";
+              res.on("data", (c) => (body += c));
+              res.on("end", () => resolve({ status: res.statusCode, body }));
+            },
+          )
+          .once("error", reject),
+      );
+      assert.deepEqual(internet, { status: 404, body: "Not found." });
+      assert.deepEqual(
+        await call(
+          "/api/auth/method",
+          null,
+          { "Tailscale-Funnel-Request": "?1" },
+          true,
+        ),
+        { status: 403, body: { error: "Public Funnel access is disabled." } },
       );
       assert.equal(
         (

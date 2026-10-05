@@ -6,6 +6,7 @@ import { useLayoutEffect, type RefObject } from "react";
 export function useViewportBox(
   element: RefObject<HTMLElement | null>,
   active: boolean,
+  prefix = "vv",
 ) {
   useLayoutEffect(() => {
     const box = element.current;
@@ -42,8 +43,11 @@ export function useViewportBox(
       pin();
       const top = viewport?.offsetTop || 0;
       const height = viewport?.height || window.innerHeight;
-      box.style.setProperty("--vv-top", `${top}px`);
-      box.style.setProperty("--vv-height", `${height}px`);
+      box.style.setProperty(`--${prefix}-top`, `${top}px`);
+      box.style.setProperty(`--${prefix}-height`, `${height}px`);
+      box.style.setProperty(`--${prefix}-left`, `${viewport?.offsetLeft || 0}px`);
+      box.style.setProperty(`--${prefix}-width`, `${viewport?.width || window.innerWidth}px`);
+      box.dataset.compactViewport = String(height < 360);
       return `${top} ${height}`;
     };
     // iOS reports the keyboard's size while it is still sliding in or out and
@@ -80,10 +84,11 @@ export function useViewportBox(
       window.removeEventListener("scroll", pin);
       window.removeEventListener("focus", schedule);
       document.removeEventListener("visibilitychange", schedule);
-      box.style.removeProperty("--vv-top");
-      box.style.removeProperty("--vv-height");
+      for (const name of ["top", "height", "left", "width"])
+        box.style.removeProperty(`--${prefix}-${name}`);
+      delete box.dataset.compactViewport;
       body.style.cssText = saved;
       window.scrollTo({ left: x, top: y, behavior: "instant" });
     };
-  }, [element, active]);
+  }, [element, active, prefix]);
 }

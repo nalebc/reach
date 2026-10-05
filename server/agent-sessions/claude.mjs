@@ -138,7 +138,33 @@ export function createClaudeSessions({
     if (!UUID.test(id)) return null;
     return (await transcripts()).find((t) => t.id === id) || null;
   }
+  // Out of usage, as Claude Code last saw it: the newest outcome across its
+  // sessions, a limit it hit (it writes that into the session, with when the
+  // limit resets) or an answer since. Newest files first; one written before
+  // the newest outcome found can't hold a newer one.
+  async function usage(now = Date.now()) {
+    const files = [];
+    for (const t of await transcripts()) {
+      const stat = await fs.stat(t.file).catch(() => null);
+      if (stat) files.push({ ...t, mtimeMs: stat.mtimeMs });
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    let newest = null;
+    for (const t of files) {
+      if (newest && t.mtimeMs < newest.at) break;
+      const seen = (await parse(t.file).catch(() => null))?.usage;
+      if (seen && (!newest || seen.at > newest.at)) newest = seen;
+    }
+    return newest?.limited && newest.resetsAt > now ? { resetsAt: newest.resetsAt } : null;
+  }
+  // Signed in, but out of usage until that limit resets.
+  async function withUsage(health) {
+    if (!health.signedIn) return health;
+    const limit = await usage().catch(() => null);
+    return limit ? { ...health, usable: false, resetsAt: limit.resetsAt } : health;
+  }
   return {
+    usage,
     async list() {
       const [files, byCli] = await Promise.all([transcripts(), records()]);
       const out = [];
@@ -246,7 +272,7 @@ export function createClaudeSessions({
           Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDECODE"),
         );
         const { stdout } = await run(cli, ["auth", "status", "--json"], { timeout: 10000, env: clean });
-        return signIn(stdout);
+        return await withUsage(signIn(stdout));
       } catch (e) {
         if (e.code === "ENOENT") return { agent: "claude", installed: false, signedIn: false };
         // Signed out: exit code 1 with the same JSON on stdout (verified).

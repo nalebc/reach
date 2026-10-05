@@ -41,7 +41,7 @@ export function privateNodePath(root, arch = process.arch) {
     `node-v22.23.3-darwin-${arch}`,
     "bin/node",
   );
-  if (!fs.existsSync(expected) || fs.realpathSync(expected) !== expected)
+  if (!fs.existsSync(expected) || fs.realpathSync.native(expected) !== expected)
     throw Error(
       "Reach's private Node runtime is missing. Run ./reach install to prepare it; system Node is not used for the service.",
     );
@@ -163,7 +163,8 @@ export async function backgroundService(options, root, deps = {}) {
       ...status,
       installed: fs.existsSync(file),
       managedHere: ours,
-      link: saved?.origin || runtime.origin || "Not configured",
+      // The one address once it's up; the private one until then.
+      link: runtime.link || saved?.origin || runtime.origin || "Not configured",
       logs: saved?.logDir || logDir,
       stayAwake:
         (runtime.awake?.mode || stayAwakeMode(saved?.options?.stayAwake)) !==

@@ -20,7 +20,7 @@ test("messages waiting for their session are kept on disk, in order, until each 
   assert.deepEqual(outbox.list(A).map((m) => m.text), ["first", "second"]);
   assert.deepEqual(outbox.list(A)[0], { cwd: "/work", model: "opus", id: first.id, text: "first", images: ["img-1"], at: first.at });
   assert.deepEqual(changes, [A, A, B]);
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
   // Reach restarts: all still there, in order.
   const again = createOutbox({ file });

@@ -109,10 +109,47 @@ export const guestPeers = () => (globalThis as GuestHolder).__reachGuestPeers;
 export const setGuestPeers = (peers: Peer[] | undefined) => {
   (globalThis as GuestHolder).__reachGuestPeers = peers;
 };
+// One address, two ways in: with the Tailscale app on, or signed in from this
+// browser (src/start.ts). Each is its own Tailscale device, approved on its
+// own (credentials are bound to the device), so each keeps its own saved
+// computers: turning the app on or off never asks for approval again.
+const way = () =>
+  typeof document !== "undefined" &&
+  document.documentElement.dataset.connection === "browser"
+    ? "reach.browser."
+    : "reach.";
+export const peersKey = () => `${way()}devices`;
+export const activeKey = () => `${way()}active`;
+// Before, this address (no port) only ever ran the browser way, so what it
+// saved belongs to that way: moved once, it keeps working, and the app way
+// starts at Connect instead of on a credential its device can't use.
+export function separateWays(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  where: { port: string; hostname: string },
+) {
+  if (
+    where.port ||
+    !where.hostname.endsWith(".ts.net") ||
+    storage.getItem("reach.ways")
+  )
+    return;
+  for (const name of ["devices", "active"]) {
+    const value = storage.getItem(`reach.${name}`);
+    if (value !== null && storage.getItem(`reach.browser.${name}`) === null)
+      storage.setItem(`reach.browser.${name}`, value);
+    storage.removeItem(`reach.${name}`);
+  }
+  storage.setItem("reach.ways", "1");
+}
+try {
+  separateWays(localStorage, location);
+} catch {
+  /* no storage here (private mode): nothing to move */
+}
 export const readPeers = (): Peer[] => {
   if (guestPeers()) return guestPeers()!;
   try {
-    const value = JSON.parse(localStorage.getItem("reach.devices") || "[]");
+    const value = JSON.parse(localStorage.getItem(peersKey()) || "[]");
     return Array.isArray(value)
       ? value.filter(
           (p): p is Peer =>
@@ -130,7 +167,7 @@ export const readPeers = (): Peer[] => {
 };
 export function savePeers(peers: Peer[]) {
   if (guestPeers()) return setGuestPeers(peers);
-  localStorage.setItem("reach.devices", JSON.stringify(peers));
+  localStorage.setItem(peersKey(), JSON.stringify(peers));
 }
 const endpoint = (peer: Peer) => {
   try {

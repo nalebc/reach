@@ -277,7 +277,7 @@ test("Reach companion: authenticated end-to-end flows", async (t) => {
         );
         assert.equal(
           (await call("/api/device")).body.capabilities.screen,
-          true,
+          ["darwin", "win32"].includes(process.platform),
         );
         assert.equal(
           loadJson(path.join(dataDir, "settings.json"), {}).screen,

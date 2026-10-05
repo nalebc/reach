@@ -59,7 +59,7 @@ test("Home's circles are filled by the real app icons, terminals included", asyn
   await view.unmount();
 });
 
-test("what macOS itself asks shows under Needs you as the Mac's, with its picture, and nothing to press", async () => {
+test("Mac requests show their available actions and a noninteractive dialog preview", async () => {
   const PNG = "data:image/png;base64,iVBORw0KGgo=";
   const view = await dom.render(
     React.createElement(HomeLive, {
@@ -103,12 +103,32 @@ test("what macOS itself asks shows under Needs you as the Mac's, with its pictur
       toast() {},
     }),
   );
-  const cards = () => [...dom.document.querySelectorAll(".home-needs .mac-prompt")];
+  // One strip, a card at a time (swipe for the next), dots for how many: the
+  // Mac's dialogs are said, marked to be answered at the Mac, nothing to press.
+  const cards = () => [...dom.document.querySelectorAll(".home-needs .need-card")];
   await dom.waitFor(() => cards().length === 3);
-  const [privacy, password, pictured] = cards();
-  assert.equal(privacy.querySelector("header strong").textContent, "Your Mac is asking");
-  // Drawn as macOS draws the dialog: its message in bold, the rest, its buttons (the default one marked).
-  const dialog = privacy.querySelector(".mac-dialog");
+  assert.deepEqual(
+    cards().map((c) => c.querySelector("strong").textContent),
+    [
+      "“Claude” wants access to control “Terminal”. Allowing control will provide access to documents and data in “Terminal”.",
+      "Your Mac is asking for your password",
+      "Your Mac is asking about an app",
+    ],
+  );
+  // Answered right here: the dialog's own buttons (its default marked), the
+  // password dialog's password; one macOS gave nothing to read: at the Mac.
+  assert.deepEqual([...cards()[0].querySelectorAll(".need-actions button")].map((b) => [b.textContent, b.className]), [
+    ["Don’t Allow", ""],
+    ["Allow", "primary"],
+  ]);
+  assert.ok(cards()[1].querySelector(".mac-password input[type=password]"));
+  assert.equal(cards()[2].querySelector(".need-note").textContent, "Answer on your Mac");
+  const dots = [...dom.document.querySelectorAll(".need-dots button")];
+  assert.deepEqual(dots.map((d) => d.getAttribute("aria-selected")), ["true", "false", "false"]);
+  // A tap shows the Mac's own dialog under the strip, as macOS draws it.
+  cards()[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await dom.waitFor(() => dom.document.querySelector(".need-more .mac-dialog"));
+  const dialog = dom.document.querySelector(".need-more .mac-dialog");
   assert.equal(
     dialog.querySelector(".mac-dialog-message").textContent,
     "“Claude” wants access to control “Terminal”. Allowing control will provide access to documents and data in “Terminal”.",
@@ -118,15 +138,18 @@ test("what macOS itself asks shows under Needs you as the Mac's, with its pictur
     ["Don’t Allow", ""],
     ["Allow", "default"],
   ]);
-  assert.equal(privacy.querySelector("img.mac-prompt-image"), null, "drawn, not pictured");
-  assert.equal(privacy.querySelector(".mac-prompt-note").textContent, "Answer it on your Mac.");
-  // Answered at the Mac: nothing to press, on any.
-  assert.equal(dom.document.querySelector(".mac-prompt button, .mac-prompt a"), null);
-  assert.equal(password.querySelector("img.mac-prompt-image"), null);
-  assert.equal(password.querySelector(".mac-dialog-message").textContent, "Your Mac is asking for your password");
-  assert.equal(password.querySelector(".mac-dialog-buttons"), null);
-  assert.equal(pictured.querySelector("img.mac-prompt-image").getAttribute("src"), PNG);
-  assert.equal(pictured.querySelector(".mac-dialog"), null);
+  assert.equal(dom.document.querySelector(".need-more .mac-dialog button, .need-more a"), null);
+  assert.equal(
+    dom.document.querySelector(".need-more .mac-prompt-note").textContent,
+    "This is a preview of the Mac's dialog. Use the request's actions or open the live screen. Some permissions require approval on the Mac itself.",
+  );
+  // Tapped again: put away.
+  cards()[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await dom.waitFor(() => !dom.document.querySelector(".need-more"));
+  // The picture-only one shows its picture.
+  cards()[2].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await dom.waitFor(() => dom.document.querySelector(".need-more img.mac-prompt-image"));
+  assert.equal(dom.document.querySelector(".need-more img.mac-prompt-image").getAttribute("src"), PNG);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });

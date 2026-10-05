@@ -1,26 +1,55 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { Link2, ShieldCheck, Smartphone, RefreshCw } from "lucide-react";
-import { Peer, normalizeUrl } from "./api";
+import {
+  Link2,
+  ScanFace,
+  ShieldCheck,
+  Smartphone,
+  RefreshCw,
+} from "lucide-react";
+import {
+  Peer,
+  activeKey,
+  normalizeUrl,
+  readPeers,
+  savePeers,
+  upsertPeer,
+} from "./api";
 import { isNative } from "./native";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
+import { hasTicket, startFresh, takeTicket } from "./face-start";
+import {
+  createWithFaceId,
+  deviceLabel,
+  faceIdError,
+  faceIdReady,
+  sameComputer,
+  signWithFaceId,
+  type FaceOptions,
+} from "./passkeys";
+import "./connect-steps.css";
 
 type Method = {
   method: "tailscale" | "pairing";
   eligible: boolean;
   login?: string;
+  // This browser signed in with Face ID here before (its access ended).
+  faceJoin?: boolean;
 };
 type Pending = {
   id: string;
   secret: string;
   expiresAt: number;
   verification: string;
+  // This computer has Face ID set up: it can approve this request.
+  passkey?: boolean;
 };
 async function call(
   url: string,
   route: string,
   body?: unknown,
   signal?: AbortSignal,
+  token?: string,
 ) {
   const response = await fetch(url + route, {
     method: body ? "POST" : "GET",
@@ -28,7 +57,10 @@ async function call(
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(10000)])
       : AbortSignal.timeout(10000),
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const value = await response.json();
@@ -70,8 +102,41 @@ export default function ConnectForm({
   const [busy, setBusy] = useState(false);
   const [retry, setRetry] = useState(0);
   const [fallback, setFallback] = useState(false);
+  // Face ID: options fetched ahead (Safari wants it straight from the tap).
+  const [faceOptions, setFaceOptions] = useState<FaceOptions | null>(null);
+  const [faceNote, setFaceNote] = useState("");
+  const [faceAvailable, setFaceAvailable] = useState(false);
+  useEffect(() => {
+    void faceIdReady().then(setFaceAvailable);
+  }, []);
+  // A fresh browser asks its computer at once (no second "Connect" tap).
+  const autoAsked = useRef(false);
+  // Approved, and offered Face ID for this phone's other browsers next time.
+  const [offer, setOffer] = useState<{
+    peer: Peer;
+    options: FaceOptions | null;
+  } | null>(null);
   const onDone = useRef(onPaired);
   onDone.current = onPaired;
+  // Just signed in with Face ID (src/start.ts): its one-time ticket makes
+  // this browser yours here at once, with no request to approve. Used once,
+  // even where React runs this twice.
+  const [joining, setJoining] = useState(hasTicket);
+  const redeemed = useRef(false);
+  useEffect(() => {
+    if (redeemed.current) return;
+    redeemed.current = true;
+    const t = takeTicket();
+    if (!t) return setJoining(false);
+    call(t.origin, "/api/auth/face-join", { ticket: t.ticket, name }).then(
+      (result) =>
+        onDone.current({ ...result.device, url: t.origin, token: result.token }),
+      (e) => {
+        setJoining(false);
+        setError((e as Error).message);
+      },
+    );
+  }, []);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => {
     const abort = new AbortController();
@@ -134,12 +199,31 @@ export default function ConnectForm({
         );
         if (abort.signal.aborted) return;
         if (result.status === "approved") {
-          onDone.current({
-            ...result.device,
-            url: origin,
-            token: result.token,
-          });
+          const peer = { ...result.device, url: origin, token: result.token };
           sessionStorage.removeItem(key);
+          // Signed in from the browser, no Face ID on this computer yet:
+          // offer it, so this phone's other browsers skip this wait.
+          let dismissed = false;
+          try {
+            dismissed = !!localStorage.getItem(`reach.faceid-offer:${origin}`);
+          } catch {}
+          if (
+            !pending.passkey &&
+            !dismissed &&
+            document.documentElement.dataset.connection === "browser" &&
+            sameComputer(origin) &&
+            (await faceIdReady())
+          ) {
+            // Saved first: leaving the offer (locking the phone, a reload)
+            // never loses the approval.
+            try {
+              savePeers(upsertPeer(readPeers(), { ...peer, pairedAt: Date.now() }));
+              localStorage.setItem(activeKey(), peer.id);
+            } catch {}
+            if (!abort.signal.aborted) setOffer({ peer, options: null });
+            return;
+          }
+          onDone.current(peer);
           return;
         }
         if (result.status === "denied") {
@@ -169,9 +253,207 @@ export default function ConnectForm({
       clearTimeout(timer);
     };
   }, [pending, method?.eligible, url]);
+  const requestAccess = async () => {
+    const abort = new AbortController();
+    controller.current = abort;
+    setBusy(true);
+    setError("");
+    try {
+      const origin = normalizeUrl(url);
+      const request = await call(
+        origin,
+        "/api/auth/requests",
+        { name },
+        abort.signal,
+      );
+      if (abort.signal.aborted) return;
+      sessionStorage.setItem(`reach.pending:${origin}`, JSON.stringify(request));
+      setPending(request);
+    } catch (e) {
+      if (!abort.signal.aborted) setError((e as Error).message);
+    } finally {
+      if (!abort.signal.aborted) setBusy(false);
+    }
+  };
+  // Just signed in, nothing connected yet, on this page's own computer:
+  // asking is the only thing to do here, so it happens by itself. (Adding
+  // another computer, or a typed address, still waits for the tap.)
+  useEffect(() => {
+    if (
+      autoAsked.current ||
+      isNative ||
+      fallback ||
+      pending ||
+      busy ||
+      error ||
+      method?.method !== "tailscale" ||
+      !method.eligible ||
+      readPeers().length > 0
+    )
+      return;
+    try {
+      if (normalizeUrl(url) !== normalizeUrl(homeOrigin())) return;
+    } catch {
+      return;
+    }
+    autoAsked.current = true;
+    void requestAccess();
+  }, [method, pending, busy, error, fallback, url]);
+  // While a request waits: Face ID options, renewed before they expire.
+  useEffect(() => {
+    if (!pending?.passkey || !sameComputer(url)) return;
+    const origin = normalizeUrl(url),
+      p = pending;
+    let live = true,
+      timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      if (!(await faceIdReady())) return;
+      try {
+        const options = await call(
+          origin,
+          `/api/auth/requests/${p.id}/passkey/options`,
+          { secret: p.secret },
+        );
+        if (live) setFaceOptions(options);
+      } catch {
+        if (live) setFaceOptions(null);
+      }
+      if (live) timer = setTimeout(load, 100000);
+    };
+    void load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      setFaceOptions(null);
+    };
+  }, [pending?.id, url]);
+  const useFaceId = () => {
+    if (!pending || !faceOptions) return;
+    const origin = normalizeUrl(url),
+      p = pending,
+      options = faceOptions;
+    setFaceNote("");
+    setFaceOptions(null);
+    // Straight from the tap. The usual poll then picks up the approval.
+    signWithFaceId(options)
+      .then((credential) =>
+        call(origin, `/api/auth/requests/${p.id}/passkey`, {
+          secret: p.secret,
+          credential,
+        }),
+      )
+      .then(() => setFaceNote("Approved with Face ID. Connecting…"))
+      .catch((e) => {
+        setFaceNote(faceIdError(e));
+        call(origin, `/api/auth/requests/${p.id}/passkey/options`, {
+          secret: p.secret,
+        }).then(setFaceOptions, () => {});
+      });
+  };
+  // The offer: its options, fetched with the new credential.
+  useEffect(() => {
+    if (!offer || offer.options) return;
+    let live = true;
+    call(
+      offer.peer.url,
+      "/api/auth/passkeys/options",
+      {},
+      undefined,
+      offer.peer.token,
+    ).then(
+      (options) => live && setOffer((o) => (o ? { ...o, options } : o)),
+      (e) => live && setFaceNote((e as Error).message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [offer?.peer.token]);
+  const finishOffer = (later: boolean) => {
+    if (!offer) return;
+    if (later)
+      try {
+        localStorage.setItem(`reach.faceid-offer:${offer.peer.url}`, "later");
+      } catch {}
+    onDone.current(offer.peer);
+  };
+  const addFaceId = () => {
+    if (!offer?.options) return;
+    const { peer, options } = offer;
+    setFaceNote("");
+    setOffer({ peer, options: null });
+    createWithFaceId(options)
+      .then((credential) =>
+        call(
+          peer.url,
+          "/api/auth/passkeys",
+          { credential, label: deviceLabel() },
+          undefined,
+          peer.token,
+        ),
+      )
+      .then(() => onDone.current(peer))
+      .catch((e) => {
+        setFaceNote(faceIdError(e));
+        setOffer({ peer, options: null }); // fetches fresh options
+      });
+  };
+  if (joining)
+    return (
+      <div className="connect-flow">
+        <div className="connection-approval" role="status" aria-live="polite">
+          <ScanFace size={30} />
+          <h3>Signing you in…</h3>
+        </div>
+      </div>
+    );
+  // A browser that signed in with Face ID here before, whose access ended:
+  // it signs in with Face ID again (the start page, as a new browser).
+  if (method?.faceJoin && !pending)
+    return (
+      <div className="connect-flow">
+        <div className="connection-approval" role="status" aria-live="polite">
+          <ScanFace size={30} />
+          <button className="button primary full" onClick={startFresh}>
+            Continue with Face ID
+          </button>
+          <p className="form-note">Signs this browser in again.</p>
+        </div>
+        <ErrorLine error={error} />
+      </div>
+    );
+  if (offer)
+    return (
+      <div className="connect-flow">
+        <div className="connection-approval" role="status" aria-live="polite">
+          <ShieldCheck size={28} />
+          <h3>Approved</h3>
+          <p>
+            Next time, this phone’s other browsers can use Face ID instead of
+            waiting for your computer.
+          </p>
+          <button
+            className="button primary full"
+            disabled={!offer.options}
+            onClick={addFaceId}
+          >
+            Use Face ID next time
+          </button>
+          <button className="text-button" onClick={() => finishOffer(true)}>
+            Not now
+          </button>
+        </div>
+        <ErrorLine error={faceNote} />
+      </div>
+    );
   if (method?.method === "pairing" || fallback) return <>{legacy(url)}</>;
+  // Signed in from the browser: this is the second of two steps.
+  const browserSignIn =
+    document.documentElement.dataset.connection === "browser";
   return (
     <div className="connect-flow">
+      {browserSignIn && (
+        <p className="connect-step">Step 2 of 2 · Connect to Reach</p>
+      )}
       {(isNative || initialUrl) && (
         <label>
           Computer address
@@ -187,17 +469,34 @@ export default function ConnectForm({
       )}
       {pending ? (
         <div className="connection-approval" role="status" aria-live="polite">
-          <ShieldCheck size={28} />
-          <h3>Approve on your computer</h3>
-          <p>Match this request in Reach’s terminal.</p>
-          <strong className="approval-code">{pending.verification}</strong>
-          <p>
-            Running in the background? Open a terminal on your computer and run{" "}
-            <code>./reach approve</code>.
-          </p>
-          <span className="form-note">
-            Waiting for approval · expires in 5 minutes
-          </span>
+          {pending.passkey && faceAvailable && sameComputer(url) ? (
+            <>
+              <ScanFace size={30} />
+              <button
+                className="button primary full"
+                disabled={!faceOptions}
+                onClick={useFaceId}
+              >
+                Continue with Face ID
+              </button>
+              {faceNote && <p className="form-note">{faceNote}</p>}
+              <p className="form-note">
+                No Face ID? Type <strong>{pending.verification}</strong> in
+                Reach on your computer.
+              </p>
+            </>
+          ) : (
+            <>
+              <ShieldCheck size={28} />
+              <h3>Approve on your computer</h3>
+              <p>Type this code in Reach on your computer:</p>
+              <strong className="approval-code">{pending.verification}</strong>
+              {faceNote && <p className="form-note">{faceNote}</p>}
+              <span className="form-note">
+                Reach in the background? Run <code>./reach approve</code> there.
+              </span>
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -214,38 +513,14 @@ export default function ConnectForm({
           <button
             className="button primary full"
             disabled={busy || !method?.eligible}
-            onClick={async () => {
-              const abort = new AbortController();
-              controller.current = abort;
-              setBusy(true);
-              setError("");
-              try {
-                const origin = normalizeUrl(url);
-                const request = await call(
-                  origin,
-                  "/api/auth/requests",
-                  { name },
-                  abort.signal,
-                );
-                if (abort.signal.aborted) return;
-                sessionStorage.setItem(
-                  `reach.pending:${origin}`,
-                  JSON.stringify(request),
-                );
-                setPending(request);
-              } catch (e) {
-                if (!abort.signal.aborted) setError((e as Error).message);
-              } finally {
-                if (!abort.signal.aborted) setBusy(false);
-              }
-            }}
+            onClick={() => void requestAccess()}
           >
             <Link2 size={17} />
             {busy
-              ? "Requesting access…"
+              ? "Asking your computer…"
               : !method && url && !error
                 ? "Checking connection…"
-                : "Connect with Tailscale"}
+                : "Connect to this computer"}
           </button>
           {(error || (method && !method.eligible)) && (
             <div className="tailscale-help">

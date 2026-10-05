@@ -219,7 +219,12 @@ export class TailnetSocket extends EventTarget {
         if (this.readyState === STATES.CLOSED) return;
         this.readyState = STATES.CLOSED;
         if (!clean) this.emit(new Event("error"));
-        this.emit(new CloseEvent("close", { code, reason, wasClean: clean }));
+        // Node 22 exposes WebSocket but not CloseEvent. The CLI shares this
+        // transport; preserve the browser event shape there as well.
+        const event = typeof CloseEvent === "function"
+          ? new CloseEvent("close", { code, reason, wasClean: clean })
+          : Object.assign(new Event("close"), { code, reason, wasClean: clean });
+        this.emit(event);
       },
     });
   }
@@ -266,13 +271,19 @@ const bytesOf = (data: ArrayBufferLike | ArrayBufferView) =>
     ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
     : new Uint8Array(data);
 
+// Reach's own requests, as opposed to the page's files.
+const PRIVATE_PATH = /^\/(?:api|ws|download)\//;
 // From here on, fetch and WebSocket to tailnet addresses use the page's node.
-// The page's own address (the public start page) stays native: it loaded
-// without the tailnet and is faster without the relay.
+// The page's own files stay native: they loaded without the tailnet and are
+// faster without the relay. Reach itself answers at this same address too
+// (one address: Reach for your devices, this page for the internet), so its
+// API and WebSockets here go through the node.
 export function installTailnet(node: TailnetNode, tailnetSuffix: string) {
   const viaTailnet = tailnetRouter(tailnetSuffix);
   const routed = (url: URL) =>
-    viaTailnet(url) && url.origin !== new URL(location.href).origin;
+    viaTailnet(url) &&
+    (url.origin !== new URL(location.href).origin ||
+      PRIVATE_PATH.test(url.pathname));
   active = { node, routed };
   const nativeFetch = window.fetch.bind(window);
   const NativeSocket = window.WebSocket;

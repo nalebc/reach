@@ -4,9 +4,11 @@ import { atomicJson, loadJson } from "../server/core.mjs";
 import { serveConfigs, tailscaleCli, tailscaleJson } from "./tailscale.mjs";
 import { runTailscale } from "./persistent-serve.mjs";
 
-// The public start link: https://<computer>.<tailnet>.ts.net (port 443) via
-// Tailscale Funnel, pointing only at the start-page listener
-// (server/public-start.mjs). Reach's own port stays private Serve.
+// The one address: https://<computer>.<tailnet>.ts.net (port 443) via
+// Tailscale Funnel, pointing at Reach's own private listener. That listener
+// gives the internet only the start page (server/public-start.mjs) and your
+// devices Reach, request by request, by Tailscale's Funnel mark
+// (server/tailscale-auth.mjs). Reach's own port (8443) stays private Serve.
 export const PUBLIC_PORT = 443;
 export const startOrigin = (privateOrigin) =>
   `https://${new URL(privateOrigin).hostname}`;
@@ -41,6 +43,23 @@ export function funnelRoute(config, origin, target) {
 export const PORT_TAKEN =
   "Port 443 on this computer's Tailscale address is used by another service, so phones without the Tailscale app can't sign in from the browser. Phones with the app still connect.";
 
+// Reach's own route from before one address (to a separate start-page
+// listener), as recorded when Reach added it: turned off so the one address
+// can take its place. Never a route Reach didn't record as its own.
+async function clearOwnOldRoute({ file, origin, target, inspect, run }) {
+  const record = file ? loadJson(file, null) : null;
+  if (
+    !record ||
+    record.origin !== origin ||
+    typeof record.target !== "string" ||
+    record.target === target ||
+    funnelRoute(await inspect(), origin, record.target) !== "ours"
+  )
+    return false;
+  await run(["funnel", `--https=${PUBLIC_PORT}`, "off"]);
+  return true;
+}
+
 // Foreground: a `tailscale funnel` process that lives as long as Reach does;
 // Tailscale removes its route when it exits.
 export class PublicLink {
@@ -57,6 +76,9 @@ export class PublicLink {
     setupUrl = () => {},
     log = null,
     now = Date.now,
+    // Where a background service records its route (to replace an old one).
+    file = "",
+    run = runTailscale,
   }) {
     Object.assign(this, {
       origin,
@@ -67,6 +89,8 @@ export class PublicLink {
       setupUrl,
       log,
       now,
+      file,
+      run,
     });
     this.child = null;
     this.stopped = false;
@@ -91,6 +115,12 @@ export class PublicLink {
     let state;
     try {
       state = funnelRoute(await this.inspect(), this.origin, this.target);
+      // A background service's route from an older Reach: this run is Reach
+      // now, at the one address; the service records its own when it starts.
+      if (state === "taken" && (await clearOwnOldRoute(this))) {
+        fs.rmSync(this.file, { force: true });
+        state = funnelRoute(await this.inspect(), this.origin, this.target);
+      }
     } catch (error) {
       this.live = false;
       this.warn(error.message);
@@ -150,7 +180,7 @@ export async function ensurePersistentFunnel({
   inspect = () => tailscaleJson(["serve", "status", "--json"]),
   run = runTailscale,
 }) {
-  const state = funnelRoute(await inspect(), origin, target);
+  let state = funnelRoute(await inspect(), origin, target);
   const record = loadJson(file, null);
   if (
     state === "ours" &&
@@ -158,6 +188,11 @@ export async function ensurePersistentFunnel({
     record?.target === target
   )
     return true;
+  if (
+    state === "taken" &&
+    (await clearOwnOldRoute({ file, origin, target, inspect, run }))
+  )
+    state = funnelRoute(await inspect(), origin, target);
   if (state === "taken") throw Error(PORT_TAKEN);
   atomicJson(file, { version: 1, origin, target });
   if (state === "free")

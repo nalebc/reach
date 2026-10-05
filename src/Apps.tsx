@@ -13,6 +13,7 @@ import {
   type AppThread,
 } from "./app-threads";
 import { controlIn, pausedIn } from "./pause";
+import { takeOpenRequest } from "./handoffs";
 import "./apps.css";
 
 // Loaded when an app is first opened on the phone; the grid stays light.
@@ -100,6 +101,11 @@ export default function Apps({
     remove,
   } = useAppThreads(peer, onPhone, changes);
   const [openId, setOpenId] = useState<string | null>(null);
+  // An app an agent handed you, opened from Home's card.
+  useEffect(() => {
+    const wanted = takeOpenRequest(computer);
+    if (wanted) setOpenId(wanted);
+  }, [computer]);
   // Swiping a card up quits its app, like the iPhone's app switcher.
   const [lift, setLift] = useState<{ id: string; dy: number } | null>(null);
   const [confirmQuit, setConfirmQuit] = useState<{

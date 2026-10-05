@@ -9,6 +9,9 @@ import type {
 } from "./desktop-input-queue";
 
 type Editor = HTMLInputElement | HTMLTextAreaElement;
+// Local-only text lets iOS keep repeating Delete even when we have not read
+// any host text. It is never sent to the computer.
+const PAD = "\u200b".repeat(32);
 export default function RemoteTyping({
   target,
   send,
@@ -31,7 +34,16 @@ export default function RemoteTyping({
     composing = useRef(false),
     valid = useRef(true);
   const beforeInput = useRef<(e: InputEvent) => void>(() => {});
-  const [draft, setDraft] = useState("");
+  const queued = useRef<DesktopAction[]>([]);
+  const deleting = useRef(false);
+  const setDraft = (text: string) => {
+    const element = editorRef.current;
+    const value = PAD + text;
+    if (element && element.value !== value) {
+      element.value = value;
+      element.setSelectionRange(value.length, value.length);
+    }
+  };
   // Armed by the key row: the next letter or key goes with the modifier.
   const [armed, setArmed] = useState(false);
   const armedRef = useRef(false);
@@ -45,9 +57,11 @@ export default function RemoteTyping({
     const handler = (event: Event) => beforeInput.current(event as InputEvent);
     element?.addEventListener("beforeinput", handler);
     element?.focus({ preventScroll: true });
+    element?.setSelectionRange(element.value.length, element.value.length);
     return () => {
       valid.current = false;
       shadow.current = "";
+      queued.current = [];
       element?.removeEventListener("beforeinput", handler);
     };
   }, [editorRef]);
@@ -61,21 +75,35 @@ export default function RemoteTyping({
   };
   const dispatch = (action: DesktopAction) => {
     if (!valid.current) return;
+    if (target.pending) {
+      if (queued.current.length >= 32) return fail(Error("Field confirmation took too long. Tap the field again."));
+      queued.current.push(action);
+      return;
+    }
     void send({
       ...action,
       ...(target.focus ? { focus: target.focus } : {}),
     }).catch(fail);
   };
+  useEffect(() => {
+    if (target.pending || !target.focus) return;
+    const actions = queued.current.splice(0);
+    for (const action of actions) dispatch(action);
+  }, [target.pending, target.focus]);
   const key = (name: string, modifiers: string[] = []) => {
     dispatch({ type: "key", key: name, modifiers });
     shadow.current = "";
     setDraft("");
   };
-  const commit = (next: string) => {
-    setDraft(next);
+  const commit = (raw: string) => {
     if (composing.current || !valid.current) return;
     try {
+      let prefix = 0;
+      while (prefix < PAD.length && raw[prefix] === PAD[0]) prefix++;
+      const next = raw.slice(prefix);
       const edit = typingEdit(shadow.current, next);
+      if (deleting.current) edit.delete += PAD.length - prefix;
+      deleting.current = false;
       // ⌘ (or ctrl) armed: the letter typed is a shortcut, not text.
       if (armedRef.current && edit.text && !edit.delete) {
         arm(false);
@@ -97,10 +125,10 @@ export default function RemoteTyping({
       }
       // Retain enough context for autocorrection without silently stopping long
       // typing sessions at an invisible maxlength. Never copy host text here.
-      shadow.current = typingTail(next);
+      shadow.current = typingTail(next.split(/\r?\n/).at(-1) || "");
       setDraft(shadow.current);
       if (!edit.delete && !edit.text) return;
-      if (target.focus) dispatch({ type: "type-edit", ...edit });
+      if (target.focus || target.pending) dispatch({ type: "type-edit", ...edit });
       else {
         // Explicit keyboard-button fallback for apps without accessibility fields.
         for (let i = 0; i < edit.delete; i++)
@@ -113,10 +141,8 @@ export default function RemoteTyping({
   };
   beforeInput.current = (event) => {
     if (event.isComposing || composing.current) return;
-    if (event.inputType === "deleteContentBackward" && !shadow.current) {
-      event.preventDefault();
-      key("backspace");
-    } else if (
+    deleting.current = event.inputType.startsWith("delete");
+    if (
       ["insertLineBreak", "insertParagraph"].includes(event.inputType)
     ) {
       event.preventDefault();
@@ -125,7 +151,7 @@ export default function RemoteTyping({
   };
   const editorProps = {
     "aria-label": "Type directly on your computer",
-    value: draft,
+    defaultValue: PAD,
     autoComplete: "off",
     // The phone must not rewrite what was already sent: autocorrect and
     // Safari's inline word suggestions replace earlier letters, which reach
@@ -137,6 +163,16 @@ export default function RemoteTyping({
     enterKeyHint: "enter" as const,
     onBlur: onClose,
     onChange: (e: React.ChangeEvent<Editor>) => commit(e.target.value),
+    onPaste: (e: React.ClipboardEvent<Editor>) => {
+      const text = e.clipboardData.getData("text/plain");
+      // A stable input element keeps its keyboard when the detected field
+      // becomes secure. Preserve multiline paste before input strips newlines.
+      if (/\r|\n/.test(text)) {
+        e.preventDefault();
+        deleting.current = false;
+        commit(PAD + shadow.current + text.replace(/\r\n?/g, "\n"));
+      }
+    },
     onCompositionStart: () => {
       composing.current = true;
     },
@@ -173,7 +209,7 @@ export default function RemoteTyping({
       } else if (e.key === "Enter") {
         e.preventDefault();
         key("enter", modifiers);
-      } else if (e.key === "Backspace" && (!draft || modifiers.length)) {
+      } else if (e.key === "Backspace" && modifiers.length) {
         e.preventDefault();
         key("backspace", modifiers);
       } else if (e.key === "Tab") {
@@ -188,24 +224,14 @@ export default function RemoteTyping({
   };
   // iOS requires a rendered editable element for its native keyboard. Keep it
   // within the viewport, visually absent. The remote screen is the text surface.
-  const sink = target.secure ? (
+  const sink = (
     <input
       {...editorProps}
       ref={(el) => {
         editorRef.current = el;
       }}
       className="remote-keyboard-sink"
-      type="password"
-      tabIndex={-1}
-    />
-  ) : (
-    <textarea
-      {...editorProps}
-      ref={(el) => {
-        editorRef.current = el;
-      }}
-      className="remote-keyboard-sink"
-      rows={1}
+      type={target.secure ? "password" : "text"}
       tabIndex={-1}
     />
   );

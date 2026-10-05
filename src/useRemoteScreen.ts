@@ -2,6 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
 import { ReconnectTimer, screenCanRetry } from "./reconnect";
 import { latestFramePainter } from "./frame-painter";
+// Video decoders open on this page, for the log when one fails: a phone runs
+// only so many hardware decoders at once.
+const decoders = new Set<VideoDecoder>();
+const openDecoders = () => {
+  for (const d of decoders) if (d.state === "closed") decoders.delete(d);
+  return decoders.size;
+};
+const lastMinute = (times: number[], now: number) => [
+  ...times.filter((at) => now - at < 60000),
+  now,
+];
 export function useRemoteScreen(
   peer: Peer,
   enabled: boolean,
@@ -30,15 +41,19 @@ export function useRemoteScreen(
   const [fallbackReason, setFallbackReason] = useState("");
   const retry = useRef(new ReconnectTimer());
   const [attempt, setAttempt] = useState(0);
-  // Real decoder failures in the last minute: H.264 is retried twice before
-  // the stream falls back to still images.
+  // Decoders that failed before showing a single frame, in the last minute:
+  // the third means this phone can't decode the stream, so still images.
   const codecFailures = useRef<number[]>([]);
+  // Decoders that failed mid-stream: each is replaced on the same connection;
+  // only a steady run of them gives up on video.
+  const hiccups = useRef<number[]>([]);
   // Steps down from this phone's full resolution, only if its decoder can't
   // keep up.
   const [step, setStep] = useState(0);
   useEffect(() => {
     retry.current.reset();
     codecFailures.current = [];
+    hiccups.current = [];
     setFallback(false);
     setFallbackReason("");
     setStep(0);
@@ -60,7 +75,14 @@ export function useRemoteScreen(
       decoder: VideoDecoder | undefined,
       configured = "",
       wireFormat = "",
-      waitKey = true;
+      waitKey = true,
+      // Frames the current decoder has shown, and the last chunk it was given.
+      decoded = 0,
+      lastChunk = { key: false, width: 0, height: 0, codec: "" },
+      // No new decoder before this: one that failed before its first frame
+      // gets the phone a moment (1 s, then 2 s), as reconnecting once did.
+      retryAt = 0;
+    const opened = Date.now();
     let backlogs = 0;
     let last = 0,
       count = 0,
@@ -95,31 +117,19 @@ export function useRemoteScreen(
       if (socket.readyState === WebSocket.OPEN)
         socket.send(JSON.stringify({ type: "diagnostic", text }));
     };
-    // `codecFailure` only for this phone's video decoder failing: server
-    // messages and garbled packets just reconnect, staying on H.264.
-    const fail = (error: string, retryable = true, codecFailure = false) => {
+    // Server messages and garbled packets reconnect, staying on H.264.
+    const fail = (error: string, retryable = true, stillImages = false) => {
       if (stopped || failed) return;
       failed = true;
       clearTimeout(watchdog);
       clearInterval(metrics);
       painter.stop();
-      if (codecFailure && format === "h264" && retryable) {
-        const now = Date.now();
-        codecFailures.current = [
-          ...codecFailures.current.filter((at) => now - at < 60000),
-          now,
-        ];
-        const giveUp = codecFailures.current.length >= 3;
-        report(
-          `${giveUp ? "switching to still images" : "decoder reset"}: ${error}`,
-        );
-        socket.close();
-        if (giveUp) {
-          setFallbackReason(error);
-          setFallback(true);
-          return;
-        }
-      } else socket.close();
+      socket.close();
+      if (stillImages) {
+        setFallbackReason(error);
+        setFallback(true);
+        return;
+      }
       setState((s) => ({
         ...s,
         ready: false,
@@ -169,6 +179,56 @@ export function useRemoteScreen(
     const painter = latestFramePainter<VideoFrame>((frame) =>
       draw(frame, frame.displayWidth, frame.displayHeight),
     );
+    const startDecoder = () => {
+      const next: VideoDecoder = new VideoDecoder({
+        // Newest frame per screen refresh: a phone that can't draw every
+        // frame skips some instead of falling further and further behind.
+        output: (frame) => {
+          if (stopped || failed || next !== decoder) frame.close();
+          else {
+            decoded++;
+            painter.push(frame);
+          }
+        },
+        error: (error) =>
+          decoderFailed(next, `Video decoder: ${error.message}`),
+      });
+      openDecoders();
+      decoders.add(next);
+      decoded = 0;
+      configured = "";
+      waitKey = true;
+      return next;
+    };
+    // This phone's decoder gave up (Safari closes it on any error). A new one
+    // takes over on the same connection from the next keyframe; the last
+    // frame stays on screen meanwhile. Reconnecting took a second or two.
+    const decoderFailed = (which: VideoDecoder | undefined, error: string) => {
+      if (stopped || failed || which !== decoder) return;
+      const now = Date.now();
+      const firstFrame = !decoded;
+      const queued = which?.decodeQueueSize ?? 0;
+      if (which && which.state !== "closed") which.close();
+      decoder = undefined;
+      configured = "";
+      waitKey = true;
+      if (firstFrame)
+        codecFailures.current = lastMinute(codecFailures.current, now);
+      else hiccups.current = lastMinute(hiccups.current, now);
+      const giveUp =
+        codecFailures.current.length >= 3 || hiccups.current.length >= 10;
+      // Enough to tell why from the computer's log.
+      const where = thread ? "app" : quality === "preview" ? "home" : "screen";
+      const chunk = lastChunk;
+      const resets = codecFailures.current.length + hiccups.current.length;
+      report(
+        `${giveUp ? "switching to still images" : `decoder restarted (${resets} this minute)`}: ${error} · ${where} ${chunk.width}×${chunk.height} ${chunk.codec} · ${firstFrame ? "before its first frame" : `after ${decoded} frames`} · on a ${chunk.key ? "keyframe" : "delta"} · ${queued} queued · ${openDecoders()} decoders open · page ${document.hidden ? "hidden" : "visible"} · ${Math.round((now - opened) / 1000)} s in`,
+      );
+      decoded = 0;
+      if (firstFrame)
+        retryAt = now + 1000 * 2 ** (codecFailures.current.length - 1);
+      if (giveUp) fail(error, true, true);
+    };
     const metrics = setInterval(() => {
       setState((s) => ({
         ...s,
@@ -224,7 +284,7 @@ export function useRemoteScreen(
           ack(item.id);
         }
       } catch {
-        fail("Could not decode the screen frame.", true, true);
+        fail("Could not decode the screen frame.");
       } finally {
         decodingImage = false;
       }
@@ -284,20 +344,27 @@ export function useRemoteScreen(
           !/^avc1\.[0-9a-f]{6}$/i.test(meta.codec)
         )
           throw Error("Invalid video format.");
-        if (!decoder)
-          decoder = new VideoDecoder({
-            // Newest frame per screen refresh: a phone that can't draw every
-            // frame skips some instead of falling further and further behind.
-            output: (frame) => {
-              if (stopped || failed) frame.close();
-              else painter.push(frame);
-            },
-            error: (error) =>
-              fail(`Video decoder: ${error.message}`, true, true),
-          });
+        if (decoder?.state === "closed") {
+          decoderFailed(decoder, "Video decoder closed.");
+          if (failed) return;
+        }
+        if (!decoder && Date.now() < retryAt) {
+          ack(id);
+          return;
+        }
+        if (!decoder) decoder = startDecoder();
+        lastChunk = {
+          key: !!meta.key,
+          width: meta.width,
+          height: meta.height,
+          codec: meta.codec,
+        };
         // A queue that keeps growing means this phone can't decode this
-        // resolution in time: one step down, then a fresh start.
-        if (decoder.decodeQueueSize > 4) {
+        // resolution in time: one step down, then a fresh start. Not while
+        // the decoder is still starting (Safari queues every chunk until its
+        // hardware decoder exists): resetting then only started another one,
+        // and another, each just as slow to start.
+        if (decoder.decodeQueueSize > (decoded ? 4 : 60)) {
           if (++backlogs >= 3 && step < 2) {
             report(`decoder falling behind at ${meta.width}×${meta.height}`);
             setStep((n) => n + 1);
@@ -305,6 +372,7 @@ export function useRemoteScreen(
           decoder.reset();
           configured = "";
           waitKey = true;
+          decoded = 0;
         }
         if (waitKey && !meta.key) {
           ack(id, true);
@@ -324,7 +392,7 @@ export function useRemoteScreen(
               optimizeForLatency: true,
             });
           } catch (e) {
-            fail(`Video decoder: ${(e as Error).message}`, true, true);
+            decoderFailed(decoder, `Video decoder: ${(e as Error).message}`);
             return;
           }
           configured = config;
@@ -340,7 +408,8 @@ export function useRemoteScreen(
             }),
           );
         } catch (e) {
-          fail(`Video decoder: ${(e as Error).message}`, true, true);
+          // Closed by an error Safari hasn't reported yet: same as reported.
+          decoderFailed(decoder, `Video decoder: ${(e as Error).message}`);
           return;
         }
         // Admit a bounded decode queue without making startup depend on the

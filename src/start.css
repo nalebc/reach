@@ -91,3 +91,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* "Step 1 of 2 · Join your network": where you are, signing in without the app. */
+.start-step {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  opacity: 0.65;
+}

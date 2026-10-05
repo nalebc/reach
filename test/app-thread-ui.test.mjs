@@ -180,12 +180,12 @@ async function open(thread = chrome, { connects = true, owner = true, controlKey
     calls,
     surface: dom.document.querySelector(".app-surface"),
     switchTo: async (t) => {
-      setThread(t);
+      dom.update(() => setThread(t));
       await settle(30);
     },
     // The live connection says control changed hands.
     controlChanged: async (key) => {
-      setKey(key);
+      dom.update(() => setKey(key));
       await settle(30);
     },
   };
@@ -411,6 +411,7 @@ test("switching apps streams the other window and moves input to its display", a
   assert.deepEqual(calls, [["switch", "t2"]]);
   await switchTo(notes);
   assert.deepEqual(computer.stream, { display: "902", thread: "t2" });
+  await dom.waitFor(() => computer.input?.display === "902");
   assert.deepEqual(computer.input, { display: "902" });
   await view.unmount();
   assert.deepEqual(dom.errors, []);

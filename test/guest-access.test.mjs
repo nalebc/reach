@@ -89,7 +89,7 @@ test(
           const device = await (await call("/api/device", guest.token)).json();
           assert.deepEqual(
             device.roots.map((r) => r.path),
-            [fs.realpathSync(shared)],
+            [fs.realpathSync.native(shared)],
           );
           assert.deepEqual(device.network.peers, []);
           assert.equal(device.capabilities.terminal, false);

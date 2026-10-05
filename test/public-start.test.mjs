@@ -7,13 +7,13 @@ import net from "node:net";
 import { once } from "node:events";
 import {
   createPublicStart,
-  listenPublicSocket,
   readTailnetManifest,
   PUBLIC_CSP,
 } from "../server/public-start.mjs";
 
-// The only part of Reach on the public internet (Tailscale Funnel): fixed
-// files, nothing else. These tests pin exactly what it will and won't serve.
+// What the public internet (Tailscale Funnel) gets: fixed files, nothing
+// else. These tests pin exactly what it will and won't serve. (Reach's own
+// listener hands it the internet's requests: test/one-address.test.mjs.)
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-public-"));
   const dist = path.join(dir, "dist");
@@ -219,29 +219,4 @@ test("without a built client the config says so (phones are told to get the app)
     `http://127.0.0.1:${server.address().port}/reach-start.json`,
   );
   assert.equal((await r.json()).tailnet, null);
-});
-
-test("the public socket replaces only its own stale socket", async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rp-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const socket = path.join(dir, "p");
-  fs.writeFileSync(socket, "not a socket");
-  const server = createPublicStart({
-    dist: dir,
-    tailnetDir: null,
-    privateOrigin: "https://mac.tail1.ts.net:8443",
-    name: "M",
-    instance: "i",
-  });
-  await assert.rejects(
-    listenPublicSocket(server, socket),
-    /Unsafe Reach socket path/,
-  );
-  fs.rmSync(socket);
-  const stale = net.createServer().listen(socket);
-  await once(stale, "listening");
-  stale.close();
-  await listenPublicSocket(server, socket);
-  assert.equal(fs.statSync(socket).mode & 0o777, 0o600);
-  server.close();
 });

@@ -133,6 +133,9 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
 /// Backspace on an empty input still deletes on the computer.
 final class SinkTextView: UITextView {
   var onEmptyBackspace: (() -> Void)?
+  // Remote text can exist even when the local context is empty. UIKit must
+  // keep Delete enabled (including its repeat) in that state.
+  override var hasText: Bool { true }
   override func deleteBackward() {
     if text.isEmpty { onEmptyBackspace?() } else { super.deleteBackward() }
   }
@@ -140,6 +143,7 @@ final class SinkTextView: UITextView {
 
 final class SinkTextField: UITextField {
   var onEmptyBackspace: (() -> Void)?
+  override var hasText: Bool { true }
   override func deleteBackward() {
     if text?.isEmpty ?? true { onEmptyBackspace?() } else { super.deleteBackward() }
   }

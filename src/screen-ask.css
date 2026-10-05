@@ -1,0 +1,55 @@
+/* A Mac dialog to answer: what it asks, floating over the live screen that
+   opened zoomed onto it (the dialog stays visible under it, in the middle). */
+.screen-ask {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 10px);
+  left: 12px;
+  right: 12px;
+  z-index: 40;
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgb(20 20 20 / 0.88);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 6px 24px rgb(0 0 0 / 0.35),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.14);
+  color: #f2f2f2;
+}
+.screen-ask strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.screen-ask.done strong {
+  color: #9fd59a;
+}
+.screen-ask span {
+  color: #e2e2e2;
+  font-size: 13.5px;
+}
+.screen-ask small {
+  color: #9a9a9a;
+  font-size: 12px;
+}
+.screen-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.screen-ask-actions button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.12);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.screen-ask-actions button.primary {
+  background: #f2f2f2;
+  color: #111;
+}

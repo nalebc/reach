@@ -7,7 +7,7 @@ import {
   type RefObject,
 } from "react";
 import type { DesktopAction } from "./useDesktopInput";
-import { boundView, pinchView, typingView } from "./desktop-geometry";
+import { boundView, focusView, pinchView, typingView } from "./desktop-geometry";
 import { screenPoint } from "./screen-pointer";
 import ScreenConnection from "./ScreenConnection";
 const clamp = (n: number, min: number, max: number) =>
@@ -29,10 +29,13 @@ export default function DesktopSurface({
   onFeedback,
   onInteraction,
   onTextTarget,
+  probe,
+  onField,
   resetKey,
   initialCursor,
   compact = false,
   focusPoint,
+  focusRect,
   typing = false,
   idle,
 }: {
@@ -50,16 +53,23 @@ export default function DesktopSurface({
   onFeedback: (s: string) => void;
   onInteraction: () => void;
   onTextTarget: (point: Point) => void;
+  // Asked on touch-down: is there a text field under the finger? When the
+  // answer is back before the finger lifts, onField opens the keyboard on
+  // that same tap (Safari opens it only during a tap).
+  probe?: (point: Point) => Promise<unknown>;
+  onField?: (point: Point, secure: boolean) => void;
   resetKey: string;
   initialCursor: Point | null;
   compact?: boolean;
   focusPoint?: Point;
+  // An area to open on (fractions of the screen): a Mac dialog to answer.
+  focusRect?: { x: number; y: number; width: number; height: number } | null;
   typing?: boolean;
   // Shown instead of "Live view is paused" while nothing streams.
   idle?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null),
-    [size, setSize] = useState({ width: 800, height: 450 });
+    [size, setSize] = useState({ width: 0, height: 0 });
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 }),
     viewRef = useRef(view);
   viewRef.current = view;
@@ -82,6 +92,19 @@ export default function DesktopSurface({
     anchor: Point;
     pan: Point;
     pinch: boolean;
+    probe?: number;
+  } | null>(null);
+  // The latest touch-down's answer, and a field tapped awaiting its click.
+  const probeSerial = useRef(0);
+  const probeAnswer = useRef<{
+    id: number;
+    field: boolean;
+    secure: boolean;
+  } | null>(null);
+  const tappedField = useRef<{
+    point: Point;
+    secure: boolean;
+    at: number;
   } | null>(null);
   const wheelHandler = useRef<(event: WheelEvent) => void>(() => {});
   useEffect(() => {
@@ -122,6 +145,7 @@ export default function DesktopSurface({
   }, []);
   useEffect(() => {
     release();
+    beforeTyping.current = null;
     setView({ scale: 1, x: 0, y: 0 });
     setRipples([]);
     moveCursor({ x: 0.5, y: 0.5 });
@@ -174,6 +198,15 @@ export default function DesktopSurface({
       );
     }
   }, [focusPoint?.x, focusPoint?.y, baseW, baseH, size.width, size.height]);
+  // Frame a requested dialog once, never again on each keyboard resize.
+  const framed = useRef("");
+  useEffect(() => {
+    if (!focusRect || !size.width || !size.height) return;
+    const key = `${resetKey}:${JSON.stringify(focusRect)}`;
+    if (framed.current === key) return;
+    framed.current = key;
+    setView(focusView(focusRect, baseW, baseH, size.width, size.height));
+  }, [resetKey, focusRect?.x, focusRect?.y, focusRect?.width, focusRect?.height, baseW, baseH, size.width, size.height]);
   const imageW = baseW * view.scale,
     imageH = baseH * view.scale,
     left = (size.width - imageW) / 2 + view.x,
@@ -238,6 +271,7 @@ export default function DesktopSurface({
           r.map((x) => (x.id === id ? { ...x, status: "failed" } : x)),
         );
         onFeedback("Click was not sent");
+        if (id === serial.current) onInteraction();
       });
   };
   wheelHandler.current = (e) => {
@@ -280,6 +314,24 @@ export default function DesktopSurface({
         pan: { x: view.x, y: view.y },
         pinch: false,
       };
+      tappedField.current = null;
+      if (point && mode !== "pan" && canControl && probe && onField) {
+        const id = ++probeSerial.current;
+        gesture.current.probe = id;
+        probeAnswer.current = null;
+        probe(point).then(
+          (answer) => {
+            const a = (answer || {}) as { field?: unknown; secure?: unknown };
+            if (probeSerial.current === id)
+              probeAnswer.current = {
+                id,
+                field: a.field === true,
+                secure: a.secure === true,
+              };
+          },
+          () => {},
+        );
+      }
       if (point && mode !== "pan" && canControl) {
         moveCursor(point);
         const begin = () => {
@@ -422,10 +474,28 @@ export default function DesktopSurface({
           : normalized(event.clientX, event.clientY);
       if (point) {
         onInteraction();
+        const answer = probeAnswer.current;
+        // Reserve Safari's keyboard activation during the user's tap even if
+        // the network reply is late. Screen buffers edits until focus confirms.
+        if (canControl && clickMode !== "right" && onField && g.probe &&
+          ((answer?.id === g.probe && answer.field) ||
+            (answer?.id !== g.probe && event.pointerType === "touch")))
+          tappedField.current = {
+            point,
+            secure: answer?.id === g.probe ? answer.secure : false,
+            at: performance.now(),
+          };
         ripple(point);
       }
     }
     if (!pointers.current.size) gesture.current = null;
+  };
+  // The click that follows a tap is when Safari lets the keyboard open.
+  const clicked = () => {
+    const field = tappedField.current;
+    tappedField.current = null;
+    if (field && performance.now() - field.at < 1000)
+      onField?.(field.point, field.secure);
   };
   return (
     <>
@@ -437,6 +507,7 @@ export default function DesktopSurface({
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
+        onClick={clicked}
         onPointerCancel={release}
         onLostPointerCapture={(e) => {
           if (pointers.current.has(e.pointerId)) release();
@@ -524,7 +595,7 @@ export default function DesktopSurface({
             <span />
           </span>
         ))}
-        {(!compact || view.scale > 1) && (
+        {(
           <div
             className={`remote-zoom ${compact ? "compact" : ""}`}
             onPointerDown={(event) => {
@@ -550,7 +621,12 @@ export default function DesktopSurface({
             )}
             <button
               className="button secondary small"
-              onClick={() => setView({ scale: 1, x: 0, y: 0 })}
+              aria-label="Fit entire screen"
+              onClick={() => {
+                const fit = { scale: 1, x: 0, y: 0 };
+                if (beforeTyping.current) beforeTyping.current = fit;
+                setView(fit);
+              }}
             >
               {Math.round(view.scale * 100)}% · Fit
             </button>

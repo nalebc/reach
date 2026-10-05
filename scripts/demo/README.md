@@ -54,3 +54,15 @@ cp /tmp/reach-demo.mp4 docs/media/reach-demo.mp4
 Inspect the poster, every scene, and the exported video before replacing README
 assets. Update the duration in README if the sequence changes. This tour is not
 evidence of remote-stream frame rate, end-to-end latency, or device compatibility.
+
+## Mobile interaction checks
+
+Open `/scripts/demo/mobile.html` on the local demo server for isolated Chat,
+Terminal and Screen fixtures. The terminal uses the real xterm renderer with
+240 sample lines; Chat uses the real session view; Screen uses the real
+interactive canvas surface with a drawn sample desktop. All API and terminal
+traffic is answered locally in the page, without executing commands.
+
+Check at 390 × 844 and 390 × 430 (keyboard-sized): scroll history, use Latest,
+type, resize, and fit the screen after zooming. This does not replace testing
+Safari's native keyboard and gestures on a physical iPhone.

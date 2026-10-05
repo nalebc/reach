@@ -65,6 +65,8 @@ import {
   Activity,
   readPeers,
   savePeers,
+  peersKey,
+  activeKey,
   compactPeers,
   upsertPeer,
   reconcilePeers,
@@ -95,7 +97,7 @@ import {
 } from "./ui";
 import Files from "./Files";
 import EverythingChat from "./EverythingChat";
-import { useAgentSessions, useChatAgent, type AgentName } from "./agent-sessions";
+import { openMacSetting, sendMacPassword, useAgentSessions, useChatAgent, type AgentName, type MacPrompt } from "./agent-sessions";
 import { AgentLogo, useAgentLogos } from "./agent-logos";
 import Apps from "./Apps";
 import { InviteSheet } from "./InviteSheet";
@@ -109,8 +111,12 @@ import { AppIcon, ComputerIcon } from "./AppIcon";
 import { Sparkles as SparklesIcon, MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
+import { accessChanged } from "./live-access";
 import { useFleetJoin } from "./fleet-join";
 import { groupDevices } from "./device-groups";
+import { FaceIdSettings } from "./FaceIdSettings";
+import { NotifySettings } from "./NotifySettings";
+import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
 // when first opened, then quietly in the background once the app is idle.
 const loadScreen = () => import("./Screen");
@@ -165,7 +171,7 @@ function ReachWorkspace() {
   }, []);
   const [peers, setPeers] = useState(() => compactPeers(readPeers())),
     [active, setActive] = useState(
-      () => localStorage.getItem("reach.active") || readPeers()[0]?.id || "",
+      () => localStorage.getItem(activeKey()) || readPeers()[0]?.id || "",
     ),
     [page, setPage] = useState("overview"),
     [pairing, setPairing] = useState(false),
@@ -275,7 +281,7 @@ function ReachWorkspace() {
   }, [page, peer?.id]);
   useEffect(() => setQuickLaunch(false), [peer?.id]);
   useEffect(() => {
-    const original = localStorage.getItem("reach.devices");
+    const original = localStorage.getItem(peersKey());
     const saved = readPeers();
     if (!saved.length) return;
     const controller = new AbortController();
@@ -286,17 +292,17 @@ function ReachWorkspace() {
     )
       .then((next) => {
         // A pairing/removal made while checks ran always wins over this migration.
-        if (!current || localStorage.getItem("reach.devices") !== original)
+        if (!current || localStorage.getItem(peersKey()) !== original)
           return;
         const previous =
-          saved.find((p) => p.id === localStorage.getItem("reach.active")) ||
+          saved.find((p) => p.id === localStorage.getItem(activeKey())) ||
           saved[0];
         savePeers(next);
         setPeers(next);
         const selected = next.find((p) => sameComputer(p, previous)) || next[0];
         if (selected) {
           setActive(selected.id);
-          localStorage.setItem("reach.active", selected.id);
+          localStorage.setItem(activeKey(),selected.id);
         }
       })
       .finally(() => clearTimeout(timeout));
@@ -468,6 +474,8 @@ function ReachWorkspace() {
     const previous = seenChanges.current;
     seenChanges.current = live;
     if (previous !== undefined && previous !== live) refreshSessions();
+    // What this device may use changed: its pages follow, no new link.
+    if (accessChanged(previous, live)) refreshDeviceRef.current(true);
   }, [live, refreshSessions]);
   useEffect(() => {
     seenChanges.current = undefined;
@@ -513,12 +521,21 @@ function ReachWorkspace() {
     setPage(id);
     setMobileMenu(false);
   };
+  // A Mac dialog to answer on the live screen (from a "Show on screen" card),
+  // and the page to go back to after.
+  const [screenAsk, setScreenAsk] = useState<{ prompt: MacPrompt; from: string } | null>(null);
+  const showOnScreen = features.screen
+    ? (prompt: MacPrompt) => {
+        setScreenAsk({ prompt, from: page });
+        navigate("screen");
+      }
+    : undefined;
   const paired = (p: Peer) => {
     const next = upsertPeer(peers, { ...p, pairedAt: Date.now() });
     savePeers(next);
     setPeers(next);
     setActive(p.id);
-    localStorage.setItem("reach.active", p.id);
+    localStorage.setItem(activeKey(),p.id);
     setPairing(false);
     setPage("overview");
     toast(`${p.name} is within reach`);
@@ -546,7 +563,7 @@ function ReachWorkspace() {
     connectionGeneration.current++;
     const saved = workspaces.current[id];
     setActive(id);
-    localStorage.setItem("reach.active", id);
+    localStorage.setItem(activeKey(),id);
     setPage(saved?.page || "overview");
     setTerminalId(saved?.terminalId || "");
     setTerminalSource(saved?.terminalSource || "reach");
@@ -777,6 +794,7 @@ function ReachWorkspace() {
                     }}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
+                    showOnScreen={showOnScreen}
                     openAgentSession={
                       pageAccessible("sessions", features)
                         ? (s) => {
@@ -830,6 +848,7 @@ function ReachWorkspace() {
                       features.screen ? () => navigate("screen") : undefined
                     }
                     changes={live}
+                    owner={pageAccessible("sessions", features)}
                   />
                 )}
                 {page === "sessions" && (
@@ -838,6 +857,7 @@ function ReachWorkspace() {
                     feed={agentFeed}
                     target={chatTarget}
                     onTargetOpened={() => setChatTarget(null)}
+                    showOnScreen={showOnScreen}
                   />
                 )}
                 {page === "chat" && (
@@ -871,6 +891,28 @@ function ReachWorkspace() {
                     toast={toast}
                     onChanged={refreshDevice}
                     changes={live}
+                    ask={
+                      screenAsk
+                        ? {
+                            id: screenAsk.prompt.id,
+                            kind: screenAsk.prompt.kind,
+                            title: screenAsk.prompt.lines?.[0] || screenAsk.prompt.title,
+                            bounds: screenAsk.prompt.bounds,
+                            setting: screenAsk.prompt.setting,
+                            open: (agentFeed.macPrompts || []).some((p) => p.id === screenAsk.prompt.id),
+                          }
+                        : null
+                    }
+                    onAskDone={() => {
+                      const from = screenAsk?.from;
+                      setScreenAsk(null);
+                      if (from && from !== "screen") navigate(from);
+                    }}
+                    onAskPassword={(password) => sendMacPassword(peer, screenAsk!.prompt.id, password)}
+                    onAskSetting={async () => {
+                      const r = await openMacSetting(peer, screenAsk!.prompt.id);
+                      return `Opened on your Mac: switch on ${r.app ? `“${r.app}”` : "it"} in ${r.opened}.`;
+                    }}
                   />
                 )}
                 {page === "agents" && (
@@ -1074,7 +1116,7 @@ async function pairWith(
     });
   } catch {
     throw Error(
-      "Can’t reach this computer. Keep Reach running and your computer awake. Connect Tailscale on your phone and open the private link.",
+      "Can’t reach this computer. Keep Reach running and your computer awake. Then open Reach's link again.",
     );
   }
   const r = await response.json();
@@ -1231,16 +1273,18 @@ function AgentRequestSheet({
           {r.scopes.map((s) => (
             <span
               key={s}
-              className={`badge ${["exec", "terminal", "screen"].includes(s) ? "warn" : "green"}`}
+              className={`badge ${["exec", "terminal", "screen", "apps:drive"].includes(s) ? "warn" : "green"}`}
             >
               {scopeLabel(s)}
             </span>
           ))}
         </div>
         <p className="sheet-sub">
-          {r.scopes.some((s) => ["exec", "terminal"].includes(s))
-            ? "It will be able to run commands with your account’s permissions."
-            : "It gets only the access listed above."}{" "}
+          {r.scopes.includes("apps:drive")
+            ? "It will be able to use any app as you, Terminal included."
+            : r.scopes.some((s) => ["exec", "terminal"].includes(s))
+              ? "It will be able to run commands with your account’s permissions."
+              : "It gets only the access listed above."}{" "}
           You can revoke it anytime in Settings.
         </p>
         <button
@@ -1267,18 +1311,6 @@ function AgentRequestSheet({
     </div>
   );
 }
-const scopeLabel = (s: string) =>
-  ({
-    admin: "Full access",
-    "files:read": "Read files",
-    "files:write": "Write files",
-    files: "Files",
-    exec: "Run commands",
-    terminal: "Terminals",
-    apps: "Open apps",
-    codex: "Codex",
-    screen: "Screen",
-  })[s] || s;
 function PairForm(props: {
   onPaired: (p: Peer) => void;
   initialUrl?: string;
@@ -1833,6 +1865,8 @@ function SettingsPage({
               </div>
             ))}
         </section>
+        <FaceIdSettings peer={peer} />
+        <NotifySettings peer={peer} />
       </div>
       <button className="forget-computer" onClick={forget}>
         <LogOut size={17} />

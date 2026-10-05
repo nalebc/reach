@@ -94,7 +94,7 @@ function npmCli() {
       process.platform === "win32" ? "npm.cmd" : "npm",
     );
     if (!fs.existsSync(candidate)) continue;
-    if (process.platform !== "win32") return fs.realpathSync(candidate);
+    if (process.platform !== "win32") return fs.realpathSync.native(candidate);
     const cli = path.join(dir, "node_modules/npm/bin/npm-cli.js");
     if (fs.existsSync(cli)) return cli;
   }
@@ -221,7 +221,7 @@ ${command} --version           Show the installed version
 ${command} install             Mac: install a background LaunchAgent
 ${command} install --stay-awake Keep system/display awake while plugged in
 ${command} uninstall           Stop and remove the service and its own Serve route
-${command} status              Running/stopped, private link, and logs
+${command} status              Running/stopped, your phone's link, and logs
 ${command} pair                Fresh one-use pairing code and QR
 ${command} --stay-awake         Stay awake only while plugged in
 ${command} --stay-awake-always  Keep system/display awake, including on battery

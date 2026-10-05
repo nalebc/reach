@@ -12,9 +12,10 @@ export function findTailscaleCli({
   exists = fs.existsSync,
 } = {}) {
   if (env.REACH_TAILSCALE) return env.REACH_TAILSCALE;
+  const paths = platform === "win32" ? path.win32 : path.posix;
   const onPath = (env.PATH || "")
-    .split(path.delimiter)
-    .some((dir) => dir && exists(path.join(dir, "tailscale")));
+    .split(paths.delimiter)
+    .some((dir) => dir && exists(paths.join(dir, "tailscale")));
   return platform === "darwin" && !onPath && exists(MAC_APP_CLI)
     ? MAC_APP_CLI
     : "tailscale";

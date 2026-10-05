@@ -23,6 +23,6 @@ export function defaultFileRoots({
 export function fileRootName(folder) {
   if (folder === path.parse(folder).root)
     return process.platform === "win32" ? `Drive ${folder}` : "Computer";
-  if (folder === fs.realpathSync(os.homedir())) return "Home";
+  if (folder === fs.realpathSync.native(os.homedir())) return "Home";
   return path.basename(folder) || folder;
 }

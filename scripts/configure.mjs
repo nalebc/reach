@@ -201,7 +201,7 @@ export async function configure(root, deps = {}) {
       throw Error("Setup cancelled. No settings changed.");
     try {
       if (!chosen) throw Error("Choose a folder.");
-      const resolved = fs.realpathSync(
+      const resolved = fs.realpathSync.native(
         chosen.replace(/^~(?=\/|$)/, os.homedir()),
       );
       if (!fs.statSync(resolved).isDirectory()) throw Error("Choose a folder.");

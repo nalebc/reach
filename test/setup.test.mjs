@@ -292,7 +292,7 @@ test("background first run ends with the phone: link, then approve by the code i
       print: (m) => printed.push(m),
       sleep: async () => {},
       readHost: () => hosts.shift() ?? host,
-      reachable: async (url) => url === "https://mac.tail1.ts.net/reach-start.json",
+      reachable: async (url) => url === "https://mac.tail1.ts.net/api/health",
       qr: { generate: (link) => qr.push(link) },
       pending: () => requests.shift() ?? [],
       ask: async () => answers.shift(),
@@ -311,6 +311,38 @@ test("background first run ends with the phone: link, then approve by the code i
   assert.match(text, /Enter the eight-character request/, "a wrong code says why, then asks again");
   assert.deepEqual(decided, ["wrong", "a1b2c3d4"]);
   assert.match(text, /Your phone is connected/);
+});
+
+// One address: shown once this very Reach answers there; another service on
+// 443 (or another Reach) doesn't count. The link Reach recorded wins.
+test("the phone link is the one address only when this Reach answers there", async (t) => {
+  const { connectPhone } = await import("../scripts/setup.mjs");
+  const root = tmp(t);
+  const host = { origin: "https://mac.tail1.ts.net:8443", dataDir: "/x", service: true, instance: "i1" };
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  const shown = async (answer, extra = {}) => {
+    const asked = [];
+    globalThis.fetch = async (url) => (asked.push(String(url)), answer());
+    const printed = [];
+    await connectPhone(root, {
+      deps: { print: (m) => printed.push(m), sleep: async () => {}, readHost: () => ({ ...host, ...extra }), qr: { generate: () => {} }, pending: () => [], waitMs: 1 },
+    });
+    return { link: /Open on your phone: (\S+)/.exec(printed.join("\n"))[1], asked };
+  };
+  const json = (v) => () => new Response(JSON.stringify(v), { status: 200 });
+  const me = await shown(json({ product: "Reach", instance: "i1" }));
+  assert.equal(me.link, "https://mac.tail1.ts.net");
+  assert.deepEqual(me.asked, ["https://mac.tail1.ts.net/api/health"]);
+  for (const answer of [
+    json({ product: "Reach", instance: "someone-else" }),
+    () => new Response("<!doctype html>", { status: 200 }), // any page at all
+    () => Promise.reject(TypeError("no route")),
+  ])
+    assert.equal((await shown(answer)).link, "https://mac.tail1.ts.net:8443");
+  const recorded = await shown(() => Promise.reject(TypeError("unused")), { link: "https://home.tail1.ts.net" });
+  assert.equal(recorded.link, "https://home.tail1.ts.net", "the link Reach shows (linked computers share one)");
+  assert.deepEqual(recorded.asked, []);
 });
 
 test("background first run: start page not reachable → private link; deny keeps waiting; gives up clearly", async (t) => {

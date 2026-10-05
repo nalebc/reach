@@ -383,6 +383,8 @@ export function createAgentSessions({
   return {
     signIn,
     logos,
+    // Asks held for the phone (agent-asks.mjs): Reach notifies your phone.
+    asks: agentAsks,
     // Sending, approving and stopping, exactly as in the agent's own app.
     async send(agent, id, body) {
       // As from the Codex app: without a pick, its composer's current mode.
@@ -416,6 +418,24 @@ export function createAgentSessions({
       return started;
     },
     stop: async (agent, id) => host(agent).stop(id),
+    // A Mac dialog answered from the phone: one of its own buttons, or the
+    // Mac's password typed into its password dialog.
+    pressMacPrompt: async (id, button) => {
+      if (!macPrompts.press) throw Object.assign(new Error("That Mac prompt was already answered."), { status: 404 });
+      return macPrompts.press(id, button);
+    },
+    typeMacPassword: async (id, password) => {
+      if (!macPrompts.password) throw Object.assign(new Error("That Mac prompt was already answered."), { status: 404 });
+      return macPrompts.password(id, password);
+    },
+    // The Mac's own dialogs on screen now (screen control holds others'
+    // pointers and keys while one is up).
+    macDialogs: () => macPrompts.current?.().prompts || [],
+    // The System Settings page a Mac prompt belongs to, opened on the Mac.
+    openMacSetting: async (id) => {
+      if (!macPrompts.openSetting) throw Object.assign(new Error("That Mac prompt was already answered."), { status: 404 });
+      return macPrompts.openSetting(id, open);
+    },
     // A picture sent in a Claude session (the phone shows it in its message).
     async image(agent, id, item, n) {
       if (agent !== "claude") throw Object.assign(new Error("That picture isn't in this session."), { status: 404 });
@@ -511,6 +531,13 @@ export function createAgentSessions({
     async list() {
       const [c, k, p] = await Promise.allSettled([codex.list(), claude.list(), codex.projects?.() ?? []]);
       const sessions = [...(c.value || []), ...(k.value || [])];
+      // The prompts each waits on (answerable from the Needs-you strip): Reach's
+      // own turns' and the agents' hooks'.
+      for (const s of sessions) {
+        const driven = s.agent === "codex" ? codexLive.drives(s.id) : claudeHost.drives(s.id);
+        const asked = [...(driven ? host(s.agent).view(s.id).prompts || [] : []), ...(agentAsks.prompts?.(s.agent, s.id) || [])];
+        if (asked.length) s.prompts = asked;
+      }
       try {
         const running = await liveNow();
         // Reach's own reply process isn't where a session lives (it showed as "Terminal").

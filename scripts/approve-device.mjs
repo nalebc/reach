@@ -42,7 +42,7 @@ export async function approveDevice(root, deps = {}) {
   const pending = pendingApprovals(host.dataDir);
   if (!pending.length) {
     print(
-      "No pending devices. Open the private link on your phone and tap Connect.",
+      "No pending devices. Open Reach's link on your phone (the QR in Reach's terminal).",
     );
     return;
   }

@@ -110,6 +110,8 @@ export function desktopConnection(
         ws.clientId = client.id;
         clearTimeout(deadline);
         const options = streamOptions({ display: message.display });
+        // Which display this control is on: an agent waits only for its own.
+        ws.reachDisplay = options.display;
         if (create === DesktopInput.create) {
           const displays = await desktopDisplays(config);
           if (
@@ -135,6 +137,8 @@ export function desktopConnection(
             cursor: initial.cursor,
             window: 8,
             typing: true,
+            // Asks "is there a text field here?" on touch-down (probe).
+            probe: true,
           }),
         );
         return;

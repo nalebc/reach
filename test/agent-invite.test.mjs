@@ -104,7 +104,7 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
     call(route, { token: joined.body.token, ...opts });
 
   // Its folder, nothing beside it.
-  const acme = fs.realpathSync(path.join(files, "Projects/acme"));
+  const acme = fs.realpathSync.native(path.join(files, "Projects/acme"));
   const device = (await as("/api/device")).body;
   assert.deepEqual(
     device.roots.map((r) => r.path),
@@ -123,7 +123,7 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
   // Commands start in its folder only, within its time limit.
   const job = await as("/api/jobs", {
     method: "POST",
-    body: { root: 0, path: "", command: "pwd" },
+    body: { root: 0, path: "", command: process.platform === "win32" ? "(Get-Location).Path" : "pwd" },
   });
   assert.equal(job.status, 202, JSON.stringify(job.body));
   let done;
@@ -132,7 +132,7 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
     if (j.status !== "running") done = j;
     else await new Promise((r) => setTimeout(r, 50));
   }
-  assert.equal(fs.realpathSync(done.output.trim()), acme);
+  assert.equal(fs.realpathSync.native(done.output.trim()), acme);
   assert.equal(
     (
       await as("/api/jobs", {

@@ -31,7 +31,7 @@ export function getConfig(overrides = {}) {
     process.env.REACH_ROOTS
       ? process.env.REACH_ROOTS.split(path.delimiter)
       : defaultFileRoots()
-  ).map((p) => fs.realpathSync(p));
+  ).map((p) => fs.realpathSync.native(p));
   return {
     port: Number(process.env.PORT || 4317),
     host: "127.0.0.1",
@@ -84,7 +84,7 @@ export function safePath(roots, rootIndex = 0, relative = "") {
   const { target, inside } = locate(roots, rootIndex, relative);
   let resolved;
   try {
-    resolved = fs.realpathSync(target);
+    resolved = fs.realpathSync.native(target);
   } catch {
     throw gone();
   }
@@ -143,6 +143,9 @@ export const ALL_SCOPES = [
   "screen:control",
   // Watch chosen apps' windows on the phone (client.guestApps; all if unset).
   "apps:open",
+  // An agent uses apps it opens on hidden displays, and hands them to you
+  // (server/agent-apps.mjs). Granted on purpose only, never to guests.
+  "apps:drive",
 ];
 // Agents never control the screen or open app windows.
 export const AGENT_SCOPES = ALL_SCOPES.filter(
@@ -157,7 +160,22 @@ export const GUEST_BLOCKED_ROUTES = [
   "agents",
   "activity",
   "fleet",
+  // What agents hand you is yours to answer.
+  "handoffs",
+  // Notifications go to your own devices.
+  "push",
+  // Every AI session's transcript, its approvals, and the Mac's own dialogs
+  // (pressing their buttons, typing the Mac's password): the owner only, not
+  // grantable to anyone, a full invitation included.
+  "sessions",
 ];
+// A credential a Face ID sign-in made for its own tagged device: only the
+// /api/auth/face-join route issues these (server/face-join.mjs).
+const faceJoined = (client) =>
+  client.kind === "device" &&
+  client.tailscale?.faceJoin === true &&
+  client.tailscale.tagged === true &&
+  client.tailscale.userId === "";
 export function createAuth(config, { rotatePairing = true } = {}) {
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
@@ -213,13 +231,16 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         client.tailscale.nodeId !== identity.nodeId)
     )
       return null;
+    // Yours: a device of your Tailscale account, or the one tagged device a
+    // Face ID sign-in made (bound to it above; server/face-join.mjs).
     if (
       client &&
       config.tailscaleOwner &&
       !["guest", "agent"].includes(client.kind) &&
       (!client.tailscale ||
-        identity.tagged ||
-        identity.userId !== config.tailscaleOwner.userId)
+        (identity.tagged
+          ? !faceJoined(client)
+          : identity.userId !== config.tailscaleOwner.userId))
     )
       return null;
     if (client)
@@ -303,7 +324,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       // (A folder that contains it is fine: its files stay hidden there.)
       const real = (p) => {
         try {
-          return fs.realpathSync(p);
+          return fs.realpathSync.native(p);
         } catch {
           return path.resolve(p);
         }
@@ -318,27 +339,27 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     }
     return chosen;
   }
-  // What you choose when inviting someone:
+  // What you choose when inviting someone (or changing it later):
   //   roots/write  shared folders by index, read or read/write
   //   folders      any folder inside them: [{ root, path }] (path relative)
   //   screen       false | "view" | "control" (true means "view")
   //   apps         undefined | "all" | [app ids]: watch those apps' windows
   //   terminal     their own terminals;  agents  AI sessions (Codex)
   //   full         everything you can do, except managing access
-  function inviteGuest({
-    name,
-    ttlSeconds,
-    roots = [],
-    folders = [],
-    write = false,
-    screen = false,
-    apps,
-    terminal = false,
-    agents = false,
-    full = false,
-  }) {
+  // `chosen`: the folders, already checked. Null if the choice isn't valid.
+  function guestAccess(
+    {
+      roots = [],
+      write = false,
+      screen = false,
+      apps,
+      terminal = false,
+      agents = false,
+      full = false,
+    },
+    chosen,
+  ) {
     const screenMode = screen === true ? "view" : screen;
-    const chosen = chooseFolders(folders);
     const appList =
       apps === undefined || apps === "all"
         ? apps
@@ -349,12 +370,6 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           ? [...new Set(apps)]
           : null;
     if (
-      typeof name !== "string" ||
-      !name.trim() ||
-      name.length > 80 ||
-      !Number.isInteger(ttlSeconds) ||
-      ttlSeconds < 60 ||
-      ttlSeconds > 86400 ||
       !Array.isArray(roots) ||
       roots.some((r) => !Number.isInteger(r) || !config.roots[r]) ||
       typeof write !== "boolean" ||
@@ -371,17 +386,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         !terminal &&
         !agents)
     )
-      throw fail(
-        400,
-        "Choose a guest name, what they may use, and a duration from 1 minute to 24 hours.",
-      );
-    const token = crypto.randomBytes(32).toString("base64url");
-    const client = {
-      id: id(),
-      kind: "guest",
-      name: name.trim(),
+      return null;
+    return {
       scopes: full
-        ? [...ALL_SCOPES]
+        ? ALL_SCOPES.filter((s) => s !== "apps:drive")
         : [
             "device",
             ...(roots.length || chosen.length
@@ -402,6 +410,34 @@ export function createAuth(config, { rotatePairing = true } = {}) {
             ]),
           ],
       ...(Array.isArray(appList) && !full ? { guestApps: appList } : {}),
+    };
+  }
+  // One invitation over several computers: the same id on each (the phone
+  // changes their access together).
+  const GROUP = /^[A-Za-z0-9_-]{8,64}$/;
+  function inviteGuest({ name, ttlSeconds, group, folders = [], ...choice }) {
+    const access = guestAccess(choice, chooseFolders(folders));
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 80 ||
+      !Number.isInteger(ttlSeconds) ||
+      ttlSeconds < 60 ||
+      ttlSeconds > 86400 ||
+      (group !== undefined && !GROUP.test(group)) ||
+      !access
+    )
+      throw fail(
+        400,
+        "Choose a guest name, what they may use, and a duration from 1 minute to 24 hours.",
+      );
+    const token = crypto.randomBytes(32).toString("base64url");
+    const client = {
+      id: id(),
+      kind: "guest",
+      name: name.trim(),
+      ...access,
+      ...(group ? { group } : {}),
       inviteHash: hash(token),
       createdAt: new Date().toISOString(),
       expiresAt: Date.now() + ttlSeconds * 1000,
@@ -453,21 +489,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         400,
         "Name the agent and choose how long it may use this computer (up to 90 days).",
       );
-    // At least one folder: it's where the agent's files, commands and
-    // sessions start.
-    const roots = chooseFolders(folders);
-    if (!roots.length)
-      throw fail(400, "Choose at least one folder for the agent.");
-    const scopes = [
-      "device",
-      "files:read",
-      ...(write ? ["files:write"] : []),
-      ...(exec ? ["exec"] : []),
-      ...(terminal ? ["terminal"] : []),
-      ...(codex ? ["codex"] : []),
-    ];
-    if (scopes.some((s) => !AGENT_SCOPES.includes(s)))
-      throw fail(400, "Invalid agent access.");
+    const { scopes, roots } = agentAccess(
+      { write, exec, terminal, codex },
+      chooseFolders(folders),
+    );
     const token = crypto.randomBytes(32).toString("base64url");
     const now = Date.now();
     const client = {
@@ -490,6 +515,101 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       joinBy: client.inviteExpiresAt,
       scopes,
     };
+  }
+  // What an agent may do in its folders (inviting it, or changing it later).
+  // Never the screen, apps or managing access: only agent scopes.
+  function agentAccess({ write = false, exec = false, terminal = false, codex = false }, roots) {
+    if ([write, exec, terminal, codex].some((v) => typeof v !== "boolean"))
+      throw fail(400, "Choose what the agent may do.");
+    // At least one folder: it's where the agent's files, commands and
+    // sessions start.
+    if (!roots.length)
+      throw fail(400, "Choose at least one folder for the agent.");
+    const scopes = [
+      "device",
+      "files:read",
+      ...(write ? ["files:write"] : []),
+      ...(exec ? ["exec"] : []),
+      ...(terminal ? ["terminal"] : []),
+      ...(codex ? ["codex"] : []),
+    ];
+    if (scopes.some((s) => !AGENT_SCOPES.includes(s)))
+      throw fail(400, "Invalid agent access.");
+    return { scopes, roots };
+  }
+  // Change what someone you invited may use, without a new link: the same
+  // choices and checks as inviting them. Their credential, their device and
+  // their time stay; every request checks the new access from the next one.
+  // `folders: "keep"` keeps the folders they have (never "everything" from
+  // full access: those are chosen again).
+  function changeAccess(clientId, changes = {}) {
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId);
+      if (
+        !client ||
+        !(
+          client.kind === "guest" ||
+          (client.kind === "agent" && client.policy?.invite)
+        ) ||
+        client.expiresAt <= Date.now() ||
+        (client.inviteExpiresAt && client.inviteExpiresAt <= Date.now())
+      )
+        throw fail(404, "That invitation has ended.");
+      const guest = client.kind === "guest";
+      const had = guest
+        ? client.scopes.includes("admin")
+          ? []
+          : client.guestRoots || []
+        : client.policy.roots || [];
+      const keep = changes.folders === "keep";
+      if (keep && !had.length)
+        throw fail(400, "Choose the folders they may use.");
+      const folders = keep ? had : chooseFolders(changes.folders ?? []);
+      const before = {
+        scopes: [...client.scopes],
+        roots: guest ? [...(client.guestRoots || [])] : [...had],
+        apps: client.guestApps,
+      };
+      if (guest) {
+        const { roots, write, screen, apps, terminal, agents, full } = changes;
+        const access = guestAccess(
+          { roots, write, screen, apps, terminal, agents, full },
+          folders,
+        );
+        if (!access) throw fail(400, "Choose what they may use.");
+        client.scopes = access.scopes;
+        client.guestRoots = access.guestRoots;
+        if (access.guestApps) client.guestApps = access.guestApps;
+        else delete client.guestApps;
+      } else {
+        const access = agentAccess(changes, folders);
+        client.scopes = access.scopes;
+        client.policy = { ...client.policy, roots: access.roots };
+      }
+      client.changedAt = new Date().toISOString();
+      result = {
+        client: {
+          id: client.id,
+          kind: client.kind,
+          name: client.name,
+          scopes: client.scopes,
+          ...(guest
+            ? { guestRoots: client.guestRoots }
+            : { policy: { invite: true, roots: client.policy.roots } }),
+          ...(client.guestApps ? { guestApps: client.guestApps } : {}),
+          ...(client.group ? { group: client.group } : {}),
+        },
+        before,
+        after: {
+          scopes: client.scopes,
+          roots: guest ? client.guestRoots : client.policy.roots,
+          apps: client.guestApps,
+        },
+      };
+      return latest;
+    });
+    return result;
   }
   // A guest or agent invitation, used once. The credential works only on the
   // Tailscale device that redeemed it.
@@ -601,6 +721,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verifyDigest,
     inviteGuest,
     inviteAgent,
+    changeAccess,
     redeemGuest,
     pair,
     issue,

@@ -14,7 +14,7 @@ const POLICY = `// my policy
 {
 \t"grants": [
 \t\t// everyone
-\t\t{"src": ["*"], "dst": ["*"], "ip": ["*"]},
+\t\t{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
 \t],
 }
 `;
@@ -104,7 +104,7 @@ test("one token: rules added (comments kept), Reach's own limited client saved, 
     confirm: async (plan) => ((seen = plan), true),
   });
   assert.equal(seen.added.length, 2, "confirm saw exactly what changes");
-  assert.deepEqual(result.allowAll, ["grants[0]"], "the allow-all rule is reported");
+  assert.deepEqual(result.allowAll, []);
   // The policy: tag + grant added, the owner's comments and rule kept.
   const saved = parsePolicy(api.policy);
   assert.deepEqual(saved.tagOwners, { [GUEST_TAG]: ["autogroup:admin"] });
@@ -255,7 +255,7 @@ test(
     assert.equal(ok.status, 200, ok.text);
     assert.equal(ok.json.configured, true);
     assert.equal(ok.json.added.length, 2);
-    assert.equal(ok.json.allowAll, true);
+    assert.equal(ok.json.allowAll, false);
     assert.doesNotMatch(ok.text, /tskey-/);
     assert.deepEqual(parsePolicy(api.policy).grants[0].dst, ["100.64.0.5"]);
     assert.deepEqual(parsePolicy(api.policy).grants[0].ip, ["tcp:8443"]);
@@ -263,3 +263,20 @@ test(
     assert.equal(tokenOnDisk(path.join(dir, "private")), false);
   },
 );
+
+
+test("unsafe wildcard policies stop setup before any policy write or key mint", async (t) => {
+  for (const policy of [
+    '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}',
+    '{"acls":[{"action":"accept","src":["*"],"dst":["tag:server:22"]}]}',
+    '{"grants":[{"src":["tag:reach-guest"],"dst":["*"],"ip":["*"]}]}',
+    '{"grants":[{"src":["100.64.0.0/10"],"dst":["*"],"ip":["tcp:22"]}]}',
+  ]) {
+    const api = fakeTailscale({ policy });
+    const keys = createGuestKeys({ dataDir: setupDir(t), self: "dev-a", request: api.request });
+    await assert.rejects(keys.setupFromAccessToken({ accessToken: TOKEN, ...where, confirm: async () => true }), /Guest access is not isolated/);
+    assert.equal(api.writes, 0);
+    assert.equal(api.clients.length, 0);
+    assert.equal(keys.configured(), false);
+  }
+});

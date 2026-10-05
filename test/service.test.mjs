@@ -66,7 +66,7 @@ test("persistent Serve creates only unused routes, reuses only its recorded rout
     assert.deepEqual(calls, [["serve", "--bg", "--https=8443", target]]);
     await ensurePersistentRoute(options);
     assert.equal(calls.length, 1);
-    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
     // A different port's service is never touched.
     config.TCP[9999] = { HTTPS: true };
     config.Web["other.example.ts.net:9999"] = {
@@ -231,7 +231,7 @@ test("install/status/uninstall preserve private runtime, PATH, scopes, logs, and
     assert(!plist.includes("never-copy"));
     const logs = path.join(root, ".reach/logs");
     assert(plist.includes(path.join(logs, "companion.log")));
-    assert.equal(
+    if (process.platform !== "win32") assert.equal(
       (await fs.stat(path.join(logs, "companion.log"))).mode & 0o777,
       0o600,
     );
@@ -248,6 +248,17 @@ test("install/status/uninstall preserve private runtime, PATH, scopes, logs, and
     assert.equal(status.running, true);
     assert.equal(status.link, origin);
     assert.equal(status.logs, logs);
+    // Once the one address is up, Reach records it: that's the phone's link.
+    const hostStatus = path.join(root, ".reach/host-status.json");
+    await fs.writeFile(
+      hostStatus,
+      JSON.stringify({ origin, link: "https://mac.example.ts.net" }),
+    );
+    assert.equal(
+      (await backgroundService(parseOptions(["status"]), root, deps)).link,
+      "https://mac.example.ts.net",
+    );
+    await fs.rm(hostStatus);
     await assert.rejects(
       backgroundService(parseOptions(["install"]), root, deps),
       /already/,
@@ -390,7 +401,7 @@ test("pair works against a running background host, prints QR, replaces codes, e
       pairRunningHost(root, deps),
       /stopped or still connecting/,
     );
-    assert.equal(
+    if (process.platform !== "win32") assert.equal(
       (await fs.stat(path.join(dataDir, "pairing.json"))).mode & 0o777,
       0o600,
     );
@@ -469,7 +480,7 @@ test("failed service install rolls back and unverified LaunchAgents cannot be st
 
 test(
   "background launcher starts without stdin, pairs without logging a code, and retains pairing after restart",
-  { timeout: 20000 },
+  { timeout: 20000, skip: process.platform === "win32" && "Unix SIGTERM launcher shutdown; Windows terminates process trees differently" },
   async () => {
     const { spawn } = await import("node:child_process");
     const { once } = await import("node:events");

@@ -31,6 +31,13 @@ Available tools:
 - `reach_list_files`, `reach_read_file`, `reach_write_file`, `reach_create_folder`
 - `reach_run_command`, `reach_get_job`, `reach_cancel_job`
 - `reach_list_chats`, `reach_create_chat`, `reach_send_message`, `reach_get_chat` (requires `codex` scope)
+- `reach_list_apps`, `reach_open_app`, `reach_see_app`, `reach_app_action`, `reach_hand_to_person`, `reach_wait_for_person`, `reach_close_app` (requires `apps:drive`, Mac only)
+
+## Use apps, and hand them to the person (Tag in)
+
+With `apps:drive`, an agent opens a Mac app on its own hidden display, shaped like a phone, where it works without touching the Mac's own screen. `reach_see_app` returns a picture of the window; `reach_app_action` clicks, types, presses keys or scrolls at that picture's pixels and returns a fresh picture. When only a person should go on (a sign-in code, a payment, "does this look right?"), `reach_hand_to_person` puts the live app on the person's phone with one sentence of what to do, and `reach_wait_for_person` waits for them to hand it back (`back`, with their note) or tell the agent to stop (`stopped`).
+
+Agents work alongside you. A single click, typing and a key go to the agent's app directly (Accessibility, and keys posted to that app alone): the Mac's pointer and keyboard stay yours, and nothing comes to the front. Keys reach the app only while its window is the agent's and the app isn't in front, so they can't land in a window you're using. What needs the pointer (a double or right click, a scroll, or an element the app won't press) and menus (`type: "menu"`, a `path` of titles; they act on the app's front window, so the app comes to the front) wait until nobody has used the Mac for 15 seconds. So does starting an app that isn't running yet, since some apps (Chrome) come to the front when they start. The agent also waits while a phone is using that same app (you take turns there), while Reach is paused, and while the app is with the person. An agent only reaches apps it opened: never one a person has open, and it never closes someone's app to make room. When its access ends (expiry or revoke), its apps go back to the Mac. `apps:drive` gives whatever the apps it opens can do, so Terminal means commands as you: treat it like `exec`. It is granted only on purpose (a policy profile or `npm run agent-token -- --scopes apps:drive`); agents invited from the phone and invited people never get it.
 
 ## Expected workflow
 

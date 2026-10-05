@@ -295,22 +295,51 @@ test("installTailnet sends tailnet traffic through the node and the rest nativel
     assert.equal(
       await (await window.fetch("/reach-start.json")).text(),
       "native",
-      "the page's own address stays native",
+      "the page's own files stay native",
+    );
+    assert.equal(
+      await (await window.fetch("/assets/api/x.js")).text(),
+      "native",
+      "only paths that start with Reach's own",
     );
     assert.equal(
       await (await window.fetch("https://example.com/x")).text(),
       "native",
     );
+    // One address: Reach answers at the page's own address too, through the node.
+    assert.equal(await (await window.fetch("/api/health")).text(), "ok");
+    assert.equal(
+      await (await window.fetch("https://mac.t.ts.net/api/device")).text(),
+      "ok",
+    );
+    assert.equal(
+      await (await window.fetch("https://mac.t.ts.net/download/abc")).text(),
+      "ok",
+    );
     const ws = new window.WebSocket("wss://mac.t.ts.net:8443/ws/presence");
     assert.ok(ws instanceof transport.TailnetSocket);
+    assert.ok(
+      new window.WebSocket("wss://mac.t.ts.net/ws/screen") instanceof
+        transport.TailnetSocket,
+    );
     new window.WebSocket("wss://example.com/x");
     assert.equal(window.WebSocket.OPEN, 1);
     assert.equal(window.WebSocket.CLOSED, 3);
     assert.deepEqual(native, [
       ["fetch", "/reach-start.json"],
+      ["fetch", "/assets/api/x.js"],
       ["fetch", "https://example.com/x"],
       ["ws", "wss://example.com/x"],
     ]);
+    assert.deepEqual(
+      node.calls.map((r) => r.url),
+      [
+        "https://mac.t.ts.net:8443/api/health",
+        "https://mac.t.ts.net/api/health",
+        "https://mac.t.ts.net/api/device",
+        "https://mac.t.ts.net/download/abc",
+      ],
+    );
   } finally {
     delete globalThis.window;
     delete globalThis.location;
@@ -342,6 +371,24 @@ test("start page: config, app-first probe, and where it sends the phone", async 
     assert.equal(flow.parseStartConfig({ ...good, origin }), null, origin);
   assert.equal(flow.parseStartConfig({ ...good, product: "Other" }), null);
   assert.equal(flow.tailnetSuffix(good.origin), "tail1234.ts.net");
+  // One address: the same computer's name without the port. Anything else is
+  // dropped, never trusted, and the page still works through `origin`.
+  const one = { ...good, home: "https://mac.tail1234.ts.net" };
+  assert.deepEqual(flow.parseStartConfig(one), one);
+  assert.equal(flow.ownOrigin(flow.parseStartConfig(one)), one.home);
+  assert.equal(flow.ownOrigin(flow.parseStartConfig(good)), good.origin);
+  for (const home of [
+    "https://other.tail1234.ts.net",
+    "http://mac.tail1234.ts.net",
+    "https://mac.tail1234.ts.net/",
+    "https://mac.tail1234.ts.net/x",
+    "nope",
+    42,
+  ]) {
+    const parsed = flow.parseStartConfig({ ...good, home });
+    assert.equal(parsed.home, undefined, String(home));
+    assert.equal(flow.ownOrigin(parsed), good.origin, String(home));
+  }
 
   const answer =
     (body, ok = true) =>

@@ -19,10 +19,12 @@ import {
 } from "lucide-react";
 import { arrowKey, controlKey } from "./terminal-keys";
 import { useViewportBox } from "./useViewportBox";
+import { useTerminalHistory } from "./useTerminalHistory";
 import {
   disposeLater,
   plainKeyboard,
   terminalOptions,
+  terminalTouch,
 } from "./terminal-options";
 import MacTerminalView from "./MacTerminalView";
 import TerminalList from "./TerminalList";
@@ -63,6 +65,7 @@ export function TerminalView({
   onExit,
   onOpenScreen,
   changes,
+  owner = false,
 }: {
   desktopTerminals: boolean;
   peer: Peer;
@@ -78,12 +81,16 @@ export function TerminalView({
   onOpenScreen?: () => void;
   // The computer's live change fingerprints (App's presence connection).
   changes?: string;
+  // The Mac's owner, on their own device: the AI apps' logos come from the
+  // owner-only sessions routes (others get the line icons).
+  owner?: boolean;
 }) {
   const page = useRef<HTMLDivElement>(null),
     mount = useRef<HTMLDivElement>(null),
     terminal = useRef<XTerm | null>(null),
     socket = useRef<WebSocket | null>(null),
     ctrlArmed = useRef(false);
+  const history = useTerminalHistory();
   const [connected, setConnected] = useState(false),
     [error, setError] = useState(""),
     [menu, setMenu] = useState<"switch" | "new" | null>(null),
@@ -178,14 +185,14 @@ export function TerminalView({
     if (macFresh && macSelected && !macTabs.some((t) => t.id === macSelected))
       setMacSelected("");
   }, [macTabs, macFresh]);
-  // Swipe left or right to move between terminals, like stories. The first
+  // Swipe the header to move between terminals, leaving output scrollable. The first
   // time there's another terminal to go to, a hand shows how.
   const [swipeHint, swipeSeen] = useFirstTime("terminal-swipe");
   const swipeHintShown = useRef(false);
   const swipe = useRef<{ x: number; y: number; at: number } | null>(null);
   const swipeHandlers = {
     onTouchStart: (event: React.TouchEvent) => {
-      // Touching the terminal while the hand shows: understood.
+      // Touching the header while the hand shows: understood.
       if (swipeHintShown.current) swipeSeen();
       const touch = event.touches[0];
       // Leave the screen edges to the browser's own back gesture.
@@ -262,7 +269,7 @@ export function TerminalView({
     const timer = setTimeout(swipeSeen, 5200);
     return () => clearTimeout(timer);
   }, [showSwipeHint, swipeSeen]);
-  const logos = useAgentLogos(peer);
+  const logos = useAgentLogos(owner ? peer : null);
   useEffect(() => {
     if ((menu === "new" || listing) && !agents)
       void request<{ agents: string[] }>(peer, "/api/terminals/agents")
@@ -282,7 +289,9 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(mount.current);
     plainKeyboard(term);
+    const removeTouch = terminalTouch(mount.current, term);
     terminal.current = term;
+    const stopHistory = history.observe(term);
     const resize = () => {
       try {
         fit.fit();
@@ -408,6 +417,8 @@ export function TerminalView({
       document.removeEventListener("visibilitychange", wake);
       ro.disconnect();
       input.dispose();
+      stopHistory();
+      removeTouch();
       ws?.close();
       disposeLater(term);
       terminal.current = null;
@@ -486,7 +497,7 @@ export function TerminalView({
   };
   return (
     <div className="terminal-page" ref={page}>
-      <header className="terminal-bar">
+      <header className="terminal-bar" {...swipeHandlers}>
         <button className="terminal-bar-icon" aria-label="Leave terminal" onClick={onExit}>
           <ChevronLeft size={20} />
         </button>
@@ -579,13 +590,12 @@ export function TerminalView({
               <Pointer size={30} strokeWidth={1.8} />
             </span>
           </span>
-          Swipe to switch terminals
+          Swipe the header to switch terminals
         </div>
       )}
       <div
         key={currentKey}
         className={`terminal-stage ${slide ? `slide-${slide}` : ""}`}
-        {...swipeHandlers}
       >
       {macTab ? (
         <MacTerminalView
@@ -600,6 +610,7 @@ export function TerminalView({
             ref={mount}
             onClick={() => terminal.current?.focus()}
           />
+          {history.reading && <button className="terminal-latest" onClick={history.latest}>↓ Latest output</button>}
           <KeyRow
             className="terminal-key-row"
             label="Terminal keys"

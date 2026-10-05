@@ -54,7 +54,7 @@ test("the sign-in link for another device is read from Claude Code's output", ()
   assert.equal(plainText(LOGIN_OUTPUT).includes("\x1b"), false);
 });
 
-test("Claude Code signs in from the phone: link out, code in, nothing opens on the Mac", async () => {
+test("Claude Code signs in from the phone: link out, code in, nothing opens on the Mac", { skip: process.platform === "win32" && "Executes a POSIX shell shim" }, async () => {
   const dir = await dataDir();
   const term = fakeTerminal();
   let signedIn = false;

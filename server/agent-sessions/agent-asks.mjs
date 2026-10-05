@@ -174,6 +174,7 @@ export function createAgentAsks({
   return {
     socketPath,
     async listen() {
+      if (process.platform === "win32") throw bad("Agent permission hooks require Unix socket permissions.", 501);
       fs.rmSync(socketPath, { force: true });
       await new Promise((resolve, reject) => {
         server.once("error", reject);

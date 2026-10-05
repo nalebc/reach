@@ -168,8 +168,8 @@ test(
     assert.match(joined.stdout, /codex mcp add reach -- node /);
     const conn = path.join(env.REACH_AGENT_HOME, "127");
     const credentialFile = path.join(conn, "credential.json");
-    assert.equal(fs.statSync(env.REACH_AGENT_HOME).mode & 0o777, 0o700);
-    assert.equal(fs.statSync(credentialFile).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(fs.statSync(env.REACH_AGENT_HOME).mode & 0o777, 0o700);
+    if (process.platform !== "win32") assert.equal(fs.statSync(credentialFile).mode & 0o777, 0o600);
     const credential = JSON.parse(fs.readFileSync(credentialFile, "utf8"));
     assert.equal(credential.via, "direct");
     assert.equal(credential.clientId, grant.clientId);
@@ -283,7 +283,7 @@ test(
       const open = new Set();
       server.on("connection", (socket) => open.add(socket));
       await once(server, "listening");
-      assert.equal(
+      if (process.platform !== "win32") assert.equal(
         fs.statSync(path.join(conn, "agent.sock")).mode & 0o777,
         0o600,
       );

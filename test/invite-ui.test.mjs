@@ -103,7 +103,17 @@ const toggle = (c, text) => [...c.querySelectorAll(".ivt-toggle")].find((t) => t
 const inviteButton = (c) => [...c.querySelectorAll("button")].find((b) => /^Invit/.test(b.textContent.trim()));
 const render = (props) =>
   dom.render(React.createElement(InviteSheet, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
-const posts = (log) => log.filter(([m, , p]) => m === "POST").map(([m, h, p, b]) => [h, p, b]);
+// An invitation carries one id for all its computers (so its access can be
+// changed later on each): checked on its own, set aside in the exact lists.
+const posts = (log) =>
+  log
+    .filter(([m, , p]) => m === "POST")
+    .map(([m, h, p, b]) => {
+      if (p !== "/api/guests" || !b?.group) return [h, p, b];
+      const { group, ...rest } = b;
+      return [h, p, rest];
+    });
+const groups = (log) => log.filter(([m, , p]) => m === "POST" && p === "/api/guests").map(([, , , b]) => b.group);
 const link = (c) => c.querySelector(".ivt-link-field").value;
 
 test("Can watch (the default): screen and the apps you open, one keyed link", async () => {
@@ -166,6 +176,9 @@ test("Custom on two computers: control, folders on each, terminal, editable, 1 d
     ["mac-b", "/api/guests", { ...common, folders: [{ root: 0, path: "" }] }],
     ["mac-a", "/api/guests/key", { ttlSeconds: 86400, clientIds: ["client-mac-a"] }],
   ]);
+  const [a, b] = groups(log);
+  assert.match(a, /^[0-9a-f-]{36}$/);
+  assert.equal(b, a, "one id for the invitation on both computers");
   assert.deepEqual(parseGuestLink(new URL(link(c)).hash).invites, [
     { origin: macA.url, secret: secret("a") },
     { origin: macB.url, secret: secret("b") },
@@ -404,11 +417,11 @@ test("people with access: their access, joined or not, time left; end one now", 
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
   await settle(40);
-  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text")].map((e) => e.textContent).join(" | "));
+  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text, .ivt-access .ivt-menu-button")].map((e) => e.textContent).join(" | "));
   assert.deepEqual(rows, [
     "You | Mac A and Mac B | Owner",
-    "Sam | Controls screen · Watches apps | Joined · 2 h 1 min left",
-    "Kim | Opens files | Not opened yet · 2 h 1 min left",
+    "Sam | Joined · 2 h 1 min left | Can control",
+    "Kim | Not opened yet · 2 h 1 min left | Can open files",
   ]);
   dom.window.confirm = globalThis.confirm = () => true;
   await click(c.querySelector('[aria-label="End Kim’s access"]'));
@@ -600,12 +613,12 @@ test("agents with access: what they can do, joined or not, or didn't join in tim
   const view = await render();
   const c = view.container;
   await settle(40);
-  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text")].map((e) => e.textContent).join(" | "));
+  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text, .ivt-access .ivt-menu-button")].map((e) => e.textContent).join(" | "));
   assert.deepEqual(rows, [
     "You | Mac A | Owner",
-    "Builder | Edits files · Runs commands | Joined · 168 h 0 min left",
-    "Reader | Opens files | Not joined yet · 168 h 0 min left",
-    "Late | Opens files | Didn’t join in time",
+    "Builder | Joined · 168 h 0 min left | Can run commands",
+    "Reader | Not joined yet · 168 h 0 min left | Can read",
+    "Late | Didn’t join in time | Can read",
   ]);
   dom.window.confirm = globalThis.confirm = () => true;
   await click(c.querySelector('[aria-label="End Builder’s access"]'));

@@ -117,3 +117,26 @@
   flex: 0 0 auto;
   color: var(--as-muted, #8e8e8e);
 }
+
+/* Opened from its slim line: its header folds it again. */
+.mac-prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted, #8e8e8e);
+  font: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.mac-prompt-head strong {
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+/* The Mac's own buttons, drawn but not pressable here. */
+.mac-dialog-buttons {
+  opacity: 0.55;
+}

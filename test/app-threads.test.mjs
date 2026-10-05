@@ -556,13 +556,16 @@ test("a phone's video trouble lands in Reach's log, briefly and safely", async (
   assert.equal(frames[0].width, 1000);
   viewer.ws.send(JSON.stringify({ type: "diagnostic", text: "decoder reset:\nbad\u0007 " + "x".repeat(400) }));
   viewer.ws.send(JSON.stringify({ type: "diagnostic", text: "flood" }));
+  // Never held back: the phone's video just dropped to still images.
+  viewer.ws.send(JSON.stringify({ type: "diagnostic", text: "switching to still images: Decoder failure" }));
   viewer.ws.send(JSON.stringify({ type: "ack", id: 1 }));
-  await until(() => logged.length === 1);
+  await until(() => logged.length === 2);
   await new Promise((r) => setTimeout(r, 50));
   const ours = logged.filter((line) => line.startsWith("Reach: phone video: "));
-  assert.equal(ours.length, 1, "one line per phone every few seconds");
+  assert.equal(ours.length, 2, "one line per phone every few seconds, and the switch");
   assert.match(ours[0], /^Reach: phone video: decoder reset: bad  x+$/);
   assert.equal(ours[0].length, "Reach: phone video: ".length + 300);
+  assert.equal(ours[1], "Reach: phone video: switching to still images: Decoder failure");
   viewer.ws.close();
 });
 

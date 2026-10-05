@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useLayoutEffect,
+} from "react";
 import {
   AlignLeft,
   ArrowUp,
   Check,
   ChevronDown,
+  ChevronLeft,
+  SlidersHorizontal,
   ChevronRight,
   FileText,
   Globe,
@@ -28,7 +37,10 @@ import type { Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
+import ChatSheet from "./ChatSheet";
+import ChatList from "./ChatList";
 import { useAppIcon } from "./app-icons";
+import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
 import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
@@ -67,12 +79,22 @@ import {
   type SessionPrompt,
 } from "./agent-sessions";
 import "./agent-session.css";
-
+import "./chat-home.css";
+import "./chat-workspace.css";
 
 // ChatGPT's (and Codex's) menu mark: two lines, the lower one shorter.
 function TwoLines({ size = 22 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
       <path d="M4 9h16M4 15h10" />
     </svg>
   );
@@ -114,9 +136,16 @@ const SKIN = {
 } as const;
 
 // Under the newest reply, as both apps put them: copy it, share it.
-function ReplyActions({ text, disclaimer }: { text: string; disclaimer: string }) {
+function ReplyActions({
+  text,
+  disclaimer,
+}: {
+  text: string;
+  disclaimer: string;
+}) {
   const [copied, setCopied] = useState(false);
-  const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+  const canShare =
+    typeof navigator !== "undefined" && typeof navigator.share === "function";
   return (
     <div className="as-reply-actions">
       <div>
@@ -136,7 +165,11 @@ function ReplyActions({ text, disclaimer }: { text: string; disclaimer: string }
           {copied ? <Check size={19} /> : <Copy size={19} />}
         </button>
         {canShare && (
-          <button className="as-icon" aria-label="Share" onClick={() => void navigator.share({ text }).catch(() => {})}>
+          <button
+            className="as-icon"
+            aria-label="Share"
+            onClick={() => void navigator.share({ text }).catch(() => {})}
+          >
             <Share size={19} />
           </button>
         )}
@@ -149,8 +182,12 @@ function ReplyActions({ text, disclaimer }: { text: string; disclaimer: string }
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app writes it.
 const claudeModel = (id?: string | null) => {
   if (id === "default") return "Default";
-  const m = String(id || "").match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/);
-  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : String(id || "");
+  const m = String(id || "").match(
+    /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/,
+  );
+  return m
+    ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`
+    : String(id || "");
 };
 
 const QUERY = "(max-width: 1024px), (pointer: coarse)";
@@ -179,18 +216,32 @@ function useKeyboardOpen() {
 }
 
 const toolIcon = (kind: SessionItem["kind"]) =>
-  kind === "command" ? Terminal : kind === "file-change" ? FileText : kind === "web" ? Globe : Wrench;
+  kind === "command"
+    ? Terminal
+    : kind === "file-change"
+      ? FileText
+      : kind === "web"
+        ? Globe
+        : Wrench;
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
-const plural = (n: number, one: string, many: string) => (n === 1 ? one : many.replace("#", String(n)));
+const plural = (n: number, one: string, many: string) =>
+  n === 1 ? one : many.replace("#", String(n));
 
 // "Edited App.tsx, ran 2 commands" with the diff size, like both apps show.
 function runSummary(items: SessionItem[]) {
-  const files = [...new Set(items.filter((i) => i.kind === "file-change").map((i) => i.text))];
+  const files = [
+    ...new Set(
+      items.filter((i) => i.kind === "file-change").map((i) => i.text),
+    ),
+  ];
   const commands = items.filter((i) => i.kind === "command").length;
   const web = items.filter((i) => i.kind === "web").length;
   const other = items.filter((i) => i.kind === "tool").length;
   const parts = [
-    files.length && (files.length === 1 ? `edited ${base(files[0])}` : `edited ${files.length} files`),
+    files.length &&
+      (files.length === 1
+        ? `edited ${base(files[0])}`
+        : `edited ${files.length} files`),
     commands && plural(commands, "ran a command", "ran # commands"),
     web && plural(web, "searched the web", "searched the web # times"),
     other && plural(other, "used a tool", "used # tools"),
@@ -211,10 +262,16 @@ function ToolRun({ items }: { items: SessionItem[] }) {
   const [open, setOpen] = useState(false);
   const { text, added, removed } = runSummary(items);
   const failed = items.filter((i) => i.status === "failed").length;
-  const running = items.some((i) => i.status === "running" || i.status === "inProgress");
+  const running = items.some(
+    (i) => i.status === "running" || i.status === "inProgress",
+  );
   return (
     <div className={`as-run ${open ? "open" : ""}`}>
-      <button className="as-run-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button
+        className="as-run-head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
         {running && <Loader2 size={13} className="spin" />}
         <span>{text}</span>
         {added > 0 && <b className="plus">+{added}</b>}
@@ -232,7 +289,10 @@ function ToolStep({ item }: { item: SessionItem }) {
   const Icon = toolIcon(item.kind);
   return (
     <div className={`as-step ${item.status === "failed" ? "failed" : ""}`}>
-      <button onClick={() => item.detail && setOpen(!open)} aria-expanded={open}>
+      <button
+        onClick={() => item.detail && setOpen(!open)}
+        aria-expanded={open}
+      >
         <Icon size={13} />
         <code>{item.text || "(step)"}</code>
       </button>
@@ -241,28 +301,16 @@ function ToolStep({ item }: { item: SessionItem }) {
   );
 }
 
-// The choices exactly as the agent offered them, in plain words.
-const DECISIONS: Record<string, string> = {
-  accept: "Yes",
-  acceptForSession: "Yes, for this session",
-  acceptWithExecpolicyAmendment: "Yes, always allow this",
-  decline: "No",
-  cancel: "No, and stop",
-  allowAlways: "Yes, and don't ask again",
-  approved: "Yes",
-  approved_for_session: "Yes, for this session",
-  abort: "No, and stop",
-  allow: "Allow",
-  deny: "Deny",
-};
-// Claude Code's permission dialog words it its own way.
-const CLAUDE_DECISIONS: Record<string, string> = { allow: "Yes", allowAlways: "Yes, and don't ask again", deny: "No" };
-const decisionKey = (d: Decision) => (typeof d === "string" ? d : Object.keys(d)[0]);
+const decisionKey = (d: Decision) =>
+  typeof d === "string" ? d : Object.keys(d)[0];
 
 // "Today 12:37 PM", "Yesterday 9:02 AM", "Oct 2 4:10 PM": as the Codex app dates a chat.
 function whenLabel(at: number, now = Date.now()) {
   const day = (t: number) => new Date(t).toDateString();
-  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const time = new Date(at).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
   if (day(at) === day(now)) return `Today ${time}`;
   if (day(at) === day(now - 86400000)) return `Yesterday ${time}`;
   return `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
@@ -271,7 +319,12 @@ function whenLabel(at: number, now = Date.now()) {
 // Where to get more usage, opened in this browser.
 export function UsageButton({ link }: { link: UsageLink | null }) {
   return link ? (
-    <a className="as-usage" href={link.url} target="_blank" rel="noopener noreferrer">
+    <a
+      className="as-usage"
+      href={link.url}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       {link.label}
     </a>
   ) : null;
@@ -281,7 +334,9 @@ export function UsageButton({ link }: { link: UsageLink | null }) {
 // date the message itself gives ("try again at Oct 9th, 2026 9:25 PM" reads
 // "Oct 9, 2026, 9:25 PM"); null when the message isn't that one.
 export function codexLimitLine(text: string) {
-  const m = text.match(/try again at ([A-Z][a-z]{2,8}) (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? (\d{1,2}:\d{2}\s?[AP]M)/);
+  const m = text.match(
+    /try again at ([A-Z][a-z]{2,8}) (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? (\d{1,2}:\d{2}\s?[AP]M)/,
+  );
   return m
     ? `You’ve hit your usage limit. Upgrade your plan or add credits to continue, or try again at ${m[1]} ${m[2]}, ${m[3]}, ${m[4]}.`
     : null;
@@ -290,7 +345,15 @@ export function codexLimitLine(text: string) {
 // An agent's error, the way its app shows it: a quiet line in Codex (a used-up
 // limit in the Codex app's own words; its card below offers the way out), a
 // card in Claude Code with the way to more usage.
-function ErrorNote({ agent, text, detail }: { agent: string; text: string; detail?: string }) {
+function ErrorNote({
+  agent,
+  text,
+  detail,
+}: {
+  agent: string;
+  text: string;
+  detail?: string;
+}) {
   const link = usageLink(agent, { text, detail });
   if (agent === "codex")
     return (
@@ -342,7 +405,9 @@ function SentImages({
     if (urls || !item) return;
     let active = true;
     void Promise.all(
-      Array.from({ length: shownCount }, (_, n) => sessionImage(peer, session, item, n).catch(() => null)),
+      Array.from({ length: shownCount }, (_, n) =>
+        sessionImage(peer, session, item, n).catch(() => null),
+      ),
     ).then((list) => active && setLoaded(list));
     return () => {
       active = false;
@@ -352,9 +417,15 @@ function SentImages({
   return (
     <div className="as-user-images">
       {Array.from({ length: shownCount }, (_, n) =>
-        sources[n] ? <img key={n} src={sources[n]!} alt="" /> : <span key={n} className="as-image-wait" aria-hidden="true" />,
+        sources[n] ? (
+          <img key={n} src={sources[n]!} alt="" />
+        ) : (
+          <span key={n} className="as-image-wait" aria-hidden="true" />
+        ),
       )}
-      {count > shownCount && <span className="as-tag">+{count - shownCount}</span>}
+      {count > shownCount && (
+        <span className="as-tag">+{count - shownCount}</span>
+      )}
     </div>
   );
 }
@@ -362,25 +433,44 @@ function SentImages({
 // A question or permission request Claude waits on in another app (the
 // Claude app, a terminal), already showing there: said here, answered there.
 // word: "Mac" or "computer" (pause.ts computerWord).
-function AskingCard({ asking, logos, where, word }: { asking: AgentAsking; logos: AgentLogos; where: string; word: string }) {
+function AskingCard({
+  asking,
+  logos,
+  where,
+  word,
+}: {
+  asking: AgentAsking;
+  logos: AgentLogos;
+  where: string;
+  word: string;
+}) {
   return (
-    <section className={`as-prompt ${asking.kind === "question" ? "question" : "tool"} elsewhere`} aria-live="polite">
+    <section
+      className={`as-prompt ${asking.kind === "question" ? "question" : "tool"} elsewhere`}
+      aria-live="polite"
+    >
       <header>
         <AgentLogo agent="claude" logos={logos} size={18} />
-        <strong>Waiting for your answer in the {where} on your {word}</strong>
+        <strong>
+          Waiting for your answer in the {where} on your {word}
+        </strong>
       </header>
       {asking.kind === "question" ? (
         asking.questions.map((q, i) => (
           <div className="as-question" key={i}>
             <p>{q.question}</p>
-            <p className="as-asked">{q.options.map((o) => o.label).join(" · ")}</p>
+            <p className="as-asked">
+              {q.options.map((o) => o.label).join(" · ")}
+            </p>
           </div>
         ))
       ) : asking.kind === "consent" ? (
         <>
           <p>{asking.title}</p>
           {asking.reason && <p className="as-reason">{asking.reason}</p>}
-          {!!asking.options?.length && <p className="as-asked">{asking.options.join(" · ")}</p>}
+          {!!asking.options?.length && (
+            <p className="as-asked">{asking.options.join(" · ")}</p>
+          )}
         </>
       ) : asking.command ? (
         <pre className="as-prompt-command">{asking.text}</pre>
@@ -403,7 +493,8 @@ function ConsentCard({
   onAnswer: (decision: "deny" | "allow") => Promise<void>;
 }) {
   const [busy, setBusy] = useState<"deny" | "allow" | null>(null);
-  const [deny = "Deny", allow = "Allow for this session"] = asking.options || [];
+  const [deny = "Deny", allow = "Allow for this session"] =
+    asking.options || [];
   const act = async (decision: "deny" | "allow") => {
     setBusy(decision);
     try {
@@ -417,7 +508,10 @@ function ConsentCard({
       <strong>{asking.title}</strong>
       {asking.reason && <p>{asking.reason}</p>}
       {asking.about === "apps" && (
-        <small>Claude will work in these apps in the background while you keep using your {computerWord(peer.platform)}.</small>
+        <small>
+          Claude will work in these apps in the background while you keep using
+          your {computerWord(peer.platform)}.
+        </small>
       )}
       {!!asking.apps?.length && (
         <ul>
@@ -430,7 +524,11 @@ function ConsentCard({
         <button disabled={!!busy} onClick={() => void act("deny")}>
           {busy === "deny" ? <Loader2 size={14} className="spin" /> : deny}
         </button>
-        <button className="primary" disabled={!!busy} onClick={() => void act("allow")}>
+        <button
+          className="primary"
+          disabled={!!busy}
+          onClick={() => void act("allow")}
+        >
           {busy === "allow" ? <Loader2 size={14} className="spin" /> : allow}
         </button>
       </div>
@@ -438,11 +536,21 @@ function ConsentCard({
   );
 }
 
-function ConsentApp({ peer, app }: { peer: Peer; app: { name: string; appId?: string } }) {
+function ConsentApp({
+  peer,
+  app,
+}: {
+  peer: Peer;
+  app: { name: string; appId?: string };
+}) {
   const icon = useAppIcon(peer, app.appId, true);
   return (
     <li>
-      {icon ? <img src={icon} alt="" /> : <span className="as-consent-noicon" aria-hidden="true" />}
+      {icon ? (
+        <img src={icon} alt="" />
+      ) : (
+        <span className="as-consent-noicon" aria-hidden="true" />
+      )}
       <span>{app.name}</span>
     </li>
   );
@@ -459,13 +567,19 @@ function PromptCard({
   agent: AgentName;
   logos: AgentLogos;
   word: string;
-  onAnswer: (answer: { decision?: string; answers?: Record<string, string[]> }) => Promise<void>;
+  onAnswer: (answer: {
+    decision?: string;
+    answers?: Record<string, string[]>;
+  }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
   // Picked choices per question, and what was typed instead ("Something else").
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [typed, setTyped] = useState<Record<string, string>>({});
-  const answerOf = (id: string) => [...(picked[id] || []), ...(typed[id]?.trim() ? [typed[id].trim()] : [])];
+  const answerOf = (id: string) => [
+    ...(picked[id] || []),
+    ...(typed[id]?.trim() ? [typed[id].trim()] : []),
+  ];
   // One question per page, as Claude Code and Codex ask them; picking the one
   // answer of a question moves on to the next.
   const questions = prompt.questions || [];
@@ -476,14 +590,22 @@ function PromptCard({
   const pick = (q: { id: string; multiSelect?: boolean }, label: string) => {
     const now = picked[q.id] || [];
     if (q.multiSelect)
-      setPicked({ ...picked, [q.id]: now.includes(label) ? now.filter((l) => l !== label) : [...now, label] });
+      setPicked({
+        ...picked,
+        [q.id]: now.includes(label)
+          ? now.filter((l) => l !== label)
+          : [...now, label],
+      });
     else {
       setPicked({ ...picked, [q.id]: [label] });
       setTyped({ ...typed, [q.id]: "" });
       if (!last) setPage(at + 1);
     }
   };
-  const act = async (key: string, answer: { decision?: string; answers?: Record<string, string[]> }) => {
+  const act = async (
+    key: string,
+    answer: { decision?: string; answers?: Record<string, string[]> },
+  ) => {
     setBusy(key);
     try {
       await onAnswer(answer);
@@ -499,7 +621,9 @@ function PromptCard({
         <AgentLogo agent={agent} logos={logos} size={18} />
         <strong>{prompt.title}</strong>
       </header>
-      {prompt.command && <pre className="as-prompt-command">{prompt.command}</pre>}
+      {prompt.command && (
+        <pre className="as-prompt-command">{prompt.command}</pre>
+      )}
       {prompt.cwd && <small>in {prompt.cwd}</small>}
       {prompt.files?.length ? (
         <ul className="as-prompt-files">
@@ -531,14 +655,22 @@ function PromptCard({
           )}
           {current && (
             <div className="as-question" key={current.id}>
-              {questions.length === 1 && current.header && <b>{current.header}</b>}
+              {questions.length === 1 && current.header && (
+                <b>{current.header}</b>
+              )}
               <p>{current.question}</p>
-              {current.multiSelect && <small className="as-question-hint">Choose any that apply</small>}
+              {current.multiSelect && (
+                <small className="as-question-hint">
+                  Choose any that apply
+                </small>
+              )}
               <div className="as-choices">
                 {current.options.map((o) => (
                   <button
                     key={o.label}
-                    className={picked[current.id]?.includes(o.label) ? "chosen" : ""}
+                    className={
+                      picked[current.id]?.includes(o.label) ? "chosen" : ""
+                    }
                     aria-pressed={!!picked[current.id]?.includes(o.label)}
                     onClick={() => pick(current, o.label)}
                   >
@@ -550,12 +682,15 @@ function PromptCard({
               {(current.other || !current.options.length) && (
                 <input
                   type={current.secret ? "password" : "text"}
-                  placeholder={current.options.length ? "Something else…" : "Your answer"}
+                  placeholder={
+                    current.options.length ? "Something else…" : "Your answer"
+                  }
                   value={typed[current.id] || ""}
                   onChange={(e) => {
                     setTyped({ ...typed, [current.id]: e.target.value });
                     // One answer per question unless several may be picked.
-                    if (!current.multiSelect) setPicked({ ...picked, [current.id]: [] });
+                    if (!current.multiSelect)
+                      setPicked({ ...picked, [current.id]: [] });
                   }}
                 />
               )}
@@ -565,9 +700,15 @@ function PromptCard({
             {last ? (
               <button
                 className="primary"
-                disabled={!!busy || questions.some((q) => !answerOf(q.id).length)}
+                disabled={
+                  !!busy || questions.some((q) => !answerOf(q.id).length)
+                }
                 onClick={() =>
-                  void act("answer", { answers: Object.fromEntries(questions.map((q) => [q.id, answerOf(q.id)])) })
+                  void act("answer", {
+                    answers: Object.fromEntries(
+                      questions.map((q) => [q.id, answerOf(q.id)]),
+                    ),
+                  })
                 }
               >
                 {busy ? <Loader2 size={14} className="spin" /> : "Submit"}
@@ -588,7 +729,11 @@ function PromptCard({
           {decisions.map((key) => (
             <button
               key={key}
-              className={positive(key) && key === decisions.find(positive) ? "primary" : ""}
+              className={
+                positive(key) && key === decisions.find(positive)
+                  ? "primary"
+                  : ""
+              }
               disabled={!!busy}
               onClick={() => void act(key, { decision: key })}
             >
@@ -597,7 +742,9 @@ function PromptCard({
               ) : prompt.kind === "dialog" ? (
                 `Answer on my ${word}`
               ) : (
-                (prompt.kind === "tool" ? CLAUDE_DECISIONS[key] : DECISIONS[key]) || key
+                (prompt.kind === "tool"
+                  ? CLAUDE_DECISIONS[key]
+                  : DECISIONS[key]) || key
               )}
             </button>
           ))}
@@ -625,9 +772,16 @@ export function ModelPicker({
   effort: string | null;
   onPick: (choice: { model?: string; effort?: string }, done: boolean) => void;
 }) {
-  const current = models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
+  const current =
+    models.find((m) => m.id === model) ||
+    models.find((m) => m.isDefault) ||
+    models[0];
   return (
-    <div className={`as-picker ${agent}`} role="group" aria-label="Model and thinking">
+    <div
+      className={`as-picker ${agent}`}
+      role="group"
+      aria-label="Model and thinking"
+    >
       <div className="as-picker-row" aria-label="Model">
         {models.map((m) => (
           <button
@@ -637,7 +791,10 @@ export function ModelPicker({
               onPick(
                 {
                   model: m.id,
-                  effort: effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined,
+                  effort:
+                    effort && m.efforts.includes(effort)
+                      ? effort
+                      : m.defaultEffort || undefined,
                 },
                 false,
               )
@@ -668,7 +825,7 @@ export function ModelPicker({
 export default function AgentSessionView({
   peer,
   session: initial,
-  siblings,
+  siblings: allSiblings,
   health,
   onSelect,
   onBack,
@@ -688,6 +845,10 @@ export default function AgentSessionView({
   onNew?: () => void;
 }) {
   const agent = initial.agent;
+  const siblings = useMemo(
+    () => allSiblings.filter((s) => s.agent === agent && !s.archived),
+    [allSiblings, agent],
+  );
   const skin = SKIN[agent];
   useClaudeFonts(peer, agent === "claude");
   const word = computerWord(peer.platform);
@@ -698,12 +859,38 @@ export default function AgentSessionView({
   const [olderBusy, setOlderBusy] = useState(false);
   const [note, setNote] = useState("");
   const [problem, setProblem] = useState("");
-  const [text, setText] = useState("");
+  const draftKey =
+    "reach-chat-draft:" + peer.id + ":" + initial.agent + ":" + initial.id;
+  const [text, setText] = useState(() => {
+    try {
+      return sessionStorage.getItem(draftKey) || "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    try {
+      if (text) sessionStorage.setItem(draftKey, text);
+      else sessionStorage.removeItem(draftKey);
+    } catch {}
+  }, [draftKey, text]);
+  const [switching, setSwitching] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const [reviewing, setReviewing] = useState(true);
+  const [reviewId, setReviewId] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Sent but not yet in the transcript; `seen` counts the same text already there.
   // messageId: where it waits in the Mac's outbox, when it waits there.
   const [pending, setPending] = useState<
-    { id: string; text: string; images: number; urls?: string[]; seen: number; messageId?: string; at: number }[]
+    {
+      id: string;
+      text: string;
+      images: number;
+      urls?: string[];
+      seen: number;
+      messageId?: string;
+      at: number;
+    }[]
   >([]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -711,16 +898,36 @@ export default function AgentSessionView({
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [choice, setChoice] = useState<{ model?: string; effort?: string; mode?: string }>({});
+  const [choice, setChoice] = useState<{
+    model?: string;
+    effort?: string;
+    mode?: string;
+  }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
   const [commands, setCommands] = useState<AgentCommand[] | null>(null);
   const { view: live } = useSessionLive(peer, initial);
+  const promptIds = live.prompts.map((p) => p.id).join(",");
+  const askingKey = JSON.stringify(info.asking);
+  useEffect(() => {
+    setReviewing(true);
+  }, [promptIds, askingKey]);
+  const reviewCount = live.prompts.length || (info.asking ? 1 : 0);
+  const selectedPrompt =
+    live.prompts.find((p) => p.id === reviewId) || live.prompts[0];
   const page = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const atBottom = useRef(true);
+  const [readingHistory, setReadingHistory] = useState(false);
+  const prepend = useRef<{ height: number; top: number } | null>(null);
+  const latest = () => {
+    atBottom.current = true;
+    setReadingHistory(false);
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
   const narrow = useNarrow();
   const keyboard = useKeyboardOpen();
   useViewportBox(page, narrow);
@@ -736,7 +943,12 @@ export default function AgentSessionView({
     async (first: boolean) => {
       if (document.hidden && !first) return;
       try {
-        const r = await readSession(peer, initial, null, first ? undefined : known.current);
+        const r = await readSession(
+          peer,
+          initial,
+          null,
+          first ? undefined : known.current,
+        );
         known.current = r.version || "";
         if ("unchanged" in r) {
           setLoadError("");
@@ -757,7 +969,10 @@ export default function AgentSessionView({
         // than when it was sent (a repeated "continue" must not clear early).
         setPending((list) =>
           list.filter(
-            (p) => r.items.filter((i) => i.role === "user" && i.text.trim() === p.text.trim()).length <= p.seen,
+            (p) =>
+              r.items.filter(
+                (i) => i.role === "user" && i.text.trim() === p.text.trim(),
+              ).length <= p.seen,
           ),
         );
       } catch (e) {
@@ -771,7 +986,10 @@ export default function AgentSessionView({
   }, [load]);
   // Faster while something runs; the live view wakes it instantly on news.
   useEffect(() => {
-    const timer = setInterval(() => void load(false), working || pending.length ? 2000 : 5000);
+    const timer = setInterval(
+      () => void load(false),
+      working || pending.length ? 2000 : 5000,
+    );
     return () => clearInterval(timer);
   }, [load, working, pending.length]);
   useEffect(() => {
@@ -786,10 +1004,26 @@ export default function AgentSessionView({
       () => {},
     );
   }, [peer.url, peer.token, agent]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (prepend.current) {
+      el.scrollTop =
+        prepend.current.top + el.scrollHeight - prepend.current.height;
+      prepend.current = null;
+    } else if (atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [items, pending, live.streaming, live.prompts.length, working]);
+  // Follow the last message through keyboard/composer resizing only when the
+  // reader was already at the end. Reading history never fights new output.
   useEffect(() => {
     const el = scroller.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [items, pending, live.streaming, live.prompts.length, working]);
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const shown = useRef(attachments);
   shown.current = attachments;
   // Pictures sent from here stay shown in their message until the page closes.
@@ -809,6 +1043,9 @@ export default function AgentSessionView({
       // Older pages are never versioned, so they always come back whole.
       const r = (await readSession(peer, initial, before)) as SessionPage;
       atBottom.current = false;
+      setReadingHistory(true);
+      const el = scroller.current;
+      if (el) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
       setItems((current) => [...r.items, ...(current || [])]);
       setBefore(r.before);
     } catch (e) {
@@ -820,7 +1057,10 @@ export default function AgentSessionView({
 
   // Tool steps between messages fold into one line, like the apps do.
   const blocks = useMemo(() => {
-    const out: ({ type: "item"; item: SessionItem } | { type: "tools"; items: SessionItem[] })[] = [];
+    const out: (
+      | { type: "item"; item: SessionItem }
+      | { type: "tools"; items: SessionItem[] }
+    )[] = [];
     for (const item of items || []) {
       const last = out[out.length - 1];
       if (item.role === "tool") {
@@ -833,7 +1073,9 @@ export default function AgentSessionView({
   // The newest reply, when the chat ends on one: it gets copy and share.
   const lastBlock = blocks[blocks.length - 1];
   const lastReply =
-    lastBlock?.type === "item" && lastBlock.item.role === "assistant" && lastBlock.item.kind === "text"
+    lastBlock?.type === "item" &&
+    lastBlock.item.role === "assistant" &&
+    lastBlock.item.kind === "text"
       ? lastBlock.item.text
       : "";
 
@@ -842,10 +1084,12 @@ export default function AgentSessionView({
   const codexHealth = health.find((h) => h.agent === "codex");
   // Where the session lives decides what sending does; writing is never
   // switched off, the note just says what will happen.
-  const elsewhere = agent === "claude" && info.held !== "reach" ? info.live?.where : undefined;
+  const elsewhere =
+    agent === "claude" && info.held !== "reach" ? info.live?.where : undefined;
   // Reach replies through the claude command on the Mac (Claude Code's CLI),
   // which signs in on its own: the Claude app's sign-in isn't shared with it.
-  const claudeSignedOut = !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
+  const claudeSignedOut =
+    !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
   const blocked =
     agent === "claude"
       ? elsewhere === "terminal"
@@ -895,16 +1139,32 @@ export default function AgentSessionView({
   const effort = choice.effort || info.effort || null;
   const modelLabel =
     models.find((m) => m.id === modelId)?.name ||
-    (agent === "codex" ? (modelId ? modelId.toUpperCase().replace(/-/g, " ") : "") : claudeModel(modelId));
+    (agent === "codex"
+      ? modelId
+        ? modelId.toUpperCase().replace(/-/g, " ")
+        : ""
+      : claudeModel(modelId));
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
-      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) continue;
+      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name))
+        continue;
       const key = ++attachmentSeq;
-      setAttachments((list) => [...list, { key, url: URL.createObjectURL(file) }]);
+      setAttachments((list) => [
+        ...list,
+        { key, url: URL.createObjectURL(file) },
+      ]);
       uploadImage(peer, file, file.name || "image").then(
-        (id) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, id } : a))),
-        (e) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, error: (e as Error).message } : a))),
+        (id) =>
+          setAttachments((list) =>
+            list.map((a) => (a.key === key ? { ...a, id } : a)),
+          ),
+        (e) =>
+          setAttachments((list) =>
+            list.map((a) =>
+              a.key === key ? { ...a, error: (e as Error).message } : a,
+            ),
+          ),
       );
     }
   };
@@ -915,31 +1175,59 @@ export default function AgentSessionView({
       return list.filter((a) => a.key !== key);
     });
   const uploading = attachments.some((a) => !a.id && !a.error);
-  const canSend = !sending && !uploading && (text.trim().length > 0 || attachments.some((a) => a.id));
+  const canSend =
+    !sending &&
+    !uploading &&
+    (text.trim().length > 0 || attachments.some((a) => a.id));
   // Permission modes the session can switch to: what the agent offers now, in
   // its own words (until that arrives, the ones it always has).
   const modeChoices = modesFor(
     modes ||
       (agent === "codex"
         ? CODEX_MODE_CHOICES.filter((m) => m.id !== "custom")
-        : ["manual", "acceptEdits", "plan", "auto"].map((id) => ({ id, label: modeLabel("claude", id) }))),
+        : ["manual", "acceptEdits", "plan", "auto"].map((id) => ({
+            id,
+            label: modeLabel("claude", id),
+          }))),
     models.find((m) => m.id === modelId),
   );
   const modeName = (id: string | null) =>
-    !id ? "" : modeChoices.find((m) => m.id === id || (id === "default" && m.id === "manual"))?.label || modeLabel(agent, id);
+    !id
+      ? ""
+      : modeChoices.find(
+          (m) => m.id === id || (id === "default" && m.id === "manual"),
+        )?.label || modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
   // Claude Code's slash commands while the message starts with "/".
-  const slash = agent === "claude" && /^\/[\w:-]*$/.test(text) ? text.slice(1).toLowerCase() : null;
+  const slash =
+    agent === "claude" && /^\/[\w:-]*$/.test(text)
+      ? text.slice(1).toLowerCase()
+      : null;
   useEffect(() => {
-    if (slash !== null && !commands) listCommands(peer, "claude").then(setCommands, () => setCommands([]));
+    if (slash !== null && !commands)
+      listCommands(peer, "claude").then(setCommands, () => setCommands([]));
   }, [slash !== null]);
-  const suggestions = slash === null || !commands ? [] : commands.filter((c) => c.name.toLowerCase().startsWith(slash)).slice(0, 6);
+  const suggestions =
+    slash === null || !commands
+      ? []
+      : commands
+          .filter((c) => c.name.toLowerCase().startsWith(slash))
+          .slice(0, 6);
 
   const send = async () => {
     if (!canSend) return;
     const ready = attachments.filter((a) => a.id);
-    const seen = (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length;
-    const message = { id: `pending-${Date.now()}`, text, images: ready.length, urls: ready.map((a) => a.url), seen, at: Date.now() };
+    const seen = (items || []).filter(
+      (i) => i.role === "user" && i.text.trim() === text.trim(),
+    ).length;
+    const message = {
+      id: `pending-${Date.now()}`,
+      text,
+      images: ready.length,
+      urls: ready.map((a) => a.url),
+      seen,
+      at: Date.now(),
+    };
     const keep = { text, attachments };
     setSending(true);
     setProblem("");
@@ -957,7 +1245,12 @@ export default function AgentSessionView({
       });
       sentUrls.current.push(...ready.map((a) => a.url));
       // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
-      if (r.messageId) setPending((list) => list.map((p) => (p === message ? { ...p, messageId: r.messageId } : p)));
+      if (r.messageId)
+        setPending((list) =>
+          list.map((p) =>
+            p === message ? { ...p, messageId: r.messageId } : p,
+          ),
+        );
       setChoice({});
       setNote(
         r.queued
@@ -998,7 +1291,9 @@ export default function AgentSessionView({
   };
   useEffect(grow, [text]);
 
-  const index = siblings.findIndex((s) => s.agent === initial.agent && s.id === initial.id);
+  const index = siblings.findIndex(
+    (s) => s.agent === initial.agent && s.id === initial.id,
+  );
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
@@ -1011,36 +1306,97 @@ export default function AgentSessionView({
   // Since the newest message, one still on its way included (the last one in
   // the transcript could be a day old: it read "1327m").
   const since = Math.max(lastUser?.at || 0, ...pending.map((p) => p.at));
-  const elapsed = working && since ? Math.max(0, Math.round((now - since) / 1000)) : 0;
-  const elapsedLabel = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`;
-  const activity = live.activity || (runningElsewhere ? `Working in the ${skin.app}` : "Working");
+  const elapsed =
+    working && since ? Math.max(0, Math.round((now - since) / 1000)) : 0;
+  const elapsedLabel =
+    elapsed >= 60
+      ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+      : `${elapsed}s`;
+  const activity =
+    live.activity ||
+    (runningElsewhere ? `Working in the ${skin.app}` : "Working");
 
   return (
-    <div ref={page} className={`as-page ${agent} ${keyboard ? "kb-open" : ""}`}>
-      <header className="as-bar">
+    <div
+      ref={page}
+      className={`as-page chat-redesign ${agent} ${keyboard ? "kb-open" : ""}`}
+    >
+      <header
+        className="as-bar"
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          // Scrolling sideways through code, output or chips isn't a swipe.
+          for (
+            let el = e.target as HTMLElement | null;
+            el && el !== e.currentTarget;
+            el = el.parentElement
+          )
+            if (
+              el.matches("pre, .as-picker-row, .as-attachments") ||
+              el.scrollWidth > el.clientWidth + 1
+            ) {
+              swipe.current = null;
+              return;
+            }
+          swipe.current = { x: t.clientX, y: t.clientY };
+        }}
+        onTouchEnd={(e) => {
+          const from = swipe.current;
+          swipe.current = null;
+          const t = e.changedTouches[0];
+          if (!from || !t) return;
+          const dx = t.clientX - from.x;
+          if (Math.abs(dx) < 70 || Math.abs(t.clientY - from.y) > 40) return;
+          const next = siblings[index + (dx < 0 ? 1 : -1)];
+          if (index >= 0 && next) onSelect(next);
+        }}
+      >
         {/* The apps' floating round buttons: the list of chats on the left;
             where it runs, a new chat and more on the right. */}
-        <button className="as-icon" aria-label="Back to all sessions" onClick={onBack}>
-          <skin.menu size={22} />
+        <button
+          className="as-icon"
+          aria-label="Back to all sessions"
+          onClick={onBack}
+        >
+          <ChevronLeft size={22} />
         </button>
-        <button className="as-title" aria-expanded={details} onClick={() => setDetails(!details)}>
+        <button
+          className="as-title"
+          aria-expanded={details}
+          onClick={() => setDetails(!details)}
+        >
           <strong>{info.title}</strong>
           <small>
-            {projectName(info.cwd)} · {whereLabel(info)}
+            {[
+              ...new Set(
+                [projectName(info.cwd), whereLabel(info)].filter(Boolean),
+              ),
+            ].join(" · ")}
           </small>
         </button>
-        {skin.where && (
-          <button className="as-icon" aria-label="Where it runs" onClick={() => setDetails(!details)}>
-            <skin.where size={20} />
-          </button>
-        )}
+        <button
+          className="as-app-switch"
+          aria-label="Switch conversations"
+          aria-haspopup="dialog"
+          aria-expanded={switching}
+          onClick={() => setSwitching(true)}
+        >
+          <AgentLogo agent={agent} logos={logos} size={22} />
+          <span className="as-app-switch-name">{agentLabel(agent)}</span>
+          <ChevronDown size={13} />
+        </button>
         <span className="as-bar-pill">
           {onNew && (
             <button className="as-icon" aria-label="New chat" onClick={onNew}>
               <skin.compose size={19} />
             </button>
           )}
-          <button className="as-icon" aria-label="More" aria-expanded={details} onClick={() => setDetails(!details)}>
+          <button
+            className="as-icon"
+            aria-label="More"
+            aria-expanded={details}
+            onClick={() => setDetails(!details)}
+          >
             <MoreHorizontal size={20} />
           </button>
         </span>
@@ -1072,39 +1428,27 @@ export default function AgentSessionView({
       <div
         className="as-scroll"
         ref={scroller}
-        onTouchStart={(e) => {
-          const t = e.touches[0];
-          // Scrolling sideways through code, output or chips isn't a swipe.
-          for (let el = e.target as HTMLElement | null; el && el !== e.currentTarget; el = el.parentElement)
-            if (el.matches("pre, .as-picker-row, .as-attachments") || el.scrollWidth > el.clientWidth + 1) {
-              swipe.current = null;
-              return;
-            }
-          swipe.current = { x: t.clientX, y: t.clientY };
-        }}
-        onTouchEnd={(e) => {
-          const from = swipe.current;
-          swipe.current = null;
-          const t = e.changedTouches[0];
-          if (!from || !t) return;
-          const dx = t.clientX - from.x;
-          if (Math.abs(dx) < 70 || Math.abs(t.clientY - from.y) > 40) return;
-          const next = siblings[index + (dx < 0 ? 1 : -1)];
-          if (index >= 0 && next) onSelect(next);
-        }}
         onScroll={(e) => {
           const el = e.currentTarget;
-          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          atBottom.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          setReadingHistory(!atBottom.current);
         }}
       >
         {before && (
-          <button className="as-older" disabled={olderBusy} onClick={() => void older()}>
+          <button
+            className="as-older"
+            disabled={olderBusy}
+            onClick={() => void older()}
+          >
             {olderBusy ? "Loading…" : "Show earlier"}
           </button>
         )}
         {loadError && <p className="as-note">{loadError}</p>}
         {/* When the chat began, above its first message, as the Codex app shows it. */}
-        {agent === "codex" && !before && items?.[0]?.at ? <p className="as-divider as-when">{whenLabel(items[0].at)}</p> : null}
+        {agent === "codex" && !before && items?.[0]?.at ? (
+          <p className="as-divider as-when">{whenLabel(items[0].at)}</p>
+        ) : null}
         {!items ? (
           <p className="as-note">
             <Loader2 size={15} className="spin" /> Opening…
@@ -1115,10 +1459,17 @@ export default function AgentSessionView({
               <ToolRun key={`tools-${b.items[0].id}`} items={b.items} />
             ) : b.item.role === "user" ? (
               <div key={b.item.id} className="as-user">
-                {b.item.queued && <span className="as-tag">Sent while working</span>}
+                {b.item.queued && (
+                  <span className="as-tag">Sent while working</span>
+                )}
                 {b.item.images ? (
                   agent === "claude" ? (
-                    <SentImages peer={peer} session={initial} item={b.item.id} count={b.item.images} />
+                    <SentImages
+                      peer={peer}
+                      session={initial}
+                      item={b.item.id}
+                      count={b.item.images}
+                    />
                   ) : (
                     <span className="as-tag">
                       {b.item.images} image{b.item.images === 1 ? "" : "s"}
@@ -1132,7 +1483,12 @@ export default function AgentSessionView({
                 Context compacted
               </div>
             ) : b.item.kind === "error" ? (
-              <ErrorNote key={b.item.id} agent={agent} text={b.item.text} detail={b.item.detail} />
+              <ErrorNote
+                key={b.item.id}
+                agent={agent}
+                text={b.item.text}
+                detail={b.item.detail}
+              />
             ) : b.item.kind === "notice" ? (
               <p key={b.item.id} className="as-divider">
                 {b.item.text}
@@ -1144,14 +1500,28 @@ export default function AgentSessionView({
             ),
           )
         )}
-        {lastReply && !working && !live.streaming && !pending.length && !live.outbox?.length && (
-          <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
-        )}
+        {lastReply &&
+          !working &&
+          !live.streaming &&
+          !pending.length &&
+          !live.outbox?.length && (
+            <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
+          )}
         {pending
-          .filter((p) => !p.messageId || !live.outbox?.some((m) => m.id === p.messageId))
+          .filter(
+            (p) =>
+              !p.messageId || !live.outbox?.some((m) => m.id === p.messageId),
+          )
           .map((p) => (
             <div key={p.id} className="as-user pending">
-              {p.images ? <SentImages peer={peer} session={initial} urls={p.urls} count={p.images} /> : null}
+              {p.images ? (
+                <SentImages
+                  peer={peer}
+                  session={initial}
+                  urls={p.urls}
+                  count={p.images}
+                />
+              ) : null}
               <AgentMarkdown text={p.text} />
             </div>
           ))}
@@ -1181,90 +1551,204 @@ export default function AgentSessionView({
           </div>
         )}
         {/* Until the transcript has the turn's error, the live state shows it. */}
-        {live.error && !working && !items?.some((i) => i.kind === "error" && i.text === live.error) && (
-          <ErrorNote agent={agent} text={live.error} />
-        )}
+        {live.error &&
+          !working &&
+          !items?.some((i) => i.kind === "error" && i.text === live.error) && (
+            <ErrorNote agent={agent} text={live.error} />
+          )}
         {working && !live.prompts.length && (
           <div className={`as-working ${agent}`} role="status">
-            {agent === "claude" ? <ClaudeSpark logos={logos} size={17} spinning /> : null}
+            {agent === "claude" ? (
+              <ClaudeSpark logos={logos} size={17} spinning />
+            ) : null}
             {/* Claude Code puts the time first: "1h 6m 42s · Almost done thinking…". */}
-            {agent === "claude" && elapsed > 0 && <small>{elapsedLabel} ·</small>}
-            <span className={agent === "codex" ? "as-shimmer" : ""}>{activity}</span>
+            {agent === "claude" && elapsed > 0 && (
+              <small>{elapsedLabel} ·</small>
+            )}
+            <span className={agent === "codex" ? "as-shimmer" : ""}>
+              {activity}
+            </span>
             {agent === "codex" && elapsed > 0 && <small>{elapsedLabel}</small>}
           </div>
         )}
-        {info.asking && !live.prompts.length && (
-          info.asking.kind === "consent" && info.asking.id ? (
-            <ConsentCard
-              asking={info.asking}
-              peer={peer}
-              onAnswer={async (decision) => {
-                const asked = info.asking;
-                if (asked?.kind !== "consent" || !asked.id) return;
-                try {
-                  await answerPrompt(peer, initial, asked.id, { decision });
-                  setInfo((old) => ({ ...old, asking: undefined }));
-                } catch (e) {
-                  setProblem((e as Error).message);
-                }
-              }}
-            />
-          ) : (
-            <AskingCard
-              asking={info.asking}
-              logos={logos}
-              where={info.live?.where === "terminal" ? "terminal" : "Claude app"}
-              word={word}
-            />
-          )
-        )}
-        {live.prompts.map((p) => (
-          <PromptCard
-            key={p.id}
-            prompt={p}
-            agent={agent}
+      </div>
+      {switching && (
+        <ChatSheet
+          title="Switch conversation"
+          onClose={() => setSwitching(false)}
+        >
+          <ChatList
+            compact
+            peer={peer}
+            sessions={siblings.length ? siblings : [initial]}
+            agent={initial.agent}
+            apps={[
+              {
+                agent: initial.agent,
+                name: agentLabel(initial.agent),
+                supported: true,
+              },
+            ]}
             logos={logos}
-            word={word}
-            onAnswer={async (answer) => {
-              try {
-                await answerPrompt(peer, initial, p.id, answer);
-              } catch (e) {
-                setProblem((e as Error).message);
-              }
+            onOpen={(s) => {
+              setSwitching(false);
+              if (s.agent !== initial.agent || s.id !== initial.id) onSelect(s);
+            }}
+            onNew={() => {
+              setSwitching(false);
+              onNew?.();
             }}
           />
-        ))}
-      </div>
+        </ChatSheet>
+      )}
+      {!!reviewCount && (
+        <section className="as-review-dock" aria-label="Pending decisions">
+          <button
+            className="as-review-toggle"
+            aria-expanded={reviewing}
+            aria-controls="session-decision-body"
+            onClick={() => setReviewing(!reviewing)}
+          >
+            <span>
+              <ShieldCheck size={16} />
+              {reviewCount === 1
+                ? "Your decision is needed"
+                : String(reviewCount) + " decisions need you"}
+            </span>
+            <ChevronDown size={16} />
+          </button>
+          <div
+            id="session-decision-body"
+            className="as-review-body"
+            hidden={!reviewing}
+          >
+            {live.prompts.length > 1 && (
+              <div
+                className="as-review-tabs"
+                role="group"
+                aria-label="Pending requests"
+              >
+                {live.prompts.map((p, i) => (
+                  <button
+                    key={p.id}
+                    aria-pressed={p.id === selectedPrompt?.id}
+                    onClick={() => setReviewId(p.id)}
+                  >
+                    {i + 1}. {p.title}
+                  </button>
+                ))}
+              </div>
+            )}
+            {info.asking &&
+              !live.prompts.length &&
+              (info.asking.kind === "consent" && info.asking.id ? (
+                <ConsentCard
+                  asking={info.asking}
+                  peer={peer}
+                  onAnswer={async (decision) => {
+                    const asked = info.asking;
+                    if (asked?.kind !== "consent" || !asked.id) return;
+                    try {
+                      await answerPrompt(peer, initial, asked.id, { decision });
+                      setInfo((old) => ({ ...old, asking: undefined }));
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    }
+                  }}
+                />
+              ) : (
+                <AskingCard
+                  asking={info.asking}
+                  logos={logos}
+                  where={
+                    info.live?.where === "terminal" ? "terminal" : "Claude app"
+                  }
+                  word={word}
+                />
+              ))}
+            {live.prompts.map((p) => (
+              <div
+                key={p.id}
+                className="as-review-item"
+                hidden={p.id !== selectedPrompt?.id}
+              >
+                <PromptCard
+                  prompt={p}
+                  agent={agent}
+                  logos={logos}
+                  word={word}
+                  onAnswer={async (answer) => {
+                    try {
+                      await answerPrompt(peer, initial, p.id, answer);
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    }
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <footer className="as-composer">
+        {readingHistory && (
+          <button
+            className="as-latest"
+            onClick={latest}
+            aria-label="Jump to latest message"
+          >
+            <ChevronDown size={16} /> Latest
+          </button>
+        )}
         {outOfUsage && (
           <div className="as-banner codex-usage">
             <div>
               <strong>You’re out of Codex usage</strong>
               <span>
-                {codexHealth?.resetsAt ? `Your rate limit resets on ${resetTime(codexHealth.resetsAt, false)}. ` : ""}
-                {codexHealth?.resetCredits ? "Upgrade or use one of your rate limit resets now." : "Upgrade to keep going."}
+                {codexHealth?.resetsAt
+                  ? `Your rate limit resets on ${resetTime(codexHealth.resetsAt, false)}. `
+                  : ""}
+                {codexHealth?.resetCredits
+                  ? "Upgrade or use one of your rate limit resets now."
+                  : "Upgrade to keep going."}
               </span>
             </div>
             {confirmReset ? (
               <div className="as-banner-actions">
                 <span>Use your rate limit reset now? It can’t be undone.</span>
-                <button className="as-banner-btn" onClick={() => setConfirmReset(false)}>
+                <button
+                  className="as-banner-btn"
+                  onClick={() => setConfirmReset(false)}
+                >
                   Cancel
                 </button>
-                <button className="as-banner-btn primary" disabled={resetting} onClick={() => void useReset()}>
-                  {resetting ? <Loader2 size={14} className="spin" /> : "Reset usage"}
+                <button
+                  className="as-banner-btn primary"
+                  disabled={resetting}
+                  onClick={() => void useReset()}
+                >
+                  {resetting ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    "Reset usage"
+                  )}
                 </button>
               </div>
             ) : (
               <div className="as-banner-actions">
                 {!!codexHealth?.resetCredits && (
-                  <button className="as-banner-btn" onClick={() => setConfirmReset(true)}>
+                  <button
+                    className="as-banner-btn"
+                    onClick={() => setConfirmReset(true)}
+                  >
                     Reset usage
                   </button>
                 )}
                 <a
                   className="as-banner-btn primary"
-                  href={usageLink("codex", { detail: "usageLimitExceeded" })?.url}
+                  href={
+                    usageLink("codex", { detail: "usageLimitExceeded" })?.url
+                  }
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -1274,7 +1758,11 @@ export default function AgentSessionView({
             )}
           </div>
         )}
-        {(problem || note || blocked) && <p className={`as-hint ${problem ? "bad" : ""}`}>{problem || blocked || note}</p>}
+        {(problem || note || blocked) && (
+          <p className={`as-hint ${problem ? "bad" : ""}`}>
+            {problem || blocked || note}
+          </p>
+        )}
         {needsSignIn && (
           <AgentAccess
             peer={peer}
@@ -1284,13 +1772,20 @@ export default function AgentSessionView({
             onSignedIn={onSignedIn}
           />
         )}
-        {choosingMode && (
-          <div className={`as-picker ${agent}`} role="group" aria-label="Permissions">
+        {settings && choosingMode && (
+          <div
+            className={`as-picker ${agent}`}
+            role="group"
+            aria-label="Permissions"
+          >
             <div className="as-picker-row">
               {modeChoices.map((m) => (
                 <button
                   key={m.id}
-                  aria-pressed={m.id === modeShown || (modeShown === "default" && m.id === "manual")}
+                  aria-pressed={
+                    m.id === modeShown ||
+                    (modeShown === "default" && m.id === "manual")
+                  }
                   title={m.note || undefined}
                   onClick={() => {
                     setChoice({ ...choice, mode: m.id });
@@ -1312,7 +1807,7 @@ export default function AgentSessionView({
                 aria-selected={false}
                 onClick={() => {
                   setText(`/${c.name} `);
-                  field.current?.focus();
+                  field.current?.focus({ preventScroll: true });
                 }}
               >
                 <b>/{c.name}</b>
@@ -1322,7 +1817,7 @@ export default function AgentSessionView({
             ))}
           </div>
         )}
-        {picking && (
+        {settings && picking && (
           <ModelPicker
             agent={agent}
             models={models}
@@ -1335,100 +1830,142 @@ export default function AgentSessionView({
           />
         )}
         <div className="as-box">
-        <div className="as-field">
-          {attachments.length > 0 && (
-            <div className="as-attachments">
-              {attachments.map((a) => (
-                <span key={a.key} className={`as-thumb ${a.error ? "bad" : ""}`} title={a.error}>
-                  <img src={a.url} alt="" />
-                  {!a.id && !a.error && <Loader2 size={16} className="spin" />}
-                  <button aria-label="Remove image" onClick={() => removeAttachment(a.key)}>
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <textarea
-            ref={field}
-            rows={1}
-            value={text}
-            placeholder={skin.placeholder}
-            onChange={(e) => setText(e.target.value)}
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files];
-              if (!files.length) return;
-              if (!e.clipboardData.getData("text/plain")) e.preventDefault();
-              addFiles(files);
-            }}
-            onKeyDown={(e) => {
-              // Enter sends on a computer; on a phone it's a new line, as in the apps.
-              if (e.key === "Enter" && !e.shiftKey && !narrow && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
-        </div>
-        <div className="as-tools">
-          <button className="as-icon" aria-label="Add images" onClick={() => picker.current?.click()}>
-            <Plus size={18} />
-          </button>
-          <input
-            ref={picker}
-            type="file"
-            accept="image/*"
-            multiple
-            hidden
-            onChange={(e) => {
-              addFiles([...(e.target.files || [])]);
-              e.target.value = "";
-            }}
-          />
-          <button
-            className={`as-mode ${agent}`}
-            disabled={heldByApp}
-            aria-expanded={choosingMode}
-            onClick={() => {
-              setChoosingMode(!choosingMode);
-              setPicking(false);
-            }}
-          >
-            {agent === "codex" && <ShieldCheck size={14} />}
-            <span>{modeShown ? modeName(modeShown) : "Default"}</span>
-          </button>
-          <span className="as-spacer" />
-          {modelLabel && (
+          <div className="as-field">
+            {attachments.length > 0 && (
+              <div className="as-attachments">
+                {attachments.map((a) => (
+                  <span
+                    key={a.key}
+                    className={`as-thumb ${a.error ? "bad" : ""}`}
+                    title={a.error}
+                  >
+                    <img src={a.url} alt="" />
+                    {!a.id && !a.error && (
+                      <Loader2 size={16} className="spin" />
+                    )}
+                    <button
+                      aria-label="Remove image"
+                      onClick={() => removeAttachment(a.key)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={field}
+              aria-label="Message"
+              rows={1}
+              value={text}
+              placeholder={skin.placeholder}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={(e) => {
+                const files = [...e.clipboardData.files];
+                if (!files.length) return;
+                if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+                addFiles(files);
+              }}
+              onKeyDown={(e) => {
+                // Enter sends on a computer; on a phone it's a new line, as in the apps.
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !narrow &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          </div>
+          <div className="as-tools">
             <button
-              className="as-model"
-              disabled={heldByApp || !models.length}
-              aria-expanded={picking}
+              className="as-icon"
+              aria-label="Add images"
+              onClick={() => picker.current?.click()}
+            >
+              <Plus size={18} />
+            </button>
+            <input
+              ref={picker}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                addFiles([...(e.target.files || [])]);
+                e.target.value = "";
+              }}
+            />
+            {settings && (
+              <button
+                className={`as-mode ${agent}`}
+                disabled={heldByApp}
+                aria-expanded={choosingMode}
+                onClick={() => {
+                  setChoosingMode(!choosingMode);
+                  setPicking(false);
+                }}
+              >
+                {agent === "codex" && <ShieldCheck size={14} />}
+                <span>{modeShown ? modeName(modeShown) : "Default"}</span>
+              </button>
+            )}
+            <span className="as-spacer" />
+            {settings && modelLabel && (
+              <button
+                className="as-model"
+                disabled={heldByApp || !models.length}
+                aria-expanded={picking}
+                onClick={() => {
+                  setPicking(!picking);
+                  setChoosingMode(false);
+                }}
+              >
+                {modelLabel} <span>{effortLabel(effort, agent)}</span>
+                {!heldByApp && models.length > 0 && <ChevronDown size={14} />}
+              </button>
+            )}
+            <button
+              className="as-icon"
+              aria-label="Chat settings"
+              aria-expanded={settings}
               onClick={() => {
-                setPicking(!picking);
+                setSettings(!settings);
+                setPicking(false);
                 setChoosingMode(false);
               }}
             >
-              {modelLabel} <span>{effortLabel(effort, agent)}</span>
-              {!heldByApp && models.length > 0 && <ChevronDown size={14} />}
+              <SlidersHorizontal size={18} />
             </button>
-          )}
-          {/* One round button, as in both apps: send, or stop while it works
+            {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
-          {runningHere && live.status !== "waiting" && !text.trim() ? (
-            <button className="as-send stop" aria-label="Stop" disabled={stopping} onClick={() => void stop()}>
-              <Square size={12} fill="currentColor" />
-            </button>
-          ) : (
-            <button
-              className={`as-send ${text.trim() || attachments.length ? "ready" : ""}`}
-              aria-label="Send"
-              disabled={!canSend}
-              onClick={() => void send()}
-            >
-              {sending ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
-            </button>
-          )}
-        </div>
+            {runningHere && live.status !== "waiting" && !text.trim() ? (
+              <button
+                className="as-send stop"
+                aria-label="Stop"
+                disabled={stopping}
+                onClick={() => void stop()}
+              >
+                <Square size={12} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                className={`as-send ${text.trim() || attachments.length ? "ready" : ""}`}
+                aria-label="Send"
+                disabled={!canSend}
+                onClick={() => void send()}
+              >
+                {sending ? (
+                  <Loader2 size={16} className="spin" />
+                ) : (
+                  <ArrowUp size={18} />
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </footer>
     </div>

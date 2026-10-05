@@ -11,6 +11,8 @@ const tabs = [
   { id: "a3", provider: "iterm2", name: "ssh pi@raspberrypi (ssh)", tty: "/dev/ttys013" },
 ];
 const calls = [];
+// Which Macs were asked for the AI apps' logos (by host).
+const logoAsks = [];
 let listed = 0;
 let slow = 0;
 let dom, React, TerminalView;
@@ -33,6 +35,7 @@ before(async () => {
         return { id: "s9", name: "Claude Code", cwd: "/Users/n/reach", status: "running", createdAt: "" };
       },
       "/api/terminals/desktop/a2": () => ({ text: "working…" }),
+      "/api/sessions/logos": (init, href) => (logoAsks.push(href.host), {}),
     },
   });
   React = dom.React;
@@ -88,6 +91,20 @@ test("the list starts terminals and names Mac windows readably", async () => {
   await dom.waitFor(() => calls.length === 1);
   assert.deepEqual(calls[0], { root: 0, run: "claude" });
   await view.unmount();
+});
+
+test("someone invited never asks for the AI apps' logos: those routes are the owner's only", async () => {
+  const guest = await dom.render(page({ peer: { ...peer, id: "guest-mac", url: "https://guest.reach.test" } }));
+  await dom.waitFor(() => guest.container.querySelectorAll(".terminal-row").length === 3);
+  await settle(100);
+  assert.deepEqual(logoAsks.filter((host) => host === "guest.reach.test"), []);
+  // Line icons stand in for the logos.
+  assert.ok(guest.container.querySelector(".terminal-quick button svg"));
+  await guest.unmount();
+  // The owner's own device does ask.
+  const owner = await dom.render(page({ owner: true, peer: { ...peer, id: "owner-mac", url: "https://owner.reach.test" } }));
+  await dom.waitFor(() => logoAsks.includes("owner.reach.test"));
+  await owner.unmount();
 });
 
 test("coming back shows the Mac's windows at once, then checks again", async () => {

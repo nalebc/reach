@@ -115,3 +115,22 @@
     opacity: 0;
   }
 }
+
+/* While typing, the bars take their own space so they never cover the field.
+   Fullscreen can still hide its chrome when the keyboard is closed. */
+.simple-screen.screen-immersive.screen-typing > .simple-screen-toolbar,
+.simple-screen.screen-immersive.screen-typing > .simple-screen-dock {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  background: #0b1012;
+  transform: none;
+  opacity: 1;
+}
+.simple-screen.screen-immersive.screen-typing .remote-zoom.compact { bottom: 10px; }
+.simple-screen .remote-zoom.compact .button { min-height: 40px; border-radius: 999px; }
+.simple-screen.screen-immersive.chrome-hidden .remote-zoom.compact {
+  opacity: 1;
+  pointer-events: auto;
+  bottom: max(14px, env(safe-area-inset-bottom));
+}

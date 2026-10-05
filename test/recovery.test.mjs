@@ -190,7 +190,7 @@ test("background service preserves scope and paths without copying secrets or re
   assert(plist.includes("<key>KeepAlive</key><true/>"));
   assert(
     plist.includes(
-      "<string>/path with spaces/reach/scripts/bootstrap.mjs</string>",
+      `<string>${path.join("/path with spaces/reach", "scripts/bootstrap.mjs")}</string>`,
     ),
   );
   assert(plist.includes("/Users/A&amp;B/My Files"));

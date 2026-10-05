@@ -13,6 +13,8 @@ export function useDesktopInput(
   onEnd: (message: string) => void,
 ) {
   const [typing, setTyping] = useState(false);
+  // The computer can say whether a text field is under the finger.
+  const [probe, setProbe] = useState(false);
   const [initialCursor, setInitialCursor] = useState<{
     x: number;
     y: number;
@@ -27,6 +29,7 @@ export function useDesktopInput(
   useEffect(() => {
     setReady(false);
     setTyping(false);
+    setProbe(false);
     setInitialCursor(null);
     if (!enabled) return;
     const url = new URL("/ws/screen-input", peer.url);
@@ -92,6 +95,7 @@ export function useDesktopInput(
           )
             setInitialCursor(m.cursor);
           setTyping(m.typing === true);
+          setProbe(m.probe === true);
           setReady(true);
           return;
         }
@@ -126,6 +130,7 @@ export function useDesktopInput(
   return {
     ready,
     typing,
+    probe,
     initialCursor,
     latency,
     send: (action: DesktopAction) => dispatcher.current(action),

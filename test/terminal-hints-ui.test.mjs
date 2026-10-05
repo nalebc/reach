@@ -126,20 +126,20 @@ test("the swipe hand shows once, only with another terminal to go to", async () 
   assert.equal(view.container.querySelector(".terminal-swipe-hint"), null);
   await view.unmount();
 
-  // Two: the hand shows, and touching the terminal means it's understood.
+  // Two: the hand shows, and touching the header means it's understood.
   tabs = [tab("a"), tab("b")];
   view = await dom.render(page("mac:a"));
   const hint = await dom.waitFor(() =>
     view.container.querySelector(".terminal-swipe-hint"),
   );
-  assert.match(hint.textContent, /Swipe to switch terminals/);
+  assert.match(hint.textContent, /Swipe the header to switch terminals/);
   assert.ok(hint.querySelector("svg"), "a hand shows the gesture");
   // It never catches the touch it teaches: the swipe reaches the terminal.
   const css = await import("node:fs").then((fs) =>
     fs.readFileSync(new URL("../src/terminals.css", import.meta.url), "utf8"),
   );
   assert.match(css, /\.terminal-swipe-hint \{[^}]*pointer-events: none/);
-  touch(view.container.querySelector(".terminal-stage"));
+  touch(view.container.querySelector(".terminal-bar"));
   await settle();
   assert.equal(view.container.querySelector(".terminal-swipe-hint"), null);
   await view.unmount();

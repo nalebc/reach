@@ -1100,17 +1100,15 @@ button.as-mode:disabled {
    messages in a bubble, replies as plain text with copy and share beneath,
    and the composer as one card with a round send button. ── */
 .as-bar {
-  position: absolute;
+  position: relative;
   z-index: 3;
-  top: 0;
-  left: 0;
-  right: 0;
-  gap: 8px;
-  min-height: 0;
-  padding: calc(env(safe-area-inset-top) + 8px) 14px 18px;
-  border: 0;
-  background: linear-gradient(to bottom, var(--as-bg) 62%, transparent);
-  pointer-events: none;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--as-line);
+  background: var(--as-bg);
+  touch-action: pan-x;
 }
 .as-bar > * {
   pointer-events: auto;
@@ -1151,7 +1149,7 @@ button.as-mode:disabled {
   justify-content: center;
 }
 .as-page.claude .as-bar .as-title {
-  visibility: hidden;
+  visibility: visible;
 }
 .as-details {
   position: absolute;
@@ -1174,8 +1172,15 @@ button.as-mode:disabled {
   font-weight: 600;
 }
 .as-scroll {
-  padding-top: 68px;
-  gap: 18px;
+  padding: 20px clamp(16px, 4vw, 32px);
+  gap: 20px;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y pinch-zoom;
+}
+.as-scroll > * {
+  flex-shrink: 0;
 }
 
 /* Messages */
@@ -1224,7 +1229,10 @@ button.as-mode:disabled {
 
 /* The composer: one card, the text on top, controls beneath. */
 .as-composer {
-  padding: 6px 14px 10px;
+  position: relative;
+  padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--as-line);
+  background: var(--as-bg);
 }
 .as-box,
 .codex .as-box {
@@ -1338,3 +1346,26 @@ button.as-mode:disabled {
     display: none;
   }
 }
+
+/* A clear escape from history, without stealing the reader's scroll. */
+.as-latest {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--as-line);
+  background: var(--as-float);
+  color: var(--as-text);
+  box-shadow: 0 4px 16px #0003;
+}
+.as-page.kb-open .as-composer { padding-bottom: 8px; }
+.as-box .as-field textarea { max-height: min(160px, 25dvh); overflow-y: auto; }
+.as-details { max-height: 50%; overflow-y: auto; }
+.as-page[data-compact-viewport="true"] .as-bar { min-height: 44px; padding-block: 0; }
+.as-page[data-compact-viewport="true"] .as-scroll { padding-block: 10px; }

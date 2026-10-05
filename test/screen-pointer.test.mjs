@@ -146,3 +146,10 @@ test("typing keeps the tapped field visible across keyboard resize, orientation 
     4,
   );
 });
+
+test("opening the phone keyboard never increases the user's screen zoom", () => {
+  for (const scale of [1, 1.5, 2, 4]) {
+    const view = typingView({ scale, x: 0, y: 0 }, { x: .8, y: .9 }, 390, 244, 390, 280);
+    assert.equal(view.scale, scale);
+  }
+});

@@ -5,12 +5,30 @@ import type { TailnetStatus } from "./tailnet-transport";
 export type StartConfig = {
   product: "Reach";
   origin: string;
+  // The one address (newer Reach): this page's own, without a port. Reach
+  // answers your devices there; the internet gets this page.
+  home?: string;
+  // A new browser can sign in with Face ID alone (server/face-join.mjs).
+  faceId?: boolean;
   name: string;
   instance: string;
   tailnet: { wasm: string; exec: string } | null;
 };
 
 const FILE = /^[\w.-]+$/;
+// The same computer's name, without a path; anything else is left out.
+const sameComputer = (value: unknown, origin: URL) => {
+  try {
+    const u = new URL(String(value));
+    return (
+      u.protocol === "https:" &&
+      u.origin === value &&
+      u.hostname === origin.hostname
+    );
+  } catch {
+    return false;
+  }
+};
 export function parseStartConfig(value: unknown): StartConfig | null {
   const v = value as Partial<StartConfig> | null;
   try {
@@ -37,6 +55,8 @@ export function parseStartConfig(value: unknown): StartConfig | null {
     return {
       product: "Reach",
       origin: v.origin,
+      ...(sameComputer(v.home, origin) ? { home: v.home } : {}),
+      ...(v.faceId === true ? { faceId: true } : {}),
       name: v.name.slice(0, 80),
       instance: v.instance,
       tailnet,
@@ -45,6 +65,9 @@ export function parseStartConfig(value: unknown): StartConfig | null {
     return null;
   }
 }
+
+// Where your own browser uses Reach: the one address, when Reach has it.
+export const ownOrigin = (config: StartConfig) => config.home || config.origin;
 
 // "mac.tail1234.ts.net" -> "tail1234.ts.net"
 export const tailnetSuffix = (origin: string) =>

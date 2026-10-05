@@ -94,7 +94,9 @@
 .terminal-screen {
   flex: 1;
   min-height: 0;
-  padding: 4px 0 0 6px;
+  padding: 8px 4px 0 8px;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 .terminal-screen .xterm {
   height: 100%;
@@ -155,6 +157,7 @@
 }
 /* Swipe between terminals; the bar shows where you are, like stories. */
 .terminal-stage {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -247,8 +250,8 @@ h1.terminal-switch {
   position: absolute;
   z-index: 4;
   left: 50%;
-  top: 42%;
-  transform: translate(-50%, -50%);
+  top: calc(env(safe-area-inset-top) + 62px);
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -288,7 +291,7 @@ h1.terminal-switch {
 @keyframes terminal-swipe-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -46%);
+    transform: translate(-50%, -4px);
   }
 }
 @keyframes terminal-swipe-hand {
@@ -320,4 +323,26 @@ h1.terminal-switch {
    Safari takes taps for its own toolbar. */
 .terminal-page:not(.kb-open) .terminal-key-row {
   padding-bottom: calc(6px + env(safe-area-inset-bottom));
+}
+
+.terminal-screen .xterm-helper-textarea { font-size: 16px !important; }
+.terminal-screen .xterm-viewport { overscroll-behavior: contain; }
+.terminal-latest {
+  position: absolute;
+  z-index: 2;
+  right: 14px;
+  bottom: calc(62px + env(safe-area-inset-bottom));
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #ffffff26;
+  border-radius: 999px;
+  background: #1c2a23;
+  color: #dce5dd;
+  box-shadow: 0 4px 16px #0004;
+}
+.kb-open .terminal-latest { bottom: 62px; }
+.terminal-bar { touch-action: pan-x; }
+.terminal-page[data-compact-viewport="true"] .terminal-bar { min-height: 40px; }
+@media (prefers-reduced-motion: reduce) {
+  .terminal-stage { animation: none; }
 }

@@ -75,7 +75,7 @@ test("owner CLI grants only selected folders, supports writes, preserves pairing
     const credential = JSON.parse(await fs.readFile(file, "utf8"));
     assert(!grant.stdout.includes(credential.token));
     if (process.platform !== "win32")
-      assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+      if (process.platform !== "win32") assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
     assert.equal(
       await fs.readFile(path.join(dataDir, "pairing.json"), "utf8"),
       pairing,

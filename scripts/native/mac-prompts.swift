@@ -10,6 +10,7 @@
 import AppKit
 import ApplicationServices
 import ScreenCaptureKit
+import Security
 
 let presenters: [String: String] = [
   "UserNotificationCenter": "privacy",
@@ -42,13 +43,30 @@ func collect(_ e: AXUIElement, _ texts: inout [String], _ buttons: inout [String
 
 struct Seen { let kind: String; let owner: String; let pid: pid_t; var line: [String: Any] }
 
+// macOS's own: the process is signed by Apple (an app can call itself
+// SecurityAgent and draw a look-alike; it can't sign as Apple).
+func signedByApple(_ pid: pid_t) -> Bool {
+  var code: SecCode?
+  guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: pid] as CFDictionary, [], &code) == errSecSuccess, let code
+  else { return false }
+  var requirement: SecRequirement?
+  guard SecRequirementCreateWithString("anchor apple" as CFString, [], &requirement) == errSecSuccess, let requirement
+  else { return false }
+  return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+}
+
 final class Watcher {
   var current: [CGWindowID: Seen] = [:]
   var last = ""
+  // Checked once per process.
+  var apple: [pid_t: Bool] = [:]
 
-  func windows() -> [(CGWindowID, String, pid_t, String)] {
+  func windows() -> [(CGWindowID, String, pid_t, String, [String: Double])] {
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-    var found: [(CGWindowID, String, pid_t, String)] = []
+    var found: [(CGWindowID, String, pid_t, String, [String: Double])] = []
+    // A process id can be reused: remembered only while its windows are up.
+    let up = Set(list.compactMap { ($0[kCGWindowOwnerPID as String] as? Int).map { pid_t($0) } })
+    apple = apple.filter { up.contains($0.key) }
     for w in list {
       let owner = w[kCGWindowOwnerName as String] as? String ?? ""
       guard let kind = presenters[owner] else { continue }
@@ -57,13 +75,20 @@ final class Watcher {
       let width = bounds["Width"] as? Double ?? 0, height = bounds["Height"] as? Double ?? 0
       // Dialogs, not menu-bar items or invisible helpers.
       if layer < 0 || width < 120 || height < 80 { continue }
-      found.append((CGWindowID(w[kCGWindowNumber as String] as? Int ?? 0), kind, pid_t(w[kCGWindowOwnerPID as String] as? Int ?? 0), owner))
+      // Where it is on screen (global points, as the displays are listed),
+      // so the phone's screen view can open on it.
+      let place = ["x": bounds["X"] as? Double ?? 0, "y": bounds["Y"] as? Double ?? 0, "width": width, "height": height]
+      let pid = pid_t(w[kCGWindowOwnerPID as String] as? Int ?? 0)
+      // Only macOS's own dialogs, never a look-alike by another app.
+      if apple[pid] == nil { apple[pid] = signedByApple(pid) }
+      guard apple[pid] == true else { continue }
+      found.append((CGWindowID(w[kCGWindowNumber as String] as? Int ?? 0), kind, pid, owner, place))
     }
     return found
   }
 
-  func describe(_ id: CGWindowID, _ kind: String, _ pid: pid_t, _ owner: String) -> [String: Any] {
-    var line: [String: Any] = ["id": Int(id), "kind": kind, "owner": owner]
+  func describe(_ id: CGWindowID, _ kind: String, _ pid: pid_t, _ owner: String, _ place: [String: Double]) -> [String: Any] {
+    var line: [String: Any] = ["id": Int(id), "kind": kind, "owner": owner, "bounds": place]
     if kind == "password" { return line }
     var texts: [String] = [], buttons: [String] = []
     var preferred = ""
@@ -116,8 +141,8 @@ final class Watcher {
       current[id] = nil
       changed = true
     }
-    for (id, kind, pid, owner) in now where current[id] == nil {
-      current[id] = Seen(kind: kind, owner: owner, pid: pid, line: describe(id, kind, pid, owner))
+    for (id, kind, pid, owner, place) in now where current[id] == nil {
+      current[id] = Seen(kind: kind, owner: owner, pid: pid, line: describe(id, kind, pid, owner, place))
       changed = true
       if kind != "password" {
         // Let the dialog finish drawing, then add its picture.

@@ -353,17 +353,23 @@ export async function connectPhone(root, { since = 0, deps = {} } = {}) {
     );
     return false;
   }
-  // The start page works for every phone, with or without the Tailscale app.
+  // The one address works for every phone, with or without the Tailscale
+  // app: shown once this Reach answers there (from here, as your devices do).
   const start = `https://${new URL(host.origin).hostname}`;
   const reachable =
     deps.reachable ||
     ((url) =>
       fetch(url, { signal: AbortSignal.timeout(3000), redirect: "error" })
-        .then((r) => r.ok)
+        .then(async (r) => {
+          const health = r.ok && (await r.json());
+          return (
+            health?.product === "Reach" && health.instance === host.instance
+          );
+        })
         .catch(() => false));
-  const link = (await reachable(`${start}/reach-start.json`))
-    ? start
-    : host.origin;
+  const link =
+    host.link ||
+    ((await reachable(`${start}/api/health`)) ? start : host.origin);
   print(`\n  Open on your phone: ${link}\n`);
   try {
     const qr = deps.qr || (await import("qrcode-terminal")).default;

@@ -29,7 +29,8 @@ export function serveSocketPath(
     exists = fs.existsSync,
   } = {},
 ) {
-  const suffix = hash(path.resolve(root)).slice(0, 12);
+  const paths = platform === "darwin" ? path.posix : path;
+  const suffix = hash(paths.resolve(root)).slice(0, 12);
   let base = platform === "darwin" ? "/tmp" : os.tmpdir();
   if (platform === "darwin") {
     // Sandboxed Tailscale variants may only dial Unix sockets in their app group.
@@ -39,14 +40,14 @@ export function serveSocketPath(
       "W5364U7YZB.group.io.tailscale.ipn.macos",
       "W5364U7YZB.io.tailscale.ipn.macsys",
     ]) {
-      const candidate = path.join(home, "Library/Group Containers", group);
+      const candidate = paths.join(home, "Library/Group Containers", group);
       if (exists(candidate)) {
         base = candidate;
         break;
       }
     }
   }
-  const socket = path.join(
+  const socket = paths.join(
     base,
     base === "/tmp" || platform !== "darwin"
       ? `reach-${uid}-${suffix}`
@@ -89,11 +90,7 @@ export function createIdentityResolver({
 } = {}) {
   const cache = new Map();
   return async (req) => {
-    if (
-      !trusted.has(req) ||
-      req.headers["tailscale-funnel-request"] !== undefined
-    )
-      return null;
+    if (!trusted.has(req) || fromInternet(req)) return null;
     const ip = req.headers["x-forwarded-for"];
     // Serve overwrites X-Forwarded-For with the actual source; never accept a
     // client supplied chain, host name, port or arbitrary CLI argument.
@@ -116,11 +113,20 @@ export function createIdentityResolver({
     return { ...value, validUntil: entry.until + 5000 };
   };
 }
+// Tailscale marks each request that came from the internet (Funnel) and strips
+// the mark from everything else, including a copy sent by the client.
+export const fromInternet = (req) =>
+  req.headers["tailscale-funnel-request"] !== undefined;
+// One address for everything: Tailscale may send the internet's requests here
+// too (Funnel) and on the same connection as your devices'. Each request is
+// sorted on its own: the internet only ever gets `publicApp` (the start page),
+// never Reach; WebSockets from the internet are refused.
 export async function listenPrivateIngress({
   socketPath,
   app,
   upgrade,
   resolveIdentity,
+  publicApp,
 }) {
   const dir = path.dirname(socketPath);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -152,6 +158,11 @@ export async function listenPrivateIngress({
     req.reachIdentity = await resolveIdentity(req);
   };
   const server = http.createServer((req, res) => {
+    if (fromInternet(req)) {
+      if (publicApp) return publicApp(req, res);
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Not found.");
+    }
     prepare(req)
       .then(() => app(req, res))
       .catch(() => {
@@ -160,6 +171,7 @@ export async function listenPrivateIngress({
       });
   });
   server.on("upgrade", (req, socket, head) => {
+    if (fromInternet(req)) return socket.destroy();
     prepare(req)
       .then(() => upgrade(req, socket, head))
       .catch(() => socket.destroy());

@@ -3,6 +3,8 @@ export type TextTarget = {
   editable: boolean;
   focus?: string;
   secure?: boolean;
+  // The keyboard opened during the tap; no input may leave until focus is confirmed.
+  pending?: boolean;
 };
 export type InputResult = {
   ok?: boolean;

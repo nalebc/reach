@@ -167,7 +167,7 @@ test("Return on an empty line in a Mac tab is sent, so prompts can be answered",
     }),
   );
   const enter = await dom.waitFor(() =>
-    view.container.querySelector(".mac-line button[aria-label=Enter]"),
+    view.container.querySelector(".mac-line button[aria-label=Enter]:not(:disabled)"),
   );
   enter.click();
   await dom.waitFor(() => state.sent.length);

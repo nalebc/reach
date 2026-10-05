@@ -58,6 +58,14 @@ export function inputAction(value) {
       throw fail(400, "Invalid focus coordinates.");
     return { type, x: value.x, y: value.y };
   }
+  // Is there a text field under the finger? (Asked on touch-down.)
+  if (type === "probe") {
+    if (
+      ![value.x, value.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
+    )
+      throw fail(400, "Invalid probe coordinates.");
+    return { type, x: value.x, y: value.y };
+  }
   if (type === "type-edit") {
     if (
       !focus ||

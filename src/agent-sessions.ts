@@ -27,6 +27,10 @@ export type AgentSession = {
   mode?: string | null;
   // What it waits on you for in another app (the Claude app, a terminal).
   asking?: AgentAsking;
+  // The Claude app's own consent card it waits on (id when answerable here).
+  consent?: { id?: string; kind: string; title: string; reason?: string; options?: string[] };
+  // Prompts waiting on the phone (permission requests, questions).
+  prompts?: SessionPrompt[];
 };
 export type AgentQuestion = {
   question: string;
@@ -143,6 +147,10 @@ export type MacPrompt = {
   // The dialog's own lines (its message first) and the button Return presses.
   lines?: string[];
   default?: string;
+  // Where it is switched on in System Settings (opened on the Mac from here).
+  setting?: { name: string; url: string };
+  // Where the dialog is on the Mac's screen (global points).
+  bounds?: { x: number; y: number; width: number; height: number };
   image?: string;
 };
 // A project as the Codex app's sidebar shows it: a name and its folders.
@@ -376,6 +384,15 @@ export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, bod
     `${sessionPath(s)}/messages`,
     body,
   );
+// Presses one of a Mac dialog's own buttons (owner only).
+export const pressMacButton = (peer: Peer, id: string, button: string) =>
+  post<{ pressed: string }>(peer, `/api/sessions/mac-prompts/${encodeURIComponent(id)}/press`, { button });
+// Types the Mac's password into its password dialog (owner only; never kept).
+export const sendMacPassword = (peer: Peer, id: string, password: string) =>
+  post<{ done: true }>(peer, `/api/sessions/mac-prompts/${encodeURIComponent(id)}/password`, { password });
+// Opens, on the Mac, the System Settings page a Mac prompt belongs to.
+export const openMacSetting = (peer: Peer, id: string) =>
+  post<{ opened: string; app: string | null }>(peer, `/api/sessions/mac-prompts/${encodeURIComponent(id)}/setting`);
 // A picture sent in a session, fetched once per page (it never changes).
 const pictures = new Map<string, Promise<string>>();
 export function sessionImage(peer: Peer, s: { agent: AgentName; id: string }, item: string, n: number) {

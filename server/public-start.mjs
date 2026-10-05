@@ -46,41 +46,33 @@ export function readTailnetManifest(dir) {
   }
 }
 
-// Listen next to Reach's private socket (same owner-only directory). A stale
-// socket from a previous run is replaced; a live one means Reach already runs.
-export async function listenPublicSocket(server, socketPath) {
-  const dir = path.dirname(socketPath);
-  const stat = fs.lstatSync(dir);
-  if (!stat.isDirectory() || stat.uid !== process.getuid())
-    throw Error("Unsafe Reach socket directory.");
-  if (fs.existsSync(socketPath)) {
-    const old = fs.lstatSync(socketPath);
-    if (!old.isSocket() || old.uid !== process.getuid())
-      throw Error("Unsafe Reach socket path.");
-    fs.unlinkSync(socketPath);
-  }
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, resolve);
-  });
-  fs.chmodSync(socketPath, 0o600);
-}
-
-export function createPublicStart({
+// What the internet gets at this computer's address. Reach's own listener
+// hands it only requests Tailscale marked as coming through Funnel
+// (server/tailscale-auth.mjs); your devices get Reach itself there.
+export function publicStartHandler({
   dist,
   tailnetDir,
   privateOrigin,
+  // The one address, https://<computer>.<tailnet>.ts.net: Reach for your
+  // devices, this page for the internet. The browser path signs in, then uses
+  // Reach there too, so both ways in keep the same saved computer.
+  home = "",
   name,
   instance,
   // When Reach was set up on this computer: the oldest one's link is your
   // tailnet's one link.
   since = 0,
+  // Whether a new browser can sign in with Face ID alone right now
+  // (server/face-join.mjs).
+  faceId = () => false,
 }) {
   const publicHost = new URL(privateOrigin).hostname;
   const config = () =>
     JSON.stringify({
       product: "Reach",
       origin: privateOrigin,
+      ...(home ? { home } : {}),
+      ...(faceId() ? { faceId: true } : {}),
       name,
       instance,
       since,
@@ -129,7 +121,7 @@ export function createPublicStart({
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found.");
   };
-  const server = http.createServer((req, res) => {
+  return (req, res) => {
     res.setHeader("Content-Security-Policy", PUBLIC_CSP);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -183,7 +175,11 @@ export function createPublicStart({
     )
       return send(req, res, path.join(dist, url.slice(1)), "no-cache");
     notFound(res);
-  });
+  };
+}
+
+export function createPublicStart(options) {
+  const server = http.createServer(publicStartHandler(options));
   // No WebSockets here, ever.
   server.on("upgrade", (req, socket) => socket.destroy());
   server.requestTimeout = 60000;

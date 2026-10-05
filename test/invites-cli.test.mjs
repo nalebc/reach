@@ -56,7 +56,7 @@ const status = async () => ({ Self: { TailscaleIPs: ["100.64.0.5", "fd7a::5"] },
 test("token path: opens the token page, shows exactly what's added, then it's ready", async (t) => {
   delete process.env.REACH_DATA;
   const root = computer(t);
-  const api = fakeApi(`{"grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]}`);
+  const api = fakeApi(`{"grants": [{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]}]}`);
   const out = [];
   const asked = [];
   const opened = [];
@@ -74,7 +74,7 @@ test("token path: opens the token page, shows exactly what's added, then it's re
   assert.deepEqual(opened, [KEYS_PAGE]);
   assert.match(text, /\+ tagOwners: tag:reach-guest → autogroup:admin/);
   assert.match(text, /\+ grant: tag:reach-guest → 100\.64\.0\.5 port 8443/);
-  assert.match(text, /Heads up: your policy has a rule letting every device reach everything/);
+  assert.doesNotMatch(text, /Heads up/);
   assert.match(text, /Invite links are ready/);
   assert.doesNotMatch(text, /tskey-api-/, "the token is never printed");
   assert.ok(fs.existsSync(path.join(root, ".reach", "quick", "tailscale-oauth.json")));

@@ -1,3 +1,4 @@
+import { useViewportBox } from "./useViewportBox";
 import {
   useCallback,
   useLayoutEffect,
@@ -53,70 +54,7 @@ export function useScreenPresentation(
       document.removeEventListener("keydown", escape);
     };
   }, [viewer]);
-  useLayoutEffect(() => {
-    if (!expanded) return;
-    const element = viewer.current;
-    if (!element) return;
-    const body = document.body;
-    const saved = {
-      position: body.style.position,
-      top: body.style.top,
-      left: body.style.left,
-      width: body.style.width,
-      overflow: body.style.overflow,
-    };
-    const x = window.scrollX,
-      y = window.scrollY;
-    Object.assign(body.style, {
-      position: "fixed",
-      top: `${-y}px`,
-      left: `${-x}px`,
-      width: "100%",
-      overflow: "hidden",
-    });
-    const viewport = window.visualViewport;
-    let frame = 0;
-    const position = () => {
-      frame = 0;
-      element.style.setProperty(
-        "--screen-top",
-        `${viewport?.offsetTop || 0}px`,
-      );
-      element.style.setProperty(
-        "--screen-left",
-        `${viewport?.offsetLeft || 0}px`,
-      );
-      element.style.setProperty(
-        "--screen-width",
-        `${viewport?.width || window.innerWidth}px`,
-      );
-      element.dataset.compactViewport = String(
-        (viewport?.height || window.innerHeight) < 360,
-      );
-      element.style.setProperty(
-        "--screen-height",
-        `${viewport?.height || window.innerHeight}px`,
-      );
-    };
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(position);
-    };
-    position();
-    viewport?.addEventListener("resize", schedule);
-    viewport?.addEventListener("scroll", schedule);
-    window.addEventListener("resize", schedule);
-    return () => {
-      cancelAnimationFrame(frame);
-      viewport?.removeEventListener("resize", schedule);
-      viewport?.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      for (const name of ["top", "left", "width", "height"])
-        element.style.removeProperty(`--screen-${name}`);
-      delete element.dataset.compactViewport;
-      Object.assign(body.style, saved);
-      window.scrollTo({ left: x, top: y, behavior: "instant" });
-    };
-  }, [expanded, viewer]);
+  useViewportBox(viewer, expanded, "screen");
   const toggleFullscreen = useCallback(async () => {
     if (fullscreen) {
       if (document.fullscreenElement === viewer.current)

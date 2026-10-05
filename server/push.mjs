@@ -1,0 +1,264 @@
+// Notifications on your phone when something needs you and Reach isn't open:
+// Web Push (RFC 8030), each message encrypted for that phone (RFC 8291) and
+// signed by this computer (VAPID, RFC 8292). Apple, Google or Mozilla carry
+// it but can't read it. Messages say only what needs you, never content.
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fail } from "./core.mjs";
+
+const b64 = (buffer) => Buffer.from(buffer).toString("base64url");
+const unb64 = (text) => Buffer.from(String(text), "base64url");
+const RECORD_SIZE = 4096;
+const MAX_PER_CLIENT = 5;
+
+// Only the browsers' own push services: a phone can't make this computer
+// send requests anywhere else.
+export function pushServiceAllowed(endpoint) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  return (
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    (url.port === "" || url.port === "443") &&
+    (host === "web.push.apple.com" ||
+      host.endsWith(".push.apple.com") ||
+      host === "fcm.googleapis.com" ||
+      host.endsWith(".push.services.mozilla.com") ||
+      host.endsWith(".notify.windows.com"))
+  );
+}
+
+// RFC 8291 (aes128gcm): one record, the 0x02 delimiter, no padding.
+// `salt` and `local` (the server's one-time key pair) are for tests.
+export function encryptPush(plaintext, { p256dh, auth }, { salt, local } = {}) {
+  const uaPublic = unb64(p256dh),
+    authSecret = unb64(auth);
+  if (uaPublic.length !== 65 || uaPublic[0] !== 4 || authSecret.length !== 16)
+    throw fail(400, "Invalid push subscription keys.");
+  const ecdh = crypto.createECDH("prime256v1");
+  if (local) ecdh.setPrivateKey(unb64(local));
+  else ecdh.generateKeys();
+  const asPublic = ecdh.getPublicKey();
+  const ecdhSecret = ecdh.computeSecret(uaPublic);
+  const ikm = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      ecdhSecret,
+      authSecret,
+      Buffer.concat([Buffer.from("WebPush: info\0"), uaPublic, asPublic]),
+      32,
+    ),
+  );
+  const saltBytes = salt ? unb64(salt) : crypto.randomBytes(16);
+  const cek = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      ikm,
+      saltBytes,
+      Buffer.from("Content-Encoding: aes128gcm\0"),
+      16,
+    ),
+  );
+  const nonce = Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      ikm,
+      saltBytes,
+      Buffer.from("Content-Encoding: nonce\0"),
+      12,
+    ),
+  );
+  const data = Buffer.concat([Buffer.from(plaintext), Buffer.from([2])]);
+  if (data.length + 16 > RECORD_SIZE) throw Error("Push message too long.");
+  const cipher = crypto.createCipheriv("aes-128-gcm", cek, nonce);
+  const sealed = Buffer.concat([
+    cipher.update(data),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  const header = Buffer.alloc(21);
+  saltBytes.copy(header, 0);
+  header.writeUInt32BE(RECORD_SIZE, 16);
+  header[20] = asPublic.length;
+  return Buffer.concat([header, asPublic, sealed]);
+}
+
+// This computer's VAPID key pair, made once and kept private.
+export function vapidKeys(file) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    const privateKey = crypto.createPrivateKey({
+      key: saved.jwk,
+      format: "jwk",
+    });
+    return { privateKey, publicKey: saved.publicKey };
+  } catch {}
+  const { privateKey } = crypto.generateKeyPairSync("ec", {
+    namedCurve: "P-256",
+  });
+  const jwk = privateKey.export({ format: "jwk" });
+  const publicKey = b64(
+    Buffer.concat([Buffer.from([4]), unb64(jwk.x), unb64(jwk.y)]),
+  );
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ jwk, publicKey }), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  return { privateKey, publicKey };
+}
+
+// The signed token a push service checks (ES256, raw r||s signature).
+export function vapidJwt({ audience, subject, privateKey, now = Date.now() }) {
+  const header = b64(JSON.stringify({ typ: "JWT", alg: "ES256" }));
+  const claims = b64(
+    JSON.stringify({
+      aud: audience,
+      exp: Math.floor(now / 1000) + 12 * 3600,
+      sub: subject,
+    }),
+  );
+  const signature = crypto.sign("sha256", Buffer.from(`${header}.${claims}`), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363",
+  });
+  return `${header}.${claims}.${b64(signature)}`;
+}
+
+export function createPush({
+  dataDir,
+  // Who sends: this computer's https address (never anyone's email).
+  subject,
+  post = (url, init) =>
+    fetch(url, {
+      ...init,
+      redirect: "error",
+      signal: AbortSignal.timeout(10000),
+    }),
+  now = Date.now,
+  log = (message) => console.log(`Reach: ${message}`),
+}) {
+  const file = path.join(dataDir, "push.json");
+  let keys;
+  const vapid = () =>
+    (keys ??= vapidKeys(path.join(dataDir, "push-vapid.json")));
+  let subscriptions = [];
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (Array.isArray(saved.subscriptions)) subscriptions = saved.subscriptions;
+  } catch {}
+  const save = () => {
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ subscriptions }), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch {
+      fs.rmSync(tmp, { force: true });
+    }
+  };
+  return {
+    key: () => vapid().publicKey,
+    subscribe(clientId, subscription) {
+      const endpoint = subscription?.endpoint;
+      const { p256dh, auth } = subscription?.keys || {};
+      if (
+        typeof endpoint !== "string" ||
+        endpoint.length > 2048 ||
+        !pushServiceAllowed(endpoint)
+      )
+        throw fail(
+          400,
+          "This browser's notification service isn't one Reach knows.",
+        );
+      if (
+        typeof p256dh !== "string" ||
+        typeof auth !== "string" ||
+        unb64(p256dh).length !== 65 ||
+        unb64(auth).length !== 16
+      )
+        throw fail(400, "Invalid push subscription keys.");
+      // One browser's endpoint belongs to whoever subscribed it last.
+      subscriptions = subscriptions.filter((s) => s.endpoint !== endpoint);
+      const mine = subscriptions.filter((s) => s.clientId === clientId);
+      if (mine.length >= MAX_PER_CLIENT)
+        subscriptions = subscriptions.filter((s) => s !== mine[0]);
+      subscriptions.push({
+        clientId,
+        endpoint,
+        keys: { p256dh, auth },
+        createdAt: new Date(now()).toISOString(),
+      });
+      save();
+      return { subscribed: true };
+    },
+    unsubscribe(clientId, endpoint) {
+      const before = subscriptions.length;
+      subscriptions = subscriptions.filter(
+        (s) => !(s.clientId === clientId && s.endpoint === endpoint),
+      );
+      if (subscriptions.length !== before) save();
+      return { subscribed: false };
+    },
+    subscribed: (clientId, endpoint) =>
+      subscriptions.some(
+        (s) =>
+          s.clientId === clientId && (!endpoint || s.endpoint === endpoint),
+      ),
+    // A revoked device gets nothing more.
+    forgetClient(clientId) {
+      const before = subscriptions.length;
+      subscriptions = subscriptions.filter((s) => s.clientId !== clientId);
+      if (subscriptions.length !== before) save();
+    },
+    // `message`: { title, tag?, url? }. Sent to these clients' browsers.
+    async notify(clientIds, message) {
+      const wanted = new Set(clientIds);
+      const targets = subscriptions.filter((s) => wanted.has(s.clientId));
+      if (!targets.length) return { sent: 0 };
+      const { privateKey, publicKey } = vapid();
+      const payload = JSON.stringify({
+        title: String(message.title || "Reach").slice(0, 120),
+        ...(message.tag && { tag: String(message.tag).slice(0, 64) }),
+        ...(message.url && { url: String(message.url).slice(0, 200) }),
+      });
+      let sent = 0;
+      await Promise.all(
+        targets.map(async (s) => {
+          try {
+            const audience = new URL(s.endpoint).origin;
+            const response = await post(s.endpoint, {
+              method: "POST",
+              headers: {
+                Authorization: `vapid t=${vapidJwt({ audience, subject: subject(), privateKey, now: now() })}, k=${publicKey}`,
+                "Content-Encoding": "aes128gcm",
+                "Content-Type": "application/octet-stream",
+                TTL: "3600",
+                Urgency: "high",
+                ...(message.tag && {
+                  Topic: String(message.tag)
+                    .replace(/[^A-Za-z0-9_-]/g, "")
+                    .slice(0, 32),
+                }),
+              },
+              body: encryptPush(payload, s.keys),
+            });
+            // Gone (the phone turned notifications off or reinstalled).
+            if (response.status === 404 || response.status === 410) {
+              subscriptions = subscriptions.filter((x) => x !== s);
+              save();
+            } else if (response.ok) sent++;
+            else log(`a notification was refused (HTTP ${response.status}).`);
+          } catch (e) {
+            log(`a notification could not be sent: ${e.message}`);
+          }
+        }),
+      );
+      return { sent };
+    },
+  };
+}

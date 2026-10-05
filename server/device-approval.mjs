@@ -134,6 +134,27 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         { flag: "wx", mode: 0o600 },
       );
     },
+    // A request still waiting, asked about by the browser that made it (its
+    // secret, from the same Tailscale device). Changes nothing.
+    pending(id, secret, identity, owner) {
+      const r = validId(id) ? loadJson(file(id), null) : null;
+      if (
+        !ownerIdentity(identity, owner) ||
+        !r ||
+        r.expiresAt <= now() ||
+        r.status !== "pending" ||
+        typeof secret !== "string" ||
+        secret.length > 100 ||
+        hash(secret) !== r.secretHash ||
+        !sameIdentity(r.identity, identity) ||
+        fs.existsSync(file(id) + ".decision")
+      )
+        throw fail(
+          403,
+          "This connection request expired or belongs to another device.",
+        );
+      return { id: r.id, name: r.name };
+    },
     poll(id, secret, identity, owner, auth) {
       const r = loadJson(file(id), null);
       if (

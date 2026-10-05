@@ -45,7 +45,7 @@ export function pinchView(
   );
 }
 
-// Center the tapped field above the phone keyboard, keeping desktop text legible.
+// Keep the tapped field above the keyboard at the user's chosen zoom.
 // The anchor is normalized to the captured display, so Retina/resizing is safe.
 export function typingView(
   initial: View,
@@ -55,10 +55,7 @@ export function typingView(
   width: number,
   height: number,
 ): View {
-  const scale = Math.min(
-    4,
-    Math.max(initial.scale, Math.min(3, 900 / Math.max(1, baseW))),
-  );
+  const scale = initial.scale;
   return boundView(
     scale,
     (0.5 - point.x) * baseW * scale,
@@ -68,4 +65,20 @@ export function typingView(
     width,
     height,
   );
+}
+
+// A view that frames one area of the screen (fractions of it): zoomed so the
+// area fills most of the stage (up to 4×), centered on it, kept in bounds.
+export function focusView(
+  area: { x: number; y: number; width: number; height: number },
+  baseW: number,
+  baseH: number,
+  width: number,
+  height: number,
+): View {
+  const fill = 0.9 * Math.min(width / Math.max(1, area.width * baseW), height / Math.max(1, area.height * baseH));
+  const scale = Math.max(1, Math.min(4, fill));
+  const cx = area.x + area.width / 2,
+    cy = area.y + area.height / 2;
+  return boundView(scale, baseW * scale * (0.5 - cx), baseH * scale * (0.5 - cy), baseW, baseH, width, height);
 }

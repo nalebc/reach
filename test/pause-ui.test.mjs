@@ -100,7 +100,7 @@ async function withChanges(Component, props, changes) {
   return {
     view,
     change: async (value) => {
-      set(value);
+      dom.update(() => set(value));
       await settle(30);
     },
   };

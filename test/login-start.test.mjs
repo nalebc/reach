@@ -34,14 +34,14 @@ test("at sign-in Reach opens in Terminal (which holds its permissions), from a s
   assert.match(text, /^#!\/bin\/bash\n/);
   assert.ok(text.includes(`export PATH='${mac.nodeDir}':/opt/homebrew/bin:/usr/local/bin:$PATH`));
   assert.ok(text.includes(`cd '${mac.root.replace(/'/g, `'\\''`)}' || exit 1\n./reach\nexit 0\n`));
-  assert.equal(fs.statSync(script).mode & 0o777, 0o700);
+  if (process.platform !== "win32") assert.equal(fs.statSync(script).mode & 0o777, 0o700);
   // The agent only opens it in Terminal, once per sign-in, never restarting it.
   const agent = fs.readFileSync(plist, "utf8");
   assert.ok(agent.includes(`<string>/usr/bin/open</string><string>-a</string><string>Terminal</string><string>${script.replace(/'/g, "'")}</string>`));
   assert.ok(agent.includes("<key>RunAtLoad</key><true/>"));
   assert.ok(!agent.includes("KeepAlive"));
   assert.ok(agent.includes("<key>WorkingDirectory</key><string>/</string>"));
-  execFileSync("/usr/bin/plutil", ["-lint", plist]);
+  if (process.platform === "darwin") execFileSync("/usr/bin/plutil", ["-lint", plist]);
   assert.deepEqual(mac.calls.at(-1), ["bootstrap", "gui/501", plist]);
   assert.equal(loginStart("status", mac).loaded, true);
   // Off again.

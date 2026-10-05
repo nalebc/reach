@@ -37,6 +37,19 @@ export function createGuestKeys({
   const recordFile = path.join(dataDir, "guest-keys.json");
   // Guest devices are named rg-<this computer>-<invite>: only ours are removed.
   const prefix = `rg-${hash(String(self)).slice(0, 4)}-`;
+  // Your own new browsers that signed in with Face ID (server/face-join.mjs):
+  // rf-<this computer>-<id>, kept apart from guests'.
+  const facePrefix = `rf-${hash(String(self)).slice(0, 4)}-`;
+  const faceName = new RegExp(`^${facePrefix}[a-z0-9]{10}(?:-\\d+)?$`);
+  const shortName = (d) =>
+    String(d?.hostname || d?.name || "")
+      .toLowerCase()
+      .split(".")[0];
+  const newId = () =>
+    Array.from(
+      crypto.randomBytes(10),
+      (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36],
+    ).join("");
   let cached = null;
 
   const credentials = () => {
@@ -231,6 +244,8 @@ export function createGuestKeys({
     } catch (error) {
       throw fail(409, error.message);
     }
+    if (plan.allowAll.length)
+      throw fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`);
     if (plan.added.length) {
       // 2. Tailscale checks the new policy (and your tests) first.
       const check = await as("POST", "/tailnet/-/acl/validate", {
@@ -295,10 +310,7 @@ export function createGuestKeys({
 
   // A key for one invitation; the guest's device will be named `hostname`.
   async function createInvite({ ttlSeconds, keySeconds, clientIds = [] }) {
-    const id = Array.from(
-      crypto.randomBytes(10),
-      (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36],
-    ).join("");
+    const id = newId();
     const expiresAt = now() + ttlSeconds * 1000;
     const created = await createKey(
       Math.max(300, Math.min(keySeconds ?? ttlSeconds, 90 * 86400)),
@@ -346,9 +358,7 @@ export function createGuestKeys({
     const { devices = [] } = (await call("GET", "/tailnet/-/devices")) || {};
     let removed = 0;
     for (const d of devices) {
-      const name = String(d?.hostname || d?.name || "")
-        .toLowerCase()
-        .split(".")[0];
+      const name = shortName(d);
       if (
         !Array.isArray(d?.tags) ||
         !d.tags.includes(GUEST_TAG) ||
@@ -368,6 +378,38 @@ export function createGuestKeys({
     return removed;
   }
 
+  // A key for one new browser of yours that just passed Face ID: it joins as
+  // a limited device (the guest tag: Reach's port only), used within minutes.
+  async function createFaceKey() {
+    const id = newId();
+    const created = await createKey(600, `Reach Face ID sign-in ${id}`);
+    if (!created?.key) throw fail(502, "Tailscale didn't return a key.");
+    return { key: created.key, hostname: `${facePrefix}${id}` };
+  }
+  // Face ID browsers whose access here ended (removed, expired, or never
+  // finished signing in) leave your tailnet. `live`: node IDs still yours.
+  async function reconcileFace(live) {
+    if (!credentials()) return 0;
+    const { devices = [] } = (await call("GET", "/tailnet/-/devices")) || {};
+    let removed = 0;
+    for (const d of devices) {
+      const name = shortName(d);
+      if (
+        !Array.isArray(d?.tags) ||
+        !d.tags.includes(GUEST_TAG) ||
+        !faceName.test(name) ||
+        live.has(d.nodeId)
+      )
+        continue;
+      // Still signing in: its ticket lasts ten minutes.
+      if (now() - (Date.parse(d.created || "") || 0) < 15 * 60000) continue;
+      await call("DELETE", `/device/${encodeURIComponent(d.nodeId || d.id)}`);
+      removed++;
+      log(`Removed ${name} from your tailnet (its Face ID sign-in ended).`);
+    }
+    return removed;
+  }
+
   return {
     configured: () => !!credentials(),
     setup,
@@ -375,6 +417,9 @@ export function createGuestKeys({
     createInvite,
     revokeClient,
     reconcile,
+    createFaceKey,
+    reconcileFace,
+    isFaceDevice: (nodeName) => faceName.test(shortName({ name: nodeName })),
     prefix,
     GUEST_TAG,
   };

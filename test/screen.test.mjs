@@ -79,6 +79,30 @@ test("control never moves silently: only an explicit Take over moves it", () => 
   assert.equal(control.acquire(ali, true, { takeover: true }).taken, "sam");
 });
 
+test("while the Mac shows one of its own dialogs, only the owner's own devices click or type", () => {
+  const now = 1000;
+  const control = new ScreenControl(() => now);
+  let dialog = false;
+  control.dialogUp = () => dialog;
+  const me = { id: "me", name: "Me", kind: "device", scopes: ["admin", "screen"] };
+  const ali = { id: "ali", name: "Ali", kind: "guest", scopes: ["screen", "screen:control"] };
+  const other = { id: "x", name: "X", kind: "linked-mac", scopes: ["admin", "screen"] };
+  control.acquire(ali, true);
+  control.check(ali);
+  dialog = true;
+  // Every check before a click or key, and the live connection's own.
+  assert.throws(() => control.check(ali), (e) => e.status === 423 && /only its owner can answer/.test(e.message));
+  assert.throws(() => control.acquire(ali, true), (e) => e.status === 423);
+  assert.throws(() => control.acquire(other, true, { takeover: true }), (e) => e.status === 423);
+  assert.deepEqual(control.acquire(ali, false), { enabled: false });
+  // Yours: unchanged.
+  assert.equal(control.acquire(me, true).enabled, true);
+  control.check(me);
+  dialog = false;
+  control.acquire(me, false);
+  assert.equal(control.acquire(ali, true).enabled, true);
+});
+
 test("invalid pointer, scroll and keyboard payloads never reach native input", async () => {
   for (const payload of [
     null,

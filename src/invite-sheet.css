@@ -752,3 +752,25 @@
   width: 100%;
   box-sizing: border-box;
 }
+
+/* Someone's access, in their row: change it right there, no new link. */
+.ivt-person .ivt-access .ivt-menu-button {
+  height: 30px;
+  max-width: 44vw;
+  padding: 0 4px 0 8px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--ivt-muted);
+  font-size: 13px;
+}
+.ivt-person .ivt-access .ivt-menu-list {
+  left: auto;
+  right: 0;
+}
+.ivt-pick-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}

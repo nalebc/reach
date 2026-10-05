@@ -41,6 +41,8 @@ import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
 import { controlIn, isPausedMessage, pausedIn } from "./pause";
 import "./screen-immersive.css";
+import "./screen-ask.css";
+import { MacPasswordField } from "./NeedsYou";
 type Display = {
   id: string;
   name: string;
@@ -57,6 +59,22 @@ type Props = {
   onChanged: () => void;
   // The computer's change fingerprints: they say at once when it's paused.
   changes?: string;
+  // Opened on a Mac dialog to answer (a "Show on screen" card): where it is,
+  // whether it's still up, and its System Settings page.
+  ask?: ScreenAsk | null;
+  onAskDone?: () => void;
+  onAskSetting?: () => Promise<string>;
+  // The Mac's password for a password dialog (typed only into it).
+  onAskPassword?: (password: string) => Promise<unknown>;
+};
+export type ScreenAsk = {
+  id: string;
+  // A password dialog is answered by typing (a password keyboard here).
+  kind?: "privacy" | "security" | "password";
+  title: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+  open: boolean;
+  setting?: { name: string; url: string };
 };
 export default function Screen({
   peer,
@@ -64,6 +82,10 @@ export default function Screen({
   toast,
   onChanged,
   changes,
+  ask = null,
+  onAskDone,
+  onAskSetting,
+  onAskPassword,
 }: Props) {
   const scopes = device.access?.scopes;
   const enabled = device.capabilities.screen,
@@ -101,8 +123,15 @@ export default function Screen({
   const [helperBusy, setHelperBusy] = useState(false);
   const helperPending = useRef(false);
   const [typingTarget, setTypingTarget] = useState<
-    (TextTarget & { point?: { x: number; y: number } }) | null
+    | (TextTarget & {
+        point?: { x: number; y: number };
+        // Opened on the tap itself (the Mac said a field was there).
+        opened?: boolean;
+      })
+    | null
   >(null);
+  const typingRef = useRef(typingTarget);
+  typingRef.current = typingTarget;
   const typingEpoch = useRef(0);
   const typingEditor = useRef<HTMLInputElement | HTMLTextAreaElement | null>(
     null,
@@ -179,7 +208,28 @@ export default function Screen({
     await new Promise((resolve) => setTimeout(resolve, 35));
     if (epoch !== typingEpoch.current || !mounted.current) return;
     try {
-      const result = await send({ type: "focus", ...point });
+      let result = await send({ type: "focus", ...point });
+      // Electron/web editors can publish their focused accessibility field
+      // just after the click. Retry briefly, without ever sending unguarded text.
+      for (const delay of [80, 160]) {
+        if (result.target?.editable || !typingRef.current?.pending) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (epoch !== typingEpoch.current || !mounted.current) return;
+        result = await send({ type: "focus", ...point });
+      }
+      const current = typingRef.current;
+      if (
+        epoch === typingEpoch.current &&
+        mounted.current &&
+        current?.opened &&
+        current.point === point
+      ) {
+        // Opened on the tap: keep that keyboard, now guarded to this field.
+        if (result.target?.editable && result.target.focus)
+          setTypingTarget({ ...current, ...result.target, pending: false });
+        else clearTyping();
+        return;
+      }
       if (
         epoch === typingEpoch.current &&
         mounted.current &&
@@ -190,6 +240,7 @@ export default function Screen({
         setFeedback("");
       }
     } catch {
+      if (epoch === typingEpoch.current && typingRef.current?.pending) clearTyping();
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
   };
@@ -305,6 +356,36 @@ export default function Screen({
       if (mounted.current) setBusy(false);
     }
   };
+  // Opened on a Mac dialog: its display, zoomed onto it, control on (the
+  // tap on "Show on screen" asked for it; someone else's control still needs
+  // Take over).
+  const askBounds = ask?.bounds;
+  const askDisplay = askBounds
+    ? displays.find((d) => {
+        const cx = askBounds.x + askBounds.width / 2,
+          cy = askBounds.y + askBounds.height / 2;
+        return cx >= d.x && cx < d.x + d.width && cy >= d.y && cy < d.y + d.height;
+      })
+    : undefined;
+  const askRect =
+    askBounds && askDisplay
+      ? {
+          x: (askBounds.x - askDisplay.x) / askDisplay.width,
+          y: (askBounds.y - askDisplay.y) / askDisplay.height,
+          width: askBounds.width / askDisplay.width,
+          height: askBounds.height / askDisplay.height,
+        }
+      : null;
+  useEffect(() => {
+    if (askDisplay) setDisplay(askDisplay.primary ? "primary" : askDisplay.id);
+  }, [ask?.id, askDisplay?.id]);
+  const askedControl = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ask || !enabled || !canControl || control || busy || askedControl.current === ask.id) return;
+    askedControl.current = ask.id;
+    void toggleControl();
+  }, [ask?.id, enabled, canControl, control]);
+  const [askSaid, setAskSaid] = useState("");
   // Pause ends control (the computer ends it too); Resume takes it back if
   // it was on, so everything is where it was.
   useEffect(() => {
@@ -319,6 +400,16 @@ export default function Screen({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paused]);
+  // A tap on a text field opens the keyboard within that tap, no Type button:
+  // the Mac said on touch-down that a field is there.
+  const typeInField = (point: { x: number; y: number }, secure: boolean) => {
+    flushSync(() => {
+      typingEpoch.current++;
+      setPanel(null);
+      setTypingTarget({ editable: true, secure, point, opened: true, pending: true });
+    });
+    typingEditor.current?.focus({ preventScroll: true });
+  };
   // Must run inside the tap's event handler: iOS only opens the keyboard then.
   const openKeyboard = () => {
     if (typingTarget && typingEditor.current) {
@@ -459,6 +550,13 @@ export default function Screen({
       <ErrorLine error={paused ? "" : error || stream.error} />
       {!enabled ? (
         <section className="panel screen-setup">
+          {ask && (
+            <div className="screen-ask" role="status">
+              <strong>{ask.title}</strong>
+              <span>Screen viewing is off. Enable it to inspect the dialog. If Reach needs Screen Recording or Accessibility access, grant it on the Mac first.</span>
+              <div className="screen-ask-actions"><button onClick={onAskDone}>Back to request</button></div>
+            </div>
+          )}
           <Empty
             icon={Monitor}
             title="Your computer, right here"
@@ -523,7 +621,50 @@ export default function Screen({
           {expanded && (
             <ErrorLine error={paused ? "" : error || stream.error} />
           )}
+          {ask && (
+            <div className={`screen-ask ${ask.open ? "" : "done"}`} role="status">
+              {ask.open && ask.kind === "password" ? (
+                <>
+                  <strong>{ask.title}</strong>
+                  <span>Enter it here: Reach types it only into that dialog. It isn't kept.</span>
+                  {onAskPassword && <MacPasswordField placeholder="Your Mac's password" submit={onAskPassword} />}
+                  <div className="screen-ask-actions">
+                    <button onClick={onAskDone}>Done</button>
+                  </div>
+                </>
+              ) : ask.open ? (
+                <>
+                  <strong>{ask.title}</strong>
+                  <span>Tap its button on the screen below to answer it.</span>
+                  <small>{askSaid || "If viewing or control is unavailable, or macOS blocks the click, approve on the Mac itself."}</small>
+                  <div className="screen-ask-actions">
+                    {ask.setting && onAskSetting && (
+                      <button
+                        onClick={() =>
+                          void onAskSetting().then(setAskSaid, (e: Error) => setAskSaid(e.message))
+                        }
+                      >
+                        Open setting on Mac
+                      </button>
+                    )}
+                    <button onClick={onAskDone}>Done</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <strong>Dialog closed</strong>
+                  <span>This request is no longer visible on your Mac.</span>
+                  <div className="screen-ask-actions">
+                    <button className="primary" onClick={onAskDone}>
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <DesktopSurface
+            focusRect={askRect}
             canvas={stream.canvas}
             width={stream.width}
             height={stream.height}
@@ -541,6 +682,11 @@ export default function Screen({
             onFeedback={setFeedback}
             onInteraction={clearTyping}
             onTextTarget={(point) => void detectTyping(point)}
+            {...(input.probe && {
+              probe: (point: { x: number; y: number }) =>
+                send({ type: "probe", ...point }),
+              onField: typeInField,
+            })}
             resetKey={`${display}:${revision}`}
             compact
             typing={typing}
@@ -561,8 +707,8 @@ export default function Screen({
           )}
           {typing && typingTarget && (
             nativeKeyboard ? (
-              <NativeRemoteTyping
-                key={`${typingTarget.focus}:${typingEpoch.current}`}
+              !typingTarget.pending && <NativeRemoteTyping
+                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 send={send}
                 onClose={clearTyping}
@@ -570,7 +716,7 @@ export default function Screen({
               />
             ) : (
               <RemoteTyping
-                key={`${typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 keyRow={mobile}
                 modifier={device.platform === "win32" ? "control" : "meta"}
@@ -581,7 +727,7 @@ export default function Screen({
               />
             )
           )}
-          {typing && typingTarget && !nativeKeyboard && mobile && (
+          {typing && typingTarget && !typingTarget.opened && !nativeKeyboard && mobile && (
             // Its own key: a sibling sharing RemoteTyping's key made React
             // duplicate the keyboard field and key row, and reset the field
             // between keystrokes (each next letter then deleted the last).
@@ -596,7 +742,7 @@ export default function Screen({
             </span>
             {control && (
               <>
-                <button
+                {!input.probe && <button
                   className="button primary small keyboard-button"
                   aria-label="Open phone keyboard"
                   onPointerDown={(event) => event.preventDefault()}
@@ -605,7 +751,7 @@ export default function Screen({
                 >
                   <Keyboard size={17} />
                   Type
-                </button>
+                </button>}
                 <button
                   className="button secondary small paste-button"
                   aria-label="Paste from your phone"
@@ -669,7 +815,7 @@ export default function Screen({
               data-immersive-keep
               onPointerDown={(event) => event.preventDefault()}
             >
-              {control && (
+              {control && !input.probe && (
                 <button
                   aria-label="Open phone keyboard"
                   disabled={!usable}
@@ -719,6 +865,12 @@ export default function Screen({
                   disabled={!usable || helperBusy}
                   run={runContext}
                 />
+              )}
+              {panel === "actions" && control && (
+                <button className="button secondary" aria-label="Open phone keyboard"
+                  disabled={!usable} onClick={openKeyboard}>
+                  <Keyboard size={17} /> Keyboard
+                </button>
               )}
               {panel === "actions" && control && (
                 <ScreenActions

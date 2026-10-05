@@ -8,13 +8,13 @@
 
 [Watch or download the MP4](docs/media/reach-demo.mp4) · [Still preview](docs/media/reach-demo-poster.png)
 
-*A 22-second interface walkthrough captured from the actual app at phone width, using sample devices, files, and conversations. It demonstrates the UI, not a live remote-desktop session or a physical-phone performance test. Codex requires a local installation and sign-in. Normal setup still requires Tailscale connectivity on both devices.*
+*A 22-second interface walkthrough captured from the actual app at phone width, using sample devices, files, and conversations. It demonstrates the UI, not a live remote-desktop session or a physical-phone performance test. Codex requires a local installation and sign-in. Computer access uses Tailscale connectivity; the browser can run its own Tailscale node without a separate phone app.*
 
 The isolated [demo fixture and capture instructions](scripts/demo/README.md) let contributors reproduce the same interface without connecting to a computer or exposing personal data.
 
 This is a working first release, not a signed App Store or Microsoft Store application. macOS functionality has been exercised locally; the Windows implementation has a CI test job but still needs real-device validation. Phones act as clients, not remotely controlled hosts.
 
-An isolated [browser connection experiment](experiments/browser-connect/README.md) embeds Tailscale in WebAssembly to explore connecting without a separate Tailscale phone app. Real browser-to-Mac file access, terminal commands, and revocation have been exercised; physical iPhone/Android validation is still pending. This does not change the normal setup yet.
+The browser connection embeds Tailscale in WebAssembly. Its start page uses **public Tailscale Funnel**, while files, terminals and screen connections stay behind authenticated Tailscale ingress. Optional passkey sign-in can enroll a limited tagged browser device without a separate Tailscale login. This changes the earlier private-only design; read the [current security model](docs/SECURITY.md) before enabling it. Physical iPhone/Android validation remains a release gate.
 
 ## What works
 
@@ -28,6 +28,8 @@ An isolated [browser connection experiment](experiments/browser-connect/README.m
 - Remote desktop with H.264 video targeting 30 or 60 fps, display selection, trackpad/direct touch, dragging, pinch zoom and pan, a visible cursor, modifier shortcuts, explicit text clipboard transfers, and fullscreen. Mac uses VideoToolbox; Windows video needs FFmpeg with libx264. A JPEG compatibility mode supports browsers without H.264 WebCodecs. Viewing and control are separately enabled; OS permissions are required. See [Remote desktop](docs/REMOTE_DESKTOP.md).
 - Apps on your phone (Mac): tap an app and it runs on the Mac in a window shaped like your phone, on its own hidden display, full screen on the phone with touch, scrolling and the phone keyboard. Several apps can be open at once; the Mac's screen stays untouched. See [Apps on your phone](docs/APP_THREADS.md).
 - Scoped agent credentials, asynchronous command jobs, output polling, timeout/cancellation, a CLI, and a stdio MCP adapter.
+- Tag in (Mac): an agent with `apps:drive` uses apps on its own hidden displays and hands one to you when a person is needed (a code, a confirmation). It shows on your phone's Home as **Needs you**: **Open** the live app, then **Done** to hand it back or **Stop**. Agents act only while nobody is using the Mac. See [the agent guide](docs/AGENTS.md).
+- Notifications: Settings → **Notifications** tells your phone when an agent hands you an app, holds a question for you, or asks for access, even with Reach closed. On iPhone, add Reach to the Home Screen first. They come from the computer whose link you opened, say only what needs you, and are encrypted for your phone.
 
 Reach adapts to the connected computer and your permissions. Unsupported features are hidden from navigation and Home; Mac-only terminal discovery is limited to owners, and Linux hosts show files/terminals without desktop controls. Codex conversations appear only when a local Codex executable is detected and its account is ready. Optional setup is available in Settings. Capabilities refresh automatically while Reach is open; **Check again** in Settings refreshes readiness. External agent access is independent of Codex.
 
@@ -70,14 +72,14 @@ That command prepares Node.js if needed, installs dependencies, builds the inter
 
 **First run: a short guided setup.** On Mac/Linux, `./reach` walks you through four steps, then starts Reach: **1. Tailscale** (it waits while you install or sign in, and opens the right page) and confirming your **personal Tailscale account**; **2. the HTTPS link** (if MagicDNS or HTTPS certificates are off for your tailnet, it opens that one Tailscale page and waits); **3. invite links** (optional, now or later): paste one Tailscale access token and Reach adds its two rules to your Tailscale policy and makes its own limited key, or do it by hand; **4. background mode** (Mac, optional): keep Reach running after you close the terminal, and approve your phone right there. Each step is saved as it finishes: stop any time with **Ctrl+C** and `./reach` picks up where you left off. Change anything later with `./reach setup` (or go straight to one step: `./reach setup invites`, `account`, `link`, `background`). A computer set up before this flow starts with no questions. Setup uses **↑/↓ and Enter** menus with recommended choices; basic terminals use numbered menus. Staying awake is automatic and does not add a setup question. Reach does not install a VPN or change OS permissions silently. No Supabase project, separate Reach account, or hosted Reach backend is required; Tailscale still supplies its coordination service.
 
-1. Scan the terminal QR with the phone camera, or open the printed link. With the **Tailscale app** on (same account), the phone connects directly, which is fastest. Without it, sign in to Tailscale right in the browser: nothing to install.
+1. Scan the terminal QR with the phone camera, or open the printed link. It is the only link you need, every time: with the **Tailscale app** on (same account) the phone connects directly, which is fastest; without it, sign in to Tailscale right in the browser (nothing to install).
 2. Tap **Connect**.
 3. Match the eight-character request on your phone with the request in the Mac’s Reach terminal. Type that request there to approve. When running Reach in the background, run `./reach approve` locally instead. Use `deny <request>` to refuse one.
-4. Future visits use the saved, device-bound session. There is no separate Reach login. Each new browser needs approval; expired or revoked sessions need approval again.
+4. Future visits use the saved, device-bound session. There is no separate Reach login. Each new browser needs approval; expired or revoked sessions need approval again. **Face ID instead:** after your first browser is approved, tap **Use Face ID next time** (or Settings → Access → Face ID for new browsers). Your phone's other browsers then show **Use Face ID** and are approved with it, without waiting for the computer. With invite links set up too, a new browser without the Tailscale app needs only Face ID: open the link, tap **Continue with Face ID**, and you're in (no Tailscale login; see Face ID sign-in in [docs/SECURITY.md](docs/SECURITY.md)).
 
-The normal QR contains **only the private address**, not a credential. A copy does not grant access. Owner access requires the configured Tailscale account, local device approval, and the saved Reach credential on that same Tailscale device. The local approval grants owner capabilities, including running commands as your OS account; screen viewing/control still have their own switches and permissions.
+The normal QR contains **only the computer's address**, not a credential. A copy does not grant access. Owner access uses either the configured Tailscale account with device approval, or a registered passkey followed by one-time tagged-device admission. Both issue a saved Reach credential bound to that Tailscale device. The local approval grants owner capabilities, including running commands as your OS account; screen viewing/control still have their own switches and permissions.
 
-For automatic reconnection on **iPhone/iPad**, open Tailscale → Settings → **VPN On Demand**, and enable **MagicDNS hostname matching**. Opening the `.ts.net` link can then activate Tailscale. Android requires Tailscale connected; Reach does not claim to bypass VPN installation, OS consent, or account sign-in. See [Tailscale’s iOS instructions](https://tailscale.com/docs/features/client/ios-vpn-on-demand).
+For automatic reconnection on **iPhone/iPad**, open Tailscale → Settings → **VPN On Demand**, and enable **MagicDNS hostname matching**. Opening the `.ts.net` link can then activate Tailscale. These VPN settings apply when using the separate Tailscale app. Browser-node sign-in is the alternative on supported browsers. See [Tailscale’s iOS instructions](https://tailscale.com/docs/features/client/ios-vpn-on-demand).
 
 **Compatibility:** the new approval flow supports Mac/Linux hosts with a recent Tailscale version that supports Serve Unix socket targets. On sandboxed Mac Tailscale builds, Reach places only its private listener socket in Tailscale’s app-group container; macOS may ask for access. Windows and explicit `--local` mode retain the pairing-code flow. The updated native iOS QR scanner accepts private address QRs after rebuilding the app; Safari works without an app rebuild.
 
@@ -226,7 +228,7 @@ See [Remote desktop setup, gestures, limits, and validation](docs/REMOTE_DESKTOP
 
 ## Agents
 
-**Invite an agent from your phone:** Share → **Agent**, name it, choose a folder and what it may do (read, edit, or run commands) and for how long, then **Invite**. Give it the one command shown (it needs Node 18+). It joins your tailnet by itself, even from a machine without Tailscale (once invite links are set up), and prints the line that adds Reach to Claude Code or Codex as an MCP server. It shows in **People with access**, where you can end it. On the agent's side: `node ~/.reach-agent/agent.mjs status | tools | call | leave`.
+**Invite an agent from your phone:** Share → **Agent**, name it, choose a folder and what it may do (read, edit, or run commands) and for how long, then **Invite**. Give it the one command shown (it needs Node 18+). It joins your tailnet by itself, even from a machine without Tailscale (once invite links are set up), and prints the line that adds Reach to Claude Code or Codex as an MCP server. It shows in **People with access**, where you can end it. Change anyone's access there too (tap what they can do, for example **Can open files** → **Can edit files**): it applies at once, with no new link. On the agent's side: `node ~/.reach-agent/agent.mjs status | tools | call | leave`.
 
 For the one-command launcher, use `node scripts/agent.mjs connect --name MyAgent --scopes files,exec` with `REACH_URL` set to the printed private URL, then approve on your paired phone. The local `agent-token` command below uses the legacy `.reach` store unless you set `REACH_DATA=.reach/quick`.
 
@@ -236,7 +238,7 @@ Create a credential **on the target computer**:
 npm run agent-token -- --name MyAgent --scopes files,exec
 ```
 
-The secret is printed once. Store it in your agent’s environment or secret manager, never in a committed config file. Scopes: `files`, `exec`, `terminal`, `apps`, `codex`, `screen`. Agent keys cannot administer/revoke other clients. Revoke them from the paired browser’s Settings.
+The secret is printed once. Store it in your agent’s environment or secret manager, never in a committed config file. Scopes: `files`, `exec`, `terminal`, `apps`, `codex`, `screen`, `apps:drive`. Agent keys cannot administer/revoke other clients. Revoke them from the paired browser’s Settings.
 
 ```sh
 export REACH_URL='https://my-computer.example.ts.net:8443'
@@ -259,7 +261,7 @@ npm run format
 npm run package   # stages a portable release in release/reach
 ```
 
-No fake devices, shell output, or AI responses are used in the app. Unit tests simulate Codex protocol events; the live integration uses the installed Codex app-server. GitHub Actions exercises builds and tests on macOS and Windows.
+No fake devices, shell output, or AI responses are used in the app. Unit tests simulate Codex protocol events; the live integration uses the installed Codex app-server. GitHub Actions exercises builds and tests on macOS, Linux and Windows. Unix permission-hook IPC is tested on Mac/Linux; Windows retains the agent’s local permission prompts.
 
 See [the security review and remaining limitations](docs/SECURITY.md).
 

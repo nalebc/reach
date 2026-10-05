@@ -4,6 +4,10 @@ import { fail } from "./core.mjs";
 // aren't lent to any phone until Resume.
 export const pausedMessage = (platform = process.platform) =>
   `Reach is paused on this ${platform === "darwin" ? "Mac" : "computer"}.`;
+// The Mac's own dialogs (a privacy prompt, its password) are its owner's to
+// answer: while one is up, only the owner's own devices click or type.
+export const dialogMessage =
+  "The Mac is showing one of its own dialogs, which only its owner can answer. You can watch until it's gone.";
 
 // Control is a short-lived grant for one paired browser, never a saved setting.
 // The Mac has one pointer and one keyboard: one person controls, everyone
@@ -18,6 +22,11 @@ export class ScreenControl {
   lease = null;
   // While paused nobody gets control, renewals included.
   paused = false;
+  // Whether macOS shows one of its own dialogs now (set by the server).
+  dialogUp = () => false;
+  ownerOnly(client) {
+    if (client.kind !== "device" && this.dialogUp()) throw fail(423, dialogMessage);
+  }
   // Who holds control now, as the other phones show it.
   holder() {
     if (!this.lease || this.lease.expiresAt <= this.now()) return null;
@@ -36,6 +45,7 @@ export class ScreenControl {
     if (typeof enabled !== "boolean")
       throw fail(400, "Send enabled as true or false.");
     if (enabled && this.paused) throw fail(423, pausedMessage());
+    if (enabled) this.ownerOnly(client);
     if (!enabled) {
       if (this.lease?.clientId === client.id) this.lease = null;
       return { enabled: false };
@@ -68,6 +78,7 @@ export class ScreenControl {
   }
   check(client) {
     if (this.paused) throw fail(423, pausedMessage());
+    this.ownerOnly(client);
     const held = this.holder();
     if (held && held.clientId !== client.id)
       throw fail(409, `${held.name || "Someone"} is controlling the screen.`);

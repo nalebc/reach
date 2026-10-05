@@ -222,6 +222,44 @@ test("a transcript is kept as the conversation shows it: big tool inputs, output
   assert.ok(JSON.stringify(view).length < 20000);
 });
 
+test("Claude out of usage: the limit Claude Code last hit, until it resets or an answer comes after it", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-usage-"));
+  const dir = path.join(root, "projects", "-work-app");
+  await fs.mkdir(dir, { recursive: true });
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString();
+  const base = { cwd: "/work/app", entrypoint: "claude-desktop" };
+  const ask = (id, uuid, when) =>
+    line({ ...base, sessionId: id, type: "user", uuid, parentUuid: null, timestamp: iso(when), message: { role: "user", content: "Try again" } });
+  // What Claude Code writes into the session when the limit is hit (verified,
+  // Claude Code 2.1.28x): its words, and when the limit resets.
+  const limit = (id, uuid, parent, when, resetsAt, quota = { status: "rejected", resetsAt: resetsAt / 1000, rateLimitType: "five_hour" }) =>
+    line({
+      ...base, sessionId: id, type: "assistant", uuid, parentUuid: parent, timestamp: iso(when),
+      isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, quotaLimits: quota,
+      message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "You've hit your session limit · resets 3:20pm (America/Vancouver)" }] },
+    });
+  const reply = (id, uuid, parent, when) =>
+    line({ ...base, sessionId: id, type: "assistant", uuid, parentUuid: parent, timestamp: iso(when), message: { model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text: "Done." }] } });
+  const A = "aaaaaaaa-2222-4333-8444-555555555555";
+  const B = "bbbbbbbb-2222-4333-8444-555555555555";
+  const resets = now + 50 * 60 * 1000;
+  await fs.writeFile(path.join(dir, `${A}.jsonl`), `${ask(A, "u1", now - 120000)}\n${limit(A, "e1", "u1", now - 60000, resets)}\n`);
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records"), run: async () => ({ stdout: '{"loggedIn":true}' }) });
+  // Out until it resets: what the Chat tab says, as it does for Codex.
+  assert.deepEqual(await claude.health(), { agent: "claude", installed: true, signedIn: true, usable: false, resetsAt: resets });
+  assert.equal(await claude.usage(resets + 1), null, "the limit has reset");
+  // An answer since, in any session: usable again.
+  await fs.writeFile(path.join(dir, `${B}.jsonl`), `${ask(B, "u2", now - 40000)}\n${reply(B, "r2", "u2", now - 30000)}\n`);
+  assert.equal((await claude.health()).usable, true);
+  // A brief slowdown ("rate_limit" without a used-up limit) isn't out of usage.
+  const calm = path.join(root, "calm", "-work-app");
+  await fs.mkdir(calm, { recursive: true });
+  await fs.writeFile(path.join(calm, `${A}.jsonl`), `${ask(A, "u1", now - 120000)}\n${limit(A, "e1", "u1", now - 60000, resets, { status: "allowed_warning" })}\n`);
+  assert.equal(await createClaudeSessions({ projects: path.join(root, "calm") }).usage(), null);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("Claude sign-in status: signed out exits 1 with JSON on stdout", async () => {
   const signedOut = createClaudeSessions({
     run: async () => {
@@ -229,8 +267,9 @@ test("Claude sign-in status: signed out exits 1 with JSON on stdout", async () =
     },
   });
   assert.deepEqual(await signedOut.health(), { agent: "claude", installed: true, signedIn: false, usable: false });
-  const signedIn = createClaudeSessions({ run: async () => ({ stdout: '{"loggedIn":true}' }) });
-  assert.equal((await signedIn.health()).signedIn, true);
+  // (No sessions: nothing of this Mac's own Claude is read.)
+  const signedIn = createClaudeSessions({ projects: path.join(os.tmpdir(), "reach-no-claude-projects"), run: async () => ({ stdout: '{"loggedIn":true}' }) });
+  assert.deepEqual(await signedIn.health(), { agent: "claude", installed: true, signedIn: true, usable: true });
   const missing = createClaudeSessions({
     run: async () => {
       throw Object.assign(new Error("not found"), { code: "ENOENT" });
@@ -342,6 +381,8 @@ test("session routes are owner-only", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-sessions-"));
   const opened = [];
   const resets = [];
+  const settings = [];
+  const answers = [];
   const reach = await createReach({
     roots: [root],
     dataDir: path.join(root, ".reach"),
@@ -352,18 +393,27 @@ test("session routes are owner-only", async () => {
       openInApp: async (agent, id) => (opened.push([agent, id]), { opened: agent }),
       resetUsage: async (agent) => (resets.push(agent), { outcome: "reset" }),
       image: async () => ({ type: "image/png", data: Buffer.from("png-bytes") }),
+      openMacSetting: async (id) => (settings.push(id), { opened: "Accessibility", app: "claude" }),
+      pressMacPrompt: async (id, button) => (answers.push([id, button]), { pressed: button }),
+      typeMacPassword: async (id, password) => (answers.push([id, password]), { done: true }),
     },
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}`;
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   const agent = reach.auth.issue("agent", ["terminal", "files"], "agent");
+  // Any credential that isn't one of the owner's own devices, whatever it
+  // grants (admin included): another kind, or one added later.
+  const other = reach.auth.issue("linked", ALL_SCOPES, "linked-mac");
   const call = (route, token, method = "GET") =>
     fetch(url + route, { method, headers: { Authorization: `Bearer ${token || ""}` } });
   try {
     assert.equal((await call("/api/sessions")).status, 401);
     assert.equal((await call("/api/sessions", agent.token)).status, 403);
     assert.equal((await call("/api/SESSIONS", agent.token)).status, 403);
+    assert.equal((await call("/api/sessions", other.token)).status, 403);
+    assert.equal((await call(`/api/sessions/codex/${ID}`, other.token)).status, 403);
+    assert.equal((await call("/api/clients", other.token)).status, 200);
     const list = await call("/api/sessions", owner.token);
     assert.equal(list.status, 200);
     assert.equal((await list.json()).sessions[0].id, ID);
@@ -372,6 +422,28 @@ test("session routes are owner-only", async () => {
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, agent.token, "POST")).status, 403);
     assert.equal((await call(`/api/sessions/codex/${ID}/open`, owner.token, "POST")).status, 200);
     assert.deepEqual(opened, [["codex", ID]]);
+    // A Mac prompt's System Settings page, opened on the Mac: the owner only.
+    assert.equal((await call(`/api/sessions/mac-prompts/7/setting`, agent.token, "POST")).status, 403);
+    const setting = await call(`/api/sessions/mac-prompts/7/setting`, owner.token, "POST");
+    assert.equal(setting.status, 200);
+    assert.deepEqual(await setting.json(), { opened: "Accessibility", app: "claude" });
+    assert.deepEqual(settings, ["7"]);
+    // A Mac dialog answered: its own button, or its password; never an agent.
+    const answer = (route, token, body) =>
+      fetch(`${url}${route}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal((await answer("/api/sessions/mac-prompts/7/press", agent.token, { button: "Allow" })).status, 403);
+    assert.equal((await answer("/api/sessions/mac-prompts/7/password", agent.token, { password: "pw" })).status, 403);
+    assert.equal((await answer("/api/sessions/mac-prompts/7/press", other.token, { button: "Allow" })).status, 403);
+    assert.equal((await answer("/api/sessions/mac-prompts/7/password", other.token, { password: "pw" })).status, 403);
+    assert.equal((await call(`/api/sessions/mac-prompts/7/setting`, other.token, "POST")).status, 403);
+    assert.deepEqual(answers, []);
+    assert.deepEqual(settings, ["7"]);
+    assert.deepEqual(await (await answer("/api/sessions/mac-prompts/7/press", owner.token, { button: "Allow" })).json(), { pressed: "Allow" });
+    assert.deepEqual(await (await answer("/api/sessions/mac-prompts/7/password", owner.token, { password: "s3cret-pw" })).json(), { done: true });
+    assert.deepEqual(answers, [["7", "Allow"], ["7", "s3cret-pw"]]);
+    // The password never reaches Reach's activity list.
+    const activity = await (await call("/api/activity", owner.token)).json();
+    assert.ok(!JSON.stringify(activity).includes("s3cret-pw"));
     // A picture from a session: the owner only, as the picture it is.
     assert.equal((await call(`/api/sessions/claude/${ID}/images/u1/0`, agent.token)).status, 403);
     const picture = await call(`/api/sessions/claude/${ID}/images/u1/0`, owner.token);

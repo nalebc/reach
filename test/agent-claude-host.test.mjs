@@ -750,7 +750,11 @@ test("a prompt asked through an agent's hook shows in its session, wakes it, and
   assert.equal(view.status, "waiting");
   assert.deepEqual(view.prompts, [prompt]);
   assert.notEqual(view.version, before.version);
-  assert.equal((await sessions.list()).sessions.find((s) => s.id === ID).status, "waiting");
+  const listed = (await sessions.list()).sessions.find((s) => s.id === ID);
+  assert.equal(listed.status, "waiting");
+  // The list carries it too, so Home and Chat can answer it with one tap.
+  assert.deepEqual(listed.prompts, [prompt]);
+  assert.equal((await sessions.list()).sessions.find((s) => s.id === THREAD).prompts, undefined);
   assert.deepEqual(await sessions.respond("claude", ID, "p1", { decision: "allow" }), { answered: true });
   assert.deepEqual(answered, [["claude", ID, "p1", { decision: "allow" }]]);
   // A prompt of Reach's own session still goes to its own host.
@@ -770,7 +774,7 @@ test("a prompt asked through an agent's hook shows in its session, wakes it, and
   sessions.close();
 });
 
-test("Reach holds a hook's prompt only for sessions the phone lists: the Claude app's and terminals', Codex threads, not headless runs", async (t) => {
+test("Reach holds a hook's prompt only for sessions the phone lists: the Claude app's and terminals', Codex threads, not headless runs", { skip: process.platform === "win32" && "Unix permission-hook socket" }, async (t) => {
   const { spawn } = await import("node:child_process");
   const { agentAskSocket } = await import("../server/agent-sessions/agent-asks.mjs");
   const hookScript = new URL("../scripts/agent-hook.mjs", import.meta.url).pathname;

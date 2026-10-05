@@ -13,7 +13,7 @@ import { ALL_SCOPES, AGENT_SCOPES, createAuth } from "../server/core.mjs";
 const CHROME = "/Applications/Google Chrome.app";
 const NOTES = "/System/Applications/Notes.app";
 
-async function start(t) {
+async function start(t, extra = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-perm-"));
   const files = path.join(dir, "files");
   fs.mkdirSync(files);
@@ -68,6 +68,7 @@ async function start(t) {
       next: async () => Buffer.from("frame"),
       stop() {},
     }),
+    ...extra,
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}`;
@@ -368,6 +369,34 @@ test("screen control can be granted, and you can always take it back", async (t)
     );
 });
 
+test("while the Mac shows one of its own dialogs, someone invited can't click or type; you can", async (t) => {
+  let dialogs = [];
+  const { call, invite, owner } = await start(t, { agentSessions: { macDialogs: () => dialogs } });
+  const guest = await invite({ screen: "control" });
+  const control = (token, enabled = true) =>
+    call("/api/screen/control", { token, method: "POST", body: { enabled } });
+  // An invalid key reaches validation (400), never the Mac.
+  const key = (token) =>
+    call("/api/screen/input", { token, method: "POST", body: { type: "key", key: "invalid" } });
+  assert.equal((await control(guest.token)).status, 200);
+  assert.equal((await key(guest.token)).status, 400);
+  // A dialog comes up (a privacy prompt, the Mac's password): held, and told why.
+  dialogs = [{ id: "7", kind: "password" }];
+  const held = await key(guest.token);
+  assert.equal(held.status, 423);
+  assert.match(held.body.error, /only its owner can answer/);
+  assert.equal((await control(guest.token)).status, 423);
+  // Letting go still works; the owner controls and answers.
+  assert.equal((await control(guest.token, false)).status, 200);
+  assert.equal((await control(owner.token)).status, 200);
+  assert.equal((await key(owner.token)).status, 400);
+  // Gone: control is theirs to take again.
+  dialogs = [];
+  assert.equal((await control(owner.token, false)).status, 200);
+  assert.equal((await control(guest.token)).status, 200);
+  assert.equal((await key(guest.token)).status, 400);
+});
+
 test("full access uses the computer like you, but can't manage access", async (t) => {
   const { call, invite } = await start(t);
   const guest = await invite({ full: true });
@@ -397,6 +426,13 @@ test("full access uses the computer like you, but can't manage access", async (t
     ["/api/settings", "GET"],
     ["/api/activity", "GET"],
     ["/api/agents/requests", "GET"],
+    // AI sessions and the Mac's own dialogs: the owner only, never granted.
+    ["/api/sessions", "GET"],
+    ["/api/sessions/claude/11111111-2222-4333-8444-555555555555", "GET"],
+    ["/api/sessions/claude/11111111-2222-4333-8444-555555555555/prompts/1", "POST", { decision: "allow" }],
+    ["/api/sessions/mac-prompts/7/press", "POST", { button: "Allow" }],
+    ["/api/sessions/mac-prompts/7/password", "POST", { password: "pw" }],
+    ["/api/sessions/mac-prompts/7/setting", "POST"],
   ])
     assert.equal(
       (await as(route, { method, body })).status,
@@ -474,7 +510,7 @@ test("folders chosen by browsing: exactly that folder, nothing beside or above i
   ).body;
   const as = (route, opts = {}) => call(route, { token: guest.token, ...opts });
   const device = (await as("/api/device")).body;
-  assert.deepEqual(device.roots.map((r) => [r.name, r.path]), [["acme", fs.realpathSync(path.join(files, "Projects/acme"))]]);
+  assert.deepEqual(device.roots.map((r) => [r.name, r.path]), [["acme", fs.realpathSync.native(path.join(files, "Projects/acme"))]]);
   const listing = await as("/api/files?root=0&path=");
   assert.deepEqual(listing.body.items.map((i) => i.name), ["designs", "brief.txt"]);
   assert.equal((await as("/api/files/content?root=0&path=brief.txt")).status, 200);

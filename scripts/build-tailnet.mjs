@@ -119,8 +119,14 @@ export async function buildTailnet({
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const out = process.argv[2] ? path.resolve(process.argv[2]) : tailnetOut;
-  const names = await buildTailnet({ out });
+  const required = process.argv.includes("--required");
+  const output = process.argv.slice(2).find((arg) => arg !== "--required");
+  const out = output ? path.resolve(output) : tailnetOut;
+  const names = tailnetCurrent(out)
+    ? JSON.parse(fs.readFileSync(path.join(out, "tailnet.json"), "utf8"))
+    : await buildTailnet({ out });
+  if (required && !names)
+    throw Error("Go is required to build a release with browser sign-in. Install the version in tailnet/go.mod and retry.");
   console.log(
     names ? `Built ${names.wasm} in ${out}` : "Go is not installed; skipped.",
   );

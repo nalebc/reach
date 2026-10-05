@@ -124,7 +124,7 @@ test("an unreadable policy is refused with a plain reason, never rewritten", () 
   assert.throws(() => addGuestRules(`{"a": nope}`, opts), /unexpected "nope"/);
 });
 
-test("allow-all detection: only rules that let everyone reach everything", () => {
+test("wildcard sources include guest devices even on a restricted destination", () => {
   assert.deepEqual(
     allowAllRules({
       acls: [
@@ -137,6 +137,6 @@ test("allow-all detection: only rules that let everyone reach everything", () =>
         { src: ["*"], dst: ["*"], ip: ["*"] },
       ],
     }),
-    ["acls[0]", "grants[1]"],
+    ["acls[0]", "acls[2]", "grants[1]"],
   );
 });

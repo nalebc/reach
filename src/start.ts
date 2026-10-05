@@ -1,8 +1,24 @@
-// The public start page. With the Tailscale app on, the phone is already on
-// the tailnet: go straight to the computer's private address (fastest, always
-// preferred). Without it, sign in to Tailscale right here in the browser and
-// run Reach through the page's own tailnet node.
+// The public start page: what the internet gets at your computer's address.
+// With the Tailscale app on, the phone is on the tailnet and gets Reach itself
+// at that same address, so it never sees this page (older Reach: it is sent to
+// the private address). Without the app, sign in to Tailscale right here in
+// the browser and run Reach through the page's own tailnet node.
+import { watchForApp } from "./app-watch";
+import {
+  FACE_DEVICE,
+  faceDevice,
+  forgetIfFresh,
+  forgetSaved,
+  saveTicket,
+  startFresh,
+} from "./face-start";
 import { setHomeOrigin } from "./home-origin";
+import {
+  faceIdError,
+  faceIdReady,
+  signWithFaceId,
+  type FaceOptions,
+} from "./passkeys";
 import { installTailnet, type TailnetNode } from "./tailnet-transport";
 import {
   appLink,
@@ -10,6 +26,7 @@ import {
   directUrl,
   guestHash,
   homeReachable,
+  ownOrigin,
   parseGuestLink,
   parseStartConfig,
   probeDirect,
@@ -66,6 +83,8 @@ function render(parts: {
   };
   secondary?: { label: string; onClick: () => void };
   hint?: boolean;
+  // Where you are, signing in without the app: "Step 1 of 2 · Join your network".
+  step?: string;
 }) {
   view.replaceChildren();
   const card = document.createElement("section");
@@ -75,7 +94,14 @@ function render(parts: {
   mark.textContent = "Reach";
   const title = document.createElement("h1");
   title.textContent = parts.title;
-  card.append(mark, title);
+  card.append(mark);
+  if (parts.step) {
+    const step = document.createElement("p");
+    step.className = "start-step";
+    step.textContent = parts.step;
+    card.append(step);
+  }
+  card.append(title);
   if (parts.detail) {
     const p = document.createElement("p");
     p.textContent = parts.detail;
@@ -139,10 +165,14 @@ function loadScript(src: string) {
   });
 }
 
+// Joining with the one-time key a Face ID sign-in gave this browser.
+type FaceJoin = { key: string; hostname: string };
+
 async function startNode(
   config: StartConfig,
   wasm: Promise<Response>,
   guest: GuestLink | null,
+  face?: FaceJoin,
 ) {
   const files = config.tailnet!;
   await loadScript(`/tailnet/${files.exec}`);
@@ -158,29 +188,13 @@ async function startNode(
       action: { label: "Reconnect", onClick: () => location.reload() },
     });
   });
+  const key = face?.key || guest?.key;
   return reachTailnet({
-    hostname: guest?.hostname || browserHostname(navigator.userAgent),
-    ...(guest?.key ? { authKey: guest.key } : {}),
+    hostname:
+      face?.hostname || guest?.hostname || browserHostname(navigator.userAgent),
+    ...(key ? { authKey: key } : {}),
     stateStorage: storeFor(guest ? "reach.guest:" : "reach.tailnet:"),
   });
-}
-
-// While in the browser, keep checking for the app: offer the faster path.
-function watchForApp(config: StartConfig) {
-  let shown = false;
-  const check = async () => {
-    if (shown || document.hidden) return;
-    if (!(await probeDirect(config, undefined, 1500))) return;
-    shown = true;
-    const pill = document.createElement("button");
-    pill.className = "start-switch";
-    pill.textContent = "Tailscale app is on · Switch to the faster connection";
-    pill.addEventListener("click", () =>
-      location.replace(directUrl(config, location)),
-    );
-    document.body.append(pill);
-  };
-  setInterval(check, 15000);
 }
 
 async function boot(
@@ -189,7 +203,11 @@ async function boot(
   guest: GuestLink | null,
 ) {
   installTailnet(node, tailnetSuffix(config.origin));
-  setHomeOrigin(guest?.invites[0]?.origin || config.origin);
+  // A device that joined with Face ID may only use Reach's private port.
+  setHomeOrigin(
+    guest?.invites[0]?.origin ||
+      (faceDevice() ? config.origin : ownOrigin(config)),
+  );
   document.documentElement.dataset.connection = "browser";
   view.remove();
   if (!guest) watchForApp(config);
@@ -200,6 +218,16 @@ async function browserMode(
   config: StartConfig,
   wasm: Promise<Response> | null,
   guest: GuestLink | null = null,
+  {
+    face,
+    faceOk = false,
+  }: {
+    // Joining now with a Face ID sign-in's key.
+    face?: FaceJoin;
+    // Face ID sign-in is there to fall back on: a device of this browser that
+    // needs a Tailscale login again signs in with Face ID instead.
+    faceOk?: boolean;
+  } = {},
 ) {
   if (!config.tailnet) {
     render({
@@ -210,13 +238,18 @@ async function browserMode(
     });
     return;
   }
-  render({ title: `Connecting to ${config.name}…`, hint: !guest });
+  // Signing in without the app takes two steps: join the network (Tailscale),
+  // then connect to Reach (Face ID or the code). Guests skip both, and so
+  // does Face ID sign-in (one step: Face ID).
+  const JOIN = guest || face ? undefined : "Step 1 of 2 · Join your network";
+  render({ title: `Connecting to ${config.name}…`, hint: !guest, step: JOIN });
   let node: TailnetNode;
   try {
     node = await startNode(
       config,
       wasm || fetch(`/tailnet/${config.tailnet.wasm}`),
       guest,
+      face,
     );
   } catch {
     render({
@@ -241,16 +274,18 @@ async function browserMode(
     checks = 0;
   const signIn = () =>
     render({
-      title: `Sign in to reach ${config.name}`,
-      detail:
-        "Use the Tailscale account your computer is signed in to. Nothing to install.",
+      step: JOIN,
+      title: "Sign in with Tailscale",
+      detail: "Puts this browser on your private network. Nothing to install.",
       action: authURL
         ? { label: "Sign in with Tailscale", href: authURL }
         : { label: "Preparing sign-in…", busy: true },
       hint: true,
     });
   // Where this browser must get to: your computer, or the invited ones.
-  const targets = guest ? guest.invites.map((x) => x.origin) : [config.origin];
+  const targets = guest
+    ? guest.invites.map((x) => x.origin)
+    : [ownOrigin(config)];
   const running = () => {
     if (booted) return;
     const states = targets.map((t) => homeReachable(node.status(), t));
@@ -294,6 +329,13 @@ async function browserMode(
             detail: "Make sure Reach is running on it, then try again.",
             action: { label: "Try again", onClick: () => location.reload() },
           }
+        : face || faceDevice()
+          ? {
+              title: `${config.name} isn’t reachable from this browser yet`,
+              detail:
+                "Try again in a moment. If it keeps happening, run ./reach setup invites on your computer.",
+              action: { label: "Try again", onClick: () => location.reload() },
+            }
         : {
             title: `This account can’t reach ${config.name}`,
             detail: `Signed in as ${login || "another account"}. Sign in with the Tailscale account your computer uses.`,
@@ -318,6 +360,13 @@ async function browserMode(
         : "Your invitation has ended",
       detail: "Ask the person who invited you for a new link.",
     });
+  // The same for a Face ID sign-in's key (it lasts ten minutes).
+  const faceFailed = () =>
+    render({
+      title: "Face ID sign-in didn't finish",
+      detail: "Try again.",
+      action: { label: "Try again", onClick: startFresh },
+    });
   node.start({
     state: (state) => {
       if (guest) {
@@ -331,22 +380,42 @@ async function browserMode(
         return;
       }
       if (state === "NeedsLogin") {
+        if (face) {
+          keyTimer ||= setTimeout(faceFailed, 8000);
+          return;
+        }
+        // This browser's device needs a Tailscale login again (its access
+        // here ended and it was removed, or it expired): Face ID instead.
+        if (faceOk) {
+          startFresh();
+          return;
+        }
         if (!asked) {
           asked = true;
+          // From now on a device of your Tailscale account, not a Face ID one.
+          try {
+            localStorage.removeItem(FACE_DEVICE);
+          } catch {}
           node.login();
         }
         signIn();
       } else if (state === "NeedsMachineAuth")
         render({
+          step: JOIN,
           title: "Waiting for approval",
           detail:
             "Your Tailscale admin needs to approve this browser in the Tailscale admin console.",
         });
       else if (state === "Running") {
+        clearTimeout(keyTimer);
         checks = 0;
         running();
       } else if (!booted && state === "Starting")
-        render({ title: `Connecting to ${config.name}…`, hint: true });
+        render({
+          title: `Joining your network…`,
+          hint: true,
+          step: JOIN,
+        });
     },
     authURL: (url) => {
       authURL = url;
@@ -355,7 +424,83 @@ async function browserMode(
   });
 }
 
+// Face ID sign-in: no Tailscale login. Your computer checks the passkey and
+// gives this browser a one-time key to join your tailnet as a limited device;
+// Reach's Connect then uses its one-time ticket (src/ConnectForm.tsx).
+async function faceMode(config: StartConfig, wasm: Promise<Response>) {
+  let ask: { id: string; options: FaceOptions } | null = null;
+  let note = "";
+  let renew: ReturnType<typeof setTimeout> | undefined;
+  const post = async (path: string, body: unknown) => {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw Error(value?.error || "Face ID sign-in isn't available right now.");
+    return value;
+  };
+  const show = () =>
+    render({
+      title: `Open ${config.name}`,
+      detail: note || "With Face ID on this phone. Nothing to install.",
+      action: {
+        label: ask ? "Continue with Face ID" : "Preparing Face ID…",
+        onClick: tap,
+        busy: !ask,
+      },
+      secondary: {
+        label: "Sign in with Tailscale instead",
+        onClick: () => {
+          clearTimeout(renew);
+          void browserMode(config, wasm);
+        },
+      },
+    });
+  // Fetched ahead (Safari only shows Face ID straight from a tap), and
+  // renewed before the two-minute challenge runs out.
+  const load = async () => {
+    clearTimeout(renew);
+    try {
+      ask = await post("/faceid/options", {});
+      renew = setTimeout(load, 100000);
+    } catch (e) {
+      ask = null;
+      note = (e as Error).message;
+    }
+    show();
+  };
+  function tap() {
+    if (!ask) return;
+    const { id, options } = ask;
+    ask = null;
+    note = "";
+    clearTimeout(renew);
+    const answer = signWithFaceId(options); // first thing in the tap
+    render({ title: `Opening ${config.name}…` });
+    answer
+      .then((credential) => post("/faceid/join", { id, credential }))
+      .then(({ key, hostname, ticket }) => {
+        saveTicket(ticket, config.origin);
+        try {
+          localStorage.setItem(FACE_DEVICE, "1");
+        } catch {}
+        return browserMode(config, wasm, null, { face: { key, hostname } });
+      })
+      .catch((e) => {
+        note = faceIdError(e);
+        void load();
+      });
+  }
+  show();
+  await load();
+}
+
 async function main() {
+  // Signing in with Face ID again: this browser's old device goes first.
+  forgetIfFresh();
   // An agent's invitation opened in a browser: it stays unused, for the agent.
   if (location.pathname === "/agent") {
     history.replaceState(null, "", "/agent");
@@ -404,7 +549,9 @@ async function main() {
       ? { ...config, origin: first, instance: "" }
       : config;
   // Already on the tailnet (Tailscale app on): straight to the private address.
-  if (await probeDirect(target)) {
+  // With one address, your own devices on the tailnet get Reach right here and
+  // never this page, so there is nowhere else to send you.
+  if ((guest || !config.home) && (await probeDirect(target))) {
     location.replace(
       guest
         ? `${target.origin}/guest${guestHash(guest.invites)}`
@@ -415,10 +562,22 @@ async function main() {
   // An invited guest's browser (a key now, or joined with one before) uses
   // its guest device; a guest link without a key signs in to Tailscale.
   const joined = !!storeFor("reach.guest:").getState("_current-profile");
+  // Your own browser without a Tailscale device yet (a new one, or signing
+  // in again): whatever it saved belonged to its old device.
+  const device = !!storeFor("reach.tailnet:").getState("_current-profile");
+  if (!guest && !device) forgetSaved();
+  // Face ID sign-in, when your computer offers it.
+  const faceOk =
+    !guest && !!config.faceId && !!config.tailnet && (await faceIdReady());
+  if (faceOk && !device) {
+    await faceMode(config, wasm || fetch(`/tailnet/${config.tailnet!.wasm}`));
+    return;
+  }
   await browserMode(
     config,
     wasm,
     guest && (guest.key || joined) ? guest : null,
+    { faceOk },
   );
 }
 

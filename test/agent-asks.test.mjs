@@ -1,4 +1,6 @@
-import test from "node:test";
+import nodeTest from "node:test";
+// The hook broker relies on mode-0600 Unix sockets. Windows keeps local prompts.
+const test = (name, fn) => nodeTest(name, { skip: process.platform === "win32" && "Unix permission-hook socket" }, fn);
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -59,7 +61,7 @@ async function broker(t, options = {}) {
 
 test("away from the Mac, Claude's question waits for the phone and the phone's answer is Claude's answer", async (t) => {
   const { asks, socketPath } = await broker(t);
-  assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
   const hook = runHook(socketPath);
   await waitFor(() => asks.has("claude", SESSION));
   const [prompt] = asks.prompts("claude", SESSION);

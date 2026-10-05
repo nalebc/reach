@@ -19,6 +19,11 @@ const A = "1fa82f5d-07e5-459c-a5fd-61368b3423c5";
 const B = "8f3a3707-0000-4000-8000-000000000001";
 const C = "9face8d1-0000-4000-8000-000000000002";
 const settle = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+const waitUntil = async (ready) => {
+  const deadline = Date.now() + 5000;
+  while (!ready() && Date.now() < deadline) await settle(10);
+  assert.ok(ready(), "scheduled work did not complete");
+};
 const link = (id) => [`claude://resume?session=${id}`, { background: true }];
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-"));
 
@@ -46,7 +51,7 @@ test("a session started from Reach joins the Claude app only while nobody is at 
   assert.deepEqual(opened, []);
   // Away and open: imported on the next round, once.
   mac.running = true;
-  await settle(60);
+  await waitUntil(() => opened.length === 1 && imports.pending().length === 0);
   assert.deepEqual(opened, [link(A)]);
   assert.deepEqual(imports.pending(), []);
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), []);
@@ -73,7 +78,7 @@ test("waiting imports survive a restart, and stop when Reach quits", async () =>
     appRunning: async () => true,
     imported: () => false,
   });
-  await settle(20);
+  await waitUntil(() => opened.length === 1);
   assert.deepEqual(opened, [link(C)]);
   imports.close();
 
@@ -180,7 +185,7 @@ test("after Reach replies in a session the Claude app has shown, its window relo
   assert.equal(reloads.length, 0);
   // Away: reloaded once, then put back on the session it was showing.
   mac.asking = false;
-  await settle(60);
+  await waitUntil(() => opened.length === 1);
   assert.equal(reloads.length, 1);
   assert.deepEqual(opened, [[`claude://code/continue?session=local_${B}`]]);
   assert.deepEqual(refresh.pending(), []);

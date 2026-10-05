@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { stateDir, packaged } from "../scripts/home.mjs";
 import { importState } from "../scripts/import-state.mjs";
@@ -14,23 +15,23 @@ import {
 import { parseOptions } from "../scripts/launcher-options.mjs";
 import { ensurePtyHelper } from "../server/pty-helper.mjs";
 
-const repo = new URL("../", import.meta.url).pathname;
+const repo = fileURLToPath(new URL("../", import.meta.url));
 const temp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `reach-${name}-`));
 
 test("state stays in a checkout's own folder, and moves to ~/.reach when installed", () => {
   assert.equal(packaged, false, "tests run from a source checkout");
-  assert.equal(stateDir("/src/reach", { env: {} }), "/src/reach/.reach");
+  assert.equal(stateDir("/src/reach", { env: {} }), path.join("/src/reach", ".reach"));
   assert.equal(
     stateDir("/usr/lib/node_modules/@nalebc/reach", {
       installed: true,
       home: "/Users/someone",
       env: {},
     }),
-    "/Users/someone/.reach",
+    path.join("/Users/someone", ".reach"),
   );
   assert.equal(
     stateDir("/anything", { installed: true, env: { REACH_HOME: "/tmp/r" } }),
-    "/tmp/r",
+    path.resolve("/tmp/r"),
   );
 });
 
@@ -58,7 +59,7 @@ test("import brings paired phones and settings, never paths, logs or caches", ()
       ["quick/device-requests/abc.json", "{}"],
     ])
       fs.writeFileSync(path.join(old, file), text);
-    fs.symlinkSync("/etc/hosts", path.join(old, "quick", "settings.json"));
+    fs.symlinkSync(path.join(old, "preferences.json"), path.join(old, "quick", "settings.json"));
     const copied = importState(from, to);
     assert.deepEqual(copied.sort(), [
       "preferences.json",
@@ -69,8 +70,8 @@ test("import brings paired phones and settings, never paths, logs or caches", ()
     ]);
     // Symlinks are skipped, everything else private.
     assert.equal(fs.existsSync(path.join(to, "quick", "settings.json")), false);
-    assert.equal(fs.statSync(to).mode & 0o777, 0o700);
-    assert.equal(
+    if (process.platform !== "win32") assert.equal(fs.statSync(to).mode & 0o777, 0o700);
+    if (process.platform !== "win32") assert.equal(
       fs.statSync(path.join(to, "quick", "clients.json")).mode & 0o777,
       0o600,
     );
@@ -147,7 +148,7 @@ test("the published package ships the app, never sources or private state, and r
     assert.equal(pkg.scripts[hook], undefined, hook);
   const bin = path.join(repo, pkg.bin.reach);
   assert.match(fs.readFileSync(bin, "utf8"), /^#!\/usr\/bin\/env node/);
-  assert.ok(fs.statSync(bin).mode & 0o111);
+  if (process.platform !== "win32") assert.ok(fs.statSync(bin).mode & 0o111);
   // Only what the server imports is installed on users' machines.
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
     "express",
@@ -157,8 +158,13 @@ test("the published package ships the app, never sources or private state, and r
     "qrcode-terminal",
     "ws",
   ]);
+  const packArgs = ["pack", "--dry-run", "--json", "--ignore-scripts"];
+  const npm = process.env.npm_execpath;
+  const command = npm ? process.execPath : process.platform === "win32" ? "cmd.exe" : "npm";
+  const args = npm ? [npm, ...packArgs] : process.platform === "win32"
+    ? ["/d", "/s", "/c", "npm pack --dry-run --json --ignore-scripts"] : packArgs;
   const [{ files }] = JSON.parse(
-    execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    execFileSync(command, args, {
       cwd: repo,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -197,7 +203,7 @@ test("the terminal helper is made executable on start", () => {
       ensurePtyHelper({ platform: "darwin", arch: "arm64", resolve }),
       null,
     );
-    assert.equal(fs.statSync(helper).mode & 0o777, 0o755);
+    if (process.platform !== "win32") assert.equal(fs.statSync(helper).mode & 0o777, 0o755);
     assert.equal(ensurePtyHelper({ platform: "linux", resolve }), null);
   } finally {
     fs.rmSync(pkg, { recursive: true, force: true });

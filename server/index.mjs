@@ -6,6 +6,8 @@ import {
   ownerIdentity,
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
+import { createPasskeys } from "./passkeys.mjs";
+import { createFaceJoin } from "./face-join.mjs";
 import { createFleet } from "./fleet.mjs";
 import { createGuestKeys, guestPolicy } from "./guest-keys.mjs";
 import { tailscaleJson } from "../scripts/tailscale.mjs";
@@ -43,12 +45,13 @@ import {
   validOrigin,
   validLeafName,
   hash,
+  ALL_SCOPES,
   AGENT_SCOPES,
   GUEST_BLOCKED_ROUTES,
 } from "./core.mjs";
 import crypto from "node:crypto";
 import { computerIdentity } from "./computer-identity.mjs";
-import { readAgentPolicy, within } from "./agent-policy.mjs";
+import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { Terminals } from "./terminal.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
 import {
@@ -63,7 +66,11 @@ import {
   AppDisplaysHelper,
   appScreenSource,
 } from "./app-threads.mjs";
-import { desktopDisplays } from "./desktop-native.mjs";
+import { AgentApps } from "./agent-apps.mjs";
+import { AgentInputHelper } from "./agent-input.mjs";
+import { createPush } from "./push.mjs";
+import { idleSeconds } from "./agent-sessions/claude-import.mjs";
+import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
 import { Jobs } from "./jobs.mjs";
@@ -88,7 +95,7 @@ export async function createReach(overrides = {}) {
   const instance = crypto.randomUUID();
   let transportAvailable = true;
   const config = getConfig(overrides);
-  config.roots = config.roots.map((p) => fs.realpathSync(p));
+  config.roots = config.roots.map((p) => fs.realpathSync.native(p));
   if (config.agentPolicyRequired || fs.existsSync(config.agentPolicyFile))
     readAgentPolicy(config.agentPolicyFile);
   config.privatePaths = [
@@ -118,6 +125,23 @@ export async function createReach(overrides = {}) {
   const approvals = config.tailscaleOwner
     ? approvalStore(config.dataDir)
     : null;
+  // Face ID instead of typing a new browser's code here: on this computer's
+  // own Tailscale name, from its private link or its start page only.
+  const passkeyHost = config.publicOrigin?.startsWith("https://")
+    ? new URL(config.publicOrigin).hostname
+    : "";
+  const passkeys =
+    approvals && passkeyHost
+      ? createPasskeys({
+          dataDir: config.dataDir,
+          rpId: passkeyHost,
+          origins: [
+            new URL(config.publicOrigin).origin,
+            `https://${passkeyHost}`,
+          ],
+          ...overrides.passkeys,
+        })
+      : null;
   let privateServer;
   const approvalCleanup = approvals
     ? setInterval(() => approvals.list(), 30000)
@@ -165,9 +189,41 @@ export async function createReach(overrides = {}) {
         ...overrides.guestKeys,
       })
     : null;
+  // Face ID sign-in for a new browser of yours, without the Tailscale app or
+  // login (server/face-join.mjs): a passkey here and invite keys set up.
+  const faceJoin =
+    passkeys && guestKeys
+      ? createFaceJoin({
+          passkeys,
+          guestKeys,
+          log: (message) => console.log(`Reach: ${message}`),
+          ...overrides.faceJoin,
+        })
+      : null;
+  // The devices of your Face ID browsers whose access here is still on.
+  const faceDevices = () =>
+    new Set(
+      auth
+        .list()
+        .filter(
+          (c) =>
+            c.kind === "device" &&
+            c.tailscale?.faceJoin &&
+            (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000) >
+              Date.now(),
+        )
+        .map((c) => c.tailscale.nodeId),
+    );
+  const tidyFace = () =>
+    guestKeys
+      .reconcileFace(faceDevices())
+      .catch((e) => console.log(`Reach: ${e.message}`));
   const tidyGuests = () =>
     guestKeys?.configured() &&
-    guestKeys.reconcile().catch((e) => console.log(`Reach: ${e.message}`));
+    Promise.all([
+      guestKeys.reconcile().catch((e) => console.log(`Reach: ${e.message}`)),
+      tidyFace(),
+    ]);
   const guestTimers = [
     setTimeout(tidyGuests, 20000),
     setInterval(tidyGuests, 5 * 60000),
@@ -223,6 +279,9 @@ export async function createReach(overrides = {}) {
     ...overrides.appShortcuts,
   });
   const screenControl = new ScreenControl();
+  // While macOS shows one of its own dialogs, only the owner's own devices
+  // click or type on the screen (ScreenControl.ownerOnly).
+  screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
   const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
   // The Mac's Terminal windows, told by events while a phone is connected;
   // changes reach phones at once through their live connection.
@@ -272,6 +331,87 @@ export async function createReach(overrides = {}) {
     appThreads,
     overrides.appScreenFactory || ((options) => appScreenSource(config, options)),
   );
+  // Notifications on your phones (server/push.mjs), only for what needs you,
+  // and only to your own devices: never guests or agents.
+  const push = createPush({
+    dataDir: config.dataDir,
+    subject: () =>
+      config.publicOrigin?.startsWith("https://")
+        ? `https://${new URL(config.publicOrigin).hostname}`
+        : "https://localhost",
+    ...overrides.push,
+  });
+  const ownDevices = () =>
+    auth
+      .list()
+      .filter(
+        (c) =>
+          c.kind === "device" &&
+          c.scopes?.includes("admin") &&
+          Date.now() < (c.expiresAt || Infinity),
+      )
+      .map((c) => c.id);
+  const notify = (message) =>
+    void push.notify(ownDevices(), message).catch(() => {});
+  // A question an agent holds for your phone (agent-asks.mjs).
+  const askCounts = new Map();
+  agentSessions.asks?.onChange?.((agent, sessionId) => {
+    const key = `${agent}:${sessionId}`;
+    const count = agentSessions.asks.prompts?.(agent, sessionId)?.length || 0;
+    if (count > (askCounts.get(key) || 0))
+      notify({
+        title: `${agent === "codex" ? "Codex" : "Claude Code"} needs your answer`,
+        tag: `ask-${String(sessionId).slice(0, 8)}`,
+      });
+    if (count) askCounts.set(key, count);
+    else askCounts.delete(key);
+  });
+  // Tag in: agents use apps on their own hidden displays and hand them to
+  // you on the phone (server/agent-apps.mjs).
+  const agentApps = new AgentApps({
+    threads: appThreads,
+    control: screenControl,
+    file: path.join(config.dataDir, "agent-apps.json"),
+    paused: () => paused,
+    idle: overrides.agentIdle || (() => idleSeconds()),
+    capture:
+      overrides.appScreenFactory ||
+      ((options) => appScreenSource(config, options)),
+    createInput: (display) =>
+      (overrides.agentInputFactory || DesktopInput.create)(config, display),
+    // In-app actions, in parallel with you (scripts/native/agent-input.swift).
+    targeted:
+      overrides.agentTargeted !== undefined
+        ? overrides.agentTargeted
+        : appThreads.platform === "darwin" && !overrides.appDisplays
+          ? () => AgentInputHelper.start(config)
+          : null,
+    // Which display a phone controls: the agent waits only for its own app.
+    controlDisplay: (clientId) => inputConnections.get(clientId)?.reachDisplay,
+    onChange: (reason, handoff) => {
+      for (const nudge of presenceNudges) nudge();
+      if (reason === "handoff")
+        notify({
+          title: `${handoff.agent} needs you in ${handoff.app}`,
+          tag: `handoff-${handoff.id.slice(0, 8)}`,
+        });
+    },
+  });
+  // An agent whose access ended leaves: its apps go back to the Mac.
+  const agentDrives = (clientId) => {
+    const c = auth.list().find((x) => x.id === clientId);
+    if (
+      !c ||
+      Date.now() >= (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000)
+    )
+      return false;
+    return !!applyAgentPolicy(c, config)?.scopes.includes("apps:drive");
+  };
+  const agentSweep = setInterval(
+    () => void agentApps.sweep(agentDrives).catch(() => {}),
+    30000,
+  );
+  agentSweep.unref();
   const inputConnections = new Map();
   const closeInput = (clientId, message) => {
     for (const [id, ws] of inputConnections)
@@ -457,6 +597,11 @@ export async function createReach(overrides = {}) {
       ...(ownerIdentity(req.reachIdentity, config.tailscaleOwner)
         ? { login: req.reachIdentity.login }
         : {}),
+      // A browser that signed in with Face ID here before: it signs in the
+      // same way again (src/ConnectForm.tsx), never with a request.
+      ...(faceJoin?.available() && faceJoin.ownDevice(req.reachIdentity)
+        ? { faceJoin: true }
+        : {}),
     }),
   );
   app.use("/api", (req, res, next) => {
@@ -504,7 +649,9 @@ export async function createReach(overrides = {}) {
           approvals.decide(created.id, "approve", from);
         } catch {}
       });
-    res.status(202).json(created);
+    res
+      .status(202)
+      .json({ ...created, ...(passkeys?.has() ? { passkey: true } : {}) });
   });
   app.post("/api/auth/requests/:id", (req, res) => {
     if (!approvals) throw fail(404, "Device approval is not configured.");
@@ -526,6 +673,122 @@ export async function createReach(overrides = {}) {
             },
           }
         : {}),
+    });
+  });
+  // Face ID for a request of yours, from the browser that made it (its secret,
+  // on the same Tailscale device), with a passkey added from a device this
+  // computer approved before. It approves the request; the poll above then
+  // issues the credential exactly as approving here does.
+  const passkeyRequest = (req) => {
+    if (!passkeys) throw fail(404, "Face ID isn't available on this computer.");
+    approvals.pending(
+      req.params.id,
+      req.body?.secret,
+      req.reachIdentity,
+      config.tailscaleOwner,
+    );
+    return `${req.params.id}:${req.reachIdentity.nodeId}`;
+  };
+  app.post("/api/auth/requests/:id/passkey/options", (req, res) => {
+    const binding = passkeyRequest(req);
+    res.json(passkeys.assertionOptions(binding));
+  });
+  app.post("/api/auth/requests/:id/passkey", (req, res) => {
+    const binding = passkeyRequest(req);
+    const used = passkeys.verifyAssertion(binding, req.body?.credential);
+    try {
+      approvals.decide(req.params.id, "approve", "your phone, with Face ID");
+    } catch {
+      // Decided at the same moment (the code typed at the computer): the
+      // browser's usual poll reports what was decided.
+    }
+    record(
+      "security",
+      `A new browser was approved with Face ID (${used.label})`,
+    );
+    res.json({ approved: true });
+  });
+  // Adding, listing and removing Face ID: only from your own approved device.
+  const ownDevice = (req) => {
+    const client = verify(
+      req,
+      req.headers.authorization?.replace(/^Bearer /, ""),
+    );
+    if (
+      !passkeys ||
+      !client ||
+      client.kind !== "device" ||
+      !client.scopes.includes("admin") ||
+      !ownerIdentity(req.reachIdentity, config.tailscaleOwner)
+    )
+      throw fail(403, "Only your own approved devices can manage Face ID.");
+    return client;
+  };
+  app.get("/api/auth/passkeys", (req, res) => {
+    ownDevice(req);
+    res.json({ passkeys: passkeys.list() });
+  });
+  app.post("/api/auth/passkeys/options", (req, res) => {
+    const client = ownDevice(req);
+    res.json(
+      passkeys.registrationOptions(
+        client.id,
+        req.reachIdentity.login || config.tailscaleOwner.login,
+      ),
+    );
+  });
+  app.post("/api/auth/passkeys", (req, res) => {
+    const client = ownDevice(req);
+    const added = passkeys.register(
+      client.id,
+      req.body?.credential,
+      req.body?.label,
+    );
+    record("security", `Face ID added (${added.label})`);
+    res.status(201).json(added);
+  });
+  app.delete("/api/auth/passkeys/:id", (req, res) => {
+    ownDevice(req);
+    passkeys.remove(req.params.id);
+    // Also end the browsers that this passkey admitted. Old Face ID devices
+    // without provenance are revoked conservatively during this migration.
+    for (const client of auth.list())
+      if (client.tailscale?.faceJoin &&
+          (!client.tailscale.passkeyId || client.tailscale.passkeyId === req.params.id))
+        endClient(client.id);
+    if (guestKeys?.configured()) void tidyFace();
+    record("security", "Face ID removed");
+    res.json({ ok: true });
+  });
+  // Face ID sign-in, second half (server/face-join.mjs): the browser that
+  // joined with this computer's one-time key shows its ticket from that
+  // tagged device, and becomes one of your devices here, bound to it. The
+  // only place such a credential is made (server/core.mjs, faceJoined).
+  app.post("/api/auth/face-join", (req, res) => {
+    if (!faceJoin)
+      throw fail(404, "Face ID sign-in isn't available on this computer.");
+    const identity = req.reachIdentity;
+    const admission = faceJoin.redeem(identity, req.body?.ticket);
+    const asked = req.body?.name;
+    const name =
+      typeof asked === "string" && asked.trim() && !/[\x00-\x1f\x7f]/.test(asked)
+        ? asked.trim().slice(0, 80)
+        : "Browser";
+    const issued = auth.issue(name, ALL_SCOPES, "device", {
+      tailscale: {
+        userId: "",
+        nodeId: identity.nodeId,
+        tagged: true,
+        faceJoin: true,
+        passkeyId: admission.passkeyId,
+      },
+      nodeName: identity.nodeName,
+    });
+    record("security", `${name}: a new browser signed in with Face ID`);
+    res.json({
+      status: "approved",
+      token: issued.token,
+      device: { ...device, name: config.name, platform: process.platform },
     });
   });
   // An invitation (a guest's or an agent's), used once.
@@ -603,6 +866,7 @@ export async function createReach(overrides = {}) {
     };
     accessRequests.set(request.id, request);
     record("agent", `${name} asked for access`);
+    notify({ title: `${name} asks for access to ${config.name}`, tag: "agent-request" });
     res.status(202).json({
       id: request.id,
       secret,
@@ -711,6 +975,11 @@ export async function createReach(overrides = {}) {
       agents: "admin",
       // Transcripts of every AI session: the owner only.
       sessions: "admin",
+      // An agent's own apps on hidden displays; what it hands you.
+      drive: "apps:drive",
+      handoffs: "admin",
+      // Notifications on this device's browser.
+      push: "admin",
     }[route];
     // An invitation that may watch chosen apps' windows reaches only those
     // routes: the app list and the app windows themselves (no quit, no typing).
@@ -729,6 +998,10 @@ export async function createReach(overrides = {}) {
       !(
         identity.kind === "guest" && GUEST_BLOCKED_ROUTES.includes(route)
       ) &&
+      // Every AI session and the Mac's own dialogs: the owner's own devices
+      // only. A list of who may, not of who may not: no other credential,
+      // whatever it grants (or a kind added later), ever reaches them.
+      (route !== "sessions" || identity.kind === "device") &&
       (route === "device" ||
         appWindows(identity) ||
         (scope &&
@@ -1013,6 +1286,43 @@ export async function createReach(overrides = {}) {
       ...(key ? { key: key.key, hostname: key.hostname } : {}),
     });
   });
+  // Change what someone you invited may use, without a new link (core.mjs,
+  // changeAccess). Every request checks the new access; what they lose ends
+  // at once: screen control comes back to you, and their open screens and
+  // terminals start over under the new access.
+  app.post("/api/guests/:id/access", (req, res) => {
+    const id = req.params.id;
+    const { client, before, after } = auth.changeAccess(id, req.body || {});
+    const lost = before.scopes.filter((s) => !after.scopes.includes(s));
+    const narrower =
+      lost.length > 0 ||
+      before.roots.some((r) => !after.roots.includes(r)) ||
+      (after.scopes.includes("apps:open") &&
+        Array.isArray(after.apps) &&
+        (!before.apps || before.apps.some((a) => !after.apps.includes(a))));
+    if (lost.includes("screen") || lost.includes("screen:control")) {
+      screenControl.revoke(id);
+      closeInput(id);
+    }
+    if (narrower)
+      for (const ws of wss.clients)
+        if (ws.clientId === id && ws.reachChannel) // not presence
+          ws.close(4002, "Access changed");
+    // Commands they were running stop too, when running commands, or the
+    // folder one runs in, is taken away.
+    for (const job of jobs.list())
+      if (
+        job.clientId === id &&
+        job.status === "running" &&
+        (lost.includes("exec") ||
+          !after.roots.some((root) => within(root, job.cwd)))
+      )
+        jobs.cancel(job.id);
+    // Their phone's live connection carries the change at once.
+    for (const nudge of presenceNudges) nudge();
+    record("guest", `Changed ${client.name}’s access`);
+    res.json(client);
+  });
   app.get("/api/clients", (req, res) =>
     res.json({ current: req.client.id, clients: auth.list() }),
   );
@@ -1022,16 +1332,23 @@ export async function createReach(overrides = {}) {
     presence.removeClient(id);
     screenControl.revoke(id);
     closeInput(id);
+    // An agent leaves: its apps go back to the Mac.
+    void agentApps.release(id).catch(() => {});
+    // A revoked phone gets no more notifications.
+    push.forgetClient(id);
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
   app.delete("/api/clients/:id", (req, res) => {
     const client = auth.list().find((c) => c.id === req.params.id);
     endClient(req.params.id);
-    // A guest who came with an invite key leaves your tailnet too.
+    // A guest who came with an invite key leaves your tailnet too, and so
+    // does a browser that signed in with Face ID.
     void guestKeys
       ?.revokeClient(req.params.id)
       .catch((e) => console.log(`Reach: ${e.message}`));
+    if (client?.tailscale?.faceJoin && guestKeys?.configured())
+      void tidyFace();
     // Revoke once: your linked computers drop that device too.
     if (client?.kind === "device" && client.tailscale)
       void fleet?.revokeElsewhere(client.tailscale);
@@ -1042,7 +1359,7 @@ export async function createReach(overrides = {}) {
   const privateRoots = () =>
     [config.dataDir, ...(config.privatePaths || [])].map((privatePath) =>
       fs.existsSync(privatePath)
-        ? fs.realpathSync(privatePath)
+        ? fs.realpathSync.native(privatePath)
         : path.resolve(privatePath),
     );
   const notPrivate = (target, privates = privateRoots()) => {
@@ -1505,6 +1822,34 @@ export async function createReach(overrides = {}) {
   // The Claude app's own typefaces from the app on this Mac (none without
   // it), ahead of the session routes below that would take /fonts/<name>.
   app.get("/api/sessions/fonts", (req, res) => res.json(agentFonts.list()));
+  // A Mac prompt's own page in System Settings, opened on the Mac (owner only,
+  // as all /api/sessions routes; only fixed System Settings pages).
+  // The Mac's own dialogs are answered by its owner only: never a guest
+  // (whatever the invitation) or an agent, on top of the sessions scope.
+  const macOwner = (req) => {
+    if (req.client?.kind !== "device")
+      throw fail(403, "Only the Mac's owner can answer its dialogs, on their own devices.");
+  };
+  app.post("/api/sessions/mac-prompts/:id/press", async (req, res) => {
+    macOwner(req);
+    const pressed = await agentSessions.pressMacPrompt(req.params.id, req.body?.button);
+    record("session", "Answered a Mac dialog from the phone");
+    res.json(pressed);
+  });
+  // The password goes straight to the Mac's password dialog; never stored or
+  // logged (not even in activity: only that it was answered).
+  app.post("/api/sessions/mac-prompts/:id/password", async (req, res) => {
+    macOwner(req);
+    const done = await agentSessions.typeMacPassword(req.params.id, req.body?.password);
+    record("session", "Typed the Mac's password from the phone");
+    res.json(done);
+  });
+  app.post("/api/sessions/mac-prompts/:id/setting", async (req, res) => {
+    macOwner(req);
+    const opened = await agentSessions.openMacSetting(req.params.id);
+    record("session", `Opened ${opened.opened} settings on the Mac`);
+    res.json(opened);
+  });
   app.get("/api/sessions/fonts/:family", (req, res) => {
     const file = agentFonts.file(req.params.family);
     if (!file) throw fail(404, "That font isn't on this computer.");
@@ -1599,11 +1944,11 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Choose a folder.");
     let real;
     try {
-      real = fs.realpathSync(value);
+      real = fs.realpathSync.native(value);
     } catch {
       throw fail(400, "That folder doesn't exist on your Mac.");
     }
-    const home = fs.realpathSync(os.homedir());
+    const home = fs.realpathSync.native(os.homedir());
     if (
       !fs.statSync(real).isDirectory() ||
       !(real === home || real.startsWith(home + path.sep)) ||
@@ -1865,9 +2210,16 @@ export async function createReach(overrides = {}) {
   const threadApp = (id) => appThreads.get(id)?.appId ?? "";
   app.get("/api/screen/apps", (req, res) => {
     appOwner(req);
-    res
-      .set("Cache-Control", "no-store")
-      .json(appThreads.list().filter((t) => appAllowed(req.client, t.appId)));
+    res.set("Cache-Control", "no-store").json(
+      appThreads
+        .list()
+        .filter((t) => appAllowed(req.client, t.appId))
+        // An agent's app says whose it is.
+        .map((t) => {
+          const agent = agentApps.agentOf(t.id);
+          return agent ? { ...t, agent } : t;
+        }),
+    );
   });
   // Guests watch apps you've opened on your phone; only you (or someone
   // with full access) open, resize or close them: opening can move an app's
@@ -1930,6 +2282,91 @@ export async function createReach(overrides = {}) {
     appControl(req);
     notPaused();
     res.set("Cache-Control", "no-store").json(await appThreads.fields(req.params.id));
+  });
+  // Tag in, for agents with apps:drive: open an app on its own hidden
+  // display, look at it, act in it, hand it to the person, wait, close.
+  const driveOnMac = () => {
+    if (appThreads.platform !== "darwin")
+      throw fail(501, "Agents can use apps on a Mac for now.");
+    if (!config.screen)
+      throw fail(403, "Screen viewing is off on this computer.");
+  };
+  app.get("/api/drive/apps", async (req, res) => {
+    driveOnMac();
+    const installed = await (overrides.appList || apps)();
+    res.set("Cache-Control", "no-store").json({
+      open: agentApps.list(req.client),
+      installed: installed.map(({ id, name }) => ({ id, name })),
+    });
+  });
+  // Not now (someone at the Mac, the person has it): try again later.
+  const orWait = async (res, work) => {
+    try {
+      return await work();
+    } catch (e) {
+      if (!e.waiting) throw e;
+      res.status(e.status || 409).json({ waiting: true, error: e.message });
+    }
+  };
+  app.post("/api/drive/apps", async (req, res) => {
+    driveOnMac();
+    await orWait(res, async () =>
+      res.status(201).json(await agentApps.open(req.client, req.body?.appId)),
+    );
+  });
+  app.get("/api/drive/apps/:id", async (req, res) => {
+    driveOnMac();
+    res.set("Cache-Control", "no-store").json(
+      await agentApps.see(req.client, req.params.id),
+    );
+  });
+  app.post("/api/drive/apps/:id/actions", async (req, res) => {
+    driveOnMac();
+    await orWait(res, async () =>
+      res.json(await agentApps.act(req.client, req.params.id, req.body)),
+    );
+  });
+  app.post("/api/drive/apps/:id/handoff", (req, res) => {
+    driveOnMac();
+    const handoff = agentApps.handOff(req.client, req.params.id, req.body?.reason);
+    record("app", `${req.client.name || "An agent"} handed you ${handoff.app}`);
+    res.status(201).json(handoff);
+  });
+  app.get("/api/drive/handoffs/:id", async (req, res) => {
+    res.set("Cache-Control", "no-store").json(
+      await agentApps.wait(req.client, req.params.id, Number(req.query.wait) * 1000),
+    );
+  });
+  app.delete("/api/drive/apps/:id", async (req, res) => {
+    res.json(await agentApps.close(req.client, req.params.id));
+  });
+  // The phone: what agents handed you, and handing it back.
+  app.get("/api/handoffs", (req, res) => {
+    res.set("Cache-Control", "no-store").json(agentApps.pending());
+  });
+  // Notifications: this browser's subscription (server/push.mjs).
+  app.get("/api/push", (req, res) => {
+    res.set("Cache-Control", "no-store").json({
+      key: push.key(),
+      subscribed: push.subscribed(
+        req.client.id,
+        typeof req.query.endpoint === "string" ? req.query.endpoint : undefined,
+      ),
+    });
+  });
+  app.post("/api/push", (req, res) => {
+    res.json(push.subscribe(req.client.id, req.body?.subscription));
+  });
+  app.delete("/api/push", (req, res) => {
+    res.json(push.unsubscribe(req.client.id, req.body?.endpoint));
+  });
+  app.post("/api/handoffs/:id", (req, res) => {
+    res.json(
+      agentApps.handBack(req.params.id, {
+        note: req.body?.note,
+        stop: req.body?.stop === true,
+      }),
+    );
   });
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body.enabled)
@@ -2182,6 +2619,11 @@ export async function createReach(overrides = {}) {
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
               }),
+            // What agents hand you: the owner's, never a guest's.
+            ...(scopes.includes("admin") &&
+              client.kind !== "guest" && {
+                handoffs: digest(agentApps.pending().map((h) => h.id)),
+              }),
             ...(scopes.includes("admin") && {
               activity: digest(events[0]?.id ?? ""), // newest first
               requests: digest(
@@ -2189,6 +2631,15 @@ export async function createReach(overrides = {}) {
                   .filter((r) => r.status === "pending")
                   .map((r) => r.id),
               ),
+            }),
+            // What someone you invited may use: when you change it, their
+            // phone reloads it at once (src/App.tsx), no new link.
+            ...(["guest", "agent"].includes(client.kind) && {
+              access: digest([
+                scopes,
+                client.agentRoots || [],
+                client.guestApps || [],
+              ]),
             }),
           };
         },
@@ -2348,7 +2799,9 @@ export async function createReach(overrides = {}) {
               const now = Date.now();
               if (
                 typeof message.text === "string" &&
-                now - (ws.reachDiagnosticAt || 0) > 5000
+                (now - (ws.reachDiagnosticAt || 0) > 5000 ||
+                  // The line that says the video just got worse always shows.
+                  message.text.startsWith("switching to still images"))
               ) {
                 ws.reachDiagnosticAt = now;
                 console.warn(
@@ -2465,12 +2918,104 @@ export async function createReach(overrides = {}) {
     });
     ws.on("error", () => {});
   });
+  // The internet's only requests to Reach itself: Face ID sign-in, from the
+  // start page through Funnel (server/tailscale-auth.mjs hands them here).
+  // Exactly two paths, POST, a small JSON body, rate limited; anything else
+  // from the internet is the start page's fixed files, or nothing.
+  const FACE_PATHS = ["/faceid/options", "/faceid/join"];
+  const faceAsks = new Map(); // source address -> { count, reset }
+  const publicFaceId = (req, res) => {
+    const route = (req.url || "").split("?")[0];
+    if (!FACE_PATHS.includes(route)) return false;
+    const reply = (status, value) => {
+      if (res.headersSent || res.destroyed) return;
+      const body = JSON.stringify(value);
+      res.writeHead(status, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+      });
+      res.end(body);
+    };
+    if (req.method !== "POST") {
+      res.writeHead(405, { Allow: "POST" });
+      res.end();
+      return true;
+    }
+    if (!validHost(req)) {
+      reply(421, { error: "Unrecognized host." });
+      return true;
+    }
+    if (!/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) {
+      reply(415, { error: "Send JSON." });
+      return true;
+    }
+    // Per address (Tailscale gives the visitor's own), on top of the
+    // computer-wide limits in server/face-join.mjs and server/passkeys.mjs.
+    const now = Date.now();
+    for (const [source, state] of faceAsks)
+      if (state.reset <= now) faceAsks.delete(source);
+    const from = String(req.headers["x-forwarded-for"] || "");
+    const seen = faceAsks.get(from);
+    if (!seen && faceAsks.size >= 1000) {
+      reply(429, { error: "Too many tries. Wait a minute." });
+      return true;
+    }
+    const state = seen && seen.reset > now ? seen : { count: 0, reset: now + 60000 };
+    faceAsks.set(from, state);
+    if (++state.count > 20) {
+      reply(429, { error: "Too many tries. Wait a minute." });
+      return true;
+    }
+    const chunks = [];
+    // Bound slow request bodies independently of the server's keepalive.
+    const deadline = setTimeout(() => {
+      reply(408, { error: "Sign-in request timed out." });
+      req.destroy();
+    }, 10000);
+    deadline.unref();
+    req.once("end", () => clearTimeout(deadline));
+    req.once("close", () => clearTimeout(deadline));
+    let size = 0;
+    req.on("error", () => {});
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 8192) {
+        reply(413, { error: "Too large." });
+        req.destroy();
+      } else chunks.push(chunk);
+    });
+    req.on("end", async () => {
+      if (res.headersSent) return;
+      try {
+        if (!faceJoin)
+          throw fail(404, "Face ID sign-in isn't set up on this computer.");
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        reply(
+          200,
+          route === "/faceid/options"
+            ? faceJoin.options()
+            : await faceJoin.join({ id: body?.id, credential: body?.credential }),
+        );
+      } catch (error) {
+        reply(error.status || 400, {
+          error: error.status ? error.message : "That request isn't readable.",
+        });
+      }
+    });
+    return true;
+  };
   return {
     app,
     server,
     config,
     auth,
     fleet,
+    // For the start page at the one address (scripts/launch.mjs).
+    publicFaceId,
+    faceIdAvailable: () => !!faceJoin?.available(),
     approvals,
     guestKeys,
     terminals,
@@ -2482,7 +3027,8 @@ export async function createReach(overrides = {}) {
     get paused() {
       return paused;
     },
-    async listenPrivate(socketPath) {
+    // `publicApp`: what the internet gets at this same address (the start page).
+    async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
       privateServer = await listenPrivateIngress({
@@ -2490,6 +3036,7 @@ export async function createReach(overrides = {}) {
         app,
         upgrade,
         resolveIdentity,
+        publicApp,
       });
     },
     setTransportAvailable(value) {
@@ -2519,16 +3066,18 @@ export async function createReach(overrides = {}) {
       const cutoff = setTimeout(() => {
         for (const s of servers) s.closeAllConnections();
       }, 1000);
+      clearInterval(agentSweep);
+      agentApps.shutdown();
       const apps = appThreads.shutdown();
       macTerminalWatch.end();
       closeInput();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       agentSessions.close?.();
-      terminals.dispose();
+      const terminalExit = terminals.dispose();
       codex.dispose();
       jobs.dispose();
-      await Promise.all([apps, closed]);
+      await Promise.all([apps, closed, terminalExit]);
       clearTimeout(cutoff);
     },
   };

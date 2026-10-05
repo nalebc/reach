@@ -124,7 +124,7 @@ function hostConfig(options) {
   }
   return getConfig({
     dataDir,
-    roots: host.roots.map((folder) => fs.realpathSync(folder)),
+    roots: host.roots.map((folder) => fs.realpathSync.native(folder)),
     agentPolicyFile: host.agentPolicyFile,
     publicOrigin: host.publicOrigin,
     agentPolicyRequired: true,
@@ -143,7 +143,7 @@ export async function main(args = process.argv.slice(2)) {
       throw Error(
         "Supply --folder and --out. Existing files are never overwritten.",
       );
-    const folder = fs.realpathSync(o.folder);
+    const folder = fs.realpathSync.native(o.folder);
     if (!fs.statSync(folder).isDirectory()) throw Error("Choose a folder.");
     const profile = o.profile || "workspace";
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(profile))

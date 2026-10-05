@@ -90,7 +90,7 @@ test("setup saves the OAuth client only after Tailscale accepts it", async () =>
     // The check made a short key and deleted it again.
     assert.deepEqual(api.deleted, ["/tailnet/-/keys/k1"]);
     const saved = fs.statSync(path.join(dir, "tailscale-oauth.json"));
-    assert.equal(saved.mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(saved.mode & 0o777, 0o600);
     assert.deepEqual(
       JSON.parse(fs.readFileSync(path.join(dir, "tailscale-oauth.json"))),
       {

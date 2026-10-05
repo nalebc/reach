@@ -160,6 +160,78 @@ test("foreground link: starts once, reports Funnel setup, restarts with backoff,
   assert.equal(spawned.length, 3);
 });
 
+// One address: the route now points at Reach's own listener. Reach's route
+// from before (to the separate start-page socket) is replaced, as recorded
+// when Reach added it; a route Reach never recorded is never touched.
+test("one address: Reach's own older route is replaced; anyone else's never", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-funnel-"));
+  const file = path.join(dir, "funnel-owner.json");
+  const now = "unix:/tmp/r-abc/s";
+  const route = (proxy) => ({
+    TCP: { 443: { HTTPS: true } },
+    Web: { [host]: { Handlers: { "/": { Proxy: proxy } } } },
+    AllowFunnel: { [host]: true },
+  });
+  try {
+    // Background service: recorded old route -> off, then the new one.
+    let config = route(target);
+    const ran = [];
+    const run = async (args) => {
+      ran.push(args);
+      config = args.at(-1) === "off" ? {} : route(args.at(-1));
+    };
+    const inspect = async () => config;
+    fs.writeFileSync(file, JSON.stringify({ version: 1, origin, target }));
+    assert.equal(
+      await ensurePersistentFunnel({ file, origin, target: now, inspect, run }),
+      true,
+    );
+    assert.deepEqual(ran, [
+      ["funnel", "--https=443", "off"],
+      ["funnel", "--bg", "--https=443", now],
+    ]);
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).target, now);
+
+    // Not recorded as Reach's (or recorded for another name): never replaced.
+    for (const record of [null, { version: 1, origin: "https://other.tail1.ts.net", target }]) {
+      config = route(target);
+      ran.length = 0;
+      if (record) fs.writeFileSync(file, JSON.stringify(record));
+      else fs.rmSync(file, { force: true });
+      await assert.rejects(
+        ensurePersistentFunnel({ file, origin, target: now, inspect, run }),
+        { message: PORT_TAKEN },
+      );
+      assert.deepEqual(ran, [], JSON.stringify(record));
+    }
+
+    // Running in the foreground over an older service's recorded route: it
+    // goes, the record with it, and the one address starts.
+    config = route(target);
+    ran.length = 0;
+    fs.writeFileSync(file, JSON.stringify({ version: 1, origin, target }));
+    const spawned = [];
+    const reports = [];
+    const link = new PublicLink({
+      origin,
+      target: now,
+      file,
+      run,
+      inspect,
+      spawnFunnel: (args) => (spawned.push(args), fakeChild()),
+      report: (m) => reports.push(m),
+    });
+    assert.equal(await link.check(), false);
+    assert.deepEqual(ran, [["funnel", "--https=443", "off"]]);
+    assert.equal(fs.existsSync(file), false);
+    assert.deepEqual(spawned, [["funnel", "--https=443", now]]);
+    assert.deepEqual(reports, [], "no port-taken warning for our own route");
+    await link.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("background service: adds a recorded Funnel route and removes only that one", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-funnel-"));
   const file = path.join(dir, "funnel-owner.json");

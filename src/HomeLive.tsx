@@ -26,7 +26,9 @@ import type { FleetConnections } from "./useFleetConnections";
 import type { MacTerminal } from "./DesktopTerminals";
 import { ReachScene } from "./ReachIdentity";
 import type { AgentSession, MacPrompt } from "./agent-sessions";
-import MacPromptCard from "./MacPrompts";
+import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
+import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
+import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
 import { useRemoteScreen } from "./useRemoteScreen";
@@ -240,6 +242,7 @@ export default function HomeLive({
   agentSessions = [],
   macPrompts = [],
   openAgentSession,
+  showOnScreen,
   onShortcuts,
   refreshSessions,
   toast,
@@ -263,6 +266,8 @@ export default function HomeLive({
   // What macOS itself is asking right now (answered at the Mac).
   macPrompts?: MacPrompt[];
   openAgentSession?: (session: AgentSession) => void;
+  // Opens the live screen on a Mac dialog, to answer it there.
+  showOnScreen?: (prompt: MacPrompt) => void;
   onShortcuts: () => void;
   refreshSessions: () => void;
   toast: (message: string) => void;
@@ -299,12 +304,60 @@ export default function HomeLive({
   const waitingChats = features.codex
     ? chats.filter((c) => c.status === "waiting")
     : [];
-  const waitingAgents = openAgentSession
-    ? agentSessions.filter((s) => s.status === "waiting")
-    : [];
-  const needsYou =
-    macPrompts.length > 0 ||
-    waitingChats.length + pending.length + waitingAgents.length > 0;
+  const agentItems = openAgentSession
+    ? agentNeeds({
+        peer,
+        sessions: agentSessions.filter((s) => !s.archived),
+        macPrompts,
+        logos,
+        open: openAgentSession,
+        answered: refreshSessions,
+        showOnScreen,
+      })
+    : agentNeeds({ peer, sessions: [], macPrompts, logos, open: () => {}, showOnScreen });
+  // Apps agents handed you (Tag in): first, an agent waits on each.
+  const [handoffs, setHandoffs] = useHandoffs(
+    peer,
+    true,
+    connections[active]?.changes,
+  );
+  const handed = handoffNeeds({
+    peer,
+    handoffs,
+    logos,
+    open: (h) => {
+      requestOpenThread(peer.computerId || peer.id, h.threadId);
+      navigate("apps");
+    },
+    ended: (h) => setHandoffs((list) => list.filter((x) => x.id !== h.id)),
+  });
+  const needItems: NeedItem[] = [
+    ...handed,
+    ...pending.map(
+      (r): NeedItem => ({
+        key: `device:${r.id}`,
+        icon: <Bell size={22} />,
+        title: `${r.name} wants access to ${device.name}`,
+        // What it would get, before you tap Allow.
+        detail: requestWords(r.scopes),
+        actions: [
+          { label: "Deny", run: () => decide(r, "deny") },
+          { label: "Allow", primary: true, run: () => decide(r, "approve") },
+        ],
+      }),
+    ),
+    ...agentItems.filter((i) => !i.key.startsWith("mac:")),
+    ...waitingChats.map(
+      (c): NeedItem => ({
+        key: `chat:${c.id}`,
+        icon: <Bell size={22} />,
+        title: `${c.name} needs your approval`,
+        actions: [{ label: "Review", primary: true, run: () => openChat(c.id) }],
+      }),
+    ),
+    ...agentItems.filter((i) => i.key.startsWith("mac:")),
+  ];
+  const needsYou = needItems.length > 0;
   const recent = (at: number) => at > 0 && now - at < ACTIVE_MS;
   const stories: Story[] = [
     ...(features.terminal ? terminals : [])
@@ -496,56 +549,12 @@ export default function HomeLive({
       </section>
 
       {needsYou && (
-        <section className="home-needs" aria-label="Needs you">
-          {macPrompts.map((p) => (
-            <MacPromptCard key={p.id} prompt={p} logos={logos} />
-          ))}
-          {pending.map((r) => (
-            <div className="home-need" key={r.id}>
-              <Bell size={17} />
-              <span>
-                {r.name} wants access to {device.name}
-              </span>
-              <button
-                className="button secondary small"
-                onClick={() => decide(r, "deny")}
-              >
-                Deny
-              </button>
-              <button
-                className="button primary small"
-                onClick={() => decide(r, "approve")}
-              >
-                Allow
-              </button>
-            </div>
-          ))}
-          {waitingChats.map((c) => (
-            <button
-              className="home-need"
-              key={c.id}
-              onClick={() => openChat(c.id)}
-            >
-              <Bell size={17} />
-              <span>{c.name} needs your approval</span>
-              <strong>Review</strong>
-            </button>
-          ))}
-          {waitingAgents.map((s) => (
-            <button
-              className="home-need"
-              key={`${s.agent}:${s.id}`}
-              onClick={() => openAgentSession?.(s)}
-            >
-              <Bell size={17} />
-              <span>
-                {s.title} · {s.agent === "codex" ? "Codex" : "Claude Code"} is
-                waiting for you
-              </span>
-              <strong>Review</strong>
-            </button>
-          ))}
-        </section>
+        // Everything that needs you, one card at a time (swipe for the next):
+        // devices asking in, what the agents ask (answered right here when
+        // the phone can), chats to review, then what the Mac itself asks.
+        <div className="home-needs">
+          <NeedsYouStrip items={needItems} />
+        </div>
       )}
 
       {(canPlus || stories.length > 0) && (

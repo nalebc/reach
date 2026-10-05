@@ -74,6 +74,53 @@ final class Input: @unchecked Sendable {
     // Never read the value, label, selected text or surrounding document.
     return ["editable": true, "focus": typingToken, "secure": subrole == "AXSecureTextField"]
   }
+  // Apps whose web content (Chrome, Electron apps such as Claude) was asked
+  // to describe itself: they only list their text fields once asked.
+  var describing = Set<pid_t>()
+  // Is there a text field at this point? Asked when a finger touches down,
+  // so the phone can open its keyboard on the same tap. Nothing is clicked,
+  // focused or read: only the kind of element under the finger.
+  func probe(_ p: [String: Any]) -> [String: Any] {
+    guard let x = p["x"] as? Double, let y = p["y"] as? Double else { return ["field": false] }
+    let bounds = CGDisplayBounds(display)
+    let at = CGPoint(
+      x: bounds.minX + x * max(0, bounds.width - 1),
+      y: bounds.minY + y * max(0, bounds.height - 1))
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.1)
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
+      var element = hit
+    else { return ["field": false] }
+    var pid: pid_t = 0
+    if AXUIElementGetPid(element, &pid) == .success, pid > 0, !describing.contains(pid) {
+      describing.insert(pid)
+      let app = AXUIElementCreateApplication(pid)
+      AXUIElementSetMessagingTimeout(app, 0.1)
+      AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+      if AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
+        let again = hit
+      {
+        element = again
+      }
+    }
+    // The field itself, or what's drawn inside it (its text, a placeholder).
+    for _ in 0..<4 {
+      let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+      if ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
+        let enabled = attribute(element, kAXEnabledAttribute) as? Bool ?? true
+        let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
+        return ["field": enabled, "secure": subrole == "AXSecureTextField"]
+      }
+      // Inside an editable web area (a rich editor such as a chat box).
+      if attribute(element, "AXEditableAncestor") != nil { return ["field": true, "secure": false] }
+      guard let parent = attribute(element, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID()
+      else { break }
+      element = parent as! AXUIElement
+    }
+    return ["field": false]
+  }
   func checkTyping(_ token: String) throws {
     guard !token.isEmpty, token == typingToken, let expected = typingElement,
       let current = focused(), CFEqual(expected, current)
@@ -255,6 +302,7 @@ final class Input: @unchecked Sendable {
     }
     let type = p["type"] as? String ?? ""
     if type == "focus" { return ["target": textTarget(p)] }
+    if type == "probe" { return probe(p) }
     if type == "context" { return context(since: p["since"] as? String) }
     if type == "menu", let path = p["path"] as? [String] {
       try pressMenu(path)

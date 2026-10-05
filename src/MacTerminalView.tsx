@@ -5,10 +5,13 @@ import { CornerDownLeft } from "lucide-react";
 import { Peer, post, request } from "./api";
 import type { MacTerminal } from "./DesktopTerminals";
 import "./key-row.css";
+import { useTerminalHistory } from "./useTerminalHistory";
 import {
   disposeLater,
   plainKeyboard,
   terminalOptions,
+  terminalTouch,
+  writeSnapshot,
 } from "./terminal-options";
 
 // A tab already open in Terminal on the Mac, shown full page. Its text comes
@@ -25,6 +28,7 @@ export default function MacTerminalView({
   tab: MacTerminal;
   onGone: () => void;
 }) {
+  const history = useTerminalHistory();
   const mount = useRef<HTMLDivElement>(null),
     terminal = useRef<XTerm | null>(null),
     snapshot = useRef(""),
@@ -36,8 +40,7 @@ export default function MacTerminalView({
   const draw = () => {
     const term = terminal.current;
     if (!term) return;
-    term.reset();
-    term.write(snapshot.current.replace(/\r?\n/g, "\r\n") + pending.current);
+    writeSnapshot(term, snapshot.current.replace(/\r?\n/g, "\r\n") + pending.current);
   };
   const submit = useRef(async () => {});
   useEffect(() => {
@@ -48,13 +51,16 @@ export default function MacTerminalView({
       timer: ReturnType<typeof setInterval> | undefined,
       // The text version this view shows; the Mac answers when it differs.
       version = 0;
-    const waits = new Set<AbortController>();
+    const waits = new Map<AbortController, ReturnType<typeof setTimeout>>();
+    let resume: (() => void) | undefined;
     const term = new XTerm(terminalOptions());
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(mount.current);
     plainKeyboard(term);
+    const removeTouch = terminalTouch(mount.current, term);
     terminal.current = term;
+    const stopHistory = history.observe(term);
     const show = (text: string) => {
       // Drop the empty rows below the prompt so typing lands after it.
       const next = String(text).replace(/(\r?\n[ \t]*)+$/, "");
@@ -90,10 +96,12 @@ export default function MacTerminalView({
       new Promise<void>((resolve) => {
         if (!document.hidden) return resolve();
         const shown = () => {
-          if (document.hidden) return;
+          if (document.hidden && !stopped) return;
           document.removeEventListener("visibilitychange", shown);
+          resume = undefined;
           resolve();
         };
+        resume = shown;
         document.addEventListener("visibilitychange", shown);
       });
     // Ask for the next text; the Mac answers when the tab prints, or after
@@ -103,8 +111,8 @@ export default function MacTerminalView({
         await visible();
         if (stopped) return;
         const wait = new AbortController();
-        waits.add(wait);
         const limit = setTimeout(() => wait.abort(), 30000);
+        waits.set(wait, limit);
         try {
           const r = await request<{
             text?: string;
@@ -180,11 +188,18 @@ export default function MacTerminalView({
     void follow();
     return () => {
       stopped = true;
-      for (const wait of waits) wait.abort();
+      resume?.();
+      for (const [wait, limit] of waits) {
+        clearTimeout(limit);
+        wait.abort();
+      }
+      waits.clear();
       clearInterval(timer);
       clearTimeout(soon);
       ro.disconnect();
       input.dispose();
+      stopHistory();
+      removeTouch();
       disposeLater(term);
       terminal.current = null;
     };
@@ -202,6 +217,7 @@ export default function MacTerminalView({
         ref={mount}
         onClick={() => terminal.current?.focus()}
       />
+      {history.reading && <button className="terminal-latest" onClick={history.latest}>↓ Latest output</button>}
       <div className="key-row terminal-key-row mac-line" role="toolbar" aria-label="Terminal keys">
         <span className="terminal-line-hint">
           {hint || "Type, then Enter sends the line to this Mac tab."}

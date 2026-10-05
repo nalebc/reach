@@ -33,10 +33,7 @@ import {
   checkUnused,
 } from "./tailscale.mjs";
 import { stateDir } from "./home.mjs";
-import {
-  createPublicStart,
-  listenPublicSocket,
-} from "../server/public-start.mjs";
+import { publicStartHandler } from "../server/public-start.mjs";
 import {
   PublicLink,
   ensurePersistentFunnel,
@@ -84,8 +81,8 @@ export async function launch(options, root) {
               )
           : undefined,
       );
-  // The public start page (https://<computer>.ts.net) may check whether the
-  // phone already reaches the private address directly (Tailscale app on).
+  // The one address (https://<computer>.ts.net): Reach for your devices, the
+  // start page for the internet. Its page may call Reach here too.
   const publicStart = socketPath && privateOrigin ? startOrigin(privateOrigin) : "";
   const reach = await createReach({
     dataDir,
@@ -118,11 +115,17 @@ export async function launch(options, root) {
     finish = resolve;
   });
   let log, monitor, approvalMonitor, recovery, power;
-  let publicLink, publicMonitor, publicServer, linkMonitor;
+  let publicLink, publicMonitor, linkMonitor;
   let startUrl = "";
   const forgetStatus = () => {
     if (loadJson(statusFile, null)?.instance === reach.instance)
       fs.rmSync(statusFile, { force: true });
+  };
+  // The link for your phone, once the one address is up (./reach status).
+  const noteLink = (link) => {
+    const current = loadJson(statusFile, null);
+    if (current?.instance === reach.instance && current.link !== link)
+      atomicJson(statusFile, { ...current, link });
   };
   const stop = () => {
     if (stopPromise) return stopPromise;
@@ -142,7 +145,6 @@ export async function launch(options, root) {
       clearInterval(publicMonitor);
       clearInterval(linkMonitor);
       await publicLink?.stop();
-      publicServer?.close();
       recovery?.stop();
       power?.stop();
       if (tunnel && tunnel.exitCode === null && tunnel.signalCode === null) {
@@ -178,7 +180,36 @@ export async function launch(options, root) {
       reach.server.listen(reach.config.port, "127.0.0.1", resolve);
     });
     const localUrl = `http://127.0.0.1:${reach.server.address().port}`;
-    if (socketPath) await reach.listenPrivate(socketPath);
+    // Both your devices and the internet (Funnel) come in on Reach's private
+    // listener at the one address; it hands the internet's requests, and only
+    // those, to the start page.
+    if (socketPath) {
+      const startPage = publicStart
+        ? publicStartHandler({
+            dist: path.join(root, "dist"),
+            tailnetDir: path.join(root, "tailnet", "dist"),
+            privateOrigin,
+            home: publicStart,
+            name: reach.config.name,
+            instance: reach.instance,
+            since: setupSince(),
+            faceId: reach.faceIdAvailable,
+          })
+        : null;
+      await reach.listenPrivate(socketPath, {
+        // The start page, and its Face ID sign-in (its only requests that
+        // reach Reach itself).
+        publicApp: startPage
+          ? (req, res) => reach.publicFaceId(req, res) || startPage(req, res)
+          : undefined,
+      });
+      // Older Reach's separate start-page socket, if one was left behind.
+      const old = path.join(path.dirname(socketPath), "p");
+      try {
+        const stat = fs.lstatSync(old);
+        if (stat.isSocket() && stat.uid === process.getuid()) fs.rmSync(old);
+      } catch {}
+    }
     const serveTarget = socketPath ? `unix:${socketPath}` : localUrl;
     atomicJson(path.join(dataDir, "agent-host.json"), {
       roots: reach.config.roots,
@@ -303,19 +334,10 @@ export async function launch(options, root) {
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
       if (publicStart && !stopped) {
-        // One link for every phone: the app path when Tailscale is on, the
-        // browser sign-in otherwise. Only the start page is public.
-        const publicSocket = path.join(path.dirname(socketPath), "p");
-        publicServer = createPublicStart({
-          dist: path.join(root, "dist"),
-          tailnetDir: path.join(root, "tailnet", "dist"),
-          privateOrigin,
-          name: reach.config.name,
-          instance: reach.instance,
-          since: setupSince(),
-        });
-        await listenPublicSocket(publicServer, publicSocket);
-        const target = `unix:${publicSocket}`;
+        // One link for every phone, the same every time: Reach itself with the
+        // Tailscale app on, the browser sign-in without it. Funnel brings the
+        // internet to the same listener, which gives it only the start page.
+        const target = serveTarget;
         if (options.service) {
           try {
             await ensurePersistentFunnel({
@@ -331,6 +353,7 @@ export async function launch(options, root) {
           publicLink = new PublicLink({
             origin: publicStart,
             target,
+            file: funnelFile,
             log,
             report: (message) => console.log(`Reach: ${message}`),
             setupUrl: (url) => {
@@ -351,8 +374,10 @@ export async function launch(options, root) {
             );
           publicMonitor = setInterval(async () => {
             const wasLive = publicLink.live;
-            if ((await publicLink.check()) && !wasLive && !startUrl)
+            if ((await publicLink.check()) && !wasLive && !startUrl) {
               console.log(`Reach: public start link is ready: ${publicStart}`);
+              noteLink(publicStart);
+            }
           }, 5000);
           publicMonitor.unref();
         }
@@ -386,6 +411,7 @@ export async function launch(options, root) {
         ? reach.fleet?.homeLink({ start: startUrl, since: setupSince() }) ||
           startUrl
         : origin;
+      if (startUrl) noteLink(link);
       console.log(
         `\n  REACH · ${reach.config.name}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
@@ -394,7 +420,7 @@ export async function launch(options, root) {
         console.log(`  This computer's own link works too: ${startUrl}`);
       console.log(
         startUrl
-          ? "  With the Tailscale app on, your phone connects directly (fastest). Without it, sign in to Tailscale in the browser; nothing to install.\n  Approve new devices here, or run ./reach approve in another terminal."
+          ? "  The same link every time, with the Tailscale app on or off (without it, you sign in to Tailscale in the browser; nothing to install).\n  Approve new devices here, or run ./reach approve in another terminal."
           : "  The QR contains only your private address. Connect Tailscale on your phone, then tap Connect.\n  Approve new devices here, or run ./reach approve in another terminal.",
       );
       if (!options.service) {

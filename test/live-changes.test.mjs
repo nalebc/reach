@@ -19,13 +19,22 @@ function listen(port, token) {
     snapshots.push(JSON.parse(data));
     wake();
   });
-  const next = (timeout = 4000) =>
+  let consumed = 0;
+  const next = (matches = () => true, timeout = 10000) =>
     new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error("no snapshot")), timeout);
+      const timer = setTimeout(() => reject(Error("no matching snapshot")), timeout);
       wake = () => {
-        clearTimeout(timer);
-        resolve(snapshots.at(-1));
+        while (consumed < snapshots.length) {
+          const snapshot = snapshots[consumed++];
+          if (matches(snapshot)) {
+            clearTimeout(timer);
+            wake = () => {};
+            resolve(snapshot);
+            return;
+          }
+        }
       };
+      wake(); // The snapshot may have arrived while the HTTP request finished.
     });
   return { ws, snapshots, next };
 }
@@ -55,12 +64,17 @@ test("devices learn that their lists changed without polling, and only lists the
       "apps",
       "chats",
       "control",
+      "handoffs",
       "requests",
       "terminals",
     ]);
     const guestFirst = await guestSocket.next();
     // A files-only guest learns nothing about the owner's terminals or chats.
-    const { build: guestBuild, ...guestLists } = guestFirst.changes;
+    // Guests receive their own access revision so permission changes refresh
+    // their phone, but no fingerprints for the owner's private lists.
+    const { build: guestBuild, access: guestAccess, ...guestLists } = guestFirst.changes;
+    assert.equal(typeof guestAccess, "string");
+    assert.ok(guestAccess.length > 0);
     assert.deepEqual(guestLists, {});
     assert.equal(guestBuild, build);
     // Something happens on the computer: a folder is created.
@@ -73,7 +87,7 @@ test("devices learn that their lists changed without polling, and only lists the
       body: JSON.stringify({ root: 0, path: "", name: "Receipts" }),
     });
     assert.equal(created.status, 200);
-    const after = await ownerSocket.next();
+    const after = await ownerSocket.next((s) => s.changes.activity !== first.changes.activity);
     assert.notEqual(after.changes.activity, first.changes.activity);
     assert.equal(after.changes.terminals, first.changes.terminals);
     // Screen control changes hands: a watching phone hears it at once.
@@ -86,12 +100,12 @@ test("devices learn that their lists changed without polling, and only lists the
       body: JSON.stringify({ enabled: true }),
     });
     assert.equal(took.status, 200);
-    const controlled = await ownerSocket.next();
+    const controlled = await ownerSocket.next((s) => s.changes.control !== after.changes.control);
     assert.notEqual(controlled.changes.control, after.changes.control);
   } finally {
     ownerSocket.ws.close();
     guestSocket.ws.close();
-    reach.server.close();
+    await reach.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

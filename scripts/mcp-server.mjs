@@ -117,6 +117,98 @@ export const tools = [
       required: ["id"],
     },
   },
+  // Tag in: apps on the Mac, on hidden displays only this agent uses.
+  {
+    name: "reach_list_apps",
+    description:
+      "List the Mac's installed apps (id and name) and the apps this agent has open. Requires apps:drive.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "reach_open_app",
+    description:
+      "Open a Mac app on its own hidden display, phone-shaped, where only this agent works; the Mac's own screen is untouched. Returns its id. An app a person has open can't be used.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appId: { type: "string", description: "An id from reach_list_apps." },
+      },
+      required: ["appId"],
+    },
+  },
+  {
+    name: "reach_see_app",
+    description:
+      "A picture of the app's window. Its pixels are the x/y coordinates for reach_app_action.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "reach_app_action",
+    description:
+      "Act in an app this agent opened: click (x, y; button, count), type (text, into the field last clicked), key (key such as enter, tab, escape, a–z; modifiers such as meta for Command), menu (path of menu titles, like [\"Image\", \"Adjustments\", \"Brightness/Contrast…\"]), or scroll (x, y, dy > 0 for further down). Runs alongside the person using the Mac when the app can take it directly (single clicks, typing, keys); menus and anything needing the pointer answer 'try again' until nobody is at the Mac. Returns a fresh picture unless see is false.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        type: {
+          type: "string",
+          enum: ["click", "type", "key", "scroll", "menu"],
+        },
+        path: { type: "array", items: { type: "string" } },
+        x: { type: "number" },
+        y: { type: "number" },
+        button: { type: "string", enum: ["left", "right"] },
+        count: { type: "integer", enum: [1, 2] },
+        text: { type: "string" },
+        key: { type: "string" },
+        modifiers: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["meta", "alt", "control", "shift"],
+          },
+        },
+        dx: { type: "number" },
+        dy: { type: "number" },
+        see: { type: "boolean" },
+      },
+      required: ["id", "type"],
+    },
+  },
+  {
+    name: "reach_hand_to_person",
+    description:
+      "Hand the live app to the person on their phone for what only a person should do (a sign-in code, a payment, a confirmation, 'does this look right?'). Say what to do in one sentence. Then call reach_wait_for_person.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, reason: { type: "string" } },
+      required: ["id", "reason"],
+    },
+  },
+  {
+    name: "reach_wait_for_person",
+    description:
+      "Wait up to 25 seconds for the person to hand the app back. state 'waiting': call again; 'back': continue (read their note); 'stopped': stop this task.",
+    inputSchema: {
+      type: "object",
+      properties: { handoff: { type: "string" } },
+      required: ["handoff"],
+    },
+  },
+  {
+    name: "reach_close_app",
+    description:
+      "Done with an app: it goes back to the Mac (or closes, for a window opened for this agent).",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
 ];
 export function callTool(api, name, a) {
   const query = new URLSearchParams({
@@ -154,24 +246,82 @@ export function callTool(api, name, a) {
       });
     case "reach_get_chat":
       return api("/api/chats/" + encoded);
+    case "reach_list_apps":
+      return api("/api/drive/apps");
+    case "reach_open_app":
+      return api("/api/drive/apps", "POST", { appId: a.appId });
+    case "reach_see_app":
+      return api("/api/drive/apps/" + encoded);
+    case "reach_app_action":
+      return appAction(api, a);
+    case "reach_hand_to_person":
+      return api("/api/drive/apps/" + encoded + "/handoff", "POST", {
+        reason: a.reason,
+      });
+    case "reach_wait_for_person":
+      return api(
+        "/api/drive/handoffs/" + encodeURIComponent(a.handoff || "") + "?wait=25",
+      );
+    case "reach_close_app":
+      return api("/api/drive/apps/" + encoded, "DELETE");
     default:
       throw Error("Unknown tool");
   }
 }
+// One action, then (unless `see` is false) a fresh picture of the result.
+async function appAction(api, a) {
+  const { id, see, ...action } = a;
+  const route = "/api/drive/apps/" + encodeURIComponent(id || "");
+  await api(route + "/actions", "POST", action);
+  if (see === false) return { done: true };
+  // The app draws what the action changed before the picture is taken.
+  await new Promise((r) => setTimeout(r, 400));
+  return { done: true, ...(await api(route)) };
+}
+// A result as MCP content: a picture as an image, the rest as JSON text.
+export function toContent(result) {
+  if (
+    result &&
+    typeof result.image === "string" &&
+    typeof result.mimeType === "string"
+  ) {
+    const { image, mimeType, ...rest } = result;
+    return [
+      { type: "image", data: image, mimeType },
+      { type: "text", text: JSON.stringify(rest, null, 2) },
+    ];
+  }
+  return [{ type: "text", text: JSON.stringify(result, null, 2) }];
+}
+// The scope each tool needs; a tool missing here is never offered.
+const TOOL_SCOPES = {
+  reach_device: null,
+  reach_list_files: "files:read",
+  reach_read_file: "files:read",
+  reach_write_file: "files:write",
+  reach_create_folder: "files:write",
+  reach_run_command: "exec",
+  reach_get_job: "exec",
+  reach_cancel_job: "exec",
+  reach_list_chats: "codex",
+  reach_create_chat: "codex",
+  reach_send_message: "codex",
+  reach_get_chat: "codex",
+  reach_list_apps: "apps:drive",
+  reach_open_app: "apps:drive",
+  reach_see_app: "apps:drive",
+  reach_app_action: "apps:drive",
+  reach_hand_to_person: "apps:drive",
+  reach_wait_for_person: "apps:drive",
+  reach_close_app: "apps:drive",
+};
 // Tools the credential's access allows (the computer enforces it anyway).
 export function toolsFor(scopes) {
   return tools.filter((tool) => {
-    if (tool.name === "reach_device") return true;
-    const scope = ["reach_write_file", "reach_create_folder"].includes(
-      tool.name,
-    )
-      ? "files:write"
-      : ["reach_list_files", "reach_read_file"].includes(tool.name)
-        ? "files:read"
-        : tool.name.includes("chat") || tool.name === "reach_send_message"
-          ? "codex"
-          : "exec";
+    if (!Object.hasOwn(TOOL_SCOPES, tool.name)) return false;
+    const scope = TOOL_SCOPES[tool.name];
     return (
+      scope === null ||
       scopes.includes(scope) ||
       (scope.startsWith("files:") && scopes.includes("files"))
     );
@@ -220,16 +370,9 @@ export function serveMcp({
       else if (r.method === "tools/call") {
         try {
           result = {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  await callTool(api, r.params.name, r.params.arguments || {}),
-                  null,
-                  2,
-                ),
-              },
-            ],
+            content: toContent(
+              await callTool(api, r.params.name, r.params.arguments || {}),
+            ),
           };
         } catch (e) {
           result = {

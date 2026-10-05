@@ -817,7 +817,7 @@ export async function main(argv = process.argv.slice(2)) {
   throw Error(`Unknown command "${verb}". Run: node agent.mjs help`);
 }
 
-const entry = process.argv[1] && fs.realpathSync(process.argv[1]);
+const entry = process.argv[1] && fs.realpathSync.native(process.argv[1]);
 if (entry === fileURLToPath(import.meta.url))
   // Exit once everything written has gone out: the tailnet client would
   // otherwise keep the process running, and a pipe may still be draining.

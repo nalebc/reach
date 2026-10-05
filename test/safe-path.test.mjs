@@ -6,7 +6,7 @@ import path from "node:path";
 import { safePath, safePathAsync } from "../server/core.mjs";
 
 test("the non-blocking path check enforces exactly the same rules", async () => {
-  const dir = fs.realpathSync(
+  const dir = fs.realpathSync.native(
     fs.mkdtempSync(path.join(os.tmpdir(), "reach-safe-")),
   );
   const root = path.join(dir, "shared");
