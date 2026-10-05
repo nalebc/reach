@@ -123,7 +123,7 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
   // Commands start in its folder only, within its time limit.
   const job = await as("/api/jobs", {
     method: "POST",
-    body: { root: 0, path: "", command: "pwd" },
+    body: { root: 0, path: "", command: process.platform === "win32" ? "(Get-Location).Path" : "pwd" },
   });
   assert.equal(job.status, 202, JSON.stringify(job.body));
   let done;

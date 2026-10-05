@@ -148,7 +148,7 @@ test("the published package ships the app, never sources or private state, and r
     assert.equal(pkg.scripts[hook], undefined, hook);
   const bin = path.join(repo, pkg.bin.reach);
   assert.match(fs.readFileSync(bin, "utf8"), /^#!\/usr\/bin\/env node/);
-  assert.ok(fs.statSync(bin).mode & 0o111);
+  if (process.platform !== "win32") assert.ok(fs.statSync(bin).mode & 0o111);
   // Only what the server imports is installed on users' machines.
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
     "express",

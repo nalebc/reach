@@ -8,13 +8,13 @@
 
 [Watch or download the MP4](docs/media/reach-demo.mp4) · [Still preview](docs/media/reach-demo-poster.png)
 
-*A 22-second interface walkthrough captured from the actual app at phone width, using sample devices, files, and conversations. It demonstrates the UI, not a live remote-desktop session or a physical-phone performance test. Codex requires a local installation and sign-in. Normal setup still requires Tailscale connectivity on both devices.*
+*A 22-second interface walkthrough captured from the actual app at phone width, using sample devices, files, and conversations. It demonstrates the UI, not a live remote-desktop session or a physical-phone performance test. Codex requires a local installation and sign-in. Computer access uses Tailscale connectivity; the browser can run its own Tailscale node without a separate phone app.*
 
 The isolated [demo fixture and capture instructions](scripts/demo/README.md) let contributors reproduce the same interface without connecting to a computer or exposing personal data.
 
 This is a working first release, not a signed App Store or Microsoft Store application. macOS functionality has been exercised locally; the Windows implementation has a CI test job but still needs real-device validation. Phones act as clients, not remotely controlled hosts.
 
-An isolated [browser connection experiment](experiments/browser-connect/README.md) embeds Tailscale in WebAssembly to explore connecting without a separate Tailscale phone app. Real browser-to-Mac file access, terminal commands, and revocation have been exercised; physical iPhone/Android validation is still pending. This does not change the normal setup yet.
+The browser connection embeds Tailscale in WebAssembly. Its start page uses **public Tailscale Funnel**, while files, terminals and screen connections stay behind authenticated Tailscale ingress. Optional passkey sign-in can enroll a limited tagged browser device without a separate Tailscale login. This changes the earlier private-only design; read the [current security model](docs/SECURITY.md) before enabling it. Physical iPhone/Android validation remains a release gate.
 
 ## What works
 
@@ -77,9 +77,9 @@ That command prepares Node.js if needed, installs dependencies, builds the inter
 3. Match the eight-character request on your phone with the request in the Mac’s Reach terminal. Type that request there to approve. When running Reach in the background, run `./reach approve` locally instead. Use `deny <request>` to refuse one.
 4. Future visits use the saved, device-bound session. There is no separate Reach login. Each new browser needs approval; expired or revoked sessions need approval again. **Face ID instead:** after your first browser is approved, tap **Use Face ID next time** (or Settings → Access → Face ID for new browsers). Your phone's other browsers then show **Use Face ID** and are approved with it, without waiting for the computer. With invite links set up too, a new browser without the Tailscale app needs only Face ID: open the link, tap **Continue with Face ID**, and you're in (no Tailscale login; see Face ID sign-in in [docs/SECURITY.md](docs/SECURITY.md)).
 
-The normal QR contains **only the computer's address**, not a credential. A copy does not grant access. Owner access requires the configured Tailscale account, local device approval, and the saved Reach credential on that same Tailscale device. The local approval grants owner capabilities, including running commands as your OS account; screen viewing/control still have their own switches and permissions.
+The normal QR contains **only the computer's address**, not a credential. A copy does not grant access. Owner access uses either the configured Tailscale account with device approval, or a registered passkey followed by one-time tagged-device admission. Both issue a saved Reach credential bound to that Tailscale device. The local approval grants owner capabilities, including running commands as your OS account; screen viewing/control still have their own switches and permissions.
 
-For automatic reconnection on **iPhone/iPad**, open Tailscale → Settings → **VPN On Demand**, and enable **MagicDNS hostname matching**. Opening the `.ts.net` link can then activate Tailscale. Android requires Tailscale connected; Reach does not claim to bypass VPN installation, OS consent, or account sign-in. See [Tailscale’s iOS instructions](https://tailscale.com/docs/features/client/ios-vpn-on-demand).
+For automatic reconnection on **iPhone/iPad**, open Tailscale → Settings → **VPN On Demand**, and enable **MagicDNS hostname matching**. Opening the `.ts.net` link can then activate Tailscale. These VPN settings apply when using the separate Tailscale app. Browser-node sign-in is the alternative on supported browsers. See [Tailscale’s iOS instructions](https://tailscale.com/docs/features/client/ios-vpn-on-demand).
 
 **Compatibility:** the new approval flow supports Mac/Linux hosts with a recent Tailscale version that supports Serve Unix socket targets. On sandboxed Mac Tailscale builds, Reach places only its private listener socket in Tailscale’s app-group container; macOS may ask for access. Windows and explicit `--local` mode retain the pairing-code flow. The updated native iOS QR scanner accepts private address QRs after rebuilding the app; Safari works without an app rebuild.
 
@@ -261,7 +261,7 @@ npm run format
 npm run package   # stages a portable release in release/reach
 ```
 
-No fake devices, shell output, or AI responses are used in the app. Unit tests simulate Codex protocol events; the live integration uses the installed Codex app-server. GitHub Actions exercises builds and tests on macOS and Windows.
+No fake devices, shell output, or AI responses are used in the app. Unit tests simulate Codex protocol events; the live integration uses the installed Codex app-server. GitHub Actions exercises builds and tests on macOS, Linux and Windows. Unix permission-hook IPC is tested on Mac/Linux; Windows retains the agent’s local permission prompts.
 
 See [the security review and remaining limitations](docs/SECURITY.md).
 

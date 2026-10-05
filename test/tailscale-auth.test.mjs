@@ -123,7 +123,7 @@ test("setup confirms a personal Tailscale identity, saves privately, honors CLI 
       9999,
     );
     assert.equal(applyPreferences(explicit, result).stayAwake, true);
-    assert.deepEqual(applyPreferences(explicit, result).folders, ["/tmp"]);
+    assert.deepEqual(applyPreferences(explicit, result).folders, [path.resolve("/tmp")]);
     await assert.rejects(
       assertSocketSupport(async () => ({ stdout: "old Serve version" })),
       /Update Tailscale/,
