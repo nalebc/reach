@@ -245,7 +245,7 @@ export function createGuestKeys({
       throw fail(409, error.message);
     }
     if (plan.allowAll.length)
-      throw fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} lets every device connect. Narrow those Tailscale rules to your members (for example autogroup:member) before enabling invite links. Reach did not change your policy or create a key.`);
+      throw fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`);
     if (plan.added.length) {
       // 2. Tailscale checks the new policy (and your tests) first.
       const check = await as("POST", "/tailnet/-/acl/validate", {

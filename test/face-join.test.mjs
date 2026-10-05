@@ -322,6 +322,21 @@ test(
     let limited = 0;
     for (let i = 0; i < 25; i++) if ((await internet("/faceid/options", { body: {} })).status === 429) limited++;
     assert.ok(limited > 0, "rate limited per address");
+    // Removing the passkey also ends browsers it already admitted.
+    const challenge = await send({ "Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.99" }, "/faceid/options", { body: {} });
+    const again = await send({ "Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.99" }, "/faceid/join", { body: { id: challenge.json.id, credential: phone.get(challenge.json.options) } });
+    NODES[FACE].name = again.json.hostname;
+    // Use a different address so the WhoIs cache cannot hold the old node name.
+    NODES["100.64.0.51"] = { ...NODES[FACE], id: "nFace2" };
+    const admitted = await from("100.64.0.51", "/api/auth/face-join", { body: { ticket: again.json.ticket } });
+    assert.equal(admitted.status, 200);
+    assert.equal((await from("100.64.0.51", "/api/device", { method: "GET", token: admitted.json.token })).status, 200);
+    const passkeyId = faceClient.tailscale.passkeyId;
+    assert.equal((await from("100.64.0.10", `/api/auth/passkeys/${passkeyId}`, { method: "DELETE", token: phoneToken })).status, 200);
+    assert.equal((await from("100.64.0.51", "/api/device", { method: "GET", token: admitted.json.token })).status, 401);
+    assert.equal((await from("100.64.0.10", "/api/device", { method: "GET", token: phoneToken })).status, 200, "local-approved owner survives passkey removal");
+
+
   },
 );
 

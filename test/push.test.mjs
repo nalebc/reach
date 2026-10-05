@@ -196,6 +196,7 @@ async function start(t) {
     dataDir: path.join(dir, "private"),
     screen: true,
     appPlatform: "darwin",
+    agentIdle: async () => 600,
     appDisplays: async ({ onExit }) => ({
       stopped: false,
       async request(cmd, payload) {

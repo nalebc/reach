@@ -126,7 +126,7 @@ test("Codex detection inspects executable permissions, honours overrides, and ca
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const executable = path.join(tmp, "codex");
   await fs.writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-  const options = { platform: process.platform, env: { PATH: tmp } };
+  const options = { platform: process.platform === "win32" ? "win32" : "linux", env: { PATH: tmp } };
   assert.equal(await findCodexExecutable(options), executable);
   assert.equal(
     await findCodexExecutable({

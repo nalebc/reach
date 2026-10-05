@@ -269,6 +269,8 @@ test("unsafe wildcard policies stop setup before any policy write or key mint", 
   for (const policy of [
     '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}',
     '{"acls":[{"action":"accept","src":["*"],"dst":["tag:server:22"]}]}',
+    '{"grants":[{"src":["tag:reach-guest"],"dst":["*"],"ip":["*"]}]}',
+    '{"grants":[{"src":["100.64.0.0/10"],"dst":["*"],"ip":["tcp:22"]}]}',
   ]) {
     const api = fakeTailscale({ policy });
     const keys = createGuestKeys({ dataDir: setupDir(t), self: "dev-a", request: api.request });

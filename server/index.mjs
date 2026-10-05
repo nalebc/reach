@@ -3028,10 +3028,10 @@ export async function createReach(overrides = {}) {
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       agentSessions.close?.();
-      terminals.dispose();
+      const terminalExit = terminals.dispose();
       codex.dispose();
       jobs.dispose();
-      await Promise.all([apps, closed]);
+      await Promise.all([apps, closed, terminalExit]);
       clearTimeout(cutoff);
     },
   };

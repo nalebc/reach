@@ -133,6 +133,32 @@ export function allowAllRules(policy) {
   return found;
 }
 
+// Conservative checks for rules which can include a newly enrolled guest.
+// Existing user/group rules do not include tagged devices. Address selectors
+// and aliases cannot be proven safe without resolving Tailscale's policy, so
+// setup asks the owner to narrow them instead of assuming isolation.
+export function guestPolicyRisks(policy, { tag, addresses, port }) {
+  const risks = new Set(allowAllRules(policy));
+  const sources = (list) => Array.isArray(list) && list.some((s) =>
+    typeof s === "string" && (s === tag || s === "autogroup:tagged" ||
+      s.includes("/") || Object.hasOwn(policy.hosts || {}, s)));
+  for (const [i, grant] of (policy.grants || []).entries()) {
+    if (!sources(grant.src)) continue;
+    const exactTag = grant.src.every((s) => s === tag);
+    const narrow = Array.isArray(grant.dst) && grant.dst.every((d) => addresses.includes(d)) &&
+      Array.isArray(grant.ip) && grant.ip.every((p) => p === `tcp:${port}`) && !grant.app;
+    if (!exactTag || !narrow) risks.add(`grants[${i}]`);
+  }
+  for (const [i, acl] of (policy.acls || []).entries()) {
+    if (acl.action !== "accept" || !sources(acl.src || acl.users)) continue;
+    const allowed = addresses.map((a) => `${a}:${port}`);
+    const narrow = (acl.src || acl.users).every((s) => s === tag) && acl.proto === "tcp" &&
+      Array.isArray(acl.dst || acl.ports) && (acl.dst || acl.ports).every((d) => allowed.includes(d));
+    if (!narrow) risks.add(`acls[${i}]`);
+  }
+  return [...risks];
+}
+
 // What Reach needs in your policy, and the policy text with it added.
 // Returns { text, added: [lines], allowAll: [rules] }; `added` is empty
 // when everything is already there (nothing to write).
@@ -192,5 +218,5 @@ export function addGuestRules(text, { tag, addresses, port }) {
   for (const e of edits.sort((a, b) => b.at - a.at))
     out = out.slice(0, e.at) + e.text + out.slice(e.at);
   if (added.length) parsePolicy(out); // never hand Tailscale something unreadable
-  return { text: out, added, allowAll: allowAllRules(policy) };
+  return { text: out, added, allowAll: guestPolicyRisks(policy, { tag, addresses, port }) };
 }
