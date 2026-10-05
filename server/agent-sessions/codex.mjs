@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { visibleUserText } from "./message-text.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +27,7 @@ const origins = {
 };
 
 export function codexSession(thread) {
-  const firstLine = String(thread.preview || "").split("\n")[0];
+  const firstLine = visibleUserText(thread.preview || "").split("\n")[0];
   return {
     agent: "codex",
     id: thread.id,
@@ -65,12 +66,12 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
   const at = startedAtMs || undefined;
   switch (item?.type) {
     case "userMessage": {
-      const text = (item.content || [])
+      const text = visibleUserText((item.content || [])
         .filter((c) => c?.type === "text")
         .map((c) => c.text)
-        .join("\n");
+        .join("\n"));
       const images = (item.content || []).filter((c) => c?.type !== "text").length;
-      return { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), at, turnId };
+      return text || images ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), at, turnId } : null;
     }
     case "agentMessage":
       return item.text?.trim()

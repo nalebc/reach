@@ -2051,7 +2051,7 @@ export async function createReach(overrides = {}) {
     const result = await agentSessions.send(
       req.params.agent,
       req.params.id,
-      turnOptions(req.body || {}, req.params.agent),
+      { ...turnOptions(req.body || {}, req.params.agent), owner: req.client.id },
     );
     record("session", `Sent a message to ${agentLabel(req.params.agent)}`);
     res.json(result);
@@ -2068,6 +2068,16 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
     res.json(await agentSessions.stop(req.params.agent, req.params.id)),
+  );
+  app.post("/api/sessions/:agent/:id/draft", async (req, res) => {
+    macOwner(req);
+    const text = req.body?.text;
+    if (typeof text !== "string" || text.length > 32000 || text.includes("\0"))
+      throw fail(400, "Invalid draft.");
+    res.json(await agentSessions.draft(req.params.agent, req.params.id, { text, owner: req.client.id }));
+  });
+  app.post("/api/sessions/:agent/:id/queue/:message/cancel", async (req, res) =>
+    res.json(await agentSessions.cancelQueued(req.params.agent, req.params.id, req.params.message)),
   );
   // Long poll: answers when the session changes (streamed text, prompts,
   // status) or after 25 seconds.

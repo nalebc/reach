@@ -22,6 +22,8 @@ const peer = {
   platform: "darwin",
 };
 const permissionPreview = new URLSearchParams(location.search).get("permissions");
+// A large intrinsic image catches approval-card icon sizing regressions.
+const sampleLogos = permissionPreview === "logo" ? { claude: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#d97856"/><path d="M32 12v40M12 32h40M18 18l28 28M18 46l28-28" stroke="#fff9ed" stroke-width="5"/></svg>')}` } : {};
 const samplePassword: MacPrompt = { id: "sample-mac-password", kind: "password", title: "Your Mac needs authentication", detail: "", app: null };
 let macPrompts: MacPrompt[] = permissionPreview === "password" ? [samplePassword] : permissionPreview === "mac"
   ? [{
@@ -163,7 +165,7 @@ window.fetch = async (input, init = {}) => {
     window.dispatchEvent(new Event("reach-preview-refresh"));
     data = { pressed: body.button };
   }
-  else if (path.endsWith("/logos")) data = { logos: {} };
+  else if (path.endsWith("/logos")) data = { version: permissionPreview || "sample", logos: sampleLogos };
   else if (path.endsWith("/models"))
     data = {
       models: [

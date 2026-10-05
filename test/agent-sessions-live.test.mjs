@@ -12,6 +12,31 @@ import { ALL_SCOPES } from "../server/core.mjs";
 const T = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82]);
 
+test("Stop can address the exact running app turn without taking over the thread", async () => {
+  const daemon = fakeDaemon({ "thread/turns/list": { data: [{ id: "app-turn", status: "inProgress" }] } });
+  const live = createCodexLive({ daemon });
+  assert.deepEqual(await live.stop(T), { stopped: true });
+  assert.deepEqual(daemon.calls.at(-1), ["turn/interrupt", { threadId: T, turnId: "app-turn" }]);
+  assert.equal(live.drives(T), false);
+  assert.ok(!daemon.methods().includes("thread/resume"));
+});
+
+test("queued Codex messages hide ambient input and removal must be confirmed", async () => {
+  let deleted = false;
+  const daemon = fakeDaemon({
+    "thread/queue/list": () => ({ data: deleted ? [] : [{ id: "q1", input: [{ type: "text", text: '<in-app-browser-context>internal</in-app-browser-context>\n## My request:\nHi' }] }] }),
+    "thread/queue/delete": () => ({ deleted }),
+  });
+  const live = createCodexLive({ daemon, queues: true });
+  live.view(T);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(live.view(T).outbox[0].text, "Hi");
+  await assert.rejects(live.cancelQueued(T, "q1"), (e) => e.status === 409);
+  deleted = true;
+  assert.deepEqual(await live.cancelQueued(T, "q1"), { deleted: true });
+  assert.equal(live.view(T).outbox, undefined);
+});
+
 // A stand-in for the shared Codex daemon: canned replies per method, and
 // hooks to push notifications and server requests the way Codex does.
 function fakeDaemon(replies = {}) {

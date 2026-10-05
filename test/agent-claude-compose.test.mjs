@@ -42,6 +42,37 @@ const compose = (m, extra = {}) =>
   });
 const message = { title: "Fix the chart", text: "Run the tests", images: ["/data/agent-images/p.png"] };
 
+test("draft updates only touch the visible chat, compare the previous value and never submit", async () => {
+  const m = mac({ onScreen: A });
+  let native = "";
+  const c = compose(m, { type: async (value) => {
+    m.typed.push(value);
+    if (value.expected !== native) throw Error("draft changed");
+    native = value.text;
+    return { drafted: true };
+  } });
+  await c.draft(A, { title: message.title, text: "hel", owner: "phone" });
+  await c.draft(A, { title: message.title, text: "hello", owner: "phone" });
+  assert.deepEqual(m.typed.map((v) => [v.draft, v.expected]), [[true, ""], [true, "hel"]]);
+  await assert.rejects(c.draft(A, { title: message.title, text: "stolen", owner: "other" }), /Another device/);
+  native = "Edited on Mac";
+  await assert.rejects(c.draft(A, { title: message.title, text: "overwrite", owner: "phone" }), /draft changed/);
+  assert.equal(native, "Edited on Mac");
+  m.onScreen = B;
+  await assert.rejects(c.draft(A, { title: message.title, text: "wrong chat", owner: "phone" }), /visible/);
+  assert.deepEqual(m.opened, []);
+});
+
+test("Send reuses the prepared draft and Stop requires confirmation from the exact app chat", async () => {
+  const m = mac({ onScreen: A });
+  const c = compose(m, { type: async (value) => (m.typed.push(value), value.draft ? { drafted: true } : value.stop ? { stopped: true } : { sent: true }) });
+  await c.draft(A, { title: message.title, text: message.text, owner: "phone" });
+  await c.deliver(A, { ...message, owner: "phone" });
+  assert.equal(m.typed.at(-1).expected, message.text);
+  assert.deepEqual(await c.stop(A, { title: message.title }), { stopped: true });
+  assert.deepEqual(m.typed.at(-1), { title: message.title, stop: true });
+});
+
 test("a message to the chat on screen goes into the Claude app's box at once, nothing switched", async () => {
   const m = mac({ onScreen: A, idle: 0 });
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });

@@ -106,8 +106,9 @@
   background: var(--as-composer);
   box-shadow: none;
 }
+/* Room to write, but never pushed under the keyboard: it gives way first. */
 .chat-home .chat-new textarea {
-  min-height: 112px;
+  min-height: min(112px, max(48px, calc(var(--sheet-height, 100dvh) - 330px)));
 }
 .chat-home .chat-new .as-field textarea,
 .chat-redesign .as-box .as-field textarea {
@@ -115,10 +116,42 @@
   font-size: 15px;
   line-height: 1.5;
 }
+/* One row, always: the send button never drops to a line of its own; the
+   model's name gives way (…) when the row is full. */
 .chat-home .chat-new .as-tools,
 .chat-redesign .as-tools {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
+}
+.chat-home .chat-new .as-tools > *,
+.chat-redesign .as-tools > * {
+  flex-shrink: 0;
+}
+.chat-home .chat-new .as-tools > .as-spacer,
+.chat-redesign .as-tools > .as-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* A little less padding, so "Default" and "Opus 5.5 Medium" fit whole on a
+   375-point phone beside +, settings and send. */
+.chat-redesign .as-tools > button.as-mode,
+.chat-redesign .as-tools > .as-model {
+  padding-inline: 8px;
+}
+@media (max-width: 430px) {
+  .chat-home .chat-new .as-tools,
+  .chat-redesign .as-tools {
+    gap: 0;
+  }
+}
+.chat-home .chat-new .as-tools > .as-model,
+.chat-redesign .as-tools > .as-model,
+.chat-redesign .as-tools > button.as-mode {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .chat-home .chat-new .as-picker {
   margin-bottom: 10px;
@@ -138,11 +171,21 @@
   color: var(--as-muted);
   font-size: 13px;
 }
+/* Out of usage: one quiet line, Upgrade small at its end. */
 .chat-status.out-of-usage {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--as-text) 6%, transparent);
+  line-height: 1.35;
+}
+.chat-status.out-of-usage .as-banner-btn {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 13px;
 }
 .chat-new .chat-folder {
   max-width: 150px;
@@ -334,7 +377,11 @@
   padding: 6px 8px;
   border-radius: 8px;
   background: none;
-  font-size: 11px;
+  font-size: 13px;
+}
+/* One size across the composer's row (Default was 15px beside an 11px model). */
+.chat-redesign .as-tools > button.as-mode {
+  font-size: 13px;
 }
 .chat-redesign .as-tools .as-model > svg {
   display: block;

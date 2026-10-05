@@ -14,6 +14,7 @@
 // drives are released after each turn; the daemon unloads them about a
 // minute later so the app can take them back (verified).
 import { randomUUID } from "node:crypto";
+import { visibleUserText } from "./message-text.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Both messages the Codex app itself checks for.
@@ -246,7 +247,7 @@ export function createCodexLive({
       .then((r) => {
         const next = (r?.data || []).map((q) => ({
           id: String(q.id),
-          text: (q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n"),
+          text: visibleUserText((q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
           images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length,
         }));
         if (JSON.stringify(next) !== JSON.stringify(t.queue || [])) {
@@ -452,11 +453,26 @@ export function createCodexLive({
       return { threadId, turnId: r.turn?.id || null };
     },
     async stop(threadId) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const t = state(threadId);
-      if (!subscribed.has(threadId) || !t.turnId)
-        throw bad("Reach isn't running anything here. Stop it on your Mac.", 409);
-      await daemon.rpc("turn/interrupt", { threadId, turnId: t.turnId });
+      let turnId = subscribed.has(threadId) ? t.turnId : null;
+      if (!turnId) {
+        const r = await daemon.rpc("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+        const turn = r?.data?.[0];
+        if (turn && !finished(turn)) turnId = turn.id;
+      }
+      if (!turnId) throw bad("There is no running turn to stop.", 409);
+      // Same request as the app. Never take over the thread or kill its process.
+      await daemon.rpc("turn/interrupt", { threadId, turnId });
       return { stopped: true };
+    },
+    async cancelQueued(threadId, messageId) {
+      if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
+        throw bad("Unknown queued message.", 404);
+      const result = await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId });
+      if (result?.deleted !== true) throw bad("That message already left the queue.", 409);
+      await readQueue(threadId);
+      return { deleted: true };
     },
     respond(threadId, promptId, answer) {
       const t = state(threadId);

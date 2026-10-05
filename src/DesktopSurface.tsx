@@ -595,7 +595,9 @@ export default function DesktopSurface({
             <span />
           </span>
         ))}
-        {(
+        {/* Zoom means nothing before there's a picture: it sat on the
+            connecting scene's words ("100% · Fit" over the cable line). */}
+        {ready && (
           <div
             className={`remote-zoom ${compact ? "compact" : ""}`}
             onPointerDown={(event) => {

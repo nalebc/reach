@@ -27,7 +27,8 @@ func out(_ value: [String: Any]) -> Never {
 struct Window {
   var titles: [String] = []  // the chat named in the header ("<title>, rename session")
   var boxes: [AXUIElement] = []  // message boxes
-  var send: AXUIElement?  // the button that says exactly "Send"
+    var send: AXUIElement?  // the button that says exactly "Send"
+    var stop: AXUIElement?
 }
 func look(_ app: AXUIElement) -> Window {
   var found = Window()
@@ -44,6 +45,7 @@ func look(_ app: AXUIElement) -> Window {
       let text = label(e)
       if text.hasSuffix(", rename session") { found.titles.append(String(text.dropLast(", rename session".count))) }
       if text == "Send" { found.send = e }
+      if text == "Stop" || text == "Stop response" { found.stop = e }
     default:
       break
     }
@@ -84,11 +86,32 @@ struct ClaudeCompose {
     if args.contains("--check") {
       out(["titles": window.titles, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false])
     }
-    guard let title = option("--title"), let text = option("--text") else { out(["error": "Say which chat and what to send."]) }
+    var payload: [String: Any] = [:]
+    if args.contains("--json") {
+      let data = FileHandle.standardInput.readDataToEndOfFile()
+      guard data.count <= 524288, let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else { out(["error": "Invalid composer request."]) }
+      payload = decoded
+    }
+    guard let title = option("--title") else { out(["error": "Say which chat to use."]) }
+    let text = (payload["text"] as? String) ?? option("--text") ?? ""
     // The right chat, one message box, nothing typed in it.
     guard window.titles == [title] else { out(["error": "The Claude app is showing another chat.", "titles": window.titles]) }
+    if args.contains("--stop") {
+      guard let stop = window.stop, enabled(stop), AXUIElementPerformAction(stop, kAXPressAction as CFString) == .success
+      else { out(["error": "Claude's Stop button isn't available in this chat."]) }
+      out(["stopped": true])
+    }
     guard window.boxes.count == 1, let box = window.boxes.first else { out(["error": "Couldn't find the Claude app's message box."]) }
-    guard value(box).isEmpty else { out(["error": "There's a draft in that chat on your Mac.", "draft": true]) }
+    let expected = (payload["expected"] as? String) ?? ""
+    guard str(box, kAXValueAttribute) == expected else { out(["error": "The draft changed on your Mac. Reach hasn't overwritten it.", "draft": true]) }
+    if payload["draft"] as? Bool == true {
+      // No focus changes, clipboard access, key presses or Send during typing.
+      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success,
+        look(app).titles == [title], str(box, kAXValueAttribute) == text
+      else { out(["error": "Claude couldn't update this draft."]) }
+      out(["drafted": true])
+    }
     AXUIElementSetAttributeValue(box, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     // Pictures: pasted one at a time, the clipboard put back after.
     if !images.isEmpty {
@@ -114,18 +137,23 @@ struct ClaudeCompose {
       }
     }
     // The text, then a last look that it's still the same chat before Send.
-    if !text.isEmpty {
-      AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString)
+    if !text.isEmpty || !expected.isEmpty {
+      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
+      else { out(["error": "Claude couldn't update the message."]) }
       usleep(300_000)
     }
     window = look(app)
     guard window.titles == [title] else { out(["error": "The Claude app switched to another chat."]) }
+    guard window.boxes.count == 1, let currentBox = window.boxes.first, str(currentBox, kAXValueAttribute) == text
+    else { out(["error": "The message changed before Send. Reach hasn't sent it."]) }
     guard let send = window.send, enabled(send) else { out(["error": "The Claude app's Send isn't available."]) }
     guard AXUIElementPerformAction(send, kAXPressAction as CFString) == .success else { out(["error": "Couldn't press Send in the Claude app."]) }
     for _ in 0..<15 {
       usleep(200_000)
       if let box = look(app).boxes.first, value(box).isEmpty { out(["sent": true]) }
     }
-    out(["error": "The Claude app didn't take the message."])
+    // The app received Send. An uncertain UI refresh must not retry it and
+    // accidentally submit the same message twice.
+    out(["sent": true, "unconfirmed": true])
   }
 }

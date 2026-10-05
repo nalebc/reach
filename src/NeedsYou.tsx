@@ -225,7 +225,7 @@ export function agentNeeds({
   const answerable: NeedItem[] = [];
   const toOpen: NeedItem[] = [];
   const name = (s: AgentSession) => (s.agent === "codex" ? "Codex" : "Claude Code");
-  const icon = (s: AgentSession) => <AgentLogo agent={s.agent} logos={logos} size={24} fill />;
+  const icon = (s: AgentSession) => <AgentLogo agent={s.agent} logos={logos} size={24} />;
   const send = (s: AgentSession, id: string, answer: object) => async () => {
     await answerPrompt(peer, s, id, answer);
     answered?.();

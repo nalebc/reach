@@ -16,13 +16,19 @@ const exec = promisify(execFile);
 const waiting = (message) => Object.assign(new Error(message), { waiting: true });
 
 export async function typeIntoClaude(
-  { title, text = "", images = [] },
+  { title, text = "", images = [], draft, expected, stop },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
 ) {
   const file = await binary();
-  const { stdout } = await run(file, ["--title", title, "--text", text, ...images.flatMap((image) => ["--image", image])], {
+  const json = draft || expected !== undefined;
+  const call = run(file, ["--title", title, ...(stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...images.flatMap((image) => ["--image", image])], {
     timeout: 30000,
   });
+  if (json && call.child?.stdin) {
+    call.child.stdin.on("error", () => {}); // helper can refuse before reading
+    call.child.stdin.end(JSON.stringify({ text, expected: expected ?? "", draft: !!draft }));
+  }
+  const { stdout } = await call;
   let result = {};
   try {
     result = JSON.parse(String(stdout).trim().split("\n").at(-1));
@@ -47,8 +53,38 @@ export function createClaudeCompose({
   wait = (ms) => new Promise((r) => setTimeout(r, ms)),
 }) {
   const link = (session) => `claude://code/continue?session=${session}`;
+  const drafts = new Map();
+  let tail = Promise.resolve();
+  const serial = (work) => {
+    const result = tail.then(work);
+    tail = result.catch(() => {});
+    return result;
+  };
   return {
-    async deliver(id, { title, text = "", images = [] }) {
+    draft(id, { title, text, owner }) {
+      return serial(async () => {
+        if (!(await appRunning()) || shown()[0]?.id !== id)
+          throw waiting("Draft stays on your phone until this chat is visible in Claude.");
+        const previous = drafts.get(id);
+        if (previous && previous.owner !== owner) throw waiting("Another device is editing this draft.");
+        if (!previous && drafts.size >= 128) throw waiting("Too many drafts are open.");
+        const result = await type({ title, text, draft: true, expected: previous?.text ?? "" });
+        if (result?.drafted !== true) throw waiting("Claude didn't confirm the draft update.");
+        if (text) drafts.set(id, { owner, text });
+        else drafts.delete(id);
+        return { synced: true };
+      });
+    },
+    stop(id, { title }) {
+      return serial(async () => {
+        if (!(await appRunning()) || shown()[0]?.id !== id) throw waiting("Open this chat in Claude to stop it.");
+        const result = await type({ title, stop: true });
+        if (result?.stopped !== true) throw waiting("Claude didn't confirm Stop.");
+        return { stopped: true };
+      });
+    },
+    deliver(id, { title, text = "", images = [], owner }) {
+      return serial(async () => {
       if (!(await appRunning())) throw waiting("Goes in when the Claude app is open on your Mac.");
       const list = shown();
       const target = list.find((s) => s.id === id);
@@ -70,7 +106,10 @@ export function createClaudeCompose({
       }
       const since = Date.now() - 2000;
       try {
-        await type({ title, text, images });
+        const draft = drafts.get(id);
+        if (draft && draft.owner !== owner) throw waiting("Another device is editing this draft.");
+        await type({ title, text, images, ...(draft ? { expected: draft.text } : {}) });
+        drafts.delete(id);
       } finally {
         if (back) await open(link(back)).catch(() => {});
       }
@@ -79,6 +118,7 @@ export function createClaudeCompose({
       for (const until = Date.now() + confirmMs; Date.now() < until; await wait(300))
         if (await arrived(id, text, since)) return { delivered: true };
       return { delivered: true, unconfirmed: true };
+      });
     },
   };
 }

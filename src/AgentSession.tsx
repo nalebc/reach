@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import type { Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
+import { createDraftSync } from "./draft-sync";
+import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import ChatSheet from "./ChatSheet";
@@ -60,6 +62,8 @@ import {
   resetUsage,
   readSession,
   sendMessage,
+  cancelQueuedMessage,
+  syncAgentDraft,
   stopSession,
   uploadImage,
   usageLink,
@@ -878,6 +882,15 @@ export default function AgentSessionView({
       else sessionStorage.removeItem(draftKey);
     } catch {}
   }, [draftKey, text]);
+  const draftSync = useRef<ReturnType<typeof createDraftSync> | null>(null);
+  useEffect(() => {
+    if (agent !== "claude" || !initial.inApp) return;
+    const sync = createDraftSync((value) => syncAgentDraft(peer, initial, value));
+    draftSync.current = sync;
+    return () => { sync.close(); draftSync.current = null; };
+  }, [peer.url, peer.token, initial.id, agent, initial.inApp]);
+  const [queueBusy, setQueueBusy] = useState<string | null>(null);
+  const [removedQueue, setRemovedQueue] = useState<string[]>([]);
   const [switching, setSwitching] = useState(false);
   const [settings, setSettings] = useState(false);
   const [reviewing, setReviewing] = useState(true);
@@ -1065,7 +1078,10 @@ export default function AgentSessionView({
       | { type: "item"; item: SessionItem }
       | { type: "tools"; items: SessionItem[] }
     )[] = [];
-    for (const item of items || []) {
+    for (const raw of items || []) {
+      // Also normalize older companions until their server has restarted.
+      const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
+      if (item.role === "user" && !item.text && !item.images) continue;
       const last = out[out.length - 1];
       if (item.role === "tool") {
         if (last?.type === "tools") last.items.push(item);
@@ -1249,6 +1265,7 @@ export default function AgentSessionView({
     setAttachments([]);
     atBottom.current = true;
     try {
+      await draftSync.current?.flush();
       const r = await sendMessage(peer, initial, {
         text: message.text,
         images: ready.map((a) => a.id!),
@@ -1265,17 +1282,7 @@ export default function AgentSessionView({
           ),
         );
       setChoice({});
-      setNote(
-        r.queued
-          ? r.delivered
-            ? `Sent to the Codex app on your ${word}.`
-            : agent === "claude"
-              ? "Goes next, when Claude finishes in the Claude app."
-              : "Queued in the Codex app. It runs after the current turn."
-          : r.steered
-            ? "Added to the running turn."
-            : "",
-      );
+      setNote("");
       void load(false);
     } catch (e) {
       setPending((list) => list.filter((p) => p !== message));
@@ -1327,7 +1334,7 @@ export default function AgentSessionView({
       : `${elapsed}s`;
   const activity =
     live.activity ||
-    (runningElsewhere ? `Working in the ${skin.app}` : "Working");
+    "Working";
 
   return (
     <div
@@ -1523,7 +1530,7 @@ export default function AgentSessionView({
         {pending
           .filter(
             (p) =>
-              !p.messageId || !live.outbox?.some((m) => m.id === p.messageId),
+              !removedQueue.includes(p.messageId || "") && !live.outbox?.some((m) => m.id === p.messageId || m.text === p.text),
           )
           .map((p) => (
             <div key={p.id} className="as-user pending">
@@ -1538,26 +1545,6 @@ export default function AgentSessionView({
               <AgentMarkdown text={p.text} />
             </div>
           ))}
-        {/* Waiting on the Mac for their turn: kept there, so a reload or a restart loses none. */}
-        {(live.outbox || []).map((m) => (
-          <div key={m.id} className="as-user pending queued">
-            <AgentMarkdown text={m.text} />
-            {m.images ? (
-              <span className="as-tag">
-                {m.images} image{m.images === 1 ? "" : "s"}
-              </span>
-            ) : null}
-            <span className={`as-tag ${m.error ? "problem" : ""}`}>
-              {m.error
-                ? `Not sent yet: ${m.error}`
-                : m.via === "app"
-                  ? "Sending through the Claude app…"
-                  : agent === "codex"
-                    ? "Queued in the Codex app"
-                    : "Sends when Claude finishes"}
-            </span>
-          </div>
-        ))}
         {live.streaming && (
           <div className="as-assistant streaming">
             <AgentMarkdown text={live.streaming} />
@@ -1712,6 +1699,40 @@ export default function AgentSessionView({
         </section>
       )}
       <footer className="as-composer">
+        {!!live.outbox?.filter((m) => !removedQueue.includes(m.id)).length && (
+          <section className="as-queue" aria-label="Queued messages">
+            <header>Queued</header>
+            {live.outbox.filter((m) => !removedQueue.includes(m.id)).map((m) => (
+              <div className="as-queue-row" key={m.id}>
+                <div className="as-queue-message">
+                  <p>{visibleUserText(m.text) || (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message")}</p>
+                  {m.images > 0 && m.text && <small>{m.images} image{m.images === 1 ? "" : "s"}</small>}
+                  {m.error && <small role="status">{m.error}</small>}
+                </div>
+                {!m.images && <button aria-label="Edit queued message" title="Edit" disabled={!!queueBusy || !!text.trim()} onClick={async () => {
+                  setQueueBusy(m.id);
+                  try {
+                    await cancelQueuedMessage(peer, initial, m.id);
+                    setRemovedQueue((old) => [...old, m.id]);
+                    setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
+                    setText(visibleUserText(m.text));
+                    field.current?.focus({ preventScroll: true });
+                  } catch (error) { setProblem((error as Error).message); }
+                  finally { setQueueBusy(null); }
+                }}><SquarePen size={14} /></button>}
+                <button aria-label="Remove queued message" title="Remove" disabled={!!queueBusy} onClick={async () => {
+                  setQueueBusy(m.id);
+                  try {
+                    await cancelQueuedMessage(peer, initial, m.id);
+                    setRemovedQueue((old) => [...old, m.id]);
+                    setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
+                  } catch (error) { setProblem((error as Error).message); }
+                  finally { setQueueBusy(null); }
+                }}><X size={14} /></button>
+              </div>
+            ))}
+          </section>
+        )}
         {readingHistory && (
           <button
             className="as-latest"
@@ -1883,7 +1904,7 @@ export default function AgentSessionView({
               rows={1}
               value={text}
               placeholder={skin.placeholder}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => { setText(e.target.value); if (!sending) draftSync.current?.update(e.target.value); }}
               onPaste={(e) => {
                 const files = [...e.clipboardData.files];
                 if (!files.length) return;
@@ -1966,7 +1987,7 @@ export default function AgentSessionView({
             </button>
             {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
-            {runningHere && live.status !== "waiting" && !text.trim() ? (
+            {working && !reviewCount && !text.trim() ? (
               <button
                 className="as-send stop"
                 aria-label="Stop"

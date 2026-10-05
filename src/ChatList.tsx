@@ -365,15 +365,27 @@ export default function ChatList({
         </div>
       ) : (
         <>
-          {(active.length > 0 || (!!pending && onReview && !compact)) && (
+          {/* Nothing at work, but something waits: one row to review it,
+              not a heading over an empty space. */}
+          {!active.length && !!pending && onReview && !compact && (
+            <button className="chat-needs-row" onClick={onReview}>
+              <ShieldCheck size={16} />
+              <span>
+                {pending} {pending === 1 ? "request needs" : "requests need"} you
+              </span>
+              <span className="chat-needs-row-go">
+                Review <ArrowUpRight size={14} />
+              </span>
+            </button>
+          )}
+          {active.length > 0 && (
             <section
               className="chat-group chat-active-group"
               aria-label="In progress"
             >
               <div className="chat-group-heading">
                 <h2>
-                  {active.length ? "In progress" : "Needs you"}{" "}
-                  <span>{active.length || ""}</span>
+                  In progress <span>{active.length}</span>
                 </h2>
                 {!!pending && onReview && !compact && (
                   <button className="chat-review-link" onClick={onReview}>
@@ -385,7 +397,7 @@ export default function ChatList({
                   </button>
                 )}
               </div>
-              {active.length > 0 && cards(active, true)}
+              {cards(active, true)}
             </section>
           )}
           {recent.length > 0 && (

@@ -117,6 +117,32 @@
   min-width: 0;
   margin: 0 0 26px;
 }
+.chat-needs-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  margin: 0 0 22px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--lime) 22%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--lime) 7%, transparent);
+  color: var(--chat-ink, #eef2ef);
+  font-size: 14px;
+  text-align: left;
+}
+.chat-needs-row > span:first-of-type {
+  flex: 1;
+  min-width: 0;
+}
+.chat-needs-row-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--lime);
+  font-size: 13px;
+}
 .chat-group-heading {
   display: flex;
   align-items: center;

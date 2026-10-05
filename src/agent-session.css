@@ -1369,3 +1369,19 @@ button.as-mode:disabled {
 .as-details { max-height: 50%; overflow-y: auto; }
 .as-page[data-compact-viewport="true"] .as-bar { min-height: 44px; padding-block: 0; }
 .as-page[data-compact-viewport="true"] .as-scroll { padding-block: 10px; }
+.as-queue {
+  border: 1px solid var(--as-composer-line, var(--border));
+  border-radius: 16px 16px 0 0;
+  background: var(--as-composer);
+  padding: 12px 14px 8px;
+  margin: 0 8px -5px;
+  max-height: min(180px, 24dvh);
+  overflow-y: auto;
+}
+.as-queue > header { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.as-queue-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.as-queue-message { flex: 1; min-width: 0; }
+.as-queue-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.as-queue-message small { display: block; color: var(--muted); font-size: 12px; }
+.as-queue-row > button { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border: 0; background: transparent; color: var(--as-text); border-radius: 50%; }
+.as-queue-row > button:disabled { opacity: .35; }

@@ -380,6 +380,10 @@ export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
 export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; mode?: string };
+export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
+  post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
+export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, text: string) =>
+  post<{ synced: boolean; supported?: boolean }>(peer, `${sessionPath(s)}/draft`, { text });
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
   post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
     peer,

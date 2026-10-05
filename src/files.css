@@ -78,6 +78,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The plain title is text only: a flex box drops its "…" (a long folder name
+   was cut mid-word under the buttons). */
+h1.files-title {
+  display: block;
+}
 .files-title h1 {
   margin: 0;
   font: inherit;

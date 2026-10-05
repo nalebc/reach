@@ -104,6 +104,56 @@ const mac = {
 };
 const SIGN_IN_URL =
   "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback";
+
+test("approval cards keep app images icon-sized instead of filling the sheet", async () => {
+  await home([claudeSession({ status: "waiting", prompts: [{ id: "approval", kind: "tool", title: "Run tests?", decisions: ["allow", "deny"] }] })]);
+  const icon = $(".need-icon img");
+  assert.ok(icon, "test the real image path, not just the fallback SVG");
+  assert.equal(icon.style.width, "24px");
+  assert.equal(icon.style.height, "24px");
+  assert.equal(icon.classList.contains("fill"), false);
+  assert.match($(".need-card").textContent, /Run tests/);
+  assert.equal($$(".need-actions button").length, 2);
+});
+
+test("app-owned Codex turns have Stop; queued messages sit above the composer and can be edited", async () => {
+  const session = codexSession({ held: "codex-app", status: "running" });
+  mac.pages[`codex:${CODEX}`].session = session;
+  mac.live = { ...idleLive(), outbox: [{ id: "q-edit", text: "Then test", images: 0 }] };
+  const route = `/api/sessions/codex/${CODEX}/queue/q-edit/cancel`;
+  routes[route] = () => ({ deleted: true });
+  await open(session);
+  await dom.waitFor(() => $(".as-queue-row"));
+  assert.ok(button("Stop"));
+  assert.equal($(".as-scroll .as-queue"), null);
+  assert.ok($(".as-composer .as-queue"));
+  await click(button("Edit queued message"));
+  await dom.waitFor(() => $("textarea").value === "Then test");
+  assert.equal($(".as-queue-row"), null);
+  assert.deepEqual(dom.errors, []);
+  delete routes[route];
+});
+
+test("typing prepares the Claude draft without submitting and send waits for it", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}/draft`;
+  t.after(() => { delete routes[route]; });
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { synced: true });
+  await open(claudeSession());
+  await dom.waitFor(() => $("textarea"));
+  await typeInto($("textarea"), "h");
+  await typeInto($("textarea"), "ello");
+  await dom.waitFor(() => mac.sent.some((m) => m.route === route));
+  assert.deepEqual(mac.sent.filter((m) => m.route === route).map((m) => m.body.text), ["hello"]);
+  assert.ok(!mac.sent.some((m) => m.route.endsWith("/messages")));
+  await typeInto($("textarea"), " again");
+  await click(button("Send"));
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/messages")));
+  const writes = mac.sent.filter((m) => m.route === route || m.route.endsWith("/messages"));
+  assert.equal(writes.at(-2).body.text, "hello again");
+  assert.ok(writes.at(-1).route.endsWith("/messages"));
+  assert.deepEqual(dom.errors, []);
+  delete routes[route];
+});
 const record = (route) => (init) => {
   mac.sent.push({ route, body: init?.body ? JSON.parse(init.body) : null });
   return route.endsWith("/messages")
@@ -306,14 +356,14 @@ const home = async (sessions, health = signedIn, extra = {}, on = peer) => {
         s.prompts?.length || s.asking || s.consent || s.status === "waiting",
     )
   ) {
-    if (!$(".chat-review-link")) {
+    if (!$(".chat-review-link, .chat-needs-row")) {
       const waiting = sessions.find(
         (s) => s.prompts?.length || s.asking || s.consent || s.status === "waiting",
       );
       if (waiting)
         await chooseApp(waiting.agent === "claude" ? "Claude Code" : "Codex");
     }
-    await click($(".chat-review-link"));
+    await click($(".chat-review-link, .chat-needs-row"));
   } else {
     const selected =
       dom.window.localStorage.getItem("reach.chatAgent") || "codex";
@@ -1311,20 +1361,20 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
     ],
   };
   await open(claudeSession({ status: "running" }));
-  await dom.waitFor(() => $$(".as-user.pending.queued").length === 2);
-  const [first, second] = $$(".as-user.pending.queued");
+  await dom.waitFor(() => $$(".as-queue-row").length === 2);
+  const [first, second] = $$(".as-queue-row");
   assert.equal(first.querySelector("p").textContent, "Run the tests");
   assert.deepEqual(
-    [...first.querySelectorAll(".as-tag")].map((t) => t.textContent),
-    ["1 image", "Sends when Claude finishes"],
+    [...first.querySelectorAll("small")].map((t) => t.textContent),
+    ["1 image"],
   );
   assert.equal(
-    second.querySelector(".as-tag.problem").textContent,
-    "Not sent yet: Claude Code is signed out on your Mac.",
+    second.querySelector("[role=status]").textContent,
+    "Claude Code is signed out on your Mac.",
   );
   // Handed over: it leaves the outbox (and shows from the transcript).
   mac.bump({ outbox: [mac.live.outbox[1]] });
-  await dom.waitFor(() => $$(".as-user.pending.queued").length === 1);
+  await dom.waitFor(() => $$(".as-queue-row").length === 1);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -1860,7 +1910,7 @@ test("a Mac prompt's card can open the live screen on the dialog itself, a passw
       showOnScreen: (p) => shown.push(p.id),
     }),
   );
-  await click($(".chat-review-link"));
+  await click($(".chat-review-link, .chat-needs-row"));
   const [first, second] = $$(".chat-home .need-card");
   assert.deepEqual(
     [...first.querySelectorAll(".need-actions button")].map((b) => [
@@ -2015,7 +2065,7 @@ test("reviews stay with their app, retain device dialogs, and send each app's ex
   );
   await click(button("Close needs you"));
   await chooseApp("Claude Code");
-  await click($(".chat-review-link"));
+  await click($(".chat-review-link, .chat-needs-row"));
   const cards = $$(".chat-home .need-card");
   assert.deepEqual(
     cards.map((c) => c.querySelector("strong").textContent),
@@ -2527,11 +2577,9 @@ test("on a Windows computer, a Codex session says computer: signed out, sent to 
     await dom.waitFor(() => $("textarea"));
     await typeInto($("textarea"), "hi");
     await click(button("Send"));
-    await dom.waitFor(() => $(".as-hint"));
-    assert.equal(
-      $(".as-hint").textContent,
-      "Sent to the Codex app on your computer.",
-    );
+    await dom.waitFor(() => mac.sent.some((s) => s.route === route));
+    await settle();
+    assert.equal($(".as-hint"), null, "delivery does not add transport commentary to the chat");
   } finally {
     routes[route] = saved;
   }
@@ -2752,7 +2800,7 @@ test("an app's pending badge exposes its old pending work without mixing other a
   await chooseApp("Claude Code");
   assert.equal($(".chat-card strong").textContent, "Older pending chat");
   assert.equal($(".needs-you"), null);
-  assert.ok($(".chat-review-link"));
+  assert.ok($(".chat-review-link, .chat-needs-row"));
   assert.deepEqual(dom.errors, []);
 });
 
@@ -2840,7 +2888,7 @@ test("failed Mac approval keeps a visible live-screen handoff even without dialo
     feed: { sessions: [], health: signedIn, errors: {}, failure: "", macPrompts: [request], reload: async () => {}, recheck: () => {} },
     showOnScreen: (p) => shown.push(p),
   }));
-  await click($(".chat-review-link"));
+  await click($(".chat-review-link, .chat-needs-row"));
   const card = $(".need-card");
   assert.ok(card.querySelector(".need-screen button"), "handoff is visible without expanding details");
   await click(button("Allow"));
@@ -2867,7 +2915,7 @@ test("Mac authentication clears the password, prevents duplicate sends, and prom
     feed: { sessions: [], health: signedIn, errors: {}, failure: "", macPrompts: [{ id: "auth-flow", kind: "password", title: "Password", detail: "", app: null }], reload: async () => refreshed++, recheck: () => {} },
     showOnScreen: (p) => shown.push(p.id),
   }));
-  await click($(".chat-review-link"));
+  await click($(".chat-review-link, .chat-needs-row"));
   const field = $(".mac-password input");
   assert.equal(field.type, "password");
   const form = $(".mac-password");

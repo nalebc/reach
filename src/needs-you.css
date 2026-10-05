@@ -69,7 +69,13 @@
   grid-area: icon;
   align-self: start;
   display: inline-flex;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  position: relative;
+  overflow: hidden;
 }
+.need-icon > .agent-logo { max-width: 100%; max-height: 100%; object-fit: contain; }
 .need-text {
   grid-area: text;
   min-width: 0;
@@ -140,6 +146,7 @@
 .need-dots button.on {
   background: #f2f2f2;
 }
+.reach-chat-sheet .need-dots button.on { background: transparent; }
 .need-more {
   margin-top: 10px;
 }

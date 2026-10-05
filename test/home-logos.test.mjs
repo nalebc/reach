@@ -111,7 +111,7 @@ test("Mac requests show their available actions and a noninteractive dialog prev
     cards().map((c) => c.querySelector("strong").textContent),
     [
       "“Claude” wants access to control “Terminal”. Allowing control will provide access to documents and data in “Terminal”.",
-      "Your Mac is asking for your password",
+      "Your Mac needs authentication",
       "Your Mac is asking about an app",
     ],
   );

@@ -332,6 +332,7 @@ export function createAgentSessions({
   // that can't go yet says why.
   let closed = false;
   const delivering = new Set();
+  const deliveringMessage = new Map();
   const deliver = async (id) => {
     if (delivering.has(id)) return;
     delivering.add(id);
@@ -346,8 +347,9 @@ export function createAgentSessions({
         const next = outbox.list(id)[0];
         if (!next) break;
         try {
+          deliveringMessage.set(id, next.id);
           if (next.via === "app") {
-            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images });
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}) });
             outbox.remove(id, next.id);
             continue;
           }
@@ -361,6 +363,8 @@ export function createAgentSessions({
           outbox.remove(id, messageId);
         } catch (e) {
           outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
+        } finally {
+          deliveringMessage.delete(id);
         }
       }
     } finally {
@@ -397,7 +401,7 @@ export function createAgentSessions({
       // itself, so its window shows it at once (Reach's own Claude Code
       // process never showed there). The app signs in on its own.
       if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
-        const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled" });
+        const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}) });
         void deliver(id);
         return { queued: true, delivered: false, messageId: queued.id, via: "app" };
       }
@@ -417,7 +421,31 @@ export function createAgentSessions({
       startedHere.add(started.threadId);
       return started;
     },
-    stop: async (agent, id) => host(agent).stop(id),
+    async draft(agent, id, { text, owner }) {
+      adapter(agent);
+      if (agent !== "claude" || !claudeCompose?.draft) return { synced: false, supported: false };
+      if (outbox.list(id).length) throw Object.assign(new Error("Waiting for the previous message to send."), { status: 409 });
+      const { session } = await claude.read(id, { limit: 1 });
+      if (!session.inApp || claudeHost.drives(id)) return { synced: false, supported: false };
+      return claudeCompose.draft(id, { title: session.appTitle || "Untitled", text, owner });
+    },
+    async stop(agent, id) {
+      const current = host(agent);
+      if (agent === "claude" && !claudeHost.drives(id) && claudeCompose?.stop) {
+        const { session } = await claude.read(id, { limit: 1 });
+        if (session.inApp) return claudeCompose.stop(id, { title: session.appTitle || "Untitled" });
+      }
+      return current.stop(id);
+    },
+    async cancelQueued(agent, id, messageId) {
+      if (host(agent) === codexLive) return codexLive.cancelQueued(id, messageId);
+      if (deliveringMessage.get(id) === messageId)
+        throw Object.assign(new Error("That message is being sent. Wait for the chat to update."), { status: 409 });
+      if (!outbox.list(id).some((m) => m.id === messageId))
+        throw Object.assign(new Error("That message already left the queue."), { status: 409 });
+      outbox.remove(id, messageId);
+      return { deleted: true };
+    },
     // A Mac dialog answered from the phone: one of its own buttons, or the
     // Mac's password typed into its password dialog.
     pressMacPrompt: async (id, button) => {
