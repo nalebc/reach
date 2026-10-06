@@ -291,6 +291,14 @@ export const CODEX_MODE_CHOICES = [
 
 export type AgentFeed = ReturnType<typeof useAgentSessions>;
 
+type SessionList = {
+  sessions: AgentSession[];
+  errors: Record<string, string>;
+  projects?: { codex?: AgentProject[] };
+  macPrompts?: MacPrompt[];
+  version: string;
+};
+
 // One feed for the whole app, started as soon as Reach connects: Home, the
 // Chat tab and its badge all read it. Polls while the page is visible; the
 // list is cheap (cached on the server).
@@ -301,35 +309,44 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
   const [macPrompts, setMacPrompts] = useState<MacPrompt[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
   const [failure, setFailure] = useState("");
-  const alive = useRef(true);
+  // Bumped when the feed stops or restarts: answers to requests sent
+  // before are dropped, so an old "unchanged" can't set `known` over the
+  // emptied list (the Chat tab stuck on "Finding your conversations…").
+  const run = useRef(0);
   // The version we hold; an unchanged list costs a few bytes and no render.
   const known = useRef("");
+  // Whether a list is held for `known` to stand for.
+  const held = useRef(false);
   // Health on demand (after signing in), besides once a minute.
   const recheck = useRef<() => void>(() => {});
   const key = peer ? `${peer.url} ${peer.token}` : "";
   const load = useCallback(async () => {
     if (!peer || document.hidden) return;
+    const mine = run.current;
+    const ask = (since: string) =>
+      request<{ unchanged: true; version: string } | SessionList>(
+        peer,
+        `/api/sessions${since ? `?known=${since}` : ""}`,
+      );
     try {
-      const r = await request<
-        | { unchanged: true; version: string }
-        | {
-            sessions: AgentSession[];
-            errors: Record<string, string>;
-            projects?: { codex?: AgentProject[] };
-            macPrompts?: MacPrompt[];
-            version: string;
-          }
-      >(peer, `/api/sessions${known.current ? `?known=${known.current}` : ""}`);
-      if (!alive.current) return;
-      known.current = r.version;
+      let r = await ask(known.current);
+      if (mine !== run.current) return;
+      // "Unchanged", yet no list here to keep: ask for the whole of it.
+      if ("unchanged" in r && !held.current) {
+        known.current = "";
+        r = await ask("");
+        if (mine !== run.current) return;
+      }
       setFailure("");
       if ("unchanged" in r) return;
+      known.current = r.version;
+      held.current = true;
       setSessions(r.sessions);
       setErrors(r.errors || {});
       setProjects(r.projects?.codex || []);
       setMacPrompts(r.macPrompts || []);
     } catch (e) {
-      if (alive.current) setFailure((e as Error).message);
+      if (mine === run.current) setFailure((e as Error).message);
     }
   }, [key]);
   useEffect(() => {
@@ -337,8 +354,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     setErrors({});
     setHealth([]);
     known.current = "";
+    held.current = false;
     if (!peer) return;
-    alive.current = true;
     void load();
     const timer = setInterval(() => void load(), everyMs);
     const visible = () => !document.hidden && void load();
@@ -360,7 +377,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     void checkHealth();
     const healthTimer = setInterval(checkHealth, 60000);
     return () => {
-      alive.current = false;
+      run.current++;
       clearInterval(timer);
       healthActive = false;
       clearInterval(healthTimer);
