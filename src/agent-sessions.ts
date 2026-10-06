@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { post, request, type Peer } from "./api";
 
 // Every Codex and Claude Code session on the computer (server/agent-sessions).
-export type AgentName = "codex" | "claude";
+export type AgentName = "codex" | "claude" | "gemini";
 export type AgentSession = {
   agent: AgentName;
   id: string;
@@ -170,7 +170,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : agent === "openclaw" ? "OpenClaw" : agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw" })[agent] || agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -270,6 +270,13 @@ const MODES: Record<AgentName, Record<string, string>> = {
     plan: "Plan",
     bypassPermissions: "Bypass permissions",
     dontAsk: "Don't ask",
+  },
+  // Gemini CLI's --approval-mode choices.
+  gemini: {
+    default: "Default",
+    auto_edit: "Auto-edit",
+    yolo: "YOLO",
+    plan: "Plan",
   },
 };
 export const modeLabel = (agent: AgentName, mode?: string | null) =>

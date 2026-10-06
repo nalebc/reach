@@ -138,6 +138,15 @@ const SKIN = {
     where: Laptop,
     disclaimer: "Claude is AI and can make mistakes.",
   },
+  // Gemini CLI's sessions, in the Gemini app's look; its own prompt words.
+  gemini: {
+    placeholder: "Type your message or @path/to/file",
+    app: "Gemini CLI",
+    menu: AlignLeft,
+    compose: SquarePen,
+    where: Terminal,
+    disclaimer: "",
+  },
 } as const;
 
 // Under the newest reply, as both apps put them: copy it, share it.
@@ -1122,7 +1131,9 @@ export default function AgentSessionView({
   const claudeSignedOut =
     !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
   const blocked =
-    agent === "claude"
+    agent === "gemini"
+      ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app."
+      : agent === "claude"
       ? elsewhere === "terminal"
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
@@ -1173,7 +1184,7 @@ export default function AgentSessionView({
   const needsSignIn =
     agent === "claude"
       ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
-      : !!codexHealth && codexHealth.installed && !codexHealth.signedIn;
+      : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn;
 
   const modelId = choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
@@ -1830,7 +1841,7 @@ export default function AgentSessionView({
             )}
           </div>
         )}
-        {(claudeLimit || outOfUsage) && (
+        {(claudeLimit || outOfUsage || agent === "gemini") && (
           <MoveOffer variant="usage" peer={peer} session={info} health={health} logos={logos} word={word} onMoved={onSelect} />
         )}
         {(problem || note || blocked) && (
@@ -1842,7 +1853,7 @@ export default function AgentSessionView({
           <AgentAccess
             peer={peer}
             agent={agent}
-            health={agent === "claude" ? claudeHealth : codexHealth}
+            health={health.find((h) => h.agent === agent)}
             logos={logos}
             onSignedIn={onSignedIn}
           />

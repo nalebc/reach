@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
+  agentLabel,
   answerPrompt,
   openMacSetting,
   pressMacButton,
@@ -224,7 +225,7 @@ export function agentNeeds({
 }): NeedItem[] {
   const answerable: NeedItem[] = [];
   const toOpen: NeedItem[] = [];
-  const name = (s: AgentSession) => (s.agent === "codex" ? "Codex" : "Claude Code");
+  const name = (s: AgentSession) => agentLabel(s.agent);
   const icon = (s: AgentSession) => <AgentLogo agent={s.agent} logos={logos} size={24} />;
   const send = (s: AgentSession, id: string, answer: object) => async () => {
     await answerPrompt(peer, s, id, answer);

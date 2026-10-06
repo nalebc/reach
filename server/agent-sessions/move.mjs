@@ -19,7 +19,7 @@ export const MOVE_BUDGET = 480_000;
 export const INJECT_BATCH = 120_000;
 
 export const agentName = (agent) =>
-  ({ codex: "Codex", claude: "Claude Code", openclaw: "OpenClaw" })[agent] || agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw" })[agent] || agent;
 
 const oneLine = (text, max) => {
   const line = String(text || "").replace(/\s+/g, " ").trim();

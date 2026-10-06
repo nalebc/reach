@@ -76,6 +76,32 @@
   --as-reply-font: "anthropic-serif", ui-serif, "New York", Georgia, "Times New Roman", serif;
   --as-user-font: "anthropic-sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
+/* Gemini CLI's sessions, in the Gemini app's dark theme (its Material 3
+   surfaces: page #131314, raised #1e1f20, the user's bubble #282a2c, text
+   #e3e3e3, the light-blue send). */
+.as-page.gemini,
+.chat-home.gemini {
+  --as-bg: #131314;
+  --as-text: #e3e3e3;
+  --as-muted: #9aa0a6;
+  --as-faint: #80868b;
+  --as-line: rgb(255 255 255 / 0.1);
+  --as-bubble: #282a2c;
+  --as-field: #1e1f20;
+  --as-field-line: rgb(255 255 255 / 0.1);
+  --as-card: #1e1f20;
+  --as-code-bg: #1e1f20;
+  --as-code-line: rgb(255 255 255 / 0.08);
+  --as-inline: #a8c7fa;
+  --as-accent: #a8c7fa;
+  --as-float: #1e1f20;
+  --as-float-line: rgb(255 255 255 / 0.08);
+  --as-chip: #282a2c;
+  --as-composer: #1e1f20;
+  --as-composer-line: transparent;
+  --as-send-ready: #a8c7fa;
+  --as-send-ready-ink: #062e6f;
+}
 @media (max-width: 1024px), (pointer: coarse) {
   .as-page {
     position: fixed;

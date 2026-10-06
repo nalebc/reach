@@ -21,6 +21,7 @@ import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
 import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
+import { createGeminiSessions } from "./gemini.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -99,6 +100,11 @@ export function createAgentSessions({
   codex = createCodexSessions({ daemon }),
   codexLive = createCodexLive({ daemon }),
   claude = createClaudeSessions(),
+  // Gemini CLI's sessions, read from its own files (gemini.mjs); none of
+  // this Mac's in tests.
+  gemini = createGeminiSessions(
+    process.env.NODE_TEST_CONTEXT ? { home: path.join(os.tmpdir(), "reach-no-gemini"), locate: async () => null } : {},
+  ),
   live = liveClaudeSessions,
   // background: deliver the link without bringing the app forward.
   open = (url, { background = false } = {}) =>
@@ -182,7 +188,7 @@ export function createAgentSessions({
   // Chats continued with the other agent, both ways (move.mjs).
   moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
 } = {}) {
-  const adapters = { codex, claude };
+  const adapters = { codex, claude, gemini };
   const adapter = (agent) => {
     const a = adapters[agent];
     if (!a) throw Object.assign(new Error("Unknown agent."), { status: 404 });
@@ -223,8 +229,8 @@ export function createAgentSessions({
     createAgentAsks({
       socketPath: agentAskSocket(dataDir),
       ...(macIdle ? { idle: macIdle } : {}),
-      skip: (agent, id) => (agent === "codex" ? codexLive.drives(id) : claudeHost.drives(id)),
-      watching: (agent, id) => !!(agent === "codex" ? codexLive.watched?.(id) : claudeHost.watched?.(id)),
+      skip: (agent, id) => !!hosts[agent]?.drives(id),
+      watching: (agent, id) => !!hosts[agent]?.watched?.(id),
       shows: async (agent, id) => {
         if (agent === "claude") {
           const where = (await liveNow()).get(id)?.where;
@@ -395,7 +401,36 @@ export function createAgentSessions({
     if (startedHere.delete(id)) void claudeImports.add(id);
     else if (wrote) void claudeRefresh.add(id);
   });
-  const host = (agent) => (adapter(agent), agent === "codex" ? codexLive : claudeHost);
+  // Who replies in each agent's chats from Reach. Gemini CLI's are read
+  // only: Google stopped serving it to personal accounts (verified Oct 5,
+  // its own answer: "no longer supported … migrate to … Antigravity").
+  const hosts = { codex: codexLive, claude: claudeHost };
+  const host = (agent) => {
+    adapter(agent);
+    if (!hosts[agent])
+      throw Object.assign(
+        new Error(
+          agent === "gemini"
+            ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app."
+            : `Reach can't reply in ${agentName(agent)} chats yet.`,
+        ),
+        { status: 409 },
+      );
+    return hosts[agent];
+  };
+  // An agent's live state; one Reach doesn't reply in yet is idle, and its
+  // long poll just waits (an instant answer would spin the phone's poll).
+  const quiet = {
+    view: () => ({ version: 0, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 }),
+    changes: (id, version, ms, signal) =>
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, Math.max(0, Number(ms) || 0));
+        signal?.addEventListener?.("abort", () => (clearTimeout(timer), resolve()));
+      }),
+  };
+  const liveHost = (agent) => (adapter(agent), hosts[agent] || quiet);
+  // Each agent's working/waiting status, from what its host knows.
+  const statusOf = (agent) => (agent === "claude" ? claudeStatus : agent === "codex" ? codexStatus : () => {});
   // A whole Codex chat, oldest first, kept a minute (a moved chat pages
   // through the one it continues).
   const codexWhole = new Map();
@@ -434,7 +469,13 @@ export function createAgentSessions({
     };
   };
   const history = (agent, id) =>
-    agent === "claude" ? claude.history(id) : agent === "openclaw" ? clawHistory(id) : codexHistory(id);
+    agent === "claude"
+      ? claude.history(id)
+      : agent === "openclaw"
+        ? clawHistory(id)
+        : agent === "gemini"
+          ? gemini.history(id)
+          : codexHistory(id);
   // The apps a chat can move between.
   const movable = () => ["codex", "claude", ...(openClaw ? ["openclaw"] : [])];
   // Where a chat was when it moved: up to its last item then (or as many
@@ -617,7 +658,7 @@ export function createAgentSessions({
           ? claudeConsent.answer(id, promptId, answer)
           : host(agent).respond(id, promptId, answer),
     view(agent, id) {
-      const view = host(agent).view(id);
+      const view = liveHost(agent).view(id);
       const asked = agentAsks.prompts?.(agent, id) || [];
       return {
         ...view,
@@ -642,7 +683,7 @@ export function createAgentSessions({
     },
     // Long poll: resolves when the session changes, or after `ms`.
     changes(agent, id, since, ms, signal) {
-      const hostVersion = host(agent).view(id).version;
+      const hostVersion = liveHost(agent).view(id).version;
       if (hostVersion + (agentAsks.version?.(agent, id) || 0) + outbox.version() !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
         const stops = [];
@@ -652,7 +693,7 @@ export function createAgentSessions({
         };
         if (agentAsks.onChange) stops.push(agentAsks.onChange((a, sessionId) => a === agent && sessionId === id && done()));
         stops.push(outbox.onChange((sessionId) => agent === "claude" && sessionId === id && done()));
-        host(agent).changes(id, hostVersion, ms, signal).then(done);
+        liveHost(agent).changes(id, hostVersion, ms, signal).then(done);
       });
     },
     // The Codex app's "Reset usage": spends one of the account's resets.
@@ -663,6 +704,7 @@ export function createAgentSessions({
     async models(agent) {
       adapter(agent);
       if (agent === "codex") return codex.models();
+      if (agent === "gemini") return { models: [], modes: [], mode: null };
       const [list, modes] = await Promise.all([claudeHost.models(), claudeHost.modes?.().catch(() => []) || []]);
       return {
         models: list.map((m) => ({
@@ -698,13 +740,13 @@ export function createAgentSessions({
       daemon.close?.();
     },
     async list() {
-      const [c, k, p] = await Promise.allSettled([codex.list(), claude.list(), codex.projects?.() ?? []]);
-      const sessions = [...(c.value || []), ...(k.value || [])];
+      const [c, k, p, g] = await Promise.allSettled([codex.list(), claude.list(), codex.projects?.() ?? [], gemini.list()]);
+      const sessions = [...(c.value || []), ...(k.value || []), ...(g.value || [])];
       // The prompts each waits on (answerable from the Needs-you strip): Reach's
       // own turns' and the agents' hooks'.
       for (const s of sessions) {
-        const driven = s.agent === "codex" ? codexLive.drives(s.id) : claudeHost.drives(s.id);
-        const asked = [...(driven ? host(s.agent).view(s.id).prompts || [] : []), ...(agentAsks.prompts?.(s.agent, s.id) || [])];
+        const driven = !!hosts[s.agent]?.drives(s.id);
+        const asked = [...(driven ? hosts[s.agent].view(s.id).prompts || [] : []), ...(agentAsks.prompts?.(s.agent, s.id) || [])];
         if (asked.length) s.prompts = asked;
       }
       try {
@@ -715,7 +757,7 @@ export function createAgentSessions({
       } catch {
         /* Live status is a hint; the list stands without it. */
       }
-      for (const s of sessions) (s.agent === "claude" ? claudeStatus : codexStatus)(s);
+      for (const s of sessions) statusOf(s.agent)(s);
       // Continued from the other agent: said in the list, with its app.
       for (const s of sessions) {
         const origin = moves.into(s.agent, s.id);
@@ -731,6 +773,7 @@ export function createAgentSessions({
         errors: {
           ...(c.status === "rejected" ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
           ...(k.status === "rejected" ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
+          ...(g.status === "rejected" ? { gemini: g.reason?.message || "Gemini CLI sessions are unavailable." } : {}),
         },
       };
     },
@@ -775,7 +818,7 @@ export function createAgentSessions({
         if (claudeHost.drives(id)) result.session.held = "reach";
         else if (running.has(id)) withLive(result.session, running.get(id));
       }
-      (agent === "claude" ? claudeStatus : codexStatus)(result.session);
+      statusOf(agent)(result.session);
       // Waiting on you in another app (the Claude app, a terminal): what it
       // asks, from the transcript, where it was written before you answer.
       // Only the newest page ends where Claude is now.
@@ -826,7 +869,12 @@ export function createAgentSessions({
         ...(i === 1 && results[2].status === "fulfilled" ? { app: results[2].value } : {}),
       }));
       const others = await detect({ fresh }).catch(() => []);
-      return [...driven, ...others];
+      // Gemini CLI: its chats are read here (gemini.mjs), so it's one Reach
+      // supports, whatever the generic detection says.
+      const gem = await gemini.health().catch(() => null);
+      const merged = others.map((o) => (o.agent === "gemini" && gem?.installed ? { ...o, ...gem, name: o.name || "Gemini CLI", supported: true } : o));
+      if (gem?.installed && !merged.some((o) => o.agent === "gemini")) merged.push({ ...gem, name: "Gemini CLI", supported: true });
+      return [...driven, ...merged];
     },
     // Slash commands the agent offers after "/" (Claude Code's from its handshake).
     async commands(agent) {

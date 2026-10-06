@@ -485,7 +485,7 @@ function AgentStatus({
         <strong>Set up {name} on {peer.name}</strong>
         <p>{name} isn't installed on this {computerWord(peer.platform)}. Install it there, then check again to discover your conversations.</p>
         <div className="chat-setup-actions">
-          <a href={agent === "codex" ? "https://developers.openai.com/codex/cli/" : "https://code.claude.com/docs/en/setup"} target="_blank" rel="noopener noreferrer">Install {name}</a>
+          <a href={agent === "codex" ? "https://developers.openai.com/codex/cli/" : agent === "gemini" ? "https://github.com/google-gemini/gemini-cli" : "https://code.claude.com/docs/en/setup"} target="_blank" rel="noopener noreferrer">Install {name}</a>
           <button onClick={recheck}>Check again</button>
         </div>
       </section>
@@ -559,7 +559,9 @@ export default function EverythingChat({
         list.push({
           agent: item.agent,
           name: item.name || item.agent,
-          supported: item.agent === "openclaw",
+          // OpenClaw has its own space; others as the Mac says (Gemini CLI's
+          // chats are read here).
+          supported: item.agent === "openclaw" || !!item.supported,
         });
     }
     return list;
@@ -568,7 +570,7 @@ export default function EverythingChat({
   useEffect(() => {
     if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent("codex");
   }, [health, apps, savedAgent]);
-  const current: AgentName = picked.agent === "claude" ? "claude" : "codex";
+  const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review">("");
   // An OpenClaw chat to open in its own space (one a chat just moved to).
@@ -697,7 +699,8 @@ export default function EverythingChat({
             onAgentChange={setAgent}
             appPending={appPending}
             onRefresh={() => { recheck(); void reload(); }}
-            canStart={!needsSetup}
+            // Gemini CLI chats are read here (it no longer answers personal accounts): no new ones.
+            canStart={!needsSetup && picked.agent !== "gemini"}
             setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}
             errors={
               errors[picked.agent]

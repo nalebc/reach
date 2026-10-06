@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Pencil,
   Plus,
+  Sparkle,
   Sparkles,
   Terminal,
   Upload,
@@ -50,7 +51,7 @@ const ACTIVE_MS = 4000;
 type Story = {
   key: string;
   name: string;
-  kind: "codex" | "claude" | "shell" | "chat";
+  kind: "codex" | "claude" | "gemini" | "shell" | "chat";
   mac?: boolean;
   state: "attention" | "active" | "running" | "idle";
   line?: string;
@@ -58,7 +59,7 @@ type Story = {
   open: () => void;
 };
 const kindOf = (name: string): Story["kind"] =>
-  /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : "shell";
+  /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : /gemini/i.test(name) ? "gemini" : "shell";
 // Codex, Claude Code and terminals wear their real app icons (from the Mac),
 // filling the round frame.
 const Glyph = ({
@@ -80,6 +81,8 @@ const Glyph = ({
     <Sparkles size={22} />
   ) : kind === "claude" ? (
     <Asterisk size={24} />
+  ) : kind === "gemini" ? (
+    <Sparkle size={22} />
   ) : kind === "chat" ? (
     <MessageSquare size={21} />
   ) : (

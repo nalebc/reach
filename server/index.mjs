@@ -77,6 +77,7 @@ import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
+import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
@@ -363,7 +364,7 @@ export async function createReach(overrides = {}) {
     const count = agentSessions.asks.prompts?.(agent, sessionId)?.length || 0;
     if (count > (askCounts.get(key) || 0))
       notify({
-        title: `${agent === "codex" ? "Codex" : "Claude Code"} needs your answer`,
+        title: `${agentName(agent)} needs your answer`,
         tag: `ask-${String(sessionId).slice(0, 8)}`,
       });
     if (count) askCounts.set(key, count);
@@ -1900,12 +1901,12 @@ export async function createReach(overrides = {}) {
     );
     record(
       "session",
-      `Opened a ${req.params.agent === "codex" ? "Codex" : "Claude Code"} session on the Mac`,
+      `Opened a ${agentName(req.params.agent)} session on the Mac`,
     );
     res.json(result);
   });
   // Replying, approving and starting sessions, as in the agents' own apps.
-  const agentLabel = (agent) => (agent === "codex" ? "Codex" : "Claude Code");
+  const agentLabel = agentName;
   const agentImages = createAgentImages({
     dir: path.join(config.dataDir, "agent-images"),
   });
@@ -1966,7 +1967,7 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/commands", async (req, res) =>
     res.json({
       commands: await agentSessions.commands(
-        req.query.agent === "claude" ? "claude" : "codex",
+        ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
       ),
     }),
   );
@@ -1982,7 +1983,7 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/models", async (req, res) =>
     res.json(
       await agentSessions.models(
-        req.query.agent === "claude" ? "claude" : "codex",
+        ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
       ),
     ),
   );
@@ -2077,7 +2078,7 @@ export async function createReach(overrides = {}) {
   // (agent-sessions/move.mjs); the new chat's address comes back.
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
     const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to });
-    record("session", `Continued a chat in ${moved.agent === "codex" ? "Codex" : "Claude Code"}`);
+    record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
   app.post("/api/sessions/:agent/:id/draft", async (req, res) => {
