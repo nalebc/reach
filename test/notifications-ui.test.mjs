@@ -13,7 +13,11 @@ let items = [],
   fail = false,
   refuse = false,
   asked = 0;
-before(async () => {
+before(async (t) => {
+  // Emit Node 22's one-time MockTimers warning before capturing React errors.
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.timers.reset();
+  await new Promise(resolve => setImmediate(resolve));
   dom = await startDom({
     routes: {
       "/api/push": () => ({ key: "test" }),

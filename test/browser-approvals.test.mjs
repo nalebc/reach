@@ -333,7 +333,7 @@ test("restricted terminal binds the folder and exact command, requires owner app
   } });
   f.client.policy = { browser: true, restrictedTerminal: true, roots: ["/shared"], screen: "off" };
   const r = f.queue.request(f.client, { type: "terminal", command: "ls", root: 0, reason: "Inspect project files" });
-  assert.equal(r.folder, "/shared");
+  assert.equal(r.folder, path.normalize("/shared"));
   assert.equal(r.status, "pending");
   assert.equal(executions, 0);
   await assert.rejects(f.queue.decide(f.client, r.id, "approve", () => f.client), { status: 403 });

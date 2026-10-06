@@ -160,7 +160,7 @@ test('Desktop terminal read commands run immediately, log outcomes and cannot es
   assert.deepEqual((await other.as('/api/browser/terminal/history')).body,[]);
   assert.equal((await bot.as('/api/agents/browser-terminal-history')).status,403);
 });
-test('supported Desktop changes wait for exact owner approval and never enlarge directory scope',async t=>{
+test('supported Desktop changes wait for exact owner approval and never enlarge directory scope',{skip:process.platform==='win32'&&'File mutations deliberately require POSIX path guarantees'},async t=>{
   const f=await start(t); desktop(f);
   const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
   const missing=await command(bot,'mkdir missing/new');assert.equal(missing.body.status,'failed');assert.ok((await bot.as('/api/browser/terminal/history')).body.some(r=>r.id===missing.body.id));
@@ -176,7 +176,7 @@ test('supported Desktop changes wait for exact owner approval and never enlarge 
   assert.ok((await f.call('/api/agents/browser-terminal-history')).body.some(r=>r.id===made.body.id));
   const noDirect=await bot.as('/api/browser/requests',{method:'POST',body:{type:'terminal-change',command:'sh -c pwd',root:0,reason:'escape'}});assert.equal(noDirect.status,400);
 });
-test('terminal change denial and revocation prevent dispatch and log denial',async t=>{
+test('terminal change denial and revocation prevent dispatch and log denial',{skip:process.platform==='win32'&&'File mutations deliberately require POSIX path guarantees'},async t=>{
   const f=await start(t);desktop(f);const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
   const denied=await command(bot,'rm notes.txt');assert.equal((await f.call(`/api/agents/browser-requests/${denied.body.id}`,{method:'POST',body:{decision:'deny'}})).body.status,'denied');
   assert.equal((await bot.as('/api/browser/terminal/history')).body.find(r=>r.id===denied.body.id).status,'denied');
@@ -189,7 +189,9 @@ test('automatic reads do not consume approval capacity and denied terminal batch
   const f=await start(t); desktop(f);
   const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
   for(let i=0;i<12;i++) assert.equal((await command(bot,'pwd')).body.status,'executed');
-  const change=await command(bot,'touch approved.txt');assert.equal(change.status,202,JSON.stringify(change.body));
+  const change=await command(bot,'touch approved.txt');
+  if(process.platform==='win32'){assert.equal(change.body.status,'failed');assert.match(change.body.error,/not supported on Windows/);assert.equal(fs.existsSync(path.join(f.dir,'Desktop/approved.txt')),false);}
+  else assert.equal(change.status,202,JSON.stringify(change.body));
   const sequence=await bot.submit({type:'batch',actions:[{type:'terminal',root:0,command:'pwd'},{type:'terminal',root:0,command:'ls'}],reason:'Read folder'});
   await f.call(`/api/agents/browser-requests/${sequence.id}`,{method:'POST',body:{decision:'deny'}});
   const history=(await f.call('/api/agents/browser-terminal-history')).body;
@@ -213,7 +215,7 @@ test('script runs only once after explicit owner review, with immutable command 
  assert.equal(f.captures(),0);assert.equal(f.inputs.length,0);
 });
 
-test('owner may remember one exact command for this invitation only; same-name new invitations start pending',async t=>{
+test('owner may remember one exact command for this invitation only; same-name new invitations start pending',{skip:process.platform==='win32'&&'File mutations deliberately require POSIX path guarantees'},async t=>{
  const f=await start(t);desktop(f);const grant={name:'Muse',folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'};
  const bot=await f.join(grant);const first=await command(bot,'touch session.txt');const route=`/api/agents/browser-requests/${first.body.id}`;
  assert.equal((await bot.as(route,{method:'POST',body:{decision:'approve-session',reviewedTerminalChange:true}})).status,403);

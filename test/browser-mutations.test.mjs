@@ -30,7 +30,7 @@ test("mutation grammar is an exact finite file-operation language", () => {
   for (const command of ["sudo rm notes.txt", "sh -c pwd", "python code.py", "./script", "mkdir -p a/b", "rm -rf a", "mv a b", "ln -s a b", "cp a b c", "rm a b", "touch /tmp/x", "touch ../x", "touch a/../x", "touch ~/x", "touch C:/x", "touch $HOME/x", "touch `pwd`", "touch x; rm y", "touch x\nrm y", "touch x | cat", "touch x > y", "touch x\\ y", 'touch "unterminated', "touch .", "touch x*", "touch a\u202eb"]) assert.throws(() => parseBrowserMutation(command), /Supported file changes/, command);
 });
 
-test("approved changes create/copy/remove only bounded regular files within the selected folder", async (t) => {
+test("approved changes create/copy/remove only bounded regular files within the selected folder", { skip: process.platform === "win32" && "File mutations deliberately require POSIX path guarantees" }, async (t) => {
   const { root, run } = await fixture(t);
   assert.match(await run("mkdir notes"), /Created folder notes/);
   assert.match(await run('touch "first note.txt"', { cwd: "notes" }), /Touched file/);
@@ -47,7 +47,7 @@ test("approved changes create/copy/remove only bounded regular files within the 
   for (const command of ["touch large", "rm large", "cp large copy"]) await assert.rejects(run(command), /1 MiB/);
 });
 
-test("approval cannot escape roots through symlinks, hard links, cwd, or special directory targets", async (t) => {
+test("approval cannot escape roots through symlinks, hard links, cwd, or special directory targets", { skip: process.platform === "win32" && "File mutations deliberately require POSIX path guarantees" }, async (t) => {
   const { root, temp, run, client } = await fixture(t);
   await fs.mkdir(path.join(root, "folder"));
   await fs.writeFile(path.join(root, "safe"), "safe");
@@ -63,7 +63,7 @@ test("approval cannot escape roots through symlinks, hard links, cwd, or special
   assert.equal(await fs.readFile(path.join(temp, "outside.txt"), "utf8"), "private outside");
 });
 
-test("authorization and current filesystem paths are checked immediately before each change", async (t) => {
+test("authorization and current filesystem paths are checked immediately before each change", { skip: process.platform === "win32" && "File mutations deliberately require POSIX path guarantees" }, async (t) => {
   const { root, run, client, authorize, resolve } = await fixture(t);
   await fs.writeFile(path.join(root, "source"), "source");
   validateBrowserMutation({ type: "terminal-change", command: "cp source copy", root: 0 }, authorize, { resolve });
@@ -74,4 +74,12 @@ test("authorization and current filesystem paths are checked immediately before 
   await fs.mkdir(path.join(root, "private"));
   await assert.rejects(run("touch private/secret"), /private data/);
   assert.equal((await fs.readdir(root)).includes("copy"), false, "validation alone never mutates files");
+});
+
+// Windows must refuse this feature rather than weaken its path guarantees.
+test("Windows refuses every approved file mutation without changing files", { skip: process.platform !== "win32" }, async (t) => {
+  const { root, run } = await fixture(t);
+  for (const command of ["mkdir notes", "touch note.txt", "cp note.txt copy.txt", "rm note.txt"])
+    await assert.rejects(run(command), /not supported on Windows/);
+  assert.deepEqual(await fs.readdir(root), []);
 });

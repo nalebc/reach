@@ -97,6 +97,7 @@ export function createAgentAsks({
       } catch {
         return finish(null);
       }
+      if (!input || typeof input !== "object" || Array.isArray(input)) return finish(null);
       const agent = input.agent;
       if (
         !AGENTS.has(agent) ||
@@ -116,11 +117,14 @@ export function createAgentAsks({
       if (done) return;
       const id = crypto.randomBytes(6).toString("hex");
       const tool_input = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
+      let prompt;
+      try { prompt = describeClaudePrompt(id, { tool_name: input.tool_name, input: tool_input }); }
+      catch { return finish(null, "mac"); }
       ask = {
         id,
         agent,
         sessionId: input.session_id,
-        prompt: describeClaudePrompt(id, { tool_name: input.tool_name, input: tool_input }),
+        prompt: { ...prompt, canAnswerOnMac: true },
         finish,
         at: Date.now(),
         lastWatched: watching(agent, input.session_id) ? Date.now() : null,
@@ -170,6 +174,9 @@ export function createAgentAsks({
           ended.get(String(promptId)) === "mac" ? "Answered on your Mac." : "This prompt was already answered.",
           409,
         );
+      if (answer?.decision === "answerOnMac" || answer?.answerOnMac === true) {
+        ask.finish(null, "mac"); return { handedOff: true };
+      }
       ask.finish(claudeAnswer(ask.prompt, answer), "phone"); // 400 for anything not offered
       return { answered: true };
     },

@@ -166,7 +166,7 @@ test("restarted without a terminal (as agents do), Reach opens in Terminal, wher
   const script = fs.readFileSync(file, "utf8");
   assert.match(script, /^#!\/bin\/bash\n# Reach: opened in Terminal by \.\/reach restart\.\n/);
   assert.ok(script.includes("cd '/Users/me/it'\\''s reach' || exit 1\n./reach\n"));
-  assert.equal(fs.statSync(file).mode & 0o777, 0o700);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o700);
   fs.rmSync(state, { recursive: true, force: true });
 });
 

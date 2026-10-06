@@ -2951,10 +2951,10 @@ export async function createReach(overrides = {}) {
     await codex.stop(req.params.id);
     res.json({ ok: true });
   });
-  app.post("/api/chats/:id/approvals/:requestId", (req, res) => {
+  app.post("/api/chats/:id/approvals/:requestId", async (req, res) => {
     if (!req.client.scopes.includes("admin"))
       throw fail(403, "Only a paired person can answer Codex approvals.");
-    codex.respond(req.params.id, req.params.requestId, req.body);
+    await codex.respond(req.params.id, req.params.requestId, req.body);
     res.json({ ok: true });
   });
   app.use("/api", (req, res) =>

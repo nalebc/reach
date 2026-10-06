@@ -21,7 +21,13 @@ func label(_ e: AXUIElement) -> String {
   let title = str(e, kAXTitleAttribute)
   return (title.isEmpty ? str(e, kAXDescriptionAttribute) : title).trimmingCharacters(in: .whitespacesAndNewlines)
 }
+// What this run does, as its reply names it ("sent", "drafted", "stopped"):
+// a refusal says it didn't ({"sent": false, "error": …}), so Reach knows
+// nothing happened and may try again (every refusal comes before Send).
+nonisolated(unsafe) var replyAction = ""
 func out(_ value: [String: Any]) -> Never {
+  var value = value
+  if value["error"] != nil, !replyAction.isEmpty, value[replyAction] == nil { value[replyAction] = false }
   let data = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])) ?? Data("{}".utf8)
   print(String(data: data, encoding: .utf8) ?? "{}")
   exit(0)
@@ -107,6 +113,16 @@ struct ClaudeCompose {
     let args = CommandLine.arguments
     let option = { (name: String) -> String? in args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
     let images = args.indices.filter { args[$0] == "--image" && $0 + 1 < args.count }.map { args[$0 + 1] }
+    var payload: [String: Any] = [:]
+    if args.contains("--json") {
+      let data = FileHandle.standardInput.readDataToEndOfFile()
+      guard data.count <= 524288, let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else { out(["error": "Invalid composer request."]) }
+      payload = decoded
+    }
+    replyAction =
+      args.contains("--check") || args.contains("--mode") ? ""
+      : args.contains("--stop") ? "stopped" : payload["draft"] as? Bool == true ? "drafted" : "sent"
     guard AXIsProcessTrusted() else { out(["error": "Reach needs Accessibility to type in the Claude app."]) }
     guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop").first
     else { out(["error": "The Claude app isn't open."]) }
@@ -119,13 +135,6 @@ struct ClaudeCompose {
     }
     if args.contains("--check") {
       out(["titles": window.titles, "sessions": window.sessions, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false])
-    }
-    var payload: [String: Any] = [:]
-    if args.contains("--json") {
-      let data = FileHandle.standardInput.readDataToEndOfFile()
-      guard data.count <= 524288, let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-      else { out(["error": "Invalid composer request."]) }
-      payload = decoded
     }
     guard let title = option("--title") else { out(["error": "Say which chat to use."]) }
     let text = (payload["text"] as? String) ?? option("--text") ?? ""

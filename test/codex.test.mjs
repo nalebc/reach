@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Codex } from "../server/codex.mjs";
-test("Codex adapter streams messages and requires explicit approval", () => {
+test("Codex adapter streams messages and requires explicit approval", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-codex-"));
   const c = new Codex({ dataDir });
   const sent = [];
-  c.send = (m) => sent.push(m);
+  c.send = (m, callback) => { sent.push(m); callback?.(); };
   c.chats.push({
     id: "thread-1",
     name: "Test",
@@ -32,8 +32,8 @@ test("Codex adapter streams messages and requires explicit approval", () => {
   });
   assert.equal(sent.length, 0);
   assert.equal(c.get("thread-1").status, "waiting");
-  assert.throws(() => c.respond("thread-1", 12, { decision: "anything" }));
-  c.respond("thread-1", 12, { decision: "decline" });
+  await assert.rejects(() => c.respond("thread-1", 12, { decision: "anything" }));
+  await c.respond("thread-1", 12, { decision: "decline" });
   assert.deepEqual(sent.at(-1), { id: 12, result: { decision: "decline" } });
   c.receive({
     id: 13,

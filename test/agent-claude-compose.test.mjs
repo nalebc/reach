@@ -101,7 +101,7 @@ test("another chat on screen: it waits while someone uses the Mac, then opens th
 
 test("nothing is typed unless the window really shows the chat; a switch that doesn't land is undone and retried later", async () => {
   const m = mac({ onScreen: B, lands: false });
-  await assert.rejects(compose(m).deliver(A, message), (e) => e.waiting && /didn't open this chat/.test(e.message));
+  await assert.rejects(compose(m).deliver(A, message), (e) => e.waiting && /didn.t open this chat/.test(e.message));
   assert.deepEqual(m.typed, []);
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
   // The helper's own refusal (another chat, a draft) keeps it waiting, and the window goes back.
@@ -130,8 +130,8 @@ test("the helper is given the chat's title, the text and each picture, and its r
   const helper = (stdout) => ({ binary: async () => "/data/reach-claude-compose", run: async (...args) => (runs.push(args), { stdout }) });
   assert.deepEqual(await typeIntoClaude(message, helper('{"sent":true}\n')), { sent: true });
   assert.deepEqual(runs[0][1], ["--title", "Fix the chart", "--text", "Run the tests", "--image", "/data/agent-images/p.png"]);
-  await assert.rejects(typeIntoClaude(message, helper('{"error":"There\'s a draft in that chat on your Mac.","draft":true}')), (e) => e.waiting && /draft/.test(e.message));
-  await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.waiting);
+  await assert.rejects(typeIntoClaude(message, helper('{"error":"There\'s a draft in that chat on your Mac.","draft":true,"sent":false}')), (e) => e.waiting && /draft/.test(e.message));
+  await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.code === "AGENT_DELIVERY_UNKNOWN");
 });
 
 test("a permission mode picked on the phone is picked in the Claude app's own menu; never Bypass", async () => {

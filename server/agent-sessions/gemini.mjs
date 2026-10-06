@@ -35,6 +35,7 @@ const picturesIn = (content) =>
 export function parseGeminiSession(source, { jsonl = true } = {}) {
   if (!jsonl) {
     const whole = JSON.parse(source);
+    if (!whole || typeof whole !== "object" || Array.isArray(whole)) throw new Error("Unsupported Gemini session format.");
     return { header: { ...whole, messages: undefined }, messages: Array.isArray(whole.messages) ? whole.messages : [] };
   }
   let header = null;
@@ -106,7 +107,8 @@ function toolItem(call, cwd) {
 // A session's messages as the chat shows them.
 export function geminiItems(messages, cwd = "") {
   const items = [];
-  for (const m of messages) {
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m || typeof m !== "object" || Array.isArray(m)) continue;
     const at = m.timestamp ? Date.parse(m.timestamp) : undefined;
     if (m.type === "user") {
       const text = textOf(m.content);
@@ -115,7 +117,7 @@ export function geminiItems(messages, cwd = "") {
     } else if (m.type === "gemini") {
       const text = textOf(m.content).trim();
       if (text) items.push({ id: `${m.id}:text`, role: "assistant", kind: "text", text, at });
-      for (const call of Array.isArray(m.toolCalls) ? m.toolCalls : []) items.push({ ...toolItem(call, cwd), at });
+      for (const call of Array.isArray(m.toolCalls) ? m.toolCalls.filter(c => c && typeof c === "object" && !Array.isArray(c)) : []) items.push({ ...toolItem(call, cwd), at });
     } else if (m.type === "error") {
       items.push({ id: String(m.id), role: "system", kind: "error", text: textOf(m.content) || "Gemini CLI hit an error.", at });
     } else if (m.type === "info") {

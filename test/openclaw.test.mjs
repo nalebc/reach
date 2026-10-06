@@ -53,7 +53,7 @@ async function fixture(t, extra = {}) {
       queueMicrotask(() => {
         if (this.readyState !== 1) return;
         const custom = handler?.(req, this);
-        if (custom?.hold) return;
+        if (custom?.drop || custom?.hold) return;
         const payload =
           custom?.payload ??
           {
@@ -78,10 +78,26 @@ async function fixture(t, extra = {}) {
                 },
               ],
             },
-            "chat.send": { runId: req.params.idempotencyKey, status: "started" },
+            "chat.send": {
+              runId: req.params.idempotencyKey,
+              status: "started",
+            },
             agent: { runId: req.params.idempotencyKey, status: "accepted" },
+            "agent.wait": { runId: req.params.runId, status: "timeout" },
             "chat.abort": { aborted: true },
             "exec.approval.resolve": { ok: true },
+            "channels.status": {
+              channelAccounts: {
+                whatsapp: [
+                  {
+                    accountId: "default",
+                    running: true,
+                    connected: true,
+                    linked: true,
+                  },
+                ],
+              },
+            },
           }[req.method] ??
           {};
         this.emit(
@@ -97,6 +113,14 @@ async function fixture(t, extra = {}) {
           ),
         );
       });
+    }
+    response(id, payload, error) {
+      this.emit(
+        "message",
+        Buffer.from(
+          JSON.stringify({ type: "res", id, ok: !error, payload, error }),
+        ),
+      );
     }
     close() {
       if (this.readyState === 3) return;
@@ -161,7 +185,6 @@ test("all agents/channels discovered with metadata only; signed minimal-scope ha
   assert.equal(JSON.stringify(r).includes("secret-token"), false);
   const p = calls[0].params,
     d = p.device;
-  // Admin too, for moving chats in (the owner chose it).
   assert.deepEqual(p.scopes, [
     "operator.read",
     "operator.write",
@@ -198,7 +221,7 @@ test("all agents/channels discovered with metadata only; signed minimal-scope ha
     ),
     true,
   );
-  assert.equal(
+  if (process.platform !== "win32") assert.equal(
     (await fs.stat(path.join(dir, "openclaw-device.json"))).mode & 0o777,
     0o600,
   );
@@ -256,7 +279,7 @@ test("Reach never asks OpenClaw to post outside Reach; retry uses caller idempot
     );
   assert.equal(calls.slice(before).some((c) => ["chat.send", "agent"].includes(c.method)), false);
   const sends = calls
-    .filter((c) => ["chat.send", "agent"].includes(c.method))
+    .filter((c) => c.method === "chat.send")
     .map((c) => c.params);
   assert.deepEqual(sends, [
     {
@@ -404,27 +427,233 @@ test("reads JSON5 local config and environment substitutions; remote profiles re
   await assert.rejects(localOpenClawConfig({ home, env: {} }), /not found/);
 });
 
-test('OpenClaw HTTP routes inherit owner-device authentication before reaching the bridge', async (t) => {
-  const { createReach } = await import('../server/index.mjs');
-  const { ALL_SCOPES } = await import('../server/core.mjs');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-claw-http-'));
+test("OpenClaw HTTP routes inherit owner-device authentication before reaching the bridge", async (t) => {
+  const { createReach } = await import("../server/index.mjs");
+  const { ALL_SCOPES } = await import("../server/core.mjs");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-http-"));
   const calls = [];
-  const fake = Object.fromEntries(['overview', 'history', 'send', 'stop', 'approve'].map(method => [method, async (...args) => { calls.push({ method, args }); return { ok: true }; }]));
-  const reach = await createReach({ roots: [dir], dataDir: path.join(dir, '.reach'), openClaw: fake, agentSessions: {} });
-  t.after(async () => { await reach.close(); await fs.rm(dir, { recursive: true, force: true }); });
-  await new Promise(r => reach.server.listen(0, '127.0.0.1', r));
+  const fake = Object.fromEntries(
+    ["overview", "history", "send", "stop", "approve"].map((method) => [
+      method,
+      async (...args) => {
+        calls.push({ method, args });
+        return { ok: true };
+      },
+    ]),
+  );
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, ".reach"),
+    openClaw: fake,
+    agentSessions: {},
+  });
+  t.after(async () => {
+    await reach.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}/api/sessions/openclaw`;
-  const owner = reach.auth.issue('owner', ALL_SCOPES);
-  const agent = reach.auth.issue('agent', ['terminal', 'files'], 'agent');
-  const linked = reach.auth.issue('linked', ALL_SCOPES, 'linked-mac');
-  const routes = [ ['overview', 'GET'], ['history?key=agent%3Amain%3Amain', 'GET'], ['send', 'POST'], ['stop', 'POST'], ['approval', 'POST'] ];
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const agent = reach.auth.issue("agent", ["terminal", "files"], "agent");
+  const linked = reach.auth.issue("linked", ALL_SCOPES, "linked-mac");
+  const routes = [
+    ["overview", "GET"],
+    ["history?key=agent%3Amain%3Amain", "GET"],
+    ["send", "POST"],
+    ["stop", "POST"],
+    ["approval", "POST"],
+  ];
   for (const [route, method] of routes) {
     assert.equal((await fetch(`${url}/${route}`, { method })).status, 401);
-    for (const credential of [agent, linked]) assert.equal((await fetch(`${url}/${route}`, { method, headers: { Authorization: `Bearer ${credential.token}` } })).status, 403);
+    for (const credential of [agent, linked])
+      assert.equal(
+        (
+          await fetch(`${url}/${route}`, {
+            method,
+            headers: { Authorization: `Bearer ${credential.token}` },
+          })
+        ).status,
+        403,
+      );
   }
   assert.equal(calls.length, 0);
-  for (const [route, method] of routes) assert.equal((await fetch(`${url}/${route}`, { method, headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify({ key: rows[0].key, text: 'test', requestId: 'test-request', id: 'approval', decision: 'deny' }) } : {}) })).status, 200);
-  assert.deepEqual(calls.map(c => c.method), ['overview', 'history', 'send', 'stop', 'approve']);
+  for (const [route, method] of routes)
+    assert.equal(
+      (
+        await fetch(`${url}/${route}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${owner.token}`,
+            "Content-Type": "application/json",
+          },
+          ...(method === "POST"
+            ? {
+                body: JSON.stringify({
+                  key: rows[0].key,
+                  text: "test",
+                  requestId: "test-request",
+                  id: "approval",
+                  decision: "deny",
+                }),
+              }
+            : {}),
+        })
+      ).status,
+      200,
+    );
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["overview", "history", "send", "stop", "approve"],
+  );
+});
+
+test("missing final chat event recovers through agent.wait and does not duplicate the history bubble", async (t) => {
+  const { c, sockets, handle } = await fixture(t, { reconcileMs: 0 });
+  await c.send({ key: REACH, text: "Hello", requestId: "recover-run" });
+  sockets[0].event("chat", {
+    sessionKey: REACH,
+    runId: "recover-run",
+    state: "delta",
+    message: { content: "Hi" },
+  });
+  assert.equal((await c.history(REACH)).streaming, "");
+  handle((req) =>
+    req.method === "agent.wait"
+      ? { payload: { runId: req.params.runId, status: "ok" } }
+      : null,
+  );
+  const h = await c.history(REACH);
+  assert.equal(h.session.status, "idle");
+  assert.equal(h.items.filter((m) => m.text === "Hi").length, 1);
+});
+
+test("agent lifecycle completion works without a chat final; stale foreign events cannot reopen or finish a run", async (t) => {
+  const { c, sockets } = await fixture(t);
+  await c.send({ key: REACH, text: "Hello", requestId: "lifecycle-run" });
+  const ws = sockets[0];
+  ws.event("agent", {
+    sessionKey: REACH,
+    runId: "older-run",
+    stream: "lifecycle",
+    data: { phase: "end" },
+  });
+  assert.equal((await c.history(REACH)).session.status, "running");
+  ws.event("agent", {
+    sessionKey: REACH,
+    runId: "lifecycle-run",
+    stream: "lifecycle",
+    data: { phase: "end" },
+  });
+  ws.event("chat", {
+    sessionKey: REACH,
+    runId: "lifecycle-run",
+    state: "delta",
+    message: { content: "late" },
+  });
+  assert.equal((await c.history(REACH)).session.status, "idle");
+});
+
+test("an acknowledged completed replay does not restart the spinner", async (t) => {
+  const { c, handle } = await fixture(t);
+  handle((req) =>
+    req.method === "chat.send"
+      ? { payload: { runId: req.params.idempotencyKey, status: "ok" } }
+      : null,
+  );
+  const sent = await c.send({
+    key: REACH,
+    text: "Hello",
+    requestId: "cached-complete",
+  });
+  assert.equal(sent.status, "idle");
+  assert.equal((await c.history(REACH)).session.status, "idle");
+});
+
+test("unconfirmed runs become actionable instead of spinning indefinitely; no automatic resend", async (t) => {
+  let clock = 1000;
+  const { c, calls } = await fixture(t, {
+    now: () => clock,
+    reconcileMs: 0,
+    staleMs: 100,
+  });
+  await c.send({ key: REACH, text: "Hello", requestId: "stalled-run" });
+  clock += 101;
+  const h = await c.history(REACH);
+  assert.equal(h.session.status, "unknown");
+  assert.match(h.error, /not confirmed completion/);
+  await assert.rejects(
+    c.send({ key: REACH, text: "Again", requestId: "another-run" }),
+    /unconfirmed/,
+  );
+  assert.equal(calls.filter((r) => r.method === "chat.send").length, 1);
+});
+
+test("reconnection reconciles the same run, without resending the message", async (t) => {
+  const { c, calls, sockets, handle } = await fixture(t, { reconcileMs: 0 });
+  await c.send({ key: REACH, text: "Hello", requestId: "reconnect-run" });
+  sockets[0].close();
+  handle((req) =>
+    req.method === "agent.wait"
+      ? { payload: { runId: req.params.runId, status: "ok" } }
+      : null,
+  );
+  assert.equal((await c.history(REACH)).session.status, "idle");
+  assert.equal(sockets.length, 2);
+  assert.equal(calls.filter((r) => r.method === "chat.send").length, 1);
+});
+
+test("external delivery is refused regardless of channel configuration or client overrides", async (t) => {
+  const { c, calls } = await fixture(t);
+  for (const key of [REACH, REACH, rows[1].key]) {
+    await assert.rejects(c.send({ key, text: "Hello", deliver: true, requestId: "blocked-delivery", replyTo: "injected" }), { status: 403 });
+  }
+  assert.equal(calls.some((call) => ["agent", "chat.send"].includes(call.method)), false);
+});
+
+test("concurrent identical requests send once; reused IDs cannot change message or destination", async (t) => {
+  const { c, calls } = await fixture(t);
+  const message = { key: REACH, text: "Hello", requestId: "double-tap" };
+  const result = await Promise.all([c.send(message), c.send(message)]);
+  assert.deepEqual(result[0], result[1]);
+  assert.equal(calls.filter((r) => r.method === "chat.send").length, 1);
+  await assert.rejects(c.send({ ...message, deliver: true }), { status: 403 });
+  await assert.rejects(
+    c.send({ ...message, text: "Different" }),
+    /already used/,
+  );
+});
+
+test("unrecognized send results are uncertain, never fake success or a second send", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) =>
+    req.method === "chat.send" ? { payload: { unexpected: true } } : null,
+  );
+  const message = {
+    key: REACH,
+    text: "Hello",
+    requestId: "unknown-result",
+  };
+  await assert.rejects(c.send(message), /unrecognized/);
+  await assert.rejects(c.send(message), /unrecognized/);
+  assert.equal((await c.history(REACH)).session.status, "unknown");
+  assert.equal(calls.filter((r) => r.method === "chat.send").length, 1);
+});
+
+test("unsupported history and failed stop acknowledgements do not masquerade as empty/success", async (t) => {
+  const { c, handle } = await fixture(t);
+  await c.send({ key: REACH, text: "Hello", requestId: "stop-denied" });
+  handle((req) =>
+    req.method === "chat.abort" ? { payload: { aborted: false } } : null,
+  );
+  await assert.rejects(c.stop(REACH), /did not confirm stopping/);
+  assert.equal((await c.history(REACH)).session.status, "running");
+  handle((req) =>
+    req.method === "chat.history" ? { payload: { unsupported: true } } : null,
+  );
+  await assert.rejects(
+    c.history(REACH, 100),
+    /unsupported conversation history/,
+  );
 });
 
 test("OpenClaw keeps approvals until acknowledged, rejects duplicates, and retains failed answers", async t => {
@@ -441,9 +670,10 @@ test("OpenClaw keeps approvals until acknowledged, rejects duplicates, and retai
   await assert.rejects(pending, /did not confirm/);
   assert.equal((await c.history(rows[0].key)).approvals.length, 1);
   handle(() => undefined);
-  assert.deepEqual(await c.approve("real", "deny"), { ok: true });
+  await assert.rejects(c.approve("real", "deny"), /already attempted/);
+  assert.equal(calls.filter(r => r.method === "exec.approval.resolve").length, 1);
+  ws.event("exec.approval.resolved", { id: "real" });
   assert.equal((await c.history(rows[0].key)).approvals.length, 0);
-  await assert.rejects(c.approve("real", "allow-once"), /already answered/);
 });
 
 test("OpenClaw exposes only native pending requests, clears resolutions and disconnects, and gates unavailable responses", async t => {
@@ -605,4 +835,19 @@ test("while a reply streams in, the open chat is read from what OpenClaw last ga
   ws.event("chat", { sessionKey: rows[0].key, runId: "r2", state: "final" });
   await c.history(rows[0].key);
   assert.equal(asked(), 2);
+});
+
+test("malformed Gateway envelopes close the adapter without crashing Reach", async t => {
+  const { c, sockets } = await fixture(t);
+  await c.overview();
+  assert.doesNotThrow(() => sockets[0].emit("message", Buffer.from("null")));
+  assert.equal(sockets[0].readyState, 3);
+});
+
+test("changed session labels cannot become React objects or crash the chat", async t => {
+  const { c, handle } = await fixture(t);
+  handle(req => req.method === "sessions.list" ? { payload: { sessions: [{ key: "agent:main:test", displayName: {} }] } } : undefined);
+  const overview = await c.overview();
+  assert.equal(overview.connected, false);
+  assert.match(overview.error, /unsupported session list/);
 });

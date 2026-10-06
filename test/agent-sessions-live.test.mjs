@@ -674,3 +674,39 @@ test("approval is successful only after its real response is delivered; failed d
   assert.equal(attempts, 2);
   assert.deepEqual(live.view(T).prompts, []);
 });
+
+test("uncertain queue cancellation never recommends resending a possibly accepted message", async () => {
+  const daemon = fakeDaemon({
+    "thread/resume": new Error("already has an active writer"),
+    "thread/queue/add": { queuedSubmission: { id: "q1" } },
+    "thread/turns/list": { data: [] },
+    "thread/queue/delete": new Error("socket lost"),
+  });
+  const live = createCodexLive({ daemon, deliverMs: 0 });
+  await live.send(T, { text: "once" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(live.view(T).error, /did not confirm/);
+  assert.equal(live.view(T).outbox, undefined, "an uncertain cancellation never returns a resendable message");
+  assert.equal(daemon.methods().filter(m => m === "thread/queue/add").length, 1);
+});
+
+test("completion of an older Codex turn cannot finish a newer turn", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "new" } } });
+  const live = createCodexLive({ daemon });
+  await live.send(T, { text: "new" });
+  daemon.emit("turn/completed", { threadId: T, turn: { id: "old", status: "completed" } });
+  assert.equal(live.view(T).status, "running");
+  assert.equal(live.view(T).turnId, "new");
+});
+
+test("permission scope is visible and native-only elicitation cannot accept an empty form", async () => {
+  const { describePrompt, answerFor } = await import("../server/agent-sessions/codex-live.mjs");
+  const permissions = { network: { enabled: true }, fileSystem: { write: ["/example"] } };
+  const prompt = describePrompt("item/permissions/requestApproval", { permissions });
+  assert.deepEqual(JSON.parse(prompt.command), permissions);
+  for (const mode of ["form", "url", "openai/userVerification", "future-mode"]) {
+    const p = describePrompt("mcpServer/elicitation/request", { mode, requestedSchema: {}, serverName: "tool" });
+    assert.deepEqual(p.decisions, ["decline", "cancel"]);
+    assert.throws(() => answerFor(p, { decision: "accept" }));
+  }
+});

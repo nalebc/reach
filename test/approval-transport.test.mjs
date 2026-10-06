@@ -63,6 +63,6 @@ test('a real transport request waits for the phone, receives its exact answer, a
   peer.terminate();
   await until(() => live.view(ID).prompts.length === 0);
   await assert.rejects(live.respond(ID, 'approval-2', { answers: { q: ['Unit'] } }), e => e.status === 409);
-  await assert.rejects(reply({ decision: 'accept' }), /not sent/);
+  await assert.rejects(reply({ decision: 'accept' }), /connection ended/);
   assert.equal(answers.length, 1, 'no disconnected answer was reported as delivered');
 });

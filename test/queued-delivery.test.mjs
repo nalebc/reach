@@ -1,4 +1,5 @@
 import test from "node:test";
+import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -16,7 +17,6 @@ const A = "11111111-2222-4333-8444-555555555555";
 const B = "22222222-2222-4333-8444-555555555555";
 
 const sessionsWith = async (outbox, extra = {}) => {
-  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
   return createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {} },
     codex: {},

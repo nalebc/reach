@@ -14,7 +14,7 @@ import { linkCli } from "../scripts/cli-link.mjs";
 const launcher = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../reach");
 const scratch = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "reach-cli-")));
 
-test("links reach into a folder on PATH; the link runs this Reach and its hints say reach", () => {
+test("links reach into a folder on PATH; the link runs this Reach and its hints say reach", { skip: process.platform === "win32" ? "POSIX shell launcher" : false }, () => {
   const home = scratch();
   const bin = path.join(home, ".local/bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -41,7 +41,7 @@ test("replaces a link to another Reach folder, leaves anything else alone", () =
   fs.symlinkSync(path.join(older, "reach"), path.join(bin, "reach"));
   const moved = linkCli({ script: launcher, env: { PATH: bin }, home });
   assert.equal(moved.ok, true);
-  assert.match(moved.text, /It pointed to .*old reach\/reach before/);
+  assert.match(moved.text, /It pointed to .*old reach[/\\]reach before/);
   assert.equal(fs.realpathSync(path.join(bin, "reach")), fs.realpathSync(launcher));
 
   fs.unlinkSync(path.join(bin, "reach"));

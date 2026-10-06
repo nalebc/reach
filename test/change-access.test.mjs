@@ -21,7 +21,7 @@ async function start(t) {
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   t.after(async () => {
     await reach.close();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   const base = `http://127.0.0.1:${reach.server.address().port}`;
   const call = async (route, { token, method = "GET", body } = {}) => {

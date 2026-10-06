@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import {
@@ -104,7 +104,7 @@ test(
     // Go disables its HTTP client when process.argv0 starts with "node"; then
     // nothing would ever reach Tailscale. Fetch is stubbed: no network used.
     const script = `
-      import { loadTailnet } from ${JSON.stringify(runtime)};
+      import { loadTailnet } from ${JSON.stringify(pathToFileURL(runtime).href)};
       const seen = [];
       globalThis.fetch = async (url) => { seen.push(String(url)); throw new TypeError("offline (test)"); };
       const make = await loadTailnet(${JSON.stringify({ execFile: path.join(dir, m.exec), wasmFile: path.join(dir, m.wasm) })});
@@ -117,13 +117,13 @@ test(
     `;
     const child = await new Promise((resolve, reject) => {
       const c = spawn(process.execPath, ["--input-type=module", "-e", script]);
-      let stdout = "";
+      let stdout = "", stderr = "";
       c.stdout.on("data", (d) => (stdout += d));
-      c.stderr.on("data", () => {});
+      c.stderr.on("data", (d) => (stderr += d));
       c.on("error", reject);
-      c.on("close", (code) => resolve({ code, stdout }));
+      c.on("close", (code) => resolve({ code, stdout, stderr }));
     });
-    assert.equal(child.code, 0);
+    assert.equal(child.code, 0, child.stderr);
     const lines = child.stdout.trim().split("\n");
     assert.equal(lines.length, 1, `stdout must stay clean: ${child.stdout}`);
     const result = JSON.parse(lines[0]);

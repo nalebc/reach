@@ -1,3 +1,4 @@
+import { uncertainDelivery, probeAgent } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -221,6 +222,7 @@ export function createAgentSessions({
   // News the moment an agent's app writes it, from its own files
   // (agent-watch.mjs); never in tests.
   agentWatch = process.env.NODE_TEST_CONTEXT ? null : createAgentWatch(),
+  claudeCompatibility = process.env.NODE_TEST_CONTEXT ? async () => null : () => locateClaude().then(file => probeAgent("claude", file)),
   // Chats continued with the other agent, both ways (move.mjs).
   moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
   // The permission mode picked for each Codex chat from Reach (chat-modes.mjs).
@@ -499,10 +501,11 @@ export function createAgentSessions({
         wakers.delete(id);
         if (closed) break;
         const next = outbox.list(id)[0];
-        if (!next) break;
+        if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
           if (next.via === "app") {
+            if (!outbox.begin(id, next.id)) break;
             await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}), ...(next.mode ? { mode: next.mode } : {}) });
             outbox.remove(id, next.id);
             wentIn = true;
@@ -514,6 +517,7 @@ export function createAgentSessions({
             continue;
           }
           const { id: messageId, at, error, ...message } = next;
+          if (!outbox.begin(id, next.id)) break;
           await claudeHost.send(id, message);
           outbox.remove(id, messageId);
         } catch (e) {
@@ -525,6 +529,11 @@ export function createAgentSessions({
             outbox.strand(id);
             continue;
           }
+          if (e?.retryable === false || (next.delivery === "sending" && !e?.waiting)) {
+            outbox.pause(id, next.id, e?.retryable === false ? e.message : uncertainDelivery("claude").message);
+            break;
+          }
+          outbox.retryLater(id, next.id);
           outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
         } finally {
           deliveringMessage.delete(id);
@@ -890,6 +899,10 @@ export function createAgentSessions({
     };
   };
   return {
+    onPromptChange(listener) {
+      const stops = Object.entries(hosts).map(([agent, h]) => h.onChange?.(id => listener(agent, id, h.view(id).prompts)));
+      return () => stops.forEach(stop => stop?.());
+    },
     // Continues a chat with the other agent, as if it had been forked in the
     // same app (move.mjs): a new chat there with what this one's agent knows
     // so far (its latest summary, then the messages since); this one stays
@@ -1021,6 +1034,7 @@ export function createAgentSessions({
         throw Object.assign(new Error("The Codex app runs its queue itself. Steer it from the Codex app."), { status: 409 });
       const message = outbox.list(id).find((m) => m.id === messageId);
       if (!message) throw Object.assign(new Error("That message already left the queue."), { status: 409 });
+      if (message.delivery) throw Object.assign(new Error("Delivery is in progress or uncertain. Check Claude before sending again."), { status: 409 });
       if (message.via !== "app")
         throw Object.assign(new Error("It goes as soon as Claude finishes where it's running."), { status: 409 });
       if (deliveringMessage.get(id) !== messageId) outbox.hurry(id, messageId);
@@ -1122,14 +1136,15 @@ export function createAgentSessions({
           ? {
               queued: outbox.list(id).length,
               // Sent from the phone, waiting their turn (shown until they're in the transcript).
-              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error, via, now }) => ({
+              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error, via, now, delivery }) => ({
                 id: messageId,
                 text,
                 images: images.length,
                 at,
                 ...(via ? { via } : {}),
                 ...(error ? { error } : {}),
-                ...(now || deliveringMessage.get(id) === messageId ? { sending: true } : {}),
+                ...(delivery === "paused" ? { delivery } : {}),
+                ...(delivery !== "paused" && (now || deliveringMessage.get(id) === messageId) ? { sending: true } : {}),
               })),
             }
           : {}),
@@ -1348,10 +1363,12 @@ export function createAgentSessions({
     // (installed, not yet supported), so the phone can show where it's going.
     async health({ fresh = false } = {}) {
       const results = await Promise.allSettled([codex.health(), claude.health(), claudeApp()]);
+      const compatibility = await Promise.allSettled([daemon.compatibility?.() || null, claudeCompatibility()]);
       const driven = results.slice(0, 2).map((r, i) => ({
         ...(r.status === "fulfilled"
           ? r.value
           : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(["AGENT_NOT_INSTALLED", "ENOENT"].includes(r.reason?.code) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
+        compatibility: compatibility[i].status === "fulfilled" ? compatibility[i].value : { status: "unavailable", reason: "Compatibility check failed." },
         name: ["Codex", "Claude Code"][i],
         supported: true,
         // Claude: its app's own sign-in, shown next to the CLI's.

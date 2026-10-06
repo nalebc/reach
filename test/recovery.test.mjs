@@ -202,8 +202,9 @@ test("background service preserves scope and paths without copying secrets or re
 
 test(
   "suspending transport closes remote sockets but keeps terminal work and credentials alive",
-  { timeout: 10000 },
-  async () => {
+  // Windows needs time to start and reap ConPTY; transport assertions are unchanged.
+  { timeout: process.platform === "win32" ? 30000 : 10000 },
+  async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-recovery-"));
     const reach = await createReach({
       roots: [dir],
@@ -220,7 +221,7 @@ test(
     const ws = new WebSocket(url.replace("http:", "ws:") + "/ws/terminal");
     try {
       await once(ws, "open");
-      const snapshot = once(ws, "message");
+      const snapshot = once(ws, "message", { signal: t.signal });
       ws.send(
         JSON.stringify({
           type: "auth",
@@ -229,14 +230,15 @@ test(
         }),
       );
       assert.equal(JSON.parse((await snapshot)[0]).type, "snapshot");
-      const pong = new Promise((resolve) =>
+      const pong = new Promise((resolve, reject) => {
+        t.signal.addEventListener("abort", () => reject(t.signal.reason), { once: true });
         ws.on("message", (data) => {
           if (JSON.parse(data).type === "pong") resolve();
-        }),
-      );
+        });
+      });
       ws.send(JSON.stringify({ type: "ping" }));
       await pong;
-      const closed = once(ws, "close");
+      const closed = once(ws, "close", { signal: t.signal });
       reach.setTransportAvailable(false);
       await closed;
       assert.equal(
@@ -261,7 +263,7 @@ test(
     } finally {
       ws.terminate();
       await reach.close();
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   },
 );
