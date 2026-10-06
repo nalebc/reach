@@ -310,14 +310,17 @@ test("Reach lets go of a session before the Claude app takes it, never mid-turn"
   assert.equal(h.drives(ID), false);
 });
 
-test("a session counts as open on the phone while its live view waits, and not after", async () => {
-  const h = host(fakeClaude());
+test("a session counts as open on the phone while its live view waits, then briefly while reconnecting", async () => {
+  let now = 1000;
+  const h = host(fakeClaude(), { now: () => now });
   assert.equal(h.watched(ID), false);
   const gone = new AbortController();
   const waiting = h.changes(ID, h.view(ID).version, 5000, gone.signal);
   assert.equal(h.watched(ID), true);
   gone.abort();
   await waiting;
+  assert.equal(h.watched(ID), true);
+  now += 5001;
   assert.equal(h.watched(ID), false);
 });
 
@@ -919,4 +922,28 @@ test("Reach lets go of Claude Code soon after a turn, later only while the phone
   await poll;
   await settle(40);
   assert.equal(h.drives(ID), false);
+});
+
+
+test("watching a Claude session survives long-poll gaps but expires after leaving", async () => {
+  let now = 1000;
+  const h = host(fakeClaude(), { now: () => now, graceMs: 5000 });
+  assert.equal(h.watched(ID), false);
+  await h.changes(ID, -1); // an immediate version response, no waiter
+  assert.equal(h.watched(ID), true);
+  now += 4999;
+  assert.equal(h.watched(ID), true);
+  now += 2;
+  assert.equal(h.watched(ID), false);
+  const controller = new AbortController();
+  const waiting = h.changes(ID, h.view(ID).version, 25000, controller.signal);
+  now += 6000;
+  assert.equal(h.watched(ID), true, "an active long poll stays watched");
+  controller.abort();
+  await waiting;
+  assert.equal(h.watched(ID), true);
+  now += 5001;
+  assert.equal(h.watched(ID), false);
+  assert.equal(h.watched("another-session"), false);
+  h.close();
 });

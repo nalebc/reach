@@ -143,10 +143,12 @@ test("all agents/channels discovered with metadata only; signed minimal-scope ha
   assert.equal(JSON.stringify(r).includes("secret-token"), false);
   const p = calls[0].params,
     d = p.device;
+  // Admin too, for moving chats in (the owner chose it).
   assert.deepEqual(p.scopes, [
     "operator.read",
     "operator.write",
     "operator.approvals",
+    "operator.admin",
   ]);
   const data = [
     "v3",

@@ -6,7 +6,10 @@ import WebSocket from "ws";
 import JSON5 from "json5";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const scopes = ["operator.read", "operator.write", "operator.approvals"];
+// Admin too (the owner chose it, Oct 5): a chat moved here from another agent
+// gets a session of its own with its history added as notes (sessions.reset,
+// sessions.patch, chat.inject), shown in OpenClaw's own app.
+const scopes = ["operator.read", "operator.write", "operator.approvals", "operator.admin"];
 const textOf = (message) =>
   typeof message?.content === "string"
     ? message.content
@@ -440,6 +443,23 @@ export function createOpenClaw({
         runs.set(key, { runId: result?.runId, text: "", status: "running" });
       listAt = 0;
       return { runId: result?.runId, status: result?.status || "started" };
+    },
+    // A chat moved here from another agent (agent-sessions/move.mjs): a new
+    // session named after it, its history added as notes (OpenClaw's app
+    // shows them and its agent reads them; nothing runs until a message).
+    // One that fails half-way is removed again.
+    async fork({ title = "", notes = [], label = "Moved" } = {}) {
+      const key = `agent:main:reach-${crypto.randomUUID().slice(0, 8)}`;
+      await rpc("sessions.reset", { key, reason: "new" });
+      try {
+        if (title) await rpc("sessions.patch", { key, label: String(title).slice(0, 120) });
+        for (const message of notes) await rpc("chat.inject", { sessionKey: key, message, label });
+      } catch (error) {
+        await rpc("sessions.delete", { key, deleteTranscript: true }).catch(() => {});
+        throw error;
+      }
+      listAt = 0;
+      return { key };
     },
     async stop(key) {
       await known(key);

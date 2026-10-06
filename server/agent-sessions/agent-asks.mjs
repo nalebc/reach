@@ -68,6 +68,7 @@ export function createAgentAsks({
   awayMs = 60 * 1000,
   // How often a held ask checks whether the Mac has been used.
   everyMs = 1000,
+  watchGraceMs = 5000,
   // (agent, session): prompts already reaching the phone another way (Reach's own sessions).
   skip = () => false,
   // (agent, session): a phone has this session open right now.
@@ -157,11 +158,18 @@ export function createAgentAsks({
         prompt: describe(agent, id, { tool_name: input.tool_name, tool_input }),
         finish,
         at: Date.now(),
+        lastWatched: watching(agent, input.session_id) ? Date.now() : null,
       };
       asks.set(id, ask);
       changed(agent, ask.sessionId);
-      // The Mac used since the ask arrived: let go, the dialog shows there.
+      // Keep the phone answerable while it is reading this session. Mac input
+      // (including Reach screen control) must not silently steal its question.
       ask.watch = setInterval(async () => {
+        if (watching(agent, ask.sessionId)) {
+          ask.lastWatched = Date.now();
+          return;
+        }
+        if (ask.lastWatched != null && Date.now() - ask.lastWatched < watchGraceMs) return;
         const seconds = await idleNow();
         if (!done && (seconds == null || seconds * 1000 < Date.now() - ask.at)) finish(null, "mac");
       }, everyMs);

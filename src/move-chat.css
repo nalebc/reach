@@ -94,3 +94,7 @@
   font: inherit;
   font-size: 13.5px;
 }
+/* In an OpenClaw conversation, under its header. */
+.claw-move {
+  padding: 8px 12px 0;
+}

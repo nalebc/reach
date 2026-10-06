@@ -534,12 +534,14 @@ export default function EverythingChat({
   target,
   onTargetOpened,
   showOnScreen,
+  onScreen,
 }: {
   peer: Peer;
   feed?: AgentFeed;
   target?: Target | null;
   onTargetOpened?: () => void;
   showOnScreen?: (prompt: MacPrompt) => void;
+  onScreen?: () => void;
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
@@ -569,8 +571,17 @@ export default function EverythingChat({
   const current: AgentName = picked.agent === "claude" ? "claude" : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review">("");
+  // An OpenClaw chat to open in its own space (one a chat just moved to).
+  const [clawOpen, setClawOpen] = useState<string | null>(null);
   useClaudeFonts(peer, current === "claude" || open?.agent === "claude");
   const openChat = (s: AgentSession) => {
+    if ((s.agent as string) === "openclaw") {
+      setAgent("openclaw");
+      setSheet("");
+      setOpen(null);
+      setClawOpen(s.id);
+      return;
+    }
     setAgent(s.agent);
     setSheet("");
     setOpen(s);
@@ -657,6 +668,7 @@ export default function EverythingChat({
           logos={logos}
           deviceRequests={macPrompts.length}
           onReviewDevice={() => setSheet("review")}
+          onScreen={onScreen}
           onSignedIn={recheck}
           onSelect={openChat}
           onBack={() => {
@@ -670,6 +682,7 @@ export default function EverythingChat({
         />
       ) : picked.agent === "openclaw" ? (
         <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
+          openKey={clawOpen} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
           onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
           deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")} />
       ) : (

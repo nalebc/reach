@@ -126,9 +126,9 @@ test("at the Mac, or the moment someone is back, Claude Code shows its own dialo
   assert.deepEqual(await runHook(unknown.socketPath).exited, { code: 0, out: "" });
 });
 
-test("with the session open on the phone, the phone gets it even if the Mac was just used; using the Mac after takes it back", async (t) => {
+test("a phone keeps its question during Mac input and reconnects; leaving lets the Mac take it back", async (t) => {
   const watched = new Set();
-  const { asks, mac, socketPath } = await broker(t, { watching: (agent, id) => watched.has(`${agent}:${id}`) });
+  const { asks, mac, socketPath } = await broker(t, { watching: (agent, id) => watched.has(`${agent}:${id}`), watchGraceMs: 120 });
   mac.idle = 2; // the Mac was used a moment ago
   assert.deepEqual(await runHook(socketPath).exited, { code: 0, out: "" }, "nobody watching: the Mac shows it");
   watched.add(`claude:${SESSION}`);
@@ -139,7 +139,16 @@ test("with the session open on the phone, the phone gets it even if the Mac was 
   mac.idle = 2 + (Date.now() - started) / 1000 + 0.2;
   await settle(80);
   assert.equal(asks.has("claude", SESSION), true);
-  mac.idle = 0.01; // a key press on the Mac
+  mac.idle = 0.01; // a key press on the Mac must not steal the phone question
+  await settle(80);
+  assert.equal(asks.has("claude", SESSION), true);
+  watched.clear();
+  await settle(40);
+  assert.equal(asks.has("claude", SESSION), true, "short reconnect gap keeps choices live");
+  watched.add(`claude:${SESSION}`);
+  await settle(80);
+  assert.equal(asks.has("claude", SESSION), true);
+  watched.clear();
   assert.deepEqual(await hook.exited, { code: 0, out: "" });
   assert.equal(asks.has("claude", SESSION), false);
 });

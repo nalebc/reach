@@ -318,7 +318,7 @@ const click = async (element) => {
   element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle();
 };
-const open = async (session, health = signedIn, on = peer) => {
+const open = async (session, health = signedIn, on = peer, extra = {}) => {
   const view = await mount(
     React.createElement(AgentSessionView, {
       peer: on,
@@ -328,6 +328,7 @@ const open = async (session, health = signedIn, on = peer) => {
       logos: { codex: LOGO, claude: LOGO },
       onSelect() {},
       onBack() {},
+      ...extra,
     }),
   );
   // Legacy protocol tests inspect model/mode controls; the rebuilt UI opens them explicitly.
@@ -1169,7 +1170,7 @@ test("Chat home says Codex is out of usage and where to get more", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
-test("a question Claude asks in the Claude app shows here too, with its choices", async () => {
+test("a question already held by Claude offers a working live-screen fallback", async () => {
   const asking = {
     kind: "question",
     questions: [
@@ -1190,7 +1191,8 @@ test("a question Claude asks in the Claude app shows here too, with its choices"
   };
   const session = claudeSession({ status: "waiting", asking });
   mac.pages[`claude:${CLAUDE}`].session = session;
-  await open(session);
+  let opened = 0;
+  await open(session, signedIn, peer, { onScreen: () => opened++ });
   await dom.waitFor(() => $(".as-prompt.elsewhere"));
   const card = $(".as-prompt.elsewhere");
   // Already showing on the Mac: said so, with the choices as words, never as buttons.
@@ -1206,7 +1208,9 @@ test("a question Claude asks in the Claude app shows here too, with its choices"
     card.querySelector(".as-asked").textContent,
     "Setting + close now (Recommended) · Leave them",
   );
-  assert.equal(card.querySelector("button, li, [role=button]"), null);
+  await click([...card.querySelectorAll("button")].find((b) => b.textContent === "Open screen to answer"));
+  assert.equal(opened, 1);
+  assert.equal(mac.sent.length, 0, "opening the screen does not choose an answer");
   assert.equal(
     $(".as-hint").textContent,
     "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session.",
@@ -1236,6 +1240,7 @@ test("the Claude app's own consent card (letting Claude use apps) shows here too
       "Allow Claude to use Calculator?",
       "Add up the receipts.",
       "Deny · Allow for this session",
+      "This request is already open in the Claude app. Answer it on your Mac.",
     ],
   );
   // Answered on the Mac: its choices as words, no buttons here.

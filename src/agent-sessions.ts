@@ -32,9 +32,9 @@ export type AgentSession = {
   // Prompts waiting on the phone (permission requests, questions).
   prompts?: SessionPrompt[];
   // Continued from a chat with the other agent, as if forked (move.mjs).
-  movedFrom?: { agent: AgentName; id: string; title?: string };
-  // Where this chat was continued with the other agent.
-  movedTo?: { agent: AgentName; id: string; at?: number }[];
+  movedFrom?: { agent: string; id: string; title?: string };
+  // Where this chat was continued with another agent.
+  movedTo?: { agent: string; id: string; at?: number }[];
 };
 export type AgentQuestion = {
   question: string;
@@ -170,7 +170,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : agent;
+  agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : agent === "openclaw" ? "OpenClaw" : agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -433,8 +433,8 @@ export const answerPrompt = (
 ) => post(peer, `${sessionPath(s)}/prompts/${encodeURIComponent(prompt)}`, answer);
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back.
-export const moveSession = (peer: Peer, s: { agent: AgentName; id: string }, to: AgentName) =>
-  post<{ agent: AgentName; id: string }>(peer, `${sessionPath(s)}/move`, { to });
+export const moveSession = (peer: Peer, s: { agent: string; id: string }, to: string) =>
+  post<{ agent: string; id: string }>(peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to });
 export const stopSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/stop`);
 export const startSession = (

@@ -133,7 +133,31 @@ const prompt = {
   reason: "Check that the updated flow handles reconnecting safely.",
   decisions: ["accept", "decline"],
 };
-sessions[1].prompts = [prompt];
+sessions[1].prompts = permissionPreview === "question" ? [{
+  id: "sample-question",
+  kind: "question",
+  title: "Claude has a question",
+  questions: [{
+    id: "Which checks should I run?",
+    question: "Which checks should I run?",
+    header: "Checks",
+    multiSelect: true,
+    other: true,
+    options: [
+      { label: "Unit tests", description: "Check the changed behavior" },
+      { label: "Type check", description: "Check the app for type errors" },
+    ],
+  }],
+}] : [prompt];
+if (permissionPreview === "elsewhere") {
+  sessions[1].prompts = [];
+  sessions[1].held = null;
+  sessions[1].live = { where: "claude-app", pid: 1, tty: null, waiting: "question" };
+  sessions[1].asking = { kind: "question", questions: [{
+    question: "Which checks should I run?",
+    options: [{ label: "Unit tests", description: "" }, { label: "Type check", description: "" }],
+  }] };
+}
 const transcript: Record<string, any[]> = {};
 // OpenClaw fixture: all replies below are sample data, never sent to a channel.
 const clawSessions = [
@@ -334,7 +358,7 @@ function Preview() {
               toast={() => {}} onChanged={() => {}}
               ask={{ ...screenPrompt, open: macPrompts.some((p) => p.id === screenPrompt.id) }}
               onAskDone={() => setScreenPrompt(null)} />
-          </> : <EverythingChat peer={peer} feed={feed} showOnScreen={setScreenPrompt} />}
+          </> : <EverythingChat peer={peer} feed={feed} showOnScreen={setScreenPrompt} onScreen={() => setScreenPrompt({ id: "sample-question-screen", kind: "privacy", title: "Answer in Claude", detail: "", app: "Claude" })} />}
         </main>
       </div>
       <MobileNav

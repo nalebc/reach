@@ -18,7 +18,8 @@ export const MOVE_BUDGET = 480_000;
 // Per call to Codex's thread/inject_items (one request each).
 export const INJECT_BATCH = 120_000;
 
-export const agentName = (agent) => (agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : agent);
+export const agentName = (agent) =>
+  ({ codex: "Codex", claude: "Claude Code", openclaw: "OpenClaw" })[agent] || agent;
 
 const oneLine = (text, max) => {
   const line = String(text || "").replace(/\s+/g, " ").trim();
@@ -164,6 +165,23 @@ export function batches(items, max = INJECT_BATCH) {
   }
   if (current.length) out.push(current);
   return out;
+}
+
+// OpenClaw: the turns as notes in a chat of its own (it adds notes as its
+// agent's messages, verified), the move said first, in pieces of `max`.
+export function openClawNotes(turns, { note = "", from = "the other app", max = 50_000 } = {}) {
+  const notes = [];
+  let current = note;
+  for (const t of turns) {
+    const part = clipMiddle(`**${t.role === "user" ? "You" : from}:** ${t.text}`, max);
+    if (current && current.length + part.length + 2 > max) {
+      notes.push(current);
+      current = "";
+    }
+    current = current ? `${current}\n\n${part}` : part;
+  }
+  if (current) notes.push(current);
+  return notes;
 }
 
 // Claude Code: a transcript of its own (the shape of the lines Claude Code

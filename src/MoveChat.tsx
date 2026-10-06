@@ -12,20 +12,29 @@ import {
 import type { Peer } from "./api";
 import "./move-chat.css";
 
-// Continuing a chat with the other agent, as if it had been forked in the
-// same app (server: agent-sessions/move.mjs): the other agent gets what this
-// one knows so far, and this chat stays as it is. Offered where switching
-// feels natural: the agent at the top of a chat, the model picker, and the
-// moment one agent runs out of usage.
-export const otherAgent = (agent: AgentName): AgentName =>
-  agent === "codex" ? "claude" : "codex";
+// Continuing a chat in another app, as if it had been forked in the same app
+// and carried on with another agent (server: agent-sessions/move.mjs): the
+// other agent gets what this one knows so far, and this chat stays as it is.
+// Offered where switching feels natural: the agent at the top of a chat, the
+// model picker, and the moment an agent runs out of usage or is signed out.
 
-// Why the other agent can't take the chat now ("" when it can).
-export function moveBlocked(to: AgentName, health: AgentHealth[], word = "Mac") {
+// What a chat needs to be moved: which app and chat it is.
+export type MoveSource = { agent: string; id: string; title?: string; cwd?: string };
+
+// The apps Reach chats with, in the order offered.
+const APPS = ["codex", "claude", "openclaw"];
+// Every other app here that can take the chat.
+export const moveTargets = (agent: string, health: AgentHealth[]) =>
+  APPS.filter((a) => a !== agent && health.some((h) => h.agent === a && h.installed && h.supported !== false));
+
+// Why an app can't take the chat now ("" when it can).
+export function moveBlocked(to: string, health: AgentHealth[], word = "Mac") {
   const h = health.find((x) => x.agent === to);
   const name = agentLabel(to);
   if (!h) return "";
   if (!h.installed) return `${name} isn't installed on your ${word}.`;
+  // OpenClaw's own Gateway answers for it when the chat moves.
+  if (to === "openclaw") return "";
   if (!h.signedIn) return `${name} is signed out on your ${word}.`;
   if (h.usable === false)
     return `${name} is out of usage${h.resetsAt ? ` until ${resetTime(h.resetsAt, false)}` : ""}.`;
@@ -33,27 +42,23 @@ export function moveBlocked(to: AgentName, health: AgentHealth[], word = "Mac") 
 }
 
 // The chat to open once moved (the server fills in the rest when it loads).
-export const movedChat = (
-  from: AgentSession,
-  to: { agent: AgentName; id: string },
-): AgentSession => ({
-  ...from,
-  agent: to.agent,
-  id: to.id,
-  origin: "reach",
-  inApp: false,
-  status: "idle",
-  held: null,
-  live: undefined,
-  model: null,
-  effort: null,
-  mode: null,
-  prompts: undefined,
-  consent: undefined,
-  asking: undefined,
-  movedTo: undefined,
-  movedFrom: { agent: from.agent, id: from.id, title: from.title },
-});
+export const movedChat = (from: MoveSource, to: { agent: string; id: string }): AgentSession =>
+  ({
+    agent: to.agent as AgentName,
+    id: to.id,
+    title: from.title || "",
+    cwd: from.cwd || "",
+    branch: "",
+    origin: "reach",
+    inApp: false,
+    updatedAt: Date.now(),
+    createdAt: Date.now(),
+    status: "idle",
+    preview: "",
+    archived: false,
+    held: null,
+    movedFrom: { agent: from.agent, id: from.id, title: from.title },
+  }) as AgentSession;
 
 // The hint is shown a few times, never again once a chat has moved.
 const HINT = "reach.moveHint";
@@ -73,24 +78,25 @@ const noteHint = (value: number) => {
 };
 
 // "Continue in Codex": one tap says what happens, the next one moves it.
-export function MoveOffer({
+function MoveRow({
   peer,
   session,
+  to,
   health,
   logos,
   word,
   onMoved,
-  variant = "row",
+  usage,
 }: {
   peer: Peer;
-  session: AgentSession;
+  session: MoveSource;
+  to: string;
   health: AgentHealth[];
   logos: AgentLogos;
   word?: string;
   onMoved: (s: AgentSession) => void;
-  variant?: "row" | "picker" | "usage";
+  usage: boolean;
 }) {
-  const to = otherAgent(session.agent);
   const name = agentLabel(to);
   const from = agentLabel(session.agent);
   const blocked = moveBlocked(to, health, word);
@@ -113,11 +119,11 @@ export function MoveOffer({
     ? blocked
     : asking
       ? `${name} continues with what ${from} knows so far; this chat stays as it is.`
-      : variant === "usage"
+      : usage
         ? `Keep going: ${name} picks up this chat where it is.`
         : `Fork this chat and keep going with ${name}.`;
   return (
-    <div className={`move-offer ${variant}`}>
+    <>
       <button
         className="move-offer-row"
         disabled={!!blocked || busy}
@@ -138,6 +144,45 @@ export function MoveOffer({
         )}
       </button>
       {problem && <small className="move-offer-problem">{problem}</small>}
+    </>
+  );
+}
+
+// One row per app that can take the chat (none: nothing shown).
+export function MoveOffer({
+  peer,
+  session,
+  health,
+  logos,
+  word,
+  onMoved,
+  variant = "row",
+}: {
+  peer: Peer;
+  session: MoveSource;
+  health: AgentHealth[];
+  logos: AgentLogos;
+  word?: string;
+  onMoved: (s: AgentSession) => void;
+  variant?: "row" | "picker" | "usage";
+}) {
+  const targets = moveTargets(session.agent, health);
+  if (!targets.length) return null;
+  return (
+    <div className={`move-offer ${variant}`}>
+      {targets.map((to) => (
+        <MoveRow
+          key={to}
+          peer={peer}
+          session={session}
+          to={to}
+          health={health}
+          logos={logos}
+          word={word}
+          onMoved={onMoved}
+          usage={variant === "usage"}
+        />
+      ))}
     </div>
   );
 }
@@ -154,18 +199,19 @@ export function MoveHint({
   logos: AgentLogos;
   onOpen: () => void;
 }) {
-  const to = otherAgent(session.agent);
-  const [shown] = useState(() => hintSeen() < 3 && !moveBlocked(to, health) && !session.movedFrom);
+  const targets = moveTargets(session.agent, health).filter((t) => !moveBlocked(t, health));
+  const [shown] = useState(() => hintSeen() < 3 && !session.movedFrom);
+  const show = shown && targets.length > 0;
   useEffect(() => {
-    if (shown) noteHint(hintSeen() + 1);
-  }, [shown]);
-  if (!shown || !health.some((h) => h.agent === to)) return null;
+    if (show) noteHint(hintSeen() + 1);
+  }, [show]);
+  if (!show) return null;
+  const to = targets[0];
+  const where = targets.length === 1 ? agentLabel(to) : "another app";
   return (
     <button className="move-hint" onClick={onOpen}>
       <AgentLogo agent={to} name={agentLabel(to)} logos={logos} size={16} />
-      <span>
-        New: continue this chat in {agentLabel(to)}, as if forked here
-      </span>
+      <span>New: continue this chat in {where}, as if forked here</span>
       <ChevronRight size={14} />
     </button>
   );

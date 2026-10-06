@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowUp,
   ChevronRight,
+  GitFork,
   Loader2,
   RefreshCw,
   Search,
@@ -14,6 +15,8 @@ import { ChatAppPicker, ago, type ChatAppChoice } from "./ChatList";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
+import { MoveOffer } from "./MoveChat";
+import type { AgentHealth, AgentSession } from "./agent-sessions";
 import "./openclaw.css";
 
 const base = "/api/sessions/openclaw";
@@ -133,13 +136,21 @@ function Conversation({
   onBack,
   deviceRequests,
   onReviewDevice,
+  logos,
+  health = [],
+  onOpenChat,
 }: {
   peer: Peer;
   session: Session;
   onBack: () => void;
   deviceRequests: number;
   onReviewDevice: () => void;
+  logos: AgentLogos;
+  // Continuing this chat in another app (MoveChat.tsx).
+  health?: AgentHealth[];
+  onOpenChat?: (s: AgentSession) => void;
 }) {
+  const [moving, setMoving] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [limit, setLimit] = useState(200);
   const { data, error } = usePolling<History>(
@@ -235,7 +246,28 @@ function Conversation({
             <ShieldCheck size={18} />
           </button>
         )}
+        {onOpenChat && (
+          <button
+            className="claw-icon"
+            aria-label="Continue in another app"
+            aria-expanded={moving}
+            onClick={() => setMoving(!moving)}
+          >
+            <GitFork size={18} />
+          </button>
+        )}
       </header>
+      {moving && onOpenChat && (
+        <div className="claw-move">
+          <MoveOffer
+            peer={peer}
+            session={{ agent: "openclaw", id: current.key, title: current.title }}
+            health={health}
+            logos={logos}
+            onMoved={onOpenChat}
+          />
+        </div>
+      )}
       <div
         className="claw-transcript"
         ref={scroll}
@@ -401,6 +433,10 @@ export default function OpenClawSpace({
   deviceRequests = 0,
   onReviewDevice,
   onDiscover,
+  openKey,
+  onOpened,
+  health,
+  onOpenChat,
 }: {
   peer: Peer;
   apps: ChatAppChoice[];
@@ -410,6 +446,12 @@ export default function OpenClawSpace({
   deviceRequests?: number;
   onReviewDevice: () => void;
   onDiscover?: () => void;
+  // A chat moved here from another app: opened as soon as it's listed.
+  openKey?: string | null;
+  onOpened?: () => void;
+  // Continuing an OpenClaw chat in another app (MoveChat.tsx).
+  health?: AgentHealth[];
+  onOpenChat?: (s: AgentSession) => void;
 }) {
   const [refresh, setRefresh] = useState(0);
   const { data, error } = usePolling<Overview>(
@@ -430,6 +472,12 @@ export default function OpenClawSpace({
         .includes(query.toLowerCase()),
   );
   const agents = [...new Set(found.map((s) => s.agentId))];
+  useEffect(() => {
+    const moved = openKey && sessions.find((s) => s.key === openKey);
+    if (!moved) return;
+    setOpened(moved);
+    onOpened?.();
+  }, [openKey, sessions, onOpened]);
   if (opened)
     return (
       <Conversation
@@ -442,6 +490,9 @@ export default function OpenClawSpace({
         }}
         deviceRequests={deviceRequests}
         onReviewDevice={onReviewDevice}
+        logos={logos}
+        health={health}
+        onOpenChat={onOpenChat}
       />
     );
   return (

@@ -858,6 +858,7 @@ function ReachWorkspace() {
                     target={chatTarget}
                     onTargetOpened={() => setChatTarget(null)}
                     showOnScreen={showOnScreen}
+                    onScreen={features.screen ? () => navigate("screen") : undefined}
                   />
                 )}
                 {page === "chat" && (

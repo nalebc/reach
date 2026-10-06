@@ -258,10 +258,11 @@ export async function createReach(overrides = {}) {
     perMessageDeflate: false,
   });
   // Every Codex and Claude Code session on this computer (Chat tab).
+  const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
+  // Chats move to and from OpenClaw too (agent-sessions/move.mjs).
   const agentSessions =
     overrides.agentSessions ||
-    createAgentSessions({ dataDir: config.dataDir });
-  const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
+    createAgentSessions({ dataDir: config.dataDir, openClaw });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
   // (node --test) never reach for the real agents.
   if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)

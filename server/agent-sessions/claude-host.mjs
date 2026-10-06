@@ -372,7 +372,10 @@ export function createClaudeHost({
     },
     running: (id) => !!sessions.get(id)?.turns,
     // A phone has the session open right now (its live view is waiting).
-    watched: (id) => !!sessions.get(id)?.waiters.size,
+    watched: (id) => {
+      const s = sessions.get(id);
+      return !!s && (!!s.waiters.size || now() < (s.watchedUntil || 0));
+    },
     async send(id, { text, images, model, effort, mode, cwd } = {}) {
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const input = claudeContent({ text, images }, readFile);
@@ -442,11 +445,13 @@ export function createClaudeHost({
     },
     changes(id, since, ms = 25000, signal) {
       const s = state(id);
+      s.watchedUntil = now() + graceMs;
       if (s.version !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);
           s.waiters.delete(done);
+          s.watchedUntil = now() + graceMs;
           signal?.removeEventListener?.("abort", done);
           // The phone left the session: let go soon.
           if (!s.waiters.size && signal?.aborted) rest(s);

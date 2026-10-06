@@ -443,11 +443,13 @@ function AskingCard({
   logos,
   where,
   word,
+  onScreen,
 }: {
   asking: AgentAsking;
   logos: AgentLogos;
   where: string;
   word: string;
+  onScreen?: () => void;
 }) {
   return (
     <section
@@ -481,6 +483,12 @@ function AskingCard({
         <pre className="as-prompt-command">{asking.text}</pre>
       ) : (
         <p>{asking.text}</p>
+      )}
+      <p className="as-reason">This request is already open in the {where}. Answer it on your {word}{onScreen ? " through live screen." : "."}</p>
+      {onScreen && (
+        <div className="as-prompt-actions">
+          <button className="primary" onClick={onScreen}>Open screen to answer</button>
+        </div>
       )}
     </section>
   );
@@ -839,6 +847,7 @@ export default function AgentSessionView({
   onNew,
   deviceRequests = 0,
   onReviewDevice,
+  onScreen,
 }: {
   peer: Peer;
   session: AgentSession;
@@ -852,6 +861,7 @@ export default function AgentSessionView({
   onNew?: () => void;
   deviceRequests?: number;
   onReviewDevice?: () => void;
+  onScreen?: () => void;
 }) {
   const agent = initial.agent;
   const siblings = useMemo(
@@ -1688,6 +1698,7 @@ export default function AgentSessionView({
                     info.live?.where === "terminal" ? "terminal" : "Claude app"
                   }
                   word={word}
+                  onScreen={onScreen}
                 />
               ))}
             {live.prompts.map((p) => (

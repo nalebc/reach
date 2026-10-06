@@ -20,7 +20,7 @@ import { createClaudeCompose, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
-import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns } from "./move.mjs";
+import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -176,6 +176,9 @@ export function createAgentSessions({
   // The Mac's own dialogs (privacy prompts, password requests), shown on the
   // phone and answered at the Mac (mac-prompts.mjs).
   macPrompts = createMacPrompts({ dataDir }),
+  // OpenClaw's Gateway (../openclaw.mjs), when Reach has one: chats move to
+  // and from it too.
+  openClaw = null,
   // Chats continued with the other agent, both ways (move.mjs).
   moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
 } = {}) {
@@ -414,7 +417,26 @@ export function createAgentSessions({
     for (const [key, v] of codexWhole) if (Date.now() - v.at > 60000) codexWhole.delete(key);
     return value;
   };
-  const history = (agent, id) => (agent === "claude" ? claude.history(id) : codexHistory(id));
+  // An OpenClaw chat as the others' items (the OpenClaw space shows its own).
+  const clawHistory = async (key) => {
+    if (!openClaw) throw Object.assign(new Error("OpenClaw isn't connected to Reach."), { status: 404 });
+    const h = await openClaw.history(key, 1000);
+    return {
+      session: { title: h.session?.title || "", cwd: os.homedir(), model: h.session?.model || "" },
+      items: (h.items || []).map((m) => ({
+        id: String(m.id),
+        role: m.tool ? "tool" : ["user", "assistant"].includes(m.role) ? m.role : "system",
+        kind: m.tool ? "tool" : "text",
+        text: String(m.text || ""),
+        at: m.at,
+      })),
+      memory: null,
+    };
+  };
+  const history = (agent, id) =>
+    agent === "claude" ? claude.history(id) : agent === "openclaw" ? clawHistory(id) : codexHistory(id);
+  // The apps a chat can move between.
+  const movable = () => ["codex", "claude", ...(openClaw ? ["openclaw"] : [])];
   // Where a chat was when it moved: up to its last item then (or as many
   // items as it had, should that one read differently now).
   const cutAt = (items, from) => {
@@ -461,8 +483,8 @@ export function createAgentSessions({
     // so far (its latest summary, then the messages since); this one stays
     // as it is. Settings are the new app's own (never more permission).
     async move(agent, id, { to } = {}) {
-      adapter(agent);
-      if (to === agent || !adapters[to]) throw Object.assign(new Error("Choose the other app."), { status: 400 });
+      if (!movable().includes(agent)) adapter(agent);
+      if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
       const key = `${agent}:${id}`;
       if (moving.has(key)) throw Object.assign(new Error("This chat is already moving."), { status: 409 });
       moving.add(key);
@@ -486,6 +508,8 @@ export function createAgentSessions({
             batches: batches(codexHistoryItems(turns)),
             developerInstructions: note,
           }));
+        } else if (to === "openclaw") {
+          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }));
         } else {
           ({ id: target, entries: written } = await claude.write({ cwd: session.cwd, title, turns, note, model: session.model || "", gitBranch: session.branch || "" }));
           // In the Claude app's list too, once nobody is at the Mac.
