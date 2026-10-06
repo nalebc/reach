@@ -52,6 +52,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
+          REACH_TEST_SCRIPT_SANDBOX: ${{ runner.os == 'macOS' && '1' || '0' }}
       - run: npm audit --audit-level=moderate
       - run: npm run package
       - run: npm run verify:package

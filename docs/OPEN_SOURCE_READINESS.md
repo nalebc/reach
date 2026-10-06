@@ -13,12 +13,12 @@ OpenClaw conversations owned by external channels remain read-only. Reach sends 
 ## Checks and repairs
 
 - Production build and TypeScript check pass locally.
-- The final local Node 22 run passed 1,425 tests with zero failures and six optional/platform skips. Three subsequently recovered permission-handoff tests also pass. CI validates the complete combined suite.
+- The final local Node 22 run passed 1,425 tests with zero failures and six optional/platform skips. Three subsequently recovered permission-handoff tests also pass. The opt-in native macOS script tests pass, including outside-file, symlink/hardlink, network/helper, environment, revocation and exact-approval checks. CI validates the complete combined suite.
 - A clean 298-file npm artifact install with production dependencies passes CLI, UI, authenticated file access and access-denial checks.
 - Browser WebAssembly assets are required, checked for source freshness and integrity, and packaged with the application. Portable packaging now includes the agent HTML entry point.
 - npm audit reports zero known vulnerabilities for the installed lockfile. This does not cover unknown issues or constitute a security certification.
 - Go vulnerability scanning for the browser `js/wasm` target found no affected imported packages or reachable symbols. The module-level advisory GO-2026-5932 concerns `golang.org/x/crypto/openpgp`, which is absent from the dependency graph; there is no patched version for that unmaintained package. CI now repeats this scan.
-- Current-tree privacy checks pass. A pattern scan of 1,307 reachable historical text blobs found no matches for private keys, AWS/GitHub credentials or Tailscale credentials. Large/binary blobs and arbitrary secret formats need human review.
+- Current-tree privacy checks pass. A pattern scan of 1,533 reachable historical blobs (text scanned) found no matches for private keys, AWS/GitHub credentials or Tailscale credentials. Large/binary blobs and arbitrary secret formats need human review.
 - Installed Codex 0.160.0 passes seven generated-schema contracts; installed Claude Code 2.1.291 passes an isolated initialization handshake. Neither test sends a model turn. These are protocol checks, not signed-in or physical-phone qualification.
 - Existing CI failures revealed POSIX-only fixtures being run as Windows executables, Unix-socket tests on an unsupported Windows ingress, path-separator assumptions, mode-bit assertions on Windows, and a real Windows absolute-folder validation bug. Tests now distinguish platform prerequisites while retaining cross-platform authentication/scope coverage; Codex accepts native absolute paths.
 - Contribution guidance, private-reporting instructions, issue/PR templates and bundled-dependency license notices are included. Go/browser and JavaScript notice collection is part of the release build.
