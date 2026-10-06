@@ -609,3 +609,11 @@
 .chat-library .chat-list-search input::placeholder {
   font-size: 12px;
 }
+
+/* A chat continued from the other agent's: which, with its logo. */
+.chat-card-moved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: -1px;
+}

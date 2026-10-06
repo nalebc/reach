@@ -4,6 +4,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createClaudeTranscript } from "./claude-transcript.mjs";
+import { claudeLines } from "./move.mjs";
+import { randomUUID } from "node:crypto";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -157,6 +159,18 @@ export function createClaudeSessions({
     }
     return newest?.limited && newest.resetsAt > now ? { resetsAt: newest.resetsAt, text: newest.text || "" } : null;
   }
+  // The installed Claude Code's version, as its transcripts carry it.
+  let installed = null;
+  const version = async () => {
+    installed ??= run(cli, ["--version"], { timeout: 10000, env: cleanEnv() })
+      .then(({ stdout }) => String(stdout).match(/\d+\.\d+\.\d+/)?.[0] || null)
+      .catch(() => null);
+    return (await installed) || "2.1.0";
+  };
+  // Claude Code's own environment, never a host app's.
+  function cleanEnv() {
+    return Object.fromEntries(Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDECODE"));
+  }
   // Signed in, but out of usage until that limit resets.
   async function withUsage(health) {
     if (!health.signedIn) return health;
@@ -165,6 +179,48 @@ export function createClaudeSessions({
   }
   return {
     usage,
+    // A whole chat, and what Claude remembers of it (its latest summary and
+    // the items since), for moving it to the other agent (move.mjs).
+    async history(id) {
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      const parsed = await parse(found.file);
+      return { session: await summary(found, (await records()).get(id)), items: parsed.items, memory: parsed.memory || null };
+    },
+    // A new chat that continues one moved here from another agent: a
+    // transcript of its own (never over an existing one), in its folder's
+    // real path (the nearest that still exists), as Claude Code writes them.
+    async write({ cwd, title, turns, note, model, gitBranch = "" }) {
+      let dir = path.resolve(String(cwd || os.homedir()));
+      for (;;) {
+        try {
+          dir = await fs.realpath(dir);
+          if ((await fs.stat(dir)).isDirectory()) break;
+        } catch {}
+        const up = path.dirname(dir);
+        if (up === dir) {
+          dir = os.homedir();
+          break;
+        }
+        dir = up;
+      }
+      // Nothing of it left but the disk's root: the home folder instead.
+      if (dir === path.parse(dir).root) dir = os.homedir();
+      const folder = path.join(projects, dir.replace(/[^a-zA-Z0-9]/g, "-"));
+      await fs.mkdir(folder, { recursive: true });
+      const ver = await version();
+      for (let tries = 0; ; tries++) {
+        const id = randomUUID();
+        const lines = claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
+        try {
+          await fs.writeFile(path.join(folder, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", { flag: "wx", mode: 0o600 });
+          // The messages written: one item each when read back.
+          return { id, cwd: dir, entries: lines.filter((l) => l.type === "user" || l.type === "assistant").length };
+        } catch (e) {
+          if (e.code !== "EEXIST" || tries > 3) throw e;
+        }
+      }
+    },
     async list() {
       const [files, byCli] = await Promise.all([transcripts(), records()]);
       const out = [];
@@ -268,10 +324,7 @@ export function createClaudeSessions({
     async health() {
       try {
         // Run with Reach's own environment, never a host app's.
-        const clean = Object.fromEntries(
-          Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDECODE"),
-        );
-        const { stdout } = await run(cli, ["auth", "status", "--json"], { timeout: 10000, env: clean });
+        const { stdout } = await run(cli, ["auth", "status", "--json"], { timeout: 10000, env: cleanEnv() });
         return await withUsage(signIn(stdout));
       } catch (e) {
         if (e.code === "ENOENT") return { agent: "claude", installed: false, signedIn: false };

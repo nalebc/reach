@@ -34,7 +34,7 @@ export function createCodexDaemon({
   };
   async function socketPath() {
     const codex = await locate();
-    if (!codex) throw Object.assign(new Error("Codex is not installed on this computer."), { status: 503 });
+    if (!codex) throw Object.assign(new Error("Codex is not installed on this computer."), { status: 503, code: "AGENT_NOT_INSTALLED" });
     const { stdout } = await run(codex, ["app-server", "daemon", "start"], {
       timeout: 20000,
       maxBuffer: 65536,

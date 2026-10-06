@@ -269,6 +269,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       const items = [];
       let model = null; // the latest model that answered
       let firstUser = "";
+      // What Claude remembers of the chat: its latest summary (written when it
+      // compacted) and the items since (moving a chat carries this; move.mjs).
+      let memory = null;
       for (const e of chain) {
         const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
         if (e.type === "system" && e.subtype === "compact_boundary") {
@@ -278,7 +281,12 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           if (a.type === "queued_command" && a.humanTurn && a.prompt)
             items.push({ id: e.uuid, role: "user", kind: "text", text: String(a.prompt), queued: true, at });
         } else if (e.type === "user") {
-          if (e.isMeta || e.isCompactSummary) continue;
+          if (e.isCompactSummary) {
+            const summary = textOf(e.message?.content).trim();
+            if (summary) memory = { summary, from: items.length };
+            continue;
+          }
+          if (e.isMeta) continue;
           const content = e.message?.content;
           const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
           const text = blocks
@@ -331,6 +339,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         firstAt: firstAt ? Date.parse(firstAt) : 0,
         updatedAt: updatedAt ? Date.parse(updatedAt) : 0,
         usage,
+        ...(memory ? { memory } : {}),
         items,
       };
     },

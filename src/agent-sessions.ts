@@ -31,6 +31,10 @@ export type AgentSession = {
   consent?: { id?: string; kind: string; title: string; reason?: string; options?: string[] };
   // Prompts waiting on the phone (permission requests, questions).
   prompts?: SessionPrompt[];
+  // Continued from a chat with the other agent, as if forked (move.mjs).
+  movedFrom?: { agent: AgentName; id: string; title?: string };
+  // Where this chat was continued with the other agent.
+  movedTo?: { agent: AgentName; id: string; at?: number }[];
 };
 export type AgentQuestion = {
   question: string;
@@ -334,22 +338,24 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     document.addEventListener("visibilitychange", visible);
     // Sign-in and usage change rarely; check on open and every minute.
     let lastHealth = "";
-    const checkHealth = () =>
-      request<{ agents: AgentHealth[] }>(peer, "/api/sessions/health")
+    let healthActive = true;
+    const checkHealth = (fresh = false) =>
+      request<{ agents: AgentHealth[] }>(peer, `/api/sessions/health${fresh ? "?fresh=1" : ""}`)
         .then((r) => {
           const next = JSON.stringify(r.agents);
-          if (alive.current && next !== lastHealth) {
+          if (healthActive && next !== lastHealth) {
             lastHealth = next;
             setHealth(r.agents);
           }
         })
         .catch(() => {});
-    recheck.current = () => void checkHealth();
+    recheck.current = () => void checkHealth(true);
     void checkHealth();
     const healthTimer = setInterval(checkHealth, 60000);
     return () => {
       alive.current = false;
       clearInterval(timer);
+      healthActive = false;
       clearInterval(healthTimer);
       document.removeEventListener("visibilitychange", visible);
     };
@@ -425,6 +431,10 @@ export const answerPrompt = (
   prompt: string,
   answer: { decision?: string; answers?: Record<string, string[]>; content?: unknown },
 ) => post(peer, `${sessionPath(s)}/prompts/${encodeURIComponent(prompt)}`, answer);
+// Continues a chat with the other agent, as if forked in the same app: the
+// new chat's address comes back.
+export const moveSession = (peer: Peer, s: { agent: AgentName; id: string }, to: AgentName) =>
+  post<{ agent: AgentName; id: string }>(peer, `${sessionPath(s)}/move`, { to });
 export const stopSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/stop`);
 export const startSession = (

@@ -76,6 +76,7 @@ import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
@@ -260,6 +261,7 @@ export async function createReach(overrides = {}) {
   const agentSessions =
     overrides.agentSessions ||
     createAgentSessions({ dataDir: config.dataDir });
+  const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
   // (node --test) never reach for the real agents.
   if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)
@@ -1813,11 +1815,12 @@ export async function createReach(overrides = {}) {
         : { ...payload, version },
     );
   };
+  openClawRoutes(app, openClaw);
   app.get("/api/sessions", async (req, res) =>
     versioned(req, res, await agentSessions.list()),
   );
   app.get("/api/sessions/health", async (req, res) =>
-    res.json({ agents: await agentSessions.health() }),
+    res.json({ agents: await agentSessions.health({ fresh: req.query.fresh === "1" }) }),
   );
   // The Claude app's own typefaces from the app on this Mac (none without
   // it), ahead of the session routes below that would take /fonts/<name>.
@@ -2069,6 +2072,13 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
     res.json(await agentSessions.stop(req.params.agent, req.params.id)),
   );
+  // Continue a chat with the other agent, as if forked in the same app
+  // (agent-sessions/move.mjs); the new chat's address comes back.
+  app.post("/api/sessions/:agent/:id/move", async (req, res) => {
+    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to });
+    record("session", `Continued a chat in ${moved.agent === "codex" ? "Codex" : "Claude Code"}`);
+    res.json(moved);
+  });
   app.post("/api/sessions/:agent/:id/draft", async (req, res) => {
     macOwner(req);
     const text = req.body?.text;
@@ -3084,6 +3094,7 @@ export async function createReach(overrides = {}) {
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       agentSessions.close?.();
+      openClaw.close?.();
       const terminalExit = terminals.dispose();
       codex.dispose();
       jobs.dispose();

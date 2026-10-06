@@ -227,6 +227,20 @@ export function createCodexLive({
     if (!subscribed.delete(id)) return;
     daemon.rpc("thread/unsubscribe", { threadId: id }).catch(() => {});
   };
+  // A thread started without a model gets the Codex service's own default,
+  // which a ChatGPT account may not have (verified: "gpt-6.1-sol … not
+  // supported"); Codex's listed default then.
+  let listedDefault = null;
+  const withModel = async (model) => {
+    if (model) return model;
+    listedDefault ??= daemon.rpc("model/list", {}).then((r) => (r.data || []).find((m) => m.isDefault)?.id || null);
+    try {
+      return await listedDefault;
+    } catch {
+      listedDefault = null;
+      return null;
+    }
+  };
   daemon.onClose?.(() => {
     subscribed.clear();
     for (const [id, t] of threads)
@@ -423,9 +437,10 @@ export function createCodexLive({
       begin(threadId, r.turn);
       return { turnId: r.turn?.id || null };
     },
-    async start({ cwd, text, images, model, effort, approvalPolicy, sandbox, approvalsReviewer, name }) {
+    async start({ cwd, text, images, model: picked, effort, approvalPolicy, sandbox, approvalsReviewer, name }) {
       if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
+      const model = await withModel(picked);
       const started = await daemon.rpc("thread/start", {
         cwd,
         serviceName: "reach",
@@ -451,6 +466,32 @@ export function createCodexLive({
       }
       begin(threadId, r.turn);
       return { threadId, turnId: r.turn?.id || null };
+    },
+    // A thread that continues a chat moved from the other agent (move.mjs):
+    // its history goes in as what the model has seen, a batch per call; no
+    // turn runs until a message is sent. Let go of at once, so the Codex app
+    // can open it; one left empty by a failure is archived.
+    async fork({ cwd, name, batches = [], developerInstructions, model: picked }) {
+      if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
+      const model = await withModel(picked);
+      const started = await daemon.rpc("thread/start", {
+        cwd,
+        serviceName: "reach",
+        ...(model ? { model } : {}),
+        ...(developerInstructions ? { developerInstructions } : {}),
+      });
+      const threadId = started.thread.id;
+      subscribed.add(threadId);
+      if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) }).catch(() => {});
+      try {
+        for (const items of batches) await daemon.rpc("thread/inject_items", { threadId, items });
+      } catch (e) {
+        release(threadId);
+        await daemon.rpc("thread/archive", { threadId }).catch(() => {});
+        throw e;
+      }
+      release(threadId);
+      return { threadId };
     },
     async stop(threadId) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);

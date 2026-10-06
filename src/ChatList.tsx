@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
+  RefreshCw,
   FolderOpen,
   Loader2,
   MessageSquare,
@@ -161,6 +162,9 @@ export default function ChatList({
   agent,
   onAgentChange,
   appPending,
+  setup,
+  canStart = true,
+  onRefresh,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -177,6 +181,9 @@ export default function ChatList({
   apps?: ChatAppChoice[];
   onAgentChange?: (agent: string) => void;
   appPending?: Record<string, number>;
+  setup?: ReactNode;
+  canStart?: boolean;
+  onRefresh?: () => void;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -230,7 +237,16 @@ export default function ChatList({
           <span className="chat-entry-copy">
             <strong>{s.title || "New chat"}</strong>
             <span className="chat-card-preview">
-              {s.prompts?.[0]?.title || s.preview || "No messages yet"}
+              {/* Continued from a chat with the other agent, as if forked. */}
+              {s.movedFrom && (
+                <span className="chat-card-moved">
+                  <AgentLogo agent={s.movedFrom.agent} logos={logos} size={12} />
+                  From {agentLabel(s.movedFrom.agent)} ·{" "}
+                </span>
+              )}
+              {s.prompts?.[0]?.title ||
+                s.preview ||
+                (s.movedFrom ? `Continues “${s.movedFrom.title || "a chat"}”` : "No messages yet")}
             </span>
             {showProject && (
               <span className="chat-entry-context">
@@ -276,7 +292,9 @@ export default function ChatList({
             <h1>Chats</h1>
             <span className="chat-list-device">{peer.name}</span>
           </div>
-          {!upcoming && (
+          <div className="chat-heading-actions">
+          {onRefresh && <button className="chat-refresh" aria-label="Refresh apps and chats" onClick={onRefresh}><RefreshCw size={16} /></button>}
+          {!upcoming && canStart && (
             <button
               className="chat-create"
               aria-label="New chat"
@@ -286,6 +304,7 @@ export default function ChatList({
               <span>New chat</span>
             </button>
           )}
+          </div>
         </header>
       )}
       <div className="chat-library-tools">
@@ -320,6 +339,7 @@ export default function ChatList({
           </label>
         )}
       </div>
+      {setup}
       {!!pending && onReview && !compact && !found.length && (
         <button
           className="chat-review-link chat-review-empty"
@@ -346,7 +366,7 @@ export default function ChatList({
         <p className="chat-list-note" role="status">
           <Loader2 size={15} className="spin" /> Finding your conversations…
         </p>
-      ) : !found.length ? (
+      ) : !found.length && setup && !q ? null : !found.length ? (
         <div className="chat-list-empty">
           <MessageSquare size={28} />
           <strong>
@@ -357,7 +377,7 @@ export default function ChatList({
               ? "Try another title, project, or app."
               : `Start a ${picked?.name || agentLabel(filter)} chat on ${peer.name}.`}
           </p>
-          {!q && (
+          {!q && canStart && (
             <button className="chat-create" onClick={onNew}>
               <Plus size={16} /> Start a conversation
             </button>

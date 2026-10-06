@@ -40,6 +40,7 @@ import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import ChatSheet from "./ChatSheet";
+import { ContinuedIn, MoveHint, MoveOffer } from "./MoveChat";
 import ChatList from "./ChatList";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
@@ -1421,6 +1422,9 @@ export default function AgentSessionView({
           </button>
         </span>
       </header>
+      {items && items.length > 2 && (
+        <MoveHint session={info} health={health} logos={logos} onOpen={() => setSwitching(true)} />
+      )}
       {details && (
         <div className="as-details">
           <strong className="as-details-title">{info.title}</strong>
@@ -1571,12 +1575,24 @@ export default function AgentSessionView({
             {agent === "codex" && elapsed > 0 && <small>{elapsedLabel}</small>}
           </div>
         )}
+        {!working && <ContinuedIn session={info} logos={logos} onOpen={onSelect} />}
       </div>
       {switching && (
         <ChatSheet
           title="Switch conversation"
           onClose={() => setSwitching(false)}
         >
+          <MoveOffer
+            peer={peer}
+            session={info}
+            health={health}
+            logos={logos}
+            word={word}
+            onMoved={(s) => {
+              setSwitching(false);
+              onSelect(s);
+            }}
+          />
           <ChatList
             compact
             peer={peer}
@@ -1803,6 +1819,9 @@ export default function AgentSessionView({
             )}
           </div>
         )}
+        {(claudeLimit || outOfUsage) && (
+          <MoveOffer variant="usage" peer={peer} session={info} health={health} logos={logos} word={word} onMoved={onSelect} />
+        )}
         {(problem || note || blocked) && (
           <p className={`as-hint ${problem ? "bad" : ""}`}>
             {problem || blocked || note}
@@ -1816,6 +1835,10 @@ export default function AgentSessionView({
             logos={logos}
             onSignedIn={onSignedIn}
           />
+        )}
+        {/* Signed out here: or keep going with the other agent. */}
+        {needsSignIn && (
+          <MoveOffer variant="usage" peer={peer} session={info} health={health} logos={logos} word={word} onMoved={onSelect} />
         )}
         {settings && choosingMode && (
           <div
@@ -1871,6 +1894,20 @@ export default function AgentSessionView({
             onPick={(next, done) => {
               setChoice(next);
               if (done) setPicking(false);
+            }}
+          />
+        )}
+        {settings && picking && (
+          <MoveOffer
+            variant="picker"
+            peer={peer}
+            session={info}
+            health={health}
+            logos={logos}
+            word={word}
+            onMoved={(s) => {
+              setPicking(false);
+              onSelect(s);
             }}
           />
         )}

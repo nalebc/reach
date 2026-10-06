@@ -400,6 +400,12 @@ export default function Screen({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paused]);
+  // The last tap landed where the Mac can't see (a game, a canvas, a remote
+  // desktop): its text fields can't be found, so the Type button is back.
+  const [blindSpot, setBlindSpot] = useState(false);
+  useEffect(() => {
+    if (!control) setBlindSpot(false);
+  }, [control]);
   // A tap on a text field opens the keyboard within that tap, no Type button:
   // the Mac said on touch-down that a field is there.
   const typeInField = (point: { x: number; y: number }, secure: boolean) => {
@@ -686,6 +692,7 @@ export default function Screen({
               probe: (point: { x: number; y: number }) =>
                 send({ type: "probe", ...point }),
               onField: typeInField,
+              onBlind: setBlindSpot,
             })}
             resetKey={`${display}:${revision}`}
             compact
@@ -742,7 +749,7 @@ export default function Screen({
             </span>
             {control && (
               <>
-                {!input.probe && <button
+                {(!input.probe || blindSpot) && <button
                   className="button primary small keyboard-button"
                   aria-label="Open phone keyboard"
                   onPointerDown={(event) => event.preventDefault()}
@@ -815,7 +822,7 @@ export default function Screen({
               data-immersive-keep
               onPointerDown={(event) => event.preventDefault()}
             >
-              {control && !input.probe && (
+              {control && (!input.probe || blindSpot) && (
                 <button
                   aria-label="Open phone keyboard"
                   disabled={!usable}

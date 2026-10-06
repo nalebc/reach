@@ -1,0 +1,96 @@
+/* Continuing a chat with the other agent (MoveChat.tsx). Drawn from the text
+   colour, so it sits right in the chat (either app's look) and in sheets. */
+.move-offer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.move-offer.row {
+  margin: 0 0 10px;
+}
+.move-offer-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.move-offer-row:disabled {
+  opacity: 0.6;
+}
+.move-offer-row > svg:last-child {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+.move-offer-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.move-offer-text strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.move-offer-text small {
+  font-size: 12.5px;
+  line-height: 1.35;
+  opacity: 0.72;
+}
+.move-offer-go {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.move-offer-problem {
+  padding: 0 4px;
+  color: var(--as-minus, #e5534b);
+  font-size: 12.5px;
+}
+.move-offer.picker {
+  margin: 4px 0 6px;
+}
+.move-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 2px auto 0;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  opacity: 0.7;
+}
+.move-continued {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 6px;
+}
+.move-continued button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+}

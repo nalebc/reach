@@ -152,6 +152,8 @@ test("the published package ships the app, never sources or private state, and r
   // Only what the server imports is installed on users' machines.
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
     "express",
+    // OpenClaw's config files are JSON5 (server/openclaw.mjs).
+    "json5",
     "multer",
     "node-pty",
     "prompts",

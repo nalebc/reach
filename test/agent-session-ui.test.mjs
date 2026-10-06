@@ -370,7 +370,7 @@ const home = async (sessions, health = signedIn, extra = {}, on = peer) => {
     const status = health.find((h) => h.agent === selected);
     if (
       status &&
-      (!status.installed || !status.signedIn || status.usable === false)
+      status.installed && status.signedIn && status.usable === false
     )
       await click(button("New chat"));
   }
@@ -1504,15 +1504,16 @@ test("changing the new-chat app preserves the draft and remembers the app", asyn
 });
 
 test("real app logos appear on conversations and in the app chooser", async () => {
-  await home([codexSession(), claudeSession()]);
+  await home([codexSession(), claudeSession()], [...signedIn, { agent: "openclaw", installed: true, signedIn: false, supported: true }]);
   await dom.waitFor(() => $(".chat-card img.agent-logo"));
   assert.equal($(".chat-card img.agent-logo").getAttribute("src"), LOGO);
   await click(button("New chat"));
-  assert.equal($$("[role=dialog] .chat-app-rail img.agent-logo").length, 2);
+  assert.equal($$("[role=dialog] .chat-app-rail img.agent-logo").length, 3);
+  assert.ok($('[role=dialog] img[alt="OpenClaw"]'), "OpenClaw has its bundled logo");
   assert.deepEqual(dom.errors, []);
 });
 
-test("upcoming logos stay visible and do not start unsupported sessions", async () => {
+test("only discovered upcoming apps are visible and never start unsupported sessions", async () => {
   const original = globalThis.fetch;
   const requests = [];
   globalThis.fetch = (url, init) => {
@@ -1523,11 +1524,12 @@ test("upcoming logos stay visible and do not start unsupported sessions", async 
     await home([codexSession()], [
       ...signedIn,
       { agent: "gemini", name: "Gemini CLI", installed: true, signedIn: true, supported: false },
-      { agent: "future-agent", name: "Future app", installed: false, signedIn: false, supported: false },
+      { agent: "future-agent", name: "Future app", installed: true, signedIn: false, supported: false },
     ]);
     const names = $$(".chat-app-rail button").map((b) => b.getAttribute("aria-label"));
-    for (const name of ["Gemini CLI", "Cursor", "Antigravity", "Future app"])
-      assert.ok(names.includes(name), `${name} remains discoverable`);
+    for (const name of ["Gemini CLI", "Future app"])
+      assert.ok(names.includes(name), `${name} was discovered`);
+    for (const name of ["Cursor", "Antigravity", "OpenClaw"]) assert.ok(!names.includes(name), `${name} was not discovered`);
     await chooseApp("Gemini CLI");
     assert.match($("[role=status]").textContent, /Gemini CLI.*Coming soon/s);
     assert.equal($("textarea"), null);
@@ -1544,7 +1546,7 @@ test("upcoming logos stay visible and do not start unsupported sessions", async 
 });
 
 test("exploring upcoming apps in a new conversation preserves the supported app's draft", async () => {
-  await home([codexSession()]);
+  await home([codexSession()], [...signedIn, ...["gemini", "cursor", "antigravity"].map((agent) => ({ agent, name: { gemini: "Gemini CLI", cursor: "Cursor", antigravity: "Antigravity" }[agent], installed: true, signedIn: false, supported: false }))]);
   await click(button("New chat"));
   await typeInto($("textarea"), "Keep this while I look at the other apps");
   for (const name of ["Gemini CLI", "Cursor", "Antigravity"]) {
@@ -2602,8 +2604,8 @@ test("new-chat availability uses the connected computer's platform", async () =>
     {},
     { ...peer, name: "PC", platform: "win32" },
   );
-  assert.match($(".chat-status").textContent, /computer/);
-  assert.doesNotMatch($(".chat-status").textContent, /Mac/);
+  assert.match($(".chat-setup").textContent, /computer/);
+  assert.doesNotMatch($(".chat-setup").textContent, /Mac/);
   assert.equal($("textarea"), null);
   assert.deepEqual(dom.errors, []);
 });
@@ -2970,4 +2972,48 @@ test("an active conversation can review Mac authentication without losing its dr
   await click($("[aria-label='Close needs you']"));
   assert.equal($("textarea").value, "Keep this draft");
   assert.deepEqual(dom.errors, []);
+});
+
+test("Codex and Claude stay available for setup while absent optional apps are hidden", async () => {
+  let checks = 0;
+  await home([], [
+    { agent: "codex", installed: false, signedIn: false },
+    { agent: "claude", installed: false, signedIn: false },
+    { agent: "gemini", name: "Gemini CLI", installed: false, signedIn: false, supported: false },
+    { agent: "openclaw", name: "OpenClaw", installed: false, signedIn: false, supported: true },
+  ], { recheck: () => checks++ });
+  assert.deepEqual($$(".chat-app-rail button").map(b => b.getAttribute("aria-label")), ["Codex", "Claude Code"]);
+  assert.match($(".chat-setup").textContent, /Set up Codex on Mac/);
+  assert.equal($(".chat-setup a").getAttribute("href"), "https://developers.openai.com/codex/cli/");
+  assert.equal(button("New chat"), undefined);
+  assert.equal($(".chat-list-empty"), null);
+  await click(button("Check again")); assert.equal(checks, 1);
+  await chooseApp("Claude Code");
+  assert.match($(".chat-setup").textContent, /Set up Claude Code/);
+  assert.equal($(".chat-setup a").getAttribute("href"), "https://code.claude.com/docs/en/setup");
+  assert.equal(mac.sent.length, 0);
+});
+
+test("an installed signed-out app offers sign-in directly in its chat space", async () => {
+  await home([], [{ agent: "codex", installed: true, signedIn: false }]);
+  assert.ok($(".chat-library .sign-in-start"));
+  assert.equal($("[role=dialog]"), null);
+  assert.equal(button("New chat"), undefined);
+  await click(button("Sign in"));
+  assert.deepEqual(mac.sent[0], { route: "POST /api/sessions/sign-in", body: { agent: "codex" } });
+});
+
+test("failed discovery offers retry without claiming an app is missing", async () => {
+  await home([], [{ agent: "codex", installed: false, signedIn: false, error: "Computer unavailable" }]);
+  assert.match($(".chat-setup").textContent, /Couldn’t check Codex/);
+  assert.equal($(".chat-setup a"), null);
+  assert.equal(button("New chat"), undefined);
+});
+
+test("an unavailable remembered optional app falls back to Codex on this computer", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "openclaw");
+  await home([codexSession()], signedIn);
+  assert.equal($(".chat-app-rail [aria-pressed=true]").getAttribute("aria-label"), "Codex");
+  assert.equal($$(".chat-card").length, 1);
+  assert.equal(button("OpenClaw"), undefined);
 });

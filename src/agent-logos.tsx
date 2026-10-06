@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { request, type Peer } from "./api";
 import { agentLabel } from "./agent-sessions";
+// OpenClaw's official lobster mark (MIT, openclaw/openclaw).
+import openClawLogo from "./assets/openclaw.svg";
 
 // The agents' real logos, read from the apps on the Mac (server/agent-sessions/
 // logos.mjs). Fetched once per version and kept in this browser, so they show
@@ -110,7 +112,7 @@ export function AgentLogo({
   fill?: boolean;
   className?: string;
 }) {
-  const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent];
+  const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent] || (agent === "openclaw" ? openClawLogo : undefined);
   const style: CSSProperties = { width: size, height: size };
   const Glyph = GLYPHS[agent] || Bot;
   return src ? (

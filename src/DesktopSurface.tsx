@@ -31,6 +31,7 @@ export default function DesktopSurface({
   onTextTarget,
   probe,
   onField,
+  onBlind,
   resetKey,
   initialCursor,
   compact = false,
@@ -58,6 +59,9 @@ export default function DesktopSurface({
   // that same tap (Safari opens it only during a tap).
   probe?: (point: Point) => Promise<unknown>;
   onField?: (point: Point, secure: boolean) => void;
+  // The Mac can't see what's under the finger (a game, a canvas, a remote
+  // desktop): its text fields can't be found, so offer the keyboard button.
+  onBlind?: (blind: boolean) => void;
   resetKey: string;
   initialCursor: Point | null;
   compact?: boolean;
@@ -321,13 +325,19 @@ export default function DesktopSurface({
         probeAnswer.current = null;
         probe(point).then(
           (answer) => {
-            const a = (answer || {}) as { field?: unknown; secure?: unknown };
-            if (probeSerial.current === id)
+            const a = (answer || {}) as {
+              field?: unknown;
+              secure?: unknown;
+              blind?: unknown;
+            };
+            if (probeSerial.current === id) {
               probeAnswer.current = {
                 id,
                 field: a.field === true,
                 secure: a.secure === true,
               };
+              onBlind?.(a.blind === true);
+            }
           },
           () => {},
         );

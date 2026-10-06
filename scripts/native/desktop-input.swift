@@ -89,9 +89,16 @@ final class Input: @unchecked Sendable {
     let system = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(system, 0.1)
     var hit: AXUIElement?
-    guard AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
-      var element = hit
-    else { return ["field": false] }
+    // Web content asked for the first time can answer nothing while it wakes
+    // its accessibility (a page's first tap said "no field"): ask again, briefly.
+    var found = AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit)
+    for _ in 0..<2 where found != .success {
+      usleep(40_000)
+      found = AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit)
+    }
+    // Nothing answers there: an app macOS can't see into. The phone offers its
+    // keyboard button instead.
+    guard found == .success, var element = hit else { return ["field": false, "blind": true] }
     var pid: pid_t = 0
     if AXUIElementGetPid(element, &pid) == .success, pid > 0, !describing.contains(pid) {
       describing.insert(pid)
@@ -119,7 +126,86 @@ final class Input: @unchecked Sendable {
       else { break }
       element = parent as! AXUIElement
     }
-    return ["field": false]
+    // What macOS hits can be a layer drawn over the field, not inside it (the
+    // ChatGPT app's composer, SwiftUI overlays, web views): the walk up never
+    // meets the field. Look in the window under the finger for a field whose
+    // frame holds the point, skipping branches that don't; bounded in time so
+    // the tap's click is never held up.
+    if let window = windowOf(hit ?? element),
+      let field = fieldAt(window, at, until: Date().addingTimeInterval(0.25))
+    {
+      let enabled = attribute(field, kAXEnabledAttribute) as? Bool ?? true
+      let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""
+      return ["field": enabled, "secure": subrole == "AXSecureTextField"]
+    }
+    return ["field": false, "blind": opaque(hit ?? element)]
+  }
+  // Can't see inside: macOS gives only the window (games), nothing it knows
+  // (unknown), or a big layer with nothing in it (a canvas, a remote desktop, a
+  // video). Text fields there can't be found; the phone shows its keyboard
+  // button for them.
+  func opaque(_ element: AXUIElement) -> Bool {
+    let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+    if ["", "AXWindow", "AXApplication", "AXUnknown"].contains(role) { return true }
+    guard ["AXGroup", "AXImage", "AXLayoutArea", "AXScrollArea", "AXWebArea"].contains(role),
+      (attribute(element, kAXChildrenAttribute) as? [AXUIElement])?.isEmpty ?? true,
+      let frame = frameOf(element)
+    else { return false }
+    return frame.width * frame.height >= 200 * 150
+  }
+  func frameOf(_ element: AXUIElement) -> CGRect? {
+    guard let position = attribute(element, kAXPositionAttribute),
+      let size = attribute(element, kAXSizeAttribute),
+      CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID()
+    else { return nil }
+    var origin = CGPoint.zero
+    var extent = CGSize.zero
+    AXValueGetValue(position as! AXValue, .cgPoint, &origin)
+    AXValueGetValue(size as! AXValue, .cgSize, &extent)
+    return CGRect(origin: origin, size: extent)
+  }
+  func windowOf(_ element: AXUIElement) -> AXUIElement? {
+    if let window = attribute(element, kAXWindowAttribute),
+      CFGetTypeID(window) == AXUIElementGetTypeID()
+    {
+      return (window as! AXUIElement)
+    }
+    var current = element
+    for _ in 0..<40 {
+      if attribute(current, kAXRoleAttribute) as? String == "AXWindow" { return current }
+      guard let parent = attribute(current, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID()
+      else { return nil }
+      current = parent as! AXUIElement
+    }
+    return nil
+  }
+  func fieldAt(_ root: AXUIElement, _ at: CGPoint, until: Date) -> AXUIElement? {
+    let roles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    var stack = [root]
+    var visited = 0
+    while let element = stack.popLast(), visited < 4000, Date() < until {
+      visited += 1
+      let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+      if roles.contains(role) {
+        if let frame = frameOf(element), frame.insetBy(dx: -2, dy: -2).contains(at) {
+          return element
+        }
+        continue
+      }
+      guard let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else {
+        continue
+      }
+      for child in children {
+        if let frame = frameOf(child), frame.width > 0, frame.height > 0,
+          !frame.insetBy(dx: -2, dy: -2).contains(at)
+        {
+          continue
+        }
+        stack.append(child)
+      }
+    }
+    return nil
   }
   func checkTyping(_ token: String) throws {
     guard !token.isEmpty, token == typingToken, let expected = typingElement,

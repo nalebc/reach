@@ -20,6 +20,7 @@ import { createClaudeCompose, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
+import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns } from "./move.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,28 +42,34 @@ export function nativeLink(session) {
   return null;
 }
 
-// Agents Reach knows of but doesn't drive yet. Shown when installed, so the
-// phone's agent picker already has their place.
+// Optional apps appear in Chat only when this computer has their app, CLI,
+// or (for an independently running OpenClaw Gateway) local configuration.
 export const KNOWN_AGENTS = [
+  { agent: "openclaw", name: "OpenClaw", cli: "openclaw", supported: true },
   { agent: "gemini", name: "Gemini CLI", cli: "gemini" },
   { agent: "antigravity", name: "Antigravity", app: "/Applications/Antigravity.app" },
   { agent: "cursor", name: "Cursor", app: "/Applications/Cursor.app", cli: "cursor-agent" },
 ];
 let detected = null;
-export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync } = {}) {
-  if (detected && Date.now() - detected.at < 10 * 60 * 1000) return detected.value;
+export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir() } = {}) {
+  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env;
+  if (cacheable && !fresh && detected && Date.now() - detected.at < 60000) return detected.value;
   const value = Promise.all(
-    known.map(async ({ agent, name, app, cli }) => {
-      let installed = !!app && exists(app);
+    known.map(async ({ agent, name, app, cli, supported = false }) => {
+      let installed = !!app && platform === "darwin" && exists(app);
+      if (agent === "openclaw") {
+        const config = env.REACH_OPENCLAW_CONFIG || env.OPENCLAW_CONFIG_PATH || path.join(env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw"), "openclaw.json");
+        installed ||= exists(config);
+      }
       if (!installed && cli)
-        installed = await run(process.env.SHELL || "/bin/zsh", ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
+        installed = await run(platform === "win32" ? "where.exe" : env.SHELL || "/bin/sh", platform === "win32" ? [cli] : ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
           ({ stdout }) => !!stdout.trim(),
           () => false,
         );
-      return { agent, name, installed, signedIn: false, supported: false };
+      return { agent, name, installed, signedIn: false, supported };
     }),
   );
-  detected = { at: Date.now(), value };
+  if (cacheable) detected = { at: Date.now(), value };
   return value;
 }
 
@@ -169,6 +176,8 @@ export function createAgentSessions({
   // The Mac's own dialogs (privacy prompts, password requests), shown on the
   // phone and answered at the Mac (mac-prompts.mjs).
   macPrompts = createMacPrompts({ dataDir }),
+  // Chats continued with the other agent, both ways (move.mjs).
+  moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
 } = {}) {
   const adapters = { codex, claude };
   const adapter = (agent) => {
@@ -384,7 +393,115 @@ export function createAgentSessions({
     else if (wrote) void claudeRefresh.add(id);
   });
   const host = (agent) => (adapter(agent), agent === "codex" ? codexLive : claudeHost);
+  // A whole Codex chat, oldest first, kept a minute (a moved chat pages
+  // through the one it continues).
+  const codexWhole = new Map();
+  const codexHistory = async (id) => {
+    const kept = codexWhole.get(id);
+    if (kept && Date.now() - kept.at < 60000) return kept.value;
+    const pages = [];
+    let cursor = null;
+    let session = null;
+    for (let n = 0; n < 200; n++) {
+      const page = await codex.read(id, { cursor, limit: 500 });
+      session ??= page.session;
+      pages.unshift(page.items);
+      if (!page.before) break;
+      cursor = page.before;
+    }
+    const value = { session, items: pages.flat(), memory: null };
+    codexWhole.set(id, { at: Date.now(), value });
+    for (const [key, v] of codexWhole) if (Date.now() - v.at > 60000) codexWhole.delete(key);
+    return value;
+  };
+  const history = (agent, id) => (agent === "claude" ? claude.history(id) : codexHistory(id));
+  // Where a chat was when it moved: up to its last item then (or as many
+  // items as it had, should that one read differently now).
+  const cutAt = (items, from) => {
+    const at = from.upTo ? items.findIndex((i) => i.id === from.upTo) + 1 : 0;
+    return at > 0 ? at : Math.min(Number(from.count) || items.length, items.length);
+  };
+  const word = process.platform === "darwin" ? "Mac" : "computer";
+  // The quiet line where a chat switched agents.
+  const joinLine = (origin, agent, found) => ({
+    id: `moved:${origin.from.agent}:${origin.from.id}`,
+    role: "system",
+    kind: "notice",
+    text: found
+      ? `Continued with ${agentName(agent)} · earlier messages are from ${agentName(origin.from.agent)}`
+      : `Continued with ${agentName(agent)} · the earlier messages from ${agentName(origin.from.agent)} are no longer on this ${word}`,
+    at: origin.at,
+  });
+  // A chat as shown: the one it continues (and that one's, a few deep), the
+  // line where it switched agents, then its own items; up to `from` if given.
+  const shown = async (agent, id, from = null, depth = 0) => {
+    let { items } = await history(agent, id);
+    if (from) items = items.slice(0, cutAt(items, from));
+    const origin = moves.into(agent, id);
+    if (!origin || depth >= 4) return items;
+    // A Claude Code chat begins with the history written for it: shown as
+    // the original chat's own messages instead.
+    if (origin.to.hidden) items = items.slice(origin.to.hidden);
+    const before = await earlier(origin, depth + 1);
+    return [...(before || []), joinLine(origin, agent, !!before), ...items];
+  };
+  // The chat a moved one continues, up to the move; null when it is no
+  // longer on this Mac (Claude Code deletes old transcripts).
+  const earlier = async (origin, depth = 1) => {
+    try {
+      return await shown(origin.from.agent, origin.from.id, origin.from, depth);
+    } catch {
+      return null;
+    }
+  };
+  const moving = new Set();
   return {
+    // Continues a chat with the other agent, as if it had been forked in the
+    // same app (move.mjs): a new chat there with what this one's agent knows
+    // so far (its latest summary, then the messages since); this one stays
+    // as it is. Settings are the new app's own (never more permission).
+    async move(agent, id, { to } = {}) {
+      adapter(agent);
+      if (to === agent || !adapters[to]) throw Object.assign(new Error("Choose the other app."), { status: 400 });
+      const key = `${agent}:${id}`;
+      if (moving.has(key)) throw Object.assign(new Error("This chat is already moving."), { status: 409 });
+      moving.add(key);
+      try {
+        const source = await history(agent, id);
+        const { session, items, memory } = source;
+        const from = agentName(agent);
+        const title = session.title || "";
+        // A Codex thread doesn't list the history it was given: a chat moved
+        // into Codex brings what it continues along again (a Claude Code
+        // chat holds its copy in its own transcript).
+        const carried = agent === "codex" && moves.into(agent, id) ? await shown(agent, id) : memory ? items.slice(memory.from) : items;
+        const turns = moveTurns(carried, { summary: memory?.summary || "", from });
+        const note = handoff({ from, title, cwd: session.cwd });
+        let target;
+        let written = 0;
+        if (to === "codex") {
+          ({ threadId: target } = await codexLive.fork({
+            cwd: session.cwd,
+            name: title,
+            batches: batches(codexHistoryItems(turns)),
+            developerInstructions: note,
+          }));
+        } else {
+          ({ id: target, entries: written } = await claude.write({ cwd: session.cwd, title, turns, note, model: session.model || "", gitBranch: session.branch || "" }));
+          // In the Claude app's list too, once nobody is at the Mac.
+          void claudeImports.add(target);
+        }
+        // A Claude Code target begins with the history written for it, which
+        // Reach shows as the original chat's own messages instead.
+        moves.add({
+          from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
+          to: { agent: to, id: target, ...(written ? { hidden: written } : {}) },
+        });
+        return { agent: to, id: target };
+      } finally {
+        moving.delete(key);
+      }
+    },
     signIn,
     logos,
     // Asks held for the phone (agent-asks.mjs): Reach notifies your phone.
@@ -575,6 +692,11 @@ export function createAgentSessions({
         /* Live status is a hint; the list stands without it. */
       }
       for (const s of sessions) (s.agent === "claude" ? claudeStatus : codexStatus)(s);
+      // Continued from the other agent: said in the list, with its app.
+      for (const s of sessions) {
+        const origin = moves.into(s.agent, s.id);
+        if (origin) s.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
+      }
       sessions.sort((a, b) => b.updatedAt - a.updatedAt);
       return {
         sessions,
@@ -589,7 +711,40 @@ export function createAgentSessions({
       };
     },
     async read(agent, id, options) {
+      // A moved chat shows the one it continues above its own messages, as
+      // if forked in the same app: older pages go on into that chat.
+      const origin = moves.into(agent, id);
+      const limit = Math.min(Math.max(Number(options?.limit) || 200, 1), 500);
+      if (origin && typeof options?.before === "string" && options.before.startsWith("moved:")) {
+        const items = (await earlier(origin)) || [];
+        const end = Math.min(Math.max(Number(options.before.slice(6)) || 0, 0), items.length);
+        const start = Math.max(0, end - limit);
+        return { items: items.slice(start, end), before: start > 0 ? `moved:${start}` : null };
+      }
       const result = await adapter(agent).read(id, options);
+      if (origin?.to.hidden) {
+        // Its first messages are the history written for it: shown once,
+        // as the original chat's (Claude pages count from its start).
+        const start = result.before ? Number(result.before) : 0;
+        if (start < origin.to.hidden) {
+          result.items = result.items.slice(origin.to.hidden - start);
+          result.before = null;
+        }
+      }
+      if (origin) {
+        result.session.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
+        if (!result.before) {
+          const items = await earlier(origin);
+          const join = joinLine(origin, agent, !!items);
+          const room = Math.max(0, limit - result.items.length);
+          const start = items ? Math.max(0, items.length - room) : 0;
+          result.items = [...(items ? items.slice(start) : []), join, ...result.items];
+          result.before = items && start > 0 ? `moved:${start}` : null;
+        }
+      }
+      // Continued with the other agent: where (the chat ends with a way there).
+      const out = moves.outOf(agent, id);
+      if (out.length) result.session.movedTo = out.map((m) => ({ agent: m.to.agent, id: m.to.id, at: m.at }));
       if (agent === "codex" && codexLive.drives(id)) result.session.held = "reach";
       if (agent === "claude") {
         const running = await liveNow().catch(() => new Map());
@@ -635,18 +790,18 @@ export function createAgentSessions({
     },
     // The agents on this Mac: the two Reach drives, then others it knows of
     // (installed, not yet supported), so the phone can show where it's going.
-    async health() {
+    async health({ fresh = false } = {}) {
       const results = await Promise.allSettled([codex.health(), claude.health(), claudeApp()]);
       const driven = results.slice(0, 2).map((r, i) => ({
         ...(r.status === "fulfilled"
           ? r.value
-          : { agent: ["codex", "claude"][i], installed: false, signedIn: false, error: r.reason?.message }),
+          : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(["AGENT_NOT_INSTALLED", "ENOENT"].includes(r.reason?.code) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
         name: ["Codex", "Claude Code"][i],
         supported: true,
         // Claude: its app's own sign-in, shown next to the CLI's.
         ...(i === 1 && results[2].status === "fulfilled" ? { app: results[2].value } : {}),
       }));
-      const others = await detect().catch(() => []);
+      const others = await detect({ fresh }).catch(() => []);
       return [...driven, ...others];
     },
     // Slash commands the agent offers after "/" (Claude Code's from its handshake).

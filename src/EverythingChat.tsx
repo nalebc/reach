@@ -13,6 +13,7 @@ import {
 import type { Peer } from "./api";
 import AgentSessionView, { ModelPicker } from "./AgentSession";
 import AgentAccess from "./AgentAccess";
+import OpenClawSpace from "./OpenClawSpace";
 import ChatList, {
   ChatAppPicker,
   ChatComingSoon,
@@ -472,11 +473,22 @@ function AgentStatus({
 }) {
   if (!health) return null;
   const name = agentLabel(agent);
+  if (health.error)
+    return <div className="chat-setup" role="status">
+      <strong>Couldn’t check {name}</strong>
+      <p>{health.error}</p>
+      <button onClick={recheck}>Check again</button>
+    </div>;
   if (!health.installed)
     return (
-      <p className="chat-status">
-        {name} isn't installed on this {computerWord(peer.platform)}.
-      </p>
+      <section className="chat-setup" aria-label={`Set up ${name}`}>
+        <strong>Set up {name} on {peer.name}</strong>
+        <p>{name} isn't installed on this {computerWord(peer.platform)}. Install it there, then check again to discover your conversations.</p>
+        <div className="chat-setup-actions">
+          <a href={agent === "codex" ? "https://developers.openai.com/codex/cli/" : "https://code.claude.com/docs/en/setup"} target="_blank" rel="noopener noreferrer">Install {name}</a>
+          <button onClick={recheck}>Check again</button>
+        </div>
+      </section>
     );
   if (!health.signedIn)
     return (
@@ -540,26 +552,20 @@ export default function EverythingChat({
       name: agentLabel(agent),
       supported: true,
     }));
-    const known = [
-      { agent: "gemini", name: "Gemini CLI" },
-      { agent: "cursor", name: "Cursor" },
-      { agent: "antigravity", name: "Antigravity" },
-    ];
-    for (const app of known) {
-      const item = health.find((h) => h.agent === app.agent);
-      list.push({ ...app, name: item?.name || app.name, supported: false });
-    }
     for (const item of health) {
-      if (item.supported === false && !list.some((a) => a.agent === item.agent))
+      if (item.installed && !list.some((a) => a.agent === item.agent))
         list.push({
           agent: item.agent,
           name: item.name || item.agent,
-          supported: false,
+          supported: item.agent === "openclaw",
         });
     }
     return list;
   }, [health]);
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
+  useEffect(() => {
+    if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent("codex");
+  }, [health, apps, savedAgent]);
   const current: AgentName = picked.agent === "claude" ? "claude" : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review">("");
@@ -634,6 +640,8 @@ export default function EverythingChat({
     ]),
   );
   const status = health.find((h) => h.agent === current);
+  const needsSetup = picked.supported && picked.agent !== "openclaw" && !!status && (!status.installed || !status.signedIn || !!status.error);
+
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
   return (
     <>
@@ -660,6 +668,10 @@ export default function EverythingChat({
             setSheet("new");
           }}
         />
+      ) : picked.agent === "openclaw" ? (
+        <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
+          onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
+          deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")} />
       ) : (
         <div className="chat-workspace" aria-hidden={!!sheet || undefined}>
           <ChatList
@@ -671,6 +683,9 @@ export default function EverythingChat({
             agent={picked.agent}
             onAgentChange={setAgent}
             appPending={appPending}
+            onRefresh={() => { recheck(); void reload(); }}
+            canStart={!needsSetup}
+            setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}
             errors={
               errors[picked.agent]
                 ? { [picked.agent]: errors[picked.agent] }
@@ -694,7 +709,9 @@ export default function EverythingChat({
               logos={logos}
             />
           </div>
-          {!picked.supported ? (
+          {picked.agent === "openclaw" ? (
+            <p className="chat-sheet-intro">Your OpenClaw sessions are discovered automatically. Close this panel to open one.</p>
+          ) : !picked.supported ? (
             <ChatComingSoon app={picked} logos={logos} />
           ) : (
             <>
@@ -705,7 +722,7 @@ export default function EverythingChat({
                 logos={logos}
                 recheck={recheck}
               />
-              {(!status || (status.installed && status.signedIn)) && (
+              {(!status || (status.installed && status.signedIn && !status.error)) && (
                 <NewChat
                   peer={peer}
                   agent={current}

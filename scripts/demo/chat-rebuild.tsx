@@ -40,13 +40,15 @@ let macPrompts: MacPrompt[] = permissionPreview === "password" ? [samplePassword
       default: "Allow",
     }]
   : [];
+const setupPreview = new URLSearchParams(location.search).get("setup");
 const health = [
   ...["codex", "claude"].map((agent) => ({
     agent,
     supported: true,
-    installed: true,
-    signedIn: true,
+    installed: agent !== "codex" || setupPreview !== "missing",
+    signedIn: agent !== "codex" || !setupPreview,
   })),
+  { agent: "openclaw", name: "OpenClaw", supported: true, installed: true, signedIn: true },
   ...[
     { agent: "gemini", name: "Gemini CLI" },
     { agent: "cursor", name: "Cursor" },
@@ -54,7 +56,7 @@ const health = [
   ].map((app) => ({
     ...app,
     supported: false,
-    installed: true,
+    installed: new URLSearchParams(location.search).get("apps") === "all",
     signedIn: false,
   })),
 ];
@@ -133,6 +135,15 @@ const prompt = {
 };
 sessions[1].prompts = [prompt];
 const transcript: Record<string, any[]> = {};
+// OpenClaw fixture: all replies below are sample data, never sent to a channel.
+const clawSessions = [
+  { key: "agent:main:whatsapp:family", title: "Weekend plans", agentId: "main", channel: "whatsapp", canDeliver: true, updatedAt: Date.now() - 120000, model: "Claude Sonnet", status: "idle" },
+  { key: "agent:work:discord:launch", title: "Website launch", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 1800000, model: "Claude Sonnet", status: "idle" },
+  { key: "agent:main:main", title: "Your personal assistant", agentId: "main", channel: "webchat", canDeliver: false, updatedAt: Date.now() - 3600000, model: "Claude Sonnet", status: "idle" },
+  { key: "agent:main:whatsapp:shopping", title: "A shopping list for the week", agentId: "main", channel: "whatsapp", canDeliver: true, updatedAt: Date.now() - 86400000, model: "Claude Sonnet", status: "idle" },
+  { key: "agent:work:discord:notes", title: "Ideas for the next release", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 172800000, model: "Claude Sonnet", status: "idle" },
+];
+const clawMessages: Record<string, any[]> = {};
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = new URL(
@@ -146,6 +157,24 @@ window.fetch = async (input, init = {}) => {
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
   let data: unknown = {};
+  if (path.startsWith("/api/sessions/openclaw/")) {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    const key = url.searchParams.get("key") || body.key;
+    const session = clawSessions.find(s => s.key === key) || clawSessions[0];
+    if (path.endsWith("/overview")) return Response.json({ connected: true, sessions: clawSessions, approvals: [] });
+    const items = clawMessages[session.key] ||= [
+      { id: "claw-user", role: "user", text: "Can you help me organize this?", tool: false },
+      { id: "claw-assistant", role: "assistant", text: "Of course. We can pick up right where we left off.\n\nThis conversation is connected to **" + (session.channel === "webchat" ? "OpenClaw" : session.channel) + "**. What would you like to work on next?", tool: false },
+    ];
+    if (path.endsWith("/history")) return Response.json({ session, items, streaming: "", error: "", approvals: [], mayHaveOlder: false });
+    if (path.endsWith("/send")) {
+      items.push({ id: body.requestId, role: "user", text: body.text, tool: false });
+      items.push({ id: body.requestId + "-reply", role: "assistant", text: body.deliver ? "Sample reply via the original channel. Nothing was actually sent." : "Sample reply in Reach. Your conversation continues here.", tool: false });
+      return Response.json({ runId: body.requestId, status: "completed" });
+    }
+    return Response.json({});
+  }
+
   if (path === "/api/sessions/mac-prompts/sample-mac-password/password") {
     // Any non-empty sample value works; no real password is needed or used.
     await new Promise((resolve) => setTimeout(resolve, 700));
@@ -274,7 +303,7 @@ function Preview() {
     return () => window.removeEventListener("reach-preview-refresh", refresh);
   }, []);
   const feed = {
-    sessions: [...sessions],
+    sessions: setupPreview ? sessions.filter((s) => s.agent !== "codex") : [...sessions],
     health,
     errors: {},
     failure: "",
