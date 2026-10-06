@@ -61,11 +61,14 @@ test("devices learn that their lists changed without polling, and only lists the
     const { build, ...lists } = first.changes;
     assert.deepEqual(Object.keys(lists).sort(), [
       "activity",
+      "agentAdmissions",
       "apps",
+      "browserRequests",
       "chats",
       "control",
       "handoffs",
       "requests",
+      "sessions",
       "terminals",
     ]);
     const guestFirst = await guestSocket.next();

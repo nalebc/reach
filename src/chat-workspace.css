@@ -159,6 +159,96 @@
 .chat-home .chat-new .as-folder-input {
   margin-bottom: 10px;
 }
+/* New chat's folder browser: Home, then any folder inside it. */
+.folder-pick {
+  display: grid;
+  gap: 6px;
+  margin: 0 2px 10px;
+}
+.folder-pick-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+.folder-pick-crumbs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.folder-pick-crumbs button {
+  max-width: 160px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-pick-crumbs button[aria-current] {
+  color: var(--as-text);
+  font-weight: 600;
+}
+.folder-pick-list {
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px solid var(--as-line);
+}
+.folder-pick-list > button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--as-line);
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.folder-pick-list > button > svg {
+  flex: none;
+  color: var(--as-muted);
+}
+.folder-pick-list > button > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-pick-empty {
+  margin: 0;
+  padding: 12px 2px;
+  color: var(--as-muted);
+  font-size: 13px;
+}
+.folder-pick-use {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--as-text);
+  color: var(--as-bg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.claude .folder-pick-use {
+  background: var(--as-accent);
+  color: #1a1a19;
+}
 .reach-chat-sheet .chat-sheet-footnote {
   min-height: 0;
   margin: 12px 0 0;
@@ -602,4 +692,33 @@
 .chat-new-claw-tools small {
   color: var(--muted, #8e8e8e);
   font-size: 12px;
+}
+
+/* Install on Mac: the command shown before it runs, then its progress. */
+.chat-setup-command {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--as-code-bg, rgba(127, 127, 127, 0.12));
+  font: 12px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.chat-setup-running {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.chat-setup-running code {
+  flex-basis: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  opacity: 0.7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-setup-problem {
+  color: #f0a0a0;
 }

@@ -269,10 +269,6 @@
 .settings-workspace .switch-row .switch {
   flex-shrink: 0;
 }
-.settings-workspace .optional-tool .button {
-  font-size: 11px;
-  white-space: nowrap;
-}
 .settings-workspace .settings-access .invite-banner {
   background: #b9efd40a;
   border: 1px solid #b9efd431;

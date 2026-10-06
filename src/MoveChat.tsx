@@ -42,6 +42,26 @@ export function moveBlocked(to: string, health: AgentHealth[], word = "Mac") {
   return "";
 }
 
+// Every other app found on the Mac, in the same order each time: the ones a
+// chat can continue in first (Codex, Claude Code, OpenClaw), then the rest by
+// name. One that can't take it now says why (it was left out, so OpenClaw on
+// an older Gateway and the apps Reach only reads seemed undetected).
+export function moveChoices(agent: string, health: AgentHealth[], word = "Mac") {
+  const rank = (a: string) => (APPS.includes(a) ? APPS.indexOf(a) : APPS.length);
+  return health
+    .filter((h) => h.installed && h.agent !== agent)
+    .map((h) => {
+      const name = h.name || agentLabel(h.agent);
+      const blocked = !APPS.includes(h.agent) || h.supported === false
+        ? h.agent === "gemini"
+          ? `Reach only reads ${name} chats.`
+          : `Reach can't continue chats in ${name} yet.`
+        : moveBlocked(h.agent, health, word);
+      return { to: h.agent, name, blocked };
+    })
+    .sort((a, b) => rank(a.to) - rank(b.to) || a.name.localeCompare(b.name));
+}
+
 // The chat to open once moved (the server fills in the rest when it loads).
 export const movedChat = (from: MoveSource, to: { agent: string; id: string }): AgentSession =>
   ({
@@ -189,8 +209,9 @@ export function MoveOffer({
   );
 }
 
-// In the chat's ⋯ menu: one row per app that can take the chat now, with
-// its logo. One tap says what happens, the next one moves it.
+// In the chat's ⋯ menu: one row per app found on the Mac, with its logo
+// (moveChoices). One tap says what happens, the next one moves it; an app
+// that can't take the chat shows, greyed, with why.
 export function MoveItems({
   peer,
   session,
@@ -206,11 +227,11 @@ export function MoveItems({
   word?: string;
   onMoved: (s: AgentSession) => void;
 }) {
-  const targets = moveTargets(session.agent, health).filter((t) => !moveBlocked(t, health, word));
+  const choices = moveChoices(session.agent, health, word);
   const [asking, setAsking] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
-  if (!targets.length) return null;
+  if (!choices.length) return null;
   const from = agentLabel(session.agent);
   const go = async (to: string) => {
     setBusy(true);
@@ -226,9 +247,18 @@ export function MoveItems({
   };
   return (
     <>
-      {targets.map((to) => {
-        const name = agentLabel(to);
+      {choices.map(({ to, name, blocked }) => {
         const here = asking === to;
+        if (blocked)
+          return (
+            <button key={to} role="menuitem" className="move-item blocked" disabled aria-disabled="true">
+              <AgentLogo agent={to} name={name} logos={logos} size={20} />
+              <span className="move-item-text">
+                <span>Continue in {name}</span>
+                <small>{blocked}</small>
+              </span>
+            </button>
+          );
         return (
           <button
             key={to}
@@ -296,20 +326,23 @@ export function MoveHint({
   );
 }
 
-// At the end of a chat that was continued elsewhere: the way there.
+// Where a chat was continued elsewhere: the way there (`moves`: the ones
+// that go at this point of the chat; all of them by default).
 export function ContinuedIn({
   session,
+  moves = session.movedTo,
   logos,
   onOpen,
 }: {
   session: AgentSession;
+  moves?: AgentSession["movedTo"];
   logos: AgentLogos;
   onOpen: (s: AgentSession) => void;
 }) {
-  if (!session.movedTo?.length) return null;
+  if (!moves?.length) return null;
   return (
     <div className="move-continued">
-      {session.movedTo.map((m) => (
+      {moves.map((m) => (
         <button key={`${m.agent}:${m.id}`} onClick={() => onOpen(movedChat(session, m))}>
           <AgentLogo agent={m.agent} name={agentLabel(m.agent)} logos={logos} size={18} />
           <span>Continued in {agentLabel(m.agent)}</span>

@@ -143,7 +143,12 @@ export function createOpenClaw({
   timeoutMs = 10000,
   now = Date.now,
   reconcileMs = 5000,
+  // The first wait before opening a dropped connection again.
+  redialMs = 1000,
   staleMs = 120000,
+  // A burst of changes (a reply streaming in) is told to waiting phones at
+  // most this often.
+  coalesceMs = 300,
 } = {}) {
   let socket,
     connecting,
@@ -159,7 +164,50 @@ export function createOpenClaw({
     approvals = new Map(),
     completions = new Map(),
     attempts = new Map(),
-    terminalRuns = new Set();
+    terminalRuns = new Set(),
+    // Told when approvals come or go (notifications look then).
+    approvalListeners = new Set();
+  const approvalsChanged = () => {
+    for (const listener of approvalListeners) listener();
+    tell();
+  };
+  // Phones waiting for what they show to change (changes() below): looked
+  // at once a burst settles.
+  const waiters = new Set();
+  let telling = null;
+  const tell = () => {
+    if (telling || !waiters.size) return;
+    telling = setTimeout(() => {
+      telling = null;
+      for (const waiter of [...waiters]) waiter.check();
+    }, coalesceMs);
+    telling.unref?.();
+  };
+  const changed = () => {
+    revision++;
+    tell();
+  };
+  // Each chat's messages as OpenClaw last gave them, kept while only the
+  // reply being written changes (its words come with the events): a phone
+  // reading the chat as it streams doesn't ask the Gateway each time.
+  const histories = new Map(); // key -> { turn, limit, at, result }
+  const turnOf = (key) => {
+    const run = runs.get(key);
+    return `${run?.runId || ""}|${run?.status || ""}|${!!run?.generated}`;
+  };
+  // Approvals come only as the Gateway's events: while anyone listens, a
+  // dropped connection is opened again (sooner, then up to every 30 s),
+  // instead of waiting for someone to ask.
+  let closed = false,
+    redial = null;
+  const keepOpen = (wait = redialMs) => {
+    if (closed || redial || !approvalListeners.size) return;
+    redial = setTimeout(() => {
+      redial = null;
+      if (!closed) connect().catch(() => keepOpen(Math.min(wait * 2, 30000)));
+    }, wait);
+    redial.unref?.();
+  };
   const putRun = (key, run) => {
     if (!runs.has(key) && runs.size >= 512) {
       const disposable = [...runs].find(
@@ -169,7 +217,7 @@ export function createOpenClaw({
       else return false;
     }
     runs.set(key, run);
-    revision++;
+    changed();
     listAt = 0;
     return true;
   };
@@ -186,7 +234,7 @@ export function createOpenClaw({
       if (terminalRuns.size > 2048)
         terminalRuns.delete(terminalRuns.values().next().value);
     }
-    revision++;
+    changed();
     listAt = 0;
   };
   const connectionError = () =>
@@ -195,11 +243,12 @@ export function createOpenClaw({
       "OpenClaw Gateway is unavailable. Start OpenClaw on this computer, then retry.",
     );
   const reset = (error) => {
+    const dropped = ready;
     ready = false;
     connecting = null;
     lastList = null;
     listAt = 0;
-    revision++;
+    changed();
     completions.clear();
     for (const run of runs.values()) {
       if (run.status === "running")
@@ -211,12 +260,15 @@ export function createOpenClaw({
           checkedAt: 0,
         });
     }
+    const hadApprovals = approvals.size > 0;
     approvals.clear();
     for (const request of pending.values()) {
       clearTimeout(request.timer);
       request.reject(error);
     }
     pending.clear();
+    if (hadApprovals) approvalsChanged();
+    if (dropped) keepOpen();
   };
   const request = (method, params = {}, completion) =>
     new Promise((resolve, reject) => {
@@ -366,7 +418,9 @@ export function createOpenClaw({
                 ? new Set(hello.features.methods)
                 : null;
               ready = true;
+              changed();
               finish();
+              probeInject();
             }, finish);
           } else {
             const p = frame.payload || {};
@@ -376,11 +430,15 @@ export function createOpenClaw({
                 typeof p.id === "string" && p.id &&
                 typeof p.request?.command === "string" && p.request.command.trim() &&
                 Number.isFinite(p.expiresAtMs) && p.expiresAtMs > Date.now() &&
-                !approvals.has(p.id))
+                !approvals.has(p.id)) {
               approvals.set(p.id, { ...p, socket: ws });
-            if (frame.event === "exec.approval.resolved")
-              approvals.delete(p.id);
-            revision++;
+              approvalsChanged();
+              // Gone when it expires, though nothing says so.
+              setTimeout(approvalsChanged, Math.min(2 ** 31 - 1, p.expiresAtMs - Date.now() + 50)).unref?.();
+            }
+            if (frame.event === "exec.approval.resolved" && approvals.delete(p.id))
+              approvalsChanged();
+            changed();
           }
         });
       });
@@ -390,9 +448,24 @@ export function createOpenClaw({
     });
     return connecting;
   };
+  // chat.inject on Gateways that handle it without listing it in hello
+  // (OpenClaw 2026.3.13: in its handlers, not its list, so moving a chat
+  // there was offered nowhere). Asked once per connection with nothing to
+  // add: "invalid chat.inject params" means it's there, anything else not.
+  let injectable = null;
+  let injectProbe = Promise.resolve();
+  const probeInject = () => {
+    injectable = null;
+    if (!methods || methods.has("chat.inject")) return;
+    injectProbe = request("chat.inject", {}).then(
+      () => (injectable = true),
+      (e) => (injectable = /invalid chat\.inject params/i.test(String(e?.message || ""))),
+    );
+  };
   const rpc = async (method, params, completion) => {
     await connect();
-    if (methods && !methods.has(method))
+    if (method === "chat.inject") await injectProbe;
+    if (methods && !methods.has(method) && !(method === "chat.inject" && injectable === true))
       throw fail(
         409,
         `This OpenClaw Gateway does not support ${method}. Update OpenClaw on this computer.`,
@@ -462,7 +535,7 @@ export function createOpenClaw({
       run.text = "";
       run.generated = true;
     } else finishRun(key, run, "idle");
-    revision++;
+    changed();
   };
   const reconcile = async (key) => {
     const run = runs.get(key);
@@ -561,6 +634,15 @@ export function createOpenClaw({
       );
     return row;
   };
+  // What a phone shows, as a short stamp: the list (who's connected, each
+  // chat's run, the approvals), or one chat (its run and reply so far).
+  const stamp = (value) => crypto.createHash("sha1").update(JSON.stringify(value)).digest("base64url").slice(0, 12);
+  const listStamp = () =>
+    stamp([ready, [...runs].map(([key, run]) => [key, run.status, !!run.generated]), activeApprovals().map((a) => a.id)]);
+  const chatStamp = (key) => {
+    const run = runs.get(key);
+    return stamp([ready, run?.runId, run?.status, run?.text, run?.error, !!run?.generated, run?.delivery?.status, activeApprovals(key).map((a) => [a.id, a.canRespond])]);
+  };
   const activeApprovals = (key) =>
     [...approvals.values()]
       .filter(
@@ -641,7 +723,13 @@ export function createOpenClaw({
     canStop: runs.get(s.key)?.method !== "agent",
   });
   return {
+    // Approvals came or went (notifications look then, not on a beat).
+    onApprovalsChange(listener) {
+      approvalListeners.add(listener);
+      return () => approvalListeners.delete(listener);
+    },
     async overview() {
+      const version = listStamp();
       try {
         const rows = await list();
         return {
@@ -649,6 +737,7 @@ export function createOpenClaw({
           sessions: rows.map(session).sort((a, b) => b.updatedAt - a.updatedAt),
           approvals: activeApprovals(),
           revision,
+          version,
         };
       } catch (error) {
         return {
@@ -657,13 +746,25 @@ export function createOpenClaw({
           approvals: [],
           error: error.message,
           revision,
+          version,
         };
       }
     },
     async history(key, limit = 200) {
+      const version = chatStamp(key);
       const row = await known(key);
       limit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
-      const result = await rpc("chat.history", { sessionKey: key, limit });
+      const kept = histories.get(key);
+      const turn = turnOf(key);
+      const result =
+        kept && kept.turn === turn && kept.limit === limit && Date.now() - kept.at < 10000
+          ? kept.result
+          : await rpc("chat.history", { sessionKey: key, limit });
+      if (result !== kept?.result) {
+        histories.delete(key);
+        histories.set(key, { turn, limit, at: Date.now(), result });
+        if (histories.size > 16) histories.delete(histories.keys().next().value);
+      }
       if (!Array.isArray(result?.messages))
         throw fail(502, "OpenClaw returned unsupported conversation history.");
       await reconcile(key);
@@ -748,6 +849,7 @@ export function createOpenClaw({
             : "generation",
         approvals: activeApprovals(key),
         revision,
+        version,
         historyLimit: limit,
         mayHaveOlder: messages.length >= limit,
       };
@@ -942,7 +1044,7 @@ export function createOpenClaw({
       return { removed: true };
     },
     // Whether this Gateway can take a chat moved from another agent.
-    canMove: () => !methods || methods.has("chat.inject"),
+    canMove: () => !methods || methods.has("chat.inject") || injectable === true,
     // A chat moved here from another agent (agent-sessions/move.mjs): a new
     // session named after it, its history added as notes (OpenClaw's app
     // shows them and its agent reads them; nothing runs until a message).
@@ -997,14 +1099,42 @@ export function createOpenClaw({
         const result = await request("exec.approval.resolve", { id, decision });
         if (result?.ok !== true)
           throw fail(409, "OpenClaw did not confirm the answer. Check the request before retrying.");
-        if (approvals.get(id) === prompt) approvals.delete(id);
-        revision++;
+        if (approvals.get(id) === prompt) {
+          approvals.delete(id);
+          approvalsChanged();
+        }
+        changed();
         return result;
       } finally {
         prompt.replying = false;
       }
     },
+    // Resolves once what a phone shows changed since `after` (one chat,
+    // given its key; else the list and its approvals), or after ms: phones
+    // wait on this instead of asking every few seconds. Never connects.
+    changes({ key, after = "", ms = 25000, signal } = {}) {
+      const version = () => (key ? chatStamp(key) : listStamp());
+      return new Promise((resolve) => {
+        const waiter = {
+          check: () => version() !== after && waiter.done(),
+          done: () => {
+            clearTimeout(timer);
+            waiters.delete(waiter);
+            signal?.removeEventListener?.("abort", waiter.done);
+            resolve({ version: version() });
+          },
+        };
+        const timer = setTimeout(waiter.done, Math.max(0, Math.min(Number(ms) || 0, 60000)));
+        waiters.add(waiter);
+        signal?.addEventListener?.("abort", waiter.done);
+        waiter.check();
+      });
+    },
     close() {
+      closed = true;
+      clearTimeout(redial);
+      clearTimeout(telling);
+      for (const waiter of [...waiters]) waiter.done();
       const old = socket;
       socket = null;
       old?.terminate();
@@ -1018,6 +1148,16 @@ export function openClawRoutes(app, client) {
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),
   );
+  // Waits until what a phone shows changes (?key: one chat; else the list)
+  // or a while passes; the phone reads it again then.
+  app.get(`${base}/changes`, async (req, res) => {
+    const gone = new AbortController();
+    res.on("close", () => gone.abort());
+    const key = typeof req.query.key === "string" && req.query.key ? req.query.key : undefined;
+    res.json(
+      await client.changes({ key, after: String(req.query.after ?? ""), ms: key ? 10000 : 25000, signal: gone.signal }),
+    );
+  });
   app.get(`${base}/history`, async (req, res) =>
     res.json(await client.history(req.query.key, req.query.limit)),
   );

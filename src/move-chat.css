@@ -97,6 +97,10 @@
   font-size: 12px;
   line-height: 1.35;
 }
+.move-item.blocked {
+  opacity: 0.55;
+  cursor: default;
+}
 .move-item-go {
   flex: 0 0 auto;
   padding: 4px 11px;

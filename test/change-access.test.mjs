@@ -181,3 +181,21 @@ test("one invitation over several computers keeps one id on each", async (t) => 
   for (const group of ["short", "has space here", 42])
     assert.equal((await call("/api/guests", { token: owner, method: "POST", body: { name: "Bo", ttlSeconds: 3600, folders: work, group } })).status, 400, String(group));
 });
+
+test("changing expiry preserves the credential and enforces duration limits without reviving ended grants", async (t) => {
+  const { call, work, invite, change, reach } = await start(t);
+  const ali = await invite({ folders: work });
+  const expiresAt = Date.now() + 120000;
+  let result = await change(ali.id, { folders: "keep", expiresAt });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.expiresAt, expiresAt);
+  assert.equal((await call("/api/device", { token: ali.token })).body.access.expiresAt, expiresAt);
+  const extended = Date.now() + 7200000;
+  assert.equal((await change(ali.id, { folders: "keep", expiresAt: extended })).status, 200);
+  assert.equal((await call("/api/device", { token: ali.token })).body.access.expiresAt, extended);
+  for (const expiresAt of [null, "tomorrow", Date.now() - 1, Date.now() + 86401000]) {
+    assert.equal((await change(ali.id, { folders: "keep", expiresAt })).status, 400);
+    assert.equal(reach.auth.list().find((c) => c.id === ali.id).expiresAt, extended);
+  }
+  assert.equal((await change(ali.id, { folders: "keep", scopes: ["admin"] })).status, 400);
+});

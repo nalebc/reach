@@ -237,7 +237,13 @@ export function withTurnNotes(items, turns, { olderPage = false, runningTurn = n
 export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
   if (!UUID.test(id) || !fs.existsSync(path.join(locks, `${id}.lock`))) return null;
   try {
-    const { stdout } = await run("/usr/sbin/lsof", ["-nP", "-Fp", path.join(locks, `${id}.lock`)], { timeout: 4000 });
+    // Only Codex's own processes can hold it (the app's, its daemon, a
+    // terminal's): lsof asked about those few, not about every process on the
+    // Mac (0.3-2.6 s on each read of an open Codex chat; this ~40 ms).
+    const { stdout: found } = await run("/usr/bin/pgrep", ["-i", "-f", "codex"], { timeout: 4000 });
+    const pids = String(found).split("\n").filter((p) => /^\d+$/.test(p.trim())).map((p) => p.trim());
+    if (!pids.length) return null;
+    const { stdout } = await run("/usr/sbin/lsof", ["-nP", "-a", "-p", pids.join(","), "-Fp", path.join(locks, `${id}.lock`)], { timeout: 4000 });
     const pid = stdout.match(/^p(\d+)/m)?.[1];
     if (!pid) return null;
     const { stdout: own } = await run("/bin/ps", ["-o", "ppid=,tty=,command=", "-p", pid], { timeout: 4000 });
@@ -259,14 +265,17 @@ export function codexRunningElsewhere({
   daemon,
   locks = LOCKS,
   now = Date.now,
-  ttl = 4000,
+  // The list is rebuilt when something changes, not on a beat: keep a
+  // thread's answer only briefly.
+  ttl = 1000,
   recent = 15 * 60 * 1000,
   max = 6,
   waiting = codexWaitingApproval,
 }) {
-  const cache = new Map(); // id -> { at, running, asking }
+  const cache = new Map(); // id -> { at, running, asking, since }
   // `files`: each thread's file, where a running one shows it waits on you.
-  return async (sessions, files = new Map()) => {
+  // onLater(ms, id): a request too new to count yet, to look at again then.
+  return async (sessions, files = new Map(), { onLater } = {}) => {
     const due = sessions
       .filter((s) => s.status === "idle" && now() - s.updatedAt < recent && fs.existsSync(path.join(locks, `${s.id}.lock`)))
       .slice(0, max);
@@ -280,14 +289,41 @@ export function codexRunningElsewhere({
           const turn = r?.data?.[0];
           const running = !!turn && !turn.completedAt && ["inProgress", "interrupted"].includes(turn.status);
           const file = files.get(s.id);
-          const asking = running && file ? !!(await waiting(file).catch(() => null)) : false;
-          cache.set(s.id, { at: now(), running, asking });
+          const asked = running && file ? await waiting(file, { onLater: (ms) => onLater?.(ms, s.id) }).catch(() => null) : null;
+          cache.set(s.id, { at: now(), running, asking: !!asked, since: asked?.since });
         }
-        if (cache.get(s.id).running) s.status = cache.get(s.id).asking ? "waiting" : "running";
+        const { running, asking, since } = cache.get(s.id);
+        if (running) s.status = asking ? "waiting" : "running";
+        // Since when, from its file: the list doesn't hold it back again.
+        if (running && asking && since) s.waitingSince = since;
       }),
     );
     return sessions;
   };
+}
+
+// A picture sent in a Codex chat, as its message holds it: inline (a data
+// URL) or a file on this Mac (Reach's uploads, the Codex app's attachments).
+// Only an image's own bytes, never another file a path might name.
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+export function sniffImage(data) {
+  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data.length >= 6 && /^GIF8[79]a$/.test(data.subarray(0, 6).toString("latin1"))) return "image/gif";
+  if (data.length >= 12 && data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
+}
+export async function codexImageData(source, { readFile = fs.promises.readFile, stat = fs.promises.stat, maxBytes = 25 * 1024 * 1024 } = {}) {
+  let data = null;
+  if (source?.type === "image" && typeof source.url === "string") {
+    const m = /^data:(image\/[\w.+-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(source.url);
+    if (m && IMAGE_TYPES.includes(m[1])) data = Buffer.from(m[2], "base64");
+  } else if (source?.type === "localImage" && typeof source.path === "string" && path.isAbsolute(source.path)) {
+    const info = await stat(source.path).catch(() => null);
+    if (info?.isFile() && info.size <= maxBytes) data = await readFile(source.path).catch(() => null);
+  }
+  const type = data && data.length <= maxBytes ? sniffImage(data) : null;
+  return type ? { type, data } : null;
 }
 
 export function createCodexSessions({
@@ -297,7 +333,19 @@ export function createCodexSessions({
   runningElsewhere = codexRunningElsewhere({ daemon }),
   waitingApproval = codexWaitingApproval,
 }) {
+  // Told when a thread's request is too new to count yet (codex-asks.mjs).
+  const later = new Set();
+  const tellLater = (ms, id) => {
+    for (const listener of later) listener(ms, id);
+  };
+  const sentImages = new Map(); // "thread:item" → its pictures, as read last
+  const imageSources = (item) => (item.content || []).filter((c) => c?.type === "image" || c?.type === "localImage");
   return {
+    // A thread to look at again in ms (a request still settling).
+    onLater(listener) {
+      later.add(listener);
+      return () => later.delete(listener);
+    },
     // The mode the Codex app's composer is in now; its next message uses it.
     appMode: () => appState().mode || null,
     // The Codex app's projects (its sidebar), each with its folders.
@@ -321,7 +369,24 @@ export function createCodexSessions({
       return runningElsewhere(
         threads.map(codexSession),
         new Map(threads.filter((t) => t.path).map((t) => [t.id, t.path])),
+        { onLater: tellLater },
       );
+    },
+    // A picture sent in a chat, by its message and place in it (n).
+    async image(id, itemId, n) {
+      const missing = () => Object.assign(new Error("That picture isn't in this session."), { status: 404 });
+      if (!UUID.test(id) || typeof itemId !== "string" || !itemId || itemId.length > 200 || !Number.isInteger(n) || n < 0) throw missing();
+      let sources = sentImages.get(`${id}:${itemId}`);
+      // Not read here lately: look for it, newest first, a few pages back.
+      for (let page = 0, cursor = null; !sources && page < 10; page++) {
+        const r = await daemon.rpc("thread/items/list", { threadId: id, limit: 200, sortDirection: "desc", cursor });
+        const found = (r.data || []).find((e) => e?.item?.type === "userMessage" && e.item.id === itemId);
+        if (found) sources = imageSources(found.item);
+        if (!(cursor = r.nextCursor)) break;
+      }
+      const image = sources?.[n] ? await codexImageData(sources[n]) : null;
+      if (!image) throw missing();
+      return image;
     },
     async read(id, { cursor = null, limit = 200 } = {}) {
       if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
@@ -340,6 +405,12 @@ export function createCodexSessions({
           .catch(() => null),
         cursor ? null : holder(id),
       ]);
+      // Where each sent picture is, for the phone to ask for it (image()).
+      for (const entry of r.data || [])
+        if (entry?.item?.type === "userMessage" && imageSources(entry.item).length) {
+          sentImages.set(`${id}:${entry.item.id}`, imageSources(entry.item));
+          if (sentImages.size > 500) sentImages.delete(sentImages.keys().next().value);
+        }
       const items = (r.data || [])
         .map((entry) => codexItem(entry))
         .filter(Boolean)
@@ -365,10 +436,17 @@ export function createCodexSessions({
       // there: what it asks, read from the chat's file (that engine tells no
       // one else). Said here, answered there.
       if (runningTurn && held && held !== "reach" && thread.path) {
-        const asking = await waitingApproval(thread.path).catch(() => null);
-        if (asking) {
+        const asked = await waitingApproval(thread.path, { onLater: (ms) => tellLater(ms, id) }).catch(() => null);
+        if (asked) {
+          const { since, ...asking } = asked;
           session.status = "waiting";
-          session.asking = asking;
+          if (since) session.waitingSince = since;
+          // The Codex app's card can be answered from the phone (Allow once
+          // or Deny, app-cards.mjs): its id names this request.
+          session.asking =
+            held === "codex-app" && asking.callId && asking.match
+              ? { ...asking, id: `app-permission:codex:${asking.callId}` }
+              : asking;
         }
       }
       return {

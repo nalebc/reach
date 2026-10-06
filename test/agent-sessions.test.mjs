@@ -88,6 +88,14 @@ test("Claude sessions list transcripts, map app records, page and reject unknown
   const older = await claude.read(ID, { limit: 3, before: page.before });
   assert.ok(!older.items.some((i) => page.items.some((j) => j.id === i.id)));
   await assert.rejects(() => claude.read("../../etc/passwd"), (e) => e.status === 404);
+  // The app's records are kept between reads (each read parsed them all) and
+  // read again only when one changes: renamed, then removed.
+  const record = path.join(records, `local_${ID}.json`);
+  await fs.writeFile(record, JSON.stringify({ sessionId: `local_${ID}`, cliSessionId: ID, title: "Renamed in the app", isArchived: false, cwd: "/work/app" }));
+  await fs.utimes(record, new Date(), new Date(Date.now() + 5000));
+  assert.equal((await claude.read(ID, { limit: 1 })).session.title, "Renamed in the app");
+  await fs.rm(record);
+  assert.equal((await claude.read(ID, { limit: 1 })).session.inApp, false);
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -196,6 +204,12 @@ test("whether the Claude app took a message is read from its transcript: its own
   // Written by Reach's own process: not the app taking it.
   await fs.appendFile(file, line({ sessionId: ID, type: "user", uuid: "u3", parentUuid: "u2", timestamp: at(8), entrypoint: "sdk-cli", message: { content: "From Reach" } }) + "\n");
   assert.equal(await claude.arrived(ID, "From Reach", since), false);
+  // A chat that moved into the Claude app: its instructions come first, in
+  // their own text block (seen Oct 6). Still the message it took.
+  const reminder = "<system-reminder>\nThis conversation is now continuing in the Claude desktop app.\n</system-reminder>";
+  await fs.appendFile(file, line({ sessionId: ID, type: "user", uuid: "u4", parentUuid: "u3", timestamp: at(9), entrypoint: "claude-desktop", message: { content: [{ type: "text", text: reminder }, { type: "text", text: "Just the coin" }] } }) + "\n");
+  assert.equal(await claude.arrived(ID, "Just the coin", since), true);
+  assert.equal(await claude.arrived(ID, "Just the", since), false);
   await fs.rm(root, { recursive: true, force: true });
 });
 

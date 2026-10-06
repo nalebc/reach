@@ -48,6 +48,9 @@ let dom,
   reads = [],
   fail = false,
   approvals = [],
+  // A Mac that says when OpenClaw changes (a waiting read per view).
+  watched = null,
+  overviewReads = 0,
   decisions = [],
   screenOpens = 0,
   view;
@@ -55,11 +58,13 @@ const base = "/api/sessions/openclaw";
 before(async () => {
   dom = await startDom({
     routes: {
-      [base + "/overview"]: () => ({
+      [base + "/overview"]: () => (overviewReads++, {
         connected: true,
         sessions,
         approvals: [],
+        ...(watched ? { version: watched.version } : {}),
       }),
+      [base + "/changes"]: (_, url) => watched?.wait(url) ?? {},
       [base + "/history"]: (_, url) => {
         const key = url.searchParams.get("key");
         reads.push(key);
@@ -83,6 +88,7 @@ before(async () => {
           approvals,
           streaming: "",
           error: "",
+          ...(watched ? { version: watched.version } : {}),
         };
       },
       [base + "/approval"]: (init) => {
@@ -259,4 +265,33 @@ test("a new OpenClaw chat starts from New chat, as a chat of Reach's own, and op
   await dom.waitFor(() => reads.includes("agent:main:reach-newchat"));
   assert.deepEqual(started, [{ text: "Plan the trip" }]);
   assert.equal(dom.document.querySelector('[role="dialog"]'), null);
+});
+
+// "Make everything evented" (2026-10-06): the page asked for the list every
+// 5 s and an open chat every 1.8 s; now it waits for the Mac to say so.
+test("with a Mac that says when OpenClaw changes, the list and an open chat are read again then, not on a beat", async () => {
+  watched = {
+    version: "1",
+    waits: [],
+    wait(url) {
+      return new Promise((resolve) => this.waits.push({ key: url.searchParams.get("key"), after: url.searchParams.get("after"), resolve }));
+    },
+  };
+  try {
+    await mount();
+    await dom.waitFor(() => watched.waits.length === 1);
+    assert.deepEqual([watched.waits[0].key, watched.waits[0].after], [null, "1"]);
+    const before = overviewReads;
+    watched.waits[0].resolve({ version: "2" });
+    await dom.waitFor(() => overviewReads === before + 1, 1000);
+    // An open chat waits on its own changes, and is read again when told.
+    await click("Weekend plans");
+    await dom.waitFor(() => watched.waits.some((w) => w.key === sessions[0].key));
+    const asked = reads.length;
+    watched.waits.find((w) => w.key === sessions[0].key).resolve({ version: "2" });
+    await dom.waitFor(() => reads.length === asked + 1, 1000);
+  } finally {
+    for (const w of watched.waits) w.resolve({});
+    watched = null;
+  }
 });

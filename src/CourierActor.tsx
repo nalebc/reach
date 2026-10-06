@@ -1,3 +1,4 @@
+import courierHead from "./courier-head.json";
 import { useEffect, useRef, useState } from "react";
 import {
   itinerary,
@@ -257,14 +258,13 @@ export default function CourierActor({
         <path d="M-17 -28H-12V-12H-17Z" fill="#618c70" />
         <path d="M-7 -21H8V-9H-7Z" fill="#88c7a1" />
         <path d="M-3 -19H4V-16H-3Z" fill="#d1f6d8" />
-        <path
-          d="M-9 -43H9V-39H13V-25H9V-21H-9V-25H-13V-39H-9Z"
-          fill="#b9efd4"
-        />
-        <path d="M-9 -41H9V-38H-9Z" fill="#e2ffe6" />
-        <path d="M-8 -35H8V-27H-8Z" fill="#173a2b" />
-        <g className="actor-eyes" fill="#f1f3dd">
-          <path d="M-5 -34H-2V-30H-5ZM3 -34H6V-30H3Z" />
+        {courierHead.shell.map((shape, index) => (
+          <rect key={index} {...shape} />
+        ))}
+        <g className="actor-eyes">
+          {courierHead.eyes.map((shape, index) => (
+            <rect key={index} {...shape} />
+          ))}
         </g>
       </g>
       <g fill="none" strokeWidth="4" strokeLinejoin="bevel">

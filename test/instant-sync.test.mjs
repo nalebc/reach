@@ -86,5 +86,43 @@ test("a Claude Code chat written to on the Mac wakes the phone that has it open;
   const again = sessions.changes("claude", C, sessions.view("claude", C).version, 300);
   tell({ agent: "claude", kind: "history", id: C });
   assert.equal(await settledWithin(again, 100), false);
+  driving.delete(C);
+  // Written in the instant between two polls (one answered, the next not yet
+  // asked): still counted, so the next poll returns at once instead of the
+  // phone showing Working until its 30 s look.
+  const seen = sessions.view("claude", C).version;
+  tell({ agent: "claude", kind: "history", id: C });
+  tell({ agent: "claude", kind: "status" });
+  assert.equal(await settledWithin(sessions.changes("claude", C, seen, 25000), 100), true);
+  assert.equal(sessions.view("claude", C).items, 3);
+  sessions.close?.();
+});
+
+test("a permission mode picked in the Claude app or the Codex app shows at once on the phone that has the chat open", async () => {
+  let tell;
+  const T2 = "0199cccc-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+  const sessions = createAgentSessions({
+    agentWatch: { onChange: (fn) => (tell = fn), close() {} },
+    codexLive: { nudge() {}, view: () => ({ version: 0, prompts: [] }), changes: (id, version, ms) => new Promise((r) => setTimeout(r, ms)), drives: () => false, onChange() {} },
+    claudeHost: {
+      view: () => ({ version: 0, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 }),
+      changes: (id, version, ms) => new Promise((r) => setTimeout(r, ms)),
+      drives: () => false,
+      onRelease() {},
+    },
+    claude: { list: async () => [], starts: async () => [], health: async () => ({ agent: "claude", signedIn: true }) },
+    codex: { list: async () => [], health: async () => ({ agent: "codex", signedIn: true }) },
+    live: async () => new Map(),
+    detect: async () => [],
+  });
+  // The Claude app's records changed (a chat's mode, among others).
+  const claudeOpen = sessions.changes("claude", C, sessions.view("claude", C).version, 25000);
+  tell({ agent: "claude", kind: "app" });
+  assert.equal(await settledWithin(claudeOpen, 500), true);
+  // The Codex app's saved choices changed (the mode its composer is in).
+  const codexOpen = sessions.changes("codex", T2, sessions.view("codex", T2).version, 25000);
+  tell({ agent: "codex", kind: "settings" });
+  assert.equal(await settledWithin(codexOpen, 500), true);
+  assert.equal(sessions.view("codex", T2).items, 1, "the phone reads the chat (and its mode) again");
   sessions.close?.();
 });

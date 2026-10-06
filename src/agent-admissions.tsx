@@ -25,6 +25,8 @@ export type AgentAdmission = {
   terminalIds?: string[];
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
+  terminalApproval?: boolean;
+  scriptApproval?: boolean;
   requestedAt: number;
   expiresAt: number;
   accessExpiresAt: number;
@@ -334,11 +336,13 @@ export function AgentAdmissionReview({
                   <li>
                     <Terminal size={18} aria-hidden="true" />
                     <div>
-                      <strong>Restricted terminal</strong>
+                      <strong>Terminal commands</strong>
                       <small>
-                        Read-only commands in shared folders. Each command needs
-                        your approval. No scripts, sudo, deletion or file
-                        changes.
+                        {admission.scriptApproval
+                          ? "Read commands run directly. Approve each other command or script once, inside the shared folder. No network, sudo or helper processes. All commands are logged."
+                          : admission.terminalApproval
+                          ? "Read commands run directly. Supported file changes need your approval. Every command stays inside the shared folders and is logged. Scripts and sudo are blocked."
+                          : "Read-only commands run directly inside shared folders and are logged. Scripts, sudo and file changes are blocked."}
                       </small>
                     </div>
                   </li>

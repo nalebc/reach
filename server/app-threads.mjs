@@ -212,6 +212,10 @@ export class AppThreads {
     // The helper's menu bar item stays while Reach runs (showMenu).
     this.resident = false;
     this.onMenu = () => {};
+    // The app in front on the Mac (null once the helper stops telling), and
+    // each app opening, as the helper tells them.
+    this.onFrontmost = () => {};
+    this.onLaunched = () => {};
     this.restartedAt = 0;
     this.stopping = false;
     this.quitting = new AbortController();
@@ -353,6 +357,8 @@ export class AppThreads {
       return console.log(
         "Reach: macOS didn't let Reach watch this Mac's own mouse, so it can get lost on the apps' hidden displays. Allow Terminal in System Settings → Privacy & Security → Accessibility, then restart Reach.",
       );
+    if (event.event === "frontmost") return this.onFrontmost(String(event.bundle || ""));
+    if (event.event === "launched") return this.onLaunched(String(event.bundle || ""));
     const t = this.get(event.thread);
     if (!t) return;
     if (event.event === "region" && rect(event.region)) {
@@ -375,6 +381,7 @@ export class AppThreads {
   }
   exited() {
     this.helper = null;
+    this.onFrontmost(null);
     // Held threads stay held: Resume reopens them.
     for (const t of this.threads.values())
       if (t.state !== "paused") {

@@ -18,6 +18,130 @@ const join = (base: string, rel: string) =>
 const homeFolder = (folder: string) =>
   /^\/(Users|home)\/[^/]+\/?$|^[A-Za-z]:\\Users\\[^\\]+\\?$/.test(folder);
 
+// One folder for a new chat: start in Home, go into any folder, use the one
+// you're in. New chats start only inside Home (server/index.mjs sessionFolder).
+export function FolderPicker({
+  peer,
+  onPick,
+}: {
+  peer: Peer;
+  onPick: (full: string) => void;
+}) {
+  const [home, setHome] = useState<{ id: number; path: string } | null>(null);
+  const [path, setPath] = useState("");
+  const [items, setItems] = useState<Entry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    request<Device>(peer, "/api/device")
+      .then((d) => {
+        const roots = d.roots || [];
+        const root = roots.find((r) => r.name === "Home") || roots[0];
+        if (!live) return;
+        if (root) setHome({ id: root.id, path: root.path });
+        else {
+          setError("No folders to show.");
+          setLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (!live) return;
+        setError((e as Error).message);
+        setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [peer.url, peer.token]);
+  useEffect(() => {
+    if (!home) return;
+    let live = true;
+    setLoading(true);
+    setError("");
+    request<{ items: Entry[] }>(
+      peer,
+      `/api/files?${new URLSearchParams({ root: String(home.id), path })}`,
+    )
+      .then((r) => {
+        if (live)
+          setItems(
+            (r.items || []).filter(
+              (i) => i.type === "directory" && !i.name.startsWith("."),
+            ),
+          );
+      })
+      .catch((e) => {
+        if (live) {
+          setItems([]);
+          setError((e as Error).message);
+        }
+      })
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [peer.url, peer.token, home?.id, path]);
+  const parts = path.split("/").filter(Boolean);
+  const here = parts.at(-1) || "Home";
+  return (
+    <div className="folder-pick">
+      <nav className="folder-pick-crumbs" aria-label="Path">
+        <button
+          type="button"
+          aria-current={!parts.length ? "location" : undefined}
+          onClick={() => setPath("")}
+        >
+          Home
+        </button>
+        {parts.map((part, i) => (
+          <span key={i}>
+            <ChevronRight size={12} />
+            <button
+              type="button"
+              aria-current={i === parts.length - 1 ? "location" : undefined}
+              onClick={() => setPath(parts.slice(0, i + 1).join("/"))}
+            >
+              {part}
+            </button>
+          </span>
+        ))}
+      </nav>
+      <div className="folder-pick-list" role="list" aria-busy={loading}>
+        {error ? (
+          <p className="folder-pick-empty">{error}</p>
+        ) : loading && !items.length ? (
+          <p className="folder-pick-empty">Loading…</p>
+        ) : !items.length ? (
+          <p className="folder-pick-empty">No folders inside.</p>
+        ) : (
+          items.map((i) => (
+            <button
+              type="button"
+              role="listitem"
+              key={i.path}
+              aria-label={`Open ${i.name}`}
+              onClick={() => setPath(i.path)}
+            >
+              <Folder size={15} />
+              <span>{i.name}</span>
+              <ChevronRight size={14} />
+            </button>
+          ))
+        )}
+      </div>
+      <button
+        type="button"
+        className="folder-pick-use"
+        disabled={!home}
+        onClick={() => home && onPick(join(home.path, path))}
+      >
+        <Check size={14} /> Use “{here}”
+      </button>
+    </div>
+  );
+}
+
 export function FolderBrowser({
   peer,
   device,

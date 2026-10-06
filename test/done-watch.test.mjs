@@ -29,7 +29,10 @@ test("a chat that finishes sends one notification that opens it", async () => {
     {
       category: "done",
       // Who, never the chat's words (lock screens).
-      title: "Your Claude Code chat is done",
+      title: "Claude Code · Ready for you",
+      body: "The response is ready. Open the conversation to continue.",
+      icon: "claude",
+      actions: [{ action: "open", title: "Open conversation" }],
       tag: "done-claude-11111111-222",
       url: "/?page=sessions&agent=claude&id=11111111-2222-4333-8444-555555555555",
     },

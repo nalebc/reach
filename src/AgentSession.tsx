@@ -1,3 +1,4 @@
+import { useWantedPrompt } from "./notification-focus";
 import {
   useCallback,
   useEffect,
@@ -5,7 +6,9 @@ import {
   useRef,
   useState,
   useLayoutEffect,
+  type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AlignLeft,
   ArrowUp,
@@ -39,10 +42,9 @@ import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import QueuedMessages from "./QueuedMessages";
-import { ContinuedIn, MoveHint, MoveItems, moveTargets } from "./MoveChat";
+import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
-import AgentCoin from "./AgentCoin";
 import { SkillChip, SlashMenu, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
@@ -52,6 +54,7 @@ import { computerWord } from "./pause";
 import {
   agentLabel,
   answerPrompt,
+  appCard,
   sessionImage,
   effortLabel,
   listModels,
@@ -67,12 +70,14 @@ import {
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
+  setAgentMode,
   stopSession,
   uploadImage,
   usageLink,
   useSessionLive,
   whereLabel,
   type AgentAsking,
+  type AppCard,
   type AgentHealth,
   type AgentMode,
   type UsageLink,
@@ -195,6 +200,54 @@ function ReplyActions({
   );
 }
 
+// Any message, yours or the agent's, can be copied: its copy button shows on
+// hover with a mouse, or when the message is tapped on a phone.
+function Copyable({
+  text,
+  side,
+  bare = false,
+  children,
+}: {
+  text: string;
+  side: "user" | "assistant";
+  bare?: boolean;
+  children: ReactNode;
+}) {
+  const [shown, setShown] = useState(false);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div
+      className={`as-msg ${side} ${shown ? "shown" : ""}`}
+      onClick={(e) => {
+        if (bare || (e.target as HTMLElement).closest("a, button, summary, img, input, textarea")) return;
+        if (String(window.getSelection?.() || "")) return;
+        setShown(!shown);
+      }}
+    >
+      {children}
+      {!bare && (
+        <div className="as-msg-actions">
+          <button
+            className="as-icon"
+            aria-label={copied ? "Copied" : "Copy message"}
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(text);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              } catch {
+                /* nothing to copy into */
+              }
+            }}
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app writes it.
 const claudeModel = (id?: string | null) => {
   if (id === "default") return "Default";
@@ -207,6 +260,25 @@ const claudeModel = (id?: string | null) => {
 };
 
 const QUERY = "(max-width: 1024px), (pointer: coarse)";
+// How long a message just sent shows as sent while it's handed over, before
+// the queue says why it waits.
+const HANDOVER_MS = 4000;
+// How long the agent has been at it ("1m 5s"), ticking on its own each second.
+function Elapsed({ since, after = "" }: { since: number; after?: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const elapsed = Math.max(0, Math.round((now - since) / 1000));
+  if (!elapsed) return null;
+  return (
+    <small>
+      {elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`}
+      {after}
+    </small>
+  );
+}
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => matchMedia(QUERY).matches);
   useEffect(() => {
@@ -403,6 +475,178 @@ function ErrorNote({
 
 // Pictures sent with a message, above its text as the apps show them: from
 // this page's own copy while sending, then from the session's transcript.
+// The permission mode, picked as each app has you pick it: a small menu over
+// its composer's mode button, the one in force checked, a tap outside closing
+// it. The Claude app's names, in its order; the Codex app's title, and the
+// line under each choice (both read from the apps themselves).
+const CLAUDE_MODE_ORDER = ["manual", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"];
+const CODEX_MODE_NOTES: Record<string, string> = {
+  auto: "Always ask to edit external files and use the internet",
+  "guardian-approvals": "Only ask for actions detected as potentially unsafe",
+  "full-access": "Unrestricted access to the internet and any file on your computer",
+  custom: "Uses permissions defined in config.toml",
+};
+function ModeMenu({
+  agent,
+  choices,
+  current,
+  anchor,
+  locked,
+  onPick,
+  onClose,
+}: {
+  agent: AgentName;
+  choices: { id: string; label: string; note?: string }[];
+  current: string | null;
+  // The mode button: the menu opens just above it.
+  anchor: HTMLElement | null;
+  // Set by another app (the Codex app runs this chat's messages with its own
+  // mode): shown, not changeable here, and said why.
+  locked?: string;
+  onPick: (id: string) => void;
+  onClose: () => void;
+}) {
+  const rank = (id: string) => (CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length);
+  const list =
+    agent === "claude"
+      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: modeLabel("claude", m.id) || m.label, note: "" }))
+      : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
+  return (
+    <ComposerMenu anchor={anchor} label="Permissions" className={agent} onClose={onClose}>
+      {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
+      {list.map((m) => (
+        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked} onClick={() => onPick(m.id)}>
+          <span className="as-mode-menu-text">
+            <span>{m.label}</span>
+            {m.note && <small>{m.note}</small>}
+          </span>
+          {m.id === current && <Check size={16} />}
+        </button>
+      ))}
+      {locked && <p className="as-mode-menu-locked">{locked}</p>}
+    </ComposerMenu>
+  );
+}
+
+// A small menu over a composer button, as the apps open theirs: drawn on the
+// chat's page (the composer scrolls its own contents and clipped it out of
+// sight), lined up with its button, closed by a tap outside or Escape.
+function ComposerMenu({
+  anchor,
+  label,
+  className = "",
+  onClose,
+  children,
+}: {
+  anchor: HTMLElement | null;
+  label: string;
+  className?: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [onClose]);
+  // No button to open over (the model picked from "/model" while the model
+  // button is hidden): over the composer.
+  const over = anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
+  const page = over?.closest<HTMLElement>(".as-page") ?? null;
+  const at = (() => {
+    if (!over || !page) return undefined;
+    const box = page.getBoundingClientRect();
+    const button = over.getBoundingClientRect();
+    const width = Math.min(300, box.width - 24);
+    // Over its button: from its left edge, or (a button on the right) to its right edge.
+    const onRight = button.left + button.width / 2 > box.left + box.width / 2;
+    const left = onRight ? button.right - box.left - width : button.left - box.left;
+    return { bottom: Math.max(8, box.bottom - button.top + 6), left: Math.max(8, Math.min(left, box.width - width - 8)) };
+  })();
+  const menu = (
+    <>
+      <div className="as-mode-scrim" onClick={onClose} />
+      <div className={`as-mode-menu ${className}`} role="menu" aria-label={label} style={at}>
+        {children}
+      </div>
+    </>
+  );
+  return page ? createPortal(menu, page) : menu;
+}
+
+// The model, picked as the apps have you pick it: a small menu over the
+// model button, each model with the agent's own words for it and the one in
+// use checked, its thinking levels under them.
+function ModelMenu({
+  agent,
+  models,
+  model,
+  effort,
+  anchor,
+  onPick,
+  onClose,
+}: {
+  agent: AgentName;
+  models: AgentModel[];
+  model: string | null;
+  effort: string | null;
+  anchor: HTMLElement | null;
+  onPick: (choice: { model?: string; effort?: string }) => void;
+  onClose: () => void;
+}) {
+  const current = models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
+  const level = effort || current?.defaultEffort;
+  return (
+    <ComposerMenu anchor={anchor} label="Model" className={`${agent} as-model-menu`} onClose={onClose}>
+      {models.map((m) => (
+        <button
+          key={m.id}
+          role="menuitemradio"
+          aria-checked={m.id === current?.id}
+          onClick={() => onPick({ model: m.id, effort: effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined })}
+        >
+          <span className="as-mode-menu-text">
+            <span>{m.name}</span>
+            {m.description && <small>{m.description}</small>}
+          </span>
+          {m.id === current?.id && <Check size={16} />}
+        </button>
+      ))}
+      {!!current?.efforts.length && (
+        <div className="as-menu-efforts" role="group" aria-label="Thinking">
+          {current.efforts.map((e) => (
+            <button
+              key={e}
+              aria-pressed={e === level}
+              title={current.effortNotes?.[e]}
+              onClick={() => onPick({ model: current.id, effort: e })}
+            >
+              {effortLabel(e, agent)}
+            </button>
+          ))}
+        </div>
+      )}
+    </ComposerMenu>
+  );
+}
+
+// A long message you sent folds to its first lines, as the Claude and Codex
+// apps fold it (an 8,000-character paste took eleven screens).
+function FoldedText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  if (text.length <= 1200 && text.split("\n").length <= 20) return <AgentMarkdown text={text} />;
+  return (
+    <>
+      <div className={open ? "as-fold" : "as-fold folded"}>
+        <AgentMarkdown text={text} />
+      </div>
+      <button className="as-fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? "Show less" : "Show more"}
+      </button>
+    </>
+  );
+}
+
 function SentImages({
   peer,
   session,
@@ -431,6 +675,13 @@ function SentImages({
     };
   }, [peer.url, peer.token, session.agent, session.id, item, shownCount, urls]);
   const sources = urls || loaded;
+  // Gone from the Mac (a temporary file the app attached): said, not blank.
+  if (!urls && loaded.length && loaded.every((l) => !l))
+    return (
+      <span className="as-tag">
+        {count} image{count === 1 ? "" : "s"}
+      </span>
+    );
   return (
     <div className="as-user-images">
       {Array.from({ length: shownCount }, (_, n) =>
@@ -448,8 +699,12 @@ function SentImages({
 }
 
 // A question or permission request an agent waits on in another app (the
-// Claude app, the Codex app, a terminal), already showing there: said here,
-// answered there. word: "Mac" or "computer" (pause.ts computerWord).
+// Claude app, the Codex app, a terminal), already showing there: said here.
+// The Claude app's and the Codex app's permission cards are drawn here as the
+// app draws them (its words, its buttons, in order: read from the app, with
+// that chat brought up there) and answered with the same buttons, pressed on
+// that card in the app. Anything else is answered there.
+// word: "Mac" or "computer" (pause.ts computerWord).
 function AskingCard({
   agent,
   asking,
@@ -457,6 +712,8 @@ function AskingCard({
   where,
   word,
   onScreen,
+  loadCard,
+  onAnswer,
 }: {
   agent: string;
   asking: AgentAsking;
@@ -464,7 +721,39 @@ function AskingCard({
   where: string;
   word: string;
   onScreen?: () => void;
+  loadCard?: () => Promise<AppCard>;
+  onAnswer?: (label: string) => Promise<void>;
 }) {
+  const id = asking.kind === "permission" ? asking.id : undefined;
+  const answerable = !!id && !!loadCard && !!onAnswer;
+  const [card, setCard] = useState<AppCard | null>(null);
+  const [failed, setFailed] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  useEffect(() => {
+    if (!answerable) return;
+    let active = true;
+    setCard(null);
+    setFailed("");
+    loadCard!().then(
+      (c) => active && setCard(c),
+      (e) => active && setFailed((e as Error).message),
+    );
+    return () => {
+      active = false;
+    };
+  }, [id, answerable]);
+  const press = async (label: string) => {
+    setBusy(label);
+    try {
+      await onAnswer?.(label);
+    } finally {
+      setBusy(null);
+    }
+  };
+  // Its main choice, as the apps make it: the one-time Allow.
+  const primary = card?.buttons.find((b) => /^Allow once\b/.test(b)) ?? card?.buttons.find((b) => /^Allow\b/.test(b));
+  const command = asking.kind === "permission" && asking.command ? asking.text : "";
   return (
     <section
       className={`as-prompt ${asking.kind === "question" ? "question" : "tool"} elsewhere`}
@@ -476,7 +765,20 @@ function AskingCard({
           Waiting for your answer in the {where} on your {word}
         </strong>
       </header>
-      {asking.kind === "question" ? (
+      {card ? (
+        // The app's own words, as its card has them.
+        <div className="as-app-card">
+          {card.texts.map((t, i) =>
+            command && t.trim() === command.trim() ? (
+              <pre key={i} className="as-prompt-command">{t}</pre>
+            ) : i === 0 ? (
+              <p key={i} className="as-app-card-title">{t}</p>
+            ) : (
+              <p key={i}>{t}</p>
+            ),
+          )}
+        </div>
+      ) : asking.kind === "question" ? (
         asking.questions.map((q, i) => (
           <div className="as-question" key={i}>
             <p>{q.question}</p>
@@ -493,16 +795,60 @@ function AskingCard({
             <p className="as-asked">{asking.options.join(" · ")}</p>
           )}
         </>
-      ) : asking.command ? (
+      ) : command ? (
         <pre className="as-prompt-command">{asking.text}</pre>
       ) : (
         <p>{asking.text}</p>
       )}
-      <p className="as-reason">This request is already open in the {where}. Answer it on your {word}{onScreen ? " through live screen." : "."}</p>
-      {onScreen && (
-        <div className="as-prompt-actions">
-          <button className="primary" onClick={onScreen}>Open screen to answer</button>
-        </div>
+      {answerable && card ? (
+        <>
+          <div className="as-prompt-actions as-app-card-actions">
+            {card.buttons.map((label) => (
+              <button
+                key={label}
+                className={label === primary ? "primary" : undefined}
+                disabled={!!busy}
+                onClick={() => void press(label)}
+              >
+                {busy === label ? <Loader2 size={14} className="spin" /> : label}
+              </button>
+            ))}
+          </div>
+          {/* The card's menu of more choices, folded as the app folds it. */}
+          {!!card.more?.length && (
+            <>
+              <button className="as-app-card-more" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>
+                More choices
+              </button>
+              {moreOpen && (
+                <div className="as-prompt-actions as-app-card-actions">
+                  {card.more.map((label) => (
+                    <button key={label} disabled={!!busy} onClick={() => void press(label)}>
+                      {busy === label ? <Loader2 size={14} className="spin" /> : label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          {card.moreInApp && <p className="as-reason">More choices are on the card in the {where}.</p>}
+        </>
+      ) : answerable && !failed ? (
+        <p className="as-reason as-app-card-loading">
+          <Loader2 size={14} className="spin" /> Getting the choices from the {where}…
+        </p>
+      ) : (
+        <>
+          <p className="as-reason">
+            {failed || `This request is already open in the ${where}.`} Answer it on your {word}
+            {onScreen ? " through live screen." : "."}
+          </p>
+          {onScreen && (
+            <div className="as-prompt-actions">
+              <button className="primary" onClick={onScreen}>Open screen to answer</button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -878,8 +1224,6 @@ export default function AgentSessionView({
   onScreen?: () => void;
 }) {
   const agent = initial.agent;
-  // The apps this chat can continue in (its menu's "Continue in…").
-  const otherApps = useMemo(() => moveTargets(agent, health), [agent, health]);
   const siblings = useMemo(
     () => allSiblings.filter((s) => s.agent === agent && !s.archived),
     [allSiblings, agent],
@@ -921,6 +1265,7 @@ export default function AgentSessionView({
   const [settings, setSettings] = useState(false);
   const [reviewing, setReviewing] = useState(true);
   const [reviewId, setReviewId] = useState("");
+  useWantedPrompt(initial.agent, initial.id, (id) => { setReviewId(id); setReviewing(true); });
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Sent but not yet in the transcript; `seen` counts the same text already there.
   // messageId: where it waits in the Mac's outbox, when it waits there.
@@ -936,6 +1281,8 @@ export default function AgentSessionView({
     }[]
   >([]);
   const [sending, setSending] = useState(false);
+  // Taps in the same instant come before `sending` re-renders: one send.
+  const sendingNow = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
@@ -946,6 +1293,8 @@ export default function AgentSessionView({
   }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
+  const modeButton = useRef<HTMLButtonElement>(null);
+  const modelButton = useRef<HTMLButtonElement>(null);
   const { view: live } = useSessionLive(peer, initial);
   const promptIds = live.prompts.map((p) => p.id).join(",");
   const askingKey = JSON.stringify(info.asking);
@@ -980,9 +1329,22 @@ export default function AgentSessionView({
 
   // The version of the newest page we hold; unchanged polls cost no render.
   const known = useRef("");
+  // One read at a time: wakes that come while one is on its way are read once
+  // after it (a Codex item woke two or three overlapping reads).
+  const reading = useRef<{ again: boolean } | null>(null);
+  // A read that fails while the Mac is out of reach for a moment (the phone
+  // waking, Reach restarting) is tried again soon, and said only if it lasts.
+  const failed = useRef(0);
+  const retryRead = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const load = useCallback(
     async (first: boolean) => {
       if (document.hidden && !first) return;
+      if (!first && reading.current) {
+        reading.current.again = true;
+        return;
+      }
+      const turn = { again: false };
+      if (!first) reading.current = turn;
       try {
         const r = await readSession(
           peer,
@@ -991,6 +1353,8 @@ export default function AgentSessionView({
           first ? undefined : known.current,
         );
         known.current = r.version || "";
+        failed.current = 0;
+        clearTimeout(retryRead.current);
         if ("unchanged" in r) {
           setLoadError("");
           return;
@@ -1017,22 +1381,40 @@ export default function AgentSessionView({
           ),
         );
       } catch (e) {
-        setLoadError((e as Error).message);
+        failed.current++;
+        if (failed.current > 1) setLoadError((e as Error).message);
+        clearTimeout(retryRead.current);
+        retryRead.current = setTimeout(() => void again.current(first), Math.min(8000, 1000 * 2 ** (failed.current - 1)));
+      } finally {
+        if (reading.current === turn) {
+          reading.current = null;
+          if (turn.again) void again.current(false);
+        }
       }
     },
     [peer.url, peer.token, initial.agent, initial.id],
   );
+  const again = useRef(load);
+  again.current = load;
   useEffect(() => {
     void load(true);
   }, [load]);
-  // Faster while something runs; the live view wakes it instantly on news.
+  // The live view wakes it the moment the chat changes (live.items, below),
+  // so it isn't read on a beat: a slow look stays as the safety net, and a
+  // page coming back reads again (news while it was hidden waited).
   useEffect(() => {
-    const timer = setInterval(
-      () => void load(false),
-      working || pending.length ? 2000 : 5000,
-    );
-    return () => clearInterval(timer);
-  }, [load, working, pending.length]);
+    const timer = setInterval(() => void load(false), 30000);
+    const shown = () => !document.hidden && void load(false);
+    document.addEventListener("visibilitychange", shown);
+    // The phone's network back: read at once.
+    window.addEventListener("online", shown);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(retryRead.current);
+      document.removeEventListener("visibilitychange", shown);
+      window.removeEventListener("online", shown);
+    };
+  }, [load]);
   useEffect(() => {
     if (live.items) void load(false);
   }, [live.items, load]);
@@ -1114,6 +1496,39 @@ export default function AgentSessionView({
     }
     return out;
   }, [items]);
+  // "Continued in …" where the chat moved, not pinned under what was said
+  // after it (by time, when the items have one; else at the end).
+  const movePlaces = useMemo(() => {
+    const places = new Map<number, NonNullable<AgentSession["movedTo"]>>();
+    const times = blocks.map((b) => (b.type === "tools" ? b.items[0]?.at : b.item.at));
+    const timed = times.some((t) => typeof t === "number");
+    for (const m of info.movedTo || []) {
+      let place = blocks.length - 1;
+      if (m.at && timed) {
+        place = -1;
+        times.forEach((t, i) => {
+          if (typeof t === "number" && t <= m.at!) place = i;
+        });
+      }
+      places.set(place, [...(places.get(place) || []), m]);
+    }
+    return places;
+  }, [blocks, info.movedTo]);
+  const placeMoves = (nodes: ReactNode[]) => {
+    if (!movePlaces.size) return nodes;
+    const out: ReactNode[] = [];
+    const at = (i: number) => {
+      const moves = movePlaces.get(i);
+      if (moves && i < blocks.length - 1)
+        out.push(<ContinuedIn key={`moved-${i}`} session={info} moves={moves} logos={logos} onOpen={onSelect} />);
+    };
+    at(-1);
+    nodes.forEach((node, i) => {
+      out.push(node);
+      at(i);
+    });
+    return out;
+  };
   // The newest reply, when the chat ends on one: it gets copy and share.
   const lastBlock = blocks[blocks.length - 1];
   const lastReply =
@@ -1122,6 +1537,13 @@ export default function AgentSessionView({
     lastBlock.item.kind === "text"
       ? lastBlock.item.text
       : "";
+
+  const replyActions =
+    !!lastReply &&
+    !working &&
+    !live.streaming &&
+    !pending.length &&
+    !live.outbox?.length;
 
   // Why replying isn't possible from here, if it isn't.
   const claudeHealth = health.find((h) => h.agent === "claude");
@@ -1262,7 +1684,7 @@ export default function AgentSessionView({
         )?.label || modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
   const send = async () => {
-    if (!canSend) return;
+    if (!canSend || sendingNow.current) return;
     // One of Codex's own commands ("/status") runs instead of being sent.
     if (!attachments.length && slashMenu.runOnSend(text)) return;
     const skill = slashMenu.skill;
@@ -1279,6 +1701,7 @@ export default function AgentSessionView({
       at: Date.now(),
     };
     const keep = { text, attachments };
+    sendingNow.current = true;
     setSending(true);
     setProblem("");
     setPending((list) => [...list, message]);
@@ -1286,7 +1709,7 @@ export default function AgentSessionView({
     setAttachments([]);
     atBottom.current = true;
     try {
-      await draftSync.current?.flush();
+      await draftSync.current?.settle();
       const r = await sendMessage(peer, initial, {
         text: message.text,
         images: ready.map((a) => a.id!),
@@ -1313,6 +1736,7 @@ export default function AgentSessionView({
       setAttachments(keep.attachments);
       setProblem((e as Error).message);
     } finally {
+      sendingNow.current = false;
       setSending(false);
     }
   };
@@ -1340,21 +1764,26 @@ export default function AgentSessionView({
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
-  const [now, setNow] = useState(Date.now());
+  // A message just sent goes straight into the conversation, as in the
+  // agents' own apps: it shows in the queue only when it has to wait (the
+  // agent is working, or something holds it up, saying what).
+  const [handoverTick, setHandoverTick] = useState(0);
+  const handingOver = (m: OutboxMessage) =>
+    !m.error &&
+    !working &&
+    (!!m.sending || pending.some((p) => (p.messageId === m.id || p.text === m.text) && Date.now() - p.at < HANDOVER_MS));
+  const queued = (live.outbox || []).filter((m) => !removedQueue.includes(m.id) && !handingOver(m));
+  // Still on its way a few seconds later: once, it moves to the queue.
   useEffect(() => {
-    if (!working) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [working]);
+    const left = pending.map((p) => HANDOVER_MS - (Date.now() - p.at)).filter((ms) => ms > 0);
+    if (!left.length) return;
+    const timer = setTimeout(() => setHandoverTick((n) => n + 1), Math.min(...left) + 50);
+    return () => clearTimeout(timer);
+  }, [pending, handoverTick]);
   // Since the newest message, one still on its way included (the last one in
-  // the transcript could be a day old: it read "1327m").
+  // the transcript could be a day old: it read "1327m"). Its clock (Elapsed)
+  // ticks by itself: ticking here redrew the whole chat every second.
   const since = Math.max(lastUser?.at || 0, ...pending.map((p) => p.at));
-  const elapsed =
-    working && since ? Math.max(0, Math.round((now - since) / 1000)) : 0;
-  const elapsedLabel =
-    elapsed >= 60
-      ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
-      : `${elapsed}s`;
   const activity =
     live.activity ||
     "Working";
@@ -1435,16 +1864,15 @@ export default function AgentSessionView({
               <skin.compose size={19} />
             </button>
           )}
-          {/* The chat's menu holds "Continue in…" the other apps, so it wears
-              them: a coin flipping through their icons. */}
+          {/* The chat's menu (details, "Continue in…"): a plain ⋯, still. */}
           <button
-            className="as-icon as-coin"
+            className="as-icon"
             aria-label="More"
-            title={otherApps.length ? "Continue in another app" : "Chat details"}
+            title="Chat details"
             aria-expanded={details}
             onClick={() => setDetails(!details)}
           >
-            {otherApps.length ? <AgentCoin agents={otherApps} logos={logos} size={26} /> : <Ellipsis size={20} />}
+            <Ellipsis size={20} />
           </button>
         </span>
       </header>
@@ -1509,16 +1937,17 @@ export default function AgentSessionView({
             <Loader2 size={15} className="spin" /> Opening…
           </p>
         ) : (
-          blocks.map((b, i) =>
+          placeMoves(blocks.map((b, i) =>
             b.type === "tools" ? (
               <ToolRun key={`tools-${b.items[0].id}`} items={b.items} />
             ) : b.item.role === "user" ? (
-              <div key={b.item.id} className="as-user">
+              <Copyable key={b.item.id} text={b.item.text} side="user" bare={!b.item.text.trim()}>
+              <div className="as-user">
                 {b.item.queued && (
                   <span className="as-tag">Sent while working</span>
                 )}
                 {b.item.images ? (
-                  agent === "claude" ? (
+                  agent === "claude" || agent === "codex" ? (
                     <SentImages
                       peer={peer}
                       session={initial}
@@ -1537,9 +1966,10 @@ export default function AgentSessionView({
                 {b.item.slash ? (
                   <code className="as-slash">{b.item.text}</code>
                 ) : (
-                  <AgentMarkdown text={b.item.text} />
+                  <FoldedText text={b.item.text} />
                 )}
               </div>
+              </Copyable>
             ) : b.item.kind === "output" ? (
               <div key={b.item.id} className="as-output">
                 <AgentMarkdown text={b.item.text} />
@@ -1560,23 +1990,22 @@ export default function AgentSessionView({
                 {b.item.text}
               </p>
             ) : (
-              <div key={b.item.id} className="as-assistant">
-                <AgentMarkdown text={b.item.text} />
-              </div>
+              // The newest reply has its own copy and share row beneath.
+              <Copyable key={b.item.id} text={b.item.text} side="assistant" bare={i === blocks.length - 1 && replyActions}>
+                <div className="as-assistant">
+                  <AgentMarkdown text={b.item.text} />
+                </div>
+              </Copyable>
             ),
-          )
+          ))
         )}
-        {lastReply &&
-          !working &&
-          !live.streaming &&
-          !pending.length &&
-          !live.outbox?.length && (
+        {replyActions && (
             <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
           )}
         {pending
           .filter(
             (p) =>
-              !removedQueue.includes(p.messageId || "") && !live.outbox?.some((m) => m.id === p.messageId || m.text === p.text),
+              !removedQueue.includes(p.messageId || "") && !queued.some((m) => m.id === p.messageId || m.text === p.text),
           )
           .map((p) => (
             <div key={p.id} className="as-user pending">
@@ -1588,7 +2017,19 @@ export default function AgentSessionView({
                   count={p.images}
                 />
               ) : null}
-              <AgentMarkdown text={p.text} />
+              <FoldedText text={p.text} />
+            </div>
+          ))}
+        {/* Being handed over from the Mac's outbox (sent before a reload). */}
+        {(live.outbox || [])
+          .filter(
+            (m) =>
+              !removedQueue.includes(m.id) && handingOver(m) && !pending.some((p) => p.messageId === m.id || p.text === m.text),
+          )
+          .map((m) => (
+            <div key={m.id} className="as-user pending">
+              {m.images ? <SentImages peer={peer} session={initial} count={m.images} /> : null}
+              <FoldedText text={visibleUserText(m.text)} />
             </div>
           ))}
         {live.streaming && (
@@ -1607,16 +2048,16 @@ export default function AgentSessionView({
             {/* Reach's mascot, typing at its laptop. */}
             <MascotTyping />
             {/* Claude Code puts the time first: "1h 6m 42s · Almost done thinking…". */}
-            {agent === "claude" && elapsed > 0 && (
-              <small>{elapsedLabel} ·</small>
-            )}
+            {agent === "claude" && since > 0 && <Elapsed since={since} after=" ·" />}
             <span className={agent === "codex" ? "as-shimmer" : ""}>
               {activity}
             </span>
-            {agent === "codex" && elapsed > 0 && <small>{elapsedLabel}</small>}
+            {agent === "codex" && since > 0 && <Elapsed since={since} />}
           </div>
         )}
-        {!working && <ContinuedIn session={info} logos={logos} onOpen={onSelect} />}
+        {!working && (
+          <ContinuedIn session={info} moves={movePlaces.get(blocks.length - 1) || []} logos={logos} onOpen={onSelect} />
+        )}
       </div>
       <div className="as-latest-anchor">
         {readingHistory && (
@@ -1696,6 +2137,17 @@ export default function AgentSessionView({
                   }
                   word={word}
                   onScreen={onScreen}
+                  loadCard={() => appCard(peer, initial)}
+                  onAnswer={async (label) => {
+                    const asked = info.asking;
+                    if (asked?.kind !== "permission" || !asked.id) return;
+                    try {
+                      await answerPrompt(peer, initial, asked.id, { label });
+                      setInfo((old) => ({ ...old, asking: undefined }));
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    }
+                  }}
                 />
               ))}
             {live.prompts.map((p) => (
@@ -1765,50 +2217,54 @@ export default function AgentSessionView({
             onSignedIn={onSignedIn}
           />
         )}
-        {settings && choosingMode && (
-          <div
-            className={`as-picker ${agent}`}
-            role="group"
-            aria-label="Permissions"
-          >
-            <div className="as-picker-row">
-              {modeChoices.map((m) => (
-                <button
-                  key={m.id}
-                  aria-pressed={
-                    m.id === modeShown ||
-                    (modeShown === "default" && m.id === "manual")
-                  }
-                  title={m.note || undefined}
-                  onClick={() => {
-                    setChoice({ ...choice, mode: m.id });
-                    setChoosingMode(false);
-                  }}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </div>
+        {choosingMode && (
+          <ModeMenu
+            agent={agent}
+            choices={modeChoices}
+            current={modeShown === "default" ? "manual" : modeShown}
+            anchor={modeButton.current}
+            locked={
+              heldByApp
+                ? `This chat is open in the Codex app, which runs it with its own permissions. Change them there, or close the chat there to set them here.`
+                : undefined
+            }
+            onClose={() => setChoosingMode(false)}
+            onPick={(id) => {
+              setChoice({ ...choice, mode: id });
+              setChoosingMode(false);
+              // A Claude app chat: picked in the app's own menu too, so
+              // both show it (else it goes with the next message).
+              if (agent === "claude" && info.inApp)
+                setAgentMode(peer, initial, id)
+                  .then((r) => {
+                    if (!r.applied) return;
+                    setInfo((old) => ({ ...old, mode: id }));
+                    setChoice((c) => (c.mode === id ? { ...c, mode: undefined } : c));
+                  })
+                  .catch((e) => setNote((e as Error).message));
+            }}
+          />
         )}
         <SlashMenu menu={slashMenu} />
-        {settings && picking && (
-          <ModelPicker
+        {picking && (
+          <ModelMenu
             agent={agent}
             models={models}
             model={modelId}
             effort={effort}
-            onPick={(next, done) => {
+            anchor={modelButton.current}
+            onClose={() => setPicking(false)}
+            onPick={(next) => {
               setChoice(next);
-              if (done) setPicking(false);
+              setPicking(false);
             }}
           />
         )}
         {/* Right on top of the message box, as both apps put their queue. */}
-        {!!live.outbox?.filter((m) => !removedQueue.includes(m.id)).length && (
+        {!!queued.length && (
           <QueuedMessages
             agent={agent}
-            messages={live.outbox.filter((m) => !removedQueue.includes(m.id))}
+            messages={queued}
             busy={queueBusy}
             canEdit={!queueBusy && !text.trim()}
             onEdit={async (m) => {
@@ -1847,6 +2303,8 @@ export default function AgentSessionView({
             })}
           />
         )}
+        {/* Gemini CLI chats are read here: no box to type in (it only refused after sending). */}
+        {agent !== "gemini" && (
         <div className="as-box">
           <div className="as-field">
             {attachments.length > 0 && (
@@ -1919,10 +2377,13 @@ export default function AgentSessionView({
                 e.target.value = "";
               }}
             />
-            {settings && (
+            {/* Always in sight, as in the Claude and Codex apps: the mode
+                there and here is the same one. */}
+            {(agent === "claude" || agent === "codex") && (
               <button
+                ref={modeButton}
                 className={`as-mode ${agent}`}
-                disabled={heldByApp}
+                title={heldByApp ? "Set in the Codex app" : undefined}
                 aria-expanded={choosingMode}
                 onClick={() => {
                   setChoosingMode(!choosingMode);
@@ -1936,12 +2397,16 @@ export default function AgentSessionView({
             <span className="as-spacer" />
             {settings && modelLabel && (
               <button
+                ref={modelButton}
                 className="as-model"
-                disabled={heldByApp || !models.length}
+                disabled={!heldByApp && !models.length}
                 aria-expanded={picking}
                 onClick={() => {
-                  setPicking(!picking);
                   setChoosingMode(false);
+                  // The Codex app picks the model for a chat it has open.
+                  if (heldByApp)
+                    return setNote("This chat is open in the Codex app, which runs it with its own model. Change it there, or close the chat there to pick it here.");
+                  setPicking(!picking);
                 }}
               >
                 {modelLabel} <span>{effortLabel(effort, agent)}</span>
@@ -1987,6 +2452,7 @@ export default function AgentSessionView({
             )}
           </div>
         </div>
+        )}
       </footer>
     </div>
   );

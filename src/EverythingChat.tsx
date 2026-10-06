@@ -10,7 +10,7 @@ import {
   Sparkle,
   X,
 } from "lucide-react";
-import { post, type Peer } from "./api";
+import { post, request, type Peer } from "./api";
 import AgentSessionView, { ModelPicker } from "./AgentSession";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
@@ -20,6 +20,7 @@ import ChatList, {
   type ChatAppChoice,
 } from "./ChatList";
 import StrandedMessages from "./StrandedMessages";
+import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
@@ -30,6 +31,7 @@ import {
 } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
+import { rememberPlace } from "./deep-link";
 import {
   CODEX_MODE_CHOICES,
   agentLabel,
@@ -51,6 +53,8 @@ import {
   type AgentName,
   type AgentSession,
   type MacPrompt,
+  installAgent,
+  type InstallPlan,
 } from "./agent-sessions";
 import "./agent-session.css";
 import "./chat-home.css";
@@ -66,7 +70,30 @@ const CLAUDE_MODE_CHOICES = ["manual", "acceptEdits", "plan", "auto"];
 type Attachment = { key: number; url: string; id?: string; error?: string };
 
 // A focused new-chat composer. Model and permission choices open on demand.
-function NewChat({
+
+// The folders a new chat can start in: where your chats are, newest first,
+// each project once. A Claude app worktree (<project>/.claude/worktrees/x) is
+// its project; a Codex app worktree (~/.codex/worktrees/…) is left out: both
+// are temporary, and a new chat landed in one by default.
+export function chatFolders(sessions: { cwd?: string }[]) {
+  const seen: string[] = [];
+  for (const s of sessions) {
+    const cwd = (s.cwd || "").replace(/[\\/]\.claude[\\/]worktrees[\\/][^\\/]+[\\/]?$/, "");
+    if (!cwd || /[\\/]\.codex[\\/]worktrees[\\/]/.test(cwd) || seen.includes(cwd)) continue;
+    seen.push(cwd);
+  }
+  return seen.slice(0, 12);
+}
+// Its name, with the folder above it when another has the same name (two
+// chips both said "reach").
+export function folderLabel(cwd: string, folders: string[]) {
+  const name = projectName(cwd);
+  if (!folders.some((f) => f !== cwd && projectName(f) === name)) return name;
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+  return parts.slice(-2).join("/");
+}
+
+export function NewChat({
   peer,
   agent,
   sessions,
@@ -79,12 +106,7 @@ function NewChat({
   onStarted: (s: AgentSession) => void;
   autoFocus?: boolean;
 }) {
-  const folders = useMemo(() => {
-    const seen: string[] = [];
-    for (const s of sessions)
-      if (s.cwd && !seen.includes(s.cwd)) seen.push(s.cwd);
-    return seen.slice(0, 12);
-  }, [sessions]);
+  const folders = useMemo(() => chatFolders(sessions), [sessions]);
   const [cwd, setCwd] = useState("");
   const [otherFolder, setOtherFolder] = useState(false);
   const draftKey = "reach-new-chat-draft:" + peer.id;
@@ -111,6 +133,8 @@ function NewChat({
   const [settings, setSettings] = useState(false);
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
   const [busy, setBusy] = useState(false);
+  // Taps in the same instant come before `busy` re-renders: one chat.
+  const startingNow = useRef(false);
   const [problem, setProblem] = useState("");
   const picker = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
@@ -195,7 +219,8 @@ function NewChat({
     }
   };
   const start = async () => {
-    if (!ready) return;
+    if (!ready || startingNow.current) return;
+    startingNow.current = true;
     setBusy(true);
     setProblem("");
     try {
@@ -234,6 +259,7 @@ function NewChat({
     } catch (e) {
       setProblem((e as Error).message);
     } finally {
+      startingNow.current = false;
       setBusy(false);
     }
   };
@@ -267,15 +293,17 @@ function NewChat({
         <>
           {choiceRow(
             [
-              ...folders.map((f) => ({ id: f, label: projectName(f) })),
-              { id: "\u0000other", label: "Other…" },
+              ...folders.map((f) => ({ id: f, label: folderLabel(f, folders) })),
+              // A folder picked by browsing, until another is chosen.
+              ...(cwd && !folders.includes(cwd)
+                ? [{ id: cwd, label: folderLabel(cwd, folders) }]
+                : []),
+              { id: "\u0000other", label: "Browse…" },
             ],
             otherFolder ? "\u0000other" : cwd,
             (id) => {
-              if (id === "\u0000other") {
-                setOtherFolder(true);
-                setCwd("");
-              } else {
+              if (id === "\u0000other") setOtherFolder(!otherFolder);
+              else {
                 setOtherFolder(false);
                 setCwd(id);
                 setPanel("");
@@ -284,16 +312,16 @@ function NewChat({
             "Folder",
           )}
           {otherFolder && (
-            <input
-              className="as-folder-input"
-              placeholder="/Users/you/project"
-              aria-label="Folder path"
-              value={cwd}
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              onChange={(e) => setCwd(e.target.value)}
-            />
+            <div className={agent}>
+              <FolderPicker
+                peer={peer}
+                onPick={(full) => {
+                  setOtherFolder(false);
+                  setCwd(full);
+                  setPanel("");
+                }}
+              />
+            </div>
           )}
         </>
       )}
@@ -363,7 +391,7 @@ function NewChat({
           />
           {!open && cwd && (
             <span className="chat-new-where" aria-hidden="true">
-              in {projectName(cwd)}
+              in {folderLabel(cwd, folders)}
             </span>
           )}
         </div>
@@ -389,12 +417,13 @@ function NewChat({
             />
             <button
               className="as-model chat-folder"
+              aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
               aria-expanded={panel === "folder"}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPanel(panel === "folder" ? "" : "folder")}
             >
               <FolderOpen size={14} />
-              <span>{cwd ? projectName(cwd) : "Folder"}</span>
+              <span>{cwd ? folderLabel(cwd, folders) : "Folder"}</span>
             </button>
             {settings && (
               <button
@@ -459,6 +488,94 @@ export function greeting(now = new Date()) {
   return "Good evening";
 }
 
+// "Install on Mac": its maker's own command, shown first and run once
+// confirmed, in a Reach terminal that ends with it (server/agent-install.mjs);
+// then a check again finds it. Its newest output line shows while it runs.
+function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: AgentName; name: string; recheck: () => void }) {
+  const [plan, setPlan] = useState<InstallPlan | null>(null);
+  const [step, setStep] = useState<"" | "confirm" | "running" | "failed">("");
+  const [line, setLine] = useState("");
+  const [problem, setProblem] = useState("");
+  const terminal = useRef("");
+  const word = computerWord(peer.platform);
+  useEffect(() => {
+    if (step !== "running") return;
+    // Only while it runs (a minute or two): its terminal's state.
+    const timer = setInterval(async () => {
+      try {
+        const list = await request<{ id: string; status: string; exitCode?: number; preview?: string }[]>(peer, "/api/terminals");
+        const t = list.find((x) => x.id === terminal.current);
+        if (t?.preview) setLine(t.preview.trim().split("\n").pop() || "");
+        if (t?.status === "running") return;
+        // Ended, or its terminal gone (closed, or Reach restarted): checked
+        // again either way, so one that did install shows as installed; never
+        // left spinning.
+        if (!t) setLine("");
+        setStep(t?.exitCode === 0 ? "" : "failed");
+        recheck();
+      } catch {
+        /* the next look tells */
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [step]);
+  const ask = async () => {
+    setProblem("");
+    try {
+      setPlan(await installAgent(peer, agent));
+      setStep("confirm");
+    } catch (e) {
+      setProblem((e as Error).message);
+    }
+  };
+  const run = async () => {
+    setProblem("");
+    try {
+      const started = await installAgent(peer, agent, true);
+      terminal.current = started.terminal?.id || "";
+      setLine("");
+      setStep("running");
+    } catch (e) {
+      setProblem((e as Error).message);
+      setStep("");
+    }
+  };
+  return (
+    <>
+      {step === "confirm" && plan ? (
+        <>
+          <p>Reach runs {name}'s own installer on your {word}:</p>
+          <pre className="chat-setup-command">{plan.command}</pre>
+          <div className="chat-setup-actions">
+            <button className="primary" onClick={() => void run()}>Install</button>
+            <button onClick={() => setStep("")}>Cancel</button>
+          </div>
+        </>
+      ) : step === "running" ? (
+        <p className="chat-setup-running">
+          <Loader2 size={14} className="spin" /> Installing {name} on your {word}…
+          {line && <code>{line}</code>}
+        </p>
+      ) : (
+        <>
+          {step === "failed" && (
+            <p className="chat-setup-problem">
+              The install stopped before finishing.{line ? ` ${line}` : ""}
+            </p>
+          )}
+          <div className="chat-setup-actions">
+            <button className="primary" onClick={() => void ask()}>
+              {step === "failed" ? "Try again" : `Install on ${word}`}
+            </button>
+            <button onClick={recheck}>Check again</button>
+          </div>
+        </>
+      )}
+      {problem && <p className="chat-setup-problem">{problem}</p>}
+    </>
+  );
+}
+
 function AgentStatus({
   peer,
   agent,
@@ -484,11 +601,15 @@ function AgentStatus({
     return (
       <section className="chat-setup" aria-label={`Set up ${name}`}>
         <strong>Set up {name} on {peer.name}</strong>
-        <p>{name} isn't installed on this {computerWord(peer.platform)}. Install it there, then check again to discover your conversations.</p>
-        <div className="chat-setup-actions">
-          <a href={agent === "codex" ? "https://developers.openai.com/codex/cli/" : agent === "gemini" ? "https://github.com/google-gemini/gemini-cli" : "https://code.claude.com/docs/en/setup"} target="_blank" rel="noopener noreferrer">Install {name}</a>
-          <button onClick={recheck}>Check again</button>
-        </div>
+        <p>{name} isn't installed on this {computerWord(peer.platform)}.</p>
+        {agent === "claude" || agent === "codex" ? (
+          <InstallAgent peer={peer} agent={agent} name={name} recheck={recheck} />
+        ) : (
+          <div className="chat-setup-actions">
+            <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener noreferrer">Install {name}</a>
+            <button onClick={recheck}>Check again</button>
+          </div>
+        )}
       </section>
     );
   if (!health.signedIn)
@@ -616,6 +737,10 @@ export default function EverythingChat({
     );
     onTargetOpened?.();
   }, [target?.agent, target?.id]);
+  // The chat open now, so a reload comes back to it (src/deep-link.ts).
+  useEffect(() => {
+    rememberPlace(peer.id, { chat: open ? { agent: open.agent, id: open.id } : null });
+  }, [peer.id, open?.agent, open?.id]);
   const allNeeds = agentNeeds({
     peer,
     sessions: (sessions || []).filter((s) => !s.archived),
@@ -747,6 +872,15 @@ export default function EverythingChat({
             />
           ) : !picked.supported ? (
             <ChatComingSoon app={picked} logos={logos} />
+          ) : picked.agent === "gemini" ? (
+            // Its chats are read here; it no longer answers personal accounts,
+            // and a new one was refused only after Start.
+            <ChatComingSoon
+              app={picked}
+              logos={logos}
+              label="Read only"
+              text={`Reach shows your ${picked.name} chats. To start a new one, pick another app above.`}
+            />
           ) : (
             <>
               <AgentStatus
@@ -794,14 +928,17 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const startingNow = useRef(false);
   const start = async () => {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || startingNow.current) return;
+    startingNow.current = true;
     setBusy(true);
     setProblem("");
     try {
       const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text });
       onStarted(key);
     } catch (e) {
+      startingNow.current = false;
       setProblem((e as Error).message);
       setBusy(false);
     }

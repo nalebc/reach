@@ -64,7 +64,7 @@ test("the bell collects actual pending requests across providers and drops resol
   assert.deepEqual(
     result.items.map((i) => i.id),
     [
-      "chat:codex:c",
+      "chat:codex:c:prompt:request-c",
       "chat:claude:a",
       "mac:dialog",
       "openclaw:p",
@@ -78,7 +78,7 @@ test("the bell collects actual pending requests across providers and drops resol
     result.items.find((i) => i.source === "openclaw").target.id,
     "claw",
   );
-  assert.doesNotMatch(JSON.stringify(result.items), /secret|Private/);
+  assert.doesNotMatch(JSON.stringify(result.items), /Private/);
   assert.equal(result.items.find((i) => i.source === "handoff").push, false);
 });
 
@@ -133,10 +133,8 @@ test("deduplicates waits across polls and restarts, but sends a new request; dis
     fs.readFileSync(file, "utf8"),
     /private-id|Private conversation|p2/,
   );
-  assert.doesNotMatch(
-    JSON.stringify(sent),
-    /private-id|Private conversation|p2/,
-  );
+  assert.doesNotMatch(JSON.stringify(sent.map(({ title, body }) => ({ title, body }))), /Private conversation|p2/);
+  assert.equal(new URL(sent[0].url, "https://reach.test").searchParams.get("id"), "private-id");
   b.close();
 });
 

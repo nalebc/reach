@@ -33,7 +33,7 @@
   "scripts": {
     "go": "node scripts/bootstrap.mjs",
     "dev": "node scripts/dev.mjs",
-    "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
+    "build": "node scripts/build-brand.mjs && tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
     "prepack": "npm run build && node scripts/build-tailnet.mjs --required",
     "start": "node server/index.mjs",
     "test": "node --test --test-timeout=60000 --test-concurrency=4 test/*.test.mjs",

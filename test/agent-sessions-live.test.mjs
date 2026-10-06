@@ -324,9 +324,13 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
   try {
     assert.equal(await codexHolder(T, { locks, run: async () => assert.fail("no lock, no lookup") }), null);
     await fs.writeFile(path.join(locks, `${T}.lock`), "");
-    const machine = (own, parent) => async (cmd, args) => ({
-      stdout: cmd.endsWith("lsof") ? "p4242\nf42\n" : args.includes("command=") ? parent : own,
-    });
+    // lsof is asked about Codex's processes only (pgrep), never every process.
+    const machine = (own, parent) => async (cmd, args) => {
+      if (cmd.endsWith("lsof")) assert.deepEqual(args.slice(0, 4), ["-nP", "-a", "-p", "660,4242"]);
+      return {
+        stdout: cmd.endsWith("pgrep") ? "660\n4242\n" : cmd.endsWith("lsof") ? "p4242\nf42\n" : args.includes("command=") ? parent : own,
+      };
+    };
     assert.equal(
       await codexHolder(T, {
         locks,
@@ -341,6 +345,11 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
     assert.equal(await codexHolder(T, { locks, run: machine(" 77 ttys004 codex resume", "-zsh\n") }), "terminal");
     assert.equal(
       await codexHolder(T, { locks, run: async () => Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) }),
+      null,
+    );
+    // No Codex running at all: nobody holds it, and lsof isn't run.
+    assert.equal(
+      await codexHolder(T, { locks, run: async (cmd) => (cmd.endsWith("pgrep") ? Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) : assert.fail("no lsof")) }),
       null,
     );
   } finally {
@@ -398,6 +407,7 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       start: async (agent, body) => (seen.push(["start", agent, body]), { threadId: T }),
       respond: async (agent, id, prompt, answer) => (seen.push(["respond", prompt, answer]), { answered: true }),
       stop: async () => ({ stopped: true }),
+      mode: async (agent, id, { mode }) => (seen.push(["mode", agent, mode]), { mode, applied: true }),
       models: async (agent) => ({ models: [{ id: `${agent}-model` }], mode: "guardian-approvals" }),
       commands: async (agent) => (agent === "claude" ? [{ name: "compact", description: "Summarize", hint: "" }] : []),
       view: () => ({ version: 3, status: "running", prompts: [] }),
@@ -422,6 +432,12 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal(uploaded.status, 200);
     const { id } = await uploaded.json();
 
+    // A permission mode picked on the phone, picked in the Claude app too: the
+    // owner's call only, and never Bypass permissions.
+    assert.equal((await call(`/api/sessions/claude/${T}/mode`, agent.token, { mode: "plan" })).status, 403);
+    assert.deepEqual(await (await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "plan" })).json(), { mode: "plan", applied: true });
+    assert.equal((await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "bypassPermissions" })).status, 400);
+    assert.deepEqual(seen.filter(([kind]) => kind === "mode"), [["mode", "claude", "plan"]]);
     assert.equal((await call(`/api/sessions/codex/${T}/messages`, agent.token, { text: "hi" })).status, 403);
     const sent = await call(`/api/sessions/codex/${T}/messages`, owner.token, {
       text: "look at this",
@@ -477,6 +493,11 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       status: "running",
       prompts: [],
     });
+    // Something new and nothing streaming: answered at once (each wake used
+    // to wait a fixed 60 ms first).
+    const asked = performance.now();
+    await (await call(`/api/sessions/codex/${T}/live?since=2`, owner.token)).json();
+    assert.ok(performance.now() - asked < 45, `answered in ${Math.round(performance.now() - asked)} ms`);
     assert.deepEqual(await (await call("/api/sessions/models?agent=codex", owner.token)).json(), {
       models: [{ id: "codex-model" }],
       mode: "guardian-approvals",

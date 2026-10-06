@@ -346,15 +346,24 @@ export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
     const deadline = setTimeout(() => call.abort(), timeoutMs);
     try {
       const head = await call.response;
+      const screenImage = route === "/api/browser/screen" && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
+      const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
       const chunks = [];
       let size = 0;
       for (let chunk; (chunk = await head.read());) {
         size += chunk.length;
-        if (size > 2 * 1024 * 1024) {
+        if (size > responseLimit) {
           head.cancel();
-          throw Error("Reach response exceeds 2 MiB.");
+          throw Error(`Reach response exceeds ${screenImage ? 8 : 2} MiB.`);
         }
         chunks.push(Buffer.from(chunk));
+      }
+      if (screenImage) {
+        let mimeType = "";
+        for (let index = 0; index < head.headers.length; index += 2)
+          if (String(head.headers[index]).toLowerCase() === "content-type") mimeType = String(head.headers[index + 1]).split(";")[0].trim();
+        if (!["image/jpeg", "image/png"].includes(mimeType)) throw Error("Reach returned an unsupported screen image.");
+        return { image: Buffer.concat(chunks).toString("base64"), mimeType };
       }
       const result = JSON.parse(
         Buffer.concat(chunks).toString("utf8") || "null",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -14,6 +14,9 @@ import {
 import { fileBlob, peerFetch, request, type FileEntry, type Peer } from "./api";
 import { saveBlob } from "./native";
 import { BrowserActionRequests } from "./browser-approvals";
+import { installBrowserTools } from "./browser-tools";
+import BrowserScreenControls from "./BrowserScreenControls";
+import BrowserTerminal from "./BrowserTerminal";
 import "./browser-workspace.css";
 
 type Access = {
@@ -24,6 +27,8 @@ type Access = {
   screen: "off" | "view" | "scroll" | "ask";
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
+  terminalApproval?: boolean;
+  scriptApproval?: boolean;
 };
 type Listing = { items: FileEntry[]; truncated?: boolean };
 type WorkspaceTab = "screen" | "files" | "terminal";
@@ -36,13 +41,16 @@ const SCREEN_REFRESH_MS = 2000;
 
 // Ordinary controls keep the shared resources usable by an assistant's browser.
 // Tabs only organize the UI; the host still authorizes every resource and action.
-export default function BrowserWorkspace({
-  peer,
-  onEnd,
-}: {
-  peer: Peer;
-  onEnd: () => void;
-}) {
+type BrowserWorkspaceProps = { peer: Peer; onEnd: () => void };
+export default function BrowserWorkspace(props: BrowserWorkspaceProps) {
+  const { peer } = props;
+  // Credentials and transport define one workspace. Remount before rendering a
+  // different identity so its scope and screenshot never inherit the old grant.
+  const identity = JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]);
+  return <BrowserWorkspaceSession key={identity} {...props} />;
+}
+
+function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
   const [access, setAccess] = useState<Access | null>(null);
   const [error, setError] = useState("");
   const [selectedTab, setSelectedTab] = useState<WorkspaceTab | null>(null);
@@ -64,6 +72,8 @@ export default function BrowserWorkspace({
   const [screenUrl, setScreenUrl] = useState("");
   const [screenAt, setScreenAt] = useState<Date | null>(null);
   const [screenBusy, setScreenBusy] = useState(false);
+  const [screenDraft, setScreenDraft] = useState(false);
+  const screenDraftRef = useRef(false);
   const [filesRevision, setFilesRevision] = useState(0);
   const [terminalRevision, setTerminalRevision] = useState(0);
   const screenObject = useRef("");
@@ -77,11 +87,21 @@ export default function BrowserWorkspace({
   const tabButtons = useRef<Partial<Record<WorkspaceTab, HTMLButtonElement | null>>>({});
   ended.current = onEnd;
   const fail = useCallback((e: unknown) => {
+    if (!mounted.current) return;
     if ((e as { status?: number })?.status === 401) ended.current();
     else if ((e as Error).name !== "AbortError") setError((e as Error).message);
   }, []);
+  useLayoutEffect(() => {
+    const session = installBrowserTools(peer, fail);
+    return () => session.dispose();
+  }, [peer.id, peer.url, peer.token, peer.transport, peer.sessionId, fail]);
+  const holdScreenDraft = useCallback((held: boolean) => {
+    screenDraftRef.current = held;
+    if (held) screenOperation.current?.abort();
+    setScreenDraft(held);
+  }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true;
     const visibilityChanged = () => setVisible(!document.hidden);
     document.addEventListener("visibilitychange", visibilityChanged);
@@ -126,7 +146,7 @@ export default function BrowserWorkspace({
   const activeTab = selectedTab && availableTabs[selectedTab]
     ? selectedTab
     : hasScreen ? "screen" : hasFiles ? "files" : "terminal";
-  const screenActive = hasScreen && activeTab === "screen" && visible;
+  const screenActive = hasScreen && activeTab === "screen" && visible && !screenDraft;
   const screenActiveRef = useRef(screenActive);
   screenActiveRef.current = screenActive;
   const currentRoot = access?.roots.some((item) => item.index === root)
@@ -239,7 +259,7 @@ export default function BrowserWorkspace({
   const updateScreen = useCallback(async (direction?: "up" | "down") => {
     // A ref, rather than render state, closes the gap between a manual refresh
     // and the automatic timer. There is at most one capture in flight.
-    if (screenOperation.current || !screenActiveRef.current) return;
+    if (screenOperation.current || !screenActiveRef.current || screenDraftRef.current) return;
     const controller = new AbortController();
     screenOperation.current = controller;
     const timeout = setTimeout(() => controller.abort(), 35000);
@@ -252,7 +272,7 @@ export default function BrowserWorkspace({
           signal: controller.signal,
         });
       }
-      if (controller.signal.aborted || !screenActiveRef.current) return;
+      if (controller.signal.aborted || !screenActiveRef.current || screenDraftRef.current) return;
       const response = await peerFetch(peer, "/api/browser/screen", {
         cache: "no-store",
         redirect: "error",
@@ -265,7 +285,7 @@ export default function BrowserWorkspace({
         });
       }
       const blob = await response.blob();
-      if (controller.signal.aborted || !screenActiveRef.current || !mounted.current) return;
+      if (controller.signal.aborted || !screenActiveRef.current || screenDraftRef.current || !mounted.current) return;
       const image = URL.createObjectURL(blob);
       if (screenObject.current) URL.revokeObjectURL(screenObject.current);
       screenObject.current = image;
@@ -371,8 +391,8 @@ export default function BrowserWorkspace({
         aria-labelledby={`browser-tab-${activeTab}`}
         tabIndex={0}
       >
-        {activeTab === "screen" && hasScreen && (
-          <section className="browser-screen" aria-labelledby="browser-screen-title">
+        {hasScreen && (
+          <section className="browser-screen" aria-labelledby="browser-screen-title" hidden={activeTab !== "screen"}>
             <div className="browser-section-heading">
               <div>
                 <h2 id="browser-screen-title">Screen</h2>
@@ -387,7 +407,7 @@ export default function BrowserWorkspace({
                 </span>
                 <button
                   className="button secondary small"
-                  disabled={screenBusy || !visible}
+                  disabled={screenBusy || !visible || screenDraft}
                   aria-label="Refresh screen"
                   onClick={() => void updateScreen()}
                 >
@@ -395,18 +415,22 @@ export default function BrowserWorkspace({
                 </button>
               </div>
             </div>
-            <div className="browser-screen-stage" aria-busy={screenBusy && !screenUrl}>
-              {screenUrl ? (
-                <img className="browser-screen-image" src={screenUrl} alt={`Shared screen of ${peer.name}`} />
-              ) : (
+            <BrowserScreenControls
+              peer={peer}
+              src={screenUrl}
+              alt={`Shared screen of ${peer.name}`}
+              enabled={access.screen === "ask"}
+              onError={fail}
+              onDraftChange={holdScreenDraft}
+            />
+            {!screenUrl && (
                 <div className="browser-screen-placeholder" role="status">
                   <Monitor size={32} />
                   <span>{screenBusy ? "Opening the shared screen…" : "Waiting for a screen image…"}</span>
                 </div>
-              )}
-            </div>
+            )}
             <div className="browser-screen-footer">
-              <p className="browser-policy">Updates automatically while this tab is open.</p>
+              <p className="browser-policy">{screenDraft ? "Screen held while your actions await approval." : "Updates automatically while this tab is open."}</p>
               {access.screen === "scroll" && (
                 <div className="browser-screen-actions">
                   <button className="button secondary small" disabled={screenBusy || !screenUrl || !visible} onClick={() => void updateScreen("up")}>
@@ -495,7 +519,7 @@ export default function BrowserWorkspace({
             <div className="browser-section-heading">
               <div>
                 <h2 id="browser-terminals-title">Terminal</h2>
-                <p className="browser-policy">{access.restrictedTerminal ? "Run approved read-only commands in shared folders" : access.terminals.length ? "Read shared terminal output" : "Request a command from the owner"}</p>
+                <p className="browser-policy">{access.restrictedTerminal ? "Commands and results for this session" : access.terminals.length ? "Read shared terminal output" : "Request a command from the owner"}</p>
               </div>
               {!!access.terminals.length && (
                 <button className="button secondary small" aria-label="Refresh terminal output" disabled={!currentTerminal || terminalBusy} onClick={() => setTerminalRevision((r) => r + 1)}>
@@ -511,7 +535,7 @@ export default function BrowserWorkspace({
                   </select>
                 </label>
                 <pre className="browser-output" aria-label="Terminal transcript">{terminalBusy && !output ? "Reading terminal…" : output || "No output yet."}</pre>
-                <p className="browser-policy">These existing sessions are output only. Command requests are separate below.</p>
+                <p className="browser-policy">These existing sessions are output only.</p>
               </>
             )}
           </section>
@@ -519,15 +543,20 @@ export default function BrowserWorkspace({
         {!hasScreen && !hasFiles && !hasTerminal && (
           <p className="browser-empty">No resources are shared with this session.</p>
         )}
-        {(access.screen === "ask" || access.commandRequests || access.restrictedTerminal) && (
-          <div className="browser-tab-requests" hidden={activeTab === "files" || (activeTab === "screen" ? access.screen !== "ask" : !(access.commandRequests || access.restrictedTerminal))}>
+        {access.restrictedTerminal && (
+          <div className="browser-tab-requests" hidden={activeTab !== "terminal"}>
+            <BrowserTerminal peer={peer} roots={access.roots} terminalApproval={access.terminalApproval} scriptApproval={access.scriptApproval} onError={fail} />
+          </div>
+        )}
+        {access.commandRequests && !access.restrictedTerminal && (
+          <div className="browser-tab-requests" hidden={activeTab !== "terminal"}>
             <BrowserActionRequests
               peer={peer}
-              screen={access.screen === "ask"}
+              screen={false}
               commands={!!access.commandRequests || !!access.restrictedTerminal}
               restrictedTerminal={!!access.restrictedTerminal}
               roots={access.roots}
-              activeKind={activeTab === "terminal" ? "command" : "screen"}
+              activeKind="command"
               onError={fail}
             />
           </div>

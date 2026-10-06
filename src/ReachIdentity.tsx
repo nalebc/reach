@@ -1,3 +1,4 @@
+import reachMascot from "./assets/reach-mascot.svg";
 import {
   memo,
   useContext,
@@ -12,15 +13,8 @@ import CourierActor from "./CourierActor";
 
 export function ReachMark() {
   return (
-    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <path
-        d="M6 25V13a7 7 0 0 1 7-7h5v7h-5v12M18 9h4a5 5 0 0 1 5 5v6"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinejoin="round"
-      />
-      <path d="M23 20h8v6h-8z" fill="currentColor" />
-      <path d="M25 26v3m4-3v3" stroke="currentColor" strokeWidth="2" />
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <image href={reachMascot} width="64" height="64" />
     </svg>
   );
 }

@@ -33,3 +33,26 @@ test("closing a conversation drops unsent updates; a refused Mac draft does not 
   await sync.flush();
   assert.deepEqual(writes, ["first"]);
 });
+
+test("Send doesn't write the draft first: it drops the one not yet written and waits only for one on its way", async () => {
+  const writes = [];
+  let release;
+  const sync = createDraftSync(async (text) => {
+    writes.push(text);
+    if (text === "hel") await new Promise((r) => { release = r; });
+  }, 10000);
+  sync.update("hel");
+  const writing = sync.flush();
+  sync.update("hello world");
+  let settled = false;
+  const sent = sync.settle().then(() => (settled = true));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(settled, false, "waits for the write on its way");
+  release();
+  await Promise.all([writing, sent]);
+  assert.deepEqual(writes, ["hel"], "the newer draft is never written: the message replaces it");
+  sync.update("next");
+  await sync.settle();
+  assert.deepEqual(writes, ["hel"]);
+  sync.close();
+});

@@ -185,7 +185,8 @@ export function createGeminiSessions({
     const session = {
       agent: "gemini",
       id: String(header.sessionId),
-      title: clip(first.split("\n")[0], 120) || "Gemini CLI session",
+      // Without the "›" prompt sign a pasted terminal line starts with.
+      title: clip(first.split("\n")[0].replace(/^\s*(?:[›❯]\s*)+/, ""), 120) || "Gemini CLI session",
       cwd,
       branch: "",
       origin: "cli",

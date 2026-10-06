@@ -138,6 +138,20 @@ export function vapidJwt({ audience, subject, privateKey, now = Date.now() }) {
   return `${header}.${claims}.${b64(signature)}`;
 }
 
+// The reason a push service gave for refusing, from its JSON body.
+async function whyRefused(response) {
+  try {
+    const text = String(await response.text()).slice(0, 300);
+    try {
+      return String(JSON.parse(text).reason || text).slice(0, 80);
+    } catch {
+      return text.slice(0, 80);
+    }
+  } catch {
+    return "";
+  }
+}
+
 export function createPush({
   dataDir,
   // Who sends: this computer's https address (never anyone's email).
@@ -152,6 +166,10 @@ export function createPush({
   log = (message) => console.log(`Reach: ${message}`),
 }) {
   const file = path.join(dataDir, "push.json");
+  // A phone whose push service keeps refusing (HTTP 400): paused a while after
+  // a few in a row, its reason logged once, instead of a refusal (and a log
+  // line) on every event. endpoint -> { count, until, reason }
+  const refused = new Map();
   let keys;
   const vapid = () =>
     (keys ??= vapidKeys(path.join(dataDir, "push-vapid.json")));
@@ -289,35 +307,63 @@ export function createPush({
       const payload = JSON.stringify({
         title: String(message.title || "Reach").slice(0, 120),
         ...(message.tag && { tag: String(message.tag).slice(0, 64) }),
-        ...(message.url && { url: String(message.url).slice(0, 200) }),
+        ...(message.url && { url: String(message.url).length <= 2000 ? String(message.url) : "/" }),
+        ...(message.body && { body: String(message.body).slice(0, 240) }),
+        ...(["codex", "claude", "gemini", "openclaw", "agent", "mac"].includes(message.icon) && { icon: message.icon }),
+        ...(Array.isArray(message.actions) && { actions: message.actions.filter((item) => ["open", "deny"].includes(item?.action) && typeof item.title === "string").slice(0, 2).map((item) => ({ action: item.action, title: item.title.slice(0, 40) })) }),
+        ...(typeof message.notification?.id === "string" && message.notification.id.length <= 1500 && /^[a-f0-9]{64}$/.test(message.notification.revision) && { notification: { id: message.notification.id, revision: message.notification.revision } }),
       });
       let sent = 0;
       await Promise.all(
         targets.map(async (s) => {
+          const pause = refused.get(s.endpoint);
+          if (pause && pause.until > now()) return;
           try {
             const audience = new URL(s.endpoint).origin;
-            const response = await post(s.endpoint, {
-              method: "POST",
-              headers: {
-                Authorization: `vapid t=${vapidJwt({ audience, subject: subject(), privateKey, now: now() })}, k=${publicKey}`,
-                "Content-Encoding": "aes128gcm",
-                "Content-Type": "application/octet-stream",
-                TTL: "3600",
-                Urgency: "high",
-                ...(message.tag && {
-                  Topic: String(message.tag)
-                    .replace(/[^A-Za-z0-9_-]/g, "")
-                    .slice(0, 32),
-                }),
-              },
-              body: encryptPush(payload, s.keys),
-            });
+            const send = (topic) =>
+              post(s.endpoint, {
+                method: "POST",
+                headers: {
+                  Authorization: `vapid t=${vapidJwt({ audience, subject: subject(), privateKey, now: now() })}, k=${publicKey}`,
+                  "Content-Encoding": "aes128gcm",
+                  "Content-Type": "application/octet-stream",
+                  TTL: "3600",
+                  Urgency: "high",
+                  ...(topic && { Topic: topic }),
+                },
+                body: encryptPush(payload, s.keys),
+              });
+            const topic = message.tag
+              ? String(message.tag).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32)
+              : "";
+            let response = await send(topic);
+            // Apple says why in the body ({"reason":"BadWebPushTopic"}).
+            let reason = response.ok ? "" : await whyRefused(response);
+            // A topic the service won't take: once more without one.
+            if (response.status === 400 && topic && /topic/i.test(reason)) {
+              response = await send("");
+              reason = response.ok ? "" : await whyRefused(response);
+            }
             // Gone (the phone turned notifications off or reinstalled).
             if (response.status === 404 || response.status === 410) {
               subscriptions = subscriptions.filter((x) => x !== s);
+              refused.delete(s.endpoint);
               save();
-            } else if (response.ok) sent++;
-            else log(`a notification was refused (HTTP ${response.status}).`);
+            } else if (response.ok) {
+              sent++;
+              refused.delete(s.endpoint);
+            } else {
+              const last = refused.get(s.endpoint);
+              const count = (last?.count || 0) + 1;
+              const why = `HTTP ${response.status}${reason ? `: ${reason}` : ""}`;
+              if (last?.why !== why) log(`a notification was refused (${why}).`);
+              refused.set(s.endpoint, {
+                count,
+                why,
+                until: count >= 3 ? now() + 15 * 60 * 1000 : 0,
+              });
+              if (count === 3) log(`notifications to one phone are paused for 15 minutes after ${count} refusals (${why}).`);
+            }
           } catch (e) {
             log(`a notification could not be sent: ${e.message}`);
           }

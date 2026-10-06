@@ -173,9 +173,13 @@ export function createClaudeHost({
       });
     return sessions.get(id);
   };
+  // Told of each change to a session (the chat list hears of its status and
+  // questions this way).
+  const changeListeners = new Set();
   const changed = (s) => {
     s.version++;
     for (const wake of [...s.waiters]) wake();
+    for (const listener of changeListeners) listener(s.id);
   };
   const write = (s, message) => s.proc?.stdin.write(`${JSON.stringify(message)}\n`);
   const control = (s, request) =>
@@ -286,8 +290,12 @@ export function createClaudeHost({
         s.streaming = "";
         s.activity = null;
         s.items++;
-        if (m.is_error) s.error = String(m.result || "Claude Code stopped with an error.");
+        // A stop ends the turn as an error with no words ("aborted_streaming"
+        // or "aborted_tools"); it is a stop, not a failure.
+        if (m.is_error && !s.stopping && !/^aborted/.test(m.terminal_reason || ""))
+          s.error = String(m.result || "Claude Code stopped with an error.");
         if (!s.turns) {
+          s.stopping = false;
           s.status = "idle";
           s.prompts.clear();
           rest(s);
@@ -379,6 +387,10 @@ export function createClaudeHost({
 
   return {
     drives: (id) => !!sessions.get(id)?.proc,
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
+    },
     // Called with a session id (and whether Reach wrote to it) each time
     // Reach lets go of its process.
     onRelease(listener) {
@@ -422,7 +434,12 @@ export function createClaudeHost({
     async stop(id) {
       const s = sessions.get(id);
       if (!s?.proc || !s.turns) throw bad("Reach isn't running anything here. Stop it on your Mac.", 409);
-      await control(s, { subtype: "interrupt" });
+      s.stopping = true;
+      // Not stopped after all: a later error in this turn is a real one.
+      await control(s, { subtype: "interrupt" }).catch((error) => {
+        s.stopping = false;
+        throw error;
+      });
       return { stopped: true };
     },
     async respond(id, promptId, answer) {

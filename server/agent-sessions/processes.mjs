@@ -158,7 +158,11 @@ export async function liveClaudeSessions(starts, { run = exec, now = Date.now, r
     }
   }
   // The registry's word wins; process matching fills in older versions.
+  // The registry has no terminal: its process's own (a terminal's tab is
+  // found by it, to answer what it asks there).
   const live = matchClaude(processes, cwds, starts);
-  for (const [id, entry] of registry()) live.set(id, { ...live.get(id), ...entry });
+  const ttys = new Map(processes.map((p) => [p.pid, p.tty]));
+  for (const [id, entry] of registry())
+    live.set(id, { ...live.get(id), ...entry, tty: entry.tty || live.get(id)?.tty || ttys.get(entry.pid) || null });
   return live;
 }

@@ -23,8 +23,35 @@ type Options = {
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
 
-const museMessage = (link: string) =>
-  `Open this temporary Reach link in your VM browser. Keep this tab open. Show me the connection code and wait for Reach approval. Use only granted access. Never invite anyone, delegate access, or share this link or credentials.\n\n${link}`;
+type InvitePermissions = {
+  screen: "off" | "view" | "scroll" | "ask";
+  folders: string[];
+  terminalOutputs: number;
+  restrictedTerminal: boolean;
+  terminalApproval: boolean;
+};
+const museMessage = (link: string, permissions: InvitePermissions) => {
+  const screen = {
+    off: "Screen: not shared.",
+    view: "Screen: view only; no input.",
+    scroll: "Screen: view and scroll directly; clicks/typing unavailable.",
+    ask: "Screen: view and request clicks, typing, keys or scrolling; owner approval covers up to five exact actions.",
+  }[permissions.screen];
+  const folderNames = permissions.folders.slice(0, 3).map((folder) => JSON.stringify(folder.length > 160 ? folder.slice(0, 157) + "…" : folder).replace(/[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)).join(", ");
+  const files = permissions.folders.length
+    ? `Files: read/search/download only in ${folderNames}${permissions.folders.length > 3 ? ` and ${permissions.folders.length - 3} more shown in Files` : ""}.`
+    : "Files: not shared.";
+  const output = permissions.terminalOutputs
+    ? `Terminal output: ${permissions.terminalOutputs} selected session${permissions.terminalOutputs === 1 ? "" : "s"}, read-only.`
+    : "Terminal output: not shared.";
+  const commands = permissions.restrictedTerminal
+    ? permissions.terminalApproval
+      ? "Commands: reads run directly; file changes and scripts ask for approval once. No network, sudo or helper processes."
+      : "Commands: supported read-only commands run directly in shared folders; other commands are blocked."
+    : "Commands: not enabled.";
+  const boundary = permissions.restrictedTerminal ? " Terminal commands cannot access outside these folders, even with approval." : "";
+  return `Open this temporary Reach link in your VM browser. Keep it open; show the connection code for admission. ${screen} ${files} ${output} ${commands}${boundary} Use Screen/Files/Terminal (window.reach optional). Never invite anyone, delegate access, or share this link or credentials.\n\n${link}`;
+};
 
 export default function BrowserInvite({
   peer,
@@ -45,6 +72,7 @@ export default function BrowserInvite({
     "off",
   );
   const [restrictedTerminal, setRestrictedTerminal] = useState(false);
+  const [terminalApproval, setTerminalApproval] = useState(false);
   const [options, setOptions] = useState<Options | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,6 +83,7 @@ export default function BrowserInvite({
     name: string;
     expiresAt: number;
     joinBy: number;
+    message: string;
   } | null>(null);
 
   useEffect(() => {
@@ -98,6 +127,7 @@ export default function BrowserInvite({
         terminalIds,
         screen,
         ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
+        ...(terminalApproval ? { terminalApproval: true, scriptApproval: true } : {}),
       });
       created = {
         peer,
@@ -121,6 +151,8 @@ export default function BrowserInvite({
         name: name.trim(),
         expiresAt: result.expiresAt,
         joinBy: result.joinBy,
+        // Describe this issued invitation, not later unsaved form edits.
+        message: museMessage(link, { screen, folders: folders.map((folder) => folder.full || folder.label), terminalOutputs: terminalIds.length, restrictedTerminal, terminalApproval }),
       });
       onCreated(created, link);
     } catch (e) {
@@ -138,7 +170,7 @@ export default function BrowserInvite({
     if (!made) return;
     setShareNote("");
     try {
-      await navigator.clipboard.writeText(museMessage(made.link));
+      await navigator.clipboard.writeText(made.message);
       setCopied(true);
     } catch {
       setShareNote("Select the message below and copy it.");
@@ -148,7 +180,7 @@ export default function BrowserInvite({
     if (!made) return;
     setShareNote("");
     try {
-      const text = museMessage(made.link);
+      const text = made.message;
       if (isNative)
         await NativeShare.share({ title: "Connect to Reach", text });
       else if (navigator.share)
@@ -275,9 +307,7 @@ export default function BrowserInvite({
                   <option value="off">No screen access</option>
                   <option value="view">View only</option>
                   <option value="scroll">View and scroll</option>
-                  {!restrictedTerminal && (
-                    <option value="ask">Control with approval</option>
-                  )}
+                  <option value="ask">Control with approval</option>
                 </select>
                 <p className="ivt-quiet">
                   {screen === "off"
@@ -294,29 +324,33 @@ export default function BrowserInvite({
           <details className="ivt-disclosure">
             <summary>
               <ShieldCheck size={17} />
-              <span>Restricted terminal</span>
-              <small>{restrictedTerminal ? "Allowed" : "Off"}</small>
+              <span>Terminal commands</span>
+              <small>{terminalApproval ? "With approval" : restrictedTerminal ? "Read-only" : "Off"}</small>
               <ChevronDown size={15} />
             </summary>
             <div className="ivt-disclosure-body">
               <label className="ivt-toggle">
                 <span>
                   Run read-only commands
-                  <small>You approve each command before it runs.</small>
+                  <small>Supported commands run in shared folders without asking.</small>
                 </span>
                 <input
                   type="checkbox"
                   checked={restrictedTerminal}
                   onChange={(e) => {
                     setRestrictedTerminal(e.target.checked);
-                    if (e.target.checked && screen === "ask") setScreen("view");
+                    if (!e.target.checked) setTerminalApproval(false);
                   }}
                 />
               </label>
-              <p className="ivt-quiet">
-                No sudo, deletion or file changes.
-                {restrictedTerminal && " Screen control is off."}
-                            </p>
+              <label className="ivt-toggle">
+                <span>Commands with approval<small>File changes and scripts run only after you approve the exact command.</small></span>
+                <input type="checkbox" checked={terminalApproval} onChange={(e) => {
+                  setTerminalApproval(e.target.checked);
+                  if (e.target.checked) setRestrictedTerminal(true);
+                }} />
+              </label>
+              <p className="ivt-quiet">{terminalApproval ? "Approve each command once. Scripts stay inside the shared folder; no network, sudo or helper processes." : "No sudo, deletion or file changes through command tools."}</p>
             </div>
           </details>
         </div>
@@ -391,7 +425,7 @@ export default function BrowserInvite({
             aria-label="AI browser invitation message"
             readOnly
             rows={3}
-            value={museMessage(made.link)}
+            value={made.message}
             onFocus={(e) => e.target.select()}
           />
           <div className="ivt-link-row">

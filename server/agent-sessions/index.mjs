@@ -14,9 +14,11 @@ import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
+import { cardExpect, cardId, createAppCards, pressAppCard, probeApp, readAppCard } from "./app-cards.mjs";
+import { createTerminalCards } from "./terminal-cards.mjs";
 import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
-import { createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
+import { CLAUDE_BUNDLE, claudeFrontmost, claudeOnScreen, createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
@@ -101,7 +103,7 @@ export function createAgentSessions({
   daemon = createCodexDaemon(),
   codex = createCodexSessions({ daemon }),
   codexLive = createCodexLive({ daemon }),
-  claude = createClaudeSessions(),
+  claude = createClaudeSessions({ locateCli: () => locateClaude() }),
   // Gemini CLI's sessions, read from its own files (gemini.mjs); none of
   // this Mac's in tests.
   gemini = createGeminiSessions(
@@ -138,6 +140,23 @@ export function createAgentSessions({
   takeOverMs = 3000,
   // How often a message waiting for the Claude app checks again.
   queueMs = 1500,
+  // How often one the Claude app hasn't taken tries again, when the Mac
+  // doesn't say what it waits for (the app in front, see frontmost()).
+  appRetryMs = 5000,
+  // How long a chat must stay waiting before it counts as waiting on you
+  // (tests that don't say count it at once, as before).
+  settleMs = process.env.NODE_TEST_CONTEXT ? 0 : 6000,
+  // Claude Code's own waits settle sooner: the Claude app answers what its
+  // rules allow within milliseconds (Codex's reviewer takes seconds).
+  claudeSettleMs = Math.min(settleMs, 1500),
+  // The list is rebuilt when something in it changes, at most once per
+  // listGapMs while agents write, and kept up to listMaxAgeMs otherwise
+  // (tests that don't say: rebuilt for every look, as before).
+  listGapMs = process.env.NODE_TEST_CONTEXT ? 0 : 1500,
+  listMaxAgeMs = process.env.NODE_TEST_CONTEXT ? 0 : 30000,
+  // Rebuilt as soon as something changes while anyone listens (never in
+  // tests that don't ask: they'd reach for the Mac's real agents).
+  proactive = !process.env.NODE_TEST_CONTEXT,
   // Agents Reach knows of beyond the two it drives today.
   detect = detectAgents,
   // Sessions started here, waiting to join the Claude app's list (claude-import.mjs).
@@ -161,7 +180,23 @@ export function createAgentSessions({
         throw Object.assign(new Error("Not in tests."), { status: 409 });
       }
     : (choice, expect) => pressClaudeConsent(choice, { dataDir, expect }),
+  // Reading the Claude app's or the Codex app's permission card, and
+  // pressing one of its buttons on the person's tap (app-cards.mjs); never
+  // in tests.
+  readCard = process.env.NODE_TEST_CONTEXT
+    ? async () => {
+        throw Object.assign(new Error("Not in tests."), { status: 409 });
+      }
+    : (agent, expect) => readAppCard(agent, expect, { dataDir }),
+  pressCard = process.env.NODE_TEST_CONTEXT
+    ? async () => {
+        throw Object.assign(new Error("Not in tests."), { status: 409 });
+      }
+    : (agent, label, expect) => pressAppCard(agent, label, expect, { dataDir }),
   claudeShown,
+  // Reach's Mac terminals (desktop-terminals.mjs): a terminal's menu is read
+  // and answered there.
+  terminals = null,
   // Messages waiting for a busy Claude app session, kept until handed over
   // The chats the Claude app lists, the one on screen first (claude-import.mjs).
   appShown = claudeAppShown,
@@ -234,6 +269,38 @@ export function createAgentSessions({
       return running.get(id)?.where === "claude-app" ? session.consent : null;
     },
   });
+  // A permission card the Claude app or the Codex app shows for one of its
+  // chats, answered from the phone on the person's tap (app-cards.mjs).
+  const appCards = createAppCards({
+    read: readCard,
+    press: pressCard,
+    ...(process.env.NODE_TEST_CONTEXT ? {} : { probe: (agent) => probeApp(agent, { dataDir }) }),
+    terminal: terminals ? createTerminalCards({ terminals }) : null,
+    open,
+    ...(claudeShown ? { shown: claudeShown } : {}),
+    pending: async (agent, id) => {
+      if (agent === "codex") {
+        // Read from the chat's file while the Codex app holds it (codex.mjs).
+        const { session } = await codex.read(id, { limit: 1 });
+        const asked = session?.asking;
+        if (session?.held !== "codex-app" || asked?.kind !== "permission" || !asked.id || !asked.match) return null;
+        return { id: asked.id, expect: cardExpect({ kind: "command", text: asked.match }) };
+      }
+      if (agent !== "claude") return null;
+      const live = (await liveNow().catch(() => new Map())).get(id);
+      const inTerminal = live?.where === "terminal" && !!live.tty && !!terminals;
+      if ((live?.where !== "claude-app" && !inTerminal) || live.waiting !== "permission prompt") return null;
+      const { items } = await claude.read(id, { limit: 20 });
+      const tool = [...(items || [])].reverse().find((i) => i.role === "tool");
+      if (tool?.status !== "running" || tool.consent || tool.questions) return null;
+      return {
+        id: cardId(tool.id),
+        expect: cardExpect(tool),
+        appSessionId: live.appSessionId || null,
+        ...(inTerminal ? { tty: live.tty } : {}),
+      };
+    },
+  });
   // Approval cards come only from live agent protocol requests. Desktop waits
   // without a reply connection are detected from agent state and use the screen.
   if (listenForAsks) macPrompts.start?.();
@@ -286,8 +353,14 @@ export function createAgentSessions({
   // - The app holds it, busy or waiting on you (Claude Code's registry says
   //   so): the message waits and goes next, as one typed in the app.
   // Never a second writer, never a copy.
+  // A "signed in" answer is kept a while: asking Claude Code takes ~6 s, and
+  // every message from the phone waited for it. Signed out is asked again.
+  let signedInAt = 0;
+  const signedInMs = 10 * 60 * 1000;
   const signedIn = async () => {
+    if (Date.now() - signedInAt < signedInMs) return;
     const health = await claude.health().catch(() => null);
+    if (health?.signedIn === true) signedInAt = Date.now();
     // Only a definite "signed out" stops it. A status Claude Code was too slow
     // to give (busy Mac, 10 s limit) isn't one: new chats failed with
     // "signed out" while Claude Code was signed in.
@@ -325,16 +398,43 @@ export function createAgentSessions({
       throw blocked("This session is open in another Claude Code process on your Mac. Reply there.");
     return holder;
   };
+  // The next piece of news from the agents' files that matches, or ms on
+  // (whichever comes first).
+  const agentNews = (matches, ms) =>
+    new Promise((resolve) => {
+      let off = () => {};
+      const timer = setTimeout(() => {
+        off();
+        resolve(false);
+      }, ms);
+      timer.unref?.();
+      off =
+        agentWatch?.onChange((news) => {
+          if (!matches(news)) return;
+          clearTimeout(timer);
+          off();
+          resolve(true);
+        }) || (() => {});
+    });
+  // The app in front on the Mac, as the menu bar's helper tells it (null:
+  // not told; asked of macOS then).
+  let front = null;
   const claudeCompose =
     givenCompose ||
     (process.env.NODE_TEST_CONTEXT
       ? null
       : createClaudeCompose({
           type: (message) => typeIntoClaude(message, { dataDir }),
+          onScreen: () => claudeOnScreen({ dataDir }),
           open,
           arrived: (id, text, since, sent) => claude.arrived(id, text, since, sent),
+          // Woken by the agents' files (agent-watch), with a slow look in
+          // case a write goes unnoticed.
+          transcriptNews: (id, ms) => agentNews((news) => news.agent === "claude" && news.id === id, Math.min(ms, 2000)),
+          appNews: (ms) => agentNews((news) => news.agent === "claude" && news.kind === "app", Math.min(ms, 1000)),
           // What Reach last put in each chat's box, kept across restarts.
           store: draftFile(path.join(dataDir, "agent-drafts.json")),
+          frontmost: () => (front === null ? claudeFrontmost() : front === CLAUDE_BUNDLE),
         }));
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
@@ -343,6 +443,10 @@ export function createAgentSessions({
   const delivering = new Set();
   const deliveringMessage = new Map();
   const wakers = new Map();
+  // Messages waiting for the Claude app try again now.
+  const wakeAppMessages = () => {
+    for (const [id, wake] of [...wakers]) if (outbox.list(id)[0]?.via === "app") wake();
+  };
   const deliver = async (id) => {
     if (delivering.has(id)) return;
     delivering.add(id);
@@ -352,19 +456,29 @@ export function createAgentSessions({
     let wentIn = false;
     // The first try goes at once (a message just sent shouldn't sit idle).
     let tried = false;
+    // What the last try waits for. When the Mac tells of it (the app in
+    // front changing, the Claude app opening), that wakes the next try, and
+    // otherwise it goes at its own time (when you'd count as away).
+    let waitFor = null;
+    const appPause = () => {
+      if (front === null || !waitFor) return appRetryMs;
+      if (waitFor.inApp) return waitFor.retryMs ?? appRetryMs;
+      if (waitFor.appClosed) return 60000;
+      return appRetryMs;
+    };
     try {
       while (!closed && outbox.list(id).length) {
         // A deleted chat's messages wait for the phone, not for their chat.
         if (outbox.list(id)[0]?.stranded) break;
         // Waiting never keeps Reach from quitting; after two hours, less often.
-        // One waiting for the Claude app's window looks again every 5 s.
+        // One the Claude app hasn't taken: see appPause().
         const first = outbox.list(id)[0];
         const pause = !tried
           ? 0
           : Date.now() - started > 2 * 60 * 60 * 1000
             ? 30000
             : first?.via === "app" && first?.error && !wentIn
-              ? 5000
+              ? appPause()
               : queueMs;
         tried = true;
         // Send now (or a new order) wakes it at once.
@@ -383,7 +497,7 @@ export function createAgentSessions({
         try {
           deliveringMessage.set(id, next.id);
           if (next.via === "app") {
-            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}) });
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}), ...(next.mode ? { mode: next.mode } : {}) });
             outbox.remove(id, next.id);
             wentIn = true;
             continue;
@@ -398,6 +512,7 @@ export function createAgentSessions({
           outbox.remove(id, messageId);
         } catch (e) {
           wentIn = false;
+          waitFor = e;
           // Not in the Claude app's list, and Claude Code has no such chat
           // either: it was deleted. Its messages wait for the phone instead.
           if (e?.unlisted && claude.exists && !(await claude.exists(id).catch(() => true))) {
@@ -458,21 +573,170 @@ export function createAgentSessions({
   // open, so their long poll wakes at once and the phone reads them again.
   const touched = new Map(); // "agent:id" -> writes seen
   const touchWaiters = new Map(); // "agent:id" -> long polls waiting
+  // When each chat's long poll last came: a write in the instant between two
+  // polls still counts (dropped, the phone showed Working until its 30 s look).
+  const polled = new Map(); // "agent:id" -> ms
+  const openMs = 60 * 1000;
+  const chatOpen = (key) => !!touchWaiters.get(key)?.size || Date.now() - (polled.get(key) || 0) < openMs;
   const touch = (agent, id) => {
     const key = `${agent}:${id}`;
-    const waiting = touchWaiters.get(key);
-    if (!waiting?.size) return;
+    if (!chatOpen(key)) return;
     touched.set(key, (touched.get(key) || 0) + 1);
-    for (const wake of [...waiting]) wake();
+    for (const wake of [...(touchWaiters.get(key) || [])]) wake();
+  };
+  // Every chat of an agent the phone has open reads again.
+  const touchOpen = (agent) => {
+    for (const key of new Set([...touchWaiters.keys(), ...polled.keys()]))
+      if (key.startsWith(`${agent}:`)) touch(agent, key.slice(agent.length + 1));
   };
   agentWatch?.onChange((news) => {
-    // The Codex app's queue or history: the open chats read again.
-    if (news.agent === "codex") codexLive.nudge?.(news.kind);
-    // A Claude Code transcript: unless Reach is the one writing it.
-    else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) touch("claude", news.id);
+    // Whatever an agent wrote may change the list (its status, a new chat).
+    if (news.agent === "codex") codexDirty = true;
+    listChanged();
+    if (news.agent === "codex") {
+      // One Codex chat's own file: that chat, if open, reads again. The Codex
+      // app's queue or history: the open chats read again. Its saved choices
+      // (a permission mode picked in the app): the open Codex chats show it.
+      if (news.kind === "rollout") touch("codex", news.id);
+      else if (news.kind === "settings") touchOpen("codex");
+      else codexLive.nudge?.(news.kind);
+    } else if (news.agent === "claude" && news.kind === "app") {
+      // The Claude app's records (the chat on screen changed): a message
+      // waiting for its chat to show tries again now. A record says a chat's
+      // permission mode too: the open Claude chats show one picked in the app.
+      wakeAppMessages();
+      touchOpen("claude");
+    } else if (news.agent === "claude" && news.kind === "status") {
+      // Claude Code's registry (a session busy, idle, waiting on you): read
+      // afresh, not from the shared look at the processes (up to liveMs
+      // old), and the open Claude chats read their status again.
+      liveCache = null;
+      touchOpen("claude");
+    } else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) {
+      // A Claude Code transcript: unless Reach is the one writing it.
+      touch("claude", news.id);
+    }
   });
   // Each agent's working/waiting status, from what its host knows.
   const statusOf = (agent) => (agent === "claude" ? claudeStatus : agent === "codex" ? codexStatus : () => {});
+  // Agents mark a chat waiting for a moment while they decide by themselves
+  // (Codex's "Approve for me" reviewer, a command a saved rule allows): it
+  // flashed on the phone as "needs your answer" and was gone. Only a chat
+  // still waiting settleMs later is waiting on you. Prompts in chats Reach
+  // drives are real requests and count at once.
+  const waitingSince = new Map();
+  const settleWaiting = (s) => {
+    const key = `${s.agent}:${s.id}`;
+    if (s.status !== "waiting" || hosts[s.agent]?.drives(s.id)) return void waitingSince.delete(key);
+    // Counted from when the agent began waiting, when it says (a Codex
+    // request read from its file has already waited out its own settle).
+    const since = Math.min(waitingSince.get(key) ?? Date.now(), s.waitingSince || Infinity);
+    waitingSince.set(key, since);
+    const left = (s.agent === "claude" ? claudeSettleMs : settleMs) - (Date.now() - since);
+    if (left <= 0) return;
+    s.status = "running";
+    delete s.asking;
+    delete s.waitingSince;
+    // Nothing else would say it's still waiting (it writes nothing): look
+    // again when its time is up.
+    recheck(key, left, () => touch(s.agent, s.id));
+  };
+  // One look again per chat, at its deadline: the list rebuilt, and the chat
+  // (if open on a phone) read again.
+  const rechecks = new Map();
+  const recheck = (key, ms, wake) => {
+    if (rechecks.has(key)) return;
+    const timer = setTimeout(() => {
+      rechecks.delete(key);
+      listChanged();
+      wake?.();
+    }, ms + 50);
+    timer.unref?.();
+    rechecks.set(key, timer);
+  };
+  codex.onLater?.((ms, id) =>
+    recheck(`codex:${id}:request`, ms, () => {
+      codexDirty = true;
+      listChanged();
+      touch("codex", id);
+    }),
+  );
+  // Codex's own list costs its daemon a quarter of a second: kept from one
+  // build to the next until Codex says something changed (copied for each
+  // build, which marks statuses on its sessions).
+  let codexKept = null;
+  let codexDirty = true;
+  const codexList = () => {
+    if (codexDirty || !codexKept || !listMaxAgeMs) {
+      codexDirty = false;
+      codexKept = codex.list();
+      codexKept.catch(() => {
+        codexKept = null;
+        codexDirty = true;
+      });
+    }
+    return codexKept.then((list) => list.map((s) => ({ ...s })));
+  };
+  // One list for every phone and for the notifications. It's rebuilt when
+  // something in it may have changed (an agent's files or status, Codex's
+  // notices, the Mac's dialogs, a chat's deadline), at most once per
+  // listGapMs, and kept otherwise: devices learn of a new one from its
+  // revision on their live connection, instead of asking every few seconds.
+  let listKept = null; // { value, json, at }
+  let listBuilding = null;
+  let listDirty = true;
+  let listRevision = 0;
+  let listBuiltAt = 0;
+  let listTimer = null;
+  const listListeners = new Set();
+  const rebuildList = () => {
+    listDirty = false;
+    listBuiltAt = Date.now();
+    listBuilding ||= buildList()
+      .then((value) => {
+        const json = JSON.stringify(value);
+        const changed = json !== listKept?.json;
+        listKept = { value, json, at: Date.now() };
+        if (changed) {
+          listRevision++;
+          for (const listener of listListeners) listener(listRevision);
+        }
+        return value;
+      })
+      .finally(() => {
+        listBuilding = null;
+      });
+    return listBuilding;
+  };
+  function listChanged() {
+    listDirty = true;
+    // Nobody listening: built when next asked for. Otherwise soon, at most
+    // once a gap however fast the agents write.
+    if (!proactive || !listListeners.size || listTimer) return;
+    listTimer = setTimeout(
+      () => {
+        listTimer = null;
+        void (listBuilding || Promise.resolve())
+          .catch(() => {})
+          .then(() => listDirty && rebuildList())
+          .catch(() => {});
+      },
+      Math.max(0, listGapMs - (Date.now() - listBuiltAt)),
+    );
+    listTimer.unref?.();
+  }
+  // Codex's own notices (a chat's status, its turns, its name) and the Mac's
+  // dialogs are in the list too.
+  daemon.onNotification?.(() => {
+    codexDirty = true;
+    listChanged();
+  });
+  macPrompts.onChange?.(() => listChanged());
+  // Chats Reach drives say their status and questions over the live
+  // protocol, not in a file (a Codex approval is a request, not a notice):
+  // the list hears of them at once too.
+  codexLive.onChange?.(() => listChanged());
+  claudeHost.onChange?.(() => listChanged());
   // A whole Codex chat, oldest first, kept a minute (a moved chat pages
   // through the one it continues).
   const codexWhole = new Map();
@@ -560,6 +824,46 @@ export function createAgentSessions({
     }
   };
   const moving = new Set();
+  // Every chat on this computer, with its status (see list() below).
+  const buildList = async () => {
+    const [c, k, p, g] = await Promise.allSettled([codexList(), claude.list(), codex.projects?.() ?? [], gemini.list()]);
+    const sessions = [...(c.value || []), ...(k.value || []), ...(g.value || [])];
+    // Only live protocol requests have an answer channel. Transcript text
+    // and pre-review checks never become actionable approval cards.
+    for (const s of sessions) {
+      const driven = !!hosts[s.agent]?.drives(s.id);
+      const asked = driven ? hosts[s.agent].view(s.id).prompts || [] : [];
+      if (asked.length) s.prompts = asked;
+    }
+    try {
+      const running = await liveNow();
+      // Reach's own reply process isn't where a session lives (it showed as "Terminal").
+      for (const s of sessions)
+        if (s.agent === "claude" && running.has(s.id) && !claudeHost.drives(s.id)) withLive(s, running.get(s.id));
+    } catch {
+      /* Live status is a hint; the list stands without it. */
+    }
+    for (const s of sessions) statusOf(s.agent)(s);
+    for (const s of sessions) settleWaiting(s);
+    // Continued from the other agent: said in the list, with its app.
+    for (const s of sessions) {
+      const origin = moves.into(s.agent, s.id);
+      if (origin) s.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
+    }
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    return {
+      sessions,
+      // The Codex app's projects, so its threads group as in its sidebar.
+      projects: { codex: p.status === "fulfilled" ? p.value : [] },
+      // What the Mac itself is asking right now (answered at the Mac).
+      macPrompts: macPrompts.current?.().prompts || [],
+      errors: {
+        ...(c.status === "rejected" ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
+        ...(k.status === "rejected" ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
+        ...(g.status === "rejected" ? { gemini: g.reason?.message || "Gemini CLI sessions are unavailable." } : {}),
+      },
+    };
+  };
   return {
     // Continues a chat with the other agent, as if it had been forked in the
     // same app (move.mjs): a new chat there with what this one's agent knows
@@ -631,7 +935,7 @@ export function createAgentSessions({
       // itself, so its window shows it at once (Reach's own Claude Code
       // process never showed there). The app signs in on its own.
       if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
-        const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}) });
+        const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
         // A loop already waiting tries again now, with this one in line.
         wakers.get(id)?.();
         void deliver(id);
@@ -657,6 +961,16 @@ export function createAgentSessions({
       const started = await claudeHost.start(body);
       startedHere.add(started.threadId);
       return started;
+    },
+    // A permission mode picked on the phone for a chat the Claude app holds:
+    // picked in the app's own menu, so both show it. Elsewhere (chats Reach
+    // runs, Codex) it goes with the next message, as before.
+    async mode(agent, id, { mode }) {
+      adapter(agent);
+      if (agent !== "claude" || !claudeCompose?.mode) return { mode, applied: false };
+      const { session } = await claude.read(id, { limit: 1 });
+      if (!session.inApp || claudeHost.drives(id)) return { mode, applied: false };
+      return { ...(await claudeCompose.mode(id, { title: session.appTitle || "Untitled", mode })), applied: true };
     },
     async draft(agent, id, { text, owner }) {
       adapter(agent);
@@ -757,13 +1071,19 @@ export function createAgentSessions({
     },
     // A picture sent in a Claude session (the phone shows it in its message).
     async image(agent, id, item, n) {
+      if (agent === "codex") return codex.image(id, item, n);
       if (agent !== "claude") throw Object.assign(new Error("That picture isn't in this session."), { status: 404 });
       return claude.image(id, item, n);
     },
+    // A permission card as its app shows it (its words and buttons), for the
+    // phone to draw; brings that chat up in the app (app-cards.mjs).
+    card: (agent, id) => appCards.card(agent, id),
     respond: async (agent, id, promptId, answer) =>
       agent === "claude" && claudeConsent.owns(promptId)
           ? claudeConsent.answer(id, promptId, answer)
-          : host(agent).respond(id, promptId, answer),
+          : (agent === "claude" || agent === "codex") && appCards.owns(promptId)
+            ? appCards.answer(agent, id, promptId, answer)
+            : host(agent).respond(id, promptId, answer),
     view(agent, id) {
       const view = liveHost(agent).view(id);
       const writes = touched.get(`${agent}:${id}`) || 0;
@@ -794,6 +1114,9 @@ export function createAgentSessions({
     changes(agent, id, since, ms, signal) {
       const hostVersion = liveHost(agent).view(id).version;
       const key = `${agent}:${id}`;
+      polled.delete(key);
+      polled.set(key, Date.now());
+      if (polled.size > 200) polled.delete(polled.keys().next().value);
       if (hostVersion + outbox.version() + (touched.get(key) || 0) !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
         const stops = [];
@@ -840,6 +1163,14 @@ export function createAgentSessions({
     },
     // Connects to Codex and indexes Claude transcripts before the phone asks.
     warm() {
+      // The helpers that read and press an app's card, built just after
+      // start (2-5 s each, cached by their source), so the first card opened
+      // on the phone doesn't wait for a build.
+      if (listenForAsks && process.platform === "darwin")
+        setTimeout(() => {
+          if (closed) return;
+          for (const kind of ["permission-card", "claude-consent"]) desktopBinary({ dataDir }, kind).catch(() => {});
+        }, 2000).unref?.();
       return this.list().catch(() => null);
     },
     // Reach is quitting: end sign-ins and replies in progress, and let go of
@@ -854,43 +1185,37 @@ export function createAgentSessions({
       agentWatch?.close?.();
       daemon.close?.();
     },
-    async list() {
-      const [c, k, p, g] = await Promise.allSettled([codex.list(), claude.list(), codex.projects?.() ?? [], gemini.list()]);
-      const sessions = [...(c.value || []), ...(k.value || []), ...(g.value || [])];
-      // Only live protocol requests have an answer channel. Transcript text
-      // and pre-review checks never become actionable approval cards.
-      for (const s of sessions) {
-        const driven = !!hosts[s.agent]?.drives(s.id);
-        const asked = driven ? hosts[s.agent].view(s.id).prompts || [] : [];
-        if (asked.length) s.prompts = asked;
-      }
-      try {
-        const running = await liveNow();
-        // Reach's own reply process isn't where a session lives (it showed as "Terminal").
-        for (const s of sessions)
-          if (s.agent === "claude" && running.has(s.id) && !claudeHost.drives(s.id)) withLive(s, running.get(s.id));
-      } catch {
-        /* Live status is a hint; the list stands without it. */
-      }
-      for (const s of sessions) statusOf(s.agent)(s);
-      // Continued from the other agent: said in the list, with its app.
-      for (const s of sessions) {
-        const origin = moves.into(s.agent, s.id);
-        if (origin) s.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
-      }
-      sessions.sort((a, b) => b.updatedAt - a.updatedAt);
-      return {
-        sessions,
-        // The Codex app's projects, so its threads group as in its sidebar.
-        projects: { codex: p.status === "fulfilled" ? p.value : [] },
-        // What the Mac itself is asking right now (answered at the Mac).
-        macPrompts: macPrompts.current?.().prompts || [],
-        errors: {
-          ...(c.status === "rejected" ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
-          ...(k.status === "rejected" ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
-          ...(g.status === "rejected" ? { gemini: g.reason?.message || "Gemini CLI sessions are unavailable." } : {}),
-        },
-      };
+    // The list as last built while nothing changed, or while its rebuild is
+    // already on its way (devices hear of it then): one build per listGapMs
+    // however many ask. Rebuilt when something changed, when it's older than
+    // listMaxAgeMs (the safety net for what isn't watched), or when asked
+    // fresh (Refresh on the phone).
+    async list({ fresh = false } = {}) {
+      if (fresh) {
+        // Everything read again: Codex's list and the processes too.
+        codexDirty = true;
+        liveCache = null;
+        await listBuilding?.catch(() => {});
+      } else if (listKept && (!listDirty || listTimer) && Date.now() - listKept.at < listMaxAgeMs) return listKept.value;
+      return listBuilding || rebuildList();
+    },
+    // Its revision, for devices' live connections (each new one is news).
+    listRevision: () => listRevision,
+    // The app in front on the Mac, from the menu bar's helper (null: it
+    // stopped telling), and apps opening: a message waiting because you're
+    // in the Claude app, or for the app to open, tries again at once.
+    frontmost(bundle) {
+      const was = front;
+      front = bundle ?? null;
+      if (front !== was && front !== CLAUDE_BUNDLE) wakeAppMessages();
+    },
+    launched(bundle) {
+      if (bundle === CLAUDE_BUNDLE) wakeAppMessages();
+    },
+    onListChange(listener) {
+      listListeners.add(listener);
+      listChanged();
+      return () => listListeners.delete(listener);
     },
     async read(agent, id, options) {
       // A moved chat shows the one it continues above its own messages, as
@@ -965,11 +1290,33 @@ export function createAgentSessions({
         };
       } else if (agent === "claude" && newest && result.session.held !== "reach" && result.session.live?.waiting) {
         const tool = [...(result.items || [])].reverse().find((i) => i.role === "tool");
-        if (tool?.status === "running")
+        // What Claude Code says it waits on: "permission prompt", "input
+        // needed" (a question), or "dialog open" (something else of its own,
+        // a notice to acknowledge), never shown as a permission for a tool.
+        if (result.session.live.waiting === "dialog open")
+          result.session.asking = { kind: "dialog", text: "Claude Code has something open for you to answer." };
+        else if (tool?.status === "running")
           result.session.asking = tool.questions
             ? { kind: "question", questions: tool.questions }
-            : { kind: "permission", text: tool.text, command: tool.kind === "command" };
+            : {
+                kind: "permission",
+                text: tool.text,
+                command: tool.kind === "command",
+                // The Claude app's card, answered from the phone (Allow once
+                // or Deny): its id names this request.
+                ...((result.session.live.where === "claude-app" ||
+                  (result.session.live.where === "terminal" && result.session.live.tty && terminals)) &&
+                result.session.live.waiting === "permission prompt" &&
+                cardExpect(tool).length
+                  ? { id: cardId(tool.id) }
+                  : {}),
+              };
       }
+      // A card answerable from the phone: its helper built while it's read,
+      // so the tap is quick (not at start: the compiler would hold up quitting).
+      if (newest && result.session.asking?.id?.startsWith?.("app-permission:") && listenForAsks && process.platform === "darwin")
+        desktopBinary({ dataDir }, "permission-card").catch(() => {});
+      if (newest) settleWaiting(result.session);
       return result;
     },
     // The agents on this Mac: the two Reach drives, then others it knows of

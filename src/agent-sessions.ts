@@ -44,7 +44,10 @@ export type AgentQuestion = {
 };
 export type AgentAsking =
   | { kind: "question"; questions: AgentQuestion[] }
-  | { kind: "permission"; text: string; command?: boolean }
+  // id: the Claude app's card, answerable from here (Allow once or Deny).
+  | { kind: "permission"; text: string; command?: boolean; id?: string }
+  // Something else Claude Code shows and waits on (a notice to acknowledge).
+  | { kind: "dialog"; text: string }
   // The Claude app's own consent card (using apps, a folder).
   | {
       kind: "consent";
@@ -316,7 +319,9 @@ type SessionList = {
 // One feed for the whole app, started as soon as Reach connects: Home, the
 // Chat tab and its badge all read it. Polls while the page is visible; the
 // list is cheap (cached on the server).
-export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
+// revision: the list's revision as the Mac's live connection tells it
+// (undefined when that connection doesn't: an older Reach, or not connected).
+export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: string) {
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<AgentProject[]>([]);
@@ -334,14 +339,20 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
   // Health on demand (after signing in), besides once a minute.
   const recheck = useRef<() => void>(() => {});
   const key = peer ? `${peer.url} ${peer.token}` : "";
-  const load = useCallback(async () => {
+  // A read that fails while the Mac is out of reach for a moment (the phone
+  // waking, the network changing, Reach restarting) is tried again soon, and
+  // said only if it lasts.
+  const failures = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const again = useRef<() => void>(() => {});
+  // fresh: built anew, not the Mac's kept list (Refresh, after an action).
+  const load = useCallback(async (fresh = false) => {
     if (!peer || document.hidden) return;
     const mine = run.current;
-    const ask = (since: string) =>
-      request<{ unchanged: true; version: string } | SessionList>(
-        peer,
-        `/api/sessions${since ? `?known=${since}` : ""}`,
-      );
+    const ask = (since: string) => {
+      const query = [since && `known=${since}`, fresh && "fresh=1"].filter(Boolean).join("&");
+      return request<{ unchanged: true; version: string } | SessionList>(peer, `/api/sessions${query ? `?${query}` : ""}`);
+    };
     try {
       let r = await ask(known.current);
       if (mine !== run.current) return;
@@ -351,6 +362,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
         r = await ask("");
         if (mine !== run.current) return;
       }
+      failures.current = 0;
+      clearTimeout(retry.current);
       setFailure("");
       if ("unchanged" in r) return;
       known.current = r.version;
@@ -360,20 +373,28 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
       setProjects(r.projects?.codex || []);
       setMacPrompts(r.macPrompts || []);
     } catch (e) {
-      if (mine === run.current) setFailure((e as Error).message);
+      if (mine !== run.current) return;
+      failures.current++;
+      if (failures.current > 1) setFailure((e as Error).message);
+      clearTimeout(retry.current);
+      retry.current = setTimeout(() => again.current(), Math.min(8000, 1000 * 2 ** (failures.current - 1)));
     }
   }, [key]);
+  again.current = () => void load();
   useEffect(() => {
     setSessions(null);
     setErrors({});
     setHealth([]);
     known.current = "";
     held.current = false;
+    failures.current = 0;
+    clearTimeout(retry.current);
     if (!peer) return;
     void load();
-    const timer = setInterval(() => void load(), everyMs);
     const visible = () => !document.hidden && void load();
     document.addEventListener("visibilitychange", visible);
+    // The phone's network back: asked at once.
+    window.addEventListener("online", visible);
     // Sign-in and usage change rarely; check on open and every minute.
     let lastHealth = "";
     let healthActive = true;
@@ -392,13 +413,29 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000) {
     const healthTimer = setInterval(checkHealth, 60000);
     return () => {
       run.current++;
-      clearInterval(timer);
       healthActive = false;
       clearInterval(healthTimer);
+      clearTimeout(retry.current);
       document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", visible);
     };
   }, [load, everyMs]);
-  return { sessions, errors, health, failure, projects, macPrompts, reload: load, recheck: () => recheck.current() };
+  // The Mac says when the list changes (revision, on its live connection):
+  // read then, with a slow safety look. A Mac that doesn't say is asked every
+  // few seconds, as before.
+  const pushed = revision !== undefined;
+  useEffect(() => {
+    if (!peer) return;
+    const timer = setInterval(() => void load(), pushed ? Math.max(everyMs, 60000) : everyMs);
+    return () => clearInterval(timer);
+  }, [load, everyMs, pushed]);
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === undefined || revision === seenRevision.current) return;
+    seenRevision.current = revision;
+    void load();
+  }, [revision, load]);
+  return { sessions, errors, health, failure, projects, macPrompts, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -441,6 +478,10 @@ export const reorderQueued = (peer: Peer, s: { agent: AgentName; id: string }, o
   post<{ reordered: true }>(peer, `${sessionPath(s)}/queue/order`, { order });
 export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, text: string) =>
   post<{ synced: boolean; supported?: boolean }>(peer, `${sessionPath(s)}/draft`, { text });
+// A permission mode picked on the phone; for a Claude app chat, picked in the
+// app too (applied: false when it goes with the next message instead).
+export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
+  post<{ mode: string; applied: boolean }>(peer, `${sessionPath(s)}/mode`, { mode });
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
   post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
     peer,
@@ -480,8 +521,25 @@ export const answerPrompt = (
   peer: Peer,
   s: { agent: AgentName; id: string },
   prompt: string,
-  answer: { decision?: string; answers?: Record<string, string[]>; content?: unknown },
+  answer: { decision?: string; label?: string; answers?: Record<string, string[]>; content?: unknown },
 ) => post(peer, `${sessionPath(s)}/prompts/${encodeURIComponent(prompt)}`, answer);
+// Installing Claude Code or Codex on the Mac (server/agent-install.mjs): its
+// maker's command first, to show; confirmed, run in a Reach terminal.
+export type InstallPlan = {
+  agent: string;
+  name: string;
+  command: string;
+  terminal?: { id: string; status: string; exitCode?: number; preview?: string };
+};
+export const installAgent = (peer: Peer, agent: string, confirm = false) =>
+  post<InstallPlan>(peer, `/api/sessions/agent-install/${encodeURIComponent(agent)}`, { confirm });
+// A permission card the Claude app or the Codex app shows, as it shows it:
+// its words and its buttons, in order (that chat comes up in the app).
+// more: the choices in the card's menu (the Codex app's "Approval options");
+// moreInApp: a menu whose choices stay in the app.
+export type AppCard = { id: string; texts: string[]; buttons: string[]; more?: string[]; moreInApp?: boolean };
+export const appCard = (peer: Peer, s: { agent: AgentName; id: string }) =>
+  request<AppCard>(peer, `${sessionPath(s)}/card`);
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back.
 export const moveSession = (peer: Peer, s: { agent: string; id: string }, to: string) =>

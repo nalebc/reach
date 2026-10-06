@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Clock, LogOut } from "lucide-react";
 import { request, type Peer } from "./api";
 import "./guest-bar.css";
@@ -15,7 +15,9 @@ export function savedGuestSession(): GuestSession | null {
       : value?.peer
         ? [value.peer]
         : [];
-    return value?.expiresAt > Date.now() &&
+    // The owner may have extended this grant while the tab was closed.
+    // Restore only to verify it with the server; local time isn't authority.
+    return Number.isFinite(value?.expiresAt) && value.expiresAt + 86400000 > Date.now() &&
       peers.length > 0 &&
       peers.every(
         (p) => typeof p?.token === "string" && typeof p?.url === "string",
@@ -37,6 +39,10 @@ export function GuestBar({
   onEnd: () => void;
 }) {
   const [now, setNow] = useState(Date.now());
+  const [expiresAt, setExpiresAt] = useState(session.expiresAt);
+  const ended = useRef(onEnd);
+  ended.current = onEnd;
+  const peersKey = session.peers.map((peer) => `${peer.url}:${peer.token}`).join("|");
   useEffect(() => {
     document.documentElement.dataset.guest = "1";
     return () => {
@@ -44,17 +50,40 @@ export function GuestBar({
     };
   }, []);
   useEffect(() => {
-    const clock = setInterval(() => setNow(Date.now()), 1000);
-    const deadline = setTimeout(
-      onEnd,
-      Math.max(0, session.expiresAt - Date.now()),
-    );
-    return () => {
-      clearInterval(clock);
-      clearTimeout(deadline);
+    const controller = new AbortController();
+    let checking = false;
+    let nextCheck = 0;
+    let deadline = session.expiresAt;
+    const refresh = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const results = await Promise.allSettled(session.peers.map((peer) =>
+          request<{ access?: { expiresAt: number } }>(peer, "/api/device", { signal: controller.signal }),
+        ));
+        if (controller.signal.aborted) return;
+        const ends = results.flatMap((result) => result.status === "fulfilled" && Number.isFinite(result.value.access?.expiresAt) ? [result.value.access!.expiresAt] : []);
+        if (ends.length) {
+          deadline = Math.max(...ends);
+          setExpiresAt(deadline);
+          if (session.peers.every((peer) => peer.transport !== "funnel"))
+            sessionStorage.setItem(storageKey, JSON.stringify({ ...session, expiresAt: deadline }));
+        } else if (results.every((result) => result.status === "rejected" && result.reason?.status === 401))
+          ended.current();
+      } finally {
+        checking = false;
+        nextCheck = Date.now() + 10000;
+      }
     };
-  }, [session]);
-  const remaining = Math.max(0, Math.ceil((session.expiresAt - now) / 1000));
+    void refresh();
+    const clock = setInterval(() => {
+      const time = Date.now();
+      setNow(time);
+      if (time >= nextCheck || (time >= deadline && deadline > time - 1000)) void refresh();
+    }, 1000);
+    return () => { controller.abort(); clearInterval(clock); };
+  }, [peersKey]);
+  const remaining = Math.max(0, Math.ceil((expiresAt - now) / 1000));
   return (
     <div className="guest-bar" role="status">
       <span>
@@ -63,7 +92,7 @@ export function GuestBar({
           ? `${Math.floor(remaining / 3600)} h ${Math.floor((remaining % 3600) / 60)} min left`
           : remaining >= 60
             ? `${Math.ceil(remaining / 60)} min left`
-            : `${remaining} s left`}
+            : remaining > 0 ? `${remaining} s left` : "Checking access…"}
       </span>
       <button
         onClick={async () => {

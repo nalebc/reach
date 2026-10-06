@@ -117,10 +117,10 @@ test("a chat offers every app that can take it, and moved to OpenClaw, opens the
   await click(await dom.waitFor(() => button("More")));
   const itemFor = (name) => $$(".as-details .move-item").find((r) => r.textContent.startsWith(`Continue in ${name}`));
   await dom.waitFor(() => itemFor("OpenClaw"));
-  // Codex and OpenClaw; not Gemini CLI, which Reach doesn't chat with yet.
+  // Codex and OpenClaw; Gemini CLI listed too, greyed: Reach only reads it.
   assert.deepEqual(
-    $$(".as-details .move-item .move-item-text > span").map((s) => s.textContent),
-    ["Continue in Codex", "Continue in OpenClaw"],
+    $$(".as-details .move-item").map((r) => [r.querySelector(".move-item-text > span").textContent, r.disabled]),
+    [["Continue in Codex", false], ["Continue in OpenClaw", false], ["Continue in Gemini CLI", true]],
   );
   await click(itemFor("OpenClaw"));
   // One tap says what happens; the next one moves it.

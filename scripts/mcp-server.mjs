@@ -2,6 +2,14 @@
 // computer: `api(route, method, body)` does the requests (HTTPS on the
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
+import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
+
+const BROWSER_ONLY_NAMES = new Set(["reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request"]);
+const BROWSER_TOOL_SCOPES = {
+  reach_access: "browser:read", reach_list_files: "files:read", reach_search_files: "files:read", reach_read_file: "files:read",
+  reach_read_terminal: "browser:read", reach_screen: "browser:read", reach_scroll: "browser:scroll",
+  reach_request_action: "browser:request", reach_request_batch: "browser:request", reach_list_requests: "browser:request", reach_cancel_request: "browser:request",
+};
 
 const location = {
   root: {
@@ -210,7 +218,12 @@ export const tools = [
     },
   },
 ];
-export function callTool(api, name, a) {
+export async function callTool(api, name, a, browserAccess) {
+  if (browserAccess || BROWSER_ONLY_NAMES.has(name)) {
+    const access = browserAccess || await api("/api/browser");
+    const plan = browserToolRequest(name, a, access);
+    return api(plan.route, plan.method, plan.body);
+  }
   const query = new URLSearchParams({
     root: String(a.root || 0),
     path: a.path || "",
@@ -316,7 +329,10 @@ const TOOL_SCOPES = {
   reach_close_app: "apps:drive",
 };
 // Tools the credential's access allows (the computer enforces it anyway).
-export function toolsFor(scopes) {
+export function toolsFor(scopes, browserAccess) {
+  if (scopes.includes("browser:read")) return browserToolsFor(browserAccess).filter((tool) => scopes.includes(BROWSER_TOOL_SCOPES[tool.name])).map(({ example, approvalRequired, ...tool }) => ({
+    ...tool, annotations: { readOnlyHint: !["reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request"].includes(tool.name), destructiveHint: approvalRequired === true, openWorldHint: false },
+  }));
   return tools.filter((tool) => {
     if (!Object.hasOwn(TOOL_SCOPES, tool.name)) return false;
     const scope = TOOL_SCOPES[tool.name];
@@ -342,6 +358,7 @@ export function serveMcp({
   const lines = readline.createInterface({ input, crlfDelay: Infinity });
   // Answers still on their way when input ends are sent before finishing.
   const pending = new Set();
+  let currentScopes = scopes;
   lines.on("line", (line) => {
     const answer = handle(line).finally(() => pending.delete(answer));
     pending.add(answer);
@@ -359,19 +376,17 @@ export function serveMcp({
           serverInfo: { name, version: "0.1.0" },
         };
       else if (r.method === "ping") result = {};
-      else if (r.method === "tools/list")
-        result = {
-          tools: toolsFor(
-            (liveScopes && (await api("/api/device")).access?.scopes) ||
-              scopes ||
-              [],
-          ),
-        };
-      else if (r.method === "tools/call") {
+      else if (r.method === "tools/list") {
+        currentScopes = (liveScopes && (await api("/api/device")).access?.scopes) || scopes || [];
+        const access = currentScopes.includes("browser:read") ? await api("/api/browser") : undefined;
+        result = { tools: toolsFor(currentScopes, access) };
+      } else if (r.method === "tools/call") {
         try {
+          const access = currentScopes.includes("browser:read") ? await api("/api/browser") : undefined;
+          if (access && !toolsFor(currentScopes, access).some((tool) => tool.name === r.params.name)) throw Error("This tool is not available in the current browser session.");
           result = {
             content: toContent(
-              await callTool(api, r.params.name, r.params.arguments || {}),
+              await callTool(api, r.params.name, r.params.arguments || {}, access),
             ),
           };
         } catch (e) {

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createClaudeTranscript } from "./claude-transcript.mjs";
 import { claudeLines } from "./move.mjs";
+import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
 
 const exec = promisify(execFile);
@@ -27,6 +28,9 @@ export function createClaudeSessions({
   cli = "claude",
   run = exec,
   env = process.env,
+  // The claude command where the owner's login shell finds it, when Reach's
+  // own PATH doesn't (index.mjs locateClaude): it read "isn't installed".
+  locateCli = null,
   // Reads a transcript as it grows (claude-transcript.mjs).
   reader = createClaudeTranscript,
 } = {}) {
@@ -89,21 +93,37 @@ export function createClaudeSessions({
     }
     return files;
   }
+  // The Claude app's records, each read again only when it changed (every
+  // read of a chat parsed all of them, ~65 files, on each reply written).
+  const recordCache = new Map(); // file -> { mtimeMs, size, record }
   async function records() {
     const byCli = new Map();
+    const seen = new Set();
     const walk = async (dir, depth) => {
-      for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory() && depth < 3) await walk(full, depth + 1);
-        else if (entry.isFile() && /^local_.+\.json$/.test(entry.name)) {
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      await Promise.all(
+        entries.map(async (entry) => {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory() && depth < 3) return walk(full, depth + 1);
+          if (!entry.isFile() || !/^local_.+\.json$/.test(entry.name)) return;
+          seen.add(full);
           try {
-            const r = JSON.parse(await fs.readFile(full, "utf8"));
-            if (r.cliSessionId) byCli.set(r.cliSessionId, r);
-          } catch {}
-        }
-      }
+            const stat = await fs.stat(full);
+            let hit = recordCache.get(full);
+            if (!hit || hit.mtimeMs !== stat.mtimeMs || hit.size !== stat.size) {
+              hit = { mtimeMs: stat.mtimeMs, size: stat.size, record: JSON.parse(await fs.readFile(full, "utf8")) };
+              recordCache.set(full, hit);
+            }
+          } catch {
+            recordCache.delete(full);
+          }
+        }),
+      );
     };
     await walk(appRecords, 0);
+    for (const file of [...recordCache.keys()]) if (!seen.has(file)) recordCache.delete(file);
+    // In the order the folders list them, as before (the last one wins).
+    for (const { record } of recordCache.values()) if (record?.cliSessionId) byCli.set(record.cliSessionId, record);
     return byCli;
   }
   async function summary({ id, file }, appRecord) {
@@ -163,12 +183,22 @@ export function createClaudeSessions({
   // The installed Claude Code's version, as its transcripts carry it.
   let installed = null;
   const version = async () => {
-    installed ??= run(cli, ["--version"], { timeout: 10000, env: cleanEnv() })
+    installed ??= runCli(["--version"], { timeout: 10000, env: cleanEnv() })
       .then(({ stdout }) => String(stdout).match(/\d+\.\d+\.\d+/)?.[0] || null)
       .catch(() => null);
     return (await installed) || "2.1.0";
   };
   // Claude Code's own environment, never a host app's.
+  // The claude command, as Reach's PATH finds it, else as the login shell does.
+  const runCli = async (args, options) => {
+    try {
+      return await run(cli, args, options);
+    } catch (e) {
+      const found = e?.code === "ENOENT" && locateCli ? await locateCli() : null;
+      if (!found) throw e;
+      return run(found, args, options);
+    }
+  };
   function cleanEnv() {
     return Object.fromEntries(Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDECODE"));
   }
@@ -285,8 +315,11 @@ export function createClaudeSessions({
         }
         if (e.type === "user" && e.entrypoint === "claude-desktop") {
           const content = e.message?.content;
-          const said = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
-          if (wanted ? said.trim() === wanted : Array.isArray(content) && content.some((b) => b?.type === "image")) return true;
+          // Read as the chat shows it: the Claude app puts its <system-reminder>
+          // ahead of the words (a chat that moved into it), and a match against
+          // the raw entry missed it, so the phone said "Sending…" 10 s longer.
+          const said = visibleUserText(typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "");
+          if (wanted ? said.trim() === visibleUserText(wanted).trim() : Array.isArray(content) && content.some((b) => b?.type === "image")) return true;
         }
       }
       return false;
@@ -334,7 +367,7 @@ export function createClaudeSessions({
     async health() {
       try {
         // Run with Reach's own environment, never a host app's.
-        const { stdout } = await run(cli, ["auth", "status", "--json"], { timeout: 10000, env: cleanEnv() });
+        const { stdout } = await runCli(["auth", "status", "--json"], { timeout: 10000, env: cleanEnv() });
         return await withUsage(signIn(stdout));
       } catch (e) {
         if (e.code === "ENOENT") return { agent: "claude", installed: false, signedIn: false };

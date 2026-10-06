@@ -193,7 +193,6 @@ export function createCodexLive({
   now = Date.now,
   wait = sleep,
   deliverMs = 10000,
-  onChange = () => {},
   // Messages waiting in Codex's own queue, shown on the phone (off in tests
   // that count the calls made to Codex).
   queues = !process.env.NODE_TEST_CONTEXT,
@@ -219,11 +218,14 @@ export function createCodexLive({
       });
     return threads.get(id);
   };
+  // Told of each change to a thread (the chat list hears of its status and
+  // questions this way).
+  const changeListeners = new Set();
   const changed = (id) => {
     const t = state(id);
     t.version++;
     for (const wake of [...t.waiters]) wake();
-    onChange(id);
+    for (const listener of changeListeners) listener(id);
   };
   const release = (id) => {
     if (!subscribed.delete(id)) return;
@@ -253,6 +255,26 @@ export function createCodexLive({
         changed(id);
       }
   });
+  // Codex's queue changed: its own notice for a thread, or a write to its
+  // queue database (which doesn't say whose). What waits on that is woken.
+  const queueWaiters = new Set();
+  const queueChanged = (threadId = null) => {
+    for (const waiter of [...queueWaiters])
+      if (!threadId || waiter.threadId === threadId) waiter.wake();
+  };
+  // The next change to a thread's queue, or ms on (the safety net).
+  const queueNews = (threadId, ms) =>
+    new Promise((resolve) => {
+      const waiter = {
+        threadId,
+        wake: () => {
+          queueWaiters.delete(waiter);
+          resolve();
+        },
+      };
+      queueWaiters.add(waiter);
+      wait(ms).then(waiter.wake);
+    });
   // What waits in Codex's queue for a thread (the Codex app runs it next):
   // text and a count of pictures, as the phone shows it.
   const readQueue = (id) => {
@@ -295,7 +317,10 @@ export function createCodexLive({
     }
     const id = p.threadId || p.turn?.threadId;
     if (!id) return;
-    if (m.method === "thread/queue/changed") return void (queues && readQueue(id));
+    if (m.method === "thread/queue/changed") {
+      queueChanged(id);
+      return void (queues && readQueue(id));
+    }
     const t = state(id);
     switch (m.method) {
       case "turn/started":
@@ -395,7 +420,8 @@ export function createCodexLive({
     try {
       const deadline = now() + deliverMs;
       while (now() < deadline) {
-        await wait(500);
+        // Woken when Codex's queue changes; a slow look in between.
+        await queueNews(threadId, 2000);
         const list = await daemon.rpc("thread/queue/list", { threadId }).catch(() => null);
         if (list && !(list.data || []).some((q) => q.id === queued)) return;
       }
@@ -434,12 +460,17 @@ export function createCodexLive({
   };
   return {
     drives: (threadId) => subscribed.has(threadId),
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
+    },
     // A phone has the thread open right now (its live view is waiting).
     watched: (threadId) => !!threads.get(threadId)?.waiters.size,
     // News from the Codex app's own files (agent-watch.mjs): its queue or its
     // history changed, though not which chat's. The chats the phone has open
     // are read again at once (the re-reads in view() stay as the fallback).
     nudge(kind) {
+      if (kind === "queue") queueChanged();
       for (const [id, t] of threads) {
         if (!t.waiters.size) continue;
         if (kind === "queue") {
@@ -625,9 +656,10 @@ export function createCodexLive({
     },
     view(threadId) {
       // The phone is looking: what waits in Codex's queue, if not read lately.
-      // While something waits, often: the Codex app takes queued messages
-      // without telling Reach, and a card stayed up after its message ran.
-      const every = threads.get(threadId)?.queue?.length ? 1500 : 5000;
+      // The Codex app takes queued messages without a notice to Reach, but
+      // its queue database changes, and that reads the queue again at once
+      // (nudge); this is the slow safety net in case no word comes.
+      const every = threads.get(threadId)?.queue?.length ? 15000 : 30000;
       if (queues && now() - (threads.get(threadId)?.queueAt || 0) > every) void readQueue(threadId);
       const t = threads.get(threadId);
       if (!t)
@@ -652,7 +684,7 @@ export function createCodexLive({
       const t = state(threadId);
       if (t.version !== Number(since)) return Promise.resolve();
       // Something waits in Codex's queue: look again soon (view() re-reads it).
-      if (queues && t.queue?.length) ms = Math.min(ms, 3000);
+      if (queues && t.queue?.length) ms = Math.min(ms, 15000);
       return new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);

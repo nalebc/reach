@@ -661,7 +661,7 @@ test("restricted grants fail closed for invalid configuration, private data, den
   for (const extra of [
     { restrictedTerminal: "true", screen: "off" },
     { restrictedTerminal: true, screen: "off" },
-    { restrictedTerminal: true, folders: [{ root: 0, path: "" }], screen: "ask" },
+    { restrictedTerminal: false, terminalApproval: true, folders: [{ root: 0, path: "" }], screen: "ask" },
     { restrictedTerminal: true, folders: [{ root: 0, path: "" }], screen: "off", commandRequests: true },
   ]) assert.equal((await f.invite(extra)).status, 400);
   const browser = await f.join({ folders: [{ root: 0, path: "" }], screen: "off", restrictedTerminal: true });
@@ -765,4 +765,21 @@ test("blanket control is unavailable and approving one action never authorizes t
   const next = await browser.submit({ type: "key", key: "enter", reason: "Continue after review" });
   assert.equal(next.status, "pending");
   assert.equal(f.inputs.length, 1, "the next input still waits for an exact owner approval");
+});
+
+test("editing browser permissions cancels pending actions and removes file access on the same credential", async (t) => {
+  const { call, join } = await start(t);
+  const agent = await join({ folders: [{ root: 0, path: "" }] });
+  const listed = await call("/api/clients");
+  const client = listed.body.clients.find((c) => c.policy?.browser);
+  const pending = await agent.as("/api/browser/requests", { method: "POST", body: { type: "click", x: 0.2, y: 0.4, reason: "Click" } });
+  assert.equal(pending.status, 201, JSON.stringify(pending.body));
+  const route = `/api/guests/${client.id}/access`;
+  assert.equal((await agent.as(route, { method: "POST", body: { folders: [], screen: "view" } })).status, 403);
+  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "view", terminalIds: ["reach:not-open"] } })).status, 400);
+  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "view" } })).status, 200);
+  assert.equal((await agent.as("/api/files?root=0")).status, 403);
+  assert.equal((await agent.as("/api/browser")).body.screen, "view");
+  const decision = await call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } });
+  assert.notEqual(decision.body.status, "completed");
 });

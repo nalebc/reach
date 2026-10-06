@@ -1,7 +1,7 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 
-// The little markdown agents write: code blocks, inline code, bold, lists and
-// headings. Rendered as React elements only; nothing becomes HTML, and links
+// The little markdown agents write: code blocks, inline code, bold, lists,
+// headings and tables. Rendered as React elements only; nothing becomes HTML, and links
 // show their text without navigating anywhere.
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -18,6 +18,23 @@ function inline(text: string, key: string): ReactNode[] {
   if (last < text.length) out.push(text.slice(last));
   return out;
 }
+
+// A table's cells: "| a | b |" (outer pipes optional, "\|" is a pipe).
+const cells = (line: string) =>
+  line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/(?<!\\)\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replace(/\\\|/g, "|"));
+const SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+// A header row with "|", then "|---|:--:|" under it (Claude's /context, its
+// comparisons): it showed as raw pipes.
+const tableAt = (lines: string[], i: number) =>
+  lines[i].includes("|") &&
+  i + 1 < lines.length &&
+  SEPARATOR.test(lines[i + 1]) &&
+  cells(lines[i]).length === cells(lines[i + 1]).length;
 
 function blocks(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -40,6 +57,42 @@ function blocks(text: string, key: string): ReactNode[] {
     const line = lines[i];
     if (!line.trim()) {
       i++;
+    } else if (tableAt(lines, i)) {
+      const start = i;
+      const head = cells(lines[i]);
+      const align = cells(lines[i + 1]).map((c) =>
+        c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : undefined,
+      );
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(cells(lines[i++]));
+      const k = `${key}-${start}`;
+      out.push(
+        <div key={k} className="md-table">
+          <table>
+            <thead>
+              <tr>
+                {head.map((h, n) => (
+                  <th key={n} style={align[n] ? { textAlign: align[n] } : undefined}>
+                    {inline(h, `${k}-h${n}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, r) => (
+                <tr key={r}>
+                  {head.map((_, n) => (
+                    <td key={n} style={align[n] ? { textAlign: align[n] } : undefined}>
+                      {inline(row[n] || "", `${k}-${r}-${n}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
     } else if (/^#{1,6}\s/.test(line)) {
       out.push(<h4 key={`${key}-${i}`}>{inline(line.replace(/^#+\s*/, ""), `${key}-${i}`)}</h4>);
       i++;
@@ -52,7 +105,8 @@ function blocks(text: string, key: string): ReactNode[] {
         i < lines.length &&
         lines[i].trim() &&
         !/^#{1,6}\s/.test(lines[i]) &&
-        !/^\s*([-*•]|\d+[.)])\s+/.test(lines[i])
+        !/^\s*([-*•]|\d+[.)])\s+/.test(lines[i]) &&
+        !(i > start && tableAt(lines, i))
       )
         para.push(lines[i++]);
       out.push(<p key={`${key}-${start}`}>{inline(para.join("\n"), `${key}-${start}`)}</p>);
@@ -61,7 +115,7 @@ function blocks(text: string, key: string): ReactNode[] {
   return out;
 }
 
-export default function AgentMarkdown({ text }: { text: string }) {
+function AgentMarkdown({ text }: { text: string }) {
   const parts = text.split(/^```[^\n]*\n?/m);
   return (
     <div className="md">
@@ -77,3 +131,8 @@ export default function AgentMarkdown({ text }: { text: string }) {
     </div>
   );
 }
+
+// Drawn again only when its text changes: a chat redraws on every update,
+// keystroke and stream delta, and parsing every message each time made long
+// chats stutter.
+export default memo(AgentMarkdown);

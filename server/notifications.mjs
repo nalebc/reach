@@ -1,12 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import {
+  chatNotifications,
+  browserNotification,
+  admissionNotification,
+  sealNotification,
+  publicNotification,
+  notificationPush,
+} from "./notification-items.mjs";
 
-const names = {
-  codex: "Codex",
-  claude: "Claude Code",
-  gemini: "Gemini CLI",
-  openclaw: "OpenClaw",
-};
 const digest = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
 
@@ -32,25 +34,15 @@ export async function readAttention({
     for (const s of agents.value.sessions || []) {
       if (s.archived || s.status !== "waiting" || unavailable.has(s.agent))
         continue;
-      items.push({
-        id: `chat:${s.agent}:${s.id}`,
-        source: s.agent,
-        signature:
-          (s.prompts || [])
-            .map((p) => String(p.id))
-            .sort()
-            .join(",") ||
-          s.consent?.id ||
-          "waiting",
-        title: `${names[s.agent] || "An agent"} needs your answer`,
-        detail: s.title || "Open the chat to respond",
-        target: { page: "sessions", agent: s.agent, id: s.id },
-      });
+      items.push(...chatNotifications(s));
     }
     for (const p of agents.value.macPrompts || [])
       items.push({
         id: `mac:${p.id}`,
         source: "mac",
+        sender: "Your computer",
+        icon: "mac",
+        kind: "computer",
         signature: String(p.id),
         title: "Your computer needs your attention",
         detail: "Review the request on the live screen",
@@ -64,6 +56,9 @@ export async function readAttention({
       items.push({
         id: `openclaw:${p.id}`,
         source: "openclaw",
+        sender: "OpenClaw",
+        icon: "openclaw",
+        kind: "permission",
         signature: String(p.id),
         title: "OpenClaw needs your approval",
         detail:
@@ -82,39 +77,42 @@ export async function readAttention({
     items.push({
       id: `handoff:${h.id}`,
       source: "handoff",
+      sender: h.agent,
+      icon: /claude/i.test(h.agent)
+        ? "claude"
+        : /codex/i.test(h.agent)
+          ? "codex"
+          : "agent",
+      kind: "handoff",
       push: false,
       title: `${h.agent} needs you in ${h.app}`,
       detail: h.reason,
       target: { page: "apps", threadId: h.threadId },
     });
-  for (const r of browserRequests())
-    items.push({
-      id: `browser:${r.id}`,
-      source: "browser",
-      push: false,
-      title: "An AI browser needs your approval",
-      detail: r.name,
-      // Opened for review straight away (src/deep-link.ts), not just Home.
-      target: { page: "overview", needs: `browser:${r.id}` },
-    });
-  for (const r of admissions())
-    items.push({
-      id: `admission:${r.requestId}`,
-      source: "admission",
-      push: false,
-      title: `${r.name} wants to connect`,
-      detail: "Review the connection request",
-      target: { page: "overview", needs: `agent-admission:${r.requestId}` },
-    });
+  for (const r of browserRequests().filter(
+    (r) => !r.status || r.status === "pending",
+  ))
+    items.push(browserNotification(r));
+  for (const r of admissions()) items.push(admissionNotification(r));
   for (const r of accessRequests().filter((r) => r.status === "pending"))
-    items.push({
-      id: `access:${r.id}`,
-      source: "access",
-      push: false,
-      title: `${r.name} asks for access`,
-      detail: "Review requested access",
-      target: { page: "agents" },
-    });
+    items.push(
+      sealNotification(
+        {
+          id: `access:${r.id}`,
+          source: "access",
+          sender: r.name,
+          icon: "agent",
+          kind: "connection",
+          push: false,
+          title: "Review requested access",
+          detail: "Agent connection",
+          summary: "Review the permissions this agent is requesting.",
+          target: { page: "overview", needs: `device:${r.id}` },
+          actions: [{ id: "deny", label: "Deny", tone: "deny" }],
+        },
+        { type: "access", id: r.id, evidence: r.scopes },
+      ),
+    );
   return { items, unavailable: [...unavailable] };
 }
 
@@ -126,13 +124,15 @@ export function createNotifications({
   notify,
   enabled,
   file,
-  intervalMs = 5000,
+  intervalMs = 30000,
+  wakeMs = 250,
 }) {
   let seen = {};
   try {
     seen = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {}
   let timer,
+    wakeTimer,
     pending,
     cached,
     checkedAt = 0,
@@ -176,10 +176,9 @@ export function createNotifications({
         }
         try {
           const result = await notify({
-            title: item.title,
+            ...notificationPush(item),
             category: item.source === "mac" ? "computer" : "chat",
             tag: `need-${key.slice(0, 24)}`,
-            url: "/?notifications=1",
           });
           if (result?.sent > 0 || result?.suppressed > 0) {
             seen[key] = { source: item.source, signature };
@@ -191,9 +190,7 @@ export function createNotifications({
       }
       if (changed) save();
       cached = {
-        items: snapshot.items.map(
-          ({ source, signature, push, ...item }) => item,
-        ),
+        items: snapshot.items.map(publicNotification),
         unavailable: snapshot.unavailable,
       };
       checkedAt = Date.now();
@@ -214,9 +211,18 @@ export function createNotifications({
       timer = setInterval(tick, intervalMs);
       timer.unref?.();
     },
+    wake() {
+      if (closed || !timer || wakeTimer) return;
+      wakeTimer = setTimeout(() => {
+        wakeTimer = null;
+        if (enabled()) void refresh({ fresh: true }).catch(() => {});
+      }, wakeMs);
+      wakeTimer.unref?.();
+    },
     close() {
       closed = true;
       clearInterval(timer);
+      clearTimeout(wakeTimer);
     },
   };
 }

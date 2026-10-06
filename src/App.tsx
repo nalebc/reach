@@ -1,4 +1,4 @@
-import { MotionContext } from "./motion";
+import AccessEditor, { accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
 import DeviceAccessBadge from "./DeviceAccessBadge";
 import { useFleetConnections } from "./useFleetConnections";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
@@ -7,7 +7,6 @@ import {
   pageAccessible,
   morePlaces,
   type WorkspaceCapabilities,
-  type CodexStatus,
 } from "./capabilities";
 import { useCodexAvailability } from "./useCodexAvailability";
 import ScreenBoundary from "./ScreenBoundary";
@@ -18,10 +17,10 @@ import ScreenPopup from "./ScreenPopup";
 import {
   lazy,
   useEffect,
+  useMemo,
   useState,
   useCallback,
   useRef,
-  useContext,
 } from "react";
 import {
   LayoutGrid,
@@ -44,7 +43,6 @@ import {
   Download,
   Info,
   Trash2,
-  Code2,
   ScanLine,
   Bot,
   X as Close,
@@ -115,7 +113,8 @@ import { useFleetJoin } from "./fleet-join";
 import { groupDevices } from "./device-groups";
 import { FaceIdSettings } from "./FaceIdSettings";
 import { NotificationBell, NotificationCenter } from "./Notifications";
-import { openTarget, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
+import { wantPrompt } from "./notification-focus";
+import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
@@ -223,7 +222,18 @@ function ReachWorkspace() {
   // Every Codex and Claude Code session, found as soon as Reach connects (owner only).
   const chatPeer =
     device && peer && pageAccessible("sessions", features) ? peer : null;
-  const agentFeed = useAgentSessions(chatPeer);
+  // The chat list's revision, as the Mac's live connection tells it: the list
+  // is read when it changes, not every few seconds.
+  const liveChanges = chatPeer ? connections[chatPeer.id]?.changes : undefined;
+  const sessionsRevision = useMemo(() => {
+    try {
+      const value = liveChanges ? JSON.parse(liveChanges).sessions : undefined;
+      return typeof value === "string" ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [liveChanges]);
+  const agentFeed = useAgentSessions(chatPeer, undefined, sessionsRevision);
   // The Chat tab wears the logo of the agent it shows (real app icons).
   const agentLogos = useAgentLogos(chatPeer);
   const [chatAgent, setChatAgent] = useChatAgent();
@@ -523,8 +533,12 @@ function ReachWorkspace() {
   const [linkTarget, setLinkTarget] = useState<OpenTarget | null>(() => {
     const target = openTarget(location.href);
     if (target) history.replaceState(history.state, "", withoutTarget(location.href));
-    return target;
+    // Without one, a reload comes back to where you were.
+    return target || lastPlace(active);
   });
+  useEffect(() => {
+    if (peer) rememberPlace(peer.id, { page });
+  }, [page, peer?.id]);
   useEffect(() => {
     const message = (event: MessageEvent) => {
       if (event.data?.type === "reach-open" && typeof event.data.url === "string") {
@@ -536,7 +550,13 @@ function ReachWorkspace() {
     return () => navigator.serviceWorker?.removeEventListener("message", message);
   }, []);
   useEffect(() => {
-    if (!linkTarget || !peer || !device || !pageAccessible(linkTarget.page, features)) return;
+    if (!linkTarget || !peer || !device) return;
+    if (linkTarget.computer && ![peer.id, peer.computerId].includes(linkTarget.computer)) {
+      const computer = peers.find((p) => [p.id, p.computerId].includes(linkTarget.computer));
+      if (computer) { setActive(computer.id); localStorage.setItem(activeKey(), computer.id); }
+      return;
+    }
+    if (!pageAccessible(linkTarget.page, features)) return;
     openTargetNow(linkTarget);
     setLinkTarget(null);
   }, [linkTarget, peer?.id, device, features]);
@@ -611,6 +631,8 @@ function ReachWorkspace() {
   // Opens what a notification (or the bell's list) points at, in one go:
   // the chat itself, the app handed to you, or the request opened for review.
   function openTargetNow(target: OpenTarget) {
+    if (target.page === "sessions" && target.agent && target.id && target.prompt)
+      wantPrompt({ agent: target.agent, session: target.id, id: target.prompt });
     if (target.page === "sessions" && ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "") && target.id)
       setChatTarget({ agent: target.agent as AgentName | "openclaw", id: target.id });
     if (target.page === "sessions" && target.agent === "openclaw") setChatAgent("openclaw");
@@ -619,7 +641,7 @@ function ReachWorkspace() {
     navigate(target.page);
   }
   return (
-    <NotificationCenter peer={peer} enabled={!!device && !!features.settings} onOpen={({ target }) => openTargetNow(target)}>
+    <NotificationCenter peer={peer} enabled={!!device && !!features.settings} changes={live} onOpen={({ target }) => openTargetNow(target)}>
     <div className="app-shell">
       <aside className="sidebar">
         <Logo companion={page !== "overview" && page !== "screen"} />
@@ -949,7 +971,6 @@ function ReachWorkspace() {
                 {page === "settings" && (
                   <SettingsPage
                     features={features}
-                    codexStatus={codexStatus}
                     peer={peer}
                     device={device}
                     toast={toast}
@@ -1518,9 +1539,8 @@ function SessionModal({
     </Modal>
   );
 }
-function SettingsPage({
+export function SettingsPage({
   features,
-  codexStatus,
   invite,
   peer,
   device,
@@ -1534,13 +1554,10 @@ function SettingsPage({
   forget: () => void;
   invite: () => void;
   features: WorkspaceCapabilities;
-  codexStatus: CodexStatus;
   onChanged: () => void;
 }) {
-  // Codex wears its real logo, as in More.
-  const settingsLogos = useAgentLogos(peer);
   const [settingsView, setSettingsView] = useState("general");
-  const motion = useContext(MotionContext);
+  const [editing, setEditing] = useState<EditableAccess | null>(null);
   const toggleScreen = async () => {
     try {
       await post(peer, "/api/settings", {
@@ -1555,9 +1572,7 @@ function SettingsPage({
   const [clientsLoading, setClientsLoading] = useState(true);
   const clientsGeneration = useRef(0);
   const [clients, setClients] = useState<
-      {
-        id: string;
-        name: string;
+      (EditableAccess & {
         createdAt: string;
         scopes?: string[];
         expiresAt?: number;
@@ -1565,7 +1580,7 @@ function SettingsPage({
         status?: string;
         deviceGroup?: string;
         tailscale?: { userId: string; nodeId: string };
-      }[]
+      })[]
     >([]),
     [current, setCurrent] = useState("");
   const load = () => {
@@ -1601,7 +1616,7 @@ function SettingsPage({
       <PageTitle
         title="Settings"
         eyebrow={device.name}
-        description="Make yourself at home."
+        description="Your computer and who can use it."
       />
       <div
         className="settings-segments"
@@ -1667,8 +1682,7 @@ function SettingsPage({
               <div>
                 <strong>Screen viewing</strong>
                 <small>
-                  View your computer’s display. Mouse and keyboard control must
-                  be enabled separately on the Screen page.
+                  Enable viewing from your devices.
                 </small>
               </div>
               <button
@@ -1683,72 +1697,6 @@ function SettingsPage({
             </div>
           </section>
         )}
-        {features.codexSetup && (
-          <section className="panel settings-panel optional-tool">
-            <h2>Optional tools</h2>
-            <div className="switch-row">
-              <AppIcon tone="codex" size="small" real={!!settingsLogos.codex}>
-                {settingsLogos.codex ? (
-                  <AgentLogo agent="codex" logos={settingsLogos} size={40} />
-                ) : (
-                  <Code2 size={17} strokeWidth={2} />
-                )}
-              </AppIcon>
-              <div>
-                <strong>Codex</strong>
-                <small>
-                  {
-                    {
-                      checking: "Checking Codex on this computer…",
-                      ready: "Connected. Conversations are available in Reach.",
-                      missing:
-                        "Not installed. Other Reach features don’t require Codex.",
-                      signin:
-                        "Installed, but not signed in. Run codex login on this computer.",
-                      unavailable:
-                        "Codex couldn’t connect. Check its installation and sign-in on this computer.",
-                    }[codexStatus.state]
-                  }
-                </small>
-              </div>
-              <button className="button secondary small" onClick={onChanged}>
-                Check again
-              </button>
-            </div>
-            {codexStatus.state === "missing" && (
-              <p className="muted">
-                Install and sign in to Codex CLI on this computer to enable
-                conversations.
-              </p>
-            )}
-          </section>
-        )}
-        <section className="panel settings-panel appearance-settings">
-          <h2>Make it yours</h2>
-          <div className="switch-row">
-            <AppIcon tone="motion" size="small">
-              <SparklesIcon size={17} strokeWidth={2} />
-            </AppIcon>
-            <div>
-              <strong>Living companion</strong>
-              <small>
-                {motion.reduced
-                  ? "Reduced motion is enabled on this device."
-                  : "Little moments of motion around your workspace."}
-              </small>
-            </div>
-            <button
-              className={`switch ${motion.enabled && !motion.reduced ? "on" : ""}`}
-              role="switch"
-              aria-label="Living companion animation"
-              aria-checked={motion.enabled && !motion.reduced}
-              disabled={motion.reduced}
-              onClick={motion.toggle}
-            >
-              <span />
-            </button>
-          </div>
-        </section>
       </div>
       <div className="settings-access" hidden={settingsView !== "access"}>
         <button className="invite-banner" onClick={invite}>
@@ -1762,7 +1710,7 @@ function SettingsPage({
           <ChevronRight size={18} />
         </button>
         <section className="panel settings-panel">
-          <h2>Connected people & devices</h2>
+          <h2>People, agents & devices</h2>
           <ErrorLine error={clientsError} />
           {clientsLoading ? (
             <Spinner />
@@ -1771,8 +1719,7 @@ function SettingsPage({
             !clients.length && <p>No devices or guests to show.</p>
           )}
           <p className="muted">
-            Revoking access disconnects that client. Already-running work stays
-            on the computer.
+            Change permissions, adjust time, or remove access.
           </p>
           {groupDevices(clients)
             .sort((a, b) => {
@@ -1805,7 +1752,7 @@ function SettingsPage({
                     {c.kind === "guest" ? (
                       <KeyRound size={16} strokeWidth={2} />
                     ) : c.kind === "agent" ? (
-                      <Bot size={17} strokeWidth={2} />
+                      <SparklesIcon size={17} strokeWidth={2} />
                     ) : (
                       <Smartphone size={17} strokeWidth={2} />
                     )}
@@ -1829,7 +1776,7 @@ function SettingsPage({
                       ]}
                     />
                     <small>
-                      {c.scopes?.map(scopeLabel).join(" · ") || "Full access"}
+                      {accessSummary(c)}
                     </small>
                     <details className="access-metadata">
                       <summary>Access details</summary>
@@ -1842,6 +1789,8 @@ function SettingsPage({
                       </small>
                     </details>
                   </div>
+                  <div className="access-row-actions">
+                  {canEditAccess(c) && <button className="button secondary small" aria-label={`Edit ${c.name}’s access`} onClick={() => setEditing(c)}>Edit access</button>}
                   <button
                     className="button ghost small danger revoke-access"
                     aria-label={`Revoke ${c.name}`}
@@ -1860,8 +1809,9 @@ function SettingsPage({
                       }
                     }}
                   >
-                    <span>Revoke</span>
+                    <span>Remove</span>
                   </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -1869,6 +1819,7 @@ function SettingsPage({
         <FaceIdSettings peer={peer} />
         {/* Notifications live in the bell's panel only: nothing about them here. */}
       </div>
+      {editing && <AccessEditor key={`${peer.id}:${editing.id}`} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); void load(); toast(removed ? "Access removed" : "Access updated"); }} />}
       <button className="forget-computer" onClick={forget}>
         <LogOut size={17} />
         Forget this computer

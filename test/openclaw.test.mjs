@@ -497,15 +497,112 @@ test("a new chat from Reach is a webchat session of Reach's own; Reach removes o
   assert.deepEqual(calls.at(-1).params, { key, deleteTranscript: true });
 });
 
-test("a Gateway that can't add a moved chat's history says so up front", async (t) => {
-  // OpenClaw 2026.3.13 has no chat.inject: "Continue in OpenClaw" failed
-  // only after confirming.
-  const { c, handle } = await fixture(t);
-  handle((req) => (req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "sessions.reset", "chat.send"] } } } : undefined));
+test("a Gateway that can't add a moved chat's history says so up front; one that can but doesn't list it is asked", async (t) => {
+  // OpenClaw 2026.3.13 handles chat.inject but leaves it out of hello's list
+  // (verified in its code and on this Mac): "Continue in OpenClaw" was offered
+  // nowhere. Asked once with nothing to add, it answers "invalid params".
+  const unlisted = await fixture(t);
+  unlisted.handle((req) =>
+    req.method === "connect"
+      ? { payload: { features: { methods: ["sessions.list", "sessions.reset", "chat.send"] } } }
+      : req.method === "chat.inject"
+        ? { error: { message: "invalid chat.inject params: must have required property 'sessionKey'" } }
+        : undefined,
+  );
+  await unlisted.c.overview();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(unlisted.c.canMove(), true);
+  // The question added nothing: no session named, nothing said.
+  assert.deepEqual(unlisted.calls.filter((c) => c.method === "chat.inject").map((c) => c.params), [{}]);
+  // A Gateway without it at all: said up front, not after confirming.
+  const without = await fixture(t);
+  without.handle((req) =>
+    req.method === "connect"
+      ? { payload: { features: { methods: ["sessions.list", "sessions.reset", "chat.send"] } } }
+      : req.method === "chat.inject"
+        ? { error: { message: "unknown method: chat.inject" } }
+        : undefined,
+  );
+  await without.c.overview();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(without.c.canMove(), false);
+  const listed = await fixture(t);
+  listed.handle((req) => (req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "chat.inject"] } } } : undefined));
+  await listed.c.overview();
+  assert.equal(listed.c.canMove(), true);
+});
+
+// "Make everything evented" (2026-10-06): notifications looked every 5 s, and
+// that look also opened OpenClaw's connection again after a drop. Now they
+// look when told: OpenClaw says when approvals come or go, and opens a
+// dropped connection again by itself while anyone listens.
+test("approvals coming, going or expiring are told at once; a dropped Gateway connection is opened again", async (t) => {
+  const { c, sockets } = await fixture(t, { redialMs: 20 });
+  let told = 0;
+  c.onApprovalsChange(() => told++);
   await c.overview();
-  assert.equal(c.canMove(), false);
-  const fresh = await fixture(t);
-  fresh.handle((req) => (req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "chat.inject"] } } } : undefined));
-  await fresh.c.overview();
-  assert.equal(fresh.c.canMove(), true);
+  const prompt = { id: "a1", request: { command: "npm test", sessionKey: rows[0].key }, expiresAtMs: Date.now() + 60000 };
+  sockets[0].event("exec.approval.requested", prompt);
+  assert.equal(told, 1);
+  sockets[0].event("exec.approval.resolved", { id: "a1" });
+  assert.equal(told, 2);
+  // One that runs out with nothing said: told when it does.
+  sockets[0].event("exec.approval.requested", { ...prompt, id: "a2", expiresAtMs: Date.now() + 100 });
+  assert.equal(told, 3);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(told, 4);
+  // The Gateway goes away and comes back: connected again without asking.
+  sockets[0].event("exec.approval.requested", { ...prompt, id: "a3" });
+  sockets[0].close();
+  assert.equal(told, 6, "its approvals are gone with it");
+  for (const end = Date.now() + 2000; sockets.length < 2 && Date.now() < end; ) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sockets.length, 2);
+  // Closed by Reach: not opened again.
+  c.close();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(sockets.length, 2);
+});
+
+// "Make everything evented" (2026-10-06): the phone's OpenClaw page asked for
+// the list every 5 s and an open chat every 1.8 s (200 messages from the
+// Gateway each time). Now it waits for the Mac to say something changed.
+test("a phone waiting on OpenClaw hears of a run starting, not each word; a chat's wait hears each word", async (t) => {
+  const { c, sockets } = await fixture(t, { coalesceMs: 10 });
+  const { version } = await c.overview();
+  const ws = sockets[0];
+  const listWait = c.changes({ after: version, ms: 2000 });
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r1", state: "delta", message: { content: "Hel" } });
+  assert.notEqual((await listWait).version, version, "a run started");
+  const chat = await c.history(rows[0].key);
+  const { version: listed } = await c.overview();
+  const quiet = c.changes({ after: listed, ms: 200 });
+  const chatWait = c.changes({ key: rows[0].key, after: chat.version, ms: 2000 });
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r1", state: "delta", message: { content: "Hello" } });
+  assert.notEqual((await chatWait).version, chat.version, "the chat's wait hears the words");
+  assert.equal((await quiet).version, listed, "the list's wait doesn't");
+  // An approval: the list's wait hears it at once.
+  const approvalWait = c.changes({ after: listed, ms: 2000 });
+  ws.event("exec.approval.requested", { id: "a1", request: { command: "npm test", sessionKey: rows[0].key }, expiresAtMs: Date.now() + 60000 });
+  assert.notEqual((await approvalWait).version, listed);
+  // Closing Reach lets every wait go.
+  const last = c.changes({ after: (await c.overview()).version, ms: 60000 });
+  c.close();
+  assert.ok(await last);
+});
+
+test("while a reply streams in, the open chat is read from what OpenClaw last gave, not asked again", async (t) => {
+  const { c, sockets, calls } = await fixture(t, { coalesceMs: 10 });
+  await c.overview();
+  const ws = sockets[0];
+  const asked = () => calls.filter((r) => r.method === "chat.history").length;
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r2", state: "delta", message: { content: "Wor" } });
+  await c.history(rows[0].key);
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r2", state: "delta", message: { content: "Working" } });
+  const streaming = await c.history(rows[0].key);
+  assert.equal(asked(), 1, "the Gateway asked once");
+  assert.equal(streaming.streaming, "Working");
+  // The turn ends: its messages are read again.
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r2", state: "final" });
+  await c.history(rows[0].key);
+  assert.equal(asked(), 2);
 });
