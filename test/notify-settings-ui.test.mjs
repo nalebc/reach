@@ -231,11 +231,31 @@ test("on iPhone, Add to Home Screen opens the Share sheet for this page, then sh
     assert.equal(shared.length, 1);
     assert.equal(shared[0].title, "Reach");
     assert.equal(shared[0].url, dom.window.location.origin + dom.window.location.pathname);
-    assert.match(view.container.querySelector(".ns-steps").textContent, /In the sheet, tap Add to Home Screen[\s\S]*Open Reach from your Home Screen/);
+    assert.match(view.container.querySelector(".ns-steps").textContent, /In the sheet, tap Add to Home Screen[\s\S]*Open Reach from your Home Screen and sign in\s+there once/);
     await view.unmount();
   } finally {
     delete dom.window.navigator.share;
   }
+});
+
+test("where the browser offers an install prompt, one tap on Add installs Reach", async () => {
+  browser();
+  const view = await render();
+  // No prompt offered: no row.
+  assert.equal(buttonNamed(view, "Add"), undefined);
+  const calls = [];
+  const offer = new dom.window.Event("beforeinstallprompt", { cancelable: true });
+  offer.prompt = async () => calls.push("prompt");
+  offer.userChoice = Promise.resolve({ outcome: "accepted" });
+  dom.window.dispatchEvent(offer);
+  await settle(40);
+  assert.equal(offer.defaultPrevented, true);
+  assert.match(view.container.textContent, /Add to Home Screen/);
+  await tap(buttonNamed(view, "Add"));
+  assert.deepEqual(calls, ["prompt"]);
+  // Used once: the browser won't prompt again with it.
+  assert.equal(buttonNamed(view, "Add"), undefined);
+  await view.unmount();
 });
 
 test("guests and browsers that can't get notifications see nothing", async () => {

@@ -208,3 +208,29 @@ test("Claude's /clear opens a new chat, picked or typed out; it's never sent int
   assert.ok(!calls.some((c) => c[0] === "message"), "nothing sent");
   assert.deepEqual(dom.errors, []);
 });
+
+// A typo'd command ("/contxt") went to Claude as a message and used a turn.
+test("a command no agent has is pointed out first; Send again sends it as typed", async () => {
+  const box = await open("claude");
+  await typeInto(box, "/contxt");
+  // The commands are in (the list is kept a minute): no match, no menu.
+  await dom.waitFor(() => !dom.document.querySelector(".sm-menu"));
+  sendButton().click();
+  await dom.waitFor(() => dom.document.querySelector(".sm-error"));
+  assert.match(dom.document.querySelector(".sm-error").textContent, /Claude Code has no \/contxt command/);
+  assert.equal(box.value, "/contxt");
+  assert.ok(!calls.some((c) => c[0] === "message"), "not sent yet");
+  sendButton().click();
+  await dom.waitFor(() => calls.some((c) => c[0] === "message"));
+  assert.deepEqual(calls.filter((c) => c[0] === "message").map((c) => c[2].text), ["/contxt"]);
+  // A path is words, not a command; an MCP server's prompt goes as typed.
+  await typeInto(box, "/Users/me/notes.txt is empty");
+  await settle();
+  sendButton().click();
+  await dom.waitFor(() => calls.filter((c) => c[0] === "message").length === 2);
+  await typeInto(box, "/mcp__github__list_prs");
+  await settle();
+  sendButton().click();
+  await dom.waitFor(() => calls.filter((c) => c[0] === "message").length === 3);
+  assert.deepEqual(dom.errors, []);
+});

@@ -159,11 +159,17 @@ test("a tap outside the ⋯ menu closes it", async () => {
   assert.equal($(".as-details"), null);
 });
 
-test("no row when the other app can't take the chat now", async () => {
+// Every app found shows, the same each time: one that can't take the chat
+// now is greyed with why (it was left out, and seemed undetected).
+test("an app that can't take the chat now shows greyed, saying why", async () => {
   await open(claudeChat(), both({ codex: { usable: false } }));
   await click(button("More"));
   const menu = await dom.waitFor(() => $(".as-details"));
-  assert.equal(menu.querySelector(".move-item"), null);
+  const rows = [...menu.querySelectorAll(".move-item")];
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].classList.contains("blocked"));
+  assert.equal(rows[0].disabled, true);
+  assert.equal(rows[0].textContent, "Continue in CodexCodex is out of usage.");
 });
 
 test("a quiet line under the header says so twice at most; a tap opens ⋯ where it stays", async () => {
@@ -204,15 +210,42 @@ test("in the list, a chat continued from the other app says so, with that app's 
   assert.match(row.textContent, /From Claude Code · Continues “Login page”/);
 });
 
-test("OpenClaw is offered only when it can take the chat (2026.3.13 can't add its history)", async () => {
-  const withClaw = (canTakeMoves) => [...both(), { agent: "openclaw", installed: true, signedIn: false, supported: true, canTakeMoves }];
-  await open(claudeChat(), withClaw(false));
+test("every app found is listed in the same order; OpenClaw when its Gateway can't add history says so", async () => {
+  const apps = (canTakeMoves) => [
+    ...both(),
+    { agent: "gemini", name: "Gemini CLI", installed: true, signedIn: true, supported: true },
+    { agent: "antigravity", name: "Antigravity", installed: true, supported: false },
+    { agent: "openclaw", installed: true, signedIn: false, supported: true, canTakeMoves },
+  ];
+  const rows = () =>
+    [...dom.document.querySelectorAll(".as-details .move-item")].map((b) => [
+      b.querySelector(".move-item-text > span").textContent,
+      b.classList.contains("blocked") ? b.querySelector("small").textContent : "ready",
+    ]);
+  await open(claudeChat(), apps(false));
   await click(button("More"));
-  const items = () => [...dom.document.querySelectorAll(".as-details .move-item")].map((b) => b.textContent);
-  assert.equal(items().some((t) => t.startsWith("Continue in OpenClaw")), false);
-  assert.ok(items().some((t) => t.startsWith("Continue in Codex")));
+  assert.deepEqual(rows(), [
+    ["Continue in Codex", "ready"],
+    ["Continue in OpenClaw", "Update OpenClaw on your Mac to move chats there."],
+    ["Continue in Antigravity", "Reach can't continue chats in Antigravity yet."],
+    ["Continue in Gemini CLI", "Reach only reads Gemini CLI chats."],
+  ]);
   for (const view of views.splice(0)) await view.unmount();
-  await open(claudeChat(), withClaw(true));
+  await open(claudeChat(), apps(true));
   await click(button("More"));
-  assert.ok(items().some((t) => t.startsWith("Continue in OpenClaw")));
+  assert.deepEqual(rows().slice(0, 2), [["Continue in Codex", "ready"], ["Continue in OpenClaw", "ready"]]);
+});
+
+// "Continued in Codex" stayed pinned under the messages written after it.
+test("the way to where a chat went sits where it moved, not under what came after", async () => {
+  const movedAt = said[1].at + 500; // after "Built it.", before "Now tests"
+  await open(claudeChat({ movedTo: [{ agent: "codex", id: NEW, at: movedAt }] }));
+  const link = await dom.waitFor(() => $(".move-continued"));
+  const order = [...dom.document.querySelectorAll(".as-user, .as-assistant, .move-continued")].map((el) =>
+    el.classList.contains("move-continued") ? "→ Codex" : el.textContent.trim(),
+  );
+  assert.deepEqual(order, ["Build the login page", "Built it.", "→ Codex", "Now tests", "Added them."]);
+  assert.equal($$(".move-continued").length, 1, "shown once");
+  assert.match(link.textContent, /Continued in Codex/);
+  assert.deepEqual(dom.errors, []);
 });

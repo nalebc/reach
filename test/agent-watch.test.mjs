@@ -23,11 +23,12 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
   const news = [];
   watch.onChange((n) => news.push(n));
   try {
-    // Codex's queue, written three times in a row: said once.
+    // Codex's queue, written three times in a row: said at once, not after
+    // a wait, and once more at most for the rest of the burst.
     for (let i = 0; i < 3; i++) fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
     assert.ok(await until(() => news.some((n) => n.kind === "queue")), "queue news");
     await new Promise((r) => setTimeout(r, 150));
-    assert.equal(news.filter((n) => n.agent === "codex" && n.kind === "queue").length, 1);
+    assert.ok(news.filter((n) => n.agent === "codex" && n.kind === "queue").length <= 2);
     // Its history.
     fs.appendFileSync(path.join(codexHome, "thread_history_1.sqlite-wal"), "y");
     assert.ok(await until(() => news.some((n) => n.agent === "codex" && n.kind === "history")), "history news");
@@ -49,5 +50,49 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
 test("an agent that isn't installed is simply not watched", () => {
   const watch = createAgentWatch({ codexHome: "/nonexistent/codex", claudeProjects: "/nonexistent/claude" });
   watch.onChange(() => {});
+  watch.close();
+});
+
+test("a transcript write is news the moment it happens, not after a wait; writes during the next moment are told once more", async () => {
+  const listeners = new Map();
+  const watch = createAgentWatch({
+    codexHome: "/c",
+    claudeProjects: "/p",
+    claudeSessions: "/s",
+    claudeAppRecords: "/r",
+    watch: (dir, options, listener) => (listeners.set(dir, listener), { close() {} }),
+    debounceMs: 60,
+  });
+  const news = [];
+  watch.onChange((n) => news.push(n));
+  const write = () => listeners.get("/p")("change", `-work-app/${ID}.jsonl`);
+  write();
+  // Told at once (it used to wait 120 ms after the last write of a burst).
+  assert.equal(news.length, 1);
+  write();
+  write();
+  assert.equal(news.length, 1);
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(news.length, 2, "the rest of the burst, once");
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(news.length, 2);
+  write();
+  assert.equal(news.length, 3, "a quiet moment later: at once again");
+  watch.close();
+});
+
+test("the Codex app saving its choices (the permission mode it's in) is news", () => {
+  const listeners = new Map();
+  const watch = createAgentWatch({
+    codexHome: "/c",
+    claudeProjects: "/p",
+    claudeSessions: "/s",
+    claudeAppRecords: "/r",
+    watch: (dir, options, listener) => (listeners.set(dir, listener), { close() {} }),
+  });
+  const news = [];
+  watch.onChange((n) => news.push(n));
+  listeners.get("/c")("change", ".codex-global-state.json");
+  assert.deepEqual(news, [{ agent: "codex", kind: "settings" }]);
   watch.close();
 });

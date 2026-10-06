@@ -136,7 +136,7 @@ test("moves are remembered both ways, across restarts; anything malformed is ign
   moves.add({ from: { agent: "claude", id: "a", title: "Fix login", upTo: "u9" }, to: { agent: "codex", id: "b" } });
   moves.add({ from: { agent: "claude", id: "a" }, to: { agent: "codex", id: "c" } });
   // Yours only, like Reach's other records.
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   const again = createMoves({ file });
   assert.equal(again.into("codex", "b").from.upTo, "u9");
   assert.equal(again.into("codex", "b").at, 42);

@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible Reach issue.
+body:
+  - type: markdown
+    attributes:
+      value: "For security issues, follow SECURITY.md. Never include credentials, invitation links or private files."
+  - type: input
+    id: version
+    attributes:
+      label: Reach version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Host and client
+      description: Host OS, phone/browser versions, agent/app version if relevant. Omit device names and private addresses.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected behavior and actual behavior
+    validations:
+      required: true

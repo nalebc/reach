@@ -4,8 +4,9 @@ import { createCodexLive } from "../server/agent-sessions/codex-live.mjs";
 
 // A message waiting in the Codex app's own queue left its "Queued" card up
 // after it ran (it was already in the chat): the Codex app takes queued
-// messages without telling Reach, and Reach looked again only every ~25 s.
-// While something waits, the phone's view is refreshed within seconds.
+// messages without a notice to Reach. Its queue database changes, though
+// (agent-watch.mjs): that word reads the queue again at once and wakes the
+// phone (2026-10-06: "don't pull"), with a slow re-read as the safety net.
 const T = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
 function fakeDaemon(replies = {}) {
   const calls = [];
@@ -27,7 +28,7 @@ function fakeDaemon(replies = {}) {
 }
 const settle = () => new Promise((r) => setTimeout(r, 5));
 
-test("a queued Codex message that ran leaves the phone's queue within seconds, with no word from Codex", async () => {
+test("a queued Codex message that ran leaves the phone's queue the moment Codex's queue changes, with no notice", async () => {
   let queue = [{ id: "q1", input: [{ type: "text", text: "Why am I asked to approve?" }] }];
   let clock = 1_000_000;
   const daemon = fakeDaemon({ "thread/queue/list": () => ({ data: queue }) });
@@ -35,17 +36,36 @@ test("a queued Codex message that ran leaves the phone's queue within seconds, w
   live.view(T);
   await settle();
   assert.equal(live.view(T).outbox.length, 1);
-  // The phone's long poll comes back quickly while something waits, so it looks again.
+  // The phone waits on the Mac (its long poll)…
   const version = live.view(T).version;
   const started = Date.now();
-  await live.changes(T, version, 25_000);
-  assert.ok(Date.now() - started < 3500, "the phone looks again within 3 s");
-  // The Codex app ran it (no queue notification): two seconds on, the view reads again.
+  const woke = live.changes(T, version, 25_000);
+  // …the Codex app runs it: no notice, but its queue database changes.
   queue = [];
-  clock += 2000;
+  live.nudge("queue");
+  await woke;
+  assert.ok(Date.now() - started < 500, "woken at once, not on a beat");
+  assert.equal(live.view(T).outbox, undefined, "the card is gone");
+});
+
+test("with no word at all, the queue is still read again after a while (the safety net)", async () => {
+  let queue = [{ id: "q1", input: [{ type: "text", text: "next" }] }];
+  let clock = 1_000_000;
+  const daemon = fakeDaemon({ "thread/queue/list": () => ({ data: queue }) });
+  const live = createCodexLive({ daemon, queues: true, now: () => clock });
   live.view(T);
   await settle();
-  assert.equal(live.view(T).outbox, undefined, "the card is gone");
+  queue = [];
+  // Not on a seconds beat anymore…
+  clock += 3000;
+  live.view(T);
+  await settle();
+  assert.equal(live.view(T).outbox.length, 1);
+  // …but after the safety net's time, it is.
+  clock += 15000;
+  live.view(T);
+  await settle();
+  assert.equal(live.view(T).outbox, undefined);
 });
 
 test("a turn starting or ending re-reads what waits (a queued message may have become that turn)", async () => {

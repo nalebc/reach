@@ -16,6 +16,10 @@ const patterns = [
   ["Tailscale credential", /\btskey-(?:auth|client|api)-[A-Za-z0-9]{12,}-[A-Za-z0-9]{24,}\b/],
 ];
 for (const file of files) {
+  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) {
+    findings.push([file, "review symlink target before release"]);
+    continue;
+  }
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) continue;
   if (/(^|\/)\.reach\/|(^|\/)\.env(?:\.|$)(?!example$)|\.(?:p12|pfx|mobileprovision|provisionprofile|p8|key|pem)$|Signing\.local\.xcconfig$/.test(file))
     findings.push([file, "private state or signing material"]);

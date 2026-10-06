@@ -6,6 +6,7 @@
 // session id, replayed user messages, API errors, results, set_model and
 // set_permission_mode. Permission requests (can_use_tool) and their answers
 // follow the shapes in the CLI's own code; they need a signed-in turn to see.
+import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent } from "./compatibility.mjs";
 import { execFile, spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -74,8 +75,11 @@ export function claudeActivity(block) {
 
 // One permission request as the phone shows it.
 export function describeClaudePrompt(id, request = {}) {
+  if (!object(request) || typeof request.tool_name !== "string" || !request.tool_name || (request.input != null && !object(request.input)))
+    throw compatibilityError("claude", "tool approval");
   const input = request.input || {};
-  if (request.tool_name === "AskUserQuestion" && Array.isArray(input.questions))
+  if (request.tool_name === "AskUserQuestion") {
+    validateQuestions(input.questions, "claude");
     return {
       id,
       kind: "question",
@@ -91,6 +95,7 @@ export function describeClaudePrompt(id, request = {}) {
         multiSelect: !!q.multiSelect,
       })),
     };
+  }
   const name = request.display_name || request.tool_name || "a tool";
   const suggestions = Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
   const shown = input.command ?? input.file_path ?? input.notebook_path ?? input.url ?? input.pattern ?? input.host;
@@ -98,7 +103,7 @@ export function describeClaudePrompt(id, request = {}) {
     id,
     kind: "tool",
     tool: request.tool_name || "",
-    title: request.description || `Allow ${name}?`,
+    title: typeof request.description === "string" ? request.description : `Allow ${String(name)}?`,
     command: shown !== undefined ? String(shown) : JSON.stringify(input).slice(0, 600),
     reason: typeof request.decision_reason === "string" ? request.decision_reason : "",
     input,
@@ -135,6 +140,7 @@ export function claudeAnswer(prompt, answer) {
 export function createClaudeHost({
   locate, // async () => absolute path of the claude CLI, or null
   spawn = spawnChild,
+  check = spawn === spawnChild ? (file) => probeAgent("claude", file) : async () => ({ status: "available" }),
   env = process.env,
   now = Date.now,
   // After a turn, Reach keeps its process this long while the phone shows the
@@ -143,8 +149,10 @@ export function createClaudeHost({
   idleMs = 60 * 1000,
   graceMs = 5000,
   readFile = fs.readFileSync,
+  requestTimeout = 15000,
 }) {
   const sessions = new Map();
+  let closed = false;
   const catalogs = new Map(); // folder → its handshake
   let modeList = null;
   // Reach's own environment, never a host app's (a terminal inside Claude Code
@@ -173,17 +181,47 @@ export function createClaudeHost({
       });
     return sessions.get(id);
   };
+  // Told of each change to a session (the chat list hears of its status and
+  // questions this way).
+  const changeListeners = new Set();
   const changed = (s) => {
     s.version++;
     for (const wake of [...s.waiters]) wake();
+    for (const listener of changeListeners) { try { listener(s.id); } catch {} }
   };
-  const write = (s, message) => s.proc?.stdin.write(`${JSON.stringify(message)}\n`);
+  const write = (s, message) => new Promise((resolve, reject) => {
+    const proc = s.proc;
+    if (!proc || proc.stdin.destroyed || proc.stdin.writableEnded || proc.stdin.writable === false)
+      return reject(uncertainDelivery("claude"));
+    let settled = false;
+    const stopped = () => finish(uncertainDelivery("claude"));
+    const finish = (error) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer);
+      proc.off("exit", stopped); proc.off("error", stopped); proc.off("reach-release", stopped);
+      error || s.proc !== proc ? reject(uncertainDelivery("claude")) : resolve();
+    };
+    const timer = setTimeout(stopped, requestTimeout);
+    proc.once("exit", stopped); proc.once("error", stopped); proc.once("reach-release", stopped);
+    try { proc.stdin.write(`${JSON.stringify(message)}\n`, finish); }
+    catch { stopped(); }
+  });
+  const refuse = (s, message) => { void write(s, message).catch(() => {
+    s.error = uncertainDelivery("claude").message;
+    end(s);
+    changed(s);
+  }); };
   const control = (s, request) =>
     new Promise((resolve, reject) => {
       const id = `reach-${randomUUID()}`;
-      s.pending.set(id, { resolve, reject });
-      write(s, { type: "control_request", request_id: id, request });
-      setTimeout(() => s.pending.delete(id) && reject(bad("Claude Code didn't answer.", 504)), 15000).unref?.();
+      const timer = setTimeout(() => {
+        if (s.pending.delete(id)) reject(uncertainDelivery("claude"));
+      }, requestTimeout);
+      s.pending.set(id, { resolve, reject, timer });
+      write(s, { type: "control_request", request_id: id, request }).catch((error) => {
+        clearTimeout(timer);
+        if (s.pending.delete(id)) reject(error);
+      });
     });
   // Let the process go after a quiet while; the next message resumes it.
   const rest = (s) => {
@@ -198,11 +236,14 @@ export function createClaudeHost({
     const proc = s.proc;
     if (!proc) return;
     s.proc = null;
-    s.prompts.clear();
-    for (const waiting of s.pending.values()) waiting.reject(bad("Claude Code disconnected.", 503));
+    proc.emit("reach-release");
+    for (const waiting of s.pending.values()) { clearTimeout(waiting.timer); waiting.reject(uncertainDelivery("claude")); }
     s.pending.clear();
+    s.prompts.clear();
+    s.turns = 0;
     s.status = "idle";
-    changed(s);
+    s.streaming = "";
+    s.activity = null;
     try {
       proc.stdin.end();
     } catch {}
@@ -214,12 +255,25 @@ export function createClaudeHost({
   };
 
   function handle(s, m) {
+    if (!object(m) || typeof m.type !== "string") throw compatibilityError("claude", "stream");
     switch (m.type) {
       case "control_request": {
-        if (typeof m.request_id !== "string" || !m.request_id) return;
+        if (typeof m.request_id !== "string" || !m.request_id || !object(m.request)) {
+          s.error = compatibilityError("claude", "control request").message;
+          changed(s);
+          end(s);
+          return;
+        }
         const request = m.request || {};
         if (request.subtype === "can_use_tool") {
-          s.prompts.set(m.request_id, describeClaudePrompt(m.request_id, request));
+          try {
+            s.prompts.set(m.request_id, describeClaudePrompt(m.request_id, request));
+          } catch (e) {
+            s.error = e.message;
+            refuse(s, { type: "control_response", response: { subtype: "error", request_id: m.request_id, error: e.message } });
+            changed(s);
+            return;
+          }
           s.status = "waiting";
         } else if (request.subtype === "request_user_dialog") {
           s.prompts.set(m.request_id, {
@@ -231,7 +285,7 @@ export function createClaudeHost({
           s.status = "waiting";
         } else {
           // Hooks, MCP and the like have no place on the phone; say so at once.
-          write(s, {
+          refuse(s, {
             type: "control_response",
             response: { subtype: "error", request_id: m.request_id, error: "Not supported by Reach." },
           });
@@ -248,8 +302,10 @@ export function createClaudeHost({
         const waiting = s.pending.get(r.request_id);
         if (!waiting) return;
         s.pending.delete(r.request_id);
+        clearTimeout(waiting.timer);
         if (r.subtype === "error") waiting.reject(bad(r.error || "Claude Code refused that.", 409));
-        else waiting.resolve(r.response || {});
+        else if (r.subtype === "success") waiting.resolve(r.response || {});
+        else waiting.reject(compatibilityError("claude", "control response"));
         return;
       }
       case "system":
@@ -260,7 +316,10 @@ export function createClaudeHost({
         const e = m.event || {};
         if (m.parent_tool_use_id) return; // a sub-agent's text
         if (e.type === "message_start") s.streaming = "";
-        else if (e.type === "content_block_delta" && e.delta?.type === "text_delta") s.streaming += e.delta.text || "";
+        else if (e.type === "content_block_delta" && e.delta?.type === "text_delta") {
+          if (typeof e.delta.text !== "string") throw compatibilityError("claude", "stream text");
+          s.streaming += e.delta.text;
+        }
         else return;
         break;
       }
@@ -268,7 +327,8 @@ export function createClaudeHost({
         if (m.parent_tool_use_id) return;
         s.streaming = "";
         s.items++;
-        const tools = (m.message?.content || []).filter((b) => b?.type === "tool_use");
+        if (!Array.isArray(m.message?.content)) throw compatibilityError("claude", "assistant message");
+        const tools = m.message.content.filter((b) => b?.type === "tool_use");
         if (tools.length) s.activity = claudeActivity(tools.at(-1));
         if (m.error) {
           const text = (m.message?.content || []).find((b) => b?.type === "text")?.text;
@@ -286,8 +346,12 @@ export function createClaudeHost({
         s.streaming = "";
         s.activity = null;
         s.items++;
-        if (m.is_error) s.error = String(m.result || "Claude Code stopped with an error.");
+        // A stop ends the turn as an error with no words ("aborted_streaming"
+        // or "aborted_tools"); it is a stop, not a failure.
+        if (m.is_error && !s.stopping && !/^aborted/.test(m.terminal_reason || ""))
+          s.error = String(m.result || "Claude Code stopped with an error.");
         if (!s.turns) {
+          s.stopping = false;
           s.status = "idle";
           s.prompts.clear();
           rest(s);
@@ -301,7 +365,11 @@ export function createClaudeHost({
 
   async function launch(s, { resume }) {
     const claude = await locate();
+    if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad("Claude Code isn't installed on this Mac.", 404);
+    const compatible = await check(claude);
+    if (compatible.status !== "available") throw compatibilityError("claude", "CLI");
+    if (closed) throw bad("Claude session service is closed.", 503);
     const mode = claudeMode(s.settings.mode);
     const args = [
       "-p",
@@ -332,6 +400,10 @@ export function createClaudeHost({
     proc.stdout.on("data", (chunk) => {
       if (s.proc !== proc) return;
       buffer += chunk;
+      if (buffer.length > 8 * 1024 * 1024) {
+        s.error = compatibilityError("claude", "stream size").message;
+        end(s); changed(s); return;
+      }
       for (let i; (i = buffer.indexOf("\n")) >= 0; ) {
         const line = buffer.slice(0, i);
         buffer = buffer.slice(i + 1);
@@ -339,7 +411,8 @@ export function createClaudeHost({
         try {
           handle(s, JSON.parse(line));
         } catch {
-          /* a line that isn't a message */
+          s.error = compatibilityError("claude", "stream").message;
+          end(s); changed(s); return;
         }
       }
     });
@@ -353,7 +426,7 @@ export function createClaudeHost({
     proc.on("exit", () => {
       if (s.proc !== proc) return;
       s.proc = null;
-      for (const waiting of s.pending.values()) waiting.reject(bad("Claude Code stopped.", 503));
+      for (const waiting of s.pending.values()) { clearTimeout(waiting.timer); waiting.reject(uncertainDelivery("claude")); }
       s.pending.clear();
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
       s.turns = 0;
@@ -364,21 +437,28 @@ export function createClaudeHost({
       changed(s);
     });
     // The handshake the SDK host makes; it also loads the session.
-    write(s, { type: "control_request", request_id: `reach-init-${randomUUID()}`, request: { subtype: "initialize" } });
+    // Never send the user's message before the host accepts the handshake.
+    try { await control(s, { subtype: "initialize" }); }
+    catch (e) { end(s); throw Object.assign(e, { retryable: false }); }
   }
 
-  function turn(s, input) {
-    write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id });
+  async function turn(s, input) {
     s.turns++;
     s.wrote = true;
     s.status = s.status === "waiting" ? "waiting" : "running";
     s.error = null;
     clearTimeout(s.idle);
     changed(s);
+    try { await write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id }); }
+    catch (error) { s.error = error.message; end(s); changed(s); throw error; }
   }
 
   return {
     drives: (id) => !!sessions.get(id)?.proc,
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
+    },
     // Called with a session id (and whether Reach wrote to it) each time
     // Reach lets go of its process.
     onRelease(listener) {
@@ -394,6 +474,8 @@ export function createClaudeHost({
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const input = claudeContent({ text, images }, readFile);
       const s = state(id);
+      const previous = s.sending || Promise.resolve();
+      const operation = previous.catch(() => {}).then(async () => {
       if (cwd) s.cwd = cwd;
       if (model) s.settings.model = model;
       if (effort) s.settings.effort = effort;
@@ -405,8 +487,11 @@ export function createClaudeHost({
         if (model) await control(s, { subtype: "set_model", model });
         if (mode && claudeMode(mode)) await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
       }
-      turn(s, input);
+      await turn(s, input);
       return { turnId: null };
+      });
+      s.sending = operation;
+      return operation;
     },
     async start({ cwd, text, images, model, effort, mode }) {
       if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
@@ -416,50 +501,33 @@ export function createClaudeHost({
       s.cwd = cwd;
       s.settings = { model: model || null, effort: effort || null, mode: mode || null };
       await launch(s, { resume: false });
-      turn(s, input);
+      await turn(s, input);
       return { threadId: id, turnId: null };
     },
     async stop(id) {
       const s = sessions.get(id);
       if (!s?.proc || !s.turns) throw bad("Reach isn't running anything here. Stop it on your Mac.", 409);
-      await control(s, { subtype: "interrupt" });
+      s.stopping = true;
+      // Not stopped after all: a later error in this turn is a real one.
+      await control(s, { subtype: "interrupt" }).catch((error) => {
+        s.stopping = false;
+        throw error;
+      });
       return { stopped: true };
     },
     async respond(id, promptId, answer) {
       const s = sessions.get(id);
       const prompt = s?.prompts.get(String(promptId));
       if (!prompt) throw bad("This prompt was already answered.", 409);
-      if (prompt.replying) throw bad("This answer is already being sent.", 409);
+      if (prompt.attempted) throw bad("This answer was already attempted. Check Claude on your Mac.", 409);
       const response = claudeAnswer(prompt, answer);
-      const proc = s.proc;
-      if (!proc || proc.stdin.destroyed || proc.stdin.writableEnded || proc.stdin.writable === false)
-        throw bad("Claude Code disconnected. Open the live screen to check the request.", 503);
-      prompt.replying = true;
-      try {
-        await new Promise((resolve, reject) => {
-          const stopped = () => finish(bad("Claude Code disconnected before the answer was delivered.", 503));
-          const finish = (error) => {
-            clearTimeout(timer);
-            proc.removeListener("exit", stopped);
-            proc.removeListener("error", stopped);
-            if (error) reject(error);
-            else if (s.proc !== proc) stopped();
-            else resolve();
-          };
-          const timer = setTimeout(() => finish(bad("Claude Code did not confirm delivery. Check the request before retrying.", 504)), 10000);
-          proc.once("exit", stopped);
-          proc.once("error", stopped);
-          try {
-            proc.stdin.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: prompt.id, response } })}\n`, finish);
-          } catch (error) { finish(error); }
-        });
-        if (s.prompts.get(String(promptId)) === prompt) s.prompts.delete(String(promptId));
-        if (!s.prompts.size && s.status === "waiting") s.status = "running";
-        changed(s);
-        return { answered: true };
-      } finally {
-        prompt.replying = false;
-      }
+      prompt.attempted = true;
+      try { await write(s, { type: "control_response", response: { subtype: "success", request_id: prompt.id, response } }); }
+      catch (error) { s.error = error.message; changed(s); throw error; }
+      s.prompts.delete(String(promptId));
+      if (!s.prompts.size && s.status === "waiting") s.status = "running";
+      changed(s);
+      return { answered: true };
     },
     // Ends Reach's process for a session (before the Claude app takes it).
     release(id) {
@@ -476,7 +544,7 @@ export function createClaudeHost({
         version: s.version,
         status: s.status,
         error: s.error,
-        prompts: [...s.prompts.values()].map(({ input, suggestions, replying, ...p }) => p),
+        prompts: [...s.prompts.values()].map(({ input, suggestions, attempted, ...p }) => p),
         streaming: s.streaming,
         activity: s.activity,
         items: s.items,
@@ -538,7 +606,10 @@ export function createClaudeHost({
           stdio: ["pipe", "pipe", "pipe"],
         });
         let buffer = "";
+        let done = false;
         const finish = (found) => {
+          if (done) return;
+          done = true;
           clearTimeout(timer);
           try {
             proc.kill();
@@ -548,6 +619,9 @@ export function createClaudeHost({
         const empty = { models: [], commands: [] };
         const timer = setTimeout(() => finish(empty), 15000);
         proc.on("error", () => finish(empty));
+        proc.on("exit", () => finish(empty));
+        proc.stderr?.on("data", () => {});
+        proc.stdin.on?.("error", () => finish(empty));
         proc.stdout.on("data", (chunk) => {
           buffer += chunk;
           for (let i; (i = buffer.indexOf("\n")) >= 0; ) {
@@ -555,8 +629,12 @@ export function createClaudeHost({
             buffer = buffer.slice(i + 1);
             try {
               const m = JSON.parse(line);
-              if (m.type === "control_response")
-                finish({ models: m.response?.response?.models || [], commands: m.response?.response?.commands || [] });
+              if (m?.type === "control_response" && m.response?.request_id === "models") {
+                const r = m.response;
+                const data = r.response;
+                if (r.subtype !== "success" || !object(data) || ![data.models, data.commands ?? []].every(v => Array.isArray(v) && v.every(object))) return finish(empty);
+                finish({ models: data.models, commands: data.commands || [] });
+              }
             } catch {}
           }
         });
@@ -567,6 +645,7 @@ export function createClaudeHost({
     },
     // Reach is quitting: let every Claude Code process go.
     close() {
+      closed = true;
       for (const s of sessions.values()) end(s);
     },
   };

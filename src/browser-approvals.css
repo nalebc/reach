@@ -1,3 +1,9 @@
+.screen-popup.browser-approval {
+  width: min(720px, calc(100vw - 28px));
+}
+.screen-popup.browser-approval:focus {
+  outline: none;
+}
 .browser-approval .screen-popup-body {
   max-width: 760px;
 }
@@ -44,6 +50,11 @@
   border-radius: 50%;
   box-shadow: 0 0 0 2px white;
   pointer-events: none;
+  display: grid;
+  place-items: center;
+  background: #b62721;
+  color: white;
+  font: 700 10px/1 system-ui;
 }
 .browser-approval .browser-approval-note {
   color: var(--muted, #aab3be);
@@ -55,4 +66,60 @@
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 18px;
+  position: sticky;
+  bottom: -22px;
+  background: var(--panel, #191e1b);
+  padding: 14px 0;
+  z-index: 1;
+  border-top: 1px solid var(--border, #ffffff20);
+}
+.browser-batch-limits { margin: 12px 0; }
+.browser-batch-limits summary { cursor: pointer; font-size: 12px; color: var(--muted, #aab3be); }
+.browser-batch-steps,
+.browser-batch-draft {
+  margin: 10px 0;
+  padding-left: 24px;
+}
+.browser-batch-steps > li,
+.browser-batch-draft > li {
+  padding: 4px 0 8px 4px;
+  border-bottom: 1px solid var(--border, #ffffff20);
+}
+.browser-batch-steps pre,
+.browser-batch-draft pre {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.browser-batch-location,
+.browser-batch-draft small {
+  overflow-wrap: anywhere;
+  color: var(--muted, #aab3be);
+  font-size: 12px;
+}
+.browser-step-status {
+  font-size: 12px;
+  color: var(--muted, #aab3be);
+  text-transform: capitalize;
+}
+.browser-batch-builder {
+  padding: 12px;
+  border: 1px solid var(--border, #ffffff20);
+  border-radius: 10px;
+}
+.browser-batch-builder h3 {
+  display: flex;
+  justify-content: space-between;
+  margin: 16px 0 8px;
+  font-size: 14px;
+}
+.browser-batch-builder h3 span {
+  color: var(--muted, #aab3be);
+  font-weight: 400;
+}
+.browser-batch-draft > li > div {
+  margin-bottom: 8px;
+}
+.browser-batch-draft .button {
+  min-height: 32px;
 }

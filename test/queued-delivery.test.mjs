@@ -225,3 +225,57 @@ test("waiting for the chat (a draft, a Stop, a message) is a 409 with its reason
   await assert.rejects(m.compose.draft(A, { title: "Fix", text: "hel", owner: "phone" }), (e) => e.waiting && e.status === 409 && /Draft stays on your phone/.test(e.message));
   await assert.rejects(m.compose.stop(A, { title: "Fix" }), (e) => e.status === 409 && /Open this chat in Claude to stop it/.test(e.message));
 });
+
+test("the menu bar's helper tells Reach which app is in front, and when it stops telling", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-front-"));
+  let tell;
+  let exit;
+  try {
+    const threads = new AppThreads({
+      file: path.join(dir, "app-threads.json"),
+      listApps: async () => [],
+      platform: "darwin",
+      startHelper: async ({ onEvent, onExit }) => {
+        tell = onEvent;
+        exit = onExit;
+        return { stopped: false, async request() { return {}; }, async stop() {} };
+      },
+    });
+    const fronts = [];
+    const launched = [];
+    threads.onFrontmost = (bundle) => fronts.push(bundle);
+    threads.onLaunched = (bundle) => launched.push(bundle);
+    await threads.showMenu();
+    tell({ event: "frontmost", bundle: "com.anthropic.claudefordesktop" });
+    tell({ event: "launched", bundle: "com.apple.Notes" });
+    tell({ event: "frontmost", bundle: "com.apple.Safari" });
+    assert.deepEqual(fronts, ["com.anthropic.claudefordesktop", "com.apple.Safari"]);
+    assert.deepEqual(launched, ["com.apple.Notes"]);
+    // The helper stopped: no word on the app in front until it's back.
+    threads.stopping = true;
+    exit();
+    assert.equal(fronts.at(-1), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the real menu bar helper says which app is in front as it starts", { skip: process.platform !== "darwin" && "needs macOS", timeout: 120000 }, async () => {
+  const { appDisplaysBinary, AppDisplaysHelper } = await import("../server/app-threads.mjs");
+  const { spawn } = await import("node:child_process");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-front-helper-"));
+  const events = [];
+  const binary = await appDisplaysBinary({ dataDir });
+  const helper = new AppDisplaysHelper(
+    spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, REACH_APP_DISPLAY_SLOTS: "41" } }),
+    { onEvent: (event) => events.push(event) },
+  );
+  try {
+    for (const end = Date.now() + 10000; !events.length && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(events[0]?.event, "frontmost");
+    assert.equal(typeof events[0].bundle, "string");
+  } finally {
+    await helper.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

@@ -324,9 +324,13 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
   try {
     assert.equal(await codexHolder(T, { locks, run: async () => assert.fail("no lock, no lookup") }), null);
     await fs.writeFile(path.join(locks, `${T}.lock`), "");
-    const machine = (own, parent) => async (cmd, args) => ({
-      stdout: cmd.endsWith("lsof") ? "p4242\nf42\n" : args.includes("command=") ? parent : own,
-    });
+    // lsof is asked about Codex's processes only (pgrep), never every process.
+    const machine = (own, parent) => async (cmd, args) => {
+      if (cmd.endsWith("lsof")) assert.deepEqual(args.slice(0, 4), ["-nP", "-a", "-p", "660,4242"]);
+      return {
+        stdout: cmd.endsWith("pgrep") ? "660\n4242\n" : cmd.endsWith("lsof") ? "p4242\nf42\n" : args.includes("command=") ? parent : own,
+      };
+    };
     assert.equal(
       await codexHolder(T, {
         locks,
@@ -341,6 +345,11 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
     assert.equal(await codexHolder(T, { locks, run: machine(" 77 ttys004 codex resume", "-zsh\n") }), "terminal");
     assert.equal(
       await codexHolder(T, { locks, run: async () => Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) }),
+      null,
+    );
+    // No Codex running at all: nobody holds it, and lsof isn't run.
+    assert.equal(
+      await codexHolder(T, { locks, run: async (cmd) => (cmd.endsWith("pgrep") ? Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) : assert.fail("no lsof")) }),
       null,
     );
   } finally {
@@ -477,6 +486,11 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       status: "running",
       prompts: [],
     });
+    // Something new and nothing streaming: answered at once (each wake used
+    // to wait a fixed 60 ms first).
+    const asked = performance.now();
+    await (await call(`/api/sessions/codex/${T}/live?since=2`, owner.token)).json();
+    assert.ok(performance.now() - asked < 45, `answered in ${Math.round(performance.now() - asked)} ms`);
     assert.deepEqual(await (await call("/api/sessions/models?agent=codex", owner.token)).json(), {
       models: [{ id: "codex-model" }],
       mode: "guardian-approvals",
@@ -652,4 +666,40 @@ test("approval is successful only after its real response is delivered; failed d
   assert.deepEqual(await retry, { answered: true });
   assert.equal(attempts, 2);
   assert.deepEqual(live.view(T).prompts, []);
+});
+
+test("uncertain queue cancellation never recommends resending a possibly accepted message", async () => {
+  const daemon = fakeDaemon({
+    "thread/resume": new Error("already has an active writer"),
+    "thread/queue/add": { queuedSubmission: { id: "q1" } },
+    "thread/turns/list": { data: [] },
+    "thread/queue/delete": new Error("socket lost"),
+  });
+  const live = createCodexLive({ daemon, deliverMs: 0 });
+  await live.send(T, { text: "once" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(live.view(T).error, /did not confirm/);
+  assert.equal(live.view(T).outbox, undefined, "an uncertain cancellation never returns a resendable message");
+  assert.equal(daemon.methods().filter(m => m === "thread/queue/add").length, 1);
+});
+
+test("completion of an older Codex turn cannot finish a newer turn", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "new" } } });
+  const live = createCodexLive({ daemon });
+  await live.send(T, { text: "new" });
+  daemon.emit("turn/completed", { threadId: T, turn: { id: "old", status: "completed" } });
+  assert.equal(live.view(T).status, "running");
+  assert.equal(live.view(T).turnId, "new");
+});
+
+test("permission scope is visible and native-only elicitation cannot accept an empty form", async () => {
+  const { describePrompt, answerFor } = await import("../server/agent-sessions/codex-live.mjs");
+  const permissions = { network: { enabled: true }, fileSystem: { write: ["/example"] } };
+  const prompt = describePrompt("item/permissions/requestApproval", { permissions });
+  assert.deepEqual(JSON.parse(prompt.command), permissions);
+  for (const mode of ["form", "url", "openai/userVerification", "future-mode"]) {
+    const p = describePrompt("mcpServer/elicitation/request", { mode, requestedSchema: {}, serverName: "tool" });
+    assert.deepEqual(p.decisions, ["decline", "cancel"]);
+    assert.throws(() => answerFor(p, { decision: "accept" }));
+  }
 });

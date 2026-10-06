@@ -339,3 +339,51 @@ test("Funnel credentials expire after two disconnected minutes and cannot be rev
   assert.deepEqual(restarted.funnelWindow(), closed);
   assert.equal(restarted.verifyFunnel(access.token, f.key), null);
 });
+
+test("owner edits preserve an accepted browser binding while expanding, restricting, and changing expiry", (t) => {
+  const f = fixture(t);
+  const { access, grant } = f.collect(f.invite({ ttlSeconds: 1200 }));
+  const expiresAt = Date.now() + 1800000;
+  const changed = f.auth.changeAccess(grant.clientId, {
+    folders: "keep", screen: "view", terminalIds: [], restrictedTerminal: true, expiresAt,
+  });
+  assert.equal(changed.client.expiresAt, expiresAt);
+  const current = f.auth.verifyFunnel(access.token, f.key);
+  assert.ok(current, "the same browser remains authenticated");
+  assert.equal(f.auth.list().find((c) => c.id === grant.clientId).status, "accepted");
+  assert.equal(current.policy.restrictedTerminal, true);
+  assert.equal(current.policy.commandRequests, undefined);
+  assert.deepEqual(current.policy.terminalIds, []);
+  assert.equal(f.auth.verifyFunnel(access.token, binding()), null);
+  assert.equal(f.auth.verify(access.token), null);
+  f.auth.changeAccess(grant.clientId, { folders: "keep", restrictedTerminal: true, screen: "ask" });
+  const withScreen = f.auth.verifyFunnel(access.token, f.key);
+  assert.equal(withScreen.policy.screen, "ask");
+  assert.equal(withScreen.policy.restrictedTerminal, true);
+  for (const changes of [
+    { folders: "keep", exec: true },
+    { folders: "keep", terminalIds: ["; rm -rf /"] },
+    { folders: [{ root: 0, path: "../private" }], screen: "off" },
+    { folders: "keep", expiresAt: Date.now() + 3601000 },
+  ]) {
+    assert.throws(() => f.auth.changeAccess(grant.clientId, changes));
+    assert.equal(f.auth.verifyFunnel(access.token, f.key).expiresAt, expiresAt, "failed edits are atomic");
+  }
+  f.auth.changeAccess(grant.clientId, { folders: [], screen: "view", expiresAt: Date.now() + 60000 });
+  const restricted = f.auth.verifyFunnel(access.token, f.key);
+  assert.deepEqual(restricted.agentRoots, []);
+  assert.equal(restricted.scopes.includes("files:read"), false);
+  assert.equal(restricted.scopes.includes("browser:request"), false);
+  f.auth.revoke(grant.clientId);
+  assert.equal(f.auth.verifyFunnel(access.token, f.key), null);
+});
+
+test("editing cannot bypass a pending admission or revive a disconnected browser", (t) => {
+  const f = fixture(t);
+  const grant = f.invite();
+  f.claim(grant);
+  assert.throws(() => f.auth.changeAccess(grant.clientId, { folders: "keep", screen: "view" }), { status: 409 });
+  const accepted = f.collect();
+  f.alter((clients) => { clients.find((c) => c.id === accepted.grant.clientId).browserIdleExpiresAt = Date.now() - 1; });
+  assert.throws(() => f.auth.changeAccess(accepted.grant.clientId, { folders: "keep", screen: "view" }), { status: 404 });
+});

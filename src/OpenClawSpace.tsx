@@ -46,6 +46,8 @@ type Overview = {
   sessions: Session[];
   approvals: Approval[];
   error?: string;
+  // What it showed, to wait on its next change (an older Mac has none).
+  version?: string;
 };
 type History = {
   session: Session;
@@ -55,6 +57,7 @@ type History = {
   error: string;
   approvals: Approval[];
   mayHaveOlder: boolean;
+  version?: string;
   phase?: "generation" | "delivery";
   delivery?: {
     channel: string;
@@ -73,11 +76,14 @@ const channelName = (channel: string) =>
   })[channel] || channel;
 
 // One request at a time; stop both requests and polling when this view closes.
-function usePolling<T>(
+// With `watch`, the Mac says when what it answered changed (a request that
+// waits): read again then. A Mac that doesn't is asked every `interval`.
+function usePolling<T extends { version?: string }>(
   peer: Peer,
   route: string,
   interval: number,
   refresh: number,
+  watch?: string,
 ) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
@@ -85,7 +91,9 @@ function usePolling<T>(
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const abort = new AbortController();
+    let watching = !!watch;
     const poll = async () => {
+      let next = interval;
       try {
         if (!document.hidden) {
           const result = await request<T>(peer, route, {
@@ -95,11 +103,25 @@ function usePolling<T>(
             setData(result);
             setError("");
           }
+          if (watch && watching && typeof result?.version === "string") {
+            const asked = Date.now();
+            try {
+              await request(peer, `${watch}${watch.includes("?") ? "&" : "?"}after=${encodeURIComponent(result.version)}`, {
+                signal: AbortSignal.any([abort.signal, AbortSignal.timeout(60000)]),
+              });
+            } catch (e) {
+              // An older Mac without it: asked every `interval`.
+              if ((e as { status?: number }).status !== 404) throw e;
+              watching = false;
+            }
+            // Read again at once, never in a tight loop.
+            if (watching) next = Math.max(0, 250 - (Date.now() - asked));
+          }
         }
       } catch (e) {
         if (active) setError((e as Error).message);
       } finally {
-        if (active) timer = setTimeout(poll, interval);
+        if (active) timer = setTimeout(poll, next);
       }
     };
     void poll();
@@ -173,6 +195,7 @@ function Conversation({
     `${base}/history?${new URLSearchParams({ key: session.key, limit: String(limit) })}`,
     1800,
     refresh,
+    `${base}/changes?${new URLSearchParams({ key: session.key })}`,
   );
   const draftKey = `reach.openclaw.draft:${peer.id}:${session.key}`;
   const [text, setText] = useState(() => {
@@ -520,6 +543,7 @@ export default function OpenClawSpace({
     `${base}/overview`,
     5000,
     refresh,
+    `${base}/changes`,
   );
   const [opened, setOpened] = useState<Session | null>(null);
   const [query, setQuery] = useState("");

@@ -111,7 +111,7 @@ const submit = async (container) => {
   await settle(40);
 };
 
-const loadSnapshot = async (container) => {
+const loadSnapshot = async (container, approvalLabel = "Approve once") => {
   const image = await dom.waitFor(() =>
     container.querySelector(".browser-approval-snapshot img"),
   );
@@ -121,11 +121,11 @@ const loadSnapshot = async (container) => {
   });
   dom.update(() => image.dispatchEvent(new dom.window.Event("load")));
   await dom.waitFor(
-    () => button(container, "Approve once")?.disabled === false,
+    () => button(container, approvalLabel)?.disabled === false,
   );
 };
 
-test("restricted terminal requires folders, disables screen control and creates a separate restricted grant", async () => {
+test("restricted terminal requires folders and preserves independently granted screen control", async () => {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
@@ -166,8 +166,8 @@ test("restricted terminal requires folders, disables screen control and creates 
       .querySelector("input"),
   );
   assert.equal(button(c, "Create invite link").disabled, true, "a shared folder is required");
-  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "view");
-  assert.ok(![...c.querySelector('[aria-label="Screen permission"]').options].some((option) => option.value === "ask"));
+  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "ask");
+  assert.ok([...c.querySelector('[aria-label="Screen permission"]').options].some((option) => option.value === "ask"));
   await click(c.querySelector('[aria-label="Share Projects"]'));
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -182,16 +182,16 @@ test("restricted terminal requires folders, disables screen control and creates 
       ttlSeconds: 900,
       folders: [{ root: 0, path: "" }],
       terminalIds: [],
-      screen: "view",
+      screen: "ask",
       restrictedTerminal: true,
     },
   );
   assert.match(c.textContent, /No sudo, deletion or file changes/);
-  assert.match(c.textContent, /Screen control is off/);
+  assert.doesNotMatch(c.textContent, /Screen control is off/);
   await view.unmount();
 });
 
-test("supervised browser submits inert exact inputs only as pending approval requests", async () => {
+test("supervised browser stages direct screen input only as a pending exact batch", async () => {
   const calls = [];
   let records = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
@@ -200,74 +200,44 @@ test("supervised browser submits inert exact inputs only as pending approval req
     const body = init.body && JSON.parse(init.body);
     calls.push([method, route, body]);
     if (route === "/api/browser")
-      return reply({
-        name: "Muse",
-        expiresAt: Date.now() + 3600000,
-        roots: [],
-        terminals: [],
-        screen: "ask",
-        commandRequests: true,
-      });
+      return reply({ name: "Muse", expiresAt: Date.now() + 3600000, roots: [], terminals: [], screen: "ask", commandRequests: true });
     if (route === "/api/browser/requests" && method === "POST") {
       const { reason, ...action } = body;
       const record = { ...pending(action), reason };
-      records = [record];
-      return reply(record);
+      records = [record]; return reply(record);
     }
     if (route === "/api/browser/requests") return reply(records);
-    if (route === "/api/browser/requests/request-1" && method === "DELETE")
-      return reply({ ok: true });
+    if (route === "/api/browser/requests/request-1" && method === "DELETE") return reply({ status: "cancelled" });
     if (route === "/api/browser/screen") return snapshot();
     return reply({ error: "Unexpected request" }, 404);
   };
-  const view = await render(
-    React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
-  );
+  const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Requested action"]'));
-  assert.equal(
-    button(c, "Scroll down"),
-    undefined,
-    "ask permission cannot use automatic scrolling",
-  );
-  await value(c.querySelector('[aria-label="Requested action"]'), "text");
+  const screen = await dom.waitFor(() => c.querySelector('[aria-label="Screen controls"]'));
+  await dom.waitFor(() => screen.querySelector("img")?.getAttribute("src"));
+  assert.equal(button(c, "Scroll down"), undefined, "ask permission cannot use automatic scrolling");
+  assert.equal(screen.querySelector('[aria-label="Requested action"]'), null, "no coordinate action form is needed");
+  const image = screen.querySelector("img");
+  image.getBoundingClientRect = () => ({ left: 20, top: 30, width: 200, height: 100, right: 220, bottom: 130 });
+  image.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, clientX: 70, clientY: 105 }));
+  await settle();
   const text = '<img src=x onerror="bad()">\nsecond line';
-  await value(c.querySelector('[aria-label="Exact text"]'), text);
-  await value(
-    c.querySelector('[aria-label="Reason for request"]'),
-    "Fill the visible editor",
-  );
-  await submit(c);
-  await dom.waitFor(() =>
-    c.querySelector('[role="log"]')?.textContent.includes("Waiting for owner"),
-  );
-  assert.deepEqual(
-    calls.filter(([m]) => m === "POST"),
-    [
-      [
-        "POST",
-        "/api/browser/requests",
-        { type: "text", text, reason: "Fill the visible editor" },
-      ],
-    ],
-  );
-  assert.match(
-    c.querySelector('[role="log"]').textContent,
-    /Waiting for owner/,
-  );
-  assert.equal(
-    c.querySelectorAll('[role="log"] img, [role="log"] script').length,
-    0,
-  );
-  assert.match(
-    c.querySelector('[role="log"] pre').textContent,
-    /\\nsecond line/,
-  );
-  await click(button(c, "Cancel request"));
-  await dom.waitFor(() =>
-    c.querySelector('[role="log"]')?.textContent.includes("cancelled"),
-  );
-  assert.match(c.querySelector('[role="log"]').textContent, /cancelled/);
+  await value(screen.querySelector('[aria-label="Text to type"]'), text);
+  await value(screen.querySelector('[aria-label="Reason for screen request"]'), "Fill the visible editor");
+  assert.equal(calls.filter(([method]) => method === "POST").length, 0, "clicking and typing only prepares actions");
+  await click(button(screen, "Ask approval · 2"));
+  await dom.waitFor(() => screen.querySelector('[role="status"]')?.textContent.includes("Waiting for owner"));
+  assert.deepEqual(calls.filter(([method]) => method === "POST"), [["POST", "/api/browser/requests", {
+    type: "batch", actions: [{ type: "click", x: 0.25, y: 0.75, button: "left", count: 1 }, { type: "text", text }], reason: "Fill the visible editor",
+  }]]);
+  assert.match(screen.querySelector('[role="status"]').textContent, /Waiting for owner/);
+  const sequence = screen.querySelector('[aria-label="Screen action sequence"]');
+  assert.equal(sequence.querySelectorAll("img,script").length, 0);
+  assert.match(sequence.textContent, /\\nsecond line/);
+  await click(button(screen, "Cancel request"));
+  await dom.waitFor(() => screen.querySelector('[role="status"]')?.textContent.includes("cancelled"));
+  assert.match(screen.querySelector('[role="status"]').textContent, /cancelled/);
+  assert.equal(calls.some(([, route]) => /\/exec|\/screen\/input|\/browser\/scroll/.test(route)), false);
   await view.unmount();
 });
 
@@ -325,144 +295,64 @@ test("command-only browser has no screen actions or execution control", async ()
   await view.unmount();
 });
 
-test("screen and terminal tabs preserve separate approval drafts and shared request history", async () => {
+test("screen and terminal tabs preserve separate drafts and display only their request histories", async () => {
   const calls = [];
   const records = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const method = init.method || "GET";
     calls.push([method, route]);
-    if (route === "/api/browser")
-      return reply({
-        name: "Muse",
-        expiresAt: Date.now() + 3600000,
-        roots: [{ name: "Project", path: "/Project", index: 0 }],
-        terminals: [],
-        screen: "ask",
-        commandRequests: true,
-      });
+    if (route === "/api/browser") return reply({ name: "Muse", expiresAt: Date.now() + 3600000, roots: [{ name: "Project", path: "/Project", index: 0 }], terminals: [], screen: "ask", commandRequests: true });
     if (route === "/api/browser/screen") return snapshot();
     if (route === "/api/files") return reply({ items: [] });
     if (route === "/api/browser/requests" && method === "POST") {
       const { reason, ...action } = JSON.parse(init.body);
-      const record = {
-        ...pending(action),
-        id: `request-${records.length + 1}`,
-        reason,
-      };
-      records.push(record);
-      return reply(record);
+      const record = { ...pending(action), id: `request-${records.length + 1}`, reason };
+      records.push(record); return reply(record);
     }
     if (route === "/api/browser/requests") return reply(records);
     return reply({ error: "Unexpected request" }, 404);
   };
-  const view = await render(
-    React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
-  );
+  const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Requested action"]'));
-  assert.deepEqual(
-    [...c.querySelector('[aria-label="Requested action"]').options].map(
-      (item) => item.value,
-    ),
-    ["click", "text", "key", "scroll"],
-    "screen requests never offer commands",
-  );
-  await value(c.querySelector('[aria-label="Requested action"]'), "text");
-  await value(
-    c.querySelector('[aria-label="Exact text"]'),
-    "Visible editor text",
-  );
-  await value(
-    c.querySelector('[aria-label="Reason for request"]'),
-    "Fill this editor",
-  );
+  const screen = await dom.waitFor(() => c.querySelector('[aria-label="Screen controls"]'));
+  await dom.waitFor(() => screen.querySelector("img")?.getAttribute("src"));
+  assert.equal(screen.querySelector('[aria-label="Requested action"]'), null);
+  await value(screen.querySelector('[aria-label="Text to type"]'), "Visible editor text");
+  await value(screen.querySelector('[aria-label="Reason for screen request"]'), "Fill this editor");
   await click(tab(c, "Terminal"));
-  assert.equal(
-    c.querySelector('[aria-label="Requested action"]').value,
-    "command",
-  );
-  assert.equal(
-    c.querySelector('[aria-label="Requested action"]').options.length,
-    1,
-  );
-  assert.equal(c.querySelector('[aria-label="Exact command"]').value, "");
-  assert.equal(c.querySelector('[aria-label="Reason for request"]').value, "");
-  await value(
-    c.querySelector('[aria-label="Exact command"]'),
-    "sudo apt update",
-  );
-  await value(
-    c.querySelector('[aria-label="Reason for request"]'),
-    "Refresh package lists",
-  );
+  const terminalForm = c.querySelector('form[aria-label="Request an action"]');
+  assert.equal(terminalForm.querySelector('[aria-label="Requested action"]').value, "command");
+  assert.equal(terminalForm.querySelector('[aria-label="Requested action"]').options.length, 1);
+  assert.equal(terminalForm.querySelector('[aria-label="Exact command"]').value, "");
+  assert.equal(terminalForm.querySelector('[aria-label="Reason for request"]').value, "");
+  await value(terminalForm.querySelector('[aria-label="Exact command"]'), "sudo apt update");
+  await value(terminalForm.querySelector('[aria-label="Reason for request"]'), "Refresh package lists");
   await click(tab(c, "Files"));
-  assert.ok(
-    c.querySelector('form[aria-label="Request an action"]').closest("[hidden]"),
-  );
+  assert.ok(terminalForm.closest("[hidden]"));
+  assert.ok(screen.closest("[hidden]"));
   await click(tab(c, "Screen"));
-  assert.equal(
-    c.querySelector('[aria-label="Requested action"]').value,
-    "text",
-  );
-  assert.equal(
-    c.querySelector('[aria-label="Exact text"]').value,
-    "Visible editor text",
-  );
-  assert.equal(
-    c.querySelector('[aria-label="Reason for request"]').value,
-    "Fill this editor",
-  );
-  await submit(c);
+  assert.equal(screen.querySelector('[aria-label="Text to type"]').value, "Visible editor text");
+  assert.equal(screen.querySelector('[aria-label="Reason for screen request"]').value, "Fill this editor");
+  await click(button(screen, "Ask approval · 1"));
   assert.equal(records.length, 1);
-  assert.match(
-    c.querySelector('[role="log"]').textContent,
-    /Visible editor text/,
-  );
+  assert.match(screen.querySelector('[aria-label="Screen action sequence"]').textContent, /Visible editor text/);
   await click(tab(c, "Terminal"));
-  assert.equal(
-    c.querySelector('[aria-label="Exact command"]').value,
-    "sudo apt update",
-  );
-  assert.equal(
-    c.querySelector('[aria-label="Reason for request"]').value,
-    "Refresh package lists",
-  );
-  assert.doesNotMatch(
-    c.querySelector('[role="log"]').textContent,
-    /Visible editor text/,
-  );
+  assert.equal(terminalForm.querySelector('[aria-label="Exact command"]').value, "sudo apt update");
+  assert.equal(terminalForm.querySelector('[aria-label="Reason for request"]').value, "Refresh package lists");
+  const terminalHistory = terminalForm.parentElement.querySelector('[role="log"]');
+  assert.doesNotMatch(terminalHistory.textContent, /Visible editor text/);
   await submit(c);
   assert.equal(records.length, 2);
-  assert.deepEqual(
-    records.map((record) => record.action),
-    [
-      { type: "text", text: "Visible editor text" },
-      { type: "command", command: "sudo apt update" },
-    ],
-  );
-  assert.match(c.querySelector('[role="log"]').textContent, /sudo apt update/);
+  assert.deepEqual(records.map((record) => record.action), [
+    { type: "batch", actions: [{ type: "text", text: "Visible editor text" }] },
+    { type: "command", command: "sudo apt update" },
+  ]);
+  assert.match(terminalHistory.textContent, /sudo apt update/);
   await click(tab(c, "Screen"));
-  assert.match(
-    c.querySelector('[role="log"]').textContent,
-    /Visible editor text/,
-  );
-  assert.doesNotMatch(
-    c.querySelector('[role="log"]').textContent,
-    /sudo apt update/,
-  );
-  assert.equal(
-    calls.filter(
-      ([method, route]) =>
-        method === "GET" && route === "/api/browser/requests",
-    ).length,
-    1,
-    "tab changes keep a single request-history poller",
-  );
-  assert.equal(
-    calls.some(([, route]) => /\/exec|\/screen\/input/.test(route)),
-    false,
-  );
+  assert.match(screen.querySelector('[aria-label="Screen action sequence"]').textContent, /Visible editor text/);
+  assert.doesNotMatch(screen.textContent, /sudo apt update/);
+  assert.equal(calls.some(([, route]) => /\/exec|\/screen\/input/.test(route)), false);
   await view.unmount();
 });
 
@@ -493,7 +383,7 @@ test("owner reviews recorded target and grants exactly one screen action", async
   const c = view.container;
   assert.equal(
     c.querySelector('[aria-label="Exact input"]').textContent,
-    "Click left button at x=0.25, y=0.75 (25% across, 75% down)",
+    "Click the marked point",
   );
   await loadSnapshot(c);
   assert.equal(c.querySelector(".browser-click-marker").style.left, "25%");
@@ -830,13 +720,13 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
     ),
   );
   assert.ok(row);
-  assert.match(row.textContent, /AI browser · scoped access/);
+  assert.ok(button(row, "Edit access"), "browser grants use their scoped access editor");
   assert.equal(
     row.querySelector(".ivt-menu-button"),
     null,
     "cannot convert a browser grant into full or command access",
   );
-  await click(button(c, "Agent"));
+  await click(button(c, "Agent") || button(c, "AI assistant") || button(c, "Muse / AI browser"));
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
@@ -875,12 +765,12 @@ test("restricted terminal review shows the exact folder and runs only after an e
   assert.match(c.textContent, /read-only command allowlist/);
   assert.equal(calls.length, 0, "no capture or command before approval");
   assert.equal(button(c, "Mark handled"), undefined);
-  await click(button(c, "Approve and run once"));
+  await click(button(c, "Approve once"));
   assert.deepEqual(calls, [["POST", "/api/agents/browser-requests/request-1", { decision: "approve" }]]);
   await view.unmount();
 });
 
-test("assistant submits a restricted command with the selected root and sees inert output in terminal history", async () => {
+test("assistant runs a read-only command from the terminal prompt and sees inert logged output", async () => {
   const calls = [];
   const records = [{ ...pending({ type: "terminal", command: "ls", root: 1 }), status: "executed", output: "<script>not executable</script>" }];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
@@ -892,27 +782,29 @@ test("assistant submits a restricted command with the selected root and sees ine
       terminals: [], screen: "off", restrictedTerminal: true,
     });
     if (route === "/api/files") return reply({ items: [] });
-    if (route === "/api/browser/requests" && method === "POST") {
-      const { reason, ...action } = JSON.parse(init.body);
-      calls.push({ ...action, reason });
-      const created = { ...pending(action), id: "new-request", reason };
+    if (route === "/api/browser/terminal" && method === "POST") {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      const created = { ...pending({ type: "terminal", ...body }), id: "new-request", status: "executed", output: "Beginning of notes", completedAt: Date.now() };
       records.unshift(created);
       return reply(created);
     }
-    if (route === "/api/browser/requests") return reply(records);
+    if (route === "/api/browser/terminal/history") return reply(records);
     return reply({ error: "Unexpected request" }, 404);
   };
   const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
   const c = view.container;
   await click(tab(c, "Terminal"));
-  await value(c.querySelector('[aria-label="Command folder"]'), "1");
-  await value(c.querySelector('[aria-label="Exact command"]'), "head -n 5 notes.txt");
-  await value(c.querySelector('[aria-label="Reason for request"]'), "Read the beginning of the notes");
-  await click(button(c, "Request owner approval"));
-  assert.deepEqual(calls, [{ type: "terminal", command: "head -n 5 notes.txt", root: 1, reason: "Read the beginning of the notes" }]);
+  await value(c.querySelector('[aria-label="Terminal shared folder"]'), "1");
+  await value(c.querySelector('[aria-label="Terminal command"]'), "head -n 5 notes.txt");
+  c.querySelector('form[aria-label="Terminal command prompt"]').dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await settle(50);
+  assert.deepEqual(calls, [{ command: "head -n 5 notes.txt", root: 1, cwd: "" }]);
   assert.equal(c.querySelector('[aria-label="Command output"]').textContent, "<script>not executable</script>");
   assert.equal(c.querySelector('[aria-label="Command output"] script'), null);
-  assert.match(c.querySelector('[aria-label="Action request history"]').textContent, /Waiting for owner/);
+  assert.match(c.querySelector('[aria-label="Command transcript"]').textContent, /Beginning of notes/);
+  assert.equal(c.querySelector('[aria-label="Reason for request"]'), null);
+  assert.equal(button(c, "Request owner approval"), undefined);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });
@@ -942,4 +834,317 @@ test("approved cd updates subsequent commands but denied cd does not", async () 
   await click(button(view.container, "Request owner approval"));
   assert.deepEqual(writes, [{ type: "terminal", command: "cat notes.txt", root: 0, cwd: "nested", reason: "Read notes" }]);
   await view.unmount();
+});
+
+test("screen batch builder submits only the ordered list for one approval and limits it to five", async () => {
+  const writes = [];
+  globalThis.fetch = dom.window.fetch = async (_url, init = {}) => {
+    if (init.method === "POST") {
+      const { reason, ...action } = JSON.parse(init.body);
+      writes.push({ ...action, reason });
+      return reply({ ...pending(action), reason, completedCount: 0 });
+    }
+    return reply([]);
+  };
+  const view = await render(React.createElement(BrowserActionRequests, {
+    peer, screen: true, commands: false, activeKind: "screen", onError: assert.fail,
+  }));
+  const c = view.container;
+  await click(button(c, "Add to batch"));
+  await value(c.querySelector('[aria-label="Requested action"]'), "text");
+  const text = '<script>inert</script>\n\u202eexact';
+  await value(c.querySelector('[aria-label="Exact text"]'), text);
+  await click(button(c, "Add to batch"));
+  await value(c.querySelector('[aria-label="Requested action"]'), "key");
+  await click(button(c, "Add to batch"));
+  await click(button(c, "Add to batch"));
+  await click(button(c, "Add to batch"));
+  assert.equal(c.querySelectorAll('[aria-label="Batch draft"] > li').length, 5);
+  assert.equal(button(c, "Add to batch").disabled, true);
+  await click(c.querySelector('[aria-label="Remove action 4"]'));
+  await click(c.querySelector('[aria-label="Remove action 4"]'));
+  assert.equal(c.querySelectorAll('[aria-label="Batch draft"] > li').length, 3);
+  assert.equal(button(c, "Add to batch").disabled, false);
+  assert.equal(c.querySelector('[aria-label="Batch draft"] script'), null);
+  assert.match(c.querySelector('[aria-label="Batch draft"]').textContent, /\\n\\u202eexact/);
+  await value(c.querySelector('[aria-label="Reason for request"]'), "Fill and submit the visible field");
+  await click(button(c, "Request approval for 3 actions"));
+  assert.deepEqual(writes, [{
+    type: "batch", actions: [
+      { type: "click", x: 0.5, y: 0.5, button: "left", count: 1 },
+      { type: "text", text },
+      { type: "key", key: "enter" },
+    ], reason: "Fill and submit the visible field",
+  }]);
+  assert.equal(c.querySelector('[aria-label="Batch draft"]'), null);
+  assert.match(c.querySelector('[role="log"]').textContent, /0 of 3 actions completed/);
+});
+
+test("owner reviews a screen batch once and keeps partial execution results visible", async () => {
+  const actions = [
+    { type: "click", x: 0.25, y: 0.75, button: "left", count: 1 },
+    { type: "text", text: "hello\n\u202eworld" },
+    { type: "key", key: "enter" },
+  ];
+  const item = { ...pending({ type: "batch", actions }), completedCount: 0 };
+  const writes = [];
+  let resolved = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (new URL(url).pathname.endsWith("/screen")) return snapshot();
+    writes.push(JSON.parse(init.body));
+    return reply({ ...item, status: "failed", completedCount: 1,
+      error: "Screen control became unavailable.",
+      steps: actions.map((action, index) => ({ action, status: ["executed", "failed", "skipped"][index] })),
+    });
+  };
+  const view = await render(React.createElement(BrowserApprovalReview, {
+    peer, item, onClose() {}, onResolved() { resolved++; },
+  }));
+  const c = view.container;
+  assert.equal(c.querySelectorAll('[aria-label="Exact action sequence"] > li').length, 3);
+  assert.match(c.textContent, /screen may change between the listed actions/);
+  assert.match(c.textContent, /does not classify clicks or typing as safe or dangerous/);
+  assert.match(c.textContent, /checks this screen before the first action/);
+  assert.match(c.textContent, /20 seconds/);
+  assert.equal(button(c, "Approve 3 actions once").disabled, true);
+  await loadSnapshot(c, "Approve 3 actions once");
+  await click(button(c, "Approve 3 actions once"));
+  assert.deepEqual(writes, [{ decision: "approve", reviewedBatch: true }]);
+  assert.equal(resolved, 0, "batch results stay open for review");
+  assert.match(c.textContent, /1 of 3 actions completed/);
+  assert.match(c.querySelector('[aria-label="Batch action results"]').textContent, /executed[\s\S]*failed[\s\S]*skipped/);
+  assert.equal(button(c, "Approve 3 actions once").disabled, true);
+});
+
+test("owner can stop the remainder while an approved batch is running", async () => {
+  const actions = [{ type: "key", key: "tab" }, { type: "key", key: "enter" }];
+  const item = { ...pending({ type: "batch", actions }), status: "executing", completedCount: 1,
+    steps: actions.map((action, index) => ({ action, status: index ? "executing" : "executed" })),
+  };
+  const writes = [];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (new URL(url).pathname.endsWith("/screen")) return snapshot();
+    writes.push(JSON.parse(init.body));
+    return reply({ ...item, status: "cancelled", steps: [item.steps[0], { ...item.steps[1], status: "skipped" }] });
+  };
+  const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() {} }));
+  const c = view.container;
+  assert.equal(button(c, "Approve 2 actions once").disabled, true);
+  assert.match(c.textContent, /1 of 2 actions completed/);
+  await click(button(c, "Stop remaining actions"));
+  assert.deepEqual(writes, [{ decision: "deny" }]);
+  assert.equal(button(c, "Stop remaining actions"), undefined);
+  assert.match(c.textContent, /cancelled/);
+  assert.match(c.textContent, /Completed actions are not undone/);
+});
+
+test("terminal batch review shows every exact root and cwd with no screen fetch", async () => {
+  const actions = [
+    { type: "terminal", command: "ls", root: 0, cwd: "nested" },
+    { type: "terminal", command: "cat note.txt", root: 1 },
+  ];
+  const item = { ...pending({ type: "batch", actions }), steps: [
+    { action: actions[0], status: "pending", folder: "/shared/project" },
+    { action: actions[1], status: "pending", folder: "/shared/notes" },
+  ] };
+  const calls = [];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    calls.push([new URL(url).pathname, init.body && JSON.parse(init.body)]);
+    return reply({ ...item, status: "executed", completedCount: 2, steps: item.steps.map((step) => ({ ...step, status: "executed", output: "<img src=x>" })) });
+  };
+  const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() {} }));
+  const c = view.container;
+  const list = c.querySelector('[aria-label="Exact action sequence"]');
+  assert.match(list.textContent, /"ls"[\s\S]*"\/shared\/project"[\s\S]*"\/nested"/);
+  assert.match(list.textContent, /"cat note.txt"[\s\S]*"\/shared\/notes"[\s\S]*"\/"/);
+  assert.equal(calls.length, 0);
+  assert.match(c.textContent, /30 seconds/);
+  await click(button(c, "Approve 2 actions once"));
+  assert.deepEqual(calls, [["/api/agents/browser-requests/request-1", { decision: "approve", reviewedBatch: true }]]);
+  assert.equal(c.querySelector('[aria-label="Action 1 output"]').textContent, "<img src=x>");
+  assert.equal(c.querySelector('[aria-label="Action 1 output"] img'), null);
+});
+
+test("manual commands cannot be batched and tab changes keep screen batches separate", async () => {
+  let setKind;
+  const writes = [];
+  globalThis.fetch = dom.window.fetch = async (_url, init = {}) => {
+    if (init.method === "POST") {
+      const { reason, ...action } = JSON.parse(init.body);
+      writes.push({ ...action, reason });
+      return reply({ ...pending(action), reason });
+    }
+    return reply([]);
+  };
+  function Requests() {
+    const [activeKind, set] = React.useState("screen");
+    setKind = set;
+    return React.createElement(BrowserActionRequests, { peer, screen: true, commands: true, activeKind, onError: assert.fail });
+  }
+  const view = await render(React.createElement(Requests));
+  const c = view.container;
+  await click(button(c, "Add to batch"));
+  dom.update(() => setKind("command"));
+  await settle();
+  assert.equal(button(c, "Add to batch"), undefined);
+  assert.equal(c.querySelector('[aria-label="Batch draft"]'), null);
+  await value(c.querySelector('[aria-label="Exact command"]'), "sudo test");
+  await value(c.querySelector('[aria-label="Reason for request"]'), "Owner handles this");
+  await click(button(c, "Request owner approval"));
+  assert.deepEqual(writes, [{ type: "command", command: "sudo test", reason: "Owner handles this" }]);
+  dom.update(() => setKind("screen"));
+  await settle();
+  assert.equal(c.querySelectorAll('[aria-label="Batch draft"] > li').length, 1);
+  assert.doesNotMatch(c.querySelector('[aria-label="Batch draft"]').textContent, /sudo/);
+});
+
+test("guest stops executing batches and keeps successful terminal cwd from partial results", async () => {
+  const actions = [
+    { type: "terminal", command: "cd nested", root: 0 },
+    { type: "terminal", command: "cat missing.txt", root: 0 },
+  ];
+  const item = { ...pending({ type: "batch", actions }), status: "executing", completedCount: 1, steps: [
+    { action: actions[0], status: "executed", directory: "nested", completedAt: Date.now(), output: "nested" },
+    { action: actions[1], status: "executing" },
+  ] };
+  const calls = [];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (init.method === "DELETE") {
+      calls.push(["DELETE", new URL(url).pathname]);
+      return reply({ ...item, status: "cancelled", steps: [item.steps[0], { ...item.steps[1], status: "skipped" }] });
+    }
+    return reply([item]);
+  };
+  const view = await render(React.createElement(BrowserActionRequests, {
+    peer, screen: false, commands: true, restrictedTerminal: true, activeKind: "command",
+    roots: [{ index: 0, name: "Project", path: "/shared/project" }], onError: assert.fail,
+  }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector('[aria-label="Working folder"]')?.textContent.endsWith("/nested"));
+  await click(button(c, "Stop remaining actions"));
+  assert.deepEqual(calls, [["DELETE", "/api/browser/requests/request-1"]]);
+  assert.match(c.querySelector('[role="log"]').textContent, /1 of 2 actions completed/);
+  assert.match(c.querySelector('[role="log"]').textContent, /Remaining actions stopped/);
+  assert.match(c.querySelector('[aria-label="Batch action results"]').textContent, /skipped/);
+  await value(c.querySelector('[aria-label="Exact command"]'), "cat notes.txt");
+  await click(button(c, "Add to batch"));
+  assert.match(c.querySelector('[aria-label="Batch draft"]').textContent, /Working folder: \/nested/);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("owner can reopen progress for an executing batch from Needs you", async () => {
+  const actions = [{ type: "key", key: "tab" }, { type: "key", key: "enter" }];
+  globalThis.fetch = dom.window.fetch = async (url) => new URL(url).pathname.endsWith("/screen")
+    ? snapshot()
+    : reply([{ ...pending({ type: "batch", actions }), status: "executing", completedCount: 1 }]);
+  function Prompts() {
+    const approvals = useBrowserApprovals(peer, true);
+    return React.createElement(React.Fragment, null,
+      React.createElement(NeedsYouStrip, { items: approvals.items }), approvals.review);
+  }
+  const view = await render(React.createElement(Prompts));
+  const c = view.container;
+  await dom.waitFor(() => button(c, "View progress"));
+  assert.match(c.textContent, /Muse is running approved actions/);
+  await click(button(c, "View progress"));
+  assert.ok(button(c, "Stop remaining actions"));
+  assert.equal(button(c, "Approve 2 actions once").disabled, true);
+});
+
+test("owner approves one scoped terminal change with explicit review acknowledgement and sees its result", async () => {
+  const calls = [];
+  let resolved = 0;
+  const item = { ...pending({ type: "terminal-change", command: 'mkdir "new notes"', root: 0, cwd: "research" }), folder: "/shared/project/research" };
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    calls.push([init.method || "GET", new URL(url).pathname, init.body && JSON.parse(init.body)]);
+    return reply({ ...item, status: "executed", output: "Created new notes" });
+  };
+  const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() { resolved++; } }));
+  const c = view.container;
+  assert.equal(c.querySelector('[aria-label="Requested command"]').textContent, JSON.stringify('mkdir "new notes"'));
+  assert.equal(c.querySelector('[aria-label="Command folder"]').textContent, '"/shared/project/research"');
+  assert.match(c.textContent, /changes files inside the shared folder/);
+  assert.match(c.textContent, /never grants access to other folders/);
+  assert.match(c.textContent, /Scripts, sudo, and unrestricted shells remain blocked/);
+  assert.doesNotMatch(c.textContent, /Assistant’s reason/);
+  assert.equal(calls.length, 0, "file changes need no screen capture and cannot execute before review");
+  assert.equal(button(c, "Approve once").disabled, false);
+  await click(button(c, "Approve once"));
+  assert.deepEqual(calls, [["POST", "/api/agents/browser-requests/request-1", { decision: "approve", reviewedTerminalChange: true }]]);
+  assert.match(c.textContent, /Created new notes/);
+  assert.equal(resolved, 0, "result stays visible");
+  assert.equal(button(c, "Approve once").disabled, true);
+});
+
+test("denying a scoped terminal change never grants review acknowledgement or execution", async () => {
+  const calls = [];
+  const item = { ...pending({ type: "terminal-change", command: "rm draft.txt", root: 0 }), folder: "/shared/project" };
+  globalThis.fetch = dom.window.fetch = async (_url, init = {}) => { calls.push(JSON.parse(init.body)); return reply({ ...item, status: "denied" }); };
+  const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() {} }));
+  await click(button(view.container, "Deny"));
+  assert.deepEqual(calls, [{ decision: "deny" }]);
+  assert.equal(button(view.container, "Approve once").disabled, true);
+});
+
+test("screen approval controls stay available alongside a scoped terminal with approved file changes", async () => {
+  const terminalRecords = [], screenRecords = [];
+  const posts = [];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    const method = init.method || "GET";
+    if (route === "/api/browser") return reply({ name: "Muse", roots: [{ index: 0, name: "Project", path: "/shared/project" }], terminals: [], screen: "ask", restrictedTerminal: true, terminalApproval: true, expiresAt: Date.now() + 60000 });
+    if (route === "/api/browser/screen") return snapshot();
+    if (route === "/api/browser/terminal/history") return reply(terminalRecords);
+    if (route === "/api/browser/terminal" && method === "POST") {
+      const body = JSON.parse(init.body); posts.push([route, body]);
+      const item = { ...pending({ type: "terminal", ...body }), id: "terminal-ls", status: "executed", output: "notes.txt" };
+      terminalRecords.push(item); return reply(item);
+    }
+    if (route === "/api/browser/requests" && method === "POST") {
+      const { reason, ...action } = JSON.parse(init.body); posts.push([route, { ...action, reason }]);
+      const item = { ...pending(action), reason }; screenRecords.push(item); return reply(item);
+    }
+    if (route === "/api/browser/requests") return reply(screenRecords);
+    if (route === "/api/files") return reply({ items: [] });
+    return reply({ error: "Unexpected route" }, 404);
+  };
+  const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd: assert.fail })); const c = view.container;
+  const screen = await dom.waitFor(() => c.querySelector('[aria-label="Screen controls"]'));
+  await dom.waitFor(() => screen.querySelector("img")?.getAttribute("src"));
+  await value(screen.querySelector('[aria-label="Text to type"]'), "project notes");
+  await value(screen.querySelector('[aria-label="Reason for screen request"]'), "Fill the selected search field");
+  await click(tab(c, "Terminal"));
+  assert.ok(screen.closest("[hidden]"));
+  assert.ok(c.querySelector('[aria-label="Terminal command"]'));
+  assert.equal(c.querySelector('[aria-label="Reason for request"]'), null);
+  await value(c.querySelector('[aria-label="Terminal command"]'), "ls");
+  c.querySelector('form[aria-label="Terminal command prompt"]').dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await dom.waitFor(() => c.querySelector('[aria-label="Command transcript"]').textContent.includes("notes.txt"));
+  await click(tab(c, "Screen"));
+  assert.equal(screen.closest("[hidden]"), null);
+  assert.equal(screen.querySelector('[aria-label="Text to type"]').value, "project notes");
+  assert.equal(button(screen, "Ask approval · 1").disabled, false);
+  await click(button(screen, "Ask approval · 1"));
+  assert.deepEqual(posts, [
+    ["/api/browser/terminal", { command: "ls", root: 0, cwd: "" }],
+    ["/api/browser/requests", { type: "batch", actions: [{ type: "text", text: "project notes" }], reason: "Fill the selected search field" }],
+  ]);
+  assert.match(screen.textContent, /Waiting for owner approval/);
+  assert.deepEqual(dom.errors, []);
+});
+
+test('script review is an exact command and folder with Approve once and Deny',async()=>{
+ const item={...pending({type:'terminal-script',command:'node report.js',root:0}),folder:'/Users/test/Desktop'};
+ const calls=[];globalThis.fetch=dom.window.fetch=async(url,init={})=>{calls.push([new URL(url).pathname,JSON.parse(init.body)]);return reply({...item,status:'executed',exitCode:0,output:'Report ready'});};
+ const view=await render(React.createElement(BrowserApprovalReview,{peer,item,onClose(){},onResolved(){}}));const c=view.container;
+ assert.match(c.textContent,/node report.js/);assert.match(c.textContent,/\/Users\/test\/Desktop/);assert.equal(c.querySelector('img'),null);assert.ok(button(c,'Deny'));assert.equal(button(c,'Approve once').disabled,false);assert.equal(c.querySelector('textarea'),null);
+ await click(button(c,'Approve once'));assert.deepEqual(calls,[[`/api/agents/browser-requests/${item.id}`,{decision:'approve',reviewedScript:true}]]);assert.match(c.textContent,/Report ready/);assert.equal(button(c,'Approve once').disabled,true);
+});
+
+test('session approval button sends a distinct reviewed owner decision and explains invitation boundaries',async()=>{
+ const item={...pending({type:'terminal-script',command:'node report.js',root:0}),folder:'/Users/test/Desktop'};const writes=[];
+ globalThis.fetch=dom.window.fetch=async(_url,init={})=>{writes.push(JSON.parse(init.body));return reply({...item,status:'executed',output:'done'});};
+ const view=await render(React.createElement(BrowserApprovalReview,{peer,item,onClose(){},onResolved(){}}));const c=view.container;
+ assert.ok(button(c,'Approve once'));assert.ok(button(c,'Deny'));assert.match(c.textContent,/exact command and folder/);assert.match(c.textContent,/new invite starts fresh/);
+ await click(button(c,'Always approve this session'));assert.deepEqual(writes,[{decision:'approve-session',reviewedScript:true}]);assert.equal(button(c,'Always approve this session').disabled,true);
 });

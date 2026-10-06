@@ -28,18 +28,34 @@ export type BrowserAction =
     }
   | { type: "scroll"; direction: "up" | "down"; amount: number }
   | { type: "command"; command: string }
-  | { type: "terminal"; command: string; root: number; cwd?: string };
+  | { type: "terminal"; command: string; root: number; cwd?: string }
+  | { type: "terminal-change"; command: string; root: number; cwd?: string }
+  | { type: "terminal-script"; command: string; root: number; cwd?: string };
+export type BrowserBatchAction = { type: "batch"; actions: BrowserAction[] };
+export type BrowserRequestStep = {
+  action: BrowserAction;
+  status: "pending" | "executing" | "executed" | "failed" | "skipped";
+  output?: string;
+  error?: string;
+  folder?: string;
+  directory?: string;
+  completedAt?: number;
+};
 export type BrowserRequest = {
   id: string;
   clientId: string;
   name: string;
-  action: BrowserAction;
+  action: BrowserAction | BrowserBatchAction;
+  steps?: BrowserRequestStep[];
+  completedCount?: number;
+  attemptedCount?: number;
   reason: string;
   status: string;
   createdAt: number;
   expiresAt: number;
   error?: string;
   output?: string;
+  approval?: "automatic" | "owner" | "session";
   folder?: string;
   directory?: string;
   completedAt?: number;
@@ -53,10 +69,12 @@ const quotedInput = (value: string) =>
     (character) =>
       `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-export function browserActionWords(action: BrowserAction): string {
+export function browserActionWords(action: BrowserAction | BrowserBatchAction): string {
   switch (action.type) {
+    case "batch":
+      return `${action.actions.length} actions, once: ${action.actions.map(browserActionWords).join(" → ")}`;
     case "click":
-      return `${action.count === 2 ? "Double-click" : "Click"} ${action.button} button at x=${action.x}, y=${action.y} (${Math.round(action.x * 100)}% across, ${Math.round(action.y * 100)}% down)`;
+      return `${action.count === 2 ? "Double-click" : action.button === "right" ? "Right-click" : "Click"} the marked point`;
     case "text":
       return `Type text: ${quotedInput(action.text)}`;
     case "key":
@@ -65,8 +83,47 @@ export function browserActionWords(action: BrowserAction): string {
       return `Scroll ${action.direction}, amount ${action.amount}`;
     case "command":
     case "terminal":
+    case "terminal-script":
+    case "terminal-change":
       return quotedInput(action.command);
   }
+}
+
+
+const commandAction = (action: BrowserAction | BrowserBatchAction) =>
+  action.type === "command" || action.type === "terminal" || action.type === "terminal-change" || action.type === "terminal-script" ||
+  (action.type === "batch" && action.actions.every((step) => step.type === "terminal"));
+
+function BatchSteps({ item, progress = false }: { item: BrowserRequest; progress?: boolean }) {
+  if (item.action.type !== "batch") return null;
+  return (
+    <ol className="browser-batch-steps" aria-label={progress ? "Batch action results" : "Exact action sequence"}>
+      {item.action.actions.map((action, index) => {
+        const step = item.steps?.[index];
+        return (
+          <li key={index}>
+            {progress && <span className="browser-step-status">{step?.status || "pending"}</span>}
+            <pre>{action.type === "click" ? browserActionWords(action).replace("the marked point", `point ${index + 1}`) : browserActionWords(action)}</pre>
+            {action.type === "terminal" && (
+              <p className="browser-batch-location">
+                Shared folder: <code>{quotedInput(step?.folder || `Folder ${action.root + 1}`)}</code><br />
+                Working folder: <code>{quotedInput(`/${action.cwd || ""}`)}</code>
+              </p>
+            )}
+            {step?.output !== undefined && (
+              <pre className="browser-output" aria-label={`Action ${index + 1} output`}>
+                {step.output || "Command completed with no output."}
+              </pre>
+            )}
+            {step?.directory !== undefined && (
+              <p className="browser-batch-location">Resulting working folder: <code>{quotedInput(`/${step.directory}`)}</code></p>
+            )}
+            {step?.error && <p className="error">{step.error}</p>}
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export function useBrowserApprovals(
@@ -101,15 +158,15 @@ export function useBrowserApprovals(
         if (live) {
           const current = Array.isArray(list)
             ? list.filter(
-                (r) => r.status === "pending" && r.expiresAt > Date.now(),
+                (r) => (r.status === "pending" && r.expiresAt > Date.now()) ||
+                  (["batch", "terminal-change"].includes(r.action.type) && r.status === "executing"),
               )
             : [];
           setRequests(current);
-          setOpened((old) =>
-            old && !current.some((r) => r.id === old.id)
-              ? { ...old, status: "ended" }
-              : old,
-          );
+          setOpened((old) => old
+            ? (Array.isArray(list) ? list.find((r) => r.id === old.id) : null) ||
+              { ...old, status: "ended" }
+            : old);
         }
       } catch {
         // Never retain an actionable prompt after losing access to its owner API.
@@ -134,10 +191,10 @@ export function useBrowserApprovals(
     ? requests.map((r) => ({
         key: `browser:${r.id}`,
         icon: <Bot size={22} />,
-        title: `${r.name} ${r.action.type === "command" ? "needs a command handled" : "needs your approval"}`,
+        title: `${r.name} ${r.status === "executing" ? "is running approved actions" : r.action.type === "command" ? "needs a command handled" : "needs your approval"}`,
         detail: browserActionWords(r.action),
         actions: [
-          { label: "Review request", primary: true, opens: true, run: () => setOpened(r) },
+          { label: r.status === "executing" ? "View progress" : "Review request", primary: true, opens: true, run: () => setOpened(r) },
         ],
       }))
     : [];
@@ -160,7 +217,7 @@ export function useBrowserApprovals(
 
 export function BrowserApprovalReview({
   peer,
-  item,
+  item: incomingItem,
   onClose,
   onResolved,
 }: {
@@ -169,7 +226,15 @@ export function BrowserApprovalReview({
   onClose: () => void;
   onResolved: () => void;
 }) {
+  const [outcome, setOutcome] = useState<BrowserRequest | null>(null);
+  const [rememberedForSession, setRememberedForSession] = useState(false);
+  const item = outcome?.status === "executing" && incomingItem.status !== "pending"
+    ? incomingItem
+    : outcome || incomingItem;
+  const batch = item.action.type === "batch" ? item.action : null;
+  const executing = item.status === "executing";
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState("");
   const [snapshotImage, setSnapshotImage] = useState<{
     url: string;
@@ -183,8 +248,11 @@ export function BrowserApprovalReview({
   const [finished, setFinished] = useState(false);
   const [now, setNow] = useState(Date.now());
   const pending = useRef(false);
-  const restrictedTerminal = item.action.type === "terminal";
-  const command = item.action.type === "command" || restrictedTerminal;
+  const script = item.action.type === "terminal-script";
+  const terminalChange = item.action.type === "terminal-change" || script;
+  const restrictedTerminal = item.action.type === "terminal" ||
+    !!batch?.actions.every((action) => action.type === "terminal");
+  const command = commandAction(item.action);
   const expired =
     item.expiresAt <= now || item.status !== "pending" || finished;
   useEffect(() => {
@@ -225,12 +293,12 @@ export function BrowserApprovalReview({
       if (image) URL.revokeObjectURL(image);
     };
   }, [peer.url, peer.token, item.id, command, snapshotSource]);
-  const decide = async (decision: "approve" | "deny" | "handled") => {
+  const decide = async (decision: "approve" | "approve-session" | "deny" | "handled") => {
     if (
       pending.current ||
       expired ||
-      (decision === "approve" &&
-        !restrictedTerminal &&
+      (["approve", "approve-session"].includes(decision) &&
+        !restrictedTerminal && !terminalChange &&
         (!snapshotReady || command))
     )
       return;
@@ -241,8 +309,15 @@ export function BrowserApprovalReview({
       const result = await post<BrowserRequest>(
         peer,
         `/api/agents/browser-requests/${encodeURIComponent(item.id)}`,
-        { decision },
+        { decision, ...(batch && decision === "approve" ? { reviewedBatch: true } : {}), ...(terminalChange && ["approve", "approve-session"].includes(decision) ? script ? { reviewedScript: true } : { reviewedTerminalChange: true } : {}) },
       );
+      if (decision === "approve-session" && result.status === "executed") setRememberedForSession(true);
+      if (batch || terminalChange) {
+        setOutcome({ ...item, ...result });
+        setFinished(result.status !== "pending" && result.status !== "executing");
+        if (result.error) setError(result.error);
+        return;
+      }
       if (["failed", "revoked", "expired"].includes(result.status)) {
         setFinished(true);
         setError(
@@ -259,20 +334,39 @@ export function BrowserApprovalReview({
       setBusy(false);
     }
   };
+  const stopBatch = async () => {
+    if (stopping || (!batch && !terminalChange)) return;
+    setStopping(true);
+    try {
+      const result = await post<BrowserRequest>(peer,
+        `/api/agents/browser-requests/${encodeURIComponent(item.id)}`, { decision: "deny" });
+      setOutcome({ ...item, ...result });
+      setFinished(true);
+    } catch (e) { setError((e as Error).message); }
+    finally { setStopping(false); }
+  };
   return (
     <ScreenPopup
-      title={`${item.name}: ${restrictedTerminal ? "review terminal command" : command ? "handle on computer" : "review screen action"}`}
+      title={`${item.name}: ${batch ? `review ${batch.actions.length} actions` : restrictedTerminal || terminalChange ? "review terminal command" : command ? "handle on computer" : "review screen action"}`}
       onClose={onClose}
       className="browser-approval"
     >
       <p>
-        {restrictedTerminal
+        {batch
+          ? restrictedTerminal
+            ? "Run these exact read-only commands once, in order, in the folders shown. Commands cannot change files, run scripts, or use sudo."
+            : "Run these exact inputs once, in order. They can operate any app, including Terminal."
+          : script
+          ? "Run this command once inside the shared folder. No network, administrator access or helper processes."
+          : terminalChange
+          ? "This command changes files inside the shared folder shown below. Approval runs only this exact command once and never grants access to other folders. Scripts, sudo, and unrestricted shells remain blocked."
+          : restrictedTerminal
           ? "Reach verified this against its read-only command allowlist. Approve once to run it in the shared folder below and return the output. It cannot change files, run scripts, use sudo, or type into your existing terminals."
           : command
             ? "Handle on computer. Review this exact command and run it yourself only if you want to. Mark handled tells the assistant you are finished; it does not execute anything."
             : "Approve from your phone. Screen actions can operate any app, including Terminal. Typing or Enter can execute commands in Terminal. Approve only if the target and full text are intended."}
       </p>
-      {restrictedTerminal && (
+      {(restrictedTerminal || terminalChange) && !batch && (
         <>
           <h3>Shared folder</h3>
           <pre aria-label="Command folder">
@@ -280,18 +374,20 @@ export function BrowserApprovalReview({
           </pre>
         </>
       )}
-      <h3>{command ? "Requested command" : "Exact input"}</h3>
-      <pre aria-label={command ? "Requested command" : "Exact input"}>
-        {browserActionWords(item.action)}
-      </pre>
-      {(command || item.action.type === "text") && (
+      <h3>{batch ? "Exact action sequence" : command ? "Requested command" : "Exact input"}</h3>
+      {batch ? <BatchSteps item={item} progress={busy || item.status !== "pending"} /> : (
+        <pre aria-label={command ? "Requested command" : "Exact input"}>
+          {browserActionWords(item.action)}
+        </pre>
+      )}
+      {((command && !script) || item.action.type === "text" || batch?.actions.some((action) => action.type === "text")) && (
         <p className="browser-approval-note">
           Quoted exactly. Escapes such as \\n and \\u202e make hidden characters
           visible.
         </p>
       )}
-      <h3>Assistant’s reason (untrusted explanation)</h3>
-      <p className="browser-request-reason">{item.reason}</p>
+      {!terminalChange && <><h3>Assistant’s reason (untrusted explanation)</h3>
+      <p className="browser-request-reason">{item.reason}</p></>}
       {!command && (
         <>
           <div className="browser-approval-snapshot">
@@ -323,35 +419,60 @@ export function BrowserApprovalReview({
             ) : (
               <p role="status">Loading request snapshot…</p>
             )}
-            {snapshotReady && item.action.type === "click" && (
+            {snapshotReady && (batch?.actions || [item.action]).map((action, index) => action.type === "click" && (
               <span
+                key={index}
                 className="browser-click-marker"
                 role="img"
-                aria-label={`Click target x=${item.action.x}, y=${item.action.y}`}
+                aria-label={batch ? `Action ${index + 1}: click target x=${action.x}, y=${action.y}` : `Click target x=${action.x}, y=${action.y}`}
                 style={{
-                  left: `${item.action.x * 100}%`,
-                  top: `${item.action.y * 100}%`,
+                  left: `${action.x * 100}%`,
+                  top: `${action.y * 100}%`,
                 }}
-              />
-            )}
+              >{batch ? index + 1 : null}</span>
+            ))}
           </div>
           <p className="browser-approval-note">
-            Captured when requested. A changed screen requires a new request. No
-            ongoing permission is granted.
+            {batch
+              ? "Reach checks this screen before the first action. Later actions run on the resulting screen. Approval expires within 60 seconds; remaining actions expire 20 seconds after starting."
+              : "Captured when requested. A changed screen requires a new request. No ongoing permission is granted."}
           </p>
         </>
       )}
+      {batch && restrictedTerminal && <p className="browser-approval-note">Approval expires within 5 minutes; remaining commands expire 30 seconds after starting.</p>}
+      {batch && <details className="browser-batch-limits">
+        <summary>How this approval works</summary>
+        <p className="browser-approval-note">The batch stops on the first failure, cancellation, pause, revoked access, or expiry. Completed actions are not undone; an input already sent may finish. No ongoing permission is granted.</p>
+        {!restrictedTerminal && <p className="browser-approval-note">The screen may change between the listed actions. Reach does not classify clicks or typing as safe or dangerous.</p>}
+      </details>}
+      {batch && (busy || item.status !== "pending") && (
+        <p role="status">{item.completedCount || 0} of {batch.actions.length} actions completed · {executing || busy ? "Running approved sequence" : item.status}</p>
+      )}
       <p className="browser-approval-note">
-        {expired
-          ? "This request has expired or is no longer pending."
-          : `Expires ${new Date(item.expiresAt).toLocaleTimeString()} (${Math.max(0, Math.ceil((item.expiresAt - now) / 1000))}s remaining).`}
+        {batch && (executing || busy)
+          ? "Only the listed actions are approved. You can stop the remaining actions at any time."
+          : batch && finished
+            ? "This sequence has ended. Running more actions requires a new request."
+            : terminalChange && finished
+              ? (item.status === "executed" ? rememberedForSession ? "Command completed. This command is approved until this session ends." : "Command completed." : `Command ${item.status}.`)
+            : expired
+              ? "This request has expired or is no longer pending."
+              : `Expires ${new Date(item.expiresAt).toLocaleTimeString()} (${Math.max(0, Math.ceil((item.expiresAt - now) / 1000))}s remaining).`}
       </p>
+      {terminalChange && item.output !== undefined && <pre className="browser-output">{item.output || "Command completed."}</pre>}
       {error && (
         <p role="alert" className="error">
           {error}
         </p>
       )}
+      {terminalChange && !expired && <p className="browser-approval-note">Session approval remembers only this exact command and folder. It ends with this invitation; a new invite starts fresh.</p>}
       <div className="browser-approval-actions">
+        {terminalChange && <button className="button secondary" disabled={busy || expired} onClick={() => void decide("approve-session")}>Always approve this session</button>}
+        {(batch || terminalChange) && (executing || busy) && (
+          <button className="button secondary" disabled={stopping} onClick={() => void stopBatch()}>
+            {stopping ? "Stopping…" : terminalChange ? "Stop command" : "Stop remaining actions"}
+          </button>
+        )}
         <button
           className="button secondary"
           disabled={busy || expired}
@@ -363,14 +484,16 @@ export function BrowserApprovalReview({
           className="button"
           disabled={busy || expired || (!command && !snapshotReady)}
           onClick={() =>
-            void decide(command && !restrictedTerminal ? "handled" : "approve")
+            void decide(command && !restrictedTerminal && !terminalChange ? "handled" : "approve")
           }
         >
           <ShieldCheck size={16} />{" "}
           {busy
             ? "Responding…"
-            : restrictedTerminal
-              ? "Approve and run once"
+            : batch
+              ? `Approve ${batch.actions.length} actions once`
+              : restrictedTerminal || terminalChange
+              ? "Approve once"
               : command
                 ? "Mark handled"
                 : "Approve once"}
@@ -398,7 +521,7 @@ export function BrowserActionRequests({
   onError: (error: unknown) => void;
 }) {
   const [selectedType, setType] = useState<
-    Exclude<BrowserAction["type"], "terminal">
+    Exclude<BrowserAction["type"], "terminal" | "terminal-change" | "terminal-script">
   >(screen ? "click" : "command");
   const showScreen = screen && activeKind !== "command";
   const showCommands = commands && activeKind !== "screen";
@@ -429,16 +552,25 @@ export function BrowserActionRequests({
   const reason = type === "command" ? commandReason : screenReason;
   const setReason = type === "command" ? setCommandReason : setScreenReason;
   const [records, setRecords] = useState<BrowserRequest[]>([]);
+  const [screenBatch, setScreenBatch] = useState<BrowserAction[]>([]);
+  const [terminalBatch, setTerminalBatch] = useState<BrowserAction[]>([]);
+  const batch = type === "command" ? terminalBatch : screenBatch;
+  const setBatch = type === "command" ? setTerminalBatch : setScreenBatch;
+  const canBatch = type !== "command" || restrictedTerminal;
+  useEffect(() => { setScreenBatch([]); setTerminalBatch([]); }, [peer.url, peer.token]);
   const [directories, setDirectories] = useState<Record<number, { path: string; at: number }>>({});
   useEffect(() => { setDirectories({}); }, [peer.url, peer.token]);
   useEffect(() => {
     setDirectories((previous) => {
       const next = { ...previous };
       for (const record of records) {
-        if (record.status === "executed" && record.action.type === "terminal" &&
-            record.directory !== undefined && record.completedAt !== undefined &&
-            record.completedAt > (next[record.action.root]?.at ?? 0))
-          next[record.action.root] = { path: record.directory, at: record.completedAt };
+        const results = record.action.type === "batch" ? record.steps || [] : [record];
+        for (const result of results) {
+          if (result.status === "executed" && result.action.type === "terminal" &&
+              result.directory !== undefined && result.completedAt !== undefined &&
+              result.completedAt > (next[result.action.root]?.at ?? 0))
+            next[result.action.root] = { path: result.directory, at: result.completedAt };
+        }
       }
       return next;
     });
@@ -480,13 +612,12 @@ export function BrowserActionRequests({
       clearInterval(timer);
     };
   }, [peer.url, peer.token]);
-  const send = async () => {
-    if (
-      pending.current ||
-      !reason.trim() ||
-      (type === "command" ? !showCommands : !showScreen)
-    )
-      return;
+  const actionValid = type === "click"
+    ? x !== "" && y !== "" && Number.isFinite(Number(x)) && Number.isFinite(Number(y)) && Number(x) >= 0 && Number(x) <= 1 && Number(y) >= 0 && Number(y) <= 1
+    : type === "scroll" ? Number.isInteger(amount) && amount >= 1 && amount <= 5
+    : type === "text" || type === "command" ? !!text
+    : true;
+  const draftAction = (): BrowserAction => {
     let action: BrowserAction;
     if (type === "click")
       action = { type, x: Number(x), y: Number(y), button, count };
@@ -497,6 +628,14 @@ export function BrowserActionRequests({
         : { type, command: text };
     else if (type === "key") action = { type, key };
     else action = { type, direction, amount };
+    return action;
+  };
+  const send = async () => {
+    if (pending.current || !reason.trim() || (!batch.length && !actionValid) ||
+        (type === "command" ? !showCommands : !showScreen)) return;
+    const action: BrowserAction | BrowserBatchAction = canBatch && batch.length
+      ? { type: "batch", actions: batch }
+      : draftAction();
     pending.current = true;
     setBusy(true);
     setMessage("");
@@ -506,6 +645,7 @@ export function BrowserActionRequests({
         reason: reason.trim(),
       });
       setRecords((list) => [record, ...list.filter((r) => r.id !== record.id)]);
+      if (action.type === "batch") setBatch([]);
       setMessage(
         "Request sent. Wait for the owner’s response below before continuing.",
       );
@@ -519,7 +659,7 @@ export function BrowserActionRequests({
   const visibleRecords = records.filter(
     (record) =>
       !activeKind ||
-      (["command", "terminal"].includes(record.action.type)
+      (commandAction(record.action)
         ? activeKind === "command"
         : activeKind === "screen"),
   );
@@ -533,11 +673,11 @@ export function BrowserActionRequests({
       </div>
       <p className="browser-policy">
         {showScreen
-          ? "Every screen input requires a separate approval in Reach. Request one action, wait for its result, then check the updated screen before continuing. "
+          ? "Ask for one input or group up to 5 exact actions for one approval. A batch runs once in order, stops on failure, and grants no ongoing control. Check the updated screen after it finishes. "
           : ""}
         {showCommands
           ? restrictedTerminal
-            ? 'Allowed: pwd, cd folder, cd .., ls [folder], cat file, head [-n N] file, tail [-n N] file, wc [-l|-w|-c] file, grep "literal text" file. Paths are relative to your working folder and stay inside the shared folder. Each command needs owner approval. Download shared files from the Files tab. No sudo, deletion, writes, shell syntax, scripts or keystrokes.'
+            ? 'Allowed: pwd, cd folder, cd .., ls [folder], cat file, head [-n N] file, tail [-n N] file, wc [-l|-w|-c] file, grep "literal text" file. Paths are relative to your working folder and stay inside the shared folder. Commands need owner approval, individually or in an exact batch of up to 5. Download shared files from the Files tab. No sudo, deletion, writes, shell syntax, scripts or keystrokes.'
             : "Commands are requests for the owner to handle on the computer. They never execute from this workspace, including sudo."
           : ""}
       </p>
@@ -590,7 +730,7 @@ export function BrowserActionRequests({
                   min="0"
                   max="1"
                   step="any"
-                  required
+                  required={!batch.length}
                   value={x}
                   onChange={(e) => setX(e.target.value)}
                 />
@@ -603,7 +743,7 @@ export function BrowserActionRequests({
                   min="0"
                   max="1"
                   step="any"
-                  required
+                  required={!batch.length}
                   value={y}
                   onChange={(e) => setY(e.target.value)}
                 />
@@ -655,7 +795,7 @@ export function BrowserActionRequests({
             {type === "command" ? "Exact command" : "Exact text"}
             <textarea
               aria-label={type === "command" ? "Exact command" : "Exact text"}
-              required
+              required={!batch.length}
               rows={4}
               maxLength={type === "command" ? 4000 : 2000}
               spellCheck={false}
@@ -714,11 +854,38 @@ export function BrowserActionRequests({
                 min="1"
                 max="5"
                 step="1"
-                required
+                required={!batch.length}
                 value={amount}
                 onChange={(e) => setAmount(Number(e.target.value))}
               />
             </label>
+          </div>
+        )}
+        {canBatch && (
+          <div className="browser-batch-builder">
+            <button type="button" className="button secondary small"
+              disabled={busy || !actionValid || batch.length >= 5}
+              onClick={() => setBatch((list) => list.length < 5 ? [...list, draftAction()] : list)}>
+              Add to batch
+            </button>
+            {batch.length > 0 && (
+              <>
+                <h3>Review batch <span>{batch.length}/5</span></h3>
+                <ol className="browser-batch-draft" aria-label="Batch draft">
+                  {batch.map((action, index) => (
+                    <li key={index}>
+                      <div>
+                        <pre>{browserActionWords(action)}</pre>
+                        {action.type === "terminal" && <small>Folder: {roots.find((item) => item.index === action.root)?.path || `Folder ${action.root + 1}`} · Working folder: /{action.cwd || ""}</small>}
+                      </div>
+                      <button type="button" className="button secondary small" disabled={busy}
+                        aria-label={`Remove action ${index + 1}`} onClick={() => setBatch((list) => list.filter((_, i) => i !== index))}>Remove</button>
+                    </li>
+                  ))}
+                </ol>
+                <p className="browser-policy">Only these listed actions will be sent, in this order. {type === "command" ? "Each command uses its listed working folder; cd does not change later commands in the batch." : "The owner reviews the starting screen. Later actions use the resulting screen."}</p>
+              </>
+            )}
           </div>
         )}
         <label>
@@ -737,10 +904,10 @@ export function BrowserActionRequests({
           disabled={
             busy ||
             !reason.trim() ||
-            ((type === "text" || type === "command") && !text)
+            (!batch.length && !actionValid)
           }
         >
-          {busy ? "Requesting…" : "Request owner approval"}
+          {busy ? "Requesting…" : batch.length && canBatch ? `Request approval for ${batch.length} actions` : "Request owner approval"}
         </button>
       </form>
       {message && <p role="status">{message}</p>}
@@ -755,7 +922,13 @@ export function BrowserActionRequests({
               <strong>
                 {r.status === "pending" ? "Waiting for owner" : r.status}
               </strong>
-              <pre>{browserActionWords(r.action)}</pre>
+              {r.action.type === "batch" ? (
+                <>
+                  <p>{r.completedCount || 0} of {r.action.actions.length} actions completed</p>
+                  <BatchSteps item={r} progress />
+                  {r.status === "cancelled" && <p className="browser-policy">Remaining actions stopped. Completed actions are not undone.</p>}
+                </>
+              ) : <pre>{browserActionWords(r.action)}</pre>}
               <p className="browser-request-reason">{r.reason}</p>
               <small>
                 Expires {new Date(r.expiresAt).toLocaleTimeString()}
@@ -766,12 +939,12 @@ export function BrowserActionRequests({
                   {r.output || "Command completed with no output."}
                 </pre>
               )}
-              {r.status === "pending" && (
+              {(r.status === "pending" || (["batch", "terminal-change"].includes(r.action.type) && r.status === "executing")) && (
                 <button
                   className="button secondary small"
                   onClick={async () => {
                     try {
-                      await request(
+                      const result = await request<Partial<BrowserRequest>>(
                         peer,
                         `/api/browser/requests/${encodeURIComponent(r.id)}`,
                         { method: "DELETE" },
@@ -779,7 +952,7 @@ export function BrowserActionRequests({
                       setRecords((list) =>
                         list.map((record) =>
                           record.id === r.id
-                            ? { ...record, status: "cancelled" }
+                            ? { ...record, ...result, status: result.status || "cancelled" }
                             : record,
                         ),
                       );
@@ -788,7 +961,7 @@ export function BrowserActionRequests({
                     }
                   }}
                 >
-                  Cancel request
+                  {r.status === "executing" ? "Stop remaining actions" : "Cancel request"}
                 </button>
               )}
             </li>

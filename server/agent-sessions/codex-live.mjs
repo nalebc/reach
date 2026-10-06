@@ -13,6 +13,8 @@
 // appears in the Codex app like one typed there (verified). Threads Reach
 // drives are released after each turn; the daemon unloads them about a
 // minute later so the app can take them back (verified).
+import { object, validateQuestions, uncertainDelivery, compatibilityError } from "./compatibility.mjs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 
@@ -41,6 +43,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // What the phone shows for one prompt, in the app's own terms.
 export function describePrompt(method, params = {}) {
+  if (!object(params)) throw compatibilityError("codex", "approval");
+  if (["reason", "cwd", "message", "serverName", "grantRoot"].some(k => params[k] != null && typeof params[k] !== "string"))
+    throw compatibilityError("codex", "approval context");
+  if (params.availableDecisions != null && (!Array.isArray(params.availableDecisions) || !params.availableDecisions.length || params.availableDecisions.some(d => typeof d !== "string" && !object(d))))
+    throw compatibilityError("codex", "approval decisions");
   const base = { method, threadId: params.threadId || params.conversationId, turnId: params.turnId || null };
   switch (method) {
     case "item/commandExecution/requestApproval":
@@ -66,12 +73,14 @@ export function describePrompt(method, params = {}) {
         decisions: DEFAULT_DECISIONS[method],
       };
     case "item/permissions/requestApproval":
+      if (!object(params.permissions)) throw compatibilityError("codex", "permission scope");
       return {
         ...base,
         kind: "permissions",
         title: "Allow more access?",
         reason: params.reason || "",
-        permissions: params.permissions || {},
+        permissions: params.permissions,
+        command: JSON.stringify(params.permissions, null, 2),
         decisions: ["allow", "deny"],
       };
     case "item/tool/requestUserInput":
@@ -94,7 +103,9 @@ export function describePrompt(method, params = {}) {
         kind: "elicitation",
         title: `${params.serverName || "A tool"} needs your input`,
         message: params.message || params.description || params.title || "",
-        decisions: ["accept", "decline", "cancel"],
+        // Forms, URLs and device proofs need their native UI; never submit an empty acceptance.
+        decisions: params.mode || params.requestedSchema ? ["decline", "cancel"] : ["accept", "decline", "cancel"],
+        ...(params.mode || params.requestedSchema ? { reason: "Complete this request in Codex on your computer. Reach cannot safely submit this form or verification." } : {}),
       };
     default:
       return { ...base, kind: "unknown", title: method };
@@ -127,7 +138,7 @@ export function answerFor(prompt, answer) {
       return { answers };
     }
     case "elicitation":
-      if (!["accept", "decline", "cancel"].includes(answer?.decision)) throw bad("Choose accept, decline or cancel.");
+      if (!prompt.decisions.includes(answer?.decision)) throw bad("Choose accept, decline or cancel.");
       return { action: answer.decision, content: answer.decision === "accept" ? answer.content ?? null : null };
     default:
       throw bad("Reach cannot answer this prompt.", 409);
@@ -193,7 +204,6 @@ export function createCodexLive({
   now = Date.now,
   wait = sleep,
   deliverMs = 10000,
-  onChange = () => {},
   // Messages waiting in Codex's own queue, shown on the phone (off in tests
   // that count the calls made to Codex).
   queues = !process.env.NODE_TEST_CONTEXT,
@@ -219,11 +229,14 @@ export function createCodexLive({
       });
     return threads.get(id);
   };
+  // Told of each change to a thread (the chat list hears of its status and
+  // questions this way).
+  const changeListeners = new Set();
   const changed = (id) => {
     const t = state(id);
     t.version++;
     for (const wake of [...t.waiters]) wake();
-    onChange(id);
+    for (const listener of changeListeners) { try { listener(id); } catch {} }
   };
   const release = (id) => {
     if (!subscribed.delete(id)) return;
@@ -253,6 +266,26 @@ export function createCodexLive({
         changed(id);
       }
   });
+  // Codex's queue changed: its own notice for a thread, or a write to its
+  // queue database (which doesn't say whose). What waits on that is woken.
+  const queueWaiters = new Set();
+  const queueChanged = (threadId = null) => {
+    for (const waiter of [...queueWaiters])
+      if (!threadId || waiter.threadId === threadId) waiter.wake();
+  };
+  // The next change to a thread's queue, or ms on (the safety net).
+  const queueNews = (threadId, ms) =>
+    new Promise((resolve) => {
+      const waiter = {
+        threadId,
+        wake: () => {
+          queueWaiters.delete(waiter);
+          resolve();
+        },
+      };
+      queueWaiters.add(waiter);
+      wait(ms).then(waiter.wake);
+    });
   // What waits in Codex's queue for a thread (the Codex app runs it next):
   // text and a count of pictures, as the phone shows it.
   const readQueue = (id) => {
@@ -295,7 +328,10 @@ export function createCodexLive({
     }
     const id = p.threadId || p.turn?.threadId;
     if (!id) return;
-    if (m.method === "thread/queue/changed") return void (queues && readQueue(id));
+    if (m.method === "thread/queue/changed") {
+      queueChanged(id);
+      return void (queues && readQueue(id));
+    }
     const t = state(id);
     switch (m.method) {
       case "turn/started":
@@ -307,6 +343,7 @@ export function createCodexLive({
         break;
       case "turn/completed": {
         const turn = p.turn || {};
+        if (t.turnId && turn.id && turn.id !== t.turnId) return;
         if (queues && t.queue?.length) void readQueue(id);
         Object.assign(t, { status: "idle", turnId: null, streaming: null, activity: null });
         t.lastCompleted = turn.id || null;
@@ -342,6 +379,10 @@ export function createCodexLive({
         t.items++; // the transcript has something new
         break;
       case "item/agentMessage/delta":
+        if (typeof p.delta !== "string" || typeof p.itemId !== "string") {
+          t.error = compatibilityError("codex", "stream text").message;
+          changed(id); return;
+        }
         t.streaming = {
           itemId: p.itemId,
           text: (t.streaming?.itemId === p.itemId ? t.streaming.text : "") + (p.delta || ""),
@@ -387,6 +428,7 @@ export function createCodexLive({
   async function queueElsewhere(threadId, input) {
     const added = await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input });
     const queued = added?.queuedSubmission?.id;
+    if (typeof queued !== "string" || !queued) throw uncertainDelivery("codex");
     if (queues) void readQueue(threadId);
     void taken(threadId, queued, input);
     return { queued: true, delivered: false, ...(queued ? { messageId: String(queued) } : {}) };
@@ -395,7 +437,8 @@ export function createCodexLive({
     try {
       const deadline = now() + deliverMs;
       while (now() < deadline) {
-        await wait(500);
+        // Woken when Codex's queue changes; a slow look in between.
+        await queueNews(threadId, 2000);
         const list = await daemon.rpc("thread/queue/list", { threadId }).catch(() => null);
         if (list && !(list.data || []).some((q) => q.id === queued)) return;
       }
@@ -406,7 +449,11 @@ export function createCodexLive({
       const removed = await daemon
         .rpc("thread/queue/delete", { threadId, queuedSubmissionId: queued })
         .catch(() => null);
-      if (removed?.deleted === false) return;
+      if (removed?.deleted !== true) {
+        state(threadId).error = uncertainDelivery("codex").message;
+        changed(threadId);
+        return;
+      }
       const t = state(threadId);
       t.returned = [
         ...(t.returned || []),
@@ -434,12 +481,17 @@ export function createCodexLive({
   };
   return {
     drives: (threadId) => subscribed.has(threadId),
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
+    },
     // A phone has the thread open right now (its live view is waiting).
     watched: (threadId) => !!threads.get(threadId)?.waiters.size,
     // News from the Codex app's own files (agent-watch.mjs): its queue or its
     // history changed, though not which chat's. The chats the phone has open
     // are read again at once (the re-reads in view() stay as the fallback).
     nudge(kind) {
+      if (kind === "queue") queueChanged();
       for (const [id, t] of threads) {
         if (!t.waiters.size) continue;
         if (kind === "queue") {
@@ -522,7 +574,7 @@ export function createCodexLive({
       return { turnId: r.turn?.id || null };
     },
     async start({ cwd, text, images, model: picked, effort, approvalPolicy, sandbox, approvalsReviewer, name }) {
-      if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
+      if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
       const model = await withModel(picked);
       const started = await daemon.rpc("thread/start", {
@@ -556,7 +608,7 @@ export function createCodexLive({
     // turn runs until a message is sent. Let go of at once, so the Codex app
     // can open it; one left empty by a failure is archived.
     async fork({ cwd, name, batches = [], developerInstructions, model: picked }) {
-      if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
+      if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const model = await withModel(picked);
       const started = await daemon.rpc("thread/start", {
         cwd,
@@ -625,9 +677,10 @@ export function createCodexLive({
     },
     view(threadId) {
       // The phone is looking: what waits in Codex's queue, if not read lately.
-      // While something waits, often: the Codex app takes queued messages
-      // without telling Reach, and a card stayed up after its message ran.
-      const every = threads.get(threadId)?.queue?.length ? 1500 : 5000;
+      // The Codex app takes queued messages without a notice to Reach, but
+      // its queue database changes, and that reads the queue again at once
+      // (nudge); this is the slow safety net in case no word comes.
+      const every = threads.get(threadId)?.queue?.length ? 15000 : 30000;
       if (queues && now() - (threads.get(threadId)?.queueAt || 0) > every) void readQueue(threadId);
       const t = threads.get(threadId);
       if (!t)
@@ -652,7 +705,7 @@ export function createCodexLive({
       const t = state(threadId);
       if (t.version !== Number(since)) return Promise.resolve();
       // Something waits in Codex's queue: look again soon (view() re-reads it).
-      if (queues && t.queue?.length) ms = Math.min(ms, 3000);
+      if (queues && t.queue?.length) ms = Math.min(ms, 15000);
       return new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);

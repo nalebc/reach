@@ -57,3 +57,22 @@ test("a damaged outbox file loses nothing it can still read, and keeps only real
   memory.add(A, { text: "hi" });
   assert.equal(memory.list(A).length, 1);
 });
+
+test("a restart during delivery pauses the message instead of sending it twice", () => {
+  const file = tmp(); const outbox = createOutbox({ file });
+  const message = outbox.add(A, { text: "once" });
+  assert.equal(outbox.begin(A, message.id), true);
+  const restored = createOutbox({ file });
+  assert.equal(restored.list(A)[0].delivery, "paused");
+  assert.equal(restored.begin(A, message.id), false);
+});
+
+test("a failed durable enqueue rolls back and a failed send marker cannot send", () => {
+  const file = tmp(); const outbox = createOutbox({ file });
+  const first = outbox.add(A, { text: "one" });
+  fs.rmSync(file); fs.mkdirSync(file);
+  assert.throws(() => outbox.add(A, { text: "two" }), /Could not save/);
+  assert.equal(outbox.list(A).length, 1);
+  assert.throws(() => outbox.begin(A, first.id), /Could not save/);
+  assert.equal(outbox.begin(A, first.id), false);
+});

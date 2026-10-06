@@ -187,7 +187,7 @@ test("claim, approval and binary workspace requests are signed with a persisted 
   );
   assert.equal(
     f.keyStore.data.get(state.id).expiresAt,
-    state.session.expiresAt,
+    state.session.expiresAt + 86400000,
   );
   const result = await f.client.request(
     state.session.peer,
@@ -299,7 +299,7 @@ test("expiry deletes stored credentials and signed requests reject different pee
   await assert.rejects(f.client.prepare(), /connection has ended/);
   assert.equal(f.state.getItem(funnelStorageKey), null);
   assert.equal(f.keyStore.data.size, 0);
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 3, "checks the latest expiry with the server before discarding the session");
 });
 
 test("strict rendering claims once, displays the owner's comparison code, and resumes its receipt", async () => {
@@ -389,4 +389,19 @@ test("ordinary owner calls keep their bearer transport and the agent entry loads
     /tailnet-transport|tailscale\.com|WebAssembly|\/api\/guests\/key/,
   );
   assert.deepEqual(dom.errors, []);
+});
+
+test("a signed browser verifies an owner extension after its original local deadline", async () => {
+  const extended = Date.now() + 7200000;
+  const f = fixture((payload) => reply(payload.operation === "claim" ? receipt() : payload.operation === "status" ? approved() : { access: { expiresAt: extended } }));
+  let state = await f.client.prepare(invitation);
+  state = await f.client.claim(state);
+  state = await f.client.status(state);
+  const originalToken = state.session.peer.token;
+  f.advance(1000000);
+  const resumed = await f.client.prepare();
+  assert.equal(resumed.session.peer.token, originalToken);
+  assert.equal(resumed.session.expiresAt, extended);
+  assert.equal(f.calls.at(-1).payload.path, "/api/device");
+  assert.equal(f.keyStore.data.get(state.id).expiresAt, extended + 86400000);
 });

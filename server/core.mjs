@@ -12,12 +12,12 @@ export const isPlainRecord = (value) => value !== null && typeof value === "obje
 // Names and review explanations must not hide or reorder the action being approved.
 export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
 export function validateBrowserInvitation(input) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "transport"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport"];
   if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw fail(400, "This invitation contains unsupported fields.");
   const {
     name, ttlSeconds, joinSeconds = 900, folders = [], terminalIds = [],
-    screen = "off", commandRequests = false, restrictedTerminal = false, transport = "tailnet",
+    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet",
   } = input;
   if (
     typeof name !== "string" || !name.trim() || name.length > 80 || hasReviewControls(name) || /[\n\t]/.test(name) ||
@@ -27,7 +27,9 @@ export function validateBrowserInvitation(input) {
     terminalIds.some((id) => !validBrowserTerminalId(id)) ||
     !["off", "view", "scroll", "ask"].includes(screen) ||
     typeof commandRequests !== "boolean" || typeof restrictedTerminal !== "boolean" ||
-    (restrictedTerminal && (screen === "ask" || commandRequests)) ||
+    (restrictedTerminal && commandRequests) ||
+    typeof terminalApproval !== "boolean" || (terminalApproval && !restrictedTerminal) ||
+    typeof scriptApproval !== "boolean" || (scriptApproval && (!terminalApproval || !restrictedTerminal)) ||
     !["tailnet", "funnel"].includes(transport) ||
     (transport === "funnel" && (ttlSeconds > 3600 || joinSeconds > 900))
   ) throw fail(400, "Name the browser agent, choose its access, and a duration from 1 minute to 24 hours.");
@@ -36,7 +38,7 @@ export function validateBrowserInvitation(input) {
     !Number.isSafeInteger(folder.root) || folder.root < 0 ||
     typeof folder.path !== "string" || folder.path.length > 4096 || hasReviewControls(folder.path)))
     throw fail(400, "Choose up to 20 folders on this computer.");
-  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, transport };
+  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport };
 }
 export const id = () => crypto.randomUUID();
 export const hash = (value) =>
@@ -557,31 +559,16 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   function inviteBrowser(input) {
     const {
       name, ttlSeconds, joinSeconds, folders, terminalIds, screen,
-      commandRequests, restrictedTerminal, transport,
+      commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport,
     } = validateBrowserInvitation(input);
     const roots = [...new Set(chooseFolders(folders))];
-    if (restrictedTerminal && !roots.length)
-      throw fail(400, "Choose at least one folder for restricted terminal commands.");
-    if (!roots.length && !terminalIds.length && screen === "off" && !commandRequests && !restrictedTerminal)
-      throw fail(400, "Choose a folder, terminal output, screen access, or command requests.");
-    const scopes = [
-      "device",
-      ...(roots.length ? ["files:read"] : []),
-      "browser:read",
-      ...(screen === "scroll" ? ["browser:scroll"] : []),
-      ...(screen === "ask" || commandRequests || restrictedTerminal ? ["browser:request"] : []),
-    ];
+    const { scopes, policy } = browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval }, roots);
     const token = crypto.randomBytes(32).toString("base64url");
     const now = Date.now();
     const client = {
       id: id(), kind: "agent", name: name.trim(), scopes,
       ...(transport === "funnel" ? { browserTransport: "funnel" } : {}),
-      policy: {
-        invite: true, browser: true, roots,
-        terminalIds: [...new Set(terminalIds)], screen,
-        ...(commandRequests ? { commandRequests: true } : {}),
-        ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
-      },
+      policy,
       inviteHash: hash(token),
       inviteExpiresAt: now + Math.min(joinSeconds, ttlSeconds) * 1000,
       createdAt: new Date(now).toISOString(),
@@ -596,6 +583,30 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     return {
       invitation: token, clientId: client.id,
       expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+    };
+  }
+  function browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval }, roots) {
+    if (restrictedTerminal && !roots.length)
+      throw fail(400, "Choose at least one folder for restricted terminal commands.");
+    if (!roots.length && !terminalIds.length && screen === "off" && !commandRequests && !restrictedTerminal)
+      throw fail(400, "Choose a folder, terminal output, screen access, or command requests.");
+    const scopes = [
+      "device",
+      ...(roots.length ? ["files:read"] : []),
+      "browser:read",
+      ...(screen === "scroll" ? ["browser:scroll"] : []),
+      ...(screen === "ask" || commandRequests || restrictedTerminal ? ["browser:request"] : []),
+    ];
+    return {
+      scopes,
+      policy: {
+        invite: true, browser: true, roots,
+        terminalIds: [...new Set(terminalIds)], screen,
+        ...(commandRequests ? { commandRequests: true } : {}),
+        ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
+        ...(terminalApproval ? { terminalApproval: true } : {}),
+        ...(scriptApproval ? { scriptApproval: true } : {}),
+      },
     };
   }
   // What an agent may do in its folders (inviting it, or changing it later).
@@ -625,6 +636,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // `folders: "keep"` keeps the folders they have (never "everything" from
   // full access: those are chosen again).
   function changeAccess(clientId, changes = {}) {
+    if (!isPlainRecord(changes) || Object.keys(changes).some((key) =>
+      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt"].includes(key)))
+      throw fail(400, "Choose valid permissions and an end time.");
     let result;
     changeClients((latest) => {
       const client = latest.find((c) => c.id === clientId);
@@ -638,11 +652,17 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         (client.inviteExpiresAt && client.inviteExpiresAt <= Date.now())
       )
         throw fail(404, "That invitation has ended.");
-      if (client.policy?.browser === true)
-        throw fail(400, "End this browser invitation and create a new one to change its access.");
+      if (client.browserTransport === "funnel" && client.admission && admissionStatus(client) === "expired")
+        throw fail(404, "That invitation has ended.");
       if (client.admission && client.admission.status !== "collected")
         throw fail(409, "This agent's first connection is waiting or has ended. Create a new invitation to change its access.");
       const guest = client.kind === "guest";
+      const browser = client.policy?.browser === true;
+      const expiresAt = changes.expiresAt ?? client.expiresAt;
+      const maxSeconds = client.browserTransport === "funnel" ? 3600 : guest || browser ? 86400 : 90 * 86400;
+      if (Object.hasOwn(changes, "expiresAt") &&
+          (!Number.isSafeInteger(changes.expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + maxSeconds * 1000))
+        throw fail(400, "Choose an end time within this invitation’s duration limit.");
       const had = guest
         ? client.scopes.includes("admin")
           ? []
@@ -657,7 +677,18 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         roots: guest ? [...(client.guestRoots || [])] : [...had],
         apps: client.guestApps,
       };
-      if (guest) {
+      if (browser) {
+        const { folders: ignoredFolders, expiresAt: ignoredExpiry, ...permissions } = changes;
+        // Use the invitation's schema, so edits cannot add shell/admin scopes,
+        // change transport, or enable unsupported command execution.
+        const input = validateBrowserInvitation({
+          ...permissions, name: client.name, ttlSeconds: 60,
+          transport: client.browserTransport || "tailnet", folders: [],
+        });
+        const access = browserAccess(input, folders);
+        client.scopes = access.scopes;
+        client.policy = access.policy;
+      } else if (guest) {
         const { roots, write, screen, apps, terminal, agents, full } = changes;
         const access = guestAccess(
           { roots, write, screen, apps, terminal, agents, full },
@@ -673,6 +704,11 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         client.scopes = access.scopes;
         client.policy = { ...client.policy, roots: access.roots };
       }
+      client.expiresAt = expiresAt;
+      // Keep the already-approved, browser-bound credential. Outstanding
+      // action approvals have their own old grant and are invalidated below.
+      if (client.admission?.status === "collected")
+        client.admission.grant = admissionGrant(client);
       client.changedAt = new Date().toISOString();
       result = {
         client: {
@@ -680,9 +716,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           kind: client.kind,
           name: client.name,
           scopes: client.scopes,
+          expiresAt: client.expiresAt,
           ...(guest
             ? { guestRoots: client.guestRoots }
-            : { policy: { invite: true, roots: client.policy.roots } }),
+            : { policy: client.policy }),
           ...(client.guestApps ? { guestApps: client.guestApps } : {}),
           ...(client.group ? { group: client.group } : {}),
         },
@@ -732,6 +769,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       terminalIds: [...client.policy.terminalIds],
       commandRequests: client.policy.commandRequests === true,
       ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
+      ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
+      ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
       ...(client.browserTransport === "funnel" ? { browserTransport: "funnel" } : {}),
     } : {}),
     requestedAt: client.admission.requestedAt,

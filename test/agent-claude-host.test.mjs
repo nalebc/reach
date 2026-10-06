@@ -170,7 +170,7 @@ test("permission prompts become cards and the answer goes back on the same reque
   assert.deepEqual(view.prompts, [
     { id: "r1", kind: "tool", tool: "Bash", title: "Delete the build folder", command: "rm -rf build", reason: "", decisions: ["allow", "allowAlways", "deny"] },
   ]);
-  await assert.rejects(h.respond(ID, "r1", { decision: "accept" }), /not available/);
+  await assert.rejects(() => h.respond(ID, "r1", { decision: "accept" }), /not available/);
   await h.respond(ID, "r1", { decision: "allowAlways" });
   assert.deepEqual(proc.lines.at(-1), {
     type: "control_response",
@@ -181,7 +181,7 @@ test("permission prompts become cards and the answer goes back on the same reque
     },
   });
   assert.equal(h.view(ID).status, "running");
-  await assert.rejects(h.respond(ID, "r1", { decision: "allow" }), (e) => e.status === 409);
+  await assert.rejects(() => h.respond(ID, "r1", { decision: "allow" }), (e) => e.status === 409);
 
   proc.print({ type: "control_request", request_id: "r2", request: { subtype: "can_use_tool", tool_name: "Write", input: { file_path: "/work/app/a.txt" } } });
   assert.equal(h.view(ID).prompts[0].title, "Allow Write?");
@@ -280,6 +280,30 @@ test("stop interrupts the turn Reach is running, and only that", async () => {
   await h.send(ID, { text: "go", cwd: "/w" });
   assert.deepEqual(await h.stop(ID), { stopped: true });
   assert.equal(claude.last().lines.at(-1).request.subtype, "interrupt");
+});
+
+// Claude Code 2.1.291, stopped mid-reply (recorded): the words so far, then
+// "[Request interrupted by user]" as a user turn, then an error result with no
+// words. The phone showed a red "Claude Code stopped with an error".
+test("a stop is a stop, not an error, whether Reach or the app stopped it", async () => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  const stopped = (proc) => {
+    proc.print({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Marcus had tended the lighthouse" }], stop_reason: null } });
+    proc.print({ type: "user", parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
+    proc.print({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming", errors: ["[ede_diagnostic] result_type=user"] });
+  };
+  await h.send(ID, { text: "a story", cwd: "/w" });
+  await h.stop(ID);
+  stopped(claude.last());
+  assert.deepEqual([h.view(ID).status, h.view(ID).error], ["idle", null]);
+  await h.send(ID, { text: "another" });
+  stopped(claude.last()); // stopped on the Mac this time
+  assert.deepEqual([h.view(ID).status, h.view(ID).error], ["idle", null]);
+  // A real failure still says so.
+  await h.send(ID, { text: "again" });
+  claude.last().print({ type: "result", subtype: "error_during_execution", is_error: true, errors: ["boom"] });
+  assert.equal(h.view(ID).error, "Claude Code stopped with an error.");
 });
 
 test("an API error ends the turn with its message; a crash mid-turn says so", async () => {
@@ -628,7 +652,11 @@ test("a Claude app session waiting on you shows what it asks, and a message from
   // A permission request reads as one.
   app.waiting = "permission prompt";
   items[1] = { id: "b1", role: "tool", kind: "command", status: "running", text: "rm -rf build", detail: "" };
-  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "permission", text: "rm -rf build", command: true });
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "permission", text: "rm -rf build", command: true, id: "app-permission:b1" });
+  // Some other dialog of Claude Code's (a notice to acknowledge) waits on you
+  // too, but it isn't a permission for the last command.
+  app.waiting = "dialog open";
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "dialog", text: "Claude Code has something open for you to answer." });
   sessions.close();
 });
 
@@ -699,6 +727,168 @@ test("the Claude app's own consent card makes its session wait on you, said as t
   running = new Map();
   assert.notEqual((await sessions.list()).sessions[0].status, "waiting");
   assert.equal((await sessions.read("claude", ID)).session.asking, undefined);
+  sessions.close();
+});
+
+// A Claude app chat's permission card couldn't be answered from the phone
+// ("Open screen to answer"): the app keeps the request to itself. Now the
+// phone shows the app's own card (its words, its buttons, in order), read in
+// the app with that chat brought up; on the person's tap only, Reach presses
+// the button with that very label, on the card that names the request.
+test("a Claude app chat's permission card shows on the phone as the app draws it and is answered with its own buttons", async () => {
+  const items = [
+    { id: "u1", role: "user", kind: "text", text: "Find it" },
+    { id: "toolu_9", role: "tool", kind: "command", status: "running", text: "cd ~/.claude/projects && grep -l \"flipping coing\" *.jsonl", detail: "" },
+  ];
+  const app = { where: "claude-app", pid: 61729, tty: null, exact: true, busy: false, waiting: "permission prompt", appSessionId: "local_4348" };
+  let running = new Map([[ID, app]]);
+  const opened = [];
+  const reads = [];
+  const pressed = [];
+  let onScreen = [{ id: "other-chat", session: "local_other", at: 2 }];
+  // The card, as the helper reads it in the app.
+  const drawn = {
+    found: true,
+    texts: ["Allow Claude to run this command?", 'cd ~/.claude/projects && grep -l "flipping coing" *.jsonl', "Deny", "Allow once"],
+    buttons: [
+      { label: "Copy", menu: false },
+      { label: "Deny", menu: false },
+      { label: "Always allow for this project", menu: false },
+      { label: "Allow once", menu: false },
+    ],
+  };
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now() - 60_000, status: "idle" }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/reach", status: "idle" }, items, before: null }),
+    },
+    live: async () => running,
+    liveMs: -1,
+    claudeHost: host(fakeClaude()),
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    open: async (url) => {
+      opened.push(url);
+      onScreen = [{ id: ID, session: "local_4348", at: 3 }, ...onScreen];
+    },
+    claudeShown: () => onScreen,
+    readCard: async (agent, expect) => (reads.push([agent, expect]), drawn),
+    pressCard: async (agent, label, expect) => {
+      pressed.push([agent, label, expect]);
+      // Answered: Claude Code goes on, the call gets its result.
+      running = new Map([[ID, { ...app, busy: true, waiting: null }]]);
+      items[1] = { ...items[1], status: "completed" };
+    },
+  });
+  const { session } = await sessions.read("claude", ID);
+  assert.deepEqual(session.asking, { kind: "permission", text: items[1].text, command: true, id: "app-permission:toolu_9" });
+  // Opened on the phone: the chat brought up in the app, its card read there
+  // (the one that names this command: its first 40 characters).
+  assert.deepEqual(await sessions.card("claude", ID), {
+    id: "app-permission:toolu_9",
+    texts: ["Allow Claude to run this command?", 'cd ~/.claude/projects && grep -l "flipping coing" *.jsonl'],
+    buttons: ["Deny", "Always allow for this project", "Allow once"],
+  });
+  assert.deepEqual(opened, ["claude://code/needs-input?session=local_4348"]);
+  assert.deepEqual(reads, [["claude", ['cd ~/.claude/projects && grep -l "flippi']]]);
+  // Only a button the card has, for the request still waiting.
+  await assert.rejects(sessions.respond("claude", ID, "app-permission:toolu_9", { label: "Allow forever" }), (e) => e.status === 400);
+  await assert.rejects(sessions.respond("claude", ID, "app-permission:toolu_1", { label: "Allow once" }), /already answered/);
+  assert.deepEqual(pressed, []);
+  assert.deepEqual(await sessions.respond("claude", ID, "app-permission:toolu_9", { label: "Always allow for this project" }), { answered: true });
+  assert.deepEqual(pressed, [["claude", "Always allow for this project", ['cd ~/.claude/projects && grep -l "flippi']]]);
+  // Already on screen: not brought up again.
+  assert.equal(opened.length, 1);
+  await assert.rejects(sessions.respond("claude", ID, "app-permission:toolu_9", { label: "Deny" }), /already answered/);
+  await assert.rejects(sessions.card("claude", ID), /already answered/);
+  assert.equal((await sessions.read("claude", ID)).session.asking, undefined);
+  sessions.close();
+});
+
+// Same for the Codex app: its card ("Do you want ChatGPT to run this
+// command?") read with the chat opened in the Codex app, answered with one of
+// its own buttons, then remembered as answered while the command runs.
+test("a Codex app approval shows on the phone as the Codex app draws it and is answered the same way", async () => {
+  let asking = { kind: "permission", text: "May I build it?", callId: "c7", match: "npm run build && npm test", id: "app-permission:codex:c7" };
+  const opened = [];
+  const pressed = [];
+  const CODEX = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: {
+      list: async () => [],
+      health: async () => ({}),
+      read: async (id) => ({ session: { agent: "codex", id, status: asking ? "waiting" : "running", held: "codex-app", ...(asking ? { asking } : {}) }, items: [], before: null }),
+    },
+    claude: { list: async () => [], starts: async () => [], health: async () => ({}) },
+    live: async () => new Map(),
+    liveMs: -1,
+    claudeHost: host(fakeClaude()),
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    open: async (url) => opened.push(url),
+    readCard: async () => ({
+      found: true,
+      texts: ["Do you want ChatGPT to run this command?", "Reason", "May I build it?", "npm run build && npm test"],
+      buttons: [{ label: "Approval options", menu: true }, { label: "Allow once", menu: false }, { label: "Deny", menu: false }],
+      // Read from the card's menu, opened and closed in the app.
+      more: ["Allow this conversation", "Always allow"],
+    }),
+    pressCard: async (agent, label, expect) => {
+      pressed.push([agent, label, expect]);
+      asking = null;
+    },
+  });
+  assert.deepEqual(await sessions.card("codex", CODEX), {
+    id: "app-permission:codex:c7",
+    texts: ["Do you want ChatGPT to run this command?", "Reason", "May I build it?", "npm run build && npm test"],
+    buttons: ["Allow once", "Deny"],
+    // The choices behind the card's menu, as the app lists them.
+    more: ["Allow this conversation", "Always allow"],
+  });
+  assert.deepEqual(opened, [`codex://threads/${CODEX}`]);
+  await assert.rejects(sessions.respond("codex", CODEX, "app-permission:codex:c6", { label: "Deny" }), /already answered/);
+  // One of the menu's choices: pressed in the app's menu.
+  assert.deepEqual(await sessions.respond("codex", CODEX, "app-permission:codex:c7", { label: "Always allow" }), { answered: true });
+  assert.deepEqual(pressed, [["codex", "Always allow", ["npm run build && npm test"]]]);
+  sessions.close();
+});
+
+test("only the apps' own cards get read: a terminal's prompt and a chat no longer waiting don't", async () => {
+  const items = [{ id: "toolu_5", role: "tool", kind: "command", status: "running", text: "npm test", detail: "" }];
+  let live = { where: "terminal", pid: 17, tty: "ttys002", exact: true, busy: false, waiting: "permission prompt" };
+  const touched = [];
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [{ agent: "claude", id: ID, updatedAt: Date.now(), status: "idle" }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/w", status: "idle" }, items, before: null }),
+    },
+    live: async () => new Map([[ID, live]]),
+    liveMs: -1,
+    claudeHost: host(fakeClaude()),
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    claudeShown: () => [{ id: ID, session: "local_1", at: 1 }],
+    open: async (...a) => touched.push(["open", ...a]),
+    readCard: async (...a) => (touched.push(["read", ...a]), { found: true, texts: [], buttons: [] }),
+    pressCard: async (...a) => touched.push(["press", ...a]),
+  });
+  // A terminal's prompt is said, answered there (for now).
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "permission", text: "npm test", command: true });
+  await assert.rejects(sessions.card("claude", ID), /already answered/);
+  await assert.rejects(sessions.respond("claude", ID, "app-permission:toolu_5", { label: "Allow once" }), /already answered/);
+  // The app's chat, but Claude Code isn't waiting on a card: nothing to read or press.
+  live = { where: "claude-app", pid: 18, tty: null, exact: true, busy: true, waiting: null };
+  await assert.rejects(sessions.card("claude", ID), /already answered/);
+  assert.deepEqual(touched, []);
   sessions.close();
 });
 
@@ -844,7 +1034,7 @@ test("watching a Claude session survives long-poll gaps but expires after leavin
   h.close();
 });
 
-test("Claude answers remain pending until delivered, failed writes retry, and duplicate taps never send twice", async (t) => {
+test("Claude answers remain pending until delivered, uncertain writes pause, and duplicate taps never send twice", async (t) => {
   const claude = fakeClaude();
   const h = host(claude);
   t.after(() => h.close());
@@ -857,18 +1047,15 @@ test("Claude answers remain pending until delivered, failed writes retry, and du
   const failed = h.respond(ID, "real", { decision: "allow" });
   assert.equal(h.view(ID).prompts.length, 1);
   assert.equal(h.view(ID).prompts[0].replying, undefined);
-  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already being sent/);
+  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already attempted/);
   assert.equal(writes.length, 1);
   callback(new Error("broken pipe"));
-  await assert.rejects(failed, /broken pipe/);
+  await assert.rejects(failed, { code: "AGENT_DELIVERY_UNKNOWN" });
   assert.equal(h.view(ID).prompts.length, 1);
-  const delivered = h.respond(ID, "real", { decision: "deny" });
-  callback();
-  assert.deepEqual(await delivered, { answered: true });
-  assert.equal(writes[1].response.request_id, "real");
-  assert.equal(writes[1].response.response.behavior, "deny");
+  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already attempted/);
+  assert.equal(writes.length, 1);
+  proc.print({ type: "control_cancel_request", request_id: "real" });
   assert.equal(h.view(ID).prompts.length, 0);
-  await assert.rejects(h.respond(ID, "real", { decision: "allow" }), /already answered/);
 });
 
 test("Claude cancellations and disconnected processes cannot be answered or leak old requests", async (t) => {
@@ -885,11 +1072,75 @@ test("Claude cancellations and disconnected processes cannot be answered or leak
   proc.stdin.write = () => {};
   const answer = h.respond(ID, "disconnected", { decision: "allow" });
   proc.exit();
-  await assert.rejects(answer, /disconnected/);
+  await assert.rejects(answer, { code: "AGENT_DELIVERY_UNKNOWN" });
   assert.equal(h.view(ID).prompts.length, 0);
   await h.send(ID, { text: "continue", cwd: "/work/app" });
   ask("old-process");
   proc.exit();
   assert.equal(h.view(ID).prompts.length, 0);
   assert.equal(h.drives(ID), true);
+});
+
+test("an old Claude process cannot clear the replacement's running turn", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "first", effort: "low" });
+  const old = claude.last();
+  old.print({ type: "result", subtype: "success", is_error: false });
+  await h.send(ID, { text: "second", effort: "high" });
+  const current = claude.last();
+  assert.notEqual(old, current);
+  old.exit(); old.print({ type: "result", subtype: "success" });
+  assert.equal(h.view(ID).status, "running"); assert.equal(h.drives(ID), true);
+});
+
+test("concurrent Claude sends share one initialized process", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await Promise.all([h.send(ID, { text: "one" }), h.send(ID, { text: "two" })]);
+  assert.equal(claude.runs.length, 1);
+  assert.equal(claude.last().lines.filter(m => m.type === "user").length, 2);
+});
+
+test("a failed Claude approval write remains uncertain and cannot be replayed", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "one" });
+  const proc = claude.last();
+  proc.print({ type: "control_request", request_id: "ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  let writes = 0;
+  proc.stdin.write = (_, cb) => { writes++; cb(Error("broken pipe")); };
+  await assert.rejects(h.respond(ID, "ask", { decision: "allow" }), { code: "AGENT_DELIVERY_UNKNOWN" });
+  await assert.rejects(h.respond(ID, "ask", { decision: "allow" }), /already attempted/);
+  assert.equal(writes, 1);
+});
+
+test("a changed Claude stream fails visibly instead of leaving a permanent spinner", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "assistant", message: { content: {} } });
+  assert.equal(h.view(ID).status, "idle");
+  assert.match(h.view(ID).error, /incompatible/);
+});
+
+test("Claude exposes real prompt changes to notification subscribers, without executing answers", async t => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  const prompts = [];
+  const stop = h.onChange(id => prompts.push(h.view(id).prompts.map(p => p.id)));
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "control_request", request_id: "ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  assert.deepEqual(prompts.at(-1), ["ask"]);
+  assert.equal(claude.last().lines.some(m => m.type === "control_response"), false);
+  stop();
+});
+
+test("the session service forwards real host prompts to its notification subscription", async t => {
+  const claude = fakeClaude(); const h = host(claude);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-notify-protocol-"));
+  const sessions = createAgentSessions({ dataDir: dir, claudeHost: h });
+  t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const events = [];
+  const unsubscribe = sessions.onPromptChange((agent, id, prompts) => events.push({ agent, id, prompts }));
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "control_request", request_id: "native-ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  assert.equal(events.at(-1).agent, "claude");
+  assert.equal(events.at(-1).prompts[0].id, "native-ask");
+  unsubscribe();
 });

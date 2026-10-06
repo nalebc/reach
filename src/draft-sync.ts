@@ -1,5 +1,7 @@
-// Coalesce keystrokes and allow just one request in flight. Send waits for the
-// latest draft so a slow response cannot put old text back after submission.
+// Coalesce keystrokes and allow just one request in flight. Send waits only
+// for a write already on its way (so a slow one can't put old text back after
+// submission); a draft not yet written is dropped, since the message itself
+// replaces whatever the box holds (writing it first cost each Send 0.5-1 s).
 export function createDraftSync(write: (text: string) => Promise<unknown>, delay = 400) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let next: string | undefined;
@@ -23,6 +25,11 @@ export function createDraftSync(write: (text: string) => Promise<unknown>, delay
       timer = setTimeout(() => void flush(), delay);
     },
     flush,
+    async settle(): Promise<void> {
+      clearTimeout(timer);
+      next = undefined;
+      while (running) await running;
+    },
     close() { closed = true; next = undefined; clearTimeout(timer); },
   };
 }

@@ -106,13 +106,13 @@ export async function runTerminalCommand(action, authorize, resolve) {
     output = names.sort().join("\n");
   } else {
     const expected = await fs.stat(full);
-    if (!expected.isFile() || expected.size > MAX_FILE)
-      throw fail(400, "Read a regular file no larger than 1 MiB.");
+    if (!expected.isFile() || expected.nlink !== 1 || expected.size > MAX_FILE)
+      throw fail(400, "Read a regular file no larger than 1 MiB without extra hard links.");
     target();
     const file = await fs.open(full, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const actual = await file.stat();
-      if (!actual.isFile() || actual.size > MAX_FILE || actual.ino !== expected.ino || actual.dev !== expected.dev)
+      if (!actual.isFile() || actual.nlink !== 1 || actual.size > MAX_FILE || actual.ino !== expected.ino || actual.dev !== expected.dev)
         throw fail(409, "The file changed. Request it again.");
       target();
       const buffer = Buffer.alloc(MAX_FILE + 1);
@@ -123,7 +123,7 @@ export async function runTerminalCommand(action, authorize, resolve) {
         if (!bytesRead) break;
         length += bytesRead;
       }
-      if (length > MAX_FILE) throw fail(400, "Read a regular file no larger than 1 MiB.");
+      if (length > MAX_FILE) throw fail(400, "Read a regular file no larger than 1 MiB without extra hard links.");
       const text = buffer.subarray(0, length).toString("utf8");
       const lines = text.split("\n");
       if (lines.at(-1) === "") lines.pop();

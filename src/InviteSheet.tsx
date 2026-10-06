@@ -24,6 +24,7 @@ import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
 import BrowserInvite from "./BrowserInvite";
+import AccessEditor, { canEditAccess, type EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
 // People and assistants share a focused composer; the assistant connection
@@ -31,18 +32,7 @@ import "./invite-sheet.css";
 
 type Role = "watch" | "control" | "files" | "work" | "full" | "custom";
 type Created = { peer: Peer; clientId: string; invitation: string };
-type Guest = {
-  id: string;
-  name: string;
-  kind?: string;
-  scopes?: string[];
-  expiresAt?: number;
-  status?: string;
-  policy?: { invite?: boolean; roots?: string[]; browser?: unknown };
-  guestRoots?: string[];
-  // The same invitation on your other computers carries the same group.
-  group?: string;
-};
+type Guest = EditableAccess & { group?: string };
 const ROLES: {
   value: Role;
   label: string;
@@ -394,6 +384,7 @@ export function InviteSheet({
   } | null>(null);
   const [picked, setPicked] = useState<Record<string, PickedFolder[]>>({});
   const [changed, setChanged] = useState("");
+  const [editing, setEditing] = useState<Guest | null>(null);
 
   const loadGuests = () =>
     request<{ clients: Guest[] }>(peer, "/api/clients")
@@ -1554,7 +1545,9 @@ export function InviteSheet({
             </span>
             {/* Their access: change it here, no new link. */}
             {g.policy?.browser || g.scopes?.includes("browser:read") ? (
-              <span className="ivt-role-text">AI browser · scoped access</span>
+              canEditAccess(g)
+                ? <button className="button secondary small" onClick={() => setEditing(g)}>Edit access</button>
+                : <span className="ivt-role-text">Agent</span>
             ) : (
               <Menu
                 label={
@@ -1605,6 +1598,7 @@ export function InviteSheet({
           </div>
         ))}
       </details>
+      {editing && <AccessEditor key={editing.id} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); setChanged(removed ? "Access removed." : "Access updated."); void loadGuests(); }} />}
     </div>
   );
 }

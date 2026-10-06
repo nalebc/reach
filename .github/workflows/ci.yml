@@ -2,6 +2,8 @@ name: Verify Reach
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   verify:
     strategy:
@@ -9,36 +11,50 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
       - run: node scripts/check-release.mjs
+        env:
+          REACH_PRIVATE_IDENTIFIERS: ${{ secrets.REACH_PRIVATE_IDENTIFIERS }}
       - run: npm ci
       - run: ./reach --help
         if: runner.os != 'Windows'
       - run: .\reach.cmd --help
         if: runner.os == 'Windows'
-      - run: npm run build
+      - run: npm run build:release
       - run: npm test
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
       - run: npm audit --audit-level=moderate
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tailnet/go.mod
-          cache-dependency-path: tailnet/go.sum
-      - run: node scripts/build-tailnet.mjs --required
       - run: npm run package
-      - run: npm run build
-        working-directory: release/reach
-      - run: node release/reach/scripts/bootstrap.mjs --help
+      - run: npm run verify:package
       - uses: actions/upload-artifact@v4
         with:
           name: reach-${{ matrix.os }}
           path: release/reach
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync ios
+        env:
+          REACH_APP_URL: https://computer.example.ts.net:8443
+      - run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build

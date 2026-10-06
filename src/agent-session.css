@@ -222,8 +222,49 @@ button.as-title:active {
 .claude .as-user {
   border-radius: 12px;
 }
-.as-user.pending {
-  opacity: 0.6;
+/* An app's own permission card, in its words. */
+.as-app-card p {
+  margin: 0 0 6px;
+}
+.as-app-card-title {
+  font-weight: 600;
+}
+.as-app-card-actions {
+  flex-wrap: wrap;
+}
+.as-app-card-more {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.as-app-card-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.as-fold.folded {
+  max-height: 15em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+.as-fold-toggle {
+  display: block;
+  margin: 6px 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 }
 .as-user.pending .as-tag.problem {
   color: #f0a0a0;
@@ -310,6 +351,39 @@ button.as-title:active {
 }
 .md u {
   text-decoration-color: var(--as-faint);
+}
+/* Tables scroll sideways on a phone rather than squeezing their words. */
+.md-table {
+  margin: 0 0 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--as-code-line);
+  border-radius: 10px;
+}
+.md-table table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.md-table th,
+.md-table td {
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th {
+  background: var(--as-code-bg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-table td {
+  min-width: 4em;
+  max-width: 22em;
+}
+.md-table tr + tr td,
+.md-table tbody tr:first-child td {
+  border-top: 1px solid var(--as-code-line);
 }
 
 /* Tool steps, folded like the apps fold them */

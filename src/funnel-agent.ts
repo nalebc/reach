@@ -180,14 +180,23 @@ export function createFunnelAgent(dependencies: {
     }
     if (state && (!invitation || state.invitation === invitation)) {
       if (
-        (state.session?.expiresAt || state.receipt?.expiresAt || Infinity) <=
-        now()
+        !state.session && (state.receipt?.expiresAt || Infinity) <= now()
       ) {
         await forget(state);
         throw endedError();
       }
       // Never mint a different identity for an already-claimed invitation.
       await keyFor(state);
+      if (state.session && state.session.expiresAt <= now()) {
+        const response = await request(state.session.peer, "/api/device");
+        const updated = read();
+        if (response.status === 401 || (response.ok && (!updated?.session || updated.session.expiresAt <= now()))) {
+          await forget(state);
+          throw endedError();
+        }
+        if (!response.ok) throw Error("Couldn’t verify access. Try again when the computer is connected.");
+        return updated!;
+      }
       save(state);
       return state;
     }
@@ -355,7 +364,7 @@ export function createFunnelAgent(dependencies: {
       delete current.receipt;
       // Token delivery is one-time: persist before a view can unmount.
       save(current);
-      await keys.write(current.id, await keyFor(current), result.expiresAt);
+      await keys.write(current.id, await keyFor(current), result.expiresAt + 86400000);
       return current;
     } else if (result.status === "denied" || result.status === "expired") {
       await forget(current);
@@ -393,7 +402,7 @@ export function createFunnelAgent(dependencies: {
       state.id !== peer.sessionId ||
       peer.url !== origin ||
       peer.token !== state.session.peer.token ||
-      state.session.expiresAt <= now()
+      (state.session.expiresAt <= now() && path !== "/api/device")
     )
       throw endedError();
     if (!/^\/api\//.test(path) || /[\\#]/.test(path))
@@ -411,11 +420,22 @@ export function createFunnelAgent(dependencies: {
       throw Error(
         "This request format is unavailable in the shared workspace.",
       );
-    return signed(
+    const response = await signed(
       state,
       { operation: "request", token: peer.token, method, path, body },
       init.signal || undefined,
     );
+    if (response.ok && method === "GET" && path === "/api/device") {
+      const device = await response.clone().json();
+      const expiresAt = device.access?.expiresAt;
+      const current = read();
+      if (Number.isFinite(expiresAt) && expiresAt > now() && current?.id === state.id && current.session) {
+        await keys.write(current.id, await keyFor(current), expiresAt + 86400000);
+        current.session.expiresAt = expiresAt;
+        save(current);
+      }
+    }
+    return response;
   }
   return {
     prepare,

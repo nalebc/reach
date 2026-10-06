@@ -122,7 +122,11 @@ export function applyAgentPolicy(client, config) {
       !["off", "view", "scroll", "ask"].includes(policy.screen) ||
       (policy.commandRequests !== undefined && typeof policy.commandRequests !== "boolean") ||
       (policy.restrictedTerminal !== undefined && typeof policy.restrictedTerminal !== "boolean") ||
-      (policy.restrictedTerminal === true && (!policy.roots.length || policy.screen === "ask" || policy.commandRequests === true)) ||
+      (policy.restrictedTerminal === true && (!policy.roots.length || policy.commandRequests === true)) ||
+      (policy.terminalApproval !== undefined && typeof policy.terminalApproval !== "boolean") ||
+      (policy.terminalApproval === true && policy.restrictedTerminal !== true) ||
+      (policy.scriptApproval !== undefined && typeof policy.scriptApproval !== "boolean") ||
+      (policy.scriptApproval === true && (policy.terminalApproval !== true || policy.restrictedTerminal !== true)) ||
       !Array.isArray(client.scopes)
     ) return null;
     const roots = policy.roots.filter((root) =>

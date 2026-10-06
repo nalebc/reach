@@ -1,3 +1,5 @@
+import { object, readOnlyRpc, validateCodexResult, uncertainDelivery } from "./agent-sessions/compatibility.mjs";
+import { describePrompt, answerFor } from "./agent-sessions/codex-live.mjs";
 import { findCodexExecutable } from "./capabilities.mjs";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
@@ -54,9 +56,10 @@ export class Codex {
     });
     this.child = child;
     const rejectAll = (message) => {
+      if (this.child !== child) return;
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
-        p.reject(fail(503, message));
+        p.reject(readOnlyRpc(p.method) ? fail(503, message) : uncertainDelivery("codex"));
       }
       this.pending.clear();
       this.child = null;
@@ -74,13 +77,14 @@ export class Codex {
       ),
     );
     child.on("exit", () =>
-      rejectAll("Codex stopped. Send a new message to reconnect."),
+      rejectAll("Codex disconnected. Check the conversation before sending again."),
     );
+    child.stdin.on("error", () => rejectAll("Codex input disconnected. Check the conversation before sending again."));
     child.stderr.on("data", () => {});
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
-      try {
-        this.receive(JSON.parse(line));
-      } catch {}
+      if (this.child !== child) return;
+      try { this.receive(JSON.parse(line)); }
+      catch { rejectAll("Codex returned an incompatible response. Use the screen or terminal."); child.kill(); }
     });
     await this.rpc("initialize", {
       clientInfo: { name: "reach", title: "Reach", version: "0.1.0" },
@@ -88,23 +92,18 @@ export class Codex {
     });
     this.send({ method: "initialized" });
   }
-  send(message) {
+  send(message, callback) {
     if (!this.child?.stdin.writable) throw fail(503, "Codex is not connected.");
-    this.child.stdin.write(JSON.stringify(message) + "\n");
+    this.child.stdin.write(JSON.stringify(message) + "\n", callback);
   }
   rpc(method, params) {
     return new Promise((resolve, reject) => {
       const requestId = ++this.seq;
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
-        reject(
-          fail(
-            504,
-            "Codex took too long to respond. Check the computer and try again.",
-          ),
-        );
+        reject(readOnlyRpc(method) ? fail(504, "Codex did not answer the read request.") : uncertainDelivery("codex"));
       }, 30000);
-      this.pending.set(requestId, { resolve, reject, timer });
+      this.pending.set(requestId, { resolve, reject, timer, method });
       try {
         this.send({ id: requestId, method, params });
       } catch (e) {
@@ -115,6 +114,7 @@ export class Codex {
     });
   }
   receive(message) {
+    if (!object(message)) throw Error("Unsupported Codex message.");
     if (message.id !== undefined && !message.method) {
       const p = this.pending.get(message.id);
       if (p) {
@@ -124,7 +124,7 @@ export class Codex {
           ? p.reject(
               fail(502, message.error.message || "Codex returned an error."),
             )
-          : p.resolve(message.result);
+          : (() => { try { p.resolve(validateCodexResult(p.method, message.result)); } catch (error) { p.reject(error); } })();
       }
       return;
     }
@@ -145,7 +145,10 @@ export class Codex {
         "item/tool/requestUserInput",
       ];
       if (supported.includes(message.method)) {
-        c.approvals.push({ id: message.id, method: message.method, params: p });
+        let prompt;
+        try { prompt = describePrompt(message.method, p); }
+        catch { this.send({ id: message.id, error: { code: -32602, message: "Unsupported approval shape." } }); return; }
+        c.approvals.push({ id: message.id, method: message.method, params: p, prompt });
         c.status = "waiting";
       } else {
         this.send({
@@ -159,6 +162,7 @@ export class Codex {
         c.error = "Codex requested a feature this client does not support.";
       }
     } else if (message.method === "item/agentMessage/delta") {
+      if (typeof p.delta !== "string") throw Error("Invalid Codex text delta.");
       let item = c.items.find((i) => i.id === p.itemId);
       if (!item) {
         item = { id: p.itemId, type: "agentMessage", text: "" };
@@ -179,6 +183,7 @@ export class Codex {
       c.status = "running";
       c.turnId = p.turn?.id;
     } else if (message.method === "turn/completed") {
+      if (c.turnId && p.turn?.id !== c.turnId) return;
       c.status = p.turn?.status === "failed" ? "error" : "idle";
       c.error = p.turn?.error?.message || null;
       c.approvals = [];
@@ -263,25 +268,22 @@ export class Codex {
     c.approvals = [];
     this.save();
   }
-  respond(threadId, requestId, body) {
+  async respond(threadId, requestId, body) {
     const c = this.get(threadId);
     const a = c.approvals.find((a) => String(a.id) === String(requestId));
     if (!a) throw fail(404, "This request is no longer pending.");
-    let result;
-    if (a.method === "item/tool/requestUserInput") {
-      result = { answers: {} };
-      for (const q of a.params.questions || []) {
-        const answer = body.answers?.[q.id];
-        if (typeof answer !== "string" || !answer.trim())
-          throw fail(400, "Answer each question.");
-        result.answers[q.id] = { answers: [answer.slice(0, 10000)] };
-      }
-    } else {
-      if (!["accept", "decline"].includes(body.decision))
-        throw fail(400, "Choose Allow or Deny.");
-      result = { decision: body.decision };
-    }
-    this.send({ id: a.id, result });
+    if (a.attempted) throw fail(409, "This answer was already attempted. Check Codex.");
+    const answer = a.method === "item/tool/requestUserInput"
+      ? { answers: Object.fromEntries(Object.entries(body.answers || {}).map(([id, value]) => [id, [value]])) }
+      : body;
+    const result = answerFor(a.prompt || describePrompt(a.method, a.params), answer);
+    a.attempted = true;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(uncertainDelivery("codex")), 30000);
+      try { this.send({ id: a.id, result }, error => {
+        clearTimeout(timer); error ? reject(uncertainDelivery("codex")) : resolve();
+      }); } catch { clearTimeout(timer); reject(uncertainDelivery("codex")); }
+    });
     c.approvals = c.approvals.filter((x) => x !== a);
     c.status = c.approvals.length ? "waiting" : "running";
     this.save();

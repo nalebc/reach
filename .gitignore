@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 tailnet/dist/
 tailnet/.tailnet-build-*/
@@ -24,3 +24,10 @@ release/
 *.xcresult/
 Signing.local.xcconfig
 ExportOptions.local.plist
+
+# Local agent scratch work and generated artifacts
+work/
+.claude/
+.codex/
+**/xcuserdata/
+ios/build/

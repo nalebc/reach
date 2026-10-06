@@ -42,7 +42,10 @@ export function createDoneWatch({
           const app = { claude: "Claude Code", codex: "Codex", openclaw: "OpenClaw" }[s.agent] || "Your agent";
           await notify({
             category: "done",
-            title: `Your ${app} chat is done`,
+            title: `${app} · Ready for you`,
+            body: "The response is ready. Open the conversation to continue.",
+            icon: s.agent,
+            actions: [{ action: "open", title: "Open conversation" }],
             tag: `done-${s.agent}-${String(s.id).slice(0, 12)}`,
             // One tap: the chat itself (src/deep-link.ts).
             url: `/?page=sessions&agent=${encodeURIComponent(s.agent)}&id=${encodeURIComponent(s.id)}`,

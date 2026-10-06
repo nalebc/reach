@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { assertReleaseAssets } from "./release-assets.mjs";
+assertReleaseAssets();
 const dest = "release/reach";
 if (!fs.existsSync("tailnet/dist/tailnet.json"))
   throw Error("Build the browser connection first: node scripts/build-tailnet.mjs --required");
@@ -27,6 +29,7 @@ for (const item of [
   "public",
   "index.html",
   "start.html",
+  "agent.html",
   "tsconfig.json",
   "vite.config.mjs",
 ])

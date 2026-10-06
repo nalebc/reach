@@ -297,7 +297,14 @@ export async function request<T = any>(
   route: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await peerFetch(peer, route, options);
+  const response = await peerFetch(peer, route, options).catch((e: Error) => {
+    // The browser's own words ("Failed to fetch", "Load failed") said
+    // nothing; a cancel stays a cancel.
+    const where = peer.platform === "darwin" ? "Mac" : "computer";
+    if (e?.name === "TimeoutError") throw Object.assign(Error(`Your ${where} didn't answer in time. Try again.`), { cause: e });
+    if (e?.name === "TypeError") throw Object.assign(Error(`Couldn't reach your ${where}. Check the connection and try again.`), { cause: e });
+    throw e;
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({
       error: "This computer could not complete the request.",

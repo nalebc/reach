@@ -344,6 +344,12 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             items.push({ id: e.uuid, role: "user", kind: "text", text: command, slash: true, at });
             continue;
           }
+          // Claude Code's mark where a turn was stopped (from Reach or the
+          // app), written as a user turn: a quiet "Stopped", as Codex shows.
+          if (/^\[Request interrupted by user( for tool use)?\]$/.test(text.trim()) && !images) {
+            items.push({ id: e.uuid, role: "system", kind: "notice", text: "Stopped", at });
+            continue;
+          }
           if (/^\s*<local-command-(stdout|stderr)>/.test(text)) {
             const output = commandOutput(text);
             if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });

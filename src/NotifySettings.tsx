@@ -13,6 +13,45 @@ import {
 } from "./push";
 import "./notifications.css";
 
+// Reach on the Home Screen. Chrome, Edge and Android offer a real install
+// prompt, but only once, at page load: it's kept from start-up (this module
+// loads with the app) for the tap. iPhone has no such prompt.
+type InstallPrompt = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+let installPrompt: InstallPrompt | null = null;
+const installChanged = () =>
+  window.dispatchEvent(new Event("reach-install-changed"));
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e as InstallPrompt;
+    installChanged();
+  });
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+    installChanged();
+  });
+}
+function useInstallPrompt() {
+  const [ready, setReady] = useState(() => !!installPrompt);
+  useEffect(() => {
+    const changed = () => setReady(!!installPrompt);
+    window.addEventListener("reach-install-changed", changed);
+    return () => window.removeEventListener("reach-install-changed", changed);
+  }, []);
+  const install = async () => {
+    const prompt = installPrompt;
+    if (!prompt) return;
+    installPrompt = null;
+    await prompt.prompt();
+    await prompt.userChoice.catch(() => null);
+    installChanged();
+  };
+  return ready ? install : null;
+}
+
 export function useNotificationSetup(peer: Peer, active = true) {
   const [support, setSupport] = useState(pushSupport);
   const [preferences, setPreferences] =
@@ -205,7 +244,8 @@ function HomeScreenSetup() {
               <img src="/favicon.svg" alt="" />
             </span>
             <span>
-              Open <strong>Reach</strong> from your Home Screen
+              Open <strong>Reach</strong> from your Home Screen and sign in
+              there once
             </span>
           </li>
         </ol>
@@ -223,11 +263,17 @@ export function NotificationSetup({
 }) {
   const { support, on, allowed, loading, busy, note, here, preferences } =
     state;
+  const install = useInstallPrompt();
   const [now, setNow] = useState(Date.now);
+  // One wake-up when a pause ends, not a ticking clock.
+  const pausedUntil = preferences?.pausedUntil || 0;
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    setNow(Date.now());
+    const left = pausedUntil - Date.now();
+    if (left <= 0) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.min(left + 50, 2 ** 31 - 1));
+    return () => clearTimeout(timer);
+  }, [pausedUntil]);
   const paused = on && !!preferences && preferences.pausedUntil > now;
   const until = preferences
     ? new Date(preferences.pausedUntil).toLocaleTimeString([], {
@@ -332,6 +378,20 @@ export function NotificationSetup({
                 </button>
               </>
             )}
+          </div>
+        )}
+        {install && (
+          <div className="ns-row">
+            <span className="ns-icon">
+              <SquarePlus size={18} />
+            </span>
+            <span className="ns-text">
+              <strong>Add to Home Screen</strong>
+              <small>Open Reach like an app</small>
+            </span>
+            <button className="ns-chip" onClick={() => void install()}>
+              Add
+            </button>
           </div>
         )}
       </div>

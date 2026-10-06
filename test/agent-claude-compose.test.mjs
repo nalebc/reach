@@ -124,6 +124,33 @@ test("the helper is given the chat's title, the text and each picture, and its r
   const helper = (stdout) => ({ binary: async () => "/data/reach-claude-compose", run: async (...args) => (runs.push(args), { stdout }) });
   assert.deepEqual(await typeIntoClaude(message, helper('{"sent":true}\n')), { sent: true });
   assert.deepEqual(runs[0][1], ["--title", "Fix the chart", "--text", "Run the tests", "--image", "/data/agent-images/p.png"]);
-  await assert.rejects(typeIntoClaude(message, helper('{"error":"There\'s a draft in that chat on your Mac.","draft":true}')), (e) => e.waiting && /draft/.test(e.message));
-  await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.waiting);
+  await assert.rejects(typeIntoClaude(message, helper('{"error":"There\'s a draft in that chat on your Mac.","draft":true,"sent":false}')), (e) => e.waiting && /draft/.test(e.message));
+  await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.code === "AGENT_DELIVERY_UNKNOWN");
+});
+
+test("a permission mode picked on the phone is picked in the Claude app's own menu; never Bypass", async () => {
+  // On screen: picked in the app at once, by the name its menu gives it.
+  const m = mac({ onScreen: A });
+  const c = compose(m, { type: async (v) => (m.typed.push(v), v.mode ? { mode: v.mode } : {}) });
+  assert.deepEqual(await c.mode(A, { title: message.title, mode: "acceptEdits" }), { mode: "acceptEdits" });
+  assert.deepEqual(await c.mode(A, { title: message.title, mode: "default" }), { mode: "default" });
+  assert.deepEqual(m.typed.map((v) => v.mode), ["Accept edits", "Manual"]);
+  await assert.rejects(c.mode(A, { title: message.title, mode: "bypassPermissions" }), (e) => e.status === 400);
+  // Another chat on screen: never switched for a mode; it goes with the next message.
+  const away = mac({ onScreen: B });
+  await assert.rejects(compose(away).mode(A, { title: message.title, mode: "plan" }), /with your next message/);
+  assert.deepEqual(away.opened, []);
+  // That next message: the mode first, then the text, as in the app's composer.
+  const next = mac({ onScreen: A });
+  await compose(next).deliver(A, { title: message.title, text: "Go", mode: "plan" });
+  assert.deepEqual(next.typed.map((v) => v.mode || v.text), ["Plan", "Go"]);
+});
+
+test("the helper is told the mode by the name the Claude app's menu uses, with nothing else", async () => {
+  const calls = [];
+  await typeIntoClaude(
+    { title: "Fix the chart", mode: "Plan", images: ["/x.png"] },
+    { binary: async () => "/bin/helper", run: (file, args) => (calls.push(args), Promise.resolve({ stdout: '{"mode":"Plan"}\n' })) },
+  );
+  assert.deepEqual(calls, [["--title", "Fix the chart", "--mode", "Plan"]]);
 });

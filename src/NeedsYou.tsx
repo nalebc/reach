@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -105,6 +105,18 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
   const pending = useRef(new Set<string>());
   const [opened, setOpened] = useState<string | null>(null);
   const track = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const focus = (event: Event) => {
+      const at = items.findIndex((item) => item.key === (event as CustomEvent).detail);
+      if (at < 0) return;
+      setIndex(at);
+      if (items[at].more) setOpened(items[at].key);
+      track.current?.scrollTo?.({ left: at * track.current.clientWidth, behavior: "smooth" });
+      track.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    };
+    window.addEventListener("reach-focus-need", focus);
+    return () => window.removeEventListener("reach-focus-need", focus);
+  }, [items]);
   if (!items.length) return null;
   const at = Math.min(index, items.length - 1);
   const act = async (item: NeedItem, action: NonNullable<NeedItem["actions"]>[number]) => {

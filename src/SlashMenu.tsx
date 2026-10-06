@@ -103,6 +103,8 @@ export function useSlashMenu({
   const [result, setResult] = useState<{ name: string; card?: Card; error?: string } | null>(null);
   // A Codex skill picked from the menu: it goes with the next message.
   const [skill, setSkill] = useState<SlashCommand | null>(null);
+  // A "/word" no command answers to, already pointed out once: sent as typed.
+  const warned = useRef("");
   const list = useRef<HTMLDivElement>(null);
   const query = enabled ? slashQuery(text) : null;
   useEffect(() => {
@@ -181,7 +183,18 @@ export function useSlashMenu({
     // new chat (true); anything else is a message (with the picked skill).
     runOnSend(message: string) {
       const intent = slashIntent(message, commands);
-      if (!intent) return false;
+      if (!intent) {
+        // A typo'd command went to the agent as a message and used a turn:
+        // said once; Send again sends it as typed ("/tmp is full" can be words).
+        const name = /^\/([A-Za-z][\w:.-]*)(?:\s|$)/.exec(message.trim())?.[1];
+        // An MCP server's prompt (/mcp__server__prompt) can come after the list.
+        if (!name || name.startsWith("mcp__") || !commands?.length || commands.some((c) => c.name === name) || warned.current === message)
+          return false;
+        warned.current = message;
+        const app = agent === "claude" ? "Claude Code" : "Codex";
+        setResult({ name, error: `${app} has no /${name} command. Send again to send it as a message.` });
+        return true;
+      }
       const { command, args } = intent;
       if (command.action === "new" && onNew) {
         setText("");

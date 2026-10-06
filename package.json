@@ -22,7 +22,8 @@
     "!scripts/compress-assets.mjs",
     "dist/",
     "tailnet/dist/",
-    "docs/*.md"
+    "docs/*.md",
+    "!scripts/smoke-package.mjs"
   ],
   "publishConfig": {
     "access": "public"
@@ -33,8 +34,8 @@
   "scripts": {
     "go": "node scripts/bootstrap.mjs",
     "dev": "node scripts/dev.mjs",
-    "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
-    "prepack": "npm run build && node scripts/build-tailnet.mjs --required",
+    "build": "node scripts/build-brand.mjs && tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
+    "prepack": "node scripts/check-release.mjs && npm run build:release",
     "start": "node server/index.mjs",
     "test": "node --test --test-timeout=60000 --test-concurrency=4 test/*.test.mjs",
     "test:typing": "REACH_TEST_TYPING_NATIVE=1 node --test test/typing-native.test.mjs",
@@ -46,7 +47,9 @@
     "agent-token": "node scripts/agent-token.mjs",
     "mcp": "node scripts/mcp.mjs",
     "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs",
-    "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs"
+    "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs",
+    "build:release": "npm run build && node scripts/build-tailnet.mjs --required && node scripts/build-notices.mjs && node scripts/release-assets.mjs",
+    "verify:package": "node scripts/smoke-package.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

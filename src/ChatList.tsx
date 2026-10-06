@@ -127,22 +127,36 @@ export function ChatAppPicker({
   );
 }
 
+// A line of a chat as plain words for the list: the markdown an agent
+// writes (**bold**, `code`, # headings, - lists, [links](…)) without its
+// marks, and no prompt sign ahead of it (Gemini CLI's "›").
+export function plainLine(text: string) {
+  return text
+    .replace(/^\s*(?:[›❯>$]\s+)+/, "")
+    .replace(/^\s*(?:#{1,6}|[-*•]|\d+[.)])\s+/, "")
+    .replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, "$1$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1")
+    .trim();
+}
+
 export function ChatComingSoon({
   app,
   logos,
+  label = "Coming soon",
+  text = `Your ${app.name} conversations will be available here when the integration is ready.`,
 }: {
   app: ChatAppChoice;
   logos: AgentLogos;
+  label?: string;
+  text?: string;
 }) {
   return (
     <div className="chat-coming-soon" role="status">
       <AgentLogo agent={app.agent} name={app.name} logos={logos} size={32} />
       <strong>{app.name}</strong>
-      <span>Coming soon</span>
-      <p>
-        Your {app.name} conversations will be available here when the
-        integration is ready.
-      </p>
+      <span>{label}</span>
+      <p>{text}</p>
     </div>
   );
 }
@@ -235,7 +249,7 @@ export default function ChatList({
             <AgentLogo agent={s.agent} logos={logos} size={20} />
           </span>
           <span className="chat-entry-copy">
-            <strong>{s.title || "New chat"}</strong>
+            <strong>{plainLine(s.title || "") || "New chat"}</strong>
             <span className="chat-card-preview">
               {/* Continued from a chat with the other agent, as if forked. */}
               {s.movedFrom && (
@@ -245,7 +259,7 @@ export default function ChatList({
                 </span>
               )}
               {s.prompts?.[0]?.title ||
-                s.preview ||
+                plainLine(s.preview || "") ||
                 (s.movedFrom ? `Continues “${s.movedFrom.title || "a chat"}”` : "No messages yet")}
             </span>
             {showProject && (

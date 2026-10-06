@@ -140,11 +140,14 @@ export function createAgentClient(
         },
         (res) => {
           const chunks = [];
+          // Only the named browser screen route may return a binary image.
+          const screenImage = route === "/api/browser/screen" && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
+          const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
           let size = 0;
           res.on("data", (chunk) => {
             size += chunk.length;
-            if (size > 2 * 1024 * 1024)
-              res.destroy(Error("Reach response exceeds 2 MiB."));
+            if (size > responseLimit)
+              res.destroy(Error(`Reach response exceeds ${screenImage ? 8 : 2} MiB.`));
             else chunks.push(chunk);
           });
           res.on("error", reject);
@@ -154,6 +157,12 @@ export function createAgentClient(
               return;
             }
             try {
+              if (screenImage) {
+                const mimeType = String(res.headers["content-type"] || "").split(";")[0].trim();
+                if (!["image/jpeg", "image/png"].includes(mimeType)) throw Error("Reach returned an unsupported screen image.");
+                resolve({ image: Buffer.concat(chunks).toString("base64"), mimeType });
+                return;
+              }
               const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
               if (res.statusCode < 200 || res.statusCode >= 300)
                 throw Error(

@@ -279,7 +279,8 @@ test("restricted terminal admission exposes its limits and invalid or removed gr
   assert.equal(client.scopes.includes("exec"), false);
   assert.equal(client.scopes.includes("terminal"), false);
   const { applyAgentPolicy } = await import("../server/agent-policy.mjs");
+  assert.equal(applyAgentPolicy({ ...client, policy: { ...client.policy, screen: "ask", terminalApproval: true } }, config).policy.screen, "ask");
   assert.equal(applyAgentPolicy(client, { ...config, roots: [] }), null);
-  for (const bad of [{ restrictedTerminal: "yes" }, { screen: "ask" }, { commandRequests: true }])
+  for (const bad of [{ restrictedTerminal: "yes" }, { terminalApproval: "yes" }, { commandRequests: true }])
     assert.equal(applyAgentPolicy({ ...client, policy: { ...client.policy, ...bad } }, config), null);
 });

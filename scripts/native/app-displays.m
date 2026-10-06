@@ -1202,6 +1202,25 @@ int main(int argc, const char *argv[]) {
       NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
       if (app) [shared enqueue:@{@"cmd": @"ended", @"pid": @(app.processIdentifier)}];
     }];
+    // The app in front, now and at each change, and each app opening: a
+    // message from the phone waiting because you're in the Claude app goes
+    // in once you step away from it (or once the app opens).
+    void (^tell)(NSString *, NSRunningApplication *) = ^(NSString *event, NSRunningApplication *app) {
+      emit(@{@"event": event, @"bundle": app.bundleIdentifier ?: @""});
+    };
+    tell(@"frontmost", NSWorkspace.sharedWorkspace.frontmostApplication);
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceDidActivateApplicationNotification
+                                                                object:nil
+                                                                 queue:NSOperationQueue.mainQueue
+                                                            usingBlock:^(NSNotification *note) {
+      tell(@"frontmost", note.userInfo[NSWorkspaceApplicationKey]);
+    }];
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceDidLaunchApplicationNotification
+                                                                object:nil
+                                                                 queue:NSOperationQueue.mainQueue
+                                                            usingBlock:^(NSNotification *note) {
+      tell(@"launched", note.userInfo[NSWorkspaceApplicationKey]);
+    }];
     dispatch_source_t termination = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(termination, ^{ [shared end]; });
     dispatch_resume(termination);

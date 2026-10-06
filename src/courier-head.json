@@ -1,0 +1,48 @@
+{
+  "shell": [
+    {
+      "x": -9,
+      "y": -43,
+      "width": 18,
+      "height": 22,
+      "fill": "#b9efd4"
+    },
+    {
+      "x": -13,
+      "y": -39,
+      "width": 26,
+      "height": 14,
+      "fill": "#b9efd4"
+    },
+    {
+      "x": -9,
+      "y": -41,
+      "width": 18,
+      "height": 3,
+      "fill": "#e2ffe6"
+    },
+    {
+      "x": -8,
+      "y": -35,
+      "width": 16,
+      "height": 8,
+      "fill": "#173a2b"
+    }
+  ],
+  "eyes": [
+    {
+      "x": -5,
+      "y": -34,
+      "width": 3,
+      "height": 4,
+      "fill": "#f1f3dd"
+    },
+    {
+      "x": 3,
+      "y": -34,
+      "width": 3,
+      "height": 4,
+      "fill": "#f1f3dd"
+    }
+  ]
+}
