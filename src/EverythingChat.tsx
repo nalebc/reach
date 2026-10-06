@@ -99,15 +99,18 @@ export function NewChat({
   sessions,
   onStarted,
   autoFocus = false,
+  folder = "",
 }: {
   peer: Peer;
   agent: AgentName;
   sessions: AgentSession[];
   onStarted: (s: AgentSession) => void;
   autoFocus?: boolean;
+  // Where to start (a chat's menu on the list: "New chat in reach").
+  folder?: string;
 }) {
   const folders = useMemo(() => chatFolders(sessions), [sessions]);
-  const [cwd, setCwd] = useState("");
+  const [cwd, setCwd] = useState(folder);
   const [otherFolder, setOtherFolder] = useState(false);
   const draftKey = "reach-new-chat-draft:" + peer.id;
   const [text, setText] = useState(() => {
@@ -695,6 +698,8 @@ export default function EverythingChat({
   const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review">("");
+  // A new chat's folder, when one was asked for (a chat's menu on the list).
+  const [newFolder, setNewFolder] = useState("");
   // An OpenClaw chat to open in its own space (one a chat just moved to).
   const [clawOpen, setClawOpen] = useState<string | null>(null);
   useClaudeFonts(peer, current === "claude" || open?.agent === "claude");
@@ -809,6 +814,7 @@ export default function EverythingChat({
           }}
           onNew={() => {
             setAgent(open.agent);
+            setNewFolder("");
             setSheet("new");
           }}
         />
@@ -818,7 +824,7 @@ export default function EverythingChat({
           openKey={clawOpen} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
           onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
           deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
-          onNew={() => setSheet("new")} />
+          onNew={() => { setNewFolder(""); setSheet("new"); }} />
       ) : (
         <div className="chat-workspace" aria-hidden={!!sheet || undefined}>
           {/* Messages whose chat was deleted, to send elsewhere or delete. */}
@@ -833,6 +839,8 @@ export default function EverythingChat({
             onAgentChange={setAgent}
             appPending={appPending}
             onRefresh={() => { recheck(); void reload(); }}
+            health={health}
+            onSectionMoved={() => void reload()}
             // Gemini CLI chats are read here (it no longer answers personal accounts): no new ones.
             canStart={!needsSetup && picked.agent !== "gemini"}
             setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}
@@ -843,7 +851,10 @@ export default function EverythingChat({
             }
             failure={failure}
             onOpen={openChat}
-            onNew={() => setSheet("new")}
+            onNew={(cwd) => {
+              setNewFolder(cwd || "");
+              setSheet("new");
+            }}
             pending={needs.length}
             onReview={() => setSheet("review")}
           />
@@ -892,6 +903,8 @@ export default function EverythingChat({
               />
               {(!status || (status.installed && status.signedIn && !status.error)) && (
                 <NewChat
+                  key={newFolder}
+                  folder={newFolder}
                   peer={peer}
                   agent={current}
                   sessions={sessions || []}

@@ -74,7 +74,7 @@ async function start(t, hooks = {}) {
         ttlSeconds: 600,
         folders: [],
         terminalIds: [],
-        screen: "ask",
+        screen: "off",
         ...extra,
       },
     });
@@ -136,81 +136,6 @@ async function start(t, hooks = {}) {
 
 const batch = (actions = [{ type: 'text', text: 'Reviewed title' }, { type: 'key', key: 'enter' }]) => ({ type: 'batch', actions, reason: 'Enter this title and confirm' });
 
-test('one HTTP owner decision runs the whole exact sequence, while changed initial screens refuse every step', async (t) => {
-  const f = await start(t);
-  const bot = await f.join(); const stale = await bot.submit(batch());
-  f.setFrame('changed');
-  const refused = await f.decide(stale.id, 'approve');
-  assert.equal(refused.body.status, 'failed'); assert.equal(refused.body.completedCount, 0);
-  assert.deepEqual(f.inputs, []);
-  const fresh = await bot.submit(batch());
-  const result = await f.decide(fresh.id, 'approve');
-  assert.equal(result.body.status, 'executed', JSON.stringify(result));
-  assert.deepEqual(f.inputs, batch().actions); assert.equal(result.body.completedCount, 2);
-  assert.equal((await f.decide(fresh.id, 'approve')).status, 409);
-  const next = await bot.submit(batch()); assert.equal(next.status, 'pending');
-  assert.equal(f.inputs.length, 2);
-});
-
-test('bot cannot approve its batch, replace approved actions, mint invites or use direct input', async (t) => {
-  const f = await start(t); const bot = await f.join(); const r = await bot.submit(batch());
-  assert.equal((await f.decide(r.id, 'approve', { token: bot.token })).status, 403);
-  assert.equal((await f.call(`/api/agents/browser-requests/${r.id}`, {method:'POST',body:{decision:'approve'}})).status, 400, 'old owner UI cannot approve a hidden sequence');
-  assert.equal((await f.decide(r.id, 'approve', { body: { decision: 'approve', actions: [{ type: 'key', key: 'enter' }] } })).status, 400);
-  for (const route of ['/api/agents/browser-invitations', '/api/agents/invitations', '/api/screen/input', '/api/jobs']) {
-    const denied = await bot.as(route, { method: 'POST', body: { command: 'sudo whoami' } });
-    assert.equal(denied.status, 403, route);
-  }
-  assert.deepEqual(f.inputs, []);
-});
-
-test('global screen lock covers the entire batch and owner stop prevents remaining actions', async (t) => {
-  let release, arrived; const entered = new Promise((r) => { arrived = r; });
-  const f = await start(t, { afterInput: async (count) => { if (count === 1) { arrived(); await new Promise((r) => { release = r; }); } } });
-  const bot = await f.join(); const scrolling = await f.join({ screen: 'scroll' });
-  const r = await bot.submit(batch()); const approving = f.decide(r.id, 'approve'); await entered;
-  const pending = await f.call('/api/agents/browser-requests');
-  assert.equal(pending.body[0].status, 'executing');
-  assert.equal((await scrolling.as('/api/browser/scroll', { method: 'POST', body: { direction: 'down', amount: 1 } })).status, 409);
-  assert.equal((await f.decide(r.id, 'deny')).body.status, 'cancelled');
-  release(); const result = await approving;
-  assert.equal(result.body.status, 'cancelled'); assert.equal(result.body.completedCount, 1);
-  assert.deepEqual(result.body.steps.map((s) => s.status), ['executed', 'skipped']);
-  assert.equal(f.inputs.length, 1);
-});
-
-test('agent revocation, pause and cancellation between actions stop the exact remaining sequence', async (t) => {
-  for (const operation of ['revoke', 'pause', 'cancel']) {
-    await t.test(operation, async (t) => {
-      let bot, r;
-      const f = await start(t, { afterInput: async (count) => {
-        if (count !== 1) return;
-        if (operation === 'revoke') f.reach.auth.revoke(bot.clientId);
-        else if (operation === 'pause') await f.reach.setPaused(true);
-        else assert.equal((await bot.as(`/api/browser/requests/${r.id}`, { method: 'DELETE' })).body.status, 'cancelled');
-      } });
-      bot = await f.join(); r = await bot.submit(batch());
-      const result = await f.decide(r.id, 'approve');
-      assert.equal(result.body.completedCount, 1, JSON.stringify(result));
-      assert.ok(['revoked', 'cancelled'].includes(result.body.status));
-      assert.equal(f.inputs.length, 1);
-      assert.equal(result.body.steps[1].status, 'skipped');
-    });
-  }
-});
-
-test('later native failure reports partial delivery and never replays successful inputs', async (t) => {
-  let attempts = 0;
-  const f = await start(t, { input: async () => { if (++attempts === 2) throw new Error('private native output'); } });
-  const bot = await f.join(); const r = await bot.submit(batch([...batch().actions, { type: 'key', key: 'tab' }]));
-  const result = await f.decide(r.id, 'approve');
-  assert.equal(result.body.status, 'failed'); assert.equal(result.body.completedCount, 1);
-  assert.equal(result.body.attemptedCount, 2);
-  assert.deepEqual(result.body.steps.map((s) => s.status), ['executed', 'failed', 'skipped']);
-  assert.equal((await f.decide(r.id, 'approve')).status, 409); assert.equal(attempts, 2);
-  assert.ok(!JSON.stringify(result.body).includes('private native'));
-});
-
 test('restricted terminal batch validates every target before review and keeps cwd explicit per step', async (t) => {
   const f = await start(t); fs.mkdirSync(path.join(f.dir, 'shared'));
   fs.mkdirSync(path.join(f.dir, 'shared/sub')); fs.writeFileSync(path.join(f.dir, 'shared/sub/note.txt'), 'scoped output');
@@ -228,15 +153,3 @@ test('restricted terminal batch validates every target before review and keeps c
 });
 
 
-test('a Mac security dialog appearing between actions blocks the next input', async (t) => {
-  let dialog = false;
-  const f = await start(t, { macDialogs: () => dialog ? [{ id: 'fixture-security-dialog' }] : [],
-    afterInput: async (count) => { if (count === 1) dialog = true; } });
-  const bot = await f.join(); const r = await bot.submit(batch());
-  const result = await f.decide(r.id, 'approve');
-  assert.equal(result.body.status, 'failed');
-  assert.equal(result.body.completedCount, 1);
-  assert.equal(f.inputs.length, 1);
-  assert.match(result.body.error, /only its owner can answer/);
-  assert.equal(result.body.steps[1].status, 'skipped');
-});

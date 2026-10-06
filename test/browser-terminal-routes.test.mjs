@@ -74,7 +74,7 @@ async function start(t, hooks = {}) {
         ttlSeconds: 600,
         folders: [],
         terminalIds: [],
-        screen: "ask",
+        screen: "off",
         ...extra,
       },
     });
@@ -144,8 +144,8 @@ function desktop(f) {
 }
 test('Desktop terminal read commands run immediately, log outcomes and cannot escape or invoke a shell',async t=>{
   const f=await start(t); desktop(f);
-  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,screen:'ask'});
-  const access=await bot.as('/api/browser'); assert.equal(access.body.screen,'ask'); assert.equal(access.body.restrictedTerminal,true);
+  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,screen:'off'});
+  const access=await bot.as('/api/browser'); assert.equal(access.body.screen,'off'); assert.equal(access.body.restrictedTerminal,true);
   const read=await command(bot,'cat notes.txt');assert.equal(read.body.status,'executed',JSON.stringify(read.body));assert.equal(read.body.output,'Only Desktop data');
   assert.equal((await f.call('/api/agents/browser-requests')).body.length,0);
   for(const cmd of ['cat ../outside.txt','cat /etc/passwd','sh -c pwd','sudo ls','ls; cat ../outside.txt','cp notes.txt ../escaped.txt','touch changed.txt']) {
@@ -162,7 +162,7 @@ test('Desktop terminal read commands run immediately, log outcomes and cannot es
 });
 test('supported Desktop changes wait for exact owner approval and never enlarge directory scope',async t=>{
   const f=await start(t); desktop(f);
-  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'ask'});
+  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
   const missing=await command(bot,'mkdir missing/new');assert.equal(missing.body.status,'failed');assert.ok((await bot.as('/api/browser/terminal/history')).body.some(r=>r.id===missing.body.id));
   const made=await command(bot,'touch draft.txt');assert.equal(made.status,202,JSON.stringify(made.body));assert.equal(made.body.status,'pending');
   assert.equal(fs.existsSync(path.join(f.dir,'Desktop/draft.txt')),false);
@@ -187,7 +187,7 @@ test('terminal change denial and revocation prevent dispatch and log denial',asy
 
 test('automatic reads do not consume approval capacity and denied terminal batches are durable',async t=>{
   const f=await start(t); desktop(f);
-  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'ask'});
+  const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
   for(let i=0;i<12;i++) assert.equal((await command(bot,'pwd')).body.status,'executed');
   const change=await command(bot,'touch approved.txt');assert.equal(change.status,202,JSON.stringify(change.body));
   const sequence=await bot.submit({type:'batch',actions:[{type:'terminal',root:0,command:'pwd'},{type:'terminal',root:0,command:'ls'}],reason:'Read folder'});

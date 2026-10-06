@@ -105,6 +105,8 @@ export default function DesktopSurface({
     pan: Point;
     pinch: boolean;
     probe?: number;
+    // A one-finger scroll under way (the pointer was put there once).
+    scrolling?: boolean;
   } | null>(null);
   // The latest touch-down's answer, and a field tapped awaiting its click.
   const probeSerial = useRef(0);
@@ -502,7 +504,12 @@ export default function DesktopSurface({
       canControl &&
       event.pointerType === "touch"
     ) {
-      action({ type: "move", ...cursorRef.current });
+      // The pointer goes there once, then only the scroll: a move with each
+      // step kept the steps from merging, and control ended in half a second.
+      if (!g.scrolling) {
+        g.scrolling = true;
+        action({ type: "move", ...cursorRef.current });
+      }
       action({
         type: "scroll",
         dx: clamp(dx, -120, 120),

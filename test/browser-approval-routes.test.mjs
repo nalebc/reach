@@ -72,7 +72,7 @@ async function start(t, hooks = {}) {
         ttlSeconds: 600,
         folders: [],
         terminalIds: [],
-        screen: "ask",
+        screen: "off",
         ...extra,
       },
     });
@@ -156,149 +156,11 @@ function assertNotExecuted(result) {
     );
 }
 
-test("ask invitations grant requests and snapshots without direct control or commands", async (t) => {
-  const { join, call, request, inputs } = await start(t);
-  const browser = await join({ commandRequests: true });
-  assert.ok(browser.scopes.includes("browser:request"));
-  for (const scope of [
-    "admin",
-    "exec",
-    "terminal",
-    "screen",
-    "screen:control",
-    "files:write",
-    "browser:scroll",
-  ])
-    assert.equal(browser.scopes.includes(scope), false, scope);
-  const info = await browser.as("/api/browser");
-  assert.equal(info.body.screen, "ask");
-  assert.equal(info.body.commandRequests, true);
-  const image = await request("/api/browser/screen", { token: browser.token });
-  assert.equal(image.status, 200);
-  assert.equal(await image.text(), "fixture-jpeg-original");
-  for (const [route, body] of [
-    ["/api/browser/scroll", { direction: "down" }],
-    ["/api/screen/input", { type: "key", key: "enter" }],
-    ["/api/screen/control", { enabled: true }],
-    ["/api/jobs", { command: "echo forbidden", root: 0 }],
-    ["/api/terminals", { root: 0 }],
-  ])
-    assert.equal(
-      (await browser.as(route, { method: "POST", body })).status,
-      403,
-      route,
-    );
-  assert.equal((await browser.as("/api/screen")).status, 403);
-  assert.equal((await call("/api/agents/browser-requests")).status, 200);
-  assert.deepEqual(inputs, []);
-});
-
-test("one owner approval executes the immutable requested screen action once", async (t) => {
-  const { join, call, request, decide, inputs } = await start(t);
-  const browser = await join();
-  const submitted = await browser.submit(click);
-  assert.deepEqual(inputs, []);
-  const pending = await call("/api/agents/browser-requests");
-  assert.equal(pending.status, 200);
-  assert.equal(pending.body.length, 1);
-  assert.equal(pending.body[0].id, submitted.id);
-  const image = await request(
-    `/api/agents/browser-requests/${submitted.id}/screen`,
-  );
-  assert.equal(image.status, 200);
-  assert.match(image.headers.get("content-type"), /^image\/jpeg/);
-  assert.match(image.headers.get("cache-control"), /no-store/);
-  assert.equal(await image.text(), "fixture-jpeg-original");
-  assert.equal(
-    (
-      await decide(submitted.id, "approve", {
-        body: {
-          decision: "approve",
-          action: { type: "text", text: "Replacement" },
-        },
-      })
-    ).status,
-    400,
-  );
-  assert.equal((await decide(submitted.id, "handled")).status, 400);
-  assert.deepEqual(inputs, []);
-  const decisions = await Promise.all([
-    decide(submitted.id, "approve"),
-    decide(submitted.id, "approve"),
-  ]);
-  assert.deepEqual(decisions.map((result) => result.status).sort(), [200, 409]);
-  assert.deepEqual(inputs, [
-    { type: "click", x: 0.25, y: 0.5, button: "left", count: 1 },
-  ]);
-  assert.equal(
-    decisions.find((result) => result.status === 200).body.status,
-    "executed",
-  );
-  assert.equal((await decide(submitted.id, "approve")).status, 409);
-  const own = await browser.as("/api/browser/requests");
-  assert.equal(own.status, 200);
-  assert.equal(
-    own.body.find((item) => item.id === submitted.id).status,
-    "executed",
-  );
-  assert.deepEqual((await call("/api/agents/browser-requests")).body, []);
-  assert.equal(
-    (await request(`/api/agents/browser-requests/${submitted.id}/screen`))
-      .status,
-    404,
-  );
-});
-
-test("changed screenshot fails approval without sending screen input", async (t) => {
-  const { join, decide, inputs, setFrame } = await start(t);
-  const browser = await join();
-  const submitted = await browser.submit(click);
-  setFrame("fixture-jpeg-another-window");
-  const result = await decide(submitted.id, "approve");
-  assert.equal(result.status, 200, JSON.stringify(result.body));
-  assert.equal(result.body.status, "failed");
-  assert.deepEqual(inputs, []);
-  assert.equal(
-    (await browser.as("/api/browser/requests")).body[0].status,
-    "failed",
-  );
-  setFrame("fixture-jpeg-original");
-  assert.equal((await decide(submitted.id, "approve")).status, 409);
-  assert.deepEqual(inputs, []);
-});
-
-test("text, keys, and scrolls each require their own owner approval", async (t) => {
-  const { join, decide, inputs } = await start(t);
-  const browser = await join();
-  const actions = [
-    { type: "text", text: "Example document title" },
-    { type: "key", key: "tab" },
-    { type: "scroll", direction: "down", amount: 2 },
-  ];
-  for (const [index, action] of actions.entries()) {
-    const submitted = await browser.submit({
-      ...action,
-      reason: "Review this exact action",
-    });
-    assert.equal(inputs.length, index);
-    assert.equal((await decide(submitted.id, "approve")).status, 200);
-    assert.deepEqual(
-      inputs[index],
-      action.type === "scroll" ? { type: "scroll", delta: -2 } : action,
-    );
-  }
-  assert.deepEqual(inputs, [
-    actions[0],
-    actions[1],
-    { type: "scroll", delta: -2 },
-  ]);
-});
-
 test("browser agents cannot approve themselves, inspect owner previews, or cancel each other's requests", async (t) => {
   const { join, call, decide, reach, changeClient, inputs } = await start(t);
-  const first = await join();
-  const second = await join();
-  const submitted = await first.submit(click);
+  const first = await join({commandRequests: true});
+  const second = await join({commandRequests: true});
+  const submitted = await first.submit({type: "command", command: "Review task", reason: "Owner handoff"});
   const ownRoute = `/api/browser/requests/${submitted.id}`;
   const ownerRoute = `/api/agents/browser-requests/${submitted.id}`;
   for (const token of [first.token, second.token]) {
@@ -386,241 +248,6 @@ test("command requests are owner handoffs and never execute even when approved",
   assert.equal(captures(), 0);
 });
 
-test("request types require explicit grants and reject unreviewable or invalid payloads", async (t) => {
-  const { join, invite, inputs, captures } = await start(t);
-  for (const commandRequests of ["true", 1, null, {}, []])
-    assert.equal((await invite({ commandRequests })).status, 400);
-  const screen = await join();
-  const commands = await join({ screen: "off", commandRequests: true });
-  const view = await join({ screen: "view" });
-  const submit = (browser, body) =>
-    browser.as("/api/browser/requests", { method: "POST", body });
-  assert.equal((await submit(view, click)).status, 403);
-  assert.equal((await submit(commands, click)).status, 403);
-  assert.equal(
-    (
-      await submit(screen, {
-        type: "command",
-        command: "sudo example",
-        reason: "Review",
-      })
-    ).status,
-    403,
-  );
-  for (const body of [
-    {},
-    { ...click, type: ["click"] },
-    { type: ["text"], text: {}, reason: "Review" },
-    { ...click, type: "launch" },
-    { ...click, x: -1 },
-    { ...click, y: 1.01 },
-    { ...click, x: "0.5" },
-    { ...click, button: "middle" },
-    { ...click, count: 3 },
-    { ...click, command: "sudo example" },
-    { ...click, reason: "" },
-    { ...click, reason: [] },
-    { type: "text", text: 123, reason: "Review" },
-    { type: "text", text: "a".repeat(2001), reason: "Review" },
-    { type: "key", key: "unknown", reason: "Review" },
-    { type: "scroll", delta: 0, reason: "Review" },
-    { type: "scroll", delta: 11, reason: "Review" },
-    { type: "scroll", delta: 1.5, reason: "Review" },
-    { type: "scroll", direction: "left", reason: "Review" },
-    { type: "scroll", direction: "down", amount: 0, reason: "Review" },
-    { type: "scroll", direction: "down", amount: 6, reason: "Review" },
-    { type: "scroll", direction: "down", amount: "2", reason: "Review" },
-  ])
-    assert.equal(
-      (await submit(screen, body)).status,
-      400,
-      JSON.stringify(body),
-    );
-  for (const body of [
-    { type: "command", command: "", reason: "Review" },
-    { type: "command", command: 123, reason: "Review" },
-    { type: "command", command: "echo example", cwd: "/", reason: "Review" },
-  ])
-    assert.equal(
-      (await submit(commands, body)).status,
-      400,
-      JSON.stringify(body),
-    );
-  assert.deepEqual(inputs, []);
-  assert.equal(captures(), 0);
-});
-
-test("denial and screen expiry never execute, and command handoffs have a bounded lifetime", async (t) => {
-  const realNow = Date.now;
-  let offset = 0;
-  t.mock.method(Date, "now", () => realNow() + offset);
-  const { join, decide, inputs } = await start(t);
-  const browser = await join({ commandRequests: true });
-  const denied = await browser.submit(click);
-  assert.equal((await decide(denied.id, "deny")).body.status, "denied");
-  assert.equal((await decide(denied.id, "approve")).status, 409);
-  const screen = await browser.submit(click);
-  const command = await browser.submit({
-    type: "command",
-    command: "sudo example",
-    reason: "Review",
-  });
-  assert.ok(
-    screen.expiresAt > Date.now() && screen.expiresAt <= Date.now() + 60_000,
-  );
-  assert.ok(
-    command.expiresAt > Date.now() + 60_000 &&
-      command.expiresAt <= Date.now() + 300_000,
-  );
-  offset = 61_000;
-  assert.ok([409, 410].includes((await decide(screen.id, "approve")).status));
-  assert.equal(
-    (await browser.as("/api/browser/requests")).body.find(
-      (item) => item.id === screen.id,
-    ).status,
-    "expired",
-  );
-  offset = 301_000;
-  assert.ok([409, 410].includes((await decide(command.id, "handled")).status));
-  assert.equal(
-    (await browser.as("/api/browser/requests")).body.find(
-      (item) => item.id === command.id,
-    ).status,
-    "expired",
-  );
-  assert.deepEqual(inputs, []);
-});
-
-test("revocation and expired credentials invalidate pending approvals before execution", async (t) => {
-  const { join, decide, call, changeClient, inputs } = await start(t);
-  const revoked = await join();
-  const revokedRequest = await revoked.submit(click);
-  assert.equal(
-    (await call(`/api/clients/${revoked.clientId}`, { method: "DELETE" }))
-      .status,
-    200,
-  );
-  assert.ok(
-    [401, 403, 409, 410].includes(
-      (await decide(revokedRequest.id, "approve")).status,
-    ),
-  );
-  assert.equal((await revoked.as("/api/browser/requests")).status, 401);
-  const expired = await join();
-  const expiredRequest = await expired.submit(click);
-  changeClient(expired.clientId, { expiresAt: Date.now() - 1 });
-  assert.ok(
-    [401, 403, 409, 410].includes(
-      (await decide(expiredRequest.id, "approve")).status,
-    ),
-  );
-  assert.deepEqual(inputs, []);
-});
-
-test("revocation while approval is capturing blocks the action at the final authorization check", async (t) => {
-  let duringCapture;
-  const { join, decide, reach, inputs } = await start(t, {
-    capture: async () => {
-      if (duringCapture) await duringCapture();
-    },
-  });
-  const browser = await join();
-  const submitted = await browser.submit(click);
-  duringCapture = async () => {
-    reach.auth.revoke(browser.clientId);
-  };
-  const result = await decide(submitted.id, "approve");
-  assertNotExecuted(result);
-  assert.deepEqual(inputs, []);
-});
-
-test("changing the requester's grant invalidates an already pending action", async (t) => {
-  const { join, decide, reach, changeClient, inputs } = await start(t);
-  const browser = await join();
-  const submitted = await browser.submit(click);
-  const previous = reach.auth.verify(browser.token);
-  changeClient(browser.clientId, {
-    policy: { ...previous.policy, screen: "view" },
-  });
-  assertNotExecuted(await decide(submitted.id, "approve"));
-  assert.deepEqual(inputs, []);
-});
-
-test("owner revocation while approving and agent revocation at native input both fail closed", async (t) => {
-  let duringCapture;
-  let duringInput;
-  const { join, decide, reach, owner, inputs } = await start(t, {
-    capture: async () => {
-      if (duringCapture) await duringCapture();
-    },
-    input: async () => {
-      if (duringInput) await duringInput();
-    },
-  });
-  const browser = await join();
-  const ownerRequest = await browser.submit(click);
-  duringCapture = async () => {
-    reach.auth.revoke(owner.clientId);
-  };
-  assertNotExecuted(await decide(ownerRequest.id, "approve"));
-  duringCapture = undefined;
-  const nextOwner = reach.auth.issue("Another owner device", ALL_SCOPES);
-  const inputRequest = await browser.submit(click);
-  duringInput = async () => {
-    reach.auth.revoke(browser.clientId);
-  };
-  assertNotExecuted(
-    await decide(inputRequest.id, "approve", { token: nextOwner.token }),
-  );
-  assert.deepEqual(inputs, []);
-});
-
-test("native input delayed beyond the screenshot freshness deadline is refused without retry", async (t) => {
-  const realNow = Date.now;
-  let offset = 0;
-  t.mock.method(Date, "now", () => realNow() + offset);
-  const { join, decide, inputs } = await start(t, {
-    input: async () => {
-      offset = 1500;
-    },
-  });
-  const browser = await join();
-  const submitted = await browser.submit(click);
-  const result = await decide(submitted.id, "approve");
-  assertNotExecuted(result);
-  assert.equal(result.body.status, "failed");
-  assert.equal((await decide(submitted.id, "approve")).status, 409);
-  assert.deepEqual(inputs, []);
-});
-
-test("pausing, disabling screen access, and an active control holder block approved screen actions", async (t) => {
-  const { join, decide, call, reach, inputs } = await start(t);
-  const browser = await join();
-  const paused = await browser.submit(click);
-  await reach.setPaused(true);
-  assertNotExecuted(await decide(paused.id, "approve"));
-  await reach.setPaused(false);
-  const controlled = await browser.submit(click);
-  assert.equal(
-    (
-      await call("/api/screen/control", {
-        method: "POST",
-        body: { enabled: true },
-      })
-    ).status,
-    200,
-  );
-  assertNotExecuted(await decide(controlled.id, "approve"));
-  await call("/api/screen/control", {
-    method: "POST",
-    body: { enabled: false },
-  });
-  const disabled = await browser.submit(click);
-  await call("/api/settings", { method: "POST", body: { screen: false } });
-  assertNotExecuted(await decide(disabled.id, "approve"));
-  assert.deepEqual(inputs, []);
-});
-
 test("restricted terminal verifies commands, waits for owner approval, returns output, and never exposes raw input", async (t) => {
   const f = await start(t);
   fs.mkdirSync(path.join(f.dir, "shared"));
@@ -661,7 +288,7 @@ test("restricted grants fail closed for invalid configuration, private data, den
   for (const extra of [
     { restrictedTerminal: "true", screen: "off" },
     { restrictedTerminal: true, screen: "off" },
-    { restrictedTerminal: false, terminalApproval: true, folders: [{ root: 0, path: "" }], screen: "ask" },
+    { restrictedTerminal: false, terminalApproval: true, folders: [{ root: 0, path: "" }], screen: "off" },
     { restrictedTerminal: true, folders: [{ root: 0, path: "" }], screen: "off", commandRequests: true },
   ]) assert.equal((await f.invite(extra)).status, 400);
   const browser = await f.join({ folders: [{ root: 0, path: "" }], screen: "off", restrictedTerminal: true });
@@ -681,7 +308,7 @@ test("malicious invitation and approval payloads fail before credentials or acti
   const before = f.reach.auth.list();
   for (const body of [
     [], null, "SQL injection", { name: { $ne: null }, ttlSeconds: 600 },
-    { name: "Muse", ttlSeconds: 600, screen: "view", exec: true },
+    { name: "Muse", ttlSeconds: 600, screen: "off", exec: true },
     JSON.parse('{"name":"Muse","ttlSeconds":600,"screen":"view","__proto__":{"admin":true}}'),
     { name: "Muse", ttlSeconds: 600, screen: "off", folders: [{ root: 0, path: "", write: true }] },
   ]) {
@@ -746,40 +373,62 @@ test("cd approval returns a working folder and cannot retarget already requested
   assert.equal((await browser.as("/api/files/content?root=0&path=nested%2Fnotes.txt")).status, 401);
 });
 
-test("blanket control is unavailable and approving one action never authorizes the next", async (t) => {
-  const f = await start(t);
-  const browser = await f.join();
-  const first = await browser.submit({ type: "click", x: 0.2, y: 0.4, reason: "Open a selected item" });
-  for (const body of [
-    { decision: "allow-control" },
-    { decision: "allow-control", acknowledgeRisk: true },
-    { decision: "approve", acknowledgeRisk: true },
-  ]) {
-    const rejected = await f.call(`/api/agents/browser-requests/${first.id}`, { method: "POST", body });
-    assert.equal(rejected.status, 400, JSON.stringify(rejected));
-  }
-  assert.deepEqual(f.inputs, []);
-  assert.equal((await browser.as("/api/browser")).body.controlUntil, undefined);
-  assert.equal((await f.decide(first.id, "approve")).body.status, "executed");
-  assert.equal(f.inputs.length, 1);
-  const next = await browser.submit({ type: "key", key: "enter", reason: "Continue after review" });
-  assert.equal(next.status, "pending");
-  assert.equal(f.inputs.length, 1, "the next input still waits for an exact owner approval");
-});
-
 test("editing browser permissions cancels pending actions and removes file access on the same credential", async (t) => {
   const { call, join } = await start(t);
-  const agent = await join({ folders: [{ root: 0, path: "" }] });
+  const agent = await join({ folders: [{ root: 0, path: "" }], restrictedTerminal: true });
   const listed = await call("/api/clients");
   const client = listed.body.clients.find((c) => c.policy?.browser);
-  const pending = await agent.as("/api/browser/requests", { method: "POST", body: { type: "click", x: 0.2, y: 0.4, reason: "Click" } });
+  const pending = await agent.as("/api/browser/requests", { method: "POST", body: { type: "terminal", root: 0, command: "pwd", reason: "Inspect folder" } });
   assert.equal(pending.status, 201, JSON.stringify(pending.body));
   const route = `/api/guests/${client.id}/access`;
-  assert.equal((await agent.as(route, { method: "POST", body: { folders: [], screen: "view" } })).status, 403);
-  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "view", terminalIds: ["reach:not-open"] } })).status, 400);
-  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "view" } })).status, 200);
+  assert.equal((await agent.as(route, { method: "POST", body: { folders: [], screen: "off", restrictedTerminal: false, commandRequests: true } })).status, 403);
+  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "off", terminalIds: ["reach:not-open"] } })).status, 400);
+  assert.equal((await call(route, { method: "POST", body: { folders: [], screen: "off", restrictedTerminal: false, commandRequests: true } })).status, 200);
   assert.equal((await agent.as("/api/files?root=0")).status, 403);
-  assert.equal((await agent.as("/api/browser")).body.screen, "view");
+  assert.equal((await agent.as("/api/browser")).body.screen, "off");
   const decision = await call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } });
   assert.notEqual(decision.body.status, "completed");
+});
+
+test("legacy desktop invitations cannot be created, captured, scrolled or approved", async (t) => {
+  const f = await start(t);
+  const before = f.reach.auth.list().length;
+  for (const screen of ["view", "scroll", "ask"]) {
+    const result = await f.invite({ screen });
+    assert.equal(result.status, 400, JSON.stringify(result));
+    assert.match(result.body.error, /Selected apps|retired/);
+  }
+  assert.equal(f.reach.auth.list().length, before);
+  for (const screen of ["view", "scroll", "ask"]) {
+    // Model an already-redeemed invitation issued by an earlier Reach build.
+    const bot = await f.join({ screen: "off", commandRequests: true });
+    const old = f.reach.auth.list().find((client) => client.id === bot.clientId);
+    f.changeClient(bot.clientId, {
+      policy: { ...old.policy, screen },
+      scopes: [...new Set([...old.scopes, "browser:read", "browser:request", "browser:scroll"])],
+    });
+    const access = await bot.as("/api/browser");
+    assert.equal(access.status, 200, JSON.stringify(access));
+    assert.equal(access.body.screen, "off");
+    assert.match(access.body.screenNotice, /new invitation.*Selected apps/);
+    assert.equal((await bot.as("/api/browser/screen")).status, 403);
+    assert.equal((await bot.as("/api/browser/screen", {method: "HEAD"})).status, 403);
+    assert.equal((await bot.as("/api/browser/scroll", {method: "POST", body: {direction: "down"}})).status, 403);
+    for (const action of [
+      click,
+      {type: "key", key: "enter", reason: "Open protected application"},
+      {type: "text", text: "tailscale up", reason: "Use a protected terminal"},
+      {type: "scroll", direction: "down", reason: "Navigate the desktop"},
+      {type: "batch", actions: [{type: "click", x: 0.5, y: 0.5}, {type: "key", key: "enter"}], reason: "Open Reach"},
+    ]) {
+      const denied = await bot.as("/api/browser/requests", {method: "POST", body: action});
+      assert.equal(denied.status, 403, JSON.stringify(denied));
+    }
+    for (const route of ["/api/screen/input", "/api/screen/control"])
+      assert.equal((await bot.as(route, {method: "POST", body: {type: "key", key: "enter"}})).status, 403);
+    assert.deepEqual((await bot.as("/api/browser/requests")).body, []);
+  }
+  assert.equal(f.captures(), 0, "retired routes never capture desktop pixels");
+  assert.deepEqual(f.inputs, [], "retired routes never send native input");
+  assert.deepEqual((await f.call("/api/agents/browser-requests")).body, []);
 });

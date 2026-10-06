@@ -189,3 +189,24 @@ test("guest expiry comes from the server after an extension, even past the old l
   );
   await view.unmount();
 });
+
+test("app invitations show request management and never offer the generic access form", async () => {
+  const calls = [];
+  const client = agent(); client.policy.screen = "apps";
+  client.policy.appAccess = [{ id: "/Applications/Safari.app", name: "Safari", mode: "control" }];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    calls.push([new URL(url).pathname, init.method || "GET"]);
+    return new Response(JSON.stringify(new URL(url).pathname === "/api/agents/browser-requests" ? [] : { apps: [{ id: "/Applications/Safari.app", name: "Safari", mode: "control", protected: false }] }), { headers: { "Content-Type": "application/json" } });
+  };
+  const view = await dom.render(React.createElement(AccessEditor, { peer, device, client, onClose() {}, onSaved() {} }));
+  assert.match(view.container.textContent, /Manage app requests/);
+  await dom.waitFor(() => view.container.querySelector('[aria-label="Safari session access"]'));
+  assert.equal(view.container.querySelector('[aria-label="Safari session access"]').value, "control");
+  assert.match(view.container.textContent, /Read files/);
+  assert.match(view.container.textContent, /Read-only terminal/);
+  assert.equal(view.container.querySelector("form"), null);
+  assert.equal(button(view.container, "Save changes"), undefined);
+  assert.ok(button(view.container, "End session"));
+  assert.equal(calls.some(([route]) => route.endsWith("/access")), false);
+  await view.unmount();
+});

@@ -174,6 +174,22 @@ test("a Claude app chat shows its permission mode in sight, as the app does, and
   await dom.waitFor(() => $(".as-mode").textContent.trim() === "Plan");
   assert.deepEqual(dom.errors, []);
 });
+test("a Claude chat in Claude Code's default mode reads Manual, the Claude app's word for it", async (t) => {
+  // Claude Code lists the mode as "Default"; the Claude app's menu calls it Manual.
+  const modes = CLAUDE_OFFERS.modes;
+  CLAUDE_OFFERS.modes = [{ id: "default", label: "Default" }, ...modes];
+  const page = mac.pages[`claude:${CLAUDE}`];
+  const before = page.session;
+  t.after(() => { CLAUDE_OFFERS.modes = modes; page.session = before; });
+  const session = claudeSession({ inApp: true, mode: "default" });
+  page.session = session;
+  await open(session);
+  // Once the offers (with Claude Code's "Default") have arrived, the word is still the app's.
+  await dom.waitFor(() => $(".as-mode") && $(".as-mode").textContent.trim() !== "");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal($(".as-mode").textContent.trim(), "Manual");
+  assert.deepEqual(dom.errors, []);
+});
 const record = (route) => (init) => {
   mac.sent.push({ route, body: init?.body ? JSON.parse(init.body) : null });
   return route.endsWith("/messages")
@@ -2828,8 +2844,50 @@ test("pending decisions show one request at a time without hiding the command's 
     $(".as-review-item:not([hidden]) strong").textContent,
     "Allow network?",
   );
-  await click($(".as-review-toggle"));
-  assert.equal($(".as-review-body").hidden, true);
+  assert.equal(mac.sent.length, 0);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a pending request is the agent's own card above the box, with no wrapper of Reach's around it", async () => {
+  mac.live = {
+    ...idleLive(),
+    status: "waiting",
+    prompts: [{ id: "7", kind: "command", title: "Run tests?", command: "npm test", decisions: ["accept", "decline"] }],
+  };
+  await open(claudeSession({ live: undefined }));
+  await dom.waitFor(() => $(".as-review-item .as-prompt"));
+  // Straight to the card: its logo and title, then its buttons.
+  assert.equal($(".as-review-dock .as-prompt header strong").textContent, "Run tests?");
+  assert.ok(!$(".as-review-toggle"), "no fold-away header of its own");
+  assert.doesNotMatch($(".as-review-dock").textContent, /decision is needed|decisions need you/);
+  assert.equal($(".as-review-body").hidden, false);
+  // One short command: nothing to open.
+  assert.ok(!$(".as-command-toggle"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a long command shows its first lines; Show all opens the rest and the buttons stay in place", async () => {
+  const script = ["cd /work/app", "python3 - <<'EOF'", "p='test/move-chat-ui.test.mjs'", "s=open(p).read()", "assert old in s", "EOF"].join("\n");
+  mac.live = {
+    ...idleLive(),
+    status: "waiting",
+    prompts: [{ id: "9", kind: "command", title: "Add tests and run them", command: script, decisions: ["accept", "decline"] }],
+  };
+  await open(claudeSession({ live: undefined }));
+  const pre = await dom.waitFor(() => $(".as-review-item .as-prompt-command"));
+  // All of it is there to read, folded to a preview until asked.
+  assert.equal(pre.textContent, script);
+  assert.ok(pre.classList.contains("clipped"));
+  const toggle = $(".as-command-toggle");
+  assert.equal(toggle.textContent, "Show all");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  // The buttons come right after the preview, not after the whole script.
+  assert.ok($(".as-review-item .as-prompt-actions button"));
+  await click(toggle);
+  assert.ok($(".as-review-item .as-prompt-command").classList.contains("open"));
+  assert.equal($(".as-command-toggle").textContent, "Show less");
+  await click($(".as-command-toggle"));
+  assert.ok($(".as-review-item .as-prompt-command").classList.contains("clipped"));
   assert.equal(mac.sent.length, 0);
   assert.deepEqual(dom.errors, []);
 });

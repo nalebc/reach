@@ -148,3 +148,24 @@
 .claw-move {
   padding: 8px 12px 0;
 }
+/* A folder on the Chats list (MoveSection): a small ⋯ by its name; its
+   choices float in a ChatPopover. */
+.move-section-open {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-right: -6px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--chat-faint, currentColor);
+}
+.move-section-open[aria-expanded="true"] {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: inherit;
+}
+.move-section-back .move-item-text > span {
+  font-weight: 600;
+}

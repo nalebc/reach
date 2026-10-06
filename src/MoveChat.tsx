@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ChevronRight, Loader2 } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, Loader2, MessageSquare, MoreHorizontal } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
@@ -10,12 +10,14 @@ import {
   type AgentSession,
 } from "./agent-sessions";
 import type { Peer } from "./api";
+import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import "./move-chat.css";
 
 // Continuing a chat in another app, as if it had been forked in the same app
 // and carried on with another agent (server: agent-sessions/move.mjs): the
 // other agent gets what this one knows so far, and this chat stays as it is.
-// Offered in one place: the chat's ⋯ menu (and an OpenClaw chat's header).
+// Offered in the chat's ⋯ menu (and an OpenClaw chat's header), and for a
+// whole folder at once next to its name on the Chats list.
 
 // What a chat needs to be moved: which app and chat it is.
 export type MoveSource = { agent: string; id: string; title?: string; cwd?: string };
@@ -286,6 +288,221 @@ export function MoveItems({
           </button>
         );
       })}
+    </>
+  );
+}
+
+// Chats a section already sent to an app ("claude:id>codex"), so moving the
+// section again (or a double tap) doesn't make the same chat twice. The list
+// doesn't say where chats went (only a chat's own page does).
+const SENT = "reach.sectionMoved";
+const sentKeys = (): string[] => {
+  try {
+    return JSON.parse(localStorage.getItem(SENT) || "[]");
+  } catch {
+    return [];
+  }
+};
+const noteSent = (key: string) => {
+  try {
+    localStorage.setItem(SENT, JSON.stringify([...sentKeys(), key].slice(-500)));
+  } catch {
+    /* the server still has each move */
+  }
+};
+const sentKey = (s: MoveSource, to: string) => `${s.agent}:${s.id}>${to}`;
+// The chats of a section that an app hasn't had yet.
+export const sectionToMove = (chats: AgentSession[], to: string) => {
+  const sent = new Set(sentKeys());
+  return chats.filter((s) => !s.movedTo?.some((m) => m.agent === to) && !sent.has(sentKey(s, to)));
+};
+
+// From the ⋯ next to a folder's name on the Chats list, said plainly either
+// way: "Move project reach to Codex" (every chat in it, one after the
+// other) or "Move one chat…" (pick it, then the app). The same move as one
+// chat's ⋯: every chat here stays as it is. One tap says what goes, the next
+// one moves it; then that app's list (a project) or the new chat (one) shows.
+export function MoveSection({
+  peer,
+  name,
+  chats,
+  health,
+  logos,
+  word,
+  onMoved,
+  onOpen,
+}: {
+  peer: Peer;
+  name: string;
+  chats: AgentSession[];
+  health: AgentHealth[];
+  logos: AgentLogos;
+  word?: string;
+  onMoved: (to: string) => void;
+  onOpen: (s: AgentSession) => void;
+}) {
+  const [open, setOpen] = useState<Anchor | null>(null);
+  // "": the whole project; "pick": choosing a chat; else that chat's id.
+  const [step, setStep] = useState("");
+  const [asking, setAsking] = useState("");
+  const [done, setDone] = useState(-1);
+  const [problem, setProblem] = useState("");
+  const agent = chats[0]?.agent || "";
+  const choices = moveChoices(agent, health, word);
+  if (!chats.length || !choices.length) return null;
+  const busy = done >= 0;
+  const one = chats.find((s) => s.id === step);
+  const go = (next: string) => {
+    setStep(next);
+    setAsking("");
+    setProblem("");
+  };
+  const moveProject = async (to: string) => {
+    const list = sectionToMove(chats, to);
+    setProblem("");
+    let failed = 0;
+    for (const [i, s] of list.entries()) {
+      setDone(i);
+      try {
+        await moveSession(peer, s, to);
+        noteSent(sentKey(s, to));
+      } catch {
+        failed++;
+      }
+    }
+    noteHint(99);
+    setDone(-1);
+    if (failed) {
+      setProblem(`${failed} of ${list.length} didn't move. Try again to move just ${failed === 1 ? "that one" : "those"}.`);
+      return;
+    }
+    setOpen(null);
+    go("");
+    onMoved(to);
+  };
+  const moveOne = async (s: AgentSession, to: string) => {
+    setProblem("");
+    setDone(0);
+    try {
+      const moved = await moveSession(peer, s, to);
+      noteSent(sentKey(s, to));
+      noteHint(99);
+      setDone(-1);
+      setOpen(null);
+      go("");
+      onOpen(movedChat(s, moved));
+    } catch (e) {
+      setDone(-1);
+      setProblem((e as Error).message);
+    }
+  };
+  const chatsWord = (n: number) => `${n} ${n === 1 ? "chat" : "chats"}`;
+  const title = (s: AgentSession) => s.title?.trim() || "New chat";
+  // One row per app: what goes there, greyed with why when it can't.
+  const appRow = (to: string, app: string, blocked: string, what: string, left: number, note: string, move: () => void) => {
+    const here = asking === to;
+    const why = blocked || (left ? "" : `Already in ${app}.`);
+    if (why)
+      return (
+        <button key={to} role="menuitem" className="move-item blocked" disabled aria-disabled="true">
+          <AgentLogo agent={to} name={app} logos={logos} size={20} />
+          <span className="move-item-text">
+            <span>Move {what} to {app}</span>
+            <small>{why}</small>
+          </span>
+        </button>
+      );
+    return (
+      <button
+        key={to}
+        role="menuitem"
+        className={`move-item ${here ? "asking" : ""}`}
+        disabled={busy}
+        onClick={() => (here ? move() : (setAsking(to), setProblem("")))}
+      >
+        <AgentLogo agent={to} name={app} logos={logos} size={20} />
+        <span className="move-item-text">
+          <span>{busy && here ? (left > 1 ? `Moving ${done + 1} of ${left}…` : "Moving…") : `Move ${what} to ${app}`}</span>
+          <small>{here && problem ? problem : note}</small>
+        </span>
+        {busy && here ? <Loader2 size={16} className="spin" /> : here ? <span className="move-item-go">Move</span> : null}
+      </button>
+    );
+  };
+  return (
+    <>
+      <button
+        className="move-section-open"
+        aria-label={`Move project ${name} or one of its chats to another app`}
+        aria-expanded={!!open}
+        disabled={busy}
+        onClick={(e) => {
+          setOpen(open ? null : anchorOf(e.currentTarget));
+          go("");
+        }}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        // Stays while chats move, so the count shows.
+        <ChatPopover anchor={open} label={`Move from ${name}`} onClose={() => !busy && setOpen(null)}>
+          {step === "" ? (
+            <>
+              {choices.map(({ to, name: app, blocked }) => {
+                const left = blocked ? 0 : sectionToMove(chats, to).length;
+                return appRow(
+                  to,
+                  app,
+                  blocked,
+                  `project ${name}`,
+                  left,
+                  asking === to
+                    ? `${chatsWord(left)} pick up where they are in ${app}; ${name} keeps its chats here`
+                    : `The whole folder: ${chatsWord(left)}`,
+                  () => void moveProject(to),
+                );
+              })}
+              <button role="menuitem" className="move-item" disabled={busy} onClick={() => go("pick")}>
+                <MessageSquare size={18} />
+                <span className="move-item-text">
+                  <span>Move one chat…</span>
+                  <small>Pick a chat from {name}</small>
+                </span>
+                <ChevronRight size={16} />
+              </button>
+            </>
+          ) : step === "pick" || !one ? (
+            <>
+              <button role="menuitem" className="move-item move-section-back" onClick={() => go("")}>
+                <ChevronLeft size={16} />
+                <span className="move-item-text">
+                  <span>Which chat?</span>
+                </span>
+              </button>
+              {chats.map((s) => (
+                <button key={s.id} role="menuitem" className="move-item" onClick={() => go(s.id)}>
+                  <span className="move-item-text">
+                    <span>{title(s)}</span>
+                  </span>
+                  <ChevronRight size={16} />
+                </button>
+              ))}
+            </>
+          ) : (
+            <>
+              <button role="menuitem" className="move-item move-section-back" disabled={busy} onClick={() => go("pick")}>
+                <ChevronLeft size={16} />
+                <span className="move-item-text">
+                  <span>{title(one)}</span>
+                </span>
+              </button>
+              {choices.map(({ to, name: app, blocked }) =>
+                appRow(to, app, blocked, "this chat", 1, asking === to ? `gets what ${agentLabel(agent)} knows so far` : "Picks up from here; this chat stays", () => void moveOne(one, to)),
+              )}
+            </>
+          )}
+        </ChatPopover>
+      )}
     </>
   );
 }

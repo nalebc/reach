@@ -463,3 +463,27 @@
   overflow-wrap: anywhere;
   resize: vertical;
 }
+
+.browser-invite-apps { display: grid; max-height: 320px; overflow: auto; margin: 12px 0; }
+.browser-invite-app { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: 13px; }
+.browser-invite-app + .browser-invite-app { border-top: 1px solid var(--ivt-line, #ffffff12); }
+.browser-invite-app > span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.browser-invite-app small { color: var(--ivt-muted, #93a096); font-size: 11px; }
+.browser-invite-app select { width: 145px; flex: 0 0 auto; }
+.browser-app-picker, .browser-app-window-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 16px; font-size: 13px; }
+.browser-app-picker label { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.browser-app-picker select, .browser-app-window-picker select { max-width: min(100%, 480px); }
+.browser-app-mode { border: 1px solid #b9efd425; border-radius: 20px; color: #b9efd4; background: #b9efd409; font-size: 11px; padding: 5px 9px; }
+.browser-app-placeholder { display: grid; justify-items: center; align-content: center; gap: 14px; min-height: 220px; padding: 32px; color: var(--muted, #93a096); text-align: center; font-size: 13px; line-height: 1.6; }
+.browser-app-placeholder strong { color: var(--text-strong, #eef4ef); font-weight: 500; }
+.browser-app-surface { display: grid; place-items: center; overflow: hidden; border: 1px solid var(--hairline, #ffffff12); border-radius: 14px; background: #060907; min-height: 220px; }
+.browser-app-surface:focus-visible { outline: 2px solid var(--lime, #b9efd4); outline-offset: 4px; }
+.browser-app-surface img { display: block; width: 100%; height: auto; max-height: calc(100dvh - 340px); min-height: 180px; object-fit: contain; user-select: none; }
+.browser-app-surface.can-control img { cursor: default; }
+.browser-app-request { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 14px 0; font-size: 13px; }
+.browser-app-approval.browser-approval .browser-approval-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+@media (max-width: 600px) {
+  .browser-app-picker label, .browser-app-window-picker { align-items: stretch; flex-direction: column; width: 100%; gap: 6px; }
+  .browser-app-picker select, .browser-app-window-picker select { width: 100%; max-width: 100%; }
+  .browser-app-surface img { min-height: 140px; max-height: 65dvh; }
+}

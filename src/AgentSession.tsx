@@ -698,6 +698,46 @@ function SentImages({
   );
 }
 
+// A command an agent asks to run: its first lines, and the rest a tap away, so
+// the card's buttons stay in sight without scrolling past a long script.
+const PREVIEW_LINES = 3;
+function CommandPreview({ text }: { text: string }) {
+  const box = useRef<HTMLPreElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  // Measured where the page has a layout; by its lines where it has none.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || open) return;
+    setOverflows(
+      el.clientHeight > 0
+        ? el.scrollHeight > el.clientHeight + 1
+        : text.split("\n").length > PREVIEW_LINES,
+    );
+  }, [text, open]);
+  useEffect(() => setOpen(false), [text]);
+  return (
+    <div className="as-command-preview">
+      <pre
+        ref={box}
+        className={`as-prompt-command${open ? " open" : overflows ? " clipped" : ""}`}
+      >
+        {text}
+      </pre>
+      {(overflows || open) && (
+        <button
+          className="as-command-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? "Show less" : "Show all"}
+          <ChevronDown size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // A question or permission request an agent waits on in another app (the
 // Claude app, the Codex app, a terminal), already showing there: said here.
 // The Claude app's and the Codex app's permission cards are drawn here as the
@@ -770,7 +810,7 @@ function AskingCard({
         <div className="as-app-card">
           {card.texts.map((t, i) =>
             command && t.trim() === command.trim() ? (
-              <pre key={i} className="as-prompt-command">{t}</pre>
+              <CommandPreview key={i} text={t} />
             ) : i === 0 ? (
               <p key={i} className="as-app-card-title">{t}</p>
             ) : (
@@ -796,7 +836,7 @@ function AskingCard({
           )}
         </>
       ) : command ? (
-        <pre className="as-prompt-command">{asking.text}</pre>
+        <CommandPreview text={asking.text} />
       ) : (
         <p>{asking.text}</p>
       )}
@@ -994,9 +1034,7 @@ function PromptCard({
         <AgentLogo agent={agent} logos={logos} size={18} />
         <strong>{prompt.title}</strong>
       </header>
-      {prompt.command && (
-        <pre className="as-prompt-command">{prompt.command}</pre>
-      )}
+      {prompt.command && <CommandPreview text={prompt.command} />}
       {prompt.cwd && <small>in {prompt.cwd}</small>}
       {prompt.files?.length ? (
         <ul className="as-prompt-files">
@@ -1263,9 +1301,8 @@ export default function AgentSessionView({
   const [queueBusy, setQueueBusy] = useState<string | null>(null);
   const [removedQueue, setRemovedQueue] = useState<string[]>([]);
   const [settings, setSettings] = useState(false);
-  const [reviewing, setReviewing] = useState(true);
   const [reviewId, setReviewId] = useState("");
-  useWantedPrompt(initial.agent, initial.id, (id) => { setReviewId(id); setReviewing(true); });
+  useWantedPrompt(initial.agent, initial.id, setReviewId);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Sent but not yet in the transcript; `seen` counts the same text already there.
   // messageId: where it waits in the Mac's outbox, when it waits there.
@@ -1296,11 +1333,6 @@ export default function AgentSessionView({
   const modeButton = useRef<HTMLButtonElement>(null);
   const modelButton = useRef<HTMLButtonElement>(null);
   const { view: live } = useSessionLive(peer, initial);
-  const promptIds = live.prompts.map((p) => p.id).join(",");
-  const askingKey = JSON.stringify(info.asking);
-  useEffect(() => {
-    setReviewing(true);
-  }, [promptIds, askingKey]);
   const reviewCount = live.prompts.length || (info.asking ? 1 : 0);
   const selectedPrompt =
     live.prompts.find((p) => p.id === reviewId) || live.prompts[0];
@@ -1676,12 +1708,14 @@ export default function AgentSessionView({
           }))),
     models.find((m) => m.id === modelId),
   );
+  // The Claude app's own names (Claude Code says "Default" where the app
+  // says "Manual"); otherwise the agent's word for it.
   const modeName = (id: string | null) =>
     !id
       ? ""
-      : modeChoices.find(
-          (m) => m.id === id || (id === "default" && m.id === "manual"),
-        )?.label || modeLabel(agent, id);
+      : (agent === "claude" && modeLabel("claude", id) !== id ? modeLabel("claude", id) : "") ||
+        modeChoices.find((m) => m.id === id || (id === "default" && m.id === "manual"))?.label ||
+        modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
   const send = async () => {
     if (!canSend || sendingNow.current) return;
@@ -2071,26 +2105,10 @@ export default function AgentSessionView({
         )}
       </div>
       {!!reviewCount && (
+        // The agent's own card, as its app shows it above the box: no
+        // wrapper of Reach's around it.
         <section className="as-review-dock" aria-label="Pending decisions">
-          <button
-            className="as-review-toggle"
-            aria-expanded={reviewing}
-            aria-controls="session-decision-body"
-            onClick={() => setReviewing(!reviewing)}
-          >
-            <span>
-              <ShieldCheck size={16} />
-              {reviewCount === 1
-                ? "Your decision is needed"
-                : String(reviewCount) + " decisions need you"}
-            </span>
-            <ChevronDown size={16} />
-          </button>
-          <div
-            id="session-decision-body"
-            className="as-review-body"
-            hidden={!reviewing}
-          >
+          <div className="as-review-body">
             {live.prompts.length > 1 && (
               <div
                 className="as-review-tabs"

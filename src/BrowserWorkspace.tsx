@@ -17,6 +17,7 @@ import { BrowserActionRequests } from "./browser-approvals";
 import { installBrowserTools } from "./browser-tools";
 import BrowserScreenControls from "./BrowserScreenControls";
 import BrowserTerminal from "./BrowserTerminal";
+import BrowserAppScreen from "./BrowserAppScreen";
 import "./browser-workspace.css";
 
 type Access = {
@@ -24,7 +25,9 @@ type Access = {
   expiresAt: number;
   roots: { name: string; path: string; index: number }[];
   terminals: { id: string; name: string }[];
-  screen: "off" | "view" | "scroll" | "ask";
+  screen: "off" | "view" | "scroll" | "ask" | "apps";
+  screenNotice?: string;
+  appAccess?: { id: string; mode: "view" | "control" }[];
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
   terminalApproval?: boolean;
@@ -146,7 +149,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
   const activeTab = selectedTab && availableTabs[selectedTab]
     ? selectedTab
     : hasScreen ? "screen" : hasFiles ? "files" : "terminal";
-  const screenActive = hasScreen && activeTab === "screen" && visible && !screenDraft;
+  const screenActive = hasScreen && access?.screen !== "apps" && activeTab === "screen" && visible && !screenDraft;
   const screenActiveRef = useRef(screenActive);
   screenActiveRef.current = screenActive;
   const currentRoot = access?.roots.some((item) => item.index === root)
@@ -384,6 +387,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         ))}
       </div>
       {error && <p className="browser-workspace-error error" role="alert">{error}</p>}
+      {access.screenNotice && <p className="browser-workspace-error" role="status">{access.screenNotice}</p>}
       <div
         className={`browser-tab-panel browser-tab-panel-${activeTab}`}
         role="tabpanel"
@@ -391,7 +395,10 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         aria-labelledby={`browser-tab-${activeTab}`}
         tabIndex={0}
       >
-        {hasScreen && (
+        {access.screen === "apps" && activeTab === "screen" && visible && (
+          <BrowserAppScreen peer={peer} expiresAt={access.expiresAt} onError={fail} />
+        )}
+        {hasScreen && access.screen !== "apps" && (
           <section className="browser-screen" aria-labelledby="browser-screen-title" hidden={activeTab !== "screen"}>
             <div className="browser-section-heading">
               <div>

@@ -24,12 +24,18 @@ const mac = ({ onScreen = B, idle = 600, running = true, delay = 2, lands = true
   };
   return state;
 };
+// The helper: types only while the window shows that very chat, by its id,
+// looking again (the app moving on) for as long as it's given (waitMs).
+const helper = (m) => async (message) => {
+  for (let looks = 0; `local_${m.onScreen}` !== message.session && looks < (message.waitMs ? 10 : 0); looks++) m.shown();
+  if (`local_${m.onScreen}` !== message.session)
+    throw Object.assign(new Error("The Claude app is showing another chat."), { waiting: true, otherChat: true });
+  m.typed.push(message);
+};
 const compose = (m, extra = {}) =>
   createClaudeCompose({
-    type: async (message) => {
-      if (m.onScreen !== A) throw Object.assign(new Error("The Claude app is showing another chat."), { waiting: true });
-      m.typed.push(message);
-    },
+    type: helper(m),
+    onScreen: async () => `local_${m.onScreen}`,
     open: m.open,
     arrived: async () => m.arrived,
     shown: m.shown,
@@ -70,13 +76,13 @@ test("Send reuses the prepared draft and Stop requires confirmation from the exa
   await c.deliver(A, { ...message, owner: "phone" });
   assert.equal(m.typed.at(-1).expected, message.text);
   assert.deepEqual(await c.stop(A, { title: message.title }), { stopped: true });
-  assert.deepEqual(m.typed.at(-1), { title: message.title, stop: true });
+  assert.deepEqual(m.typed.at(-1), { title: message.title, session: `local_${A}`, waitMs: 0, stop: true });
 });
 
 test("a message to the chat on screen goes into the Claude app's box at once, nothing switched", async () => {
   const m = mac({ onScreen: A, idle: 0 });
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });
-  assert.deepEqual(m.typed, [message]);
+  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}` }]);
   assert.deepEqual(m.opened, []);
 });
 
@@ -89,7 +95,7 @@ test("another chat on screen: it waits while someone uses the Mac, then opens th
   // Away: switched, sent, switched back to what was on screen.
   m.idle = 600;
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });
-  assert.deepEqual(m.typed, [message]);
+  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}`, waitMs: 50 }]);
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
 });
 

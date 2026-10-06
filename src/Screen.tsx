@@ -41,6 +41,7 @@ import { PausedCover } from "./PauseControl";
 import { controlIn, isPausedMessage, pausedIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
+import "./screen-bar.css";
 import { MacPasswordField } from "./NeedsYou";
 type Display = {
   id: string;
@@ -643,65 +644,6 @@ export default function Screen({
                     ? device.name
                     : "Connecting…"}
             </span>
-            <div
-              className="simple-screen-actions"
-              onPointerDown={(event) => {
-                if (typing) event.preventDefault();
-              }}
-            >
-              {control && (
-                <button
-                  className="button secondary small keyboard-button"
-                  aria-label={
-                    typing
-                      ? "Dismiss phone keyboard"
-                      : mobile
-                        ? "Open phone keyboard"
-                        : "Type on computer"
-                  }
-                  disabled={!usable}
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    if (typing) {
-                      typingEditor.current?.blur();
-                      clearTyping();
-                    } else openKeyboard();
-                  }}
-                >
-                  <Keyboard size={17} />
-                  {typing ? "Done" : "Type"}
-                </button>
-              )}
-              <button
-                className="icon-button"
-                aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                onClick={() => void toggleFullscreen()}
-              >
-                {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-              </button>
-              <button
-                className="icon-button"
-                aria-label="Screen options"
-                onClick={() => {
-                  clearTyping();
-                  setPanel("more");
-                }}
-              >
-                <MoreHorizontal size={21} />
-              </button>
-              {onClose && (
-                <button
-                  className="icon-button"
-                  aria-label="Close screen session"
-                  onClick={() => {
-                    release();
-                    onClose();
-                  }}
-                >
-                  <X size={18} />
-                </button>
-              )}
-            </div>
           </div>
           {expanded && (
             <ErrorLine error={paused ? "" : error || stream.error} />
@@ -842,88 +784,51 @@ export default function Screen({
                 editorRef={typingEditor}
               />
             )}
-          <div className="simple-screen-dock">
-            <span className="simple-screen-caption" role="status">
-              {feedback ||
-                (control && !input.ready ? "Connecting controls…" : "")}
-            </span>
-            {control && (
-              <>
-                <button
-                  className="button secondary small paste-button"
-                  aria-label="Paste from your phone"
-                  onPointerDown={(event) => event.preventDefault()}
-                  disabled={!usable || clipboardBusy}
-                  onClick={() => void pastePhone()}
-                >
-                  <ClipboardPaste size={16} />
-                  Paste
-                </button>
-                {typing && (
-                  <button
-                    className="icon-button"
-                    aria-label="Dismiss phone keyboard"
-                    onPointerDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      typingEditor.current?.blur();
-                      clearTyping();
-                    }}
-                  >
-                    <X size={19} />
-                  </button>
-                )}
-              </>
+          {/* Every control in one small bar floating at the bottom center:
+              Control, keyboard, paste, shortcuts, options, close. */}
+          <div className="simple-screen-dock screen-bar-dock">
+            {(feedback || (control && !input.ready)) && (
+              <span className="simple-screen-caption" role="status">
+                {feedback || "Connecting controls…"}
+              </span>
             )}
-            {!typing &&
-              !paused &&
-              (control || (canControl && device.capabilities.apps)) && (
-                <button
-                  className="button secondary small screen-actions-trigger"
-                  onPointerDown={(event) => event.preventDefault()}
-                  disabled={control && (!usable || helperBusy)}
-                  aria-haspopup="dialog"
-                  onClick={() => {
-                    clearTyping();
-                    setPanel("actions");
-                  }}
-                >
-                  <Command size={16} /> Shortcuts
-                </button>
-              )}
-            {canControl && !typing && !paused && (
-              <button
-                className={`button ${control ? "secondary" : "primary"} small`}
-                disabled={!stream.ready || busy || !live}
-                onClick={() => void toggleControl()}
-              >
-                <MousePointer2 size={15} />
-                {control
-                  ? "Stop"
-                  : holder?.canTakeOver
-                    ? "Take over"
-                    : "Control"}
-              </button>
-            )}
-            {!live && !paused && (
-              <button className="button primary small" onClick={reconnect}>
-                Resume
-              </button>
-            )}
-          </div>
-          {fullscreen && !chromeShown && (
             <div
-              className="screen-immersive-pill"
+              className="screen-bar"
+              role="toolbar"
+              aria-label="Screen controls"
               data-immersive-keep
               onPointerDown={(event) => event.preventDefault()}
             >
+              {canControl && !typing && !paused && (
+                <button
+                  aria-label={control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
+                  title={control ? "Stop controlling" : holder?.canTakeOver ? "Take over" : "Control your computer"}
+                  aria-pressed={control}
+                  disabled={!stream.ready || busy || !live}
+                  onClick={() => void toggleControl()}
+                >
+                  <MousePointer2 size={19} />
+                </button>
+              )}
               {control && (
                 <button
-                  aria-label="Open phone keyboard"
+                  aria-label={
+                    typing
+                      ? "Dismiss phone keyboard"
+                      : mobile
+                        ? "Open phone keyboard"
+                        : "Type on computer"
+                  }
+                  aria-pressed={typing}
                   disabled={!usable}
-                  onClick={openKeyboard}
+                  onClick={() => {
+                    if (typing) {
+                      typingEditor.current?.blur();
+                      clearTyping();
+                    } else openKeyboard();
+                  }}
                 >
-                  <Keyboard size={18} />
-                  Type
+                  <Keyboard size={19} />
                 </button>
               )}
               {control && (
@@ -932,33 +837,52 @@ export default function Screen({
                   disabled={!usable || clipboardBusy}
                   onClick={() => void pastePhone()}
                 >
-                  <ClipboardPaste size={17} />
-                  Paste
+                  <ClipboardPaste size={18} />
                 </button>
               )}
+              {!typing &&
+                !paused &&
+                (control || (canControl && device.capabilities.apps)) && (
+                  <button
+                    aria-label="Shortcuts"
+                    aria-haspopup="dialog"
+                    disabled={control && (!usable || helperBusy)}
+                    onClick={() => {
+                      clearTyping();
+                      setPanel("actions");
+                    }}
+                  >
+                    <Command size={18} />
+                  </button>
+                )}
               <button
-                aria-label="Exit fullscreen"
-                onClick={() => void toggleFullscreen()}
+                aria-label="Screen options"
+                aria-haspopup="dialog"
+                onClick={() => {
+                  clearTyping();
+                  setPanel("more");
+                }}
               >
-                <Minimize size={18} />
+                <MoreHorizontal size={20} />
               </button>
-              <button
-                aria-label={
-                  control ? "Stop controlling" : "Control your computer"
-                }
-                aria-pressed={control}
-                disabled={!stream.ready || busy || !live}
-                onClick={() => void toggleControl()}
-              >
-                <MousePointer2 size={17} />
-                {control
-                  ? "Stop"
-                  : holder?.canTakeOver
-                    ? "Take over"
-                    : "Control"}
-              </button>
+              {onClose && (
+                <button
+                  aria-label="Close screen session"
+                  onClick={() => {
+                    release();
+                    onClose();
+                  }}
+                >
+                  <X size={19} />
+                </button>
+              )}
+              {!live && !paused && (
+                <button className="screen-bar-text" onClick={reconnect}>
+                  Resume
+                </button>
+              )}
             </div>
-          )}
+          </div>
           {panel && (
             <ScreenPopup
               title={
@@ -1077,6 +1001,19 @@ export default function Screen({
                     tap Copy selected text. Keys and app commands are in
                     Shortcuts.
                   </p>
+                  <div className="screen-key-row">
+                    <button
+                      className="button secondary small"
+                      aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                      onClick={() => {
+                        setPanel(null);
+                        void toggleFullscreen();
+                      }}
+                    >
+                      {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+                      {fullscreen ? "Exit full screen" : "Full screen"}
+                    </button>
+                  </div>
                   {control && (
                     <div className="screen-key-row">
                       <button

@@ -5,6 +5,7 @@ import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { ErrorLine, Modal } from "./ui";
 import "./access-editor.css";
 import { scopeLabel } from "./scope-words";
+import { BrowserApprovalReview, browserActionWords, type BrowserRequest } from "./browser-approvals";
 
 export function accessSummary(client: EditableAccess) {
   if (client.scopes?.includes("admin")) return "Full access";
@@ -12,7 +13,7 @@ export function accessSummary(client: EditableAccess) {
     const policy = client.policy;
     return [
       policy.roots?.length ? "Read files" : "",
-      policy.screen && policy.screen !== "off" ? ({ view: "View screen", scroll: "View and scroll", ask: "Screen actions with approval" }[policy.screen]) : "",
+      policy.screen && policy.screen !== "off" ? ({ view: "View screen", scroll: "View and scroll", ask: "Screen actions with approval", apps: "Selected app windows" }[policy.screen]) : "",
       policy.terminalIds?.length ? "Terminal output" : "",
       policy.restrictedTerminal ? (policy.terminalApproval ? "Terminal with command approvals" : "Read-only terminal") : "",
       policy.commandRequests ? "Command suggestions" : "",
@@ -37,12 +38,14 @@ export type EditableAccess = {
     roots?: string[];
     terminalIds?: string[];
     screen?: string;
+    appAccess?: { id: string; name?: string; mode: "view" | "control" }[];
     restrictedTerminal?: boolean;
     terminalApproval?: boolean;
     scriptApproval?: boolean;
     commandRequests?: boolean;
   };
 };
+export const appScopedAccess = (client: EditableAccess) => !!client.policy?.browser && client.policy.screen === "apps";
 export const canEditAccess = (client: EditableAccess) =>
   (client.kind === "guest" ||
     (client.kind === "agent" && client.policy?.invite)) &&
@@ -87,7 +90,93 @@ const localTime = (time: number) => {
     .slice(0, 16);
 };
 
-export default function AccessEditor({
+type AccessEditorProps = {
+  peer: Peer;
+  device: Device;
+  client: EditableAccess;
+  onClose: () => void;
+  onSaved: (removed?: boolean) => void;
+};
+export default function AccessEditor(props: AccessEditorProps) {
+  return appScopedAccess(props.client) ? <AppSessionAccess {...props} /> : <GeneralAccessEditor {...props} />;
+}
+function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps) {
+  const [items, setItems] = useState<BrowserRequest[]>([]);
+  const [grants, setGrants] = useState<{ id: string; name: string; mode: "hidden" | "view" | "control"; protected: boolean }[] | null>(null);
+  const [selected, setSelected] = useState<BrowserRequest | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    let reading = false;
+    const refresh = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const [records, access] = await Promise.all([
+          request<BrowserRequest[]>(peer, "/api/agents/browser-requests", { signal: controller.signal }),
+          request<{ apps: NonNullable<typeof grants> }>(peer, `/api/agents/browser-app-access/${encodeURIComponent(client.id)}`, { signal: controller.signal }),
+        ]);
+        if (!controller.signal.aborted) {
+          const current = records.filter((item) => item.clientId === client.id && item.action.type === "app-access" && item.status === "pending" && item.expiresAt > Date.now());
+          setItems(current);
+          setGrants(access.apps.filter((app) => app.mode !== "hidden" && !app.protected));
+          setSelected((old) => old ? current.find((item) => item.id === old.id) || null : null);
+          setError("");
+        }
+      } catch (e) {
+        if (!controller.signal.aborted) { setItems([]); setGrants(null); setSelected(null); setError((e as Error).message); }
+      } finally { reading = false; }
+    };
+    void refresh(); const timer = setInterval(() => void refresh(), 3000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [peer.url, peer.token, client.id, revision]);
+  const end = async () => {
+    if (busy || !confirm(`End ${client.name}’s session now?`)) return;
+    setBusy(true); setError("");
+    try { await request(peer, `/api/clients/${encodeURIComponent(client.id)}`, { method: "DELETE" }); onSaved(true); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  const limitApp = async (appId: string, mode: "hidden" | "view") => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      await post(peer, `/api/agents/browser-app-access/${encodeURIComponent(client.id)}`, { appId, mode });
+      setGrants((current) => current?.map((app) => app.id === appId ? { ...app, mode } : app).filter((app) => app.mode !== "hidden") || null);
+      setRevision((value) => value + 1);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <Modal title="Manage app requests" onClose={() => !busy && onClose()}>
+      <section className="access-editor">
+        <div className="ae-person"><Sparkles size={22} /><div><strong>{client.name}</strong><small>{accessSummary(client)}</small></div></div>
+        <p className="browser-policy">Allow additional apps when the agent asks. App permissions end with this invitation. Create a new invitation to change folder or terminal permissions.</p>
+        <h3>Current app access</h3>
+        {grants === null ? <p className="browser-policy">Loading app access…</p> : !grants.length ? <p className="browser-policy">No apps currently shared.</p> :
+          <div className="browser-invite-apps">{grants.map((app) => <label className="browser-invite-app" key={app.id}>
+            <span>{app.name}</span>
+            <select className="ivt-field" aria-label={`${app.name} session access`} disabled={busy} value={app.mode} onChange={(event) => void limitApp(app.id, event.target.value as "hidden" | "view")}>
+              {app.mode === "control" && <option value="control">View &amp; control</option>}
+              <option value="view">View only</option><option value="hidden">Hidden</option>
+            </select>
+          </label>)}</div>}
+        {!!client.policy?.roots?.length && <p className="browser-policy">Shared folders: {client.policy.roots.join(", ")}</p>}
+        <h3>App requests</h3>
+        {!items.length && <p className="browser-policy">No pending app requests. New requests appear here and in Needs you.</p>}
+        <ul className="browser-request-history">{items.map((item) => <li key={item.id}><span>{browserActionWords(item.action)}</span><button className="button secondary small" onClick={() => setSelected(item)}>Review request</button></li>)}</ul>
+        <p className="browser-policy">Session ends {new Date(client.expiresAt || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
+        <ErrorLine error={error} />
+        <button className="button secondary" disabled={busy} onClick={() => void end()}>{busy ? "Ending…" : "End session"}</button>
+      </section>
+    </Modal>
+    {selected && <BrowserApprovalReview peer={peer} item={selected} onClose={() => setSelected(null)} onResolved={() => { setSelected(null); setRevision((value) => value + 1); }} />}
+  </>;
+}
+
+function GeneralAccessEditor({
   peer,
   device,
   client,

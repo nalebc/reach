@@ -100,7 +100,7 @@ test("Muse invitation copies and shares its actual granted permissions with its 
           { id: "reach:one", name: "Build logs" },
           { id: "desktop:two", name: "Private terminal" },
         ],
-        screenAvailable: true,
+        screenAvailable: true, appAccessAvailable: true, apps: [{ id: "safari", name: "Safari", protected: false }],
       });
     if (route === "/api/agents/browser-invitations")
       return reply({
@@ -132,7 +132,7 @@ test("Muse invitation copies and shares its actual granted permissions with its 
       .find((item) => item.textContent.startsWith("Build logs"))
       .querySelector("input"),
   );
-  await value(c.querySelector('[aria-label="Screen permission"]'), "scroll");
+  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
   await click(button(c, "Create invite link"));
   assert.deepEqual(
     calls.find(([, route]) => route === "/api/agents/browser-invitations")[2],
@@ -142,7 +142,8 @@ test("Muse invitation copies and shares its actual granted permissions with its 
       ttlSeconds: 900,
       folders: [{ root: 0, path: "" }],
       terminalIds: ["reach:one"],
-      screen: "scroll",
+      screen: "apps",
+      appAccess: [],
     },
   );
   const preview = c.querySelector(
@@ -156,8 +157,8 @@ test("Muse invitation copies and shares its actual granted permissions with its 
     message,
     /Never invite anyone, delegate access, or share this link or credentials/,
   );
-  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 110);
-  assert.match(message, /Screen: view and scroll directly; clicks\/typing unavailable/);
+  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 190);
+  assert.match(message, /Apps: none shared yet/);
   assert.match(message, /Files: read\/search\/download only in "\/Users\/me\/Project"/);
   assert.match(message, /Terminal output: 1 selected session, read-only/);
   assert.match(message, /Commands: not enabled/);
@@ -177,9 +178,9 @@ test("Muse invitation copies and shares its actual granted permissions with its 
   );
   assert.equal(made[1], invite);
   assert.doesNotMatch(invite, /curl|agent\.mjs|\/agent#/);
-  assert.match(c.textContent, /Share your full display with scrolling/);
+  assert.match(c.textContent, /Share only the apps you choose/);
   // Unsubmitted edits must not misdescribe the already-issued credential.
-  await value(c.querySelector('[aria-label="Screen permission"]'), "ask");
+  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
   await click(c.querySelector('[aria-label="Share Project"]'));
   await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Build logs")).querySelector("input"));
   assert.equal(preview.value, message, "prompt is frozen to the invitation's actual permissions");
@@ -261,13 +262,12 @@ test("Muse invitation copies and shares its actual granted permissions with its 
 
 for (const choice of [
   { screen: "off", folder: true, allowed: /Screen: not shared\./ },
-  { screen: "view", folder: false, allowed: /Screen: view only; no input\./ },
-  { screen: "ask", folder: false, allowed: /Screen: view and request clicks, typing, keys or scrolling; owner approval covers up to five exact actions\./ },
+  { screen: "apps", folder: false, allowed: /Apps: none shared yet/ },
 ]) test(`invitation prompt accurately describes ${choice.screen} screen access without inventing other permissions`, async () => {
   let issued;
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [{ id: "safari", name: "Safari", protected: false }] });
     if (route === "/api/agents/browser-invitations") {
       issued = JSON.parse(init.body);
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000 });
@@ -288,7 +288,7 @@ for (const choice of [
   assert.match(message, /Commands: not enabled\./);
   assert.match(message, /Never invite anyone, delegate access, or share this link or credentials/);
   assert.doesNotMatch(message, /full control|unrestricted|run shell commands/i);
-  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 110);
+  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 190);
   assert.equal(new URL(message.split("\n").at(-1)).pathname, "/agent-browser");
   await view.unmount();
 });
@@ -297,7 +297,7 @@ test("invitation prompt includes the restricted command grant separately from sh
   let issued;
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
-    if (route === "/api/agents/browser-options") return reply({ terminals: [{ id: "reach:one", name: "Build logs" }], screenAvailable: true });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [{ id: "reach:one", name: "Build logs" }], screenAvailable: true, appAccessAvailable: true, apps: [{ id: "safari", name: "Safari", protected: false }] });
     if (route === "/api/agents/browser-invitations") {
       issued = JSON.parse(init.body);
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000 });
@@ -309,19 +309,19 @@ test("invitation prompt includes the restricted command grant separately from sh
   await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]'));
   await click(c.querySelector('[aria-label="Share Project"]'));
   await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Build logs")).querySelector("input"));
-  await value(c.querySelector('[aria-label="Screen permission"]'), "view");
+  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
   await click([...c.querySelectorAll(".ivt-disclosure")].at(-1).querySelector('input[type="checkbox"]'));
   await click(button(c, "Create invite link"));
   const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
   assert.equal(issued.restrictedTerminal, true);
-  assert.equal(issued.screen, "view");
-  assert.match(message, /Screen: view only; no input\./);
+  assert.equal(issued.screen, "apps");
+  assert.match(message, /Apps: none shared yet/);
   assert.match(message, /Files: read\/search\/download only in "\/Users\/me\/Project"/);
   assert.match(message, /Terminal output: 1 selected session, read-only/);
   assert.match(message, /Commands: supported read-only commands run directly in shared folders; other commands are blocked/);
   assert.match(message, /Terminal commands cannot access outside these folders, even with approval/);
   assert.doesNotMatch(message, /Commands: not enabled|full control|unrestricted|run shell commands/i);
-  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 110);
+  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 190);
   await view.unmount();
 });
 
@@ -329,7 +329,7 @@ test("invitation combines screen approval and approved file changes without wide
   let issued;
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [{ id: "safari", name: "Safari", protected: false }] });
     if (route === "/api/agents/browser-invitations") {
       issued = JSON.parse(init.body);
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000 });
@@ -340,21 +340,21 @@ test("invitation combines screen approval and approved file changes without wide
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]'));
   await click(c.querySelector('[aria-label="Share Project"]'));
-  await value(c.querySelector('[aria-label="Screen permission"]'), "ask");
+  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
   await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Commands with approval")).querySelector("input"));
-  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "ask", "terminal access must not downgrade screen control");
+  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "apps", "terminal access must not downgrade screen control");
   await click(button(c, "Create invite link"));
   assert.equal(issued.restrictedTerminal, true);
   assert.equal(issued.terminalApproval, true);
   assert.equal(issued.scriptApproval, true);
-  assert.equal(issued.screen, "ask");
+  assert.equal(issued.screen, "apps");
   const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
-  assert.match(message, /owner approval covers up to five exact actions/);
+  assert.match(message, /Other apps are hidden; ask for access/);
   assert.match(message, /file changes and scripts ask for approval once/);
   assert.match(message, /Terminal commands cannot access outside these folders, even with approval/);
   assert.match(message, /Files: read\/search\/download only in "\/Users\/me\/Project"/);
   assert.doesNotMatch(message, /full control|unrestricted|other commands require owner approval/i);
-  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 110);
+  assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 190);
   await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Run read-only commands")).querySelector("input"));
   assert.equal([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Commands with approval")).querySelector("input").checked, false, "turning command access off clears file-change approval scope");
   assert.equal(c.querySelector('[aria-label="AI browser invitation message"]').value, message);

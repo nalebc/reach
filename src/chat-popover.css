@@ -1,0 +1,65 @@
+/* A small menu by what opened it (ChatPopover.tsx): a folder's ⋯ or a chat
+   held down on the Chats list. Above the tab bar, never a sheet. */
+.chat-popover-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+}
+.chat-popover {
+  position: fixed;
+  z-index: 121;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(290px, calc(100vw - 24px));
+  max-height: min(420px, calc(100dvh - 24px));
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 14px;
+  background: var(--panel, #191d20);
+  color: var(--text-strong, #eef4ef);
+  box-shadow:
+    inset 0 0 0 0.5px color-mix(in srgb, currentColor 14%, transparent),
+    0 14px 36px -8px rgb(0 0 0 / 0.55);
+  animation: chat-popover-in 120ms ease-out;
+  overscroll-behavior: contain;
+}
+@keyframes chat-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+.chat-popover .move-item {
+  min-height: 44px;
+}
+.chat-popover .move-item > svg:last-child:not(:first-child) {
+  flex: none;
+  opacity: 0.5;
+}
+/* What the menu is about: the chat's title, quietly. */
+.chat-popover-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px 8px;
+  margin-bottom: 3px;
+  border-bottom: 0.5px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+.chat-popover-head strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-popover-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-popover-line {
+  height: 0.5px;
+  margin: 3px 8px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}

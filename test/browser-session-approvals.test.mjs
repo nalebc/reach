@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createBrowserApprovals} from '../server/browser-approvals.mjs';
 function fixture(){
  let time=1000,runs=0;const owner={id:'phone',kind:'device',scopes:['admin']};
- const client={id:'invite-one',name:'Muse',kind:'agent',expiresAt:100000,scopes:['browser:read','browser:request'],agentRoots:['/shared/Desktop','/shared/Other'],policy:{browser:true,restrictedTerminal:true,terminalApproval:true,scriptApproval:true,screen:'ask'}};
+ const client={id:'invite-one',name:'Muse',kind:'agent',expiresAt:100000,scopes:['browser:read','browser:request'],agentRoots:['/shared/Desktop','/shared/Other'],policy:{browser:true,restrictedTerminal:true,terminalApproval:true,scriptApproval:true,screen:'off'}};
  const clients=new Map([[client.id,client]]),notifications=[];
  const create=()=>createBrowserApprovals({verifyClient:id=>clients.get(id),verifyOwner:id=>id===owner.id?owner:null,now:()=>time,notify:x=>notifications.push(x),execute:async(a,check)=>{check();runs++;return a.type==='terminal-script'?{output:'ok',exitCode:0}:'ok';}});
  const queue=create(),input={type:'terminal-change',command:'touch notes.txt',root:0,reason:'Run this command'};
@@ -35,8 +35,8 @@ test('expiry blocks execution and approval; restart, pause, revoke and grant cha
 });
 test('Approve once and Deny do not remember permission; screen and batches cannot be remembered',async()=>{
  for(const decision of ['approve','deny']){const f=fixture();await f.approve(decision);assert.equal(await f.queue.runRemembered(f.client,f.input,()=>f.client),null);}
- const f=fixture();await assert.rejects(f.approve('approve-session',{type:'key',key:'enter',reason:'Enter'}),{status:400});
- await assert.rejects(f.approve('approve-session',{type:'batch',actions:[{type:'key',key:'enter'}],reason:'Enter'}),{status:400});
+ const f=fixture();await assert.rejects(f.approve('approve-session',{type:'key',key:'enter',reason:'Enter'}),{status:403});
+ await assert.rejects(f.approve('approve-session',{type:'batch',actions:[{type:'key',key:'enter'}],reason:'Enter'}),{status:403});
  assert.equal(f.runs,0);
 });
 test('script session approval keeps the exact script invocation',async()=>{

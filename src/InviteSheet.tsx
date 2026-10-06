@@ -24,7 +24,7 @@ import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
 import BrowserInvite from "./BrowserInvite";
-import AccessEditor, { canEditAccess, type EditableAccess } from "./AccessEditor";
+import AccessEditor, { appScopedAccess, canEditAccess, type EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
 // People and assistants share a focused composer; the assistant connection
@@ -1546,7 +1546,7 @@ export function InviteSheet({
             {/* Their access: change it here, no new link. */}
             {g.policy?.browser || g.scopes?.includes("browser:read") ? (
               canEditAccess(g)
-                ? <button className="button secondary small" onClick={() => setEditing(g)}>Edit access</button>
+                ? <button className="button secondary small" onClick={() => setEditing(g)}>{appScopedAccess(g) ? "Manage app requests" : "Edit access"}</button>
                 : <span className="ivt-role-text">Agent</span>
             ) : (
               <Menu

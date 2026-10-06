@@ -307,6 +307,8 @@ export function createAgentSessions({
   // Working, not merely open: Reach's own turn, or an open process whose
   // transcript is mid-turn (recently) or just changed. The Claude app keeps a
   // process for every open session, so a process alone means nothing.
+  // Claude sessions whose process Reach let go of, and when.
+  const letGo = new Map();
   const claudeStatus = (s) => {
     if (claudeHost.running(s.id)) {
       s.status = claudeHost.view(s.id).status === "waiting" ? "waiting" : "running";
@@ -324,6 +326,10 @@ export function createAgentSessions({
       else if (s.live.busy) s.status = "running";
       return;
     }
+    // A process Reach has just let go of (after a turn, a Stop) is still
+    // exiting: seen without Claude Code's word, it read as working for a few
+    // seconds (the phone showed Working well after Stop). Not a guess then.
+    if (Date.now() - (letGo.get(s.id) || 0) < 10000) return;
     const age = Date.now() - (s.updatedAt || 0);
     if (s.live && ((s.pending && age < 10 * 60 * 1000) || age < 30000)) s.status = "running";
   };
@@ -537,6 +543,8 @@ export function createAgentSessions({
   // Sessions the app already lists get its window reloaded instead (it
   // doesn't see what Reach added otherwise).
   claudeHost.onRelease?.((id, { wrote } = {}) => {
+    letGo.set(id, Date.now());
+    if (letGo.size > 200) letGo.delete(letGo.keys().next().value);
     if (startedHere.delete(id)) void claudeImports.add(id);
     else if (wrote) void claudeRefresh.add(id);
   });
@@ -584,6 +592,22 @@ export function createAgentSessions({
     touched.set(key, (touched.get(key) || 0) + 1);
     for (const wake of [...(touchWaiters.get(key) || [])]) wake();
   };
+  // What each open Claude chat last saw of its own registry entry.
+  const seenStatus = new Map(); // id -> "where busy waiting"
+  const statusNews = async () => {
+    const running = await liveNow().catch(() => null);
+    if (!running) return touchOpen("claude");
+    for (const key of new Set([...touchWaiters.keys(), ...polled.keys()])) {
+      if (!key.startsWith("claude:")) continue;
+      const id = key.slice(7);
+      const entry = running.get(id);
+      const now = entry ? `${entry.where} ${!!entry.busy} ${entry.waiting || ""}` : "gone";
+      if (seenStatus.get(id) === now) continue;
+      seenStatus.set(id, now);
+      if (seenStatus.size > 200) seenStatus.delete(seenStatus.keys().next().value);
+      touch("claude", id);
+    }
+  };
   // Every chat of an agent the phone has open reads again.
   const touchOpen = (agent) => {
     for (const key of new Set([...touchWaiters.keys(), ...polled.keys()]))
@@ -609,9 +633,10 @@ export function createAgentSessions({
     } else if (news.agent === "claude" && news.kind === "status") {
       // Claude Code's registry (a session busy, idle, waiting on you): read
       // afresh, not from the shared look at the processes (up to liveMs
-      // old), and the open Claude chats read their status again.
+      // old). Only the open Claude chats whose own entry changed read again
+      // (any session on the Mac writes it, all the time, while it works).
       liveCache = null;
-      touchOpen("claude");
+      void statusNews();
     } else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) {
       // A Claude Code transcript: unless Reach is the one writing it.
       touch("claude", news.id);

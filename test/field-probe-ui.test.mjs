@@ -247,3 +247,60 @@ test("the probe is checked like any desktop action, and the computer says it can
   assert.equal(ws.sent.find((m) => m.type === "ready")?.probe, true);
   ws.emit("close");
 });
+
+// "I can no longer scroll" (2026-10-06): a one-finger scroll sent a move with
+// every step, which kept the steps from merging; control ended in seconds.
+test("a one-finger scroll puts the pointer there once, then sends only scroll steps", async () => {
+  const canvas = React.createRef();
+  const sent = [];
+  const view = await dom.render(
+    React.createElement(DesktopSurface, {
+      canvas, width: 1000, height: 500, ready: true, connecting: false, canControl: true,
+      mode: "direct", drag: false, clickMode: "left", touchScroll: true,
+      send: async (action) => (sent.push(action), {}),
+      onDragEnd() {}, onFeedback() {}, onInteraction() {}, onTextTarget() {},
+      resetKey: "k", initialCursor: null,
+    }),
+  );
+  const video = view.container.querySelector("canvas");
+  video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500, x: 0, y: 0 });
+  const stage = view.container.querySelector(".remote-stage");
+  finger("pointerdown", stage, 500, 400);
+  for (let y = 390; y >= 100; y -= 10) finger("pointermove", stage, 500, y);
+  finger("pointerup", stage, 500, 100);
+  await settle(20);
+  const kinds = sent.map((a) => a.type).filter((t) => t === "move" || t === "scroll");
+  assert.equal(kinds.filter((t) => t === "move").length, 1, "one move");
+  assert.ok(kinds.filter((t) => t === "scroll").length > 10, "the scroll steps");
+  assert.equal(kinds[0], "move");
+  await view.unmount();
+});
+
+test("on the Mac, a move or scroll that waited too long is let go; a late click ends control", async () => {
+  const ws = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    sent: [],
+    send(m) { this.sent.push(JSON.parse(m)); },
+    close() { this.closed = true; },
+  });
+  let release;
+  desktopConnection(ws, {
+    config: { screen: true },
+    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    control: { check() {}, acquire() {}, revoke() {} },
+    create: async () => ({
+      // The first action holds the helper 1.2 s; the next ones wait behind it.
+      send: async (a) => (a.type === "key" ? new Promise((r) => (release = () => r({})), setTimeout(() => release(), 1200)) : {}),
+      stop() {},
+    }),
+  });
+  const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
+  send({ type: "auth", token: "T", display: "1" });
+  for (const end = Date.now() + 1000; !ws.sent.some((m) => m.type === "ready") && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
+  send({ type: "input", id: 1, action: { type: "key", key: "a" } });
+  send({ type: "input", id: 2, action: { type: "scroll", dx: 0, dy: -5 } });
+  for (const end = Date.now() + 2000; !ws.sent.some((m) => m.id === 2) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ws.sent.find((m) => m.id === 2)?.skipped, true, "the late scroll let go");
+  assert.equal(ws.sent.some((m) => m.type === "error"), false, "control stays on");
+  ws.emit("close");
+});

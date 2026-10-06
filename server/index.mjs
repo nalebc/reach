@@ -1,3 +1,6 @@
+import { createBrowserHostGuard } from "./browser-host-guard.mjs";
+import { createBrowserAppAccess } from "./browser-app-access.mjs";
+import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
 import { DevicePresence, presenceConnection } from "./presence.mjs";
 import {
@@ -139,6 +142,7 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
   const detectTools = createToolDetector(overrides.toolDetection);
   const resolveIdentity = createIdentityResolver(overrides.tailscaleIdentity);
   const approvals = config.tailscaleOwner
@@ -254,6 +258,7 @@ export async function createReach(overrides = {}) {
       ? context.token === token && !paused && transportAvailable &&
         auth.verifyFunnel(token, context.keyThumbprint)
       : auth.verify(token, req.reachIdentity);
+    if (!browserHostGuard.allows(req, client)) return null;
     return client?.policy?.browser && req.headers.upgrade?.toLowerCase() === "websocket"
       ? null : client;
   };
@@ -267,6 +272,10 @@ export async function createReach(overrides = {}) {
       try {
         req.reachIdentity = await resolveIdentity(req);
         if (!req.reachIdentity) end();
+        if (browserHostGuard.isActive()) {
+          await browserHostGuard.refresh();
+          browserHostGuard.assertRequest(req, verify(req, req.headers.authorization?.replace(/^Bearer /, "")));
+        }
       } catch {
         req.reachIdentity = null;
         end();
@@ -496,6 +505,7 @@ export async function createReach(overrides = {}) {
       atomicJson(settingsFile, settings);
       if (value) {
         browserApprovals.cancelPending();
+        browserAppAccess.clear();
         browserSnapshots.clear();
         screenControl.clear();
         // The phone takes control back on Resume when it hears why.
@@ -557,6 +567,14 @@ export async function createReach(overrides = {}) {
   };
   const browserScreenAvailable = () => config.screen &&
     (overrides.browserScreenSupported ?? ["darwin", "win32"].includes(process.platform));
+  const browserAppAvailable = (overrides.browserAppSupported ?? (overrides.browserScreenSupported === undefined && process.platform === "darwin"));
+  const browserAppAccess = createBrowserAppAccess({
+    native: overrides.browserAppNative || new BrowserAppNative(config),
+    verifyClient: (id) => auth.list().find((client) => client.id === id),
+    screenAvailable: () => browserScreenAvailable() && !paused && transportAvailable,
+    persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
+    notify, record,
+  });
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
     authorize();
@@ -590,13 +608,11 @@ export async function createReach(overrides = {}) {
   };
   const browserSnapshots = new Map();
   const browserInputCheck = (authorize) => {
-    const client = authorize();
+    authorize();
     notPaused();
-    if (!browserScreenAvailable()) throw fail(403, "Screen access was turned off.");
-    screenControl.ownerOnly(client);
-    if (screenControl.holder())
-      throw fail(409, "Someone is controlling the screen. Try again after they finish.");
-    return client;
+    // A previously queued approval must never reach the unrestricted desktop
+    // input path. Selected-app input has its own native, window-bound guard.
+    throw fail(403, "Whole-desktop agent control is no longer available. Ask the owner for a new Selected apps invitation.");
   };
   const browserCommandLog = await createBrowserCommandLog({ dir: path.join(config.dataDir, "browser-commands") });
   const browserApprovals = createBrowserApprovals({
@@ -800,6 +816,16 @@ export async function createReach(overrides = {}) {
     const cleanup = trackIdentity(req, () => res.destroy());
     res.once("close", cleanup);
     res.once("finish", cleanup);
+    next();
+  });
+  app.use("/api", async (req, res, next) => {
+    if (browserHostGuard.isActive()) {
+      await browserHostGuard.refresh();
+      const token = req.headers.authorization?.replace(/^Bearer /, "");
+      const context = funnelRequests.get(req);
+      const client = context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+      if (!auth.isBrowserAppAdmission(req)) browserHostGuard.assertRequest(req, client);
+    }
     next();
   });
   // Browser credentials cannot use public admission routes to request another
@@ -1331,6 +1357,7 @@ export async function createReach(overrides = {}) {
     settings.screen = config.screen = req.body.screen;
     if (!config.screen) {
       browserApprovals.cancelPending();
+        browserAppAccess.clear();
       browserSnapshots.clear();
       screenControl.clear();
       screenStreams.stop();
@@ -1547,6 +1574,9 @@ export async function createReach(overrides = {}) {
         throw fail(400, "A selected terminal is no longer available. Choose again.");
     }
     req.reauthorize();
+    const previousClient = auth.list().find((entry) => entry.id === id);
+    if (req.body?.screen === "apps" || previousClient?.policy?.screen === "apps")
+      throw fail(409, "Use app requests to grant additional apps. End this invitation and create a new one to change its base access.");
     const { client, before, after } = auth.changeAccess(id, req.body || {});
     browserApprovals.cancelClient(id);
     const lost = before.scopes.filter((s) => !after.scopes.includes(s));
@@ -1649,6 +1679,7 @@ export async function createReach(overrides = {}) {
     );
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record,
+    appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -2985,7 +3016,10 @@ export async function createReach(overrides = {}) {
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });
-  const upgrade = (req, socket, head) => {
+  const upgrade = async (req, socket, head) => {
+    if (browserHostGuard.isActive()) {
+      try { await browserHostGuard.refresh(); browserHostGuard.assertRequest(req); } catch { socket.destroy(); return; }
+    }
     if (config.tailscaleOwner && (!trustedRequest(req) || !req.reachIdentity))
       return socket.destroy();
     if (!transportAvailable) {
@@ -3497,6 +3531,7 @@ export async function createReach(overrides = {}) {
           funnelRequests.set(req, context);
           req.method = context.method;
           req.url = context.path;
+          req.originalUrl = context.path; // Verified inner route, not the outer gateway path.
           req.body = context.body || {};
           req.headers.authorization = `Bearer ${context.token}`;
           delete req._parsedUrl;
@@ -3555,6 +3590,7 @@ export async function createReach(overrides = {}) {
       notifications.close();
       clearInterval(snapshotSweep);
       browserApprovals.close();
+      browserAppAccess.close();
       await browserApprovals.flushChanges();
       await browserCommandLog.close();
       browserSnapshots.clear();

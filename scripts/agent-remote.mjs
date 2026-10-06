@@ -346,7 +346,7 @@ export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
     const deadline = setTimeout(() => call.abort(), timeoutMs);
     try {
       const head = await call.response;
-      const screenImage = route === "/api/browser/screen" && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
+      const screenImage = (route === "/api/browser/screen" || /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route)) && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
       const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
       const chunks = [];
       let size = 0;

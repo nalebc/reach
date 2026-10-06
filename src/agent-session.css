@@ -1587,10 +1587,40 @@ button.as-mode:disabled {
   font-size: 12.5px;
   line-height: 1.4;
 }
-/* An app's card: a long command scrolls in place, the buttons stay in view. */
-.as-app-card .as-prompt-command {
-  max-height: 7.5em;
+/* A command's first three lines; "Show all" opens the rest, which scrolls in
+   place so the card's buttons stay in view. */
+.as-command-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.as-command-preview .as-prompt-command {
+  align-self: stretch;
+  max-height: calc(1.45em * 3 + 18px);
+  overflow: hidden;
+}
+.as-command-preview .as-prompt-command.clipped {
+  -webkit-mask-image: linear-gradient(#000 60%, transparent);
+  mask-image: linear-gradient(#000 60%, transparent);
+}
+.as-command-preview .as-prompt-command.open {
+  max-height: min(40dvh, calc(1.45em * 14 + 18px));
   overflow: auto;
+  overscroll-behavior: contain;
+}
+.as-command-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--as-muted);
+  font-size: 12px;
+}
+.as-command-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
 }
 /* The model menu's thinking levels, under its models. */
 .as-menu-efforts {

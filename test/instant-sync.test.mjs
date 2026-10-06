@@ -94,6 +94,8 @@ test("a Claude Code chat written to on the Mac wakes the phone that has it open;
   tell({ agent: "claude", kind: "history", id: C });
   tell({ agent: "claude", kind: "status" });
   assert.equal(await settledWithin(sessions.changes("claude", C, seen, 25000), 100), true);
+  // The status news is checked against the registry first (a moment later).
+  for (let i = 0; i < 20 && sessions.view("claude", C).items < 3; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(sessions.view("claude", C).items, 3);
   sessions.close?.();
 });

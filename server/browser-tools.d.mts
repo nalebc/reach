@@ -3,7 +3,7 @@ export type BrowserAccess = {
   expiresAt: number;
   roots: { name: string; path: string; index: number }[];
   terminals: { id: string; name: string }[];
-  screen: "off" | "view" | "scroll" | "ask";
+  screen: "off" | "view" | "scroll" | "ask" | "apps";
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
   terminalApproval?: boolean;

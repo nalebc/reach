@@ -20,23 +20,24 @@ import "./browser-workspace.css";
 type Options = {
   terminals: { id: string; name: string }[];
   screenAvailable: boolean;
+  appAccessAvailable?: boolean;
+  appAccessError?: string;
+  apps?: { id: string; name: string; protected: boolean; reason?: string }[];
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
 
 type InvitePermissions = {
-  screen: "off" | "view" | "scroll" | "ask";
+  screen: "off" | "apps";
+  apps: { name: string; mode: "view" | "control" }[];
   folders: string[];
   terminalOutputs: number;
   restrictedTerminal: boolean;
   terminalApproval: boolean;
 };
 const museMessage = (link: string, permissions: InvitePermissions) => {
-  const screen = {
-    off: "Screen: not shared.",
-    view: "Screen: view only; no input.",
-    scroll: "Screen: view and scroll directly; clicks/typing unavailable.",
-    ask: "Screen: view and request clicks, typing, keys or scrolling; owner approval covers up to five exact actions.",
-  }[permissions.screen];
+  const screen = permissions.screen === "apps"
+    ? `Apps: ${permissions.apps.length ? permissions.apps.map((app) => `${JSON.stringify(app.name)} (${app.mode === "control" ? "view and control directly" : "view only"})`).join(", ") : "none shared yet"}. In Screen, select a shared window; click/type directly where control is granted. Other apps are hidden; ask for access. Grants expire with this invitation.`
+    : "Screen: not shared.";
   const folderNames = permissions.folders.slice(0, 3).map((folder) => JSON.stringify(folder.length > 160 ? folder.slice(0, 157) + "…" : folder).replace(/[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)).join(", ");
   const files = permissions.folders.length
     ? `Files: read/search/download only in ${folderNames}${permissions.folders.length > 3 ? ` and ${permissions.folders.length - 3} more shown in Files` : ""}.`
@@ -68,9 +69,8 @@ export default function BrowserInvite({
   const [minutes, setMinutes] = useState(15);
   const [folders, setFolders] = useState<PickedFolder[]>([]);
   const [terminalIds, setTerminalIds] = useState<string[]>([]);
-  const [screen, setScreen] = useState<"off" | "view" | "scroll" | "ask">(
-    "off",
-  );
+  const [screen, setScreen] = useState<"off" | "apps">("off");
+  const [appAccess, setAppAccess] = useState<Record<string, "view" | "control">>({});
   const [restrictedTerminal, setRestrictedTerminal] = useState(false);
   const [terminalApproval, setTerminalApproval] = useState(false);
   const [options, setOptions] = useState<Options | null>(null);
@@ -126,6 +126,7 @@ export default function BrowserInvite({
         folders: folders.map(({ root, path }) => ({ root, path })),
         terminalIds,
         screen,
+        ...(screen === "apps" ? { appAccess: Object.entries(appAccess).map(([id, mode]) => ({ id, mode })) } : {}),
         ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
         ...(terminalApproval ? { terminalApproval: true, scriptApproval: true } : {}),
       });
@@ -152,7 +153,7 @@ export default function BrowserInvite({
         expiresAt: result.expiresAt,
         joinBy: result.joinBy,
         // Describe this issued invitation, not later unsaved form edits.
-        message: museMessage(link, { screen, folders: folders.map((folder) => folder.full || folder.label), terminalOutputs: terminalIds.length, restrictedTerminal, terminalApproval }),
+        message: museMessage(link, { screen, apps: (options?.apps || []).filter((app) => appAccess[app.id] && !app.protected).map((app) => ({ name: app.name, mode: appAccess[app.id] })), folders: folders.map((folder) => folder.full || folder.label), terminalOutputs: terminalIds.length, restrictedTerminal, terminalApproval }),
       });
       onCreated(created, link);
     } catch (e) {
@@ -280,47 +281,49 @@ export default function BrowserInvite({
               )}
             </div>
           </details>
-          {options?.screenAvailable && (
-            <details className="ivt-disclosure">
-              <summary>
-                <Monitor size={17} />
-                <span>Screen</span>
-                <small>
-                  {
-                    {
-                      off: "None",
-                      view: "View only",
-                      scroll: "View & scroll",
-                      ask: "With approval",
-                    }[screen]
-                  }
-                </small>
-                <ChevronDown size={15} />
-              </summary>
-              <div className="ivt-disclosure-body">
-                <select
-                  className="ivt-field"
-                  aria-label="Screen permission"
-                  value={screen}
-                  onChange={(e) => setScreen(e.target.value as typeof screen)}
-                >
-                  <option value="off">No screen access</option>
-                  <option value="view">View only</option>
-                  <option value="scroll">View and scroll</option>
-                  <option value="ask">Control with approval</option>
-                </select>
-                <p className="ivt-quiet">
-                  {screen === "off"
-                    ? "Your screen stays private."
-                    : screen === "view"
-                      ? "Share your full display, view only."
-                      : screen === "ask"
-                        ? "Approve actions in any app, including Terminal."
-                        : "Share your full display with scrolling."}
-                </p>
-              </div>
-            </details>
-          )}
+          <details className="ivt-disclosure">
+            <summary>
+              <Monitor size={17} />
+              <span>App access</span>
+              <small>{screen === "off" ? "Off" : `${Object.keys(appAccess).length} shared`}</small>
+              <ChevronDown size={15} />
+            </summary>
+            <div className="ivt-disclosure-body">
+              <select className="ivt-field" aria-label="Screen permission" value={screen}
+                disabled={!options?.appAccessAvailable}
+                onChange={(e) => setScreen(e.target.value as typeof screen)}>
+                <option value="off">No app access</option>
+                <option value="apps">Selected apps</option>
+              </select>
+              {!options ? <p className="ivt-quiet">Loading apps…</p>
+                : !options.appAccessAvailable ? <p className="ivt-quiet">{options.appAccessError || "Protected app sharing is unavailable on this computer."}</p>
+                : screen === "off" ? <p className="ivt-quiet">Your apps stay private.</p>
+                : <>
+                  <p className="ivt-quiet">Share only the apps you choose. The agent can ask for another app during this session. Open an app on the computer if it is missing.</p>
+                  <div className="browser-invite-apps">
+                    {(options.apps || []).map((app) => (
+                      <label className="browser-invite-app" key={app.id}>
+                        <span>{app.name}{app.protected && <small>{app.reason || "Always protected"}</small>}</span>
+                        <select className="ivt-field" aria-label={`${app.name} access`}
+                          disabled={app.protected} value={appAccess[app.id] || "hidden"}
+                          onChange={(e) => setAppAccess((current) => {
+                            const next = { ...current };
+                            if (e.target.value === "hidden") delete next[app.id];
+                            else next[app.id] = e.target.value as "view" | "control";
+                            return next;
+                          })}>
+                          <option value="hidden">Hidden</option>
+                          {!app.protected && <option value="view">View only</option>}
+                          {!app.protected && <option value="control">View &amp; control</option>}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="ivt-quiet">Access covers each shared app’s content and signed-in accounts. Every new invitation starts fresh.</p>
+                  <p className="ivt-quiet">Approve on your phone or another verified device. Reach on this Mac is locked during this invitation.</p>
+                </>}
+            </div>
+          </details>
           <details className="ivt-disclosure">
             <summary>
               <ShieldCheck size={17} />

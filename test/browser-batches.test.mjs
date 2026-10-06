@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBrowserApprovals } from '../server/browser-approvals.mjs';
 
-const batch = (actions = [{ type: 'text', text: 'Exact title' }, { type: 'key', key: 'enter' }]) => ({ type: 'batch', actions, reason: 'Fill the title and confirm' });
+const batch = (actions = [{ type: 'terminal', root: 0, command: 'pwd' }, { type: 'terminal', root: 0, command: 'ls' }]) => ({ type: 'batch', actions, reason: 'Fill the title and confirm' });
 function fixture(hook) {
   let now = 1000;
   const client = { id: 'bot', name: 'Muse', kind: 'agent', expiresAt: 900000,
     agentRoots: ['/shared'], scopes: ['browser:read', 'browser:request'],
-    policy: { browser: true, screen: 'ask' } };
+    policy: { browser: true, screen: 'off', restrictedTerminal: true } };
   const owner = { id: 'owner', kind: 'device', scopes: ['admin'] };
   const calls = [], notifications = [];
   const f = { client, owner, calls, notifications, advance: (ms) => { now += ms; } };
@@ -34,10 +34,10 @@ function fixture(hook) {
 
 test('batch binds a deeply immutable ordered sequence and never creates later permission', async () => {
   const f = fixture(); const input = batch(); const r = f.submit(input);
-  input.actions[0].text = 'changed';
-  r.action.actions[0].text = 'response changed';
-  r.steps[0].action.text = 'step changed';
-  f.queue.listOwner()[0].action.actions.push({ type: 'key', key: 'escape' });
+  input.actions[0].command = 'changed';
+  r.action.actions[0].command = 'response changed';
+  r.steps[0].action.command = 'step changed';
+  f.queue.listOwner()[0].action.actions.push({ type: 'terminal', root: 0, command: 'ls' });
   const result = await f.decide(r);
   assert.equal(result.status, 'executed');
   assert.equal(result.completedCount, 2); assert.equal(result.attemptedCount, 2);
@@ -58,9 +58,9 @@ test('invalid batches fail before notifications and no step may broaden permissi
     batch(Array.from({ length: 5 }, () => ({ type: 'text', text: '😀'.repeat(1000) }))),
     { ...batch(), allowControl: true }, { ...batch(), reason: 'hidden\u202ereason' },
   ]) assert.throws(() => f.submit(input), { status: 400 });
-  for (const screen of ['off', 'view', 'scroll']) {
+  for (const screen of ['off', 'view', 'scroll', 'ask', 'apps']) {
     f.client.policy.screen = screen;
-    assert.throws(() => f.submit(), { status: 403 });
+    assert.throws(() => f.submit(batch([{ type: 'key', key: 'enter' }])), { status: 403 });
   }
   assert.deepEqual(f.queue.listOwner(), []); assert.equal(f.notifications.length, 0);
 });
@@ -90,7 +90,7 @@ test('concurrent decisions claim the batch once; executing progress is visible a
 
 test('failure after an earlier step preserves partial progress and never retries', async () => {
   const f = fixture((_, i) => { if (i === 1) throw Error('native error with secret'); });
-  const r = f.submit(batch([...batch().actions, { type: 'key', key: 'tab' }]));
+  const r = f.submit(batch([...batch().actions, { type: 'terminal', root: 0, command: 'pwd' }]));
   const result = await f.decide(r);
   assert.equal(result.status, 'failed'); assert.equal(result.completedCount, 1);
   assert.equal(result.attemptedCount, 2);
@@ -104,7 +104,7 @@ test('scope changes, roots changes, expiry and owner cancellation stop subsequen
     (f) => { f.client.policy.screen = 'view'; },
     (f) => { f.client.agentRoots = ['/other']; },
     (f) => { f.client.expiresAt = 1; },
-    (f) => f.advance(20001),
+    (f) => f.advance(30001),
     (f) => f.queue.cancelPending(),
     (f) => { f.owner.scopes = []; },
   ]) {

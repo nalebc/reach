@@ -54,7 +54,8 @@ export async function typeIntoClaude(
   } catch {
     throw waiting("Couldn't type it into the Claude app.");
   }
-  if (result.error) throw waiting(result.error);
+  // otherChat: the window shows another chat (it says which).
+  if (result.error) throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {});
   return result;
 }
 
@@ -211,6 +212,10 @@ export function createClaudeCompose({
         if (APP_MODES[mode]) await type({ ...into, mode: APP_MODES[mode] });
         await type({ ...into, text, images, ...(draft ? { expected: draft.text } : {}) });
         if (drafts.delete(id)) keep();
+      } catch (e) {
+        // Switched to, but the window never showed it: back, and again later.
+        if (switched && e?.otherChat) throw waiting("The Claude app didn't open this chat; trying again.");
+        throw e;
       } finally {
         if (back) await open(link(back), { background: true }).catch(() => {});
       }

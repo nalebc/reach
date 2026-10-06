@@ -13,7 +13,8 @@ function fixture(options = {}) {
   const client = {
     id: "muse", kind: "agent", name: "Muse", expiresAt: 900000,
     scopes: ["browser:read", "browser:request"],
-    policy: { browser: true, screen: "ask", commandRequests: true },
+    agentRoots: ["/shared"],
+    policy: { browser: true, screen: "off", restrictedTerminal: true, commandRequests: true },
   };
   const owner = { id: "phone", kind: "device", scopes: ["admin"] };
   const clients = new Map([[client.id, client]]);
@@ -29,26 +30,26 @@ function fixture(options = {}) {
     now: () => time,
     ...options,
   });
-  const click = () => queue.request(client, {
-    type: "click", x: 0.4, y: 0.7, reason: "Open this file",
+  const requestCommand = () => queue.request(client, {
+    type: "terminal", root: 0, command: "pwd", reason: "Inspect the shared folder",
   });
   const decide = (request, decision = "approve") =>
     queue.decide(owner, request.id, decision, () => owner);
-  return { queue, client, clients, owner, calls, pushes, events, click, decide, advance: (ms) => { time += ms; } };
+  return { queue, client, clients, owner, calls, pushes, events, requestCommand, decide, advance: (ms) => { time += ms; } };
 }
 
-test("screen approval binds exact immutable action and executes once", async () => {
+test("terminal approval binds exact immutable action and executes once", async () => {
   const f = fixture();
-  const input = { type: "text", text: "reviewed exact text", reason: "Enter the title" };
+  const input = { type: "terminal", root: 0, command: "cat notes.txt", reason: "Read these notes" };
   const request = f.queue.request(f.client, input);
-  assert.equal(request.expiresAt, 61000);
-  input.text = "replacement";
-  request.action.text = "replacement via response";
-  f.queue.listOwner()[0].action.text = "replacement via list";
+  assert.equal(request.expiresAt, 301000);
+  input.command = "replacement";
+  request.action.command = "replacement via response";
+  f.queue.listOwner()[0].action.command = "replacement via list";
   const result = await f.decide(request);
   assert.equal(result.status, "executed");
   assert.equal(f.calls.length, 1);
-  assert.deepEqual(f.calls[0].action, { type: "text", text: "reviewed exact text" });
+  assert.deepEqual(f.calls[0].action, { type: "terminal", root: 0, command: "cat notes.txt" });
   assert.ok(Object.isFrozen(f.calls[0].action));
   assert.equal(f.calls[0].request.id, request.id);
   await assert.rejects(f.decide(request), { status: 409 });
@@ -64,7 +65,7 @@ test("simultaneous owner approvals claim an action before awaiting native work",
     executions++;
     await new Promise((resolve) => { release = resolve; });
   } });
-  const request = f.click();
+  const request = f.requestCommand();
   const first = f.decide(request);
   await assert.rejects(f.decide(request), { status: 409 });
   release();
@@ -74,6 +75,7 @@ test("simultaneous owner approvals claim an action before awaiting native work",
 
 test("all command requests including sudo are manual handoffs and never execute", async () => {
   const f = fixture();
+  f.client.policy.restrictedTerminal = false;
   for (const command of ["sudo rm -rf /example", "echo safe", "python -c 'print(1)'"]) {
     const request = f.queue.request(f.client, { type: "command", command, reason: "Please inspect and handle this" });
     assert.equal(request.expiresAt, 301000);
@@ -87,7 +89,7 @@ test("all command requests including sudo are manual handoffs and never execute"
 
 test("browser, guest, and non-admin credentials cannot approve or mark handled", async () => {
   const f = fixture();
-  const request = f.click();
+  const request = f.requestCommand();
   for (const client of [f.client, { ...f.owner, kind: "guest" }, { ...f.owner, scopes: [] }])
     await assert.rejects(f.queue.decide(client, request.id, "approve", () => client), { status: 403 });
   await assert.rejects(f.queue.decide({ ...f.owner, id: f.client.id }, request.id, "approve", () => ({ ...f.owner, id: f.client.id })), { status: 403 });
@@ -99,7 +101,7 @@ test("only requesting browser sees and cancels its own requests", () => {
   const f = fixture();
   const another = { ...f.client, id: "other" };
   f.clients.set(another.id, another);
-  const request = f.click();
+  const request = f.requestCommand();
   assert.deepEqual(f.queue.listClient(another), []);
   assert.throws(() => f.queue.cancel(another, request.id), { status: 404 });
   assert.equal(f.queue.cancel(f.client, request.id).status, "cancelled");
@@ -109,7 +111,7 @@ test("only requesting browser sees and cancels its own requests", () => {
 test("permission checks distinguish command handoffs, screen requests, and auto-scroll", () => {
   const f = fixture();
   const click = { type: "click", x: 0.2, y: 0.2, reason: "Click" };
-  for (const screen of ["off", "view", "scroll"])
+  for (const screen of ["off", "view", "scroll", "ask", "apps"])
     assert.throws(() => f.queue.request({ ...f.client, policy: { ...f.client.policy, screen } }, click), { status: 403 });
   assert.throws(() => f.queue.request({ ...f.client, policy: { ...f.client.policy, commandRequests: false } }, { type: "command", command: "echo x", reason: "Run" }), { status: 403 });
   assert.throws(() => f.queue.request({ ...f.client, scopes: ["browser:read"] }, click), { status: 403 });
@@ -154,7 +156,7 @@ test("unknown fields and malformed actions cannot enqueue or notify", () => {
 
 test("denial and all unsupported decisions leave no execution grant", async () => {
   const f = fixture();
-  const request = f.click();
+  const request = f.requestCommand();
   for (const decision of ["handled", "allow-all", null])
     await assert.rejects(f.decide(request, decision), { status: 400 });
   assert.equal((await f.decide(request, "deny")).status, "denied");
@@ -164,17 +166,17 @@ test("denial and all unsupported decisions leave no execution grant", async () =
 
 test("expiry and policy changes invalidate pending requests", async () => {
   const f = fixture();
-  const expired = f.click();
-  f.advance(60000);
+  const expired = f.requestCommand();
+  f.advance(300000);
   assert.equal(f.queue.getOwner(expired.id).status, "expired");
   await assert.rejects(f.decide(expired), { status: 409 });
-  const changed = f.click();
+  const changed = f.requestCommand();
   f.client.policy.commandRequests = false;
   assert.equal(f.queue.getOwner(changed.id).status, "revoked", "even unrelated grant changes require review again");
   await assert.rejects(f.decide(changed), { status: 409 });
-  f.client.expiresAt = 62000;
-  const short = f.click();
-  assert.equal(short.expiresAt, 62000);
+  f.client.expiresAt = 302000;
+  const short = f.requestCommand();
+  assert.equal(short.expiresAt, 302000);
   f.clients.delete(f.client.id);
   assert.equal(f.queue.getOwner(short.id).status, "revoked");
   assert.equal(f.calls.length, 0);
@@ -188,7 +190,7 @@ test("revocation is rechecked immediately before dispatch", async () => {
     authorize();
     dispatched++;
   } });
-  const request = f.click();
+  const request = f.requestCommand();
   const pending = f.decide(request);
   f.clients.delete(f.client.id);
   release();
@@ -205,7 +207,7 @@ test("owner reauthorization is required again at native dispatch", async () => {
     authorize();
     dispatched++;
   } });
-  const request = f.click();
+  const request = f.requestCommand();
   const pending = f.queue.decide(f.owner, request.id, "approve", () => {
     if (revoked) throw Object.assign(Error("revoked"), { status: 401 });
     return f.owner;
@@ -218,7 +220,7 @@ test("owner reauthorization is required again at native dispatch", async () => {
 
 test("failed execution never retries automatically or exposes arbitrary native output", async () => {
   const f = fixture({ execute: async () => { throw Error("secret-output"); } });
-  const request = f.click();
+  const request = f.requestCommand();
   const result = await f.decide(request);
   assert.equal(result.status, "failed");
   assert.equal(JSON.stringify(result).includes("secret-output"), false);
@@ -226,50 +228,50 @@ test("failed execution never retries automatically or exposes arbitrary native o
 });
 
 test("known pre-dispatch failures retain actionable owner messages", async () => {
-  const f = fixture({ execute: async () => { throw Object.assign(Error("The screen changed. Request a fresh screenshot."), { status: 409 }); } });
-  const result = await f.decide(f.click());
+  const f = fixture({ execute: async () => { throw Object.assign(Error("The shared folder changed. Request the command again."), { status: 409 }); } });
+  const result = await f.decide(f.requestCommand());
   assert.equal(result.status, "failed");
-  assert.match(result.error, /screen changed/);
+  assert.match(result.error, /shared folder changed/);
 });
 
 test("pausing cancels existing requests without permanently closing the queue", async () => {
   const f = fixture();
-  const request = f.click();
+  const request = f.requestCommand();
   f.queue.cancelPending();
   assert.equal(f.queue.getOwner(request.id).status, "cancelled");
   assert.deepEqual(f.queue.listOwner(), []);
   await assert.rejects(f.decide(request), { status: 409 });
-  assert.equal(f.click().status, "pending");
+  assert.equal(f.requestCommand().status, "pending");
 });
 
 test("outstanding requests are bounded per client and globally", async () => {
   const f = fixture();
-  const first = f.click();
-  f.click(); f.click();
-  assert.throws(f.click, { status: 429 });
+  const first = f.requestCommand();
+  f.requestCommand(); f.requestCommand();
+  assert.throws(f.requestCommand, { status: 429 });
   await f.decide(first, "deny");
-  f.click();
+  f.requestCommand();
   for (let i = 0; i < 17; i++) {
     const client = { ...f.client, id: `agent-${i}` };
     f.clients.set(client.id, client);
-    f.queue.request(client, { type: "key", key: "enter", reason: "Enter" });
+    f.queue.request(client, { type: "terminal", root: 0, command: "pwd", reason: "Inspect folder" });
   }
   const client = { ...f.client, id: "overflow" };
   f.clients.set(client.id, client);
-  assert.throws(() => f.queue.request(client, { type: "key", key: "enter", reason: "Enter" }), { status: 429 });
+  assert.throws(() => f.queue.request(client, { type: "terminal", root: 0, command: "pwd", reason: "Inspect folder" }), { status: 429 });
 });
 
 test("request cancellation cannot bypass notification rate limits", () => {
   const f = fixture();
   for (let i = 0; i < 10; i++) {
-    const request = f.click();
+    const request = f.requestCommand();
     f.queue.cancel(f.client, request.id);
   }
-  assert.throws(f.click, { status: 429 });
+  assert.throws(f.requestCommand, { status: 429 });
   assert.equal(f.pushes.length, 10);
   assert.equal(new Set(f.pushes.map((push) => push.tag)).size, 1);
   f.advance(60000);
-  assert.equal(f.click().status, "pending");
+  assert.equal(f.requestCommand().status, "pending");
   assert.equal(f.pushes.length, 11);
 });
 
@@ -278,27 +280,27 @@ test("notification rate limits apply across distinct invitations", () => {
   for (let i = 0; i < 60; i++) {
     const client = { ...f.client, id: `agent-${i}` };
     f.clients.set(client.id, client);
-    const request = f.queue.request(client, { type: "key", key: "enter", reason: "Enter" });
+    const request = f.queue.request(client, { type: "terminal", root: 0, command: "pwd", reason: "Inspect folder" });
     f.queue.cancel(client, request.id);
   }
-  assert.throws(f.click, { status: 429 });
+  assert.throws(f.requestCommand, { status: 429 });
   assert.equal(f.pushes.length, 60);
   f.advance(60000);
-  assert.equal(f.click().status, "pending");
+  assert.equal(f.requestCommand().status, "pending");
 });
 
 test("revoking one client and closing queue invalidate work without affecting another client", async () => {
   const f = fixture();
-  const first = f.click();
+  const first = f.requestCommand();
   const other = { ...f.client, id: "other" };
   f.clients.set(other.id, other);
-  const second = f.queue.request(other, { type: "key", key: "enter", reason: "Enter" });
+  const second = f.queue.request(other, { type: "terminal", root: 0, command: "pwd", reason: "Inspect folder" });
   f.queue.cancelClient(f.client.id);
   assert.equal(f.queue.getOwner(first.id).status, "revoked");
   assert.equal(f.queue.getOwner(second.id).status, "pending");
   f.queue.close();
   assert.equal(f.queue.getOwner(second.id).status, "revoked");
-  assert.throws(f.click, { status: 503 });
+  assert.throws(f.requestCommand, { status: 503 });
   await assert.rejects(f.decide(second), { status: 409 });
 });
 

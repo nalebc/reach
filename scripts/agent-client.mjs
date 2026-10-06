@@ -141,7 +141,7 @@ export function createAgentClient(
         (res) => {
           const chunks = [];
           // Only the named browser screen route may return a binary image.
-          const screenImage = route === "/api/browser/screen" && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
+          const screenImage = (route === "/api/browser/screen" || /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route)) && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
           const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
           let size = 0;
           res.on("data", (chunk) => {

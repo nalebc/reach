@@ -19,6 +19,8 @@ type Pending = {
   at: number;
   sent: number;
 };
+// Pointer moves and scrolls: the newest one stands for those before it.
+const isMotion = (action: DesktopAction) => action.type === "move" || action.type === "scroll";
 // A small ordered window hides network RTT; the host still dispatches serially.
 export class DesktopInputQueue {
   private pending = new Map<number, Pending>();
@@ -39,26 +41,24 @@ export class DesktopInputQueue {
   enqueue(action: DesktopAction): Promise<InputResult> {
     return new Promise((resolve, reject) => {
       if (this.stopped) return reject(Error("Desktop control ended."));
-      const previous = this.queued.at(-1);
-      if (
-        ["move", "scroll"].includes(action.type) &&
-        previous?.action.type === action.type
-      ) {
-        this.queued.pop();
-        if (action.type === "scroll")
-          action = {
-            ...action,
-            dx: Math.max(
-              -120,
-              Math.min(120, Number(previous.action.dx) + Number(action.dx)),
-            ),
-            dy: Math.max(
-              -120,
-              Math.min(120, Number(previous.action.dy) + Number(action.dy)),
-            ),
-          };
-        previous.resolve({ ok: true, skipped: true });
-      }
+      // A move or scroll merges into the last one of its kind still waiting,
+      // past other moves and scrolls (never past a click or key): moves and
+      // scrolls arriving in turns can't pile up on a slow link.
+      if (isMotion(action))
+        for (let i = this.queued.length - 1; i >= 0 && isMotion(this.queued[i].action); i--) {
+          const previous = this.queued[i];
+          if (previous.action.type !== action.type) continue;
+          if (action.type === "scroll")
+            action = {
+              ...action,
+              dx: Math.max(-120, Math.min(120, Number(previous.action.dx) + Number(action.dx))),
+              dy: Math.max(-120, Math.min(120, Number(previous.action.dy) + Number(action.dy))),
+            };
+          previous.resolve({ ok: true, skipped: true });
+          this.queued[i] = { action, resolve, reject, at: this.now(), sent: 0 };
+          this.flush();
+          return;
+        }
       if (this.queued.length >= 32) {
         reject(Error("Too many pending actions."));
         this.fail("Desktop input queue filled. Reconnect.");
@@ -86,6 +86,13 @@ export class DesktopInputQueue {
         return;
       }
       if (this.now() - item.at > 1000) {
+        // A move or scroll that waited too long is let go (the next one
+        // stands for it); a click or key never goes late: control ends.
+        if (motion) {
+          this.queued.shift();
+          item.resolve({ ok: true, skipped: true });
+          continue;
+        }
         this.fail("Connection is too slow for safe control. Reconnect.");
         return;
       }

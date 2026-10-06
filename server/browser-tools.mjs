@@ -20,10 +20,9 @@ const terminalAction = object({
 }, ["type", "root", "command"]);
 const definition = (name, title, description, inputSchema, example, extra = {}) => ({ name, title, description, inputSchema, example, ...extra });
 const location = { root, path: relativePath };
-const requestsAllowed = (access) => access.screen === "ask" || access.restrictedTerminal === true || access.commandRequests === true;
-const screenAllowed = (access) => access.screen === "ask";
+const requestsAllowed = (access) => access.screen === "apps" || access.restrictedTerminal === true || access.commandRequests === true;
 const terminalAllowed = (access) => access.restrictedTerminal === true && !!access.roots?.length;
-const actionKinds = (access) => [...(screenAllowed(access) ? screenActions : []), ...(terminalAllowed(access) ? [terminalAction] : [])];
+const actionKinds = (access) => terminalAllowed(access) ? [terminalAction] : [];
 
 /** Tools are created afresh so a caller cannot mutate a shared schema. */
 export function browserToolsFor(access = {}) {
@@ -35,18 +34,23 @@ export function browserToolsFor(access = {}) {
     definition("reach_read_file", "Read a file", "Read a UTF-8 file from a shared folder, subject to the host's size limit.", object(location, ["root", "path"]), { root: firstRoot, path: "README.md" }),
   );
   if (access.terminals?.length) tools.push(definition("reach_read_terminal", "Read terminal output", "Read output from an explicitly shared terminal. This cannot type into or run commands in that terminal.", object({ id: string(256) }, ["id"]), { id: access.terminals[0].id }));
-  if (["view", "scroll", "ask"].includes(access.screen)) tools.push(definition("reach_screen", "View screen", "Read the current screen as {image: base64, mimeType}. Screen coordinates in requests are fractions from 0 to 1.", object(), {}));
-  if (access.screen === "scroll") tools.push(definition("reach_scroll", "Scroll screen", "Scroll only within the session's explicitly granted scroll access.", object({ direction: kinds(["up", "down"]), amount: integer(1, 5) }, ["direction"]), { direction: "down", amount: 3 }));
   if (terminalAllowed(access)) tools.push(
     definition("reach_terminal_command", "Run a terminal command", "Submit one command. Supported read-only commands run immediately; other commands require separate owner approval if granted, otherwise are blocked. Every command is logged. Do not resubmit a pending command.", object({ command: string(4000), root, cwd: relativePath }, ["command", "root"]), { command: "pwd", root: firstRoot, cwd: "" }),
     definition("reach_terminal_history", "Command history", "Read this session’s command history and outcomes.", object(), {}),
   );
+  if (access.screen === "apps") tools.push(
+    definition("reach_apps", "Shared apps", "List apps and this invitation's hidden/view/control access. Protected apps cannot be granted.", object(), {}),
+    definition("reach_app_windows", "App windows", "List standard windows of an allowed app. Target IDs belong only to this invitation.", object({ appId: string(1024) }, ["appId"]), { appId: "/Applications/Safari.app" }),
+    definition("reach_app_screen", "View app window", "Read only the selected window as {image: base64,mimeType}. Other apps and the desktop are excluded.", object({ target: string(128) }, ["target"]), { target: "target-from-reach_app_windows" }),
+    definition("reach_app_input", "Use app window", "Interact with a control-enabled window. Unsupported controls stop; no desktop fallback. Observe results before continuing.", object({ target:string(128), action:{oneOf:[object({type:kinds("click"),x:point,y:point},["type","x","y"]), ...screenActions.slice(1)]} }, ["target","action"]), { target: "target-from-reach_app_windows", action:{type:"click",x:0.5,y:0.5} }),
+    definition("reach_request_app", "Request app access", "Ask the owner to share an app for this invitation only. The agent cannot approve requests. Poll reach_list_requests.", object({appId:string(1024),mode:kinds(["view","control"]),reason},["appId","mode"]), {appId:"/Applications/Safari.app",mode:"control",reason:"Use this app for the requested task."}, {approvalRequired:true}),
+  );
   const actions = actionKinds(access);
   if (actions.length) {
-    const example = terminalAllowed(access) ? { type: "terminal", root: firstRoot, cwd: "", command: "pwd" } : { type: "click", x: 0.5, y: 0.5 };
+    const example = { type: "terminal", root: firstRoot, cwd: "", command: "pwd" };
     tools.push(
-      definition("reach_request_action", "Request one action", "Ask the owner to approve one exact screen action or restricted terminal command. Returns a pending request; submitting does not execute it.", object({ action: { oneOf: actions }, reason }, ["action", "reason"]), { action: example, reason: "Describe the action's purpose here." }, { approvalRequired: true }),
-      definition("reach_request_batch", "Request an action batch", "Ask once for up to five exact actions, in order. Use only screen actions or only restricted terminal commands; no mixed or nested batches. Approval covers only the listed actions. Poll reach_list_requests for step outcomes.", object({ actions: { type: "array", minItems: 1, maxItems: 5, items: { oneOf: actions } }, reason }, ["actions", "reason"]), { actions: [example], reason: "Describe this short sequence's purpose here." }, { approvalRequired: true }),
+      definition("reach_request_action", "Request one action", "Ask the owner to approve one exact restricted terminal command. Returns a pending request; submitting does not execute it.", object({ action: { oneOf: actions }, reason }, ["action", "reason"]), { action: example, reason: "Describe the action's purpose here." }, { approvalRequired: true }),
+      definition("reach_request_batch", "Request an action batch", "Ask once for up to five exact actions, in order. Use only restricted terminal commands; no desktop actions or nested batches. Approval covers only the listed actions. Poll reach_list_requests for step outcomes.", object({ actions: { type: "array", minItems: 1, maxItems: 5, items: { oneOf: actions } }, reason }, ["actions", "reason"]), { actions: [example], reason: "Describe this short sequence's purpose here." }, { approvalRequired: true }),
     );
   }
   if (requestsAllowed(access)) tools.push(
@@ -117,14 +121,17 @@ export function browserToolRequest(name, args, access) {
   const get = (route, response = "json") => ({ route, method: "GET", response });
   switch (name) {
     case "reach_access": return get("/api/browser");
+    case "reach_apps": return get("/api/browser/apps");
+    case "reach_app_windows": return get(`/api/browser/apps/windows?${new URLSearchParams({appId:input.appId})}`);
+    case "reach_app_screen": return get(`/api/browser/apps/screen?${new URLSearchParams({target:input.target})}`, "image");
+    case "reach_app_input": return {route:"/api/browser/apps/input",method:"POST",body:input,response:"json"};
+    case "reach_request_app": return {route:"/api/browser/apps/requests",method:"POST",body:input,response:"json"};
     case "reach_list_files": return get(`/api/files?${query}`);
     case "reach_search_files": return get(`/api/browser/files/search?${new URLSearchParams({ root: String(input.root), q: input.query })}`);
     case "reach_read_file": return get(`/api/files/text?${query}`);
     case "reach_terminal_command": return { route: "/api/browser/terminal", method: "POST", body: input, response: "json" };
     case "reach_terminal_history": return get("/api/browser/terminal/history");
     case "reach_read_terminal": return get(`/api/browser/terminals/${encodeURIComponent(input.id)}`);
-    case "reach_screen": return get("/api/browser/screen", "image");
-    case "reach_scroll": return { route: "/api/browser/scroll", method: "POST", body: input, response: "json" };
     case "reach_request_action": return { route: "/api/browser/requests", method: "POST", body: { ...input.action, reason: input.reason }, response: "json" };
     case "reach_request_batch":
       if (new TextEncoder().encode(JSON.stringify({ type: "batch", actions: input.actions, reason: input.reason })).length > 12000) invalid("The batch is too large. Keep the complete request under 12,000 bytes.");

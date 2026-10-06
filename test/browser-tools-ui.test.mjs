@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { startDom } from "./dom/harness.mjs";
 let dom, installBrowserTools;
 const peer = { id: "mac", name: "Mac", url: "https://mac.tail.ts.net", token: "private-token", platform: "darwin" };
-const access = { name: "Mac", expiresAt: Date.now() + 3600000, roots: [{ index: 0, name: "Project", path: "/shared" }], terminals: [], screen: "ask" };
+const access = { name: "Mac", expiresAt: Date.now() + 3600000, roots: [{ index: 0, name: "Project", path: "/shared" }], terminals: [], screen: "off", restrictedTerminal: true };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 before(async () => {
   dom = await startDom();
@@ -21,9 +21,13 @@ test("bridge validates current access, exposes no credentials and invalidates ca
   assert.deepEqual(Object.keys(captured).sort(), ["callTool", "listTools"]);
   assert.ok(!JSON.stringify(captured).includes(peer.token));
   assert.ok((await captured.listTools()).some((tool) => tool.name === "reach_request_batch"));
+  for (const name of ["reach_screen", "reach_scroll"])
+    await assert.rejects(captured.callTool(name, {}), /not available/);
+  await assert.rejects(captured.callTool("reach_request_action", { action: { type: "click", x: 0.2, y: 0.4 }, reason: "Try a legacy screen action" }), /Invalid tool/);
+  await assert.rejects(captured.callTool("reach_request_batch", { actions: [{ type: "key", key: "enter" }], reason: "Try a legacy batch" }), /Invalid tool/);
   await captured.callTool("reach_list_files", { root: 0, path: "" });
   assert.ok(calls.some(([url]) => url.includes("/api/files?")));
-  current = { ...access, roots: [], screen: "view" };
+  current = { ...access, roots: [], screen: "off", restrictedTerminal: false };
   await assert.rejects(captured.callTool("reach_request_batch", { actions: [{ type: "key", key: "tab" }], reason: "inspect" }), /not available/);
   assert.equal(calls.filter(([url]) => url.includes("/api/browser/requests")).length, 0);
   const second = installBrowserTools({ ...peer, token: "another-token" });

@@ -58,8 +58,17 @@ export function desktopConnection(
         let result;
         try {
           authorize();
-          if (Date.now() - item.at > 1000)
+          if (Date.now() - item.at > 1000) {
+            // A move or scroll that waited too long is let go (the next one
+            // stands for it); a click or key never runs late.
+            if (["move", "scroll"].includes(item.action.type)) {
+              item.resolve?.({ ok: true, skipped: true });
+              if (item.id !== undefined && !closed && ws.readyState === 1)
+                ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
+              continue;
+            }
             throw fail(408, "Desktop action became stale.");
+          }
           result = await helper.send(item.action);
           authorize();
         } catch (e) {

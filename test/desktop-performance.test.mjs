@@ -133,3 +133,42 @@ test("automatic video backs off congestion without reconnecting its source", asy
   broadcaster.remove(ws);
   assert.equal(stopped, true);
 });
+
+// "I can no longer scroll … it keeps flipping control off" (2026-10-06): a
+// scroll sent a move and a scroll for each finger movement; the two never
+// merged, the queue filled in half a second, and control ended.
+test("moves and scrolls arriving in turns on a slow link merge instead of filling the queue", async () => {
+  let now = 0;
+  const sent = [];
+  const failures = [];
+  const queue = new DesktopInputQueue((id, action) => sent.push({ id, action }), (m) => failures.push(m), 1, () => now);
+  const done = [];
+  for (let i = 0; i < 200; i++) {
+    now += 8;
+    done.push(queue.enqueue({ type: "move", x: 0.5, y: 0.5 }));
+    done.push(queue.enqueue({ type: "scroll", dx: 0, dy: -1 }));
+  }
+  assert.deepEqual(failures, [], "control stays on");
+  assert.ok(sent.length <= 3, `sent ${sent.length} while the first was unanswered`);
+  queue.close();
+  await Promise.allSettled(done);
+});
+
+test("a move or scroll that waited too long is let go; a late click still ends control", async () => {
+  let now = 0;
+  const failures = [];
+  const queue = new DesktopInputQueue(() => {}, (m) => failures.push(m), 1, () => now);
+  void queue.enqueue({ type: "heartbeat" }).catch(() => {});
+  const late = queue.enqueue({ type: "scroll", dx: 0, dy: -5 });
+  now += 1500;
+  queue.acknowledge(1, { ok: true });
+  assert.deepEqual(await late, { ok: true, skipped: true });
+  assert.deepEqual(failures, []);
+  const click = queue.enqueue({ type: "click", x: 0.5, y: 0.5 }).catch(() => {});
+  void queue.enqueue({ type: "click", x: 0.6, y: 0.5 }).catch(() => {});
+  now += 1500;
+  queue.acknowledge(2, { ok: true });
+  assert.match(failures[0] || "", /too slow/);
+  queue.close();
+  await click;
+});

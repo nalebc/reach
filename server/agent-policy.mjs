@@ -1,3 +1,4 @@
+import { validAppAccess } from "./browser-app-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -119,7 +120,9 @@ export function applyAgentPolicy(client, config) {
       !Array.isArray(policy.terminalIds) ||
       policy.terminalIds.length > 20 ||
       policy.terminalIds.some((id) => !validBrowserTerminalId(id)) ||
-      !["off", "view", "scroll", "ask"].includes(policy.screen) ||
+      !["off", "view", "scroll", "ask", "apps"].includes(policy.screen) ||
+      (policy.screen === "apps" && !validAppAccess(policy.appAccess)) ||
+      (policy.screen !== "apps" && policy.appAccess !== undefined) ||
       (policy.commandRequests !== undefined && typeof policy.commandRequests !== "boolean") ||
       (policy.restrictedTerminal !== undefined && typeof policy.restrictedTerminal !== "boolean") ||
       (policy.restrictedTerminal === true && (!policy.roots.length || policy.commandRequests === true)) ||
@@ -139,7 +142,7 @@ export function applyAgentPolicy(client, config) {
         BROWSER_SCOPES.includes(scope) &&
         (scope !== "files:read" || roots.length > 0) &&
         (scope !== "browser:scroll" || policy.screen === "scroll") &&
-        (scope !== "browser:request" || policy.screen === "ask" || policy.commandRequests === true || (policy.restrictedTerminal === true && roots.length > 0)),
+        (scope !== "browser:request" || ["ask", "apps"].includes(policy.screen) || policy.commandRequests === true || (policy.restrictedTerminal === true && roots.length > 0)),
       ),
       policy: { ...policy, roots },
       agentRoots: roots,

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { fail, hash, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
+import { fail, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
 import { fileRootName } from "./file-roots.mjs";
 import { validBrowserTerminalId } from "./agent-policy.mjs";
 import { validateBrowserRequest, browserRequestActions } from "./browser-approvals.mjs";
@@ -16,19 +16,23 @@ import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-comm
 export function browserRouteAllowed(client, method, route) {
   if (!client?.policy?.browser) return false;
   if (method === "DELETE" && route === "/device/access") return true;
+  if (client.policy.screen === "apps" && client.scopes.includes("browser:read")) {
+    if (["GET", "HEAD"].includes(method) && ["/browser/apps", "/browser/apps/windows", "/browser/apps/screen"].includes(route)) return true;
+    if (method === "POST" && client.scopes.includes("browser:request") && ["/browser/apps/input", "/browser/apps/requests"].includes(route)) return true;
+  }
+  // Retired desktop routes must not bypass selected-app capture/input guards,
+  // including for credentials issued before app access was introduced.
+  if (["/browser/screen", "/browser/scroll"].includes(route)) return false;
   if (route === "/browser/requests" && ["GET", "HEAD", "POST"].includes(method))
     return client.scopes.includes("browser:request");
   if (method === "DELETE" && /^\/browser\/requests\/[^/]+$/.test(route))
     return client.scopes.includes("browser:request");
   if ((method === "POST" && route === "/browser/terminal") || (["GET", "HEAD"].includes(method) && route === "/browser/terminal/history"))
     return client.scopes.includes("browser:request") && client.policy.restrictedTerminal === true;
-  if (method === "POST" && route === "/browser/scroll")
-    return client.scopes.includes("browser:scroll");
   if (!["GET", "HEAD"].includes(method)) return false;
   if (route === "/device") return true;
   if (
     route === "/browser" ||
-    route === "/browser/screen" ||
     /^\/browser\/terminals\/[^/]+$/.test(route)
   )
     return client.scopes.includes("browser:read");
@@ -54,15 +58,13 @@ export function browserAccessRoutes(
     desktopTerminals,
     resolve,
     resolveAsync,
-    capture,
-    viewCapture = capture,
-    scroll,
     screenAvailable,
     record,
     approvals,
     commandLog,
     snapshots,
     prepareFunnel,
+    appAccess, appAccessAvailable = false, hostGuard,
   },
 ) {
   const owner = (req) => {
@@ -100,14 +102,19 @@ export function browserAccessRoutes(
   };
   app.get("/api/agents/browser-options", async (req, res) => {
     owner(req);
-    res.json({
-      terminals: await terminalOptions(() => owner(req)),
-      screenAvailable: screenAvailable(),
-    });
+    let apps = [], appAccessError;
+    if (appAccessAvailable) {
+      try { apps = (await appAccess.options(() => owner(req))).map(({id,name,protected:protectedApp,reason}) => ({id,name,protected:!!protectedApp,reason})); }
+      catch (error) { appAccessError = error.status ? error.message : "Protected app sharing is unavailable. Check macOS permissions."; }
+    }
+    owner(req);
+    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,apps,...(appAccessError ? {appAccessError}: {})});
   });
   app.post("/api/agents/browser-invitations", async (req, res) => {
     owner(req);
     const input = validateBrowserInvitation(req.body);
+    if (input.screen && !["off", "apps"].includes(input.screen))
+      throw fail(400, "Desktop sharing for agents has been retired. Choose Selected apps or turn screen access off.");
     if (input.screen && input.screen !== "off" && !screenAvailable())
       throw fail(403, "Turn on screen viewing in Reach before sharing it.");
     if (
@@ -130,7 +137,17 @@ export function browserAccessRoutes(
         );
     }
     owner(req);
-    const grant = auth.inviteBrowser(input);
+    let reservation;
+    if (input.screen === "apps") {
+      if (!appAccessAvailable || !appAccess || !hostGuard) throw fail(503, "App sharing is unavailable on this computer.");
+      reservation = await hostGuard.beginInvitation(req, req.reauthorize());
+    }
+    let grant;
+    try {
+      if (input.screen === "apps") input.appAccess = await appAccess.validateChoices(input.appAccess, () => owner(req));
+      owner(req);
+      grant = auth.inviteBrowser(input, reservation?.approver);
+    } finally { reservation?.(); }
     let url;
     if (input.transport === "funnel") {
       try {
@@ -163,13 +180,42 @@ export function browserAccessRoutes(
         path: p,
       })),
       terminals: selected,
-      screen: client.policy.screen,
+      screen: client.policy.screen === "apps" ? "apps" : "off",
+      ...(!["off", "apps"].includes(client.policy.screen) ? {
+        screenNotice: "Desktop sharing for agents has been retired. Ask the owner for a new invitation using Selected apps.",
+      } : {}),
       commandRequests: client.policy.commandRequests === true,
       ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
       ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
       ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
     });
   });
+  app.get("/api/agents/browser-app-access/:clientId", async (req, res) => {
+    owner(req);res.json(await appAccess.ownerAccess(req.params.clientId, () => owner(req)));
+  });
+  app.post("/api/agents/browser-app-access/:clientId", async (req, res) => {
+    owner(req);res.json(await appAccess.restrict(req.params.clientId, req.body, () => owner(req)));
+  });
+  const appClient = (req) => {
+    const client = browser(req);
+    if (!appAccessAvailable || !appAccess || client.policy.screen !== "apps" || !screenAvailable()) throw fail(403, "This invitation does not share apps.");
+    return client;
+  };
+  app.get("/api/browser/apps", async (req, res) => res.json(await appAccess.list(appClient(req), () => appClient(req))));
+  app.get("/api/browser/apps/windows", async (req, res) => {
+    if (typeof req.query.appId !== "string" || Object.keys(req.query).some((key) => key !== "appId")) throw fail(400, "Choose one shared app.");
+    res.json(await appAccess.windows(appClient(req), req.query.appId, () => appClient(req)));
+  });
+  app.get("/api/browser/apps/screen", async (req, res) => {
+    if (typeof req.query.target !== "string" || Object.keys(req.query).some((key) => key !== "target")) throw fail(400, "Choose one shared window.");
+    res.type("image/jpeg").send(await appAccess.capture(appClient(req), req.query.target, () => appClient(req)));
+  });
+  app.post("/api/browser/apps/input", async (req, res) => {
+    const body = req.body;
+    if (!isPlainRecord(body) || typeof body.target !== "string" || Object.keys(body).some((key) => !["target", "action"].includes(key))) throw fail(400, "Send an action to one shared window.");
+    res.json(await appAccess.input(appClient(req), body.target, body.action, () => appClient(req)));
+  });
+  app.post("/api/browser/apps/requests", async (req, res) => res.status(201).json(await appAccess.request(appClient(req), req.body, () => appClient(req))));
   const saveCommand = async (item) => {
     if (!browserCommandRecords(item).length) return;
     if (!commandLog) throw fail(503, "Command logging is unavailable. Nothing can run.");
@@ -249,14 +295,13 @@ export function browserAccessRoutes(
     res.json(history);
   });
   // The assistant proposes; only a separate owner credential may decide.
-  // Screen requests retain the exact screenshot the owner reviews. Neither
-  // the body of the approval nor a client-side UI can replace the action.
+  // Only scoped terminal/manual requests use this queue. App capture and input
+  // stay behind the separate selected-app enforcement path.
   app.post("/api/browser/requests", async (req, res) => {
-    let client = browser(req);
+    const client = browser(req);
     const input = req.body || {};
     const { action } = validateBrowserRequest(client, input);
     const actions = browserRequestActions(action);
-    let frame;
     for (const step of actions.filter((step) => ["terminal", "terminal-change", "terminal-script"].includes(step.type))) {
       if (step.type === "terminal-script") validateBrowserScript(step, () => browser(req), { resolve });
       if (step.type === "terminal-change") validateBrowserMutation(step, () => browser(req), { resolve });
@@ -268,33 +313,25 @@ export function browserAccessRoutes(
       if (location.spec.name === "cd" && !(await fs.stat(target)).isDirectory())
         throw fail(400, "Choose a folder, not a file.");
     }
-    if (actions.some((step) => !["command", "terminal", "terminal-change", "terminal-script"].includes(step.type))) {
-      if (client.policy.screen !== "ask" || !screenAvailable())
-        throw fail(403, "This invitation cannot request screen control.");
-      frame = await capture(() => {
-        client = browser(req);
-        if (client.policy.screen !== "ask" || !screenAvailable())
-          throw fail(403, "Screen control requests are no longer allowed.");
-      });
-      if (frame.length > 8 * 1024 * 1024)
-        throw fail(413, "This screen snapshot is too large to review.");
-    }
+    if (actions.some((step) => !["command", "terminal", "terminal-change", "terminal-script"].includes(step.type)))
+      throw fail(403, "Desktop control for agents has been retired. Ask the owner for a new invitation using Selected apps.");
     if (["terminal-change", "terminal-script"].includes(action.type)) {
       const remembered = await approvals.runRemembered(browser(req), input, () => browser(req));
       if (remembered) { await saveCommand(remembered); return res.json(remembered); }
     }
     const request = approvals.request(browser(req), input);
-    if (frame) snapshots.set(request.id, { frame, hash: hash(frame) });
     await approvals.flushChanges();
     if (browserCommandRecords(request).length) {
       try { await saveCommand(request); } catch (error) { approvals.cancel(browser(req), request.id); throw error; }
     }
     res.status(201).json(request);
   });
-  app.get("/api/browser/requests", (req, res) =>
-    res.json(approvals.listClient(browser(req))),
-  );
+  app.get("/api/browser/requests", (req, res) => {
+    const client = browser(req);
+    res.json([...approvals.listClient(client), ...(client.policy.screen === "apps" ? appAccess.listClient(client) : [])]);
+  });
   app.delete("/api/browser/requests/:id", async (req, res) => {
+    if (appAccess?.has(req.params.id)) return res.json(appAccess.cancel(browser(req), req.params.id));
     const result = approvals.cancel(browser(req), req.params.id);
     snapshots.delete(req.params.id);
     await approvals.flushChanges();
@@ -303,7 +340,7 @@ export function browserAccessRoutes(
   });
   app.get("/api/agents/browser-requests", (req, res) => {
     owner(req);
-    res.json(approvals.listOwner());
+    res.json([...approvals.listOwner(), ...(appAccess?.listOwner() || [])]);
   });
   app.get("/api/agents/browser-requests/:id/screen", (req, res) => {
     owner(req);
@@ -320,6 +357,10 @@ export function browserAccessRoutes(
       throw fail(400, "Approve the exact action shown, without replacements.");
     if (Object.keys(body).some((key) => !["decision", "reviewedBatch", "reviewedTerminalChange", "reviewedScript"].includes(key)))
       throw fail(400, "Approve the exact action shown, without replacements.");
+    if (appAccess?.has(req.params.id)) {
+      if (Object.keys(body).some((key) => key !== "decision")) throw fail(400, "Allow the exact app access shown or deny it.");
+      return res.json(await appAccess.decide(req.params.id, body.decision, () => owner(req)));
+    }
     const reviewed = approvals.getOwner(req.params.id);
     const approving = ["approve", "approve-session"].includes(body.decision);
     if (body.decision === "approve-session" && !["terminal-change", "terminal-script"].includes(reviewed.action.type)) throw fail(400, "Only an exact terminal command can be approved for this session.");
@@ -434,37 +475,10 @@ export function browserAccessRoutes(
       searching.delete(client.id);
     }
   });
-  const screen = (req, needsScroll = false) => {
-    const client = browser(req);
-    if (
-      !screenAvailable() ||
-      client.policy.screen === "off" ||
-      (needsScroll && !client.scopes.includes("browser:scroll"))
-    )
-      throw fail(403, "This invitation does not allow that screen action.");
-    return client;
+  const retiredScreen = (req) => {
+    browser(req);
+    throw fail(403, "Desktop sharing for agents has been retired. Ask the owner for a new invitation using Selected apps.");
   };
-  app.get("/api/browser/screen", async (req, res) => {
-    screen(req);
-    const frame = await viewCapture(() => screen(req));
-    screen(req);
-    res.type("image/jpeg").send(frame);
-  });
-  app.post("/api/browser/scroll", async (req, res) => {
-    screen(req, true);
-    const body = req.body || {};
-    const amount = body.amount ?? 3;
-    if (
-      !["up", "down"].includes(body.direction) ||
-      !Number.isInteger(amount) ||
-      amount < 1 ||
-      amount > 5 ||
-      Object.keys(body).some((k) => !["direction", "amount"].includes(k))
-    )
-      throw fail(400, "Choose up or down and 1 to 5 scroll steps.");
-    const delta = body.direction === "up" ? amount : -amount;
-    await scroll({ type: "scroll", delta }, () => screen(req, true));
-    record("agent", `${req.client.name} scrolled the screen`);
-    res.json({ ok: true });
-  });
+  app.get("/api/browser/screen", retiredScreen);
+  app.post("/api/browser/scroll", retiredScreen);
 }

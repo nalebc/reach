@@ -21,7 +21,8 @@ export type AgentAdmission = {
   scopes: string[];
   roots: string[];
   browser: boolean;
-  screen?: "off" | "view" | "scroll" | "ask";
+  screen?: "off" | "view" | "scroll" | "ask" | "apps";
+  appAccess?: { id: string; name?: string; mode: "view" | "control" }[];
   terminalIds?: string[];
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
@@ -196,6 +197,7 @@ export function AgentAdmissionReview({
     view: "View only",
     scroll: "View and scroll; scrolling does not need approval",
     ask: "Every screen input needs your approval",
+    apps: "Only selected app windows. Other apps stay hidden.",
   };
   const canRun = admission.scopes.some((scope) =>
     ["exec", "terminal", "apps:drive"].includes(scope),
@@ -309,11 +311,17 @@ export function AgentAdmissionReview({
                     <Monitor size={18} aria-hidden="true" />
                     <div>
                       <strong>
-                        {admission.screen === "ask"
+                        {admission.screen === "apps" ? "App access" : admission.screen === "ask"
                           ? "Screen control"
                           : "Screen"}
                       </strong>
                       <small>{screen[admission.screen]}</small>
+                      {admission.screen === "apps" && <>
+                        {!!admission.appAccess?.length ? <ul className="agent-admission-resources" aria-label="Shared apps">
+                          {admission.appAccess.map((app) => <li key={app.id}><bdi>{readable(app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id)}</bdi> · {app.mode === "control" ? "View & control" : "View only"}</li>)}
+                        </ul> : <small>No apps shared yet. The agent can ask for access.</small>}
+                        <small>Control allows actions inside that app, including its signed-in accounts. Approve more apps on your phone or another verified device; Reach on this Mac is locked during this invitation.</small>
+                      </>}
                     </div>
                   </li>
                 )}

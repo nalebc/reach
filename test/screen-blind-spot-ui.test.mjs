@@ -60,7 +60,7 @@ test("Type remains available whether or not the computer can detect a field", as
   const view = await screenDom.render(
     React.createElement(Screen, { peer, device, toast: () => {}, onChanged: () => {} }),
   );
-  [...screenDom.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Control").click();
+  [...screenDom.document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Control").click();
   await screenDom.waitFor(() => computer.surface?.canControl);
   assert.equal(typeButton().length, 1, "manual keyboard stays available alongside detection");
   computer.surface.onBlind(true);

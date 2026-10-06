@@ -1,0 +1,78 @@
+/* The Screen's controls: one small bar floating at the bottom center, icons
+   only (Control, keyboard, paste, shortcuts, options, close). It stays put in
+   fullscreen (small enough not to hide), and the phone keyboard's key row
+   replaces it while typing (the dock's own rules). */
+.simple-screen > .simple-screen-dock.screen-bar-dock,
+.simple-screen.screen-immersive > .simple-screen-dock.screen-bar-dock,
+.simple-screen.screen-immersive.chrome-hidden > .simple-screen-dock.screen-bar-dock {
+  position: absolute;
+  left: 50%;
+  right: auto;
+  top: auto;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 7;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  opacity: 1;
+  pointer-events: none;
+}
+.screen-bar {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgb(11 16 18 / 0.74);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.35);
+}
+.screen-bar button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #e9f2ef;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.screen-bar button:active {
+  background: rgb(255 255 255 / 0.12);
+}
+.screen-bar button[aria-pressed="true"] {
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+.screen-bar button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.screen-bar .screen-bar-text {
+  width: auto;
+  padding: 0 14px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.screen-bar-dock .simple-screen-caption {
+  pointer-events: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgb(11 16 18 / 0.74);
+  color: #e9f2ef;
+  font-size: 12px;
+}

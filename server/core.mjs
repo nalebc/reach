@@ -1,3 +1,4 @@
+import { validAppAccess } from "./browser-app-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -12,12 +13,12 @@ export const isPlainRecord = (value) => value !== null && typeof value === "obje
 // Names and review explanations must not hide or reorder the action being approved.
 export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
 export function validateBrowserInvitation(input) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport", "appAccess"];
   if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw fail(400, "This invitation contains unsupported fields.");
   const {
     name, ttlSeconds, joinSeconds = 900, folders = [], terminalIds = [],
-    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet",
+    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet", appAccess = [],
   } = input;
   if (
     typeof name !== "string" || !name.trim() || name.length > 80 || hasReviewControls(name) || /[\n\t]/.test(name) ||
@@ -25,7 +26,8 @@ export function validateBrowserInvitation(input) {
     !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||
     !Array.isArray(terminalIds) || terminalIds.length > 20 ||
     terminalIds.some((id) => !validBrowserTerminalId(id)) ||
-    !["off", "view", "scroll", "ask"].includes(screen) ||
+    !["off", "view", "scroll", "ask", "apps"].includes(screen) ||
+    !validAppAccess(appAccess) || (screen !== "apps" && appAccess.length > 0) ||
     typeof commandRequests !== "boolean" || typeof restrictedTerminal !== "boolean" ||
     (restrictedTerminal && commandRequests) ||
     typeof terminalApproval !== "boolean" || (terminalApproval && !restrictedTerminal) ||
@@ -38,7 +40,7 @@ export function validateBrowserInvitation(input) {
     !Number.isSafeInteger(folder.root) || folder.root < 0 ||
     typeof folder.path !== "string" || folder.path.length > 4096 || hasReviewControls(folder.path)))
     throw fail(400, "Choose up to 20 folders on this computer.");
-  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport };
+  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess };
 }
 export const id = () => crypto.randomUUID();
 export const hash = (value) =>
@@ -556,17 +558,18 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // or requests for one owner-reviewed action. Restricted commands are reads;
   // legacy command requests remain manual handoffs.
   // It never inherits shell, ordinary screen-input, or owner capabilities.
-  function inviteBrowser(input) {
+  function inviteBrowser(input, browserAppApprover) {
     const {
       name, ttlSeconds, joinSeconds, folders, terminalIds, screen,
-      commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport,
+      commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess,
     } = validateBrowserInvitation(input);
     const roots = [...new Set(chooseFolders(folders))];
-    const { scopes, policy } = browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval }, roots);
+    const { scopes, policy } = browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots);
     const token = crypto.randomBytes(32).toString("base64url");
     const now = Date.now();
     const client = {
       id: id(), kind: "agent", name: name.trim(), scopes,
+      ...(screen === "apps" && browserAppApprover ? { browserAppApprover: structuredClone(browserAppApprover) } : {}),
       ...(transport === "funnel" ? { browserTransport: "funnel" } : {}),
       policy,
       inviteHash: hash(token),
@@ -585,7 +588,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
     };
   }
-  function browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval }, roots) {
+  function browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots) {
     if (restrictedTerminal && !roots.length)
       throw fail(400, "Choose at least one folder for restricted terminal commands.");
     if (!roots.length && !terminalIds.length && screen === "off" && !commandRequests && !restrictedTerminal)
@@ -595,13 +598,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       ...(roots.length ? ["files:read"] : []),
       "browser:read",
       ...(screen === "scroll" ? ["browser:scroll"] : []),
-      ...(screen === "ask" || commandRequests || restrictedTerminal ? ["browser:request"] : []),
+      ...(["ask", "apps"].includes(screen) || commandRequests || restrictedTerminal ? ["browser:request"] : []),
     ];
     return {
       scopes,
       policy: {
         invite: true, browser: true, roots,
         terminalIds: [...new Set(terminalIds)], screen,
+        ...(screen === "apps" ? { appAccess: structuredClone(appAccess) } : {}),
         ...(commandRequests ? { commandRequests: true } : {}),
         ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
         ...(terminalApproval ? { terminalApproval: true } : {}),
@@ -637,7 +641,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // full access: those are chosen again).
   function changeAccess(clientId, changes = {}) {
     if (!isPlainRecord(changes) || Object.keys(changes).some((key) =>
-      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt"].includes(key)))
+      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess"].includes(key)))
       throw fail(400, "Choose valid permissions and an end time.");
     let result;
     changeClients((latest) => {
@@ -771,6 +775,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
       ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
       ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
+      ...(client.policy.screen === "apps" ? { appAccess: client.policy.appAccess.map(({id,mode}) => ({id,mode})) } : {}),
       ...(client.browserTransport === "funnel" ? { browserTransport: "funnel" } : {}),
     } : {}),
     requestedAt: client.admission.requestedAt,
@@ -1123,6 +1128,40 @@ export function createAuth(config, { rotatePairing = true } = {}) {
             }
           : {}),
       })),
+    // A reduction must survive pause/restart. This internal method cannot grant
+    // access; only an existing base grant may be removed or reduced to viewing.
+    restrictBrowserApp(clientId, appId, mode) {
+      if (!["hidden", "view"].includes(mode) || typeof appId !== "string") throw fail(400, "Choose a reduced app permission.");
+      changeClients((latest) => {
+        const client = latest.find((entry) => entry.id === clientId);
+        if (!client || client.kind !== "agent" || client.policy?.screen !== "apps" || client.expiresAt <= Date.now()) throw fail(404, "This app invitation has ended.");
+        client.policy.appAccess = client.policy.appAccess.flatMap((entry) => entry.id !== appId ? [entry] : mode === "hidden" ? [] : [{...entry, mode:"view"}]);
+        if (client.admission?.status === "collected") client.admission.grant = admissionGrant(client);
+        client.changedAt = new Date().toISOString();
+        return latest;
+      });
+    },
+    // Admission carries its own one-use capability before a browser token exists.
+    // This narrow check only bypasses the host UI guard; the normal claim/poll
+    // handlers still consume/revalidate secrets, grant hashes and node binding.
+    isBrowserAppAdmission(req) {
+      if (req.method !== "POST") return false;
+      const route = (req.originalUrl || req.url || "").split("?", 1)[0];
+      const body = req.body;
+      if (!isPlainRecord(body)) return false;
+      const entries = loadJson(file, []), now = Date.now();
+      const eligible = (client) => client.kind === "agent" && client.policy?.browser === true && client.policy.screen === "apps" && client.browserTransport !== "funnel" && client.expiresAt > now;
+      if (route === "/api/invitations/redeem" && typeof body.invitation === "string" && body.invitation.length <= 256) {
+        const digest = hash(body.invitation);
+        return entries.some((client) => eligible(client) && client.inviteExpiresAt > now && client.inviteHash === digest);
+      }
+      const match = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
+      if (match && typeof body.secret === "string" && body.secret.length <= 256) {
+        const digest = hash(body.secret);
+        return entries.some((client) => eligible(client) && client.admission?.requestId === match[1] && client.admission.expiresAt > now && client.admission.secretHash === digest);
+      }
+      return false;
+    },
     revoke(clientId) {
       changeClients((latest) => latest.filter((c) => c.id !== clientId));
     },

@@ -134,14 +134,14 @@ const permits = (client, action) => action.type === "batch"
     !!(client.agentRoots || client.policy.roots)?.[action.root]
   : action.type === "command"
     ? client.policy.commandRequests === true && !client.policy.restrictedTerminal
-    : client.policy.screen === "ask";
+    : false; // Desktop input is retired; selected-app input has its own guard.
 function owner(client) {
   if (client?.kind !== "device" || !client.scopes?.includes("admin"))
     throw fail(403, "Only the computer's owner can answer this request.");
 }
 
-// Routes use this before taking a review screenshot. Queue insertion repeats
-// the check against the latest grant after any asynchronous capture work.
+// Routes and queue insertion both enforce grants. Legacy screen actions are
+// parsed for compatibility but never permitted, even for older invitations.
 export function validateBrowserRequest(client, input, at = Date.now()) {
   const parsed = parse(input);
   if (!isBrowser(client, at) || !permits(client, parsed.action))
@@ -150,9 +150,9 @@ export function validateBrowserRequest(client, input, at = Date.now()) {
 }
 
 // This queue holds exact, short-lived requests, never an execution credential.
-// Screen and restricted terminal actions run only in the owner's decision call.
+// Restricted terminal actions run only in the owner's decision call.
 // Legacy manual command requests remain messages and never reach execute().
-// This is a consent gate, not an OS sandbox for the effects of a screen action.
+// Selected-app actions cannot enter this queue or fall back to desktop input.
 export function createBrowserApprovals({
   verifyClient,
   verifyOwner = () => null,

@@ -1121,3 +1121,38 @@ test("a card's words are put back as the card shows them", async () => {
   // Already whole: as it was.
   assert.deepEqual(cardLines(["Do you want ChatGPT to run this command?", "npm test"], { command: ["npm test"] }), ["Do you want ChatGPT to run this command?", "npm test"]);
 });
+
+// Seen in the end-to-end test (2026-10-06): after Stop, Reach lets go of its
+// Claude Code process, which is still exiting for a few seconds; found among
+// the processes without Claude Code's own status, with a transcript just
+// written, it read as working and the phone showed Working well after Stop.
+test("a process Reach just let go of doesn't read as working while it exits", async () => {
+  let release;
+  const claudeHost = {
+    ...host(fakeClaude()),
+    onRelease: (listener) => (release = listener),
+    running: () => false,
+    drives: () => false,
+  };
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/w", status: "idle", updatedAt: Date.now() - 2000 }, items: [], before: null }),
+    },
+    // The exiting process: found by the process list, no word of its own.
+    live: async () => new Map([[ID, { where: "background", pid: 77, tty: null, exact: false }]]),
+    liveMs: -1,
+    claudeHost,
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  // Before (any process with a fresh transcript): working, as before.
+  assert.equal((await sessions.read("claude", ID)).session.status, "running");
+  release(ID, { wrote: true });
+  assert.equal((await sessions.read("claude", ID)).session.status, "idle");
+  sessions.close();
+});

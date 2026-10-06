@@ -23,6 +23,11 @@ export function parseBrowserScript(command) {
 const systemRoots = ['/bin', '/usr/bin', '/usr/lib', '/System/Library', '/System/Volumes/Preboot/Cryptexes/OS'];
 const within = (p, root) => p === root || p.startsWith(root + path.sep);
 const literal = (p) => JSON.stringify(p);
+function rejectProtectedProgram(program) {
+  const name = path.basename(program).normalize('NFKC').toLowerCase();
+  if (['reach', 'reach-agent', 'tailscale', 'tailscaled'].includes(name))
+    throw fail(403, 'Reach and Tailscale management commands are protected and cannot be approved for agents.');
+}
 let runtimeFiles;
 function nodeRuntimeFiles() {
   if (runtimeFiles) return runtimeFiles;
@@ -53,12 +58,14 @@ export function validateBrowserScript(action, authorize, { resolve } = {}) {
   const root = resolve(action.root, '', client), cwd = resolve(action.root, action.cwd || '', client);
   if (!within(cwd, root) || !fs.statSync(cwd).isDirectory() || root === '/' || systemRoots.some(p => within(root, p) || within(p, root))) throw fail(403, 'Choose a shared project folder.');
   const words = parseBrowserScript(action.command);
+  rejectProtectedProgram(words[0]);
   let executable;
   if (words[0] === 'node') executable = fs.realpathSync(process.execPath);
   else if (words[0].includes('/')) executable = path.resolve(cwd, words[0]);
   else executable = ['/usr/bin', '/bin'].map(p => path.join(p, words[0])).find(p => fs.existsSync(p));
   if (!executable) throw fail(400, 'That program is not available in the isolated terminal. Use a system tool, node, or a script in the shared folder.');
   executable = fs.realpathSync(executable);
+  rejectProtectedProgram(executable);
   if (!within(executable, root) && !systemRoots.some(p => within(executable, p)) && executable !== fs.realpathSync(process.execPath)) throw fail(403, 'That program is outside the isolated runtime.');
   if (['sudo', 'su', 'sandbox-exec'].includes(path.basename(executable))) throw fail(403, 'Administrator commands cannot run inside a folder-scoped approval.');
   return { root, cwd, executable, args: words.slice(1), client };

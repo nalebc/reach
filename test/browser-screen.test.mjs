@@ -282,7 +282,7 @@ test("native unchanged markers and oversized frames are never served as screen J
   }
 });
 
-test("only browser viewing uses the warm helper; approval evidence and execution use fresh full captures", async (t) => {
+test("retired desktop viewing never starts a warm helper, fresh capture or native input", async (t) => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "reach-browser-screen-"),
   );
@@ -328,7 +328,8 @@ test("only browser viewing uses the warm helper; approval evidence and execution
     name: "Muse",
     folders: [],
     terminalIds: [],
-    screen: "ask",
+    screen: "off",
+    commandRequests: true,
     ttlSeconds: 600,
   });
   const agent = admitAgent(reach.auth, invite.invitation);
@@ -346,61 +347,25 @@ test("only browser viewing uses the warm helper; approval evidence and execution
       },
       body: body ? JSON.stringify(body) : undefined,
     });
-  for (let i = 1; i <= 3; i++) {
-    const image = await request("/api/browser/screen");
-    assert.equal(image.status, 200);
-    assert.equal(await image.text(), `view-${i}`);
-  }
-  assert.equal(starts, 1);
-  assert.equal(fullCaptures, 0);
+  for (let i = 1; i <= 3; i++)
+    assert.equal((await request("/api/browser/screen")).status, 403);
   const submitted = await request("/api/browser/requests", agent.token, {
-    type: "click",
-    x: 0.25,
-    y: 0.5,
-    button: "left",
-    count: 1,
-    reason: "Open a fixture",
+    type: "click", x: 0.25, y: 0.5, reason: "Open a fixture",
   });
-  assert.equal(submitted.status, 201);
-  const action = await submitted.json();
-  const evidence = await request(
-    `/api/agents/browser-requests/${action.id}/screen`,
-    owner.token,
-  );
-  assert.equal(await evidence.text(), "full-resolution-approval-fixture");
-  assert.equal(fullCaptures, 1);
-  const approved = await request(
-    `/api/agents/browser-requests/${action.id}`,
-    owner.token,
-    { decision: "approve" },
-  );
-  assert.equal(approved.status, 200);
-  assert.equal((await approved.json()).status, "executed");
-  assert.equal(fullCaptures, 2);
-  assert.equal(inputs, 1);
-  assert.equal(frames, 3);
-  const paused = await request("/api/settings/pause", owner.token, {
-    paused: true,
-  });
-  assert.equal(paused.status, 200);
-  assert.equal(stops, 1);
-  assert.equal((await request("/api/browser/screen")).status, 423);
-  assert.equal(starts, 1);
+  assert.equal(submitted.status, 403);
+  await request("/api/settings/pause", owner.token, { paused: true });
+  assert.ok([403, 423].includes((await request("/api/browser/screen")).status));
   await request("/api/settings/pause", owner.token, { paused: false });
-  assert.equal((await request("/api/browser/screen")).status, 200);
-  assert.equal(starts, 2);
+  assert.equal((await request("/api/browser/screen")).status, 403);
   await request("/api/settings", owner.token, { screen: false });
-  assert.equal(stops, 2);
   assert.equal((await request("/api/browser/screen")).status, 403);
   await request("/api/settings", owner.token, { screen: true });
-  assert.equal((await request("/api/browser/screen")).status, 200);
-  assert.equal(starts, 3);
-  await request(
-    `/api/clients/${agent.clientId}`,
-    owner.token,
-    undefined,
-    "DELETE",
-  );
-  assert.equal(stops, 3);
+  assert.equal((await request("/api/browser/screen")).status, 403);
+  await request(`/api/clients/${agent.clientId}`, owner.token, undefined, "DELETE");
   assert.equal((await request("/api/browser/screen")).status, 401);
+  assert.equal(starts, 0);
+  assert.equal(stops, 0);
+  assert.equal(frames, 0);
+  assert.equal(fullCaptures, 0);
+  assert.equal(inputs, 0);
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runBrowserScript, parseBrowserScript, scriptProfile } from '../server/browser-scripts.mjs';
+import { runBrowserScript, validateBrowserScript, parseBrowserScript, scriptProfile } from '../server/browser-scripts.mjs';
 const enabled = process.platform === 'darwin' && process.env.REACH_TEST_SCRIPT_SANDBOX === '1';
 function fixture(t) {
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'reach-script-test-')), root=fs.realpathSync(base), shared=path.join(root,'shared'); fs.mkdirSync(shared); fs.writeFileSync(path.join(root,'outside.txt'),'private');
@@ -17,6 +17,15 @@ test('one command parser preserves arguments and rejects shell chaining',()=>{
  for(const s of ['echo a; rm x','echo a | sh','$(id)','node "oops','A=1 node x','node\nx'])assert.throws(()=>parseBrowserScript(s));
 });
 test('profile denies helpers, network and host IPC',()=>{const p=scriptProfile('/tmp/example',['/tmp/example/private']);assert.match(p,/deny default/);assert.match(p,/deny process-fork/);assert.doesNotMatch(p,/allow network/);});
+test('protected management commands cannot be approved, including symlink aliases', {skip:process.platform!=='darwin'}, t=>{
+ const f=fixture(t);
+ const check=command=>validateBrowserScript({type:'terminal-script',command,root:0},()=>f.client,{resolve:f.resolve});
+ for(const command of ['tailscale up','tailscaled','reach invite','reach-agent','/Applications/Tailscale.app/Contents/MacOS/Tailscale status','./TAILSCALE status'])
+  assert.throws(()=>check(command),/Reach and Tailscale management commands are protected/);
+ fs.writeFileSync(path.join(f.shared,'tailscale'),'');
+ fs.symlinkSync('tailscale',path.join(f.shared,'renamed'));
+ assert.throws(()=>check('./renamed up'),/protected/);
+});
 test('kernel sandbox permits scripts and denies outside reads/writes, symlinks, network and helpers',{skip:!enabled},async t=>{
  const f=fixture(t);fs.writeFileSync(path.join(f.shared,'script.js'),`const fs=require('fs');fs.writeFileSync('made.txt','ok');console.log(fs.readFileSync('made.txt','utf8'));`);
  let r=await f.run('node script.js');assert.equal(r.exitCode,0,r.output);assert.match(r.output,/ok/);

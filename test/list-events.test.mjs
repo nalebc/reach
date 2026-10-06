@@ -192,6 +192,40 @@ test("Claude Code's status changing (a question, a turn ending) wakes the Claude
   }
 });
 
+test("a registry write wakes only the open Claude chats whose own status changed, not every open chat each time", async () => {
+  const C = "11111111-2222-4333-8444-555555555555";
+  const D = "22222222-2222-4333-8444-555555555555";
+  let running = new Map([[C, { where: "claude-app", busy: false, waiting: null }], [D, { where: "claude-app", busy: false, waiting: null }]]);
+  const { sessions, write } = await sessionsWith({
+    codexList: async () => [],
+    claude: { list: async () => [], starts: async () => [] },
+    live: async () => running,
+  });
+  const wakes = (ms) =>
+    Promise.all(
+      [C, D].map((id) =>
+        Promise.race([sessions.changes("claude", id, sessions.view("claude", id).version, 25000).then(() => id), new Promise((r) => setTimeout(() => r(null), ms))]),
+      ),
+    ).then((ids) => ids.filter(Boolean));
+  try {
+    // First look: both learn where they stand.
+    let woke = wakes(300);
+    write({ agent: "claude", kind: "status" });
+    assert.deepEqual(await woke, [C, D]);
+    // Another session on the Mac working: neither open chat changed.
+    woke = wakes(300);
+    write({ agent: "claude", kind: "status" });
+    assert.deepEqual(await woke, []);
+    // C turns busy: only C reads again.
+    running = new Map([[C, { where: "claude-app", busy: true, waiting: null }], [D, { where: "claude-app", busy: false, waiting: null }]]);
+    woke = wakes(300);
+    write({ agent: "claude", kind: "status" });
+    assert.deepEqual(await woke, [C]);
+  } finally {
+    sessions.close();
+  }
+});
+
 test("a question in a chat Reach drives reaches the list with no file written: its host says so", async () => {
   const told = new Set();
   let prompts = [];

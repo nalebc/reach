@@ -97,6 +97,7 @@ function permittedPath(method, value) {
         "/api/browser/screen",
         "/api/browser/requests",
         "/api/browser/terminal/history",
+        "/api/browser/apps", "/api/browser/apps/windows", "/api/browser/apps/screen",
         "/api/browser/files/search",
         "/api/files",
         "/api/files/text",
@@ -106,7 +107,7 @@ function permittedPath(method, value) {
       ].includes(route)) ||
     (read && /^\/api\/browser\/terminals\/[A-Za-z0-9_:.-]+$/.test(route)) ||
     (method === "POST" &&
-      ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal"].includes(route)) ||
+      ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests"].includes(route)) ||
     (method === "DELETE" &&
       (route === "/api/device/access" ||
         /^\/api\/browser\/requests\/[a-f0-9-]{36}$/.test(route)));

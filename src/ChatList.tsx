@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   ArrowUpRight,
   RefreshCw,
@@ -10,10 +10,14 @@ import {
   ShieldCheck,
   ChevronRight,
   X,
+  SquarePen,
 } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, projectName, type AgentSession } from "./agent-sessions";
+import { agentLabel, projectName, type AgentHealth, type AgentSession } from "./agent-sessions";
+import { moveChoices, MoveItems, MoveSection } from "./MoveChat";
+import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
+import { computerWord } from "./pause";
 import "./chat-list.css";
 
 const DAY = 86400000;
@@ -179,6 +183,8 @@ export default function ChatList({
   setup,
   canStart = true,
   onRefresh,
+  health = [],
+  onSectionMoved,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -187,7 +193,8 @@ export default function ChatList({
   failure?: string;
   agent?: string;
   onOpen: (s: AgentSession) => void;
-  onNew: () => void;
+  // A folder: a new chat there (from a chat's menu).
+  onNew: (cwd?: string) => void;
   onReview?: () => void;
   answered?: () => void;
   pending?: number;
@@ -198,6 +205,9 @@ export default function ChatList({
   setup?: ReactNode;
   canStart?: boolean;
   onRefresh?: () => void;
+  // The apps found on the Mac: a folder's chats can move to another one.
+  health?: AgentHealth[];
+  onSectionMoved?: (to: string) => void;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -236,6 +246,45 @@ export default function ChatList({
     const key = s.cwd || "";
     projects.set(key, [...(projects.get(key) || []), s]);
   }
+  // Touch and hold a chat (or right-click it): its menu, by it.
+  const [menu, setMenu] = useState<{ s: AgentSession; at: Anchor } | null>(null);
+  const held = useRef<{ timer?: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean }>({ x: 0, y: 0, fired: false });
+  const hold = (s: AgentSession) => ({
+    onPointerDown: (e: PointerEvent<HTMLElement>) => {
+      const card = e.currentTarget;
+      held.current.fired = false;
+      held.current.x = e.clientX;
+      held.current.y = e.clientY;
+      clearTimeout(held.current.timer);
+      held.current.timer = setTimeout(() => {
+        held.current.fired = true;
+        navigator.vibrate?.(10);
+        setMenu({ s, at: anchorOf(card) });
+      }, 500);
+    },
+    // A scroll isn't a hold.
+    onPointerMove: (e: PointerEvent) => {
+      if (Math.hypot(e.clientX - held.current.x, e.clientY - held.current.y) > 10) clearTimeout(held.current.timer);
+    },
+    onPointerUp: () => clearTimeout(held.current.timer),
+    onPointerLeave: () => clearTimeout(held.current.timer),
+    onPointerCancel: () => clearTimeout(held.current.timer),
+    onContextMenu: (e: MouseEvent<HTMLElement>) => {
+      e.preventDefault();
+      clearTimeout(held.current.timer);
+      held.current.fired = true;
+      setMenu({ s, at: anchorOf(e.currentTarget) });
+    },
+    onClick: () => {
+      // The tap that ends a hold opens nothing.
+      if (held.current.fired) {
+        held.current.fired = false;
+        return;
+      }
+      onOpen(s);
+    },
+  });
+  useEffect(() => () => clearTimeout(held.current.timer), []);
   const cards = (list: AgentSession[], showProject = false) => (
     <div className="chat-entries">
       {list.map((s) => (
@@ -243,7 +292,8 @@ export default function ChatList({
           key={`${s.agent}:${s.id}`}
           className={`chat-card ${needsYou(s) ? "waiting" : s.status}`}
           aria-label={`${s.title || "New chat"}, ${agentLabel(s.agent)}`}
-          onClick={() => onOpen(s)}
+          aria-haspopup="menu"
+          {...hold(s)}
         >
           <span className="chat-entry-logo" title={agentLabel(s.agent)}>
             <AgentLogo agent={s.agent} logos={logos} size={20} />
@@ -312,7 +362,7 @@ export default function ChatList({
             <button
               className="chat-create"
               aria-label="New chat"
-              onClick={onNew}
+              onClick={() => onNew()}
             >
               <Plus size={16} />
               <span>New chat</span>
@@ -392,7 +442,7 @@ export default function ChatList({
               : `Start a ${picked?.name || agentLabel(filter)} chat on ${peer.name}.`}
           </p>
           {!q && canStart && (
-            <button className="chat-create" onClick={onNew}>
+            <button className="chat-create" onClick={() => onNew()}>
               <Plus size={16} /> Start a conversation
             </button>
           )}
@@ -453,6 +503,31 @@ export default function ChatList({
                       </span>
                       <span>{list.length}</span>
                     </h2>
+                    {/* The whole folder, not only the chats shown (no search,
+                        no "Show more"); chats at work stay out of it. */}
+                    {!compact && (
+                      <MoveSection
+                        peer={peer}
+                        name={projectName(cwd) || "Workspace"}
+                        chats={all.filter(
+                          (s) =>
+                            s.agent === filter &&
+                            (s.cwd || "") === cwd &&
+                            !needsYou(s) &&
+                            s.status !== "running",
+                        )}
+                        health={health}
+                        logos={logos}
+                        word={computerWord(peer.platform)}
+                        onOpen={onOpen}
+                        onMoved={(to) => {
+                          (onAgentChange || setLocalAgent)(to);
+                          setQuery("");
+                          setLimit(12);
+                          onSectionMoved?.(to);
+                        }}
+                      />
+                    )}
                   </div>
                   {cards(list)}
                 </section>
@@ -469,6 +544,85 @@ export default function ChatList({
           )}
         </>
       )}
+      {menu && (
+        <ChatMenu
+          peer={peer}
+          session={menu.s}
+          at={menu.at}
+          health={health}
+          logos={logos}
+          canStart={canStart}
+          onClose={() => setMenu(null)}
+          onOpen={(s) => {
+            setMenu(null);
+            onOpen(s);
+          }}
+          onNew={(cwd) => {
+            setMenu(null);
+            onNew(cwd);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// A chat's menu on the list (touch and hold, or right-click): open it, start
+// another in its folder, continue it in another app (MoveItems, as in the
+// chat's own ⋯).
+function ChatMenu({
+  peer,
+  session,
+  at,
+  health,
+  logos,
+  canStart,
+  onClose,
+  onOpen,
+  onNew,
+}: {
+  peer: Peer;
+  session: AgentSession;
+  at: Anchor;
+  health: AgentHealth[];
+  logos: AgentLogos;
+  canStart: boolean;
+  onClose: () => void;
+  onOpen: (s: AgentSession) => void;
+  onNew: (cwd: string) => void;
+}) {
+  const where = projectName(session.cwd) || "Workspace";
+  return (
+    <ChatPopover anchor={at} align="start" label={`${session.title || "New chat"} options`} onClose={onClose}>
+      <div className="chat-popover-head">
+        <strong>{plainLine(session.title || "") || "New chat"}</strong>
+        <small>
+          {where} · {agentLabel(session.agent)}
+        </small>
+      </div>
+      <button role="menuitem" className="move-item" onClick={() => onOpen(session)}>
+        <ArrowUpRight size={18} />
+        <span className="move-item-text">
+          <span>Open</span>
+        </span>
+      </button>
+      {canStart && session.cwd && (
+        <button role="menuitem" className="move-item" onClick={() => onNew(session.cwd)}>
+          <SquarePen size={18} />
+          <span className="move-item-text">
+            <span>New chat in {where}</span>
+          </span>
+        </button>
+      )}
+      {moveChoices(session.agent, health).length > 0 && <div className="chat-popover-line" />}
+      <MoveItems
+        peer={peer}
+        session={session}
+        health={health}
+        logos={logos}
+        word={computerWord(peer.platform)}
+        onMoved={onOpen}
+      />
+    </ChatPopover>
   );
 }

@@ -571,3 +571,16 @@ test("reopening the same invitation resumes its receipt without redeeming it aga
 
 test("admission surfaces render without React warnings", () =>
   assert.deepEqual(dom.errors, []));
+
+test("app admission names the app modes without misrepresenting them as full screen access", async () => {
+  const entry = { ...admission(), screen: "apps", appAccess: [{ id: "/Applications/Safari.app", name: "Safari", mode: "control" }, { id: "/System/Applications/Notes.app", name: "Notes", mode: "view" }], restrictedTerminal: true };
+  const view = await dom.render(React.createElement(AgentAdmissionReview, { peer, admission: entry, onClose() {}, onResolved() {} }));
+  assert.match(view.container.textContent, /App access/);
+  assert.match(view.container.textContent, /Safari · View & control/);
+  assert.match(view.container.textContent, /Notes · View only/);
+  assert.match(view.container.textContent, /Other apps stay hidden/);
+  assert.match(view.container.textContent, /Reach on this Mac is locked/);
+  assert.match(view.container.textContent, /Read-only commands run directly inside shared folders/);
+  assert.doesNotMatch(view.container.textContent, /Every screen input needs your approval/);
+  await view.unmount();
+});

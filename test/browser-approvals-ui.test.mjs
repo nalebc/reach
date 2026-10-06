@@ -131,7 +131,7 @@ test("restricted terminal requires folders and preserves independently granted s
     const route = new URL(url).pathname;
     if (init.method === "POST") calls.push([route, JSON.parse(init.body)]);
     if (route === "/api/agents/browser-options")
-      return reply({ terminals: [], screenAvailable: true });
+      return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [] });
     if (route === "/api/agents/browser-invitations")
       return reply({
         invitation: "b".repeat(43),
@@ -158,16 +158,16 @@ test("restricted terminal requires folders and preserves independently granted s
   );
   const c = view.container;
   assert.equal(button(c, "Create invite link").disabled, true);
-  await value(c.querySelector('[aria-label="Screen permission"]'), "ask");
-  assert.match(c.textContent, /Approve actions in any app, including Terminal/);
+  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
+  assert.match(c.textContent, /Share only the apps you choose/);
   await click(
     [...c.querySelectorAll("label")]
       .find((l) => l.textContent.includes("Run read-only commands"))
       .querySelector("input"),
   );
   assert.equal(button(c, "Create invite link").disabled, true, "a shared folder is required");
-  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "ask");
-  assert.ok([...c.querySelector('[aria-label="Screen permission"]').options].some((option) => option.value === "ask"));
+  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "apps");
+  assert.ok([...c.querySelector('[aria-label="Screen permission"]').options].some((option) => option.value === "apps"));
   await click(c.querySelector('[aria-label="Share Projects"]'));
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -182,7 +182,8 @@ test("restricted terminal requires folders and preserves independently granted s
       ttlSeconds: 900,
       folders: [{ root: 0, path: "" }],
       terminalIds: [],
-      screen: "ask",
+      screen: "apps",
+      appAccess: [],
       restrictedTerminal: true,
     },
   );
@@ -694,7 +695,7 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
     if (route === "/api/guests/keys")
       return reply({ configured: true, policy: {} });
     if (route === "/api/agents/browser-options")
-      return reply({ terminals: [], screenAvailable: true });
+      return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [] });
     return reply({});
   };
   const host = {
@@ -733,13 +734,13 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
   await dom.waitFor(() =>
     [
       ...(c.querySelector('[aria-label="Screen permission"]')?.options || []),
-    ].some((option) => option.value === "ask"),
+    ].some((option) => option.value === "apps"),
   );
   assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
   assert.ok(
     [...c.querySelector('[aria-label="Screen permission"]').options].some(
-      (option) => option.value === "ask",
+      (option) => option.value === "apps",
     ),
   );
   await view.unmount();

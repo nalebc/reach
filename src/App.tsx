@@ -1,4 +1,4 @@
-import AccessEditor, { accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
+import AccessEditor, { appScopedAccess, accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
 import DeviceAccessBadge from "./DeviceAccessBadge";
 import { useFleetConnections } from "./useFleetConnections";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
@@ -1790,7 +1790,7 @@ export function SettingsPage({
                     </details>
                   </div>
                   <div className="access-row-actions">
-                  {canEditAccess(c) && <button className="button secondary small" aria-label={`Edit ${c.name}’s access`} onClick={() => setEditing(c)}>Edit access</button>}
+                  {canEditAccess(c) && <button className="button secondary small" aria-label={appScopedAccess(c) ? `Manage ${c.name}’s app requests` : `Edit ${c.name}’s access`} onClick={() => setEditing(c)}>{appScopedAccess(c) ? "Manage app requests" : "Edit access"}</button>}
                   <button
                     className="button ghost small danger revoke-access"
                     aria-label={`Revoke ${c.name}`}

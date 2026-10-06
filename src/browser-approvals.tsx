@@ -41,11 +41,12 @@ export type BrowserRequestStep = {
   directory?: string;
   completedAt?: number;
 };
+export type BrowserAppAccessAction = { type: "app-access"; appId: string; appName: string; mode: "view" | "control" };
 export type BrowserRequest = {
   id: string;
   clientId: string;
   name: string;
-  action: BrowserAction | BrowserBatchAction;
+  action: BrowserAction | BrowserBatchAction | BrowserAppAccessAction;
   steps?: BrowserRequestStep[];
   completedCount?: number;
   attemptedCount?: number;
@@ -53,6 +54,7 @@ export type BrowserRequest = {
   status: string;
   createdAt: number;
   expiresAt: number;
+  sessionExpiresAt?: number;
   error?: string;
   output?: string;
   approval?: "automatic" | "owner" | "session";
@@ -69,8 +71,10 @@ const quotedInput = (value: string) =>
     (character) =>
       `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-export function browserActionWords(action: BrowserAction | BrowserBatchAction): string {
+export function browserActionWords(action: BrowserAction | BrowserBatchAction | BrowserAppAccessAction): string {
   switch (action.type) {
+    case "app-access":
+      return `${action.mode === "control" ? "View and control" : "View"} ${action.appName}`;
     case "batch":
       return `${action.actions.length} actions, once: ${action.actions.map(browserActionWords).join(" → ")}`;
     case "click":
@@ -90,7 +94,7 @@ export function browserActionWords(action: BrowserAction | BrowserBatchAction): 
 }
 
 
-const commandAction = (action: BrowserAction | BrowserBatchAction) =>
+const commandAction = (action: BrowserAction | BrowserBatchAction | BrowserAppAccessAction) =>
   action.type === "command" || action.type === "terminal" || action.type === "terminal-change" || action.type === "terminal-script" ||
   (action.type === "batch" && action.actions.every((step) => step.type === "terminal"));
 
@@ -215,7 +219,67 @@ export function useBrowserApprovals(
   };
 }
 
-export function BrowserApprovalReview({
+type ApprovalReviewProps = {
+  peer: Peer;
+  item: BrowserRequest;
+  onClose: () => void;
+  onResolved: () => void;
+};
+
+export function BrowserApprovalReview(props: ApprovalReviewProps) {
+  return props.item.action.type === "app-access"
+    ? <BrowserAppApprovalReview key={props.item.id} {...props} />
+    : <BrowserInputApprovalReview {...props} />;
+}
+
+function BrowserAppApprovalReview({ peer, item, onClose, onResolved }: ApprovalReviewProps) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const sending = useRef(false);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  if (item.action.type !== "app-access") return null;
+  const action = item.action;
+  const expired = item.status !== "pending" || item.expiresAt <= now;
+  const decide = async (decision: "approve" | "deny") => {
+    if (sending.current || expired) return;
+    sending.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await post<BrowserRequest>(peer,
+        `/api/agents/browser-requests/${encodeURIComponent(item.id)}`, { decision });
+      if (result.status === "executed" || result.status === "denied") onResolved();
+      else setError(result.error || "This request has ended. Ask the agent to request access again.");
+    } catch (e) { setError((e as Error).message); }
+    finally { sending.current = false; setBusy(false); }
+  };
+  return (
+    <ScreenPopup title={`Allow ${item.name} to use ${action.appName}?`} onClose={onClose} className="browser-approval browser-app-approval">
+      <p>{action.mode === "control" ? "View and control" : "View only"} · <strong>{action.appName}</strong></p>
+      <p className="browser-approval-note">{action.mode === "control"
+        ? "The agent can click and type in this app without asking for each action. This includes its content and signed-in accounts."
+        : "The agent can see this app’s windows and content. It cannot click or type in them."}</p>
+      {item.reason && <p className="browser-request-reason">{item.reason}</p>}
+      <p className="browser-approval-note">{item.sessionExpiresAt
+        ? `Access ends at ${new Date(item.sessionExpiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+        : "Access ends with this invitation."} A new invitation starts fresh.</p>
+      {expired && <p role="status">This request has ended.</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      <div className="browser-approval-actions">
+        <button className="button secondary" disabled={busy || expired} onClick={() => void decide("deny")}>Deny</button>
+        <button className="button" disabled={busy || expired} onClick={() => void decide("approve")}>
+          <ShieldCheck size={16} /> {busy ? "Responding…" : "Allow for this session"}
+        </button>
+      </div>
+    </ScreenPopup>
+  );
+}
+
+function BrowserInputApprovalReview({
   peer,
   item: incomingItem,
   onClose,
