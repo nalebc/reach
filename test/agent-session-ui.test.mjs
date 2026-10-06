@@ -923,9 +923,20 @@ test("a chat open in the Codex app says so and keeps the app's settings", async 
   await open(codexSession({ held: "codex-app" }));
   // Where it lives is in the header, as a word; no paragraph about it.
   await dom.waitFor(() => $(".as-model")?.textContent.includes("GPT-6 Astra"));
-  assert.equal($(".as-hint"), null);
-  assert.equal($(".as-model").disabled, true);
+  assert.equal($$(".as-hint").length, 0);
   assert.equal($(".as-title small").textContent, "app · Open in Codex app");
+  // The Codex app runs it with its own model and permissions. A tap on either
+  // did nothing (disabled, the reason only in a hover title the phone never
+  // shows); now it says so, and nothing changes.
+  await click($(".as-model"));
+  assert.match($(".as-hint").textContent, /open in the Codex app, which runs it with its own model/);
+  assert.equal($$(".as-composer .as-picker").length, 0);
+  await click($(".as-mode"));
+  const menu = await dom.waitFor(() => $(".as-mode-menu"));
+  assert.match(menu.querySelector(".as-mode-menu-locked").textContent, /open in the Codex app, which runs it with its own permissions/);
+  assert.ok($$(".as-mode-menu button").every((b) => b.disabled));
+  assert.equal($$(".as-mode-menu button[aria-checked=true]").length, 1);
+  await click($(".as-mode-scrim"));
   await typeInto($("textarea"), "hi");
   await click(button("Send"));
   assert.deepEqual(mac.sent, [
@@ -936,25 +947,27 @@ test("a chat open in the Codex app says so and keeps the app's settings", async 
   ]);
 });
 
-test("model and thinking open inline above the composer, never as a popup", async () => {
+// The model was a row of chips inside the composer; the apps open a small
+// menu over the model button (as the permission mode's), each model with its
+// own words, the one in use checked, its thinking levels under them.
+test("the model opens as a small menu like the apps', its thinking levels in it", async () => {
   await open(codexSession());
   await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
   await click($(".as-model"));
   assert.equal($(".as-model").getAttribute("aria-expanded"), "true");
-  assert.ok($(".as-composer .as-picker"));
-  assert.equal($("[role=dialog]"), null);
-  const chip = (label) =>
-    $$(".as-picker-row button").find((b) => b.textContent === label);
-  assert.equal(chip("GPT-6 Astra").getAttribute("aria-pressed"), "true");
-  await click(chip("GPT-6 Sol"));
-  // Choosing a model leaves thinking to pick; thinking finishes the choice.
-  assert.ok($(".as-picker"));
-  assert.deepEqual(
-    $$(".as-picker-row[aria-label=Thinking] button").map((b) => b.textContent),
-    ["Low", "Medium", "High"],
-  );
-  await click(chip("High"));
-  assert.equal($(".as-picker"), null);
+  const menu = $(".as-model-menu");
+  assert.ok(menu.parentElement.classList.contains("as-page"), "on the page, not clipped inside the composer");
+  assert.equal($$(".as-composer .as-picker").length, 0);
+  const row = (name) => $$(".as-model-menu > button").find((b) => b.querySelector(".as-mode-menu-text > span").textContent === name);
+  assert.equal(row("GPT-6 Astra").getAttribute("aria-checked"), "true");
+  // A model picked: the menu closes, as in the apps.
+  await click(row("GPT-6 Sol"));
+  assert.equal($$(".as-model-menu").length, 0);
+  // Its thinking levels, in the same menu.
+  await click($(".as-model"));
+  assert.deepEqual($$(".as-menu-efforts button").map((b) => b.textContent), ["Low", "Medium", "High"]);
+  await click($$(".as-menu-efforts button").find((b) => b.textContent === "High"));
+  assert.equal($$(".as-model-menu").length, 0);
   assert.equal($(".as-model").textContent.trim(), "GPT-6 Sol High");
   await typeInto($("textarea"), "go");
   await click(button("Send"));
@@ -2310,6 +2323,10 @@ test("the permission mode changes from the session, in each agent's own terms, i
   await click($(".as-mode"));
   assert.equal($$(".as-picker[aria-label=Permissions]").length, 0, "no row of chips");
   // The Codex app's own title and lines under its choices.
+  // On the chat's page, not inside the composer, which scrolls its own
+  // contents and clipped the menu out of sight.
+  assert.equal($(".as-mode-menu").closest(".as-composer"), null);
+  assert.ok($(".as-mode-menu").parentElement.classList.contains("as-page"));
   assert.equal($(".as-mode-menu-title").textContent, "How should ChatGPT actions be approved?");
   // What Codex offers now, a profile Reach has no name for included.
   assert.deepEqual(names(), ["Ask for approval", "Approve for me", "Full access", "Read only", "Network only", "Custom (config.toml)"]);
@@ -3358,4 +3375,28 @@ test("a Codex app approval shows as the Codex app draws it; a card that can't be
   assert.equal([...said.querySelectorAll("button")].filter((b) => /Allow|Deny/.test(b.textContent)).length, 0);
   assert.ok([...said.querySelectorAll("button")].some((b) => b.textContent === "Open screen to answer"));
   assert.deepEqual(dom.errors, []);
+});
+
+// "Chat sometimes shows can't reach your Mac" (2026-10-06): a chat read that
+// failed for a moment left the message up until the next 30 s look.
+test("an open chat's read that fails for a moment is tried again by itself, without saying the Mac is out of reach", async () => {
+  const route = `/api/sessions/codex/${CODEX}`;
+  const real = routes[route];
+  let unreachable = 0;
+  routes[route] = (...args) => {
+    if (unreachable > 0 && unreachable--) throw new TypeError("Load failed");
+    return real(...args);
+  };
+  try {
+    await open(codexSession());
+    await dom.waitFor(() => $("textarea"));
+    unreachable = 1;
+    mac.pages[`codex:${CODEX}`].items = [{ id: "a1", role: "assistant", kind: "text", text: "Back again", turnId: "t1" }];
+    mac.bump();
+    await dom.waitFor(() => /Back again/.test(dom.document.body.textContent), 4000);
+    assert.equal(/Couldn.t reach/.test(dom.document.body.textContent), false);
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    routes[route] = real;
+  }
 });

@@ -178,6 +178,7 @@ export default function Screen({
     },
     [release],
   );
+  const aspect = useRef(1.6);
   const stream = useRemoteScreen(
     peer,
     enabled,
@@ -565,6 +566,11 @@ export default function Screen({
       if (mounted.current) setClipboardBusy(false);
     }
   };
+  // The viewer keeps its shape while it connects: with no picture yet the
+  // stream is 0 wide, and the box (with the plug-in scene in it) collapsed
+  // to a thin bar. The last screen's shape, or 16:10 the first time.
+  if (stream.width > 0 && stream.height > 0)
+    aspect.current = stream.width / stream.height;
   const reconnect = () => {
     release();
     setLive(true);
@@ -619,10 +625,10 @@ export default function Screen({
           ref={viewer}
           style={
             {
-              "--screen-aspect": stream.width / Math.max(1, stream.height),
+              "--screen-aspect": aspect.current,
             } as React.CSSProperties
           }
-          className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"}`}
+          className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"} ${stream.ready && stream.width ? "" : "screen-waiting"}`}
         >
           <div className="screen-toolbar simple-screen-toolbar">
             <span className="screen-state" role="status">

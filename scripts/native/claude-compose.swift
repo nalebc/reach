@@ -2,7 +2,10 @@
 // presses its Send, as the person would at the Mac: the app's own Claude Code
 // process runs it and its window shows it at once (a chat that is working
 // queues it, as the app does). Only when the window's header names the chat
-// it is meant for (--title, exactly), and never over text already in the box.
+// it is meant for, and never over text already in the box. Which chat is
+// on screen is read by the app's own id for it (--session local_…, from its
+// page's address: two chats can share a name, never an id); without one, by
+// the name in the header (--title, exactly).
 // Pictures are pasted (Edit > Paste) and the clipboard is put back after.
 // `--check` only reports what the window shows. Prints one JSON line.
 import AppKit
@@ -26,6 +29,7 @@ func out(_ value: [String: Any]) -> Never {
 
 struct Window {
   var titles: [String] = []  // the chat named in the header ("<title>, rename session")
+  var sessions: [String] = []  // the chat on screen by the app's own id (local_…), from its page's address
   var boxes: [AXUIElement] = []  // message boxes
     var send: AXUIElement?  // the button that says exactly "Send"
     var stop: AXUIElement?
@@ -38,6 +42,13 @@ let modeNames = ["Auto", "Manual", "Accept edits", "Plan"]
 // Each element's role, children, title and description in one call to the
 // app (not one call each): the whole window is walked about a third faster.
 let looked = [kAXRoleAttribute, kAXChildrenAttribute, kAXTitleAttribute, kAXDescriptionAttribute] as CFArray
+// The app's id for a chat, as its page's address carries it
+// (https://claude.ai/epitaxy/local_<uuid>).
+let sessionPattern = try! NSRegularExpression(pattern: "local_[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+func sessionIn(_ s: String) -> String? {
+  guard let m = sessionPattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)), let r = Range(m.range, in: s) else { return nil }
+  return String(s[r])
+}
 func look(_ app: AXUIElement) -> Window {
   var found = Window()
   var queue = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
@@ -52,6 +63,10 @@ func look(_ app: AXUIElement) -> Window {
     let role = (v[0] as? String) ?? ""
     let description = (v[3] as? String) ?? ""
     switch role {
+    case "AXWebArea":
+      if let url = attr(e, "AXURL") as? URL, let session = sessionIn(url.absoluteString), !found.sessions.contains(session) {
+        found.sessions.append(session)
+      }
     case kAXTextAreaRole as String:
       // The message box is labelled "Prompt" (other fields come and go).
       if description == "Prompt" { found.boxes.append(e) }
@@ -103,7 +118,7 @@ struct ClaudeCompose {
       window = look(app)
     }
     if args.contains("--check") {
-      out(["titles": window.titles, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false])
+      out(["titles": window.titles, "sessions": window.sessions, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false])
     }
     var payload: [String: Any] = [:]
     if args.contains("--json") {
@@ -114,16 +129,18 @@ struct ClaudeCompose {
     }
     guard let title = option("--title") else { out(["error": "Say which chat to use."]) }
     let text = (payload["text"] as? String) ?? option("--text") ?? ""
-    // The right chat, one message box, nothing typed in it. Right after Reach
-    // switches the window to this chat, its header can still name the one
-    // before for a moment: look again for up to 2 s before giving up.
-    var looks = 0
-    while window.titles != [title], looks < 8 {
+    // The right chat (by its id when Reach gives one), one message box,
+    // nothing typed in it. Right after Reach switches the window to this chat
+    // it can still show the one before for a moment: looked at again for up
+    // to --wait ms (2 s unless said) before giving up.
+    let session = option("--session")
+    let showing = { (w: Window) -> Bool in session.map { w.sessions == [$0] } ?? (w.titles == [title]) }
+    let until = Date().addingTimeInterval(min(Double(option("--wait") ?? "") ?? 2000, 20000) / 1000)
+    while !showing(window), Date() < until {
       usleep(250_000)
       window = look(app)
-      looks += 1
     }
-    guard window.titles == [title] else { out(["error": "The Claude app is showing another chat.", "titles": window.titles]) }
+    guard showing(window) else { out(["error": "The Claude app is showing another chat.", "titles": window.titles, "sessions": window.sessions]) }
     // A permission mode picked on the phone: chosen in the app's own menu, as
     // a person would, so the app and the phone show the same one.
     if let wanted = option("--mode") {
@@ -177,7 +194,7 @@ struct ClaudeCompose {
     if payload["draft"] as? Bool == true {
       // No focus changes, clipboard access, key presses or Send during typing.
       guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success,
-        look(app).titles == [title], value(box) == trimmed(text)
+        showing(look(app)), value(box) == trimmed(text)
       else { out(["error": "Claude couldn't update this draft."]) }
       out(["drafted": true])
     }
@@ -201,7 +218,7 @@ struct ClaudeCompose {
         else { out(["error": "A picture couldn't be read."]) }
         pasteboard.clearContents()
         pasteboard.setData(png, forType: .png)
-        guard look(app).titles == [title], pressMenu(app, ["Edit", "Paste"]) else { out(["error": "Couldn't paste the picture into the Claude app."]) }
+        guard showing(look(app)), pressMenu(app, ["Edit", "Paste"]) else { out(["error": "Couldn't paste the picture into the Claude app."]) }
         usleep(700_000)
       }
     }
@@ -214,11 +231,11 @@ struct ClaudeCompose {
       usleep(20_000)
     }
     window = look(app)
-    for _ in 0..<12 where window.titles == [title] && !enabled(window.send) {
+    for _ in 0..<12 where showing(window) && !enabled(window.send) {
       usleep(50_000)
       window = look(app)
     }
-    guard window.titles == [title] else { out(["error": "The Claude app switched to another chat."]) }
+    guard showing(window) else { out(["error": "The Claude app switched to another chat."]) }
     guard window.boxes.count == 1, let currentBox = window.boxes.first, value(currentBox) == trimmed(text)
     else { out(["error": "The message changed before Send. Reach hasn't sent it."]) }
     guard let send = window.send, enabled(send) else { out(["error": "The Claude app's Send isn't available."]) }

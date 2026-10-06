@@ -33,14 +33,16 @@ export async function claudeFrontmost(run = exec) {
 // Reach may pick there (never Bypass permissions, turned on at the Mac).
 export const APP_MODES = { manual: "Manual", default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto" };
 
+// session: the chat by the app's own id (local_…), which the window must
+// show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
-  { title, text = "", images = [], draft, expected, stop, mode },
+  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
 ) {
   const file = await binary();
   const json = draft || expected !== undefined;
   let call;
-  try { call = run(file, ["--title", title, ...(mode ? ["--mode", mode] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode ? [] : images.flatMap((image) => ["--image", image]))], {
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
   }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
@@ -61,6 +63,14 @@ export async function typeIntoClaude(
   if (result[action] === false && typeof result.error === "string") throw waiting(result.error);
   if (result[action] !== true || result.error) throw uncertainDelivery("claude");
   return result;
+}
+
+// Which chat the Claude app's window shows, by the app's own id for it
+// (local_…, from the page's address); null when it can't tell.
+export async function claudeOnScreen({ dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {}) {
+  const { stdout } = await run(await binary(), ["--check"], { timeout: 10000 });
+  const sessions = JSON.parse(String(stdout).trim().split("\n").at(-1)).sessions;
+  return Array.isArray(sessions) && sessions.length === 1 ? sessions[0] : null;
 }
 
 // The drafts Reach put in the Claude app's message boxes, kept on disk: after
@@ -108,6 +118,9 @@ export function createClaudeCompose({
   // those instead of looking every few hundred milliseconds.
   transcriptNews = (id, ms) => wait(Math.min(ms, 300)),
   appNews = (ms) => wait(Math.min(ms, 250)),
+  // The chat the window shows, by the app's own id for it (claudeOnScreen);
+  // tests that don't say: the one the app's records name first.
+  onScreen = async () => shown()[0]?.session ?? null,
   store = null,
 }) {
   const link = (session) => `claude://code/continue?session=${session}`;
@@ -115,6 +128,9 @@ export function createClaudeCompose({
     Object.entries(store?.load() || {}).filter(([, d]) => d && typeof d.text === "string"),
   );
   const keep = () => store?.save(Object.fromEntries(drafts));
+  // The app's own id for a chat: what the window must show to be typed in.
+  const sessionOf = (id) => shown().find((s) => s.id === id)?.session || null;
+  const screen = () => Promise.resolve(onScreen()).catch(() => null);
   let tail = Promise.resolve();
   const serial = (work) => {
     const result = tail.then(work);
@@ -129,7 +145,7 @@ export function createClaudeCompose({
         const previous = drafts.get(id);
         if (previous && previous.owner !== owner) throw waiting("Another device is editing this draft.");
         if (!previous && drafts.size >= 128) throw waiting("Too many drafts are open.");
-        const result = await type({ title, text, draft: true, expected: previous?.text ?? "" });
+        const result = await type({ title, session: sessionOf(id), waitMs: 0, text, draft: true, expected: previous?.text ?? "" });
         if (result?.drafted !== true) throw waiting("Claude didn't confirm the draft update.");
         if (text) drafts.set(id, { owner, text });
         else drafts.delete(id);
@@ -140,7 +156,7 @@ export function createClaudeCompose({
     stop(id, { title }) {
       return serial(async () => {
         if (!(await appRunning()) || shown()[0]?.id !== id) throw waiting("Open this chat in Claude to stop it.");
-        const result = await type({ title, stop: true });
+        const result = await type({ title, session: sessionOf(id), waitMs: 0, stop: true });
         if (result?.stopped !== true) throw waiting("Claude didn't confirm Stop.");
         return { stopped: true };
       });
@@ -154,7 +170,7 @@ export function createClaudeCompose({
         if (!label) throw Object.assign(new Error("Reach can't pick that mode in the Claude app."), { status: 400 });
         if (!(await appRunning()) || shown()[0]?.id !== id)
           throw waiting("Changes in the Claude app when this chat is open there, or with your next message.");
-        const result = await type({ title, mode: label });
+        const result = await type({ title, session: sessionOf(id), waitMs: 0, mode: label });
         if (result?.mode !== label) throw waiting("The Claude app didn't switch modes.");
         return { mode };
       });
@@ -170,8 +186,12 @@ export function createClaudeCompose({
       // Another chat on screen: switched in the background while you're in
       // another app or away; never under you while you use the Claude app (a
       // switch under someone typing would put their words in this chat).
+      // Which chat the window really shows, by its id (the app's records
+      // can lag): this one, or one to switch from and back to.
       let back = null;
-      if (list[0]?.id !== id) {
+      let switched = false;
+      const showing = await screen();
+      if (showing !== target.session) {
         const elsewhere = !now && !(await Promise.resolve(frontmost()).catch(() => true));
         const seconds = now || elsewhere ? Infinity : await Promise.resolve(idle()).catch(() => null);
         if (seconds == null || seconds * 1000 < awayMs)
@@ -181,14 +201,10 @@ export function createClaudeCompose({
             // once you'd count as away (no input for awayMs).
             { inApp: true, ...(seconds == null ? {} : { retryMs: Math.max(0, awayMs - seconds * 1000) }) },
           );
-        back = list[0]?.session || null;
+        back = showing || list[0]?.session || null;
         // In the background: Claude never comes forward over what you're doing.
         await open(link(target.session), { background: true });
-        for (const until = Date.now() + switchMs; shown()[0]?.id !== id; await appNews(Math.max(0, until - Date.now())))
-          if (Date.now() > until) {
-            if (back) await open(link(back), { background: true }).catch(() => {});
-            throw waiting("The Claude app didn't open this chat; trying again.");
-          }
+        switched = true;
       }
       const since = Date.now() - 2000;
       try {
@@ -196,8 +212,11 @@ export function createClaudeCompose({
         if (draft && draft.owner !== owner) throw waiting("Another device is editing this draft.");
         // The mode picked on the phone first, as one picked in the app's
         // composer applies to the message sent after it.
-        if (APP_MODES[mode]) await type({ title, mode: APP_MODES[mode] });
-        await type({ title, text, images, ...(draft ? { expected: draft.text } : {}) });
+        // Typed only while the window shows this very chat, by its id; just
+        // switched to, it's given switchMs to get there.
+        const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}) };
+        if (APP_MODES[mode]) await type({ ...into, mode: APP_MODES[mode] });
+        await type({ ...into, text, images, ...(draft ? { expected: draft.text } : {}) });
         if (drafts.delete(id)) keep();
       } finally {
         if (back) await open(link(back), { background: true }).catch(() => {});

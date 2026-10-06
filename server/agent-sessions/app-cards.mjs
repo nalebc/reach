@@ -50,6 +50,42 @@ async function helper(agent, args, { dataDir, run = exec, binary = () => desktop
 }
 const expecting = (expect) => expect.flatMap((text) => ["--expect", text]);
 
+// The card's words as the app reads them out: its sentence in pieces ("Allow
+// Claude to", "run", "Check the build", "?"), the description a second time,
+// then the command. Put back as the card shows them: the sentence on one line,
+// the command on its own (the piece holding what the request is about), each
+// line once.
+export function cardLines(texts, { buttons = [], command = [] } = {}) {
+  const squeeze = (t) => String(t).replace(/\s+/g, "").toLowerCase();
+  const isCommand = (t) => command.some((c) => squeeze(c) && squeeze(t).includes(squeeze(c)));
+  const lines = [];
+  let line = "";
+  const flush = () => {
+    if (line) lines.push(line);
+    line = "";
+  };
+  for (const raw of texts) {
+    const piece = String(raw).trim();
+    if (!piece || buttons.includes(piece)) continue;
+    if (isCommand(piece) && piece.length > 12) {
+      flush();
+      lines.push(piece);
+      continue;
+    }
+    // A label of its own ("Reason") stays on its line.
+    if (/^[A-Z][a-z]+$/.test(line) && /^[A-Z]/.test(piece)) flush();
+    line = !line ? piece : /^[?.!,:;)]/.test(piece) ? line + piece : `${line} ${piece}`;
+    if (/[?.!]$/.test(piece)) flush();
+  }
+  flush();
+  // Once each: a line already said inside an earlier one goes.
+  return lines.filter((l, i) => !lines.slice(0, i).some((before) => before.includes(l)));
+}
+
+// How much of its window an app lets Reach see ({ elements }): the Codex app
+// (ChatGPT.app's Chromium view) shows a dozen, none of them its cards.
+export const probeApp = (agent, options) => helper(agent, ["--probe"], options);
+
 // The card as the app draws it: { found, texts, buttons: [{ label, menu }] }.
 export const readAppCard = (agent, expect, options) => helper(agent, ["--read", ...expecting(expect)], options);
 export async function pressAppCard(agent, label, expect, options) {
@@ -61,6 +97,8 @@ export async function pressAppCard(agent, label, expect, options) {
 export function createAppCards({
   read,
   press,
+  // How much an app shows Reach ({ elements }), asked before bringing it up.
+  probe = async () => ({ elements: Infinity }),
   open,
   // The card a chat waits on now ({ id, expect, appSessionId?, tty? }), or
   // null; tty: a terminal's menu, read and answered there.
@@ -93,6 +131,11 @@ export function createAppCards({
     const asked = await pending(agent, id);
     if (!asked || (promptId && asked.id !== promptId)) throw bad("This request was already answered.", 409);
     if (!asked.expect?.length) throw bad("Reach can't tell this request's card apart. Answer it on your Mac.", 409);
+    // Only the Codex app hides its window from Reach; the Claude app always
+    // shows its cards, so it isn't asked (one helper run saved per card).
+    if (agent === "codex" && !asked.tty && ((await probe(agent).catch(() => null))?.elements ?? Infinity) < 50)
+      // Nothing to read there: said at once, the app left where it is.
+      throw bad(`The ${APP[agent]} app doesn't let Reach see its cards. Answer it on your Mac.`, 409);
     if (asked.tty) {
       if (!terminal) throw bad("Answer it in the terminal on your Mac.", 409);
     } else if (agent === "codex") {
@@ -123,7 +166,7 @@ export function createAppCards({
       asked,
       card: {
         id: asked.id,
-        texts: (card.texts || []).filter((t) => !buttons.includes(t)),
+        texts: cardLines(card.texts || [], { buttons, command: asked.expect || [] }),
         buttons,
         ...(more.length ? { more } : {}),
         // A menu Reach couldn't read: its choices stay in the app.

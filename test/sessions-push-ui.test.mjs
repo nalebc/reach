@@ -10,11 +10,18 @@ const peer = { id: "mac", name: "Mac", url: "https://reach.test", token: "t", pl
 let dom, React, useAgentSessions;
 let reads = 0;
 const asked = [];
+// Reads that fail as if the Mac were out of reach.
+let unreachable = 0;
 before(async () => {
   dom = await startDom({
     mobile: true,
     routes: {
-      "/api/sessions": (init, href) => (reads++, asked.push(href.searchParams.get("fresh")), { sessions: [], errors: {}, version: `v${reads}` }),
+      "/api/sessions": (init, href) => {
+        reads++;
+        asked.push(href.searchParams.get("fresh"));
+        if (unreachable > 0 && unreachable--) throw new TypeError("Load failed");
+        return { sessions: [], errors: {}, version: `v${reads}` };
+      },
       "/api/sessions/health": () => ({ agents: [] }),
     },
   });
@@ -70,5 +77,38 @@ test("Refresh asks the Mac to build the list anew; the phone's own looks take th
   await dom.waitFor(() => asked.length === 2);
   assert.equal(asked[1], "1");
   await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
+// "Chat sometimes shows can't reach your Mac" (2026-10-06): one read failed
+// (the phone waking, Reach restarting) and the message stayed up until the
+// next look, now a minute away. It's tried again soon, and said only if the
+// Mac stays out of reach.
+test("a read that fails for a moment is tried again by itself and never says the Mac is out of reach", async () => {
+  const shown = [];
+  let setRev;
+  function Feed() {
+    const [revision, set] = React.useState("1");
+    setRev = (r) => dom.update(() => set(r));
+    const feed = useAgentSessions(peer, 60000, revision);
+    if (feed.failure) shown.push(feed.failure);
+    return React.createElement("p", null, feed.sessions ? "listed" : "finding");
+  }
+  unreachable = 0;
+  const view = await dom.render(React.createElement(Feed));
+  await dom.waitFor(() => /listed/.test(dom.document.body.textContent));
+  const before = reads;
+  unreachable = 1;
+  setRev("2");
+  await dom.waitFor(() => reads === before + 2, 3000);
+  await settle(50);
+  assert.deepEqual(shown, [], "nothing said for a moment's blip");
+  // Out of reach for longer: said, and cleared once it answers again.
+  unreachable = 3;
+  setRev("3");
+  await dom.waitFor(() => shown.length > 0, 4000);
+  assert.match(shown.at(-1), /Couldn.t reach/);
+  await view.unmount();
+  unreachable = 0;
   assert.deepEqual(dom.errors, []);
 });

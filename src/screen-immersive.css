@@ -173,6 +173,11 @@
   aspect-ratio: var(--screen-aspect, 1.6);
   max-height: 70dvh;
 }
+/* Until the picture comes, room for the plug-in scene: a phone-wide 16:10
+   box was too short for it. */
+.simple-screen.screen-waiting:not(.screen-expanded) .remote-stage {
+  min-height: clamp(280px, 78vw, 440px);
+}
 .simple-screen.screen-expanded {
   border-radius: 0;
   border: 0;

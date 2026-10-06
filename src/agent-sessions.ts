@@ -339,6 +339,12 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   // Health on demand (after signing in), besides once a minute.
   const recheck = useRef<() => void>(() => {});
   const key = peer ? `${peer.url} ${peer.token}` : "";
+  // A read that fails while the Mac is out of reach for a moment (the phone
+  // waking, the network changing, Reach restarting) is tried again soon, and
+  // said only if it lasts.
+  const failures = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const again = useRef<() => void>(() => {});
   // fresh: built anew, not the Mac's kept list (Refresh, after an action).
   const load = useCallback(async (fresh = false) => {
     if (!peer || document.hidden) return;
@@ -356,6 +362,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
         r = await ask("");
         if (mine !== run.current) return;
       }
+      failures.current = 0;
+      clearTimeout(retry.current);
       setFailure("");
       if ("unchanged" in r) return;
       known.current = r.version;
@@ -365,19 +373,28 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       setProjects(r.projects?.codex || []);
       setMacPrompts(r.macPrompts || []);
     } catch (e) {
-      if (mine === run.current) setFailure((e as Error).message);
+      if (mine !== run.current) return;
+      failures.current++;
+      if (failures.current > 1) setFailure((e as Error).message);
+      clearTimeout(retry.current);
+      retry.current = setTimeout(() => again.current(), Math.min(8000, 1000 * 2 ** (failures.current - 1)));
     }
   }, [key]);
+  again.current = () => void load();
   useEffect(() => {
     setSessions(null);
     setErrors({});
     setHealth([]);
     known.current = "";
     held.current = false;
+    failures.current = 0;
+    clearTimeout(retry.current);
     if (!peer) return;
     void load();
     const visible = () => !document.hidden && void load();
     document.addEventListener("visibilitychange", visible);
+    // The phone's network back: asked at once.
+    window.addEventListener("online", visible);
     // Sign-in and usage change rarely; check on open and every minute.
     let lastHealth = "";
     let healthActive = true;
@@ -398,7 +415,9 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       run.current++;
       healthActive = false;
       clearInterval(healthTimer);
+      clearTimeout(retry.current);
       document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", visible);
     };
   }, [load, everyMs]);
   // The Mac says when the list changes (revision, on its live connection):

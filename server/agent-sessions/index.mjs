@@ -15,11 +15,11 @@ import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
-import { cardExpect, cardId, createAppCards, pressAppCard, readAppCard } from "./app-cards.mjs";
+import { cardExpect, cardId, createAppCards, pressAppCard, probeApp, readAppCard } from "./app-cards.mjs";
 import { createTerminalCards } from "./terminal-cards.mjs";
 import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
-import { CLAUDE_BUNDLE, claudeFrontmost, createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
+import { CLAUDE_BUNDLE, claudeFrontmost, claudeOnScreen, createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
@@ -147,6 +147,9 @@ export function createAgentSessions({
   // How long a chat must stay waiting before it counts as waiting on you
   // (tests that don't say count it at once, as before).
   settleMs = process.env.NODE_TEST_CONTEXT ? 0 : 6000,
+  // Claude Code's own waits settle sooner: the Claude app answers what its
+  // rules allow within milliseconds (Codex's reviewer takes seconds).
+  claudeSettleMs = Math.min(settleMs, 1500),
   // The list is rebuilt when something in it changes, at most once per
   // listGapMs while agents write, and kept up to listMaxAgeMs otherwise
   // (tests that don't say: rebuilt for every look, as before).
@@ -273,6 +276,7 @@ export function createAgentSessions({
   const appCards = createAppCards({
     read: readCard,
     press: pressCard,
+    ...(process.env.NODE_TEST_CONTEXT ? {} : { probe: (agent) => probeApp(agent, { dataDir }) }),
     terminal: terminals ? createTerminalCards({ terminals }) : null,
     open,
     ...(claudeShown ? { shown: claudeShown } : {}),
@@ -423,6 +427,7 @@ export function createAgentSessions({
       ? null
       : createClaudeCompose({
           type: (message) => typeIntoClaude(message, { dataDir }),
+          onScreen: () => claudeOnScreen({ dataDir }),
           open,
           arrived: (id, text, since, sent) => claude.arrived(id, text, since, sent),
           // Woken by the agents' files (agent-watch), with a slow look in
@@ -636,7 +641,7 @@ export function createAgentSessions({
     // request read from its file has already waited out its own settle).
     const since = Math.min(waitingSince.get(key) ?? Date.now(), s.waitingSince || Infinity);
     waitingSince.set(key, since);
-    const left = settleMs - (Date.now() - since);
+    const left = (s.agent === "claude" ? claudeSettleMs : settleMs) - (Date.now() - since);
     if (left <= 0) return;
     s.status = "running";
     delete s.asking;
@@ -1173,6 +1178,14 @@ export function createAgentSessions({
     },
     // Connects to Codex and indexes Claude transcripts before the phone asks.
     warm() {
+      // The helpers that read and press an app's card, built just after
+      // start (2-5 s each, cached by their source), so the first card opened
+      // on the phone doesn't wait for a build.
+      if (listenForAsks && process.platform === "darwin")
+        setTimeout(() => {
+          if (closed) return;
+          for (const kind of ["permission-card", "claude-consent"]) desktopBinary({ dataDir }, kind).catch(() => {});
+        }, 2000).unref?.();
       return this.list().catch(() => null);
     },
     // Reach is quitting: end sign-ins and replies in progress, and let go of

@@ -8,6 +8,7 @@ import {
   useLayoutEffect,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AlignLeft,
   ArrowUp,
@@ -489,12 +490,19 @@ function ModeMenu({
   agent,
   choices,
   current,
+  anchor,
+  locked,
   onPick,
   onClose,
 }: {
   agent: AgentName;
   choices: { id: string; label: string; note?: string }[];
   current: string | null;
+  // The mode button: the menu opens just above it.
+  anchor: HTMLElement | null;
+  // Set by another app (the Codex app runs this chat's messages with its own
+  // mode): shown, not changeable here, and said why.
+  locked?: string;
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
@@ -503,27 +511,122 @@ function ModeMenu({
     agent === "claude"
       ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: modeLabel("claude", m.id) || m.label, note: "" }))
       : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
+  return (
+    <ComposerMenu anchor={anchor} label="Permissions" className={agent} onClose={onClose}>
+      {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
+      {list.map((m) => (
+        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked} onClick={() => onPick(m.id)}>
+          <span className="as-mode-menu-text">
+            <span>{m.label}</span>
+            {m.note && <small>{m.note}</small>}
+          </span>
+          {m.id === current && <Check size={16} />}
+        </button>
+      ))}
+      {locked && <p className="as-mode-menu-locked">{locked}</p>}
+    </ComposerMenu>
+  );
+}
+
+// A small menu over a composer button, as the apps open theirs: drawn on the
+// chat's page (the composer scrolls its own contents and clipped it out of
+// sight), lined up with its button, closed by a tap outside or Escape.
+function ComposerMenu({
+  anchor,
+  label,
+  className = "",
+  onClose,
+  children,
+}: {
+  anchor: HTMLElement | null;
+  label: string;
+  className?: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
-  return (
+  // No button to open over (the model picked from "/model" while the model
+  // button is hidden): over the composer.
+  const over = anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
+  const page = over?.closest<HTMLElement>(".as-page") ?? null;
+  const at = (() => {
+    if (!over || !page) return undefined;
+    const box = page.getBoundingClientRect();
+    const button = over.getBoundingClientRect();
+    const width = Math.min(300, box.width - 24);
+    // Over its button: from its left edge, or (a button on the right) to its right edge.
+    const onRight = button.left + button.width / 2 > box.left + box.width / 2;
+    const left = onRight ? button.right - box.left - width : button.left - box.left;
+    return { bottom: Math.max(8, box.bottom - button.top + 6), left: Math.max(8, Math.min(left, box.width - width - 8)) };
+  })();
+  const menu = (
     <>
       <div className="as-mode-scrim" onClick={onClose} />
-      <div className={`as-mode-menu ${agent}`} role="menu" aria-label="Permissions">
-        {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
-        {list.map((m) => (
-          <button key={m.id} role="menuitemradio" aria-checked={m.id === current} onClick={() => onPick(m.id)}>
-            <span className="as-mode-menu-text">
-              <span>{m.label}</span>
-              {m.note && <small>{m.note}</small>}
-            </span>
-            {m.id === current && <Check size={16} />}
-          </button>
-        ))}
+      <div className={`as-mode-menu ${className}`} role="menu" aria-label={label} style={at}>
+        {children}
       </div>
     </>
+  );
+  return page ? createPortal(menu, page) : menu;
+}
+
+// The model, picked as the apps have you pick it: a small menu over the
+// model button, each model with the agent's own words for it and the one in
+// use checked, its thinking levels under them.
+function ModelMenu({
+  agent,
+  models,
+  model,
+  effort,
+  anchor,
+  onPick,
+  onClose,
+}: {
+  agent: AgentName;
+  models: AgentModel[];
+  model: string | null;
+  effort: string | null;
+  anchor: HTMLElement | null;
+  onPick: (choice: { model?: string; effort?: string }) => void;
+  onClose: () => void;
+}) {
+  const current = models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
+  const level = effort || current?.defaultEffort;
+  return (
+    <ComposerMenu anchor={anchor} label="Model" className={`${agent} as-model-menu`} onClose={onClose}>
+      {models.map((m) => (
+        <button
+          key={m.id}
+          role="menuitemradio"
+          aria-checked={m.id === current?.id}
+          onClick={() => onPick({ model: m.id, effort: effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined })}
+        >
+          <span className="as-mode-menu-text">
+            <span>{m.name}</span>
+            {m.description && <small>{m.description}</small>}
+          </span>
+          {m.id === current?.id && <Check size={16} />}
+        </button>
+      ))}
+      {!!current?.efforts.length && (
+        <div className="as-menu-efforts" role="group" aria-label="Thinking">
+          {current.efforts.map((e) => (
+            <button
+              key={e}
+              aria-pressed={e === level}
+              title={current.effortNotes?.[e]}
+              onClick={() => onPick({ model: current.id, effort: e })}
+            >
+              {effortLabel(e, agent)}
+            </button>
+          ))}
+        </div>
+      )}
+    </ComposerMenu>
   );
 }
 
@@ -1190,6 +1293,8 @@ export default function AgentSessionView({
   }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
+  const modeButton = useRef<HTMLButtonElement>(null);
+  const modelButton = useRef<HTMLButtonElement>(null);
   const { view: live } = useSessionLive(peer, initial);
   const promptIds = live.prompts.map((p) => p.id).join(",");
   const askingKey = JSON.stringify(info.asking);
@@ -1227,6 +1332,10 @@ export default function AgentSessionView({
   // One read at a time: wakes that come while one is on its way are read once
   // after it (a Codex item woke two or three overlapping reads).
   const reading = useRef<{ again: boolean } | null>(null);
+  // A read that fails while the Mac is out of reach for a moment (the phone
+  // waking, Reach restarting) is tried again soon, and said only if it lasts.
+  const failed = useRef(0);
+  const retryRead = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const load = useCallback(
     async (first: boolean) => {
       if (document.hidden && !first) return;
@@ -1244,6 +1353,8 @@ export default function AgentSessionView({
           first ? undefined : known.current,
         );
         known.current = r.version || "";
+        failed.current = 0;
+        clearTimeout(retryRead.current);
         if ("unchanged" in r) {
           setLoadError("");
           return;
@@ -1270,7 +1381,10 @@ export default function AgentSessionView({
           ),
         );
       } catch (e) {
-        setLoadError((e as Error).message);
+        failed.current++;
+        if (failed.current > 1) setLoadError((e as Error).message);
+        clearTimeout(retryRead.current);
+        retryRead.current = setTimeout(() => void again.current(first), Math.min(8000, 1000 * 2 ** (failed.current - 1)));
       } finally {
         if (reading.current === turn) {
           reading.current = null;
@@ -1292,9 +1406,13 @@ export default function AgentSessionView({
     const timer = setInterval(() => void load(false), 30000);
     const shown = () => !document.hidden && void load(false);
     document.addEventListener("visibilitychange", shown);
+    // The phone's network back: read at once.
+    window.addEventListener("online", shown);
     return () => {
       clearInterval(timer);
+      clearTimeout(retryRead.current);
       document.removeEventListener("visibilitychange", shown);
+      window.removeEventListener("online", shown);
     };
   }, [load]);
   useEffect(() => {
@@ -2104,6 +2222,12 @@ export default function AgentSessionView({
             agent={agent}
             choices={modeChoices}
             current={modeShown === "default" ? "manual" : modeShown}
+            anchor={modeButton.current}
+            locked={
+              heldByApp
+                ? `This chat is open in the Codex app, which runs it with its own permissions. Change them there, or close the chat there to set them here.`
+                : undefined
+            }
             onClose={() => setChoosingMode(false)}
             onPick={(id) => {
               setChoice({ ...choice, mode: id });
@@ -2122,15 +2246,17 @@ export default function AgentSessionView({
           />
         )}
         <SlashMenu menu={slashMenu} />
-        {settings && picking && (
-          <ModelPicker
+        {picking && (
+          <ModelMenu
             agent={agent}
             models={models}
             model={modelId}
             effort={effort}
-            onPick={(next, done) => {
+            anchor={modelButton.current}
+            onClose={() => setPicking(false)}
+            onPick={(next) => {
               setChoice(next);
-              if (done) setPicking(false);
+              setPicking(false);
             }}
           />
         )}
@@ -2255,9 +2381,9 @@ export default function AgentSessionView({
                 there and here is the same one. */}
             {(agent === "claude" || agent === "codex") && (
               <button
+                ref={modeButton}
                 className={`as-mode ${agent}`}
-                disabled={heldByApp}
-                title={heldByApp ? "Change it in the Codex app: it shows here" : undefined}
+                title={heldByApp ? "Set in the Codex app" : undefined}
                 aria-expanded={choosingMode}
                 onClick={() => {
                   setChoosingMode(!choosingMode);
@@ -2271,12 +2397,16 @@ export default function AgentSessionView({
             <span className="as-spacer" />
             {settings && modelLabel && (
               <button
+                ref={modelButton}
                 className="as-model"
-                disabled={heldByApp || !models.length}
+                disabled={!heldByApp && !models.length}
                 aria-expanded={picking}
                 onClick={() => {
-                  setPicking(!picking);
                   setChoosingMode(false);
+                  // The Codex app picks the model for a chat it has open.
+                  if (heldByApp)
+                    return setNote("This chat is open in the Codex app, which runs it with its own model. Change it there, or close the chat there to pick it here.");
+                  setPicking(!picking);
                 }}
               >
                 {modelLabel} <span>{effortLabel(effort, agent)}</span>

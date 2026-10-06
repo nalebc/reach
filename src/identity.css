@@ -653,8 +653,12 @@ select {
   width: min(520px, 90%);
   gap: 14px;
 }
+/* The scene shrinks to the stage's height, so its words always show. */
+.screen-connection {
+  container-type: size;
+}
 .screen-connection .connection-device {
-  width: 100%;
+  width: min(100%, calc((100cqh - 130px) * 480 / 265));
   height: auto;
   aspect-ratio: 480/265;
   margin: 0;

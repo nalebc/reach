@@ -27,6 +27,11 @@ const mac = ({ onScreen = B, idle = 600, running = true, delay = 2, lands = true
 const compose = (m, extra = {}) =>
   createClaudeCompose({
     type: async (message) => {
+      // Navigation now settles in the native helper, which checks the exact session.
+      for (const until = Date.now() + (message.waitMs || 0); m.onScreen !== A && Date.now() < until;) {
+        m.shown();
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
       if (m.onScreen !== A) throw Object.assign(new Error("The Claude app is showing another chat."), { waiting: true });
       m.typed.push(message);
     },
@@ -70,13 +75,13 @@ test("Send reuses the prepared draft and Stop requires confirmation from the exa
   await c.deliver(A, { ...message, owner: "phone" });
   assert.equal(m.typed.at(-1).expected, message.text);
   assert.deepEqual(await c.stop(A, { title: message.title }), { stopped: true });
-  assert.deepEqual(m.typed.at(-1), { title: message.title, stop: true });
+  assert.deepEqual(m.typed.at(-1), { title: message.title, session: `local_${A}`, waitMs: 0, stop: true });
 });
 
 test("a message to the chat on screen goes into the Claude app's box at once, nothing switched", async () => {
   const m = mac({ onScreen: A, idle: 0 });
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });
-  assert.deepEqual(m.typed, [message]);
+  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}` }]);
   assert.deepEqual(m.opened, []);
 });
 
@@ -89,13 +94,13 @@ test("another chat on screen: it waits while someone uses the Mac, then opens th
   // Away: switched, sent, switched back to what was on screen.
   m.idle = 600;
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });
-  assert.deepEqual(m.typed, [message]);
+  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}`, waitMs: 50 }]);
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
 });
 
 test("nothing is typed unless the window really shows the chat; a switch that doesn't land is undone and retried later", async () => {
   const m = mac({ onScreen: B, lands: false });
-  await assert.rejects(compose(m).deliver(A, message), (e) => e.waiting && /didn't open this chat/.test(e.message));
+  await assert.rejects(compose(m).deliver(A, message), (e) => e.waiting && /showing another chat/.test(e.message));
   assert.deepEqual(m.typed, []);
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
   // The helper's own refusal (another chat, a draft) keeps it waiting, and the window goes back.

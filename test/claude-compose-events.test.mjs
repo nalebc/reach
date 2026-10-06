@@ -221,3 +221,71 @@ test("a message waiting for the Claude app to open goes in when it opens", async
     sessions.close();
   }
 });
+
+// "Make sure a message is always delivered to the right session. Use session
+// id instead of names" (2026-10-06): the window was checked by the chat's
+// name, which two chats can share, and Reach switched back to the chat the
+// app's records named, which could lag what the window showed.
+test("two chats with the same name: the message is typed only once the window shows that chat's own id", async () => {
+  let showing = "local_b";
+  const typed = [];
+  const opened = [];
+  const compose = createClaudeCompose({
+    type: async (message) => (typed.push(message), { sent: true }),
+    open: async (url) => {
+      opened.push(url);
+      showing = url.split("session=")[1];
+    },
+    arrived: async () => true,
+    // Same name; the app's records even name A first.
+    shown: () => [{ id: A, session: "local_a", title: "Fix" }, { id: B, session: "local_b", title: "Fix" }],
+    onScreen: async () => showing,
+    idle: async () => 0,
+    appRunning: async () => true,
+    frontmost: async () => false,
+    wait: later,
+  });
+  assert.deepEqual(await compose.deliver(A, { title: "Fix", text: "hi" }), { delivered: true });
+  // The window showed B (whatever the records said): switched to A by id, typed for A's id, back to B.
+  assert.deepEqual(opened, ["claude://code/continue?session=local_a", "claude://code/continue?session=local_b"]);
+  assert.equal(typed.length, 1);
+  assert.equal(typed[0].session, "local_a");
+  assert.ok(typed[0].waitMs > 0, "given time to show it");
+  // Already on screen by id: typed at once, no switch.
+  opened.length = 0;
+  showing = "local_a";
+  await compose.deliver(A, { title: "Fix", text: "again" });
+  assert.deepEqual(opened, []);
+  assert.equal(typed.at(-1).session, "local_a");
+});
+
+test("drafts, Stop and modes are typed only into the chat with that id", async () => {
+  const typed = [];
+  const compose = createClaudeCompose({
+    type: async (message) => (typed.push(message), message.stop ? { stopped: true } : message.mode ? { mode: message.mode } : { drafted: true }),
+    open: async () => {},
+    arrived: async () => true,
+    shown: () => [{ id: A, session: "local_a", title: "Fix" }],
+    appRunning: async () => true,
+  });
+  await compose.draft(A, { title: "Fix", text: "dra", owner: "phone" });
+  await compose.stop(A, { title: "Fix" });
+  await compose.mode(A, { title: "Fix", mode: "plan" });
+  assert.deepEqual(typed.map((m) => [m.session, m.waitMs]), [["local_a", 0], ["local_a", 0], ["local_a", 0]]);
+});
+
+test("the Claude app helper is asked for the chat by its id, and says which one it shows", async () => {
+  const { typeIntoClaude, claudeOnScreen } = await import("../server/agent-sessions/claude-compose.mjs");
+  const calls = [];
+  const run = async (file, args) => (calls.push(args), { stdout: JSON.stringify(args.includes("--check") ? { sessions: ["local_x"] } : { sent: true }) });
+  await typeIntoClaude({ title: "Fix", session: "local_x", waitMs: 15000, text: "hi" }, { run, binary: async () => "/helper" });
+  assert.deepEqual(calls[0].slice(0, 6), ["--title", "Fix", "--session", "local_x", "--wait", "15000"]);
+  assert.equal(await claudeOnScreen({ run, binary: async () => "/helper" }), "local_x");
+  const unsure = async () => ({ stdout: JSON.stringify({ sessions: ["local_x", "local_y"] }) });
+  assert.equal(await claudeOnScreen({ run: unsure, binary: async () => "/helper" }), null);
+  // The helper itself compares ids, before typing and right before Send.
+  const { readFileSync } = await import("node:fs");
+  const helper = readFileSync(new URL("../scripts/native/claude-compose.swift", import.meta.url), "utf8");
+  assert.match(helper, /session\.map \{ w\.sessions == \[\$0\] \}/);
+  assert.match(helper, /guard showing\(window\) else \{ out\(\["error": "The Claude app switched to another chat."\]\) \}/);
+});

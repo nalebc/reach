@@ -1575,3 +1575,41 @@ button.as-mode:disabled {
   font-size: 12.5px;
   line-height: 1.35;
 }
+.as-mode-menu button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.as-mode-menu-locked {
+  margin: 4px 0 0;
+  padding: 8px 10px 6px;
+  border-top: 0.5px solid var(--as-float-line);
+  color: var(--as-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+/* An app's card: a long command scrolls in place, the buttons stay in view. */
+.as-app-card .as-prompt-command {
+  max-height: 7.5em;
+  overflow: auto;
+}
+/* The model menu's thinking levels, under its models. */
+.as-menu-efforts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 6px 4px;
+  border-top: 0.5px solid var(--as-float-line);
+}
+.as-menu-efforts button {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--as-bubble);
+  font-size: 13.5px;
+}
+.as-menu-efforts button[aria-pressed="true"] {
+  background: var(--as-text);
+  color: var(--as-bg);
+}

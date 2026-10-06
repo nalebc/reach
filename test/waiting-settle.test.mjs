@@ -102,3 +102,36 @@ test("a chat that says since when it waits is counted from then, not held back a
     sessions.close();
   }
 });
+
+// "Needs you" took 6 s to show for Claude chats too (2026-10-06): the Claude
+// app answers what its rules allow within milliseconds, so a Claude Code wait
+// counts after a moment; Codex's reviewer takes seconds, so its wait stays.
+test("a Claude Code chat still waiting a moment later is waiting on you; a Codex one waits out its own settle", async () => {
+  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
+  const C = "11111111-2222-4333-8444-555555555555";
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: { list: async () => [chat(HELD)], projects: async () => [] },
+    codexLive: { drives: () => false, view: () => ({ status: "idle", prompts: [] }) },
+    claude: {
+      list: async () => [{ agent: "claude", id: C, title: "Fix", cwd: "/work", updatedAt: Date.now(), createdAt: 1, status: "idle", preview: "", archived: false }],
+      starts: async () => new Map(),
+    },
+    gemini: { list: async () => [] },
+    live: async () => new Map([[C, { where: "claude-app", busy: true, waiting: "permission prompt" }]]),
+    claudeHost: { onRelease() {}, running: () => false, drives: () => false },
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks: { close() {} },
+    settleMs: 3000,
+    claudeSettleMs: 100,
+  });
+  const status = async () => Object.fromEntries((await sessions.list()).sessions.map((s) => [s.agent, s.status]));
+  try {
+    assert.deepEqual(await status(), { codex: "running", claude: "running" });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepEqual(await status(), { codex: "running", claude: "waiting" });
+  } finally {
+    sessions.close();
+  }
+});

@@ -1144,3 +1144,41 @@ test("the session service forwards real host prompts to its notification subscri
   assert.equal(events.at(-1).prompts[0].id, "native-ask");
   unsubscribe();
 });
+
+// The Codex app (ChatGPT.app's Chromium view) shows macOS accessibility a
+// dozen elements and none of its cards: opening one brought the app to the
+// front for nothing. Asked first, it's said at once and the app stays put.
+test("an app that shows Reach nothing isn't brought up to read a card", async () => {
+  const { createAppCards } = await import("../server/agent-sessions/app-cards.mjs");
+  const touched = [];
+  const cards = createAppCards({
+    probe: async (agent) => ({ elements: agent === "codex" ? 12 : 400 }),
+    pending: async (agent) => ({ id: `app-permission:${agent === "codex" ? "codex:c1" : "t1"}`, expect: ["npm test"], appSessionId: "local_1" }),
+    open: async (url) => touched.push(["open", url]),
+    read: async (agent) => (touched.push(["read", agent]), { found: true, texts: [], buttons: [{ label: "Deny" }, { label: "Allow once" }] }),
+    press: async () => touched.push(["press"]),
+    shown: () => [{ id: "chat", session: "local_1" }],
+    wait: async () => {},
+  });
+  await assert.rejects(cards.card("codex", "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"), /doesn't let Reach see its cards/);
+  assert.deepEqual(touched, []);
+  assert.deepEqual((await cards.card("claude", "chat")).buttons, ["Deny", "Allow once"]);
+  assert.deepEqual(touched, [["read", "claude"]]);
+});
+
+// The card as the Claude app reads it out (seen on the phone, 2026-10-06): the
+// sentence in pieces, the description twice, then the command. It showed as
+// six loose lines; now as the card shows it.
+test("a card's words are put back as the card shows them", async () => {
+  const { cardLines } = await import("../server/agent-sessions/app-cards.mjs");
+  const command = 'stat -f "%Sm %N" -t "%H:%M:%S" .reach/quick/reach-permission-card-* .reach/quick/notification-seen.json';
+  assert.deepEqual(
+    cardLines(
+      ["Allow Claude to", "run", "Check when the card helper was built and notifications seen", "?", "Check when the card helper was built and notifications seen", command, "Deny", "Allow once"],
+      { buttons: ["Deny", "Allow once"], command: [command.slice(0, 40)] },
+    ),
+    ["Allow Claude to run Check when the card helper was built and notifications seen?", command],
+  );
+  // Already whole: as it was.
+  assert.deepEqual(cardLines(["Do you want ChatGPT to run this command?", "npm test"], { command: ["npm test"] }), ["Do you want ChatGPT to run this command?", "npm test"]);
+});

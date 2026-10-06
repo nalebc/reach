@@ -128,6 +128,26 @@ struct PermissionCard {
     let args = CommandLine.arguments
     let value = { (name: String) in args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
     let read = args.contains("--read")
+    // How much of its window an app lets Reach see: Chromium apps that don't
+    // build an accessibility tree show only a handful of elements.
+    if args.contains("--probe") {
+      let apps = ["claude": "com.anthropic.claudefordesktop", "codex": "com.openai.codex"]
+      guard let bundle = apps[value("--app") ?? "claude"],
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first
+      else { out(["elements": 0]) }
+      let app = AXUIElementCreateApplication(running.processIdentifier)
+      AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+      var count = 0
+      for _ in 0..<4 {
+        var queue = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        var i = 0
+        while i < queue.count, i < 400 { queue.append(contentsOf: children(queue[i])); i += 1 }
+        count = i
+        if count >= 50 { break }
+        usleep(300_000)
+      }
+      out(["elements": count])
+    }
     let press = value("--press")
     let expect = args.indices.filter { args[$0] == "--expect" && $0 + 1 < args.count }.map { args[$0 + 1] }
     guard read || !(press ?? "").isEmpty else { out(["error": "Choose a button."]) }
