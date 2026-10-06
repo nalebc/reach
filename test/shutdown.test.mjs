@@ -92,7 +92,7 @@ async function startReach(t, { preload } = {}) {
       "-e",
       // Left behind when the test runner dies (killed, timed out): it stops
       // itself, helpers and menu bar item included, rather than run for good.
-      `setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
+      `for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => setTimeout(() => console.error("Shutdown diagnostics:", JSON.stringify({ resources: process.getActiveResourcesInfo(), handles: process._getActiveHandles().map(h => ({ type: h.constructor.name, pid: h.pid, executable: h.spawnfile })) })), 3000).unref()); setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
     ],
     { env, stdio: ["pipe", "pipe", "pipe"] },
   );
