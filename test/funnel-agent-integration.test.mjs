@@ -1,4 +1,7 @@
-import test from "node:test";
+import nodeTest from "node:test";
+// This suite exercises the POSIX private ingress socket and its UID/mode checks.
+// Signed request, admission and scope suites also run on Windows.
+const test = (name, fn) => nodeTest(name, { skip: process.platform === "win32" ? "Unix private ingress is not implemented on Windows" : false }, fn);
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";

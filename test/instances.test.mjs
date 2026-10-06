@@ -54,7 +54,7 @@ test("a second start says where Reach runs and what to run instead", () => {
   assert.match(two, /^2 copies are running:\n {2}· in a Terminal window[^\n]*\n {2}· in the background, with no window, from ~\/My Projects\/reach copy\nOnly one should run\. Run reach stop/);
 });
 
-test("reach status tells what really runs, with its link", () => {
+test("reach status tells what really runs, with its link", { skip: process.platform === "win32" ? "POSIX process discovery" : false }, () => {
   const hosts = reachHosts(table, { self: 50, exists });
   const runtime = () => ({ link: "https://mac.tail.ts.net", awake: { mode: "always", active: true } });
   const text = statusText([hosts[0]], { command: "reach", dir: HOME, runtime });
@@ -76,7 +76,7 @@ test("a Reach handing itself to the background service doesn't stop that service
   // First-run setup picks background mode: ./reach installs the service and
   // stays open until the phone connects. The service must start anyway.
   const hosts = reachHosts(table, { self: 50, exists });
-  const files = { "/state/handover.pid": "10" };
+  const files = { [path.join("/state", "handover.pid")]: "10" };
   const read = (f) => {
     if (!(f in files)) throw Object.assign(Error("missing"), { code: "ENOENT" });
     return files[f];

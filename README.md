@@ -12,7 +12,7 @@
 
 The isolated [demo fixture and capture instructions](scripts/demo/README.md) let contributors reproduce the same interface without connecting to a computer or exposing personal data.
 
-This is a working first release, not a signed App Store or Microsoft Store application. macOS functionality has been exercised locally; the Windows implementation has a CI test job but still needs real-device validation. Phones act as clients, not remotely controlled hosts.
+This is an early-access release candidate, not a signed App Store or Microsoft Store application. macOS functionality has been exercised locally; the Windows implementation has a CI test job but still needs real-device validation. Phones act as clients, not remotely controlled hosts.
 
 The browser connection embeds Tailscale in WebAssembly. Its start page uses **public Tailscale Funnel**, while files, terminals and screen connections stay behind authenticated Tailscale ingress. Optional passkey sign-in can enroll a limited tagged browser device without a separate Tailscale login. This changes the earlier private-only design; read the [current security model](docs/SECURITY.md) before enabling it. Physical iPhone/Android validation remains a release gate.
 
@@ -28,7 +28,7 @@ The browser connection embeds Tailscale in WebAssembly. Its start page uses **pu
 - Remote desktop with H.264 video targeting 30 or 60 fps, display selection, trackpad/direct touch, dragging, pinch zoom and pan, a visible cursor, modifier shortcuts, explicit text clipboard transfers, and fullscreen. Mac uses VideoToolbox; Windows video needs FFmpeg with libx264. A JPEG compatibility mode supports browsers without H.264 WebCodecs. Viewing and control are separately enabled; OS permissions are required. See [Remote desktop](docs/REMOTE_DESKTOP.md).
 - Apps on your phone (Mac): tap an app and it runs on the Mac in a window shaped like your phone, on its own hidden display, full screen on the phone with touch, scrolling and the phone keyboard. Several apps can be open at once; the Mac's screen stays untouched. See [Apps on your phone](docs/APP_THREADS.md).
 - Scoped agent credentials, asynchronous command jobs, output polling, timeout/cancellation, a CLI, and a stdio MCP adapter.
-- Browser invitations for Muse or another assistant with a browser: read selected folders, find files by name, read selected terminal output, view the screen, and request your approval for screen actions or ask you to handle commands. Permissions are enforced on the computer. See [AI browser invitations](#ai-browser-invitations).
+- Browser invitations for Muse or another assistant with a browser: read selected folders, find files by name, read selected terminal output, view the screen, run bounded read commands, and request approval for screen actions, file changes or isolated scripts. Permissions are enforced on the computer. See [AI browser invitations](#ai-browser-invitations).
 - Tag in (Mac): an agent with `apps:drive` uses apps on its own hidden displays and hands one to you when a person is needed (a code, a confirmation). It shows on your phone's Home as **Needs you**: **Open** the live app, then **Done** to hand it back or **Stop**. Agents act only while nobody is using the Mac. See [the agent guide](docs/AGENTS.md).
 - Notifications: Settings → **Notifications** tells your phone when an agent hands you an app, holds a question for you, or asks for access, even with Reach closed. On iPhone, add Reach to the Home Screen first. They come from the computer whose link you opened, say only what needs you, and are encrypted for your phone.
 
@@ -36,7 +36,7 @@ Reach adapts to the connected computer and your permissions. Unsupported feature
 
 ## AI browser invitations
 
-Open **Invite someone → Agent**, then choose **Browser link**. Name the assistant and expand only the permissions you need: files, existing terminal output, screen access, or a restricted terminal. Choose 15 minutes, 30 minutes, or 1 hour, then **Create invite link**. Use **Copy prompt + link** or **Share…** to give it to your assistant. Existing terminal names identify sessions already open on your computer; they are not permission profiles. Screen access starts off. Restricted terminal mode removes screen control to prevent commands being typed through another app.
+Open **Invite someone → Agent**, then choose **Browser link**. Name the assistant and expand only the permissions you need: files, existing terminal output, screen access, or a restricted terminal. Choose 15 minutes, 30 minutes, or 1 hour, then **Create invite link**. Use **Copy prompt + link** or **Share…** to give it to your assistant. Existing terminal names identify sessions already open on your computer; they are not permission profiles. Screen access starts off. Screen input is a separate permission: even when terminal commands are folder-scoped, approved desktop input can operate other apps.
 
 The short message includes the connection link and says: “Open this Reach link in your VM browser. Show me the connection code and wait for my Reach approval. Use only granted access. Never invite anyone, delegate access, or share this link or credentials.” The complete message is selectable if clipboard access fails; sharing falls back to copying when the browser has no share sheet.
 
@@ -46,15 +46,15 @@ This extra connection approval applies only to invited agents, including CLI age
 
 **No invitation or delegation permission:** Muse's browser credential cannot create guest or agent invitations, mint invitation keys, change grants, approve access requests, or use the public admission handlers with that credential. These restrictions are enforced by the server allowlist, including before public admission routes; the prompt is an additional instruction, not the security boundary. They do not guarantee that an assistant cannot forward an unused link, relay information, or misuse an owner session you expose through approved desktop control. Keep owner credentials and signed-in approval pages off the shared desktop. Actual invitation redemption is single-use and the resulting credential is bound to the connecting Tailscale identity when present.
 
-Invite links must be set up first using Reach’s existing Tailscale setup. The link loads Reach’s browser connection, so the assistant needs no CLI, MCP setup, or installed VPN. The invitation is single-use, must be opened within 15 minutes, and expires at the owner’s chosen deadline. End access from the invite list at any time; to change its permissions, end it and create another invite. The computer must remain awake with Reach running. Actual Muse VM browser compatibility still needs an end-to-end check; a browser that blocks Reach’s WebAssembly or private transport cannot join.
+Invite links must be set up first using Reach’s existing Tailscale setup. The link loads Reach’s browser connection, so the assistant needs no CLI, MCP setup, or installed VPN. The invitation is single-use, must be opened within 15 minutes, and expires at the owner’s chosen deadline. Edit granted permissions or their expiry from **People with access**, or remove access there at any time. Changes apply to the existing grant; an expired or revoked invitation needs a new link. The computer must remain awake with Reach running. Actual Muse VM browser compatibility still needs an end-to-end check; a browser that blocks Reach’s WebAssembly or private transport cannot join.
 
 **Control with approval:** choose this screen mode to let the assistant propose clicks, text, keys, or scrolling. Each proposal appears on your phone in **Home → Needs you**. Open **Review request** to see the exact action, the assistant’s explanation, and the recorded screenshot (with a click marker). **Approve once** performs just that stored action; **Deny** performs none. Screen requests expire after one minute. The computer captures the screen again before executing and rejects a changed snapshot; moving cursors, animations and clocks can therefore require a fresh request. Pausing Reach, switching off screen access, revocation or an expired invitation cancels queued work. Background notifications require Reach Notifications to be set up on your phone. No approval is replayed after a restart or automatically retried after an uncertain native result.
 
-**Restricted terminal:** choose at least one folder under **Files**, then enable **Run read-only commands**. The assistant can request `pwd`, `cd folder`, `cd ..`, `ls [folder]`, `cat file`, `head [-n N] file`, `tail [-n N] file`, `wc [-l|-w|-c] file`, or `grep "literal text" file` in a selected folder. Reach verifies the command and folder on the server, shows the exact request in **Home → Needs you**, and runs it only after **Approve and run once**. An approved `cd` updates the working folder for subsequent requests; `cd ..` can move up only within the shared folder. Each pending request keeps its exact working folder even if another `cd` completes. Results appear in the assistant's Terminal request history. Requests expire after five minutes and cannot be replayed; revocation, changed grants, and pause prevent execution.
+**Terminal access:** supported reads (`pwd`, `cd`, `ls`, `cat`, `head`, `tail`, `wc`, `grep`) run directly using bounded filesystem operations inside the selected folders. They do not invoke a shell. The separate **Commands with approval** permission allows supported file changes and, on supported macOS hosts, isolated scripts. The owner reviews the exact command and working folder and chooses **Approve once**, **Always approve this session**, or **Deny**. Session approval remembers only that exact command and folder for that invitation; it expires or clears with access changes, pause, revocation or restart. A new invitation starts fresh. Script contents can change between repeated runs, so use one-time approval when each revision needs review.
 
-Browser invitations reject unknown permission fields, malformed types, and unexpected fields inside folder selections before issuing credentials. Request validation runs before queuing an action and again at execution, with current authorization and folder checks. Hidden control characters are rejected in invitation names and approval explanations. The invitation flow stores JSON and does not execute SQL; SQL-looking text is treated as data. File and command output is rendered as text, and restricted commands never pass through a shell or interpreter. These checks apply to browser invitations and restricted commands; they do not sandbox screen control or advanced MCP access.
+Approved scripts run under a macOS filesystem sandbox with network, administrator commands and helper processes denied. Unsupported hosts fail closed. This does not provide memory/disk quotas, and it is separate from supervised screen control, which can affect any visible app. See [browser-agent tools and limits](docs/BROWSER_AGENT_TOOLS.md) for the precise contract.
 
-This restricted command language uses read-only filesystem operations, not a shell, project executable, or PTY. There is no `sudo`, `rm`, deletion, file writing, script execution, shell chaining, redirection, wildcard expansion, or command substitution. Unsupported commands are rejected, not forwarded to a human-run fallback. Files are limited to 1 MiB, directory listings to 1,000 entries, and returned output to about 64,000 characters. `grep` matches literal text rather than regular expressions. Paths use `/`, are relative to the selected folder, and cannot escape it or read Reach's private data. Screen control and legacy manual command handoffs cannot be combined with this mode. Builds, edits, interpreters, and general shell programs require a separately isolated execution environment and are not part of this mode.
+Browser invitation and action inputs are validated on the computer. Requests recheck current authorization before execution; agents cannot approve themselves or edit their own grants. The invitation store uses JSON, not SQL. File output is rendered as text. These controls do not sandbox unrestricted owner/CLI execution or desktop input.
 
 **Existing manual command grants:** older invitations may still ask you to handle a command yourself and mark it handled. These legacy requests never execute in Reach; the new invite UI offers the restricted terminal instead.
 
@@ -73,7 +73,17 @@ See [Agent CLI setup](docs/AGENT_CLI.md) for owner commands, restricted tailnet 
 
 ## Install
 
-With Node.js 22 or newer:
+The npm package is not published yet. For now, use a source checkout with Node.js 22 or newer and the Go version in `tailnet/go.mod`:
+
+```sh
+git clone https://github.com/nalebc/reach.git
+cd reach
+./reach
+```
+
+On Windows, use `.\reach.cmd` in place of `./reach`. Repository access is required while the release candidate is private.
+
+After the first npm release is published:
 
 ```sh
 npm install --global @nalebc/reach
@@ -327,3 +337,7 @@ Home keeps a large computer illustration when only one computer is connected, wi
 Presence reconnects independently for each computer, starting after one second and backing off to ten seconds; coming online triggers a retry. Broken sockets are detected with heartbeat checks within about twenty seconds. Expired/revoked credentials cannot reconnect. Quiet connections send only heartbeat traffic; full presence snapshots are sent when state changes. Update and restart each companion to enable this feature; older hosts may still serve Files/Screen while showing no live presence connection.
 
 For a fleet in Safari/Chrome, use one Reach URL as your workspace and explicitly allow that exact browser origin on each other companion, for example `REACH_ALLOWED_ORIGINS="https://home-mac.example.ts.net:8443" ./reach`. Use your actual private Reach URL, including its port. This permits that Reach page to make authenticated requests; it does not grant credentials, bypass local approval, or expose a public route. The native Reach app uses its existing approved Capacitor origin. Arbitrary websites and other tailnet origins remain blocked by default.
+
+## Contributing and release status
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [release-readiness report](docs/OPEN_SOURCE_READINESS.md). The [release procedure](docs/RELEASE.md) covers reproducible packaging; [physical-device acceptance](docs/RELEASE_TESTING.md) covers the checks automation cannot prove. Muse and Grok end-to-end compatibility remains unverified until recorded against a specific release candidate.

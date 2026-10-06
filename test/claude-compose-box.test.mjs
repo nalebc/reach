@@ -59,3 +59,29 @@ test("the helper picks a permission mode from the Claude app's own menu, and nev
   assert.match(pick, /text == wanted \|\| text\.hasPrefix\(wanted \+ " "\)/);
   assert.match(pick, /look\(app\)\.modeName == wanted/);
 });
+
+test("typing a message into the Claude app has no fixed pauses and reads the window in one call per element", () => {
+  // Each element's attributes in one call (a walk was ~1/3 slower one by one).
+  const look = between("func look(_ app: AXUIElement) -> Window", "\nfunc value(");
+  assert.match(look, /AXUIElementCopyMultipleAttributeValues\(e, looked/);
+  assert.doesNotMatch(look, /str\(e, kAXRoleAttribute\)/);
+  // After the text goes in: no 300 ms pause; Send is looked for at once.
+  const send = between("// The text, then a last look", 'out(["sent": true, "unconfirmed": true])');
+  assert.doesNotMatch(send, /usleep\(300_000\)/);
+  assert.doesNotMatch(send, /usleep\(200_000\)/);
+  // The box emptying is read on the box, not by walking the window again.
+  const after = send.slice(send.indexOf("AXUIElementPerformAction(send"));
+  assert.doesNotMatch(after, /look\(app\)/);
+  assert.match(after, /value\(currentBox\)\.isEmpty/);
+});
+
+test("the helper picks a permission mode from the Claude app's own menu, and never Bypass permissions", () => {
+  assert.match(swift, /let modeNames = \["Auto", "Manual", "Accept edits", "Plan"\]/);
+  const pick = between('if let wanted = option("--mode")', 'if args.contains("--stop")');
+  assert.match(pick, /guard modeNames\.contains\(wanted\)/);
+  // Already in it: nothing is opened.
+  assert.match(pick, /if window\.modeName == wanted \{ out\(\["mode": wanted\]\) \}\s*guard AXUIElementPerformAction\(button/);
+  // The menu item is the one that starts with the mode's name; then checked.
+  assert.match(pick, /text == wanted \|\| text\.hasPrefix\(wanted \+ " "\)/);
+  assert.match(pick, /look\(app\)\.modeName == wanted/);
+});

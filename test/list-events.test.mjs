@@ -140,7 +140,7 @@ test("the agents' files that say a chat changed are all watched: Codex's chats, 
   });
   const news = [];
   watch.onChange((n) => news.push(n));
-  handlers.get("/codex/sessions")("change", `2026/10/06/rollout-2026-10-06T07-21-22-${HELD}.jsonl`);
+  handlers.get(path.join("/codex", "sessions"))("change", `2026/10/06/rollout-2026-10-06T07-21-22-${HELD}.jsonl`);
   handlers.get("/claude/sessions")("change", "2018.json");
   handlers.get("/app/records")("change", "acct/org/local_c7a1f0e7-e040-4d99-a9ad-78a80b447310.json");
   await until(() => news.length === 3);

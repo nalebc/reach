@@ -35,6 +35,8 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
     // A Claude Code transcript, with its session id.
     fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
     assert.ok(await until(() => news.some((n) => n.agent === "claude" && n.id === ID)), "Claude news");
+    // Let the recognized write's trailing notification finish before testing unrelated files.
+    await new Promise((r) => setTimeout(r, 150));
     // Anything else is no news.
     const before = news.length;
     fs.writeFileSync(path.join(codexHome, "logs_2.sqlite-wal"), "z");

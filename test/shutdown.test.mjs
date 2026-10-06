@@ -34,7 +34,7 @@ async function fakeCodexDaemon(t) {
   const executable = path.join(dir, "codex");
   await fs.writeFile(
     executable,
-    `#!/bin/sh\necho '${JSON.stringify({ socketPath })}'\n`,
+    `#!/bin/sh\ncase "$*" in *--version*) echo "codex-cli 0.160.0"; exit;; *--help*) echo "start"; exit;; esac\necho '${JSON.stringify({ socketPath })}'\n`,
     { mode: 0o755 },
   );
   const server = http.createServer();
@@ -50,7 +50,7 @@ async function fakeCodexDaemon(t) {
       const message = JSON.parse(data);
       if (message.method === "initialize") daemon.initialized = true;
       if (message.id !== undefined)
-        ws.send(JSON.stringify({ id: message.id, result: {} }));
+        ws.send(JSON.stringify({ id: message.id, result: message.method.endsWith("/list") ? { data: [] } : {} }));
     }),
   );
   await new Promise((r) => server.listen(socketPath, r));
@@ -92,7 +92,7 @@ async function startReach(t, { preload } = {}) {
       "-e",
       // Left behind when the test runner dies (killed, timed out): it stops
       // itself, helpers and menu bar item included, rather than run for good.
-      `setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
+      `for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => setTimeout(() => console.error("Shutdown diagnostics:", JSON.stringify({ resources: process.getActiveResourcesInfo(), handles: process._getActiveHandles().map(h => ({ type: h.constructor.name, pid: h.pid, executable: h.spawnfile })) })), 3000).unref()); setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
     ],
     { env, stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -376,7 +376,11 @@ test("quitting lets each Claude Code reply process go", async () => {
       proc.exitCode = null;
       proc.stdout = new EventEmitter();
       proc.stderr = new EventEmitter();
-      proc.stdin = { on() {}, write() {}, end: () => (proc.ended = true) };
+      proc.stdin = { on() {}, write(raw, callback) {
+        const m = JSON.parse(raw);
+        callback?.();
+        if (m.type === "control_request") queueMicrotask(() => proc.stdout.emit("data", JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: {} } }) + "\n"));
+      }, end: () => (proc.ended = true) };
       proc.kill = () => (proc.exitCode = 143);
       procs.push(proc);
       return proc;

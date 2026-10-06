@@ -308,5 +308,5 @@ async function realWatchdog(t, mode) {
   assert.equal(fs.readFileSync(marker, "utf8"), "closed");
 }
 
-test("actual watchdog process closes its foreground child on IPC disconnect", (t) => realWatchdog(t, "disconnect"));
-test("actual watchdog process closes when a frozen parent stops renewing", (t) => realWatchdog(t, "freeze"));
+test("actual watchdog process closes its foreground child on IPC disconnect", { skip: process.platform === "win32" ? "POSIX executable and SIGTERM fixture" : false }, (t) => realWatchdog(t, "disconnect"));
+test("actual watchdog process closes when a frozen parent stops renewing", { skip: process.platform === "win32" ? "POSIX executable and SIGTERM fixture" : false }, (t) => realWatchdog(t, "freeze"));

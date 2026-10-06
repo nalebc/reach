@@ -200,8 +200,9 @@ test(
             );
           }
           let approved = false;
-          reach.codex.send = () => {
+          reach.codex.send = (_, callback) => {
             approved = true;
+            callback?.();
           };
           assert.equal(
             (

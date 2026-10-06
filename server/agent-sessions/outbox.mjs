@@ -22,6 +22,10 @@ export function createOutbox({ file = null } = {}) {
     for (const [id, list] of Object.entries(JSON.parse(fs.readFileSync(file, "utf8")))) {
       // Send now was for that moment: after a restart they wait like the rest.
       const kept = Array.isArray(list) ? list.filter(valid).map(({ now, ...m }) => m) : [];
+      for (const message of kept) if (message.delivery && message.delivery !== "paused") {
+        message.delivery = "paused";
+        message.error = "Reach restarted during delivery. Check the conversation before sending again; automatic retry is paused.";
+      }
       if (UUID.test(id) && kept.length) queues.set(id, kept);
     }
   } catch {
@@ -29,7 +33,7 @@ export function createOutbox({ file = null } = {}) {
   }
   let version = 0;
   const listeners = new Set();
-  const changed = (id) => {
+  const changed = (id, strict = false) => {
     version++;
     if (file)
       try {
@@ -37,23 +41,49 @@ export function createOutbox({ file = null } = {}) {
         const tmp = `${file}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(queues)), { mode: 0o600 });
         fs.renameSync(tmp, file);
-      } catch {
-        /* kept in memory until Reach restarts */
+      } catch (e) {
+        if (strict) throw Object.assign(new Error("Could not save delivery state. Nothing was sent."), { retryable: false });
       }
-    for (const listener of listeners) listener(id);
+    for (const listener of listeners) { try { listener(id); } catch {} }
   };
   return {
     add(id, { text = "", images = [], ...settings } = {}) {
       const message = {
-        ...settings,
+        ...Object.fromEntries(Object.entries(settings).filter(([k]) => !["delivery", "error", "id", "at"].includes(k))),
         id: randomUUID(),
         text: String(text),
         images: (Array.isArray(images) ? images : []).map(String),
         at: Date.now(),
       };
       queues.set(id, [...(queues.get(id) || []), message]);
-      changed(id);
+      try { changed(id, true); }
+      catch (error) {
+        const kept = queues.get(id).filter(m => m.id !== message.id);
+        if (kept.length) queues.set(id, kept); else queues.delete(id);
+        throw error;
+      }
       return message;
+    },
+    begin(id, messageId) {
+      const message = queues.get(id)?.find(m => m.id === messageId);
+      if (!message || message.delivery === "paused" || message.delivery === "sending") return false;
+      message.delivery = "sending";
+      try { changed(id, true); } // Persist BEFORE touching the agent, or do not send.
+      catch (error) { message.delivery = "paused"; message.error = error.message; throw error; }
+      return true;
+    },
+    pause(id, messageId, error) {
+      const message = queues.get(id)?.find(m => m.id === messageId);
+      if (!message) return;
+      message.delivery = "paused";
+      message.error = error;
+      changed(id);
+    },
+    retryLater(id, messageId) {
+      const message = queues.get(id)?.find(m => m.id === messageId);
+      if (!message) return;
+      delete message.delivery;
+      changed(id);
     },
     list: (id) => queues.get(id) || [],
     sessions: () => [...queues.keys()],
@@ -82,7 +112,7 @@ export function createOutbox({ file = null } = {}) {
     hurry(id, messageId) {
       const list = queues.get(id) || [];
       const message = list.find((m) => m.id === messageId);
-      if (!message) return false;
+      if (!message || message.delivery) return false;
       message.now = true;
       queues.set(id, [message, ...list.filter((m) => m !== message)]);
       changed(id);

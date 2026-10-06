@@ -44,6 +44,7 @@ const hashed = (name, data) => {
 export async function buildTailnet({
   out = tailnetOut,
   go = "go",
+  required = false,
   log = console.log,
 } = {}) {
   const env = {
@@ -56,6 +57,7 @@ export async function buildTailnet({
   try {
     await exec(go, ["version"], { env, timeout: 15000 });
   } catch {
+    if (required) throw Error("Go is required to build browser sign-in release assets.");
     return null; // No Go: phones need the Tailscale app until it's built.
   }
   const stage = fs.mkdtempSync(path.join(path.dirname(out), ".tailnet-build-"));
@@ -124,7 +126,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const out = output ? path.resolve(output) : tailnetOut;
   const names = tailnetCurrent(out)
     ? JSON.parse(fs.readFileSync(path.join(out, "tailnet.json"), "utf8"))
-    : await buildTailnet({ out });
+    : await buildTailnet({ out, required });
   if (required && !names)
     throw Error("Go is required to build a release with browser sign-in. Install the version in tailnet/go.mod and retry.");
   console.log(

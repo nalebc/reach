@@ -170,7 +170,7 @@ test("permission prompts become cards and the answer goes back on the same reque
   assert.deepEqual(view.prompts, [
     { id: "r1", kind: "tool", tool: "Bash", title: "Delete the build folder", command: "rm -rf build", reason: "", decisions: ["allow", "allowAlways", "deny"] },
   ]);
-  await assert.rejects(h.respond(ID, "r1", { decision: "accept" }), /not available/);
+  await assert.rejects(() => h.respond(ID, "r1", { decision: "accept" }), /not available/);
   await h.respond(ID, "r1", { decision: "allowAlways" });
   assert.deepEqual(proc.lines.at(-1), {
     type: "control_response",
@@ -181,7 +181,7 @@ test("permission prompts become cards and the answer goes back on the same reque
     },
   });
   assert.equal(h.view(ID).status, "running");
-  await assert.rejects(h.respond(ID, "r1", { decision: "allow" }), (e) => e.status === 409);
+  await assert.rejects(() => h.respond(ID, "r1", { decision: "allow" }), (e) => e.status === 409);
 
   proc.print({ type: "control_request", request_id: "r2", request: { subtype: "can_use_tool", tool_name: "Write", input: { file_path: "/work/app/a.txt" } } });
   assert.equal(h.view(ID).prompts[0].title, "Allow Write?");
@@ -1034,7 +1034,7 @@ test("watching a Claude session survives long-poll gaps but expires after leavin
   h.close();
 });
 
-test("Claude answers remain pending until delivered, failed writes retry, and duplicate taps never send twice", async (t) => {
+test("Claude answers remain pending until delivered, uncertain writes pause, and duplicate taps never send twice", async (t) => {
   const claude = fakeClaude();
   const h = host(claude);
   t.after(() => h.close());
@@ -1047,18 +1047,15 @@ test("Claude answers remain pending until delivered, failed writes retry, and du
   const failed = h.respond(ID, "real", { decision: "allow" });
   assert.equal(h.view(ID).prompts.length, 1);
   assert.equal(h.view(ID).prompts[0].replying, undefined);
-  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already being sent/);
+  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already attempted/);
   assert.equal(writes.length, 1);
   callback(new Error("broken pipe"));
-  await assert.rejects(failed, /broken pipe/);
+  await assert.rejects(failed, { code: "AGENT_DELIVERY_UNKNOWN" });
   assert.equal(h.view(ID).prompts.length, 1);
-  const delivered = h.respond(ID, "real", { decision: "deny" });
-  callback();
-  assert.deepEqual(await delivered, { answered: true });
-  assert.equal(writes[1].response.request_id, "real");
-  assert.equal(writes[1].response.response.behavior, "deny");
+  await assert.rejects(h.respond(ID, "real", { decision: "deny" }), /already attempted/);
+  assert.equal(writes.length, 1);
+  proc.print({ type: "control_cancel_request", request_id: "real" });
   assert.equal(h.view(ID).prompts.length, 0);
-  await assert.rejects(h.respond(ID, "real", { decision: "allow" }), /already answered/);
 });
 
 test("Claude cancellations and disconnected processes cannot be answered or leak old requests", async (t) => {
@@ -1075,13 +1072,77 @@ test("Claude cancellations and disconnected processes cannot be answered or leak
   proc.stdin.write = () => {};
   const answer = h.respond(ID, "disconnected", { decision: "allow" });
   proc.exit();
-  await assert.rejects(answer, /disconnected/);
+  await assert.rejects(answer, { code: "AGENT_DELIVERY_UNKNOWN" });
   assert.equal(h.view(ID).prompts.length, 0);
   await h.send(ID, { text: "continue", cwd: "/work/app" });
   ask("old-process");
   proc.exit();
   assert.equal(h.view(ID).prompts.length, 0);
   assert.equal(h.drives(ID), true);
+});
+
+test("an old Claude process cannot clear the replacement's running turn", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "first", effort: "low" });
+  const old = claude.last();
+  old.print({ type: "result", subtype: "success", is_error: false });
+  await h.send(ID, { text: "second", effort: "high" });
+  const current = claude.last();
+  assert.notEqual(old, current);
+  old.exit(); old.print({ type: "result", subtype: "success" });
+  assert.equal(h.view(ID).status, "running"); assert.equal(h.drives(ID), true);
+});
+
+test("concurrent Claude sends share one initialized process", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await Promise.all([h.send(ID, { text: "one" }), h.send(ID, { text: "two" })]);
+  assert.equal(claude.runs.length, 1);
+  assert.equal(claude.last().lines.filter(m => m.type === "user").length, 2);
+});
+
+test("a failed Claude approval write remains uncertain and cannot be replayed", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "one" });
+  const proc = claude.last();
+  proc.print({ type: "control_request", request_id: "ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  let writes = 0;
+  proc.stdin.write = (_, cb) => { writes++; cb(Error("broken pipe")); };
+  await assert.rejects(h.respond(ID, "ask", { decision: "allow" }), { code: "AGENT_DELIVERY_UNKNOWN" });
+  await assert.rejects(h.respond(ID, "ask", { decision: "allow" }), /already attempted/);
+  assert.equal(writes, 1);
+});
+
+test("a changed Claude stream fails visibly instead of leaving a permanent spinner", async (t) => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "assistant", message: { content: {} } });
+  assert.equal(h.view(ID).status, "idle");
+  assert.match(h.view(ID).error, /incompatible/);
+});
+
+test("Claude exposes real prompt changes to notification subscribers, without executing answers", async t => {
+  const claude = fakeClaude(); const h = host(claude); t.after(() => h.close());
+  const prompts = [];
+  const stop = h.onChange(id => prompts.push(h.view(id).prompts.map(p => p.id)));
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "control_request", request_id: "ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  assert.deepEqual(prompts.at(-1), ["ask"]);
+  assert.equal(claude.last().lines.some(m => m.type === "control_response"), false);
+  stop();
+});
+
+test("the session service forwards real host prompts to its notification subscription", async t => {
+  const claude = fakeClaude(); const h = host(claude);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-notify-protocol-"));
+  const sessions = createAgentSessions({ dataDir: dir, claudeHost: h });
+  t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const events = [];
+  const unsubscribe = sessions.onPromptChange((agent, id, prompts) => events.push({ agent, id, prompts }));
+  await h.send(ID, { text: "one" });
+  claude.last().print({ type: "control_request", request_id: "native-ask", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  assert.equal(events.at(-1).agent, "claude");
+  assert.equal(events.at(-1).prompts[0].id, "native-ask");
+  unsubscribe();
 });
 
 // The Codex app (ChatGPT.app's Chromium view) shows macOS accessibility a

@@ -356,8 +356,11 @@ test("owner edits preserve an accepted browser binding while expanding, restrict
   assert.deepEqual(current.policy.terminalIds, []);
   assert.equal(f.auth.verifyFunnel(access.token, binding()), null);
   assert.equal(f.auth.verify(access.token), null);
+  f.auth.changeAccess(grant.clientId, { folders: "keep", restrictedTerminal: true, screen: "ask" });
+  const withScreen = f.auth.verifyFunnel(access.token, f.key);
+  assert.equal(withScreen.policy.screen, "ask");
+  assert.equal(withScreen.policy.restrictedTerminal, true);
   for (const changes of [
-    { folders: "keep", restrictedTerminal: true, screen: "ask" },
     { folders: "keep", exec: true },
     { folders: "keep", terminalIds: ["; rm -rf /"] },
     { folders: [{ root: 0, path: "../private" }], screen: "off" },

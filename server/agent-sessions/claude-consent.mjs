@@ -3,6 +3,7 @@
 // drawn in the session's own view), presses the same button there through
 // Accessibility (scripts/native/claude-consent.swift), and counts it answered
 // once the transcript has the answer.
+import { object } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
@@ -27,7 +28,9 @@ export async function pressClaudeConsent(
   } catch {
     throw bad("Couldn't press it in the Claude app. Answer it on your Mac.", 502);
   }
+  if (!object(result)) throw bad("Unknown approval response. Check it on your Mac.", 409);
   if (result.error) throw bad(`${result.error} Answer it on your Mac.`, 409);
+  if (result.pressed !== choice) throw bad("The Claude app returned an unknown approval response. Check it on your Mac before answering again.", 409);
   return result;
 }
 
@@ -43,34 +46,37 @@ export function createClaudeConsent({
   // long one takes a moment).
   confirmMs = 10000,
 }) {
-  let answering = false;
+  let busy = false;
+  const attempted = new Set();
   return {
     owns: (promptId) => typeof promptId === "string" && promptId.startsWith("consent:"),
     async answer(id, promptId, { decision } = {}) {
       const choice = CONSENT_CHOICES[decision];
       if (!choice) throw bad("Choose Deny or Allow for this session.", 400);
-      if (answering) throw bad("An answer is already being sent to the Claude app.", 409);
-      answering = true;
+      if (attempted.size >= 2048) throw bad("Too many approval attempts. Answer on your Mac.", 409);
+      if (busy) throw bad("An answer is already being sent to the Claude app.", 409);
+      if (attempted.has(`${id}:${promptId}`)) throw bad("This request was already answered, or an answer is in progress or was already attempted. Answer it on your Mac.", 409);
+      busy = true;
       try {
-        const asked = await pending(id);
-        if (asked?.id !== promptId) throw bad("This request was already answered.", 409);
-        // Drawn in its session's view: show that session first.
-        const list = shown();
-        if (list[0]?.id !== id) {
-          const record = list.find((s) => s.id === id);
-          if (!record) throw bad("The Claude app doesn't list this session. Answer it on your Mac.", 409);
-          await open(`claude://code/continue?session=${record.session}`);
-          await wait(switchMs);
-        }
-        if ((await pending(id))?.id !== promptId) throw bad("This request was already answered.", 409);
-        // The card says what Reach expects: "Allow Claude to use" and each app.
-        await press(choice, ["Allow Claude to use", ...(asked.apps || [])]);
-        for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
-          if ((await pending(id))?.id !== promptId) return { answered: true };
-        throw bad("The Claude app didn't take the answer. Answer it on your Mac.", 409);
-      } finally {
-        answering = false;
+      const asked = await pending(id);
+      if (asked?.id !== promptId) throw bad("This request was already answered.", 409);
+      // Drawn in its session's view: show that session first.
+      const list = shown();
+      if (list[0]?.id !== id) {
+        const record = list.find((s) => s.id === id);
+        if (!record) throw bad("The Claude app doesn't list this session. Answer it on your Mac.", 409);
+        await open(`claude://code/continue?session=${record.session}`);
+        await wait(switchMs);
       }
+      if ((await pending(id))?.id !== promptId) throw bad("This request was already answered.", 409);
+      if (shown()[0]?.id !== id) throw bad("The Claude app is not showing this request. Answer it on your Mac.", 409);
+      attempted.add(`${id}:${promptId}`);
+      // The card says what Reach expects: "Allow Claude to use" and each app.
+      await press(choice, ["Allow Claude to use", ...(asked.apps || [])]);
+      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
+        if ((await pending(id))?.id !== promptId) return { answered: true };
+      throw bad("The Claude app did not confirm the answer. Answer it on your Mac.", 409);
+      } finally { busy = false; }
     },
   };
 }

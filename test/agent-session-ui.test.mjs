@@ -3222,10 +3222,12 @@ test("a reload comes back to the chat that was open, in this tab, on this comput
   const feed = { sessions: [claudeSession()], errors: {}, health: signedIn, failure: "", reload: async () => {}, recheck: () => {} };
   await mount(React.createElement(EverythingChat, { peer, feed, target: { agent: "claude", id: CLAUDE } }));
   await dom.waitFor(() => button("Back to all sessions"));
+  await dom.waitFor(() => link.lastPlace(peer.id)?.id === CLAUDE);
   assert.deepEqual(link.lastPlace(peer.id), { page: "sessions", agent: "claude", id: CLAUDE });
   assert.equal(link.lastPlace("another-mac"), null, "another computer's place isn't this one's");
   // Back to the list: a reload shows the list.
   await click(button("Back to all sessions"));
+  await dom.waitFor(() => !link.lastPlace(peer.id)?.id);
   assert.deepEqual(link.lastPlace(peer.id), { page: "sessions" });
   link.rememberPlace(peer.id, { page: "files" });
   assert.deepEqual(link.lastPlace(peer.id), { page: "files" });

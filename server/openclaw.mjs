@@ -338,9 +338,9 @@ export function createOpenClaw({
           let frame;
           try {
             frame = JSON.parse(String(buffer));
-          } catch {
-            return;
-          }
+          } catch { return finish(connectionError()); }
+          if (!frame || typeof frame !== "object" || Array.isArray(frame) || typeof frame.type !== "string")
+            return finish(connectionError());
           if (frame.type === "res") {
             // `agent` has two responses with the SAME RPC id: accepted, then
             // finished (including delivery errors). Keep listening after ack.
@@ -603,7 +603,11 @@ export function createOpenClaw({
       includeUnknown: true,
     })
       .then((result) => {
-        if (!Array.isArray(result?.sessions))
+        if (!Array.isArray(result?.sessions) || result.sessions.some(row =>
+          !row || typeof row !== "object" || typeof row.key !== "string" || !row.key ||
+          ["label", "displayName", "agentId", "channel", "lastChannel", "model"].some(k => row[k] != null && typeof row[k] !== "string") ||
+          (row.deliveryContext?.channel != null && typeof row.deliveryContext.channel !== "string")
+        ))
           throw fail(502, "OpenClaw returned an unsupported session list.");
         lastList = result.sessions;
         listAt = Date.now();
@@ -655,7 +659,7 @@ export function createOpenClaw({
         command: a.request?.command || "OpenClaw needs permission",
         cwd: a.request?.cwd || "",
         expiresAt: a.expiresAtMs,
-        canRespond: ready && socket === a.socket && (!methods || methods.has("exec.approval.resolve")),
+        canRespond: !a.attempted && ready && socket === a.socket && (!methods || methods.has("exec.approval.resolve")),
       }));
   const destination = (s) => {
     const context = s.deliveryContext || {};
@@ -825,8 +829,8 @@ export function createOpenClaw({
         session: session(row),
         items: messages
           .map((m, i) => ({
-            id: m.id || `${m.timestamp || 0}:${i}`,
-            role: m.role || "system",
+            id: String(m.id || `${m.timestamp || 0}:${i}`),
+            role: typeof m.role === "string" ? m.role : "system",
             text:
               textOf(m) ||
               (Array.isArray(m.content) &&
@@ -1088,11 +1092,13 @@ export function createOpenClaw({
       if (!["allow-once", "deny"].includes(decision))
         throw fail(400, "Choose Allow once or Deny.");
       if (prompt.replying) throw fail(409, "This answer is already being sent.");
+      if (prompt.attempted) throw fail(409, "This answer was already attempted. Check OpenClaw before answering again.");
       if (!ready || socket !== prompt.socket || socket?.readyState !== WebSocket.OPEN)
         throw connectionError();
       if (methods && !methods.has("exec.approval.resolve"))
         throw fail(409, "This OpenClaw Gateway cannot accept approvals. Answer in OpenClaw on your computer.");
       prompt.replying = true;
+      prompt.attempted = true;
       try {
         // Use the connection that requested this decision; never reconnect
         // and send an old answer into a different Gateway session.

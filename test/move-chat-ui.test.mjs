@@ -182,7 +182,10 @@ test("a quiet line under the header says so twice at most; a tap opens ⋯ where
   await click(hint);
   assert.match((await dom.waitFor(() => $(".as-details .move-item"))).textContent, /^Continue in Codex/);
   // Tapped once: never again.
-  assert.equal(dom.window.localStorage.getItem("reach.moveHint"), "99");
+  for (const view of views.splice(0)) await view.unmount();
+  await open(claudeChat());
+  await settle(100);
+  assert.equal($(".move-hint"), null, "a dismissed hint stays dismissed on the next chat");
   for (const view of views.splice(0)) await view.unmount();
   // Not tapped: shown on the second chat opened, not on the third.
   dom.window.localStorage.setItem("reach.moveHint", "1");

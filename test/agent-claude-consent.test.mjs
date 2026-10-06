@@ -21,7 +21,7 @@ const app = (id = "consent:toolu_1") => {
 
 test("a phone's answer presses the same button on the Claude app's card, showing that session first when it isn't on screen", async () => {
   const mac = app();
-  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(B, A), wait: async () => {} });
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: () => (mac.opened.length ? shownAs(A, B)() : shownAs(B, A)()), wait: async () => {} });
   assert.equal(consent.owns("consent:toolu_1"), true);
   assert.equal(consent.owns("7"), false);
   assert.deepEqual(await consent.answer(A, "consent:toolu_1", { decision: "allow" }), { answered: true });

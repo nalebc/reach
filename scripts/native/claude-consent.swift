@@ -116,18 +116,16 @@ struct ClaudeConsent {
       if !ready { usleep(250_000) }
     }
     guard ready, let choice = press else { out(find ? ["found": false, "ms": ms()] : ["error": "The Claude app isn't showing that request."]) }
-    // Pressed, then gone: answered. Still there: once more, then say so.
-    for attempt in 0..<2 {
-      guard let card = look(), let button = card[choice] else {
-        out(attempt == 0 ? ["error": "This request was already answered."] : ["pressed": choice, "ms": ms()])
-      }
-      guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
-      else { out(["error": "Couldn't press it in the Claude app."]) }
-      for _ in 0..<10 {
-        usleep(200_000)
-        if look() == nil { out(["pressed": choice, "ms": ms()]) }
-      }
+    // Exactly one press: a delayed UI acknowledgement must never approve a new card.
+    guard let card = look(), let button = card[choice] else {
+      out(["error": "This request was already answered."])
     }
-    out(["error": "The Claude app didn't take the answer."])
+    guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    else { out(["error": "Couldn't press it in the Claude app."]) }
+    for _ in 0..<20 {
+      usleep(200_000)
+      if look() == nil { out(["pressed": choice, "ms": ms()]) }
+    }
+    out(["error": "The Claude app did not confirm the answer. Check it on your Mac."])
   }
 }

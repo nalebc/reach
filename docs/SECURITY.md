@@ -1,4 +1,6 @@
-# Reach security review — 2026-10-03
+# Reach security model and review history
+
+For the current browser-agent command and approval contract, see [BROWSER_AGENT_TOOLS.md](BROWSER_AGENT_TOOLS.md). Sections dated below record earlier reviews and may describe superseded UI. Current release qualification is tracked in [OPEN_SOURCE_READINESS.md](OPEN_SOURCE_READINESS.md). To report a vulnerability, follow [the security policy](../SECURITY.md).
 
 ## Current release model (2026-10-05)
 

@@ -9,6 +9,7 @@
 // Claude forward. It waits, saying why, while you use the Claude app itself.
 import fs from "node:fs";
 import path from "node:path";
+import { object, uncertainDelivery } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
@@ -40,22 +41,31 @@ export async function typeIntoClaude(
 ) {
   const file = await binary();
   const json = draft || expected !== undefined;
-  const call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode ? [] : images.flatMap((image) => ["--image", image]))], {
+  let call;
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
-  });
+  }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
     call.child.stdin.on("error", () => {}); // helper can refuse before reading
     call.child.stdin.end(JSON.stringify({ text, expected: expected ?? "", draft: !!draft }));
   }
-  const { stdout } = await call;
-  let result = {};
+  let result;
   try {
+    const { stdout } = await call;
     result = JSON.parse(String(stdout).trim().split("\n").at(-1));
-  } catch {
-    throw waiting("Couldn't type it into the Claude app.");
+  } catch { throw uncertainDelivery("claude"); }
+  if (!object(result)) throw uncertainDelivery("claude");
+  if (mode) {
+    if (result.mode !== mode || result.error) throw uncertainDelivery("claude");
+    return result;
   }
-  // otherChat: the window shows another chat (it says which).
-  if (result.error) throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {});
+  const action = stop ? "stopped" : draft ? "drafted" : "sent";
+  // A refusal says what didn't happen ({"sent": false, "error": …}), and is
+  // tried again. otherChat: the window shows another chat (it says which).
+  // Anything else unclear: maybe sent, never retried.
+  if (result[action] === false && typeof result.error === "string")
+    throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {});
+  if (result[action] !== true || result.error) throw uncertainDelivery("claude");
   return result;
 }
 
