@@ -73,7 +73,17 @@ See [Agent CLI setup](docs/AGENT_CLI.md) for owner commands, restricted tailnet 
 
 ## Install
 
-With Node.js 22 or newer:
+The npm package is not published yet. For now, use a source checkout with Node.js 22 or newer and the Go version in `tailnet/go.mod`:
+
+```sh
+git clone https://github.com/nalebc/reach.git
+cd reach
+./reach
+```
+
+On Windows, use `.\reach.cmd` in place of `./reach`. Repository access is required while the release candidate is private.
+
+After the first npm release is published:
 
 ```sh
 npm install --global @nalebc/reach

@@ -34,7 +34,7 @@ OpenClaw conversations owned by external channels remain read-only. Reach sends 
 | Security review | Independently review public Funnel admission, the custom passkey verifier, script sandbox boundaries, scope changes and replay/cancellation. Use disposable folders/accounts. Screen control and unrestricted CLI/PTY access can act as the signed-in user. Sharing executable startup files or the Reach installation itself carries additional risk. |
 | Repository controls | Enable private vulnerability reporting and main-branch checks before/when making the repository public. GitHub currently returns 404 for reporting status and 403 for branch protection on this private plan. Configure these when the plan/visibility permits them. |
 | Public assets | Review the full demo video/GIF and all screenshots for private information; the inspected poster uses sample data. Refresh the older demo labels and logo before using it in the announcement. Review third-party brand usage and generated notices. |
-| Release artifact | Build and qualify one exact artifact; publish its checksum, known limitations, platform matrix and upgrade/recovery instructions. No version tag or public release has been created by this audit. |
+| Release artifact | The npm registry returns 404 for `@nalebc/reach` and GitHub has no releases. Confirm npm scope ownership and publishing access, then build and qualify one exact artifact; publish its checksum, known limitations, platform matrix and upgrade/recovery instructions. No version tag or public release has been created by this audit. |
 
 ## Announcement language
 

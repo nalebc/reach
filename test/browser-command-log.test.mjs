@@ -20,9 +20,9 @@ test("history is durable, private, credential-free, immutable and filtered by cl
   await log.append(record("request-1", { status: "executing" }));
   await log.append(record("request-1", { status: "executed", output: "\u001b[31mhello\u001b[0m\u202e", completedAt: 400 }));
   await log.append(record("request-2:0", { clientId: "agent-two", action: { type: "terminal-change", command: "touch note.txt", root: 0 }, status: "denied", approval: "owner", createdAt: 300 }));
-  assert.equal((await fs.stat(dir)).mode & 0o777, 0o700);
+  if (process.platform !== "win32") assert.equal((await fs.stat(dir)).mode & 0o777, 0o700);
   const file = path.join(dir, "commands.jsonl");
-  assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
   assert.doesNotMatch(await fs.readFile(file, "utf8"), /DO-NOT-STORE|SECRET|Authorization|browserBinding|token/);
   assert.equal((await log.history({ clientId: "agent-one" })).length, 1);
   assert.equal((await log.history({ clientId: "agent-one" }))[0].output, "hello");
@@ -71,7 +71,8 @@ test("history fails closed on symlinks, unsafe modes, truncated records and unex
   await fs.symlink(actual, dir);
   await assert.rejects(createBrowserCommandLog({ dir }), /private owned directory/);
   await fs.unlink(dir); await fs.mkdir(dir, { mode: 0o755 });
-  await assert.rejects(createBrowserCommandLog({ dir }), /private owned directory/);
+  // Windows uses ACLs, not POSIX permission bits. Link and tamper checks still run.
+  if (process.platform !== "win32") await assert.rejects(createBrowserCommandLog({ dir }), /private owned directory/);
   await fs.chmod(dir, 0o700);
   const outside = path.join(temp, "outside"); await fs.writeFile(outside, "", { mode: 0o600 });
   await fs.symlink(outside, path.join(dir, "commands.jsonl"));

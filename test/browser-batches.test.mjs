@@ -1,4 +1,5 @@
 import test from 'node:test';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createBrowserApprovals } from '../server/browser-approvals.mjs';
 
@@ -118,8 +119,8 @@ test('scope changes, roots changes, expiry and owner cancellation stop subsequen
 test('restricted command batches preserve exact folder/cwd and per-step output without enabling shell', async () => {
   const f = fixture(); Object.assign(f.client.policy, { screen: 'off', restrictedTerminal: true });
   const r = f.submit(batch([{ type: 'terminal', root: 0, cwd: '', command: 'cd child' }, { type: 'terminal', root: 0, cwd: 'child', command: 'ls' }]));
-  assert.equal(r.expiresAt, 301000); assert.equal(r.steps[0].folder, '/shared');
-  assert.equal(r.steps[1].folder, '/shared/child');
+  assert.equal(r.expiresAt, 301000); assert.equal(r.steps[0].folder, path.normalize('/shared'));
+  assert.equal(r.steps[1].folder, path.normalize('/shared/child'));
   const result = await f.decide(r);
   assert.equal(result.status, 'executed'); assert.equal(result.steps[0].directory, 'child');
   assert.equal(result.steps[1].output, 'output');
