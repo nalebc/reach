@@ -407,6 +407,7 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       start: async (agent, body) => (seen.push(["start", agent, body]), { threadId: T }),
       respond: async (agent, id, prompt, answer) => (seen.push(["respond", prompt, answer]), { answered: true }),
       stop: async () => ({ stopped: true }),
+      mode: async (agent, id, { mode }) => (seen.push(["mode", agent, mode]), { mode, applied: true }),
       models: async (agent) => ({ models: [{ id: `${agent}-model` }], mode: "guardian-approvals" }),
       commands: async (agent) => (agent === "claude" ? [{ name: "compact", description: "Summarize", hint: "" }] : []),
       view: () => ({ version: 3, status: "running", prompts: [] }),
@@ -431,6 +432,12 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal(uploaded.status, 200);
     const { id } = await uploaded.json();
 
+    // A permission mode picked on the phone, picked in the Claude app too: the
+    // owner's call only, and never Bypass permissions.
+    assert.equal((await call(`/api/sessions/claude/${T}/mode`, agent.token, { mode: "plan" })).status, 403);
+    assert.deepEqual(await (await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "plan" })).json(), { mode: "plan", applied: true });
+    assert.equal((await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "bypassPermissions" })).status, 400);
+    assert.deepEqual(seen.filter(([kind]) => kind === "mode"), [["mode", "claude", "plan"]]);
     assert.equal((await call(`/api/sessions/codex/${T}/messages`, agent.token, { text: "hi" })).status, 403);
     const sent = await call(`/api/sessions/codex/${T}/messages`, owner.token, {
       text: "look at this",

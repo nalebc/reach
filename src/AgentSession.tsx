@@ -199,6 +199,54 @@ function ReplyActions({
   );
 }
 
+// Any message, yours or the agent's, can be copied: its copy button shows on
+// hover with a mouse, or when the message is tapped on a phone.
+function Copyable({
+  text,
+  side,
+  bare = false,
+  children,
+}: {
+  text: string;
+  side: "user" | "assistant";
+  bare?: boolean;
+  children: ReactNode;
+}) {
+  const [shown, setShown] = useState(false);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div
+      className={`as-msg ${side} ${shown ? "shown" : ""}`}
+      onClick={(e) => {
+        if (bare || (e.target as HTMLElement).closest("a, button, summary, img, input, textarea")) return;
+        if (String(window.getSelection?.() || "")) return;
+        setShown(!shown);
+      }}
+    >
+      {children}
+      {!bare && (
+        <div className="as-msg-actions">
+          <button
+            className="as-icon"
+            aria-label={copied ? "Copied" : "Copy message"}
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(text);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              } catch {
+                /* nothing to copy into */
+              }
+            }}
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app writes it.
 const claudeModel = (id?: string | null) => {
   if (id === "default") return "Default";
@@ -426,6 +474,59 @@ function ErrorNote({
 
 // Pictures sent with a message, above its text as the apps show them: from
 // this page's own copy while sending, then from the session's transcript.
+// The permission mode, picked as each app has you pick it: a small menu over
+// its composer's mode button, the one in force checked, a tap outside closing
+// it. The Claude app's names, in its order; the Codex app's title, and the
+// line under each choice (both read from the apps themselves).
+const CLAUDE_MODE_ORDER = ["manual", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"];
+const CODEX_MODE_NOTES: Record<string, string> = {
+  auto: "Always ask to edit external files and use the internet",
+  "guardian-approvals": "Only ask for actions detected as potentially unsafe",
+  "full-access": "Unrestricted access to the internet and any file on your computer",
+  custom: "Uses permissions defined in config.toml",
+};
+function ModeMenu({
+  agent,
+  choices,
+  current,
+  onPick,
+  onClose,
+}: {
+  agent: AgentName;
+  choices: { id: string; label: string; note?: string }[];
+  current: string | null;
+  onPick: (id: string) => void;
+  onClose: () => void;
+}) {
+  const rank = (id: string) => (CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length);
+  const list =
+    agent === "claude"
+      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: modeLabel("claude", m.id) || m.label, note: "" }))
+      : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [onClose]);
+  return (
+    <>
+      <div className="as-mode-scrim" onClick={onClose} />
+      <div className={`as-mode-menu ${agent}`} role="menu" aria-label="Permissions">
+        {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
+        {list.map((m) => (
+          <button key={m.id} role="menuitemradio" aria-checked={m.id === current} onClick={() => onPick(m.id)}>
+            <span className="as-mode-menu-text">
+              <span>{m.label}</span>
+              {m.note && <small>{m.note}</small>}
+            </span>
+            {m.id === current && <Check size={16} />}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 // A long message you sent folds to its first lines, as the Claude and Codex
 // apps fold it (an 8,000-character paste took eleven screens).
 function FoldedText({ text }: { text: string }) {
@@ -1319,6 +1420,13 @@ export default function AgentSessionView({
       ? lastBlock.item.text
       : "";
 
+  const replyActions =
+    !!lastReply &&
+    !working &&
+    !live.streaming &&
+    !pending.length &&
+    !live.outbox?.length;
+
   // Why replying isn't possible from here, if it isn't.
   const claudeHealth = health.find((h) => h.agent === "claude");
   const codexHealth = health.find((h) => h.agent === "codex");
@@ -1715,7 +1823,8 @@ export default function AgentSessionView({
             b.type === "tools" ? (
               <ToolRun key={`tools-${b.items[0].id}`} items={b.items} />
             ) : b.item.role === "user" ? (
-              <div key={b.item.id} className="as-user">
+              <Copyable key={b.item.id} text={b.item.text} side="user" bare={!b.item.text.trim()}>
+              <div className="as-user">
                 {b.item.queued && (
                   <span className="as-tag">Sent while working</span>
                 )}
@@ -1742,6 +1851,7 @@ export default function AgentSessionView({
                   <FoldedText text={b.item.text} />
                 )}
               </div>
+              </Copyable>
             ) : b.item.kind === "output" ? (
               <div key={b.item.id} className="as-output">
                 <AgentMarkdown text={b.item.text} />
@@ -1762,17 +1872,16 @@ export default function AgentSessionView({
                 {b.item.text}
               </p>
             ) : (
-              <div key={b.item.id} className="as-assistant">
-                <AgentMarkdown text={b.item.text} />
-              </div>
+              // The newest reply has its own copy and share row beneath.
+              <Copyable key={b.item.id} text={b.item.text} side="assistant" bare={i === blocks.length - 1 && replyActions}>
+                <div className="as-assistant">
+                  <AgentMarkdown text={b.item.text} />
+                </div>
+              </Copyable>
             ),
           ))
         )}
-        {lastReply &&
-          !working &&
-          !live.streaming &&
-          !pending.length &&
-          !live.outbox?.length && (
+        {replyActions && (
             <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
           )}
         {pending
@@ -1991,40 +2100,26 @@ export default function AgentSessionView({
           />
         )}
         {choosingMode && (
-          <div
-            className={`as-picker ${agent}`}
-            role="group"
-            aria-label="Permissions"
-          >
-            <div className="as-picker-row">
-              {modeChoices.map((m) => (
-                <button
-                  key={m.id}
-                  aria-pressed={
-                    m.id === modeShown ||
-                    (modeShown === "default" && m.id === "manual")
-                  }
-                  title={m.note || undefined}
-                  onClick={() => {
-                    setChoice({ ...choice, mode: m.id });
-                    setChoosingMode(false);
-                    // A Claude app chat: picked in the app's own menu too, so
-                    // both show it (else it goes with the next message).
-                    if (agent === "claude" && info.inApp)
-                      setAgentMode(peer, initial, m.id)
-                        .then((r) => {
-                          if (!r.applied) return;
-                          setInfo((old) => ({ ...old, mode: m.id }));
-                          setChoice((c) => (c.mode === m.id ? { ...c, mode: undefined } : c));
-                        })
-                        .catch((e) => setNote((e as Error).message));
-                  }}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <ModeMenu
+            agent={agent}
+            choices={modeChoices}
+            current={modeShown === "default" ? "manual" : modeShown}
+            onClose={() => setChoosingMode(false)}
+            onPick={(id) => {
+              setChoice({ ...choice, mode: id });
+              setChoosingMode(false);
+              // A Claude app chat: picked in the app's own menu too, so
+              // both show it (else it goes with the next message).
+              if (agent === "claude" && info.inApp)
+                setAgentMode(peer, initial, id)
+                  .then((r) => {
+                    if (!r.applied) return;
+                    setInfo((old) => ({ ...old, mode: id }));
+                    setChoice((c) => (c.mode === id ? { ...c, mode: undefined } : c));
+                  })
+                  .catch((e) => setNote((e as Error).message));
+            }}
+          />
         )}
         <SlashMenu menu={slashMenu} />
         {settings && picking && (

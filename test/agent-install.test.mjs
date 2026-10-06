@@ -72,3 +72,39 @@ test("installing from the phone: shown first, run once confirmed, the owner's ow
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("an install that can't start answers with why, and Reach keeps running", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-install-fail-"));
+  const reach = await createReach({
+    roots: [root],
+    dataDir: path.join(root, ".reach"),
+    agentSessions: { list: async () => ({ sessions: [], errors: {} }), health: async () => [] },
+    terminals: {
+      // The Mac couldn't open a terminal (a shell that won't start, say).
+      create: () => {
+        throw new Error("posix_spawnp failed.");
+      },
+      list: () => [],
+      get: () => null,
+    },
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const install = (body, app = "claude") =>
+    fetch(`${url}/api/sessions/agent-install/${app}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    const failed = await install({ confirm: true });
+    assert.ok(failed.status >= 400);
+    assert.equal(typeof (await failed.json()).error, "string");
+    // Still answering.
+    assert.equal((await install({})).status, 200);
+  } finally {
+    await new Promise((r) => reach.server.close(r));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

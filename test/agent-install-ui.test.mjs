@@ -26,7 +26,7 @@ before(async () => {
         const plan = { agent: "claude", name: "Claude Code", command: "curl -fsSL https://claude.ai/install.sh | bash" };
         return body.confirm ? { ...plan, terminal } : plan;
       },
-      "/api/terminals": () => [terminal],
+      "/api/terminals": () => (terminal ? [terminal] : []),
     },
   });
   React = dom.React;
@@ -65,3 +65,33 @@ test("the phone installs Claude Code on the Mac: shown, confirmed, watched, chec
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });
+
+// "Make sure install failures don't crash the app" (2026-10-06): an install
+// that fails says so with Try again, and one whose terminal is gone (closed,
+// or Reach restarted mid-install) no longer spins forever.
+for (const [what, end] of [
+  ["fails", () => (terminal = { ...terminal, status: "exited", exitCode: 1, preview: "curl: (6) Could not resolve host" })],
+  ["loses its terminal", () => (terminal = null)],
+]) {
+  test(`an install that ${what} stops, says so, offers Try again, and checks the Mac again`, async () => {
+    terminal = { id: "t1", status: "running", preview: "Downloading Claude Code…" };
+    sent.length = 0;
+    dom.window.localStorage.setItem("reach.chatAgent", "claude");
+    let rechecked = 0;
+    const view = await dom.render(
+      React.createElement(EverythingChat, {
+        peer,
+        feed: { sessions: [], errors: {}, health, failure: "", reload: async () => {}, recheck: () => rechecked++ },
+      }),
+    );
+    await click(await dom.waitFor(() => button("Install on Mac")));
+    await click(await dom.waitFor(() => button("Install")));
+    await dom.waitFor(() => /Installing Claude Code on your Mac/.test(dom.document.body.textContent));
+    end();
+    await dom.waitFor(() => /The install stopped before finishing/.test(dom.document.body.textContent), 5000);
+    assert.ok(button("Try again"));
+    assert.ok(rechecked > 0, "the Mac is checked again");
+    await view.unmount();
+    assert.deepEqual(dom.errors, []);
+  });
+}

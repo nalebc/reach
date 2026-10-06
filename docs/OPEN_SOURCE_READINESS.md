@@ -6,17 +6,18 @@ Reach is an early-access release candidate. A stable source revision is not the 
 
 The candidate starts from GitHub main and preserves the newer live-checkout work: simplified invitations and editable grants, browser-agent admission, bounded terminal reads, approved file changes and macOS scripts, session approvals, screen batches, mobile chat/queues/approval cards, direct notification routing, OpenClaw restrictions, the selected pixel logo, and the single-instance launcher.
 
-The saved agent-integration audit was merged against its original baselines, rather than copying an older checkout over newer work. Restored guards cover malformed agent messages, uncertain delivery, stale turn completion, one-shot approvals and durable outbox recovery. The latest folder picker and permission-mode UI were included. Superseded agent-coin UI remains removed. Historical branches and local work artifacts are retained; scratch previews, private state and test logs are excluded from the release.
+The saved agent-integration audit was merged against its original baselines, rather than copying an older checkout over newer work. Restored guards cover malformed agent messages, uncertain delivery, stale turn completion, one-shot approvals and durable outbox recovery. The latest folder picker, permission-mode menu, message copying, notification panel and installation-failure tests were included. Three permission-handoff state tests were recovered from the other workspace. Superseded agent-coin UI remains removed. Historical branches and local work artifacts are retained; scratch previews, private state and test logs are excluded from the release.
 
 OpenClaw conversations owned by external channels remain read-only. Reach sends only into its own conversations. Earlier audit text describing external delivery is historical, not a feature promise.
 
 ## Checks and repairs
 
 - Production build and TypeScript check pass locally.
-- The latest full Node 22 run passed 1,417 tests, skipped seven native/opt-in checks, and exposed one MockTimers warning captured as a UI error. The warning setup was corrected; 213 focused checks, including the affected suite and subsequent changes, pass. Final commit CI is still required.
-- A clean npm artifact install with production dependencies passes CLI, UI, authenticated file access and access-denial checks.
+- The final local Node 22 run passed 1,425 tests with zero failures and six optional/platform skips. Three subsequently recovered permission-handoff tests also pass. CI validates the complete combined suite.
+- A clean 298-file npm artifact install with production dependencies passes CLI, UI, authenticated file access and access-denial checks.
 - Browser WebAssembly assets are required, checked for source freshness and integrity, and packaged with the application. Portable packaging now includes the agent HTML entry point.
 - npm audit reports zero known vulnerabilities for the installed lockfile. This does not cover unknown issues or constitute a security certification.
+- Go vulnerability scanning for the browser `js/wasm` target found no affected imported packages or reachable symbols. The module-level advisory GO-2026-5932 concerns `golang.org/x/crypto/openpgp`, which is absent from the dependency graph; there is no patched version for that unmaintained package. CI now repeats this scan.
 - Current-tree privacy checks pass. A pattern scan of 1,307 reachable historical text blobs found no matches for private keys, AWS/GitHub credentials or Tailscale credentials. Large/binary blobs and arbitrary secret formats need human review.
 - Installed Codex 0.160.0 passes seven generated-schema contracts; installed Claude Code 2.1.291 passes an isolated initialization handshake. Neither test sends a model turn. These are protocol checks, not signed-in or physical-phone qualification.
 - Existing CI failures revealed POSIX-only fixtures being run as Windows executables, Unix-socket tests on an unsupported Windows ingress, path-separator assumptions, mode-bit assertions on Windows, and a real Windows absolute-folder validation bug. Tests now distinguish platform prerequisites while retaining cross-platform authentication/scope coverage; Codex accepts native absolute paths.

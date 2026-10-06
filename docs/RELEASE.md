@@ -20,7 +20,7 @@ npm run verify:package
 
 The portable folder is `release/reach`. It includes startup scripts, source/build inputs, browser networking, the license, and documentation; it installs its dependencies on first launch. The npm artifact contains built assets and runtime code rather than the React source. Neither includes local Reach state, signing files, or `work/` scratch files.
 
-CI repeats the release checks on macOS, Linux and Windows. A separate unsigned simulator build compiles the iOS plugins. CI configuration in a local checkout is not evidence that those remote jobs have passed: inspect the checks on the exact release commit.
+CI repeats the release checks on macOS, Linux and Windows. A Go vulnerability check scans the browser networking dependency graph. A separate unsigned simulator build compiles the iOS plugins. CI configuration in a local checkout is not evidence that those remote jobs have passed: inspect the checks on the exact release commit.
 
 ## Native iOS verification
 

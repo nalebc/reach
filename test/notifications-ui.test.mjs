@@ -97,7 +97,7 @@ test("resolved requests disappear on reopening, and a lost connection never says
   view.container.querySelector(".notification-bell").click();
   await settle(60);
   assert.match(view.container.textContent, /You're all caught up/);
-  view.container.querySelector('[aria-label="Close panel"]').click();
+  view.container.querySelector('[aria-label="Close notifications"]').click();
   await settle();
   fail = true;
   view.container.querySelector(".notification-bell").click();
@@ -247,4 +247,28 @@ test("an outdated request stays reviewable and displays the server error", async
   );
   await view.unmount();
   globalThis.fetch = dom.window.fetch = original;
+});
+
+// The bell opens its own panel: a page on a phone, a dropdown under the bell
+// on a computer. It rose from the bottom as a sheet, far from the bell.
+test("the bell's panel opens from the bell, not as a bottom sheet", async () => {
+  items = [];
+  const view = await mount();
+  await settle(60);
+  const bell = view.container.querySelector(".notification-bell");
+  bell.getBoundingClientRect = () => ({ top: 10, bottom: 54, left: 900, right: 944, width: 44, height: 44 });
+  Object.defineProperty(dom.window, "innerWidth", { configurable: true, value: 1000 });
+  bell.click();
+  await settle(60);
+  const panel = view.container.querySelector("dialog[open]");
+  assert.ok(panel.classList.contains("notification-center"));
+  assert.ok(!panel.classList.contains("screen-popup"), "not the shared bottom sheet");
+  assert.ok(!panel.querySelector(".sheet-handle"), "no drag handle");
+  assert.equal(panel.style.getPropertyValue("--bell-top"), "60px", "just under the bell");
+  assert.equal(panel.style.getPropertyValue("--bell-right"), "56px", "lined up with its right edge");
+  assert.equal(panel.querySelector("h2").textContent, "Notifications");
+  panel.querySelector('[aria-label="Close notifications"]').click();
+  await settle();
+  assert.equal(view.container.querySelectorAll("dialog[open]").length, 0);
+  await view.unmount();
 });

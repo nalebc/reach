@@ -53,14 +53,62 @@
   border-radius: 50%;
   background: var(--lime);
 }
-/* Notification cards keep the request and its actions together. */
-.screen-popup.notification-center {
-  width: min(540px, calc(100vw - 28px));
+/* The bell's panel: on a computer it drops down from the bell; on a phone
+   (below) it's a page of its own. */
+.notification-center {
+  position: fixed;
+  inset: var(--bell-top, 64px) var(--bell-right, 16px) auto auto;
+  width: min(400px, calc(100vw - 24px));
+  max-width: none;
+  max-height: min(640px, calc(100dvh - var(--bell-top, 64px) - 16px));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border, #ffffff14);
+  border-radius: 18px;
+  background: var(--panel, #191e1b);
+  color: var(--text, #e7eeea);
+  box-shadow: 0 18px 60px #0008;
+  transform-origin: top right;
+  animation: notification-drop 140ms ease-out;
 }
-.notification-center .screen-popup-body {
-  width: 100%;
+.notification-center:focus {
+  outline: none;
+}
+.notification-center::backdrop {
+  background: transparent;
+}
+.notification-center-body {
   box-sizing: border-box;
-  padding: 20px;
+  padding: 14px 18px 18px;
+}
+.notification-center-body > header {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.notification-center-body h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -0.3px;
+}
+.notification-back {
+  display: none;
+}
+@keyframes notification-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+@keyframes notification-page-in {
+  from {
+    transform: translateX(100%);
+  }
 }
 .notification-inbox-head {
   display: flex;
@@ -330,10 +378,41 @@
   .notification-bell-label {
     display: none;
   }
-  .notification-center .screen-popup-body {
+  /* A page of its own: back arrow, then a large title. */
+  .notification-center {
+    inset: 0;
     width: 100%;
-    padding: 20px 20px calc(22px + env(safe-area-inset-bottom));
-    box-sizing: border-box;
+    height: 100%;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    background: var(--bg, #101311);
+    box-shadow: none;
+    animation: notification-page-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .notification-center-body {
+    min-height: 100%;
+    padding: calc(6px + env(safe-area-inset-top)) 20px
+      calc(24px + env(safe-area-inset-bottom));
+  }
+  .notification-center-body > header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 18px;
+  }
+  .notification-center-body > header .icon-button {
+    margin-left: -10px;
+  }
+  .notification-center-body h2 {
+    font-size: 30px;
+    letter-spacing: -0.8px;
+  }
+  .notification-back {
+    display: block;
+  }
+  .notification-close {
+    display: none;
   }
 }
 
@@ -538,4 +617,9 @@
   width: 20px;
   height: 20px;
   border-radius: 5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .notification-center {
+    animation: none;
+  }
 }

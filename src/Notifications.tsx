@@ -4,16 +4,19 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
   Bell,
   Check,
+  ChevronLeft,
   ChevronRight,
   Loader2,
   Monitor,
   Settings2,
   Sparkles,
+  X,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
@@ -22,7 +25,7 @@ import {
   shareNotificationIcons,
   takeNotificationIntent,
 } from "./notification-bridge";
-import ScreenPopup from "./ScreenPopup";
+import { holdPage } from "./page-hold";
 import "./notifications.css";
 
 export type NotificationItem = {
@@ -51,7 +54,7 @@ export type NotificationItem = {
 const Notifications = createContext<{
   count: number;
   setup: boolean;
-  open: () => void;
+  open: (bell?: HTMLElement) => void;
   expanded: boolean;
 } | null>(null);
 export function NotificationBell({ compact = false }: { compact?: boolean }) {
@@ -68,7 +71,7 @@ export function NotificationBell({ compact = false }: { compact?: boolean }) {
       aria-haspopup="dialog"
       aria-expanded={state.expanded}
       title="Notifications"
-      onClick={state.open}
+      onClick={(e) => state.open(e.currentTarget)}
     >
       <Bell size={20} />
       {state.count > 0 ? (
@@ -219,6 +222,74 @@ export function NotificationCard({
     </article>
   );
 }
+// The bell's panel. On a phone it's a page of its own that slides in, with a
+// back arrow; on a computer it drops down from the bell. A sheet rising from
+// the bottom felt detached from the bell that opened it.
+function NotificationPanel({
+  anchor,
+  onClose,
+  children,
+}: {
+  anchor: DOMRect | null;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    const focus = document.activeElement as HTMLElement | null;
+    const letGo = holdPage();
+    element?.showModal();
+    element?.focus({ preventScroll: true });
+    return () => {
+      element?.close();
+      letGo();
+      focus?.focus?.({ preventScroll: true });
+    };
+  }, []);
+  // Under the bell, its right edge lined up with the bell's.
+  const place = anchor
+    ? ({
+        "--bell-top": `${Math.round(anchor.bottom + 6)}px`,
+        "--bell-right": `${Math.max(12, Math.round(window.innerWidth - anchor.right))}px`,
+      } as CSSProperties)
+    : undefined;
+  return (
+    <dialog
+      ref={dialog}
+      className="notification-center"
+      style={place}
+      tabIndex={-1}
+      aria-label="Notifications"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") e.stopPropagation();
+      }}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="notification-center-body">
+        <header>
+          <button
+            className="icon-button"
+            aria-label="Close notifications"
+            onClick={onClose}
+          >
+            <ChevronLeft size={24} className="notification-back" />
+            <X size={18} className="notification-close" />
+          </button>
+          <h2>Notifications</h2>
+        </header>
+        {children}
+      </div>
+    </dialog>
+  );
+}
+
 export function NotificationCenter({
   peer,
   enabled,
@@ -235,6 +306,7 @@ export function NotificationCenter({
   const setup = useNotificationSetup(peer, enabled);
   const logos = useAgentLogos(enabled ? peer : null);
   const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -309,6 +381,7 @@ export function NotificationCenter({
   useEffect(() => {
     if (!enabled) return;
     const show = () => {
+      setAnchor(null);
       setOpen(true);
       setRevision((v) => v + 1);
     };
@@ -386,7 +459,8 @@ export function NotificationCenter({
               setup:
                 !setup.loading && !setup.on && setup.support !== "unsupported",
               expanded: open,
-              open: () => {
+              open: (bell) => {
+                setAnchor(bell?.getBoundingClientRect() || null);
                 setOpen(true);
                 setRevision((v) => v + 1);
               },
@@ -407,11 +481,7 @@ export function NotificationCenter({
         </div>
       )}
       {open && enabled && (
-        <ScreenPopup
-          title="Notifications"
-          className="notification-center"
-          onClose={() => setOpen(false)}
-        >
+        <NotificationPanel anchor={anchor} onClose={() => setOpen(false)}>
           <div className="notification-inbox-head">
             <span>{peer.name}</span>
             <span>
@@ -469,7 +539,7 @@ export function NotificationCenter({
             </summary>
             <NotificationSetup state={setup} />
           </details>
-        </ScreenPopup>
+        </NotificationPanel>
       )}
     </Notifications.Provider>
   );

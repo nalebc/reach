@@ -2299,28 +2299,28 @@ test("the upcoming app chooser honors the connected computer's app names", async
   assert.deepEqual(dom.errors, []);
 });
 
-test("the permission mode changes from the session, in each agent's own terms", async () => {
+test("the permission mode changes from the session, in each agent's own terms, in a small menu as the apps open it", async () => {
+  // The mode's choices opened as a scrolling row of chips; both apps open a
+  // small menu over the button, the one in force checked.
+  const names = () => $$(".as-mode-menu button .as-mode-menu-text > span").map((s) => s.textContent);
+  const pick = (name) => $$(".as-mode-menu button").find((b) => b.querySelector(".as-mode-menu-text > span").textContent === name);
   await open(codexSession());
   await dom.waitFor(() => $(".as-mode"));
   assert.equal($(".as-mode").textContent, "Approve for me");
   await click($(".as-mode"));
+  assert.equal($$(".as-picker[aria-label=Permissions]").length, 0, "no row of chips");
+  // The Codex app's own title and lines under its choices.
+  assert.equal($(".as-mode-menu-title").textContent, "How should ChatGPT actions be approved?");
   // What Codex offers now, a profile Reach has no name for included.
-  assert.deepEqual(
-    $$(".as-picker[aria-label=Permissions] button").map((b) => b.textContent),
-    [
-      "Ask for approval",
-      "Approve for me",
-      "Full access",
-      "Read only",
-      "Network only",
-      "Custom (config.toml)",
-    ],
-  );
-  await click(
-    $$(".as-picker[aria-label=Permissions] button").find(
-      (b) => b.textContent === "Full access",
-    ),
-  );
+  assert.deepEqual(names(), ["Ask for approval", "Approve for me", "Full access", "Read only", "Network only", "Custom (config.toml)"]);
+  assert.equal(pick("Full access").querySelector("small").textContent, "Unrestricted access to the internet and any file on your computer");
+  assert.equal(pick("Approve for me").getAttribute("aria-checked"), "true");
+  // A tap outside closes it, nothing changed.
+  await click($(".as-mode-scrim"));
+  assert.equal($$(".as-mode-menu").length, 0);
+  await click($(".as-mode"));
+  await click(pick("Full access"));
+  assert.equal($$(".as-mode-menu").length, 0);
   assert.equal($(".as-mode").textContent, "Full access");
   await typeInto($("textarea"), "ship it");
   await click(button("Send"));
@@ -2329,18 +2329,11 @@ test("the permission mode changes from the session, in each agent's own terms", 
   await open(claudeSession({ live: undefined }));
   await dom.waitFor(() => $(".as-mode"));
   await click($(".as-mode"));
-  await dom.waitFor(
-    () => $$(".as-picker[aria-label=Permissions] button").length === 5,
-  );
-  assert.deepEqual(
-    $$(".as-picker[aria-label=Permissions] button").map((b) => b.textContent),
-    ["Manual", "Plan", "Accept edits", "Auto", "delegate"],
-  );
-  await click(
-    $$(".as-picker[aria-label=Permissions] button").find(
-      (b) => b.textContent === "Plan",
-    ),
-  );
+  await dom.waitFor(() => $$(".as-mode-menu button").length === 5);
+  // The Claude app's names, in its order; one Reach has no name for at the end.
+  assert.deepEqual(names(), ["Manual", "Accept edits", "Plan", "Auto", "delegate"]);
+  assert.equal($$(".as-mode-menu-title").length, 0);
+  await click(pick("Plan"));
   await typeInto($("textarea"), "think first");
   await click(button("Send"));
   assert.deepEqual(mac.sent, [
@@ -2469,6 +2462,39 @@ test("the newest reply gets copy and share, and Claude's note; not while it work
   await open(codexSession());
   await dom.waitFor(() => button("Stop"));
   assert.equal($(".as-reply-actions"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+// Every message can be copied, yours and the agent's, not just the newest
+// reply: tap one on a phone and its copy button shows beneath it.
+test("any message, yours or the agent's, can be copied", async () => {
+  for (const v of views.splice(0)) await v.unmount();
+  mac.live = idleLive();
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
+  mac.pages[`claude:${CLAUDE}`].items = [
+    { id: "u1", role: "user", kind: "text", text: "Rename the **button**", turnId: "t1" },
+    { id: "a1", role: "assistant", kind: "text", text: "Renamed it to `Save`.", turnId: "t1" },
+    { id: "u2", role: "user", kind: "text", text: "Thanks", turnId: "t2" },
+    { id: "a2", role: "assistant", kind: "text", text: "Anytime.", turnId: "t2" },
+  ];
+  const copied = [];
+  Object.defineProperty(dom.window.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (t) => copied.push(t) },
+  });
+  await open(claudeSession({ live: undefined }));
+  await dom.waitFor(() => $(".as-reply-actions"));
+  const msgs = $$(".as-msg");
+  assert.deepEqual(msgs.map((m) => m.className.split(" ")[1]), ["user", "assistant", "user", "assistant"]);
+  assert.equal($$(".as-msg.shown").length, 0, "hidden until tapped");
+  // The newest reply keeps its own row; no second copy button on it.
+  assert.equal(msgs[3].querySelector(".as-msg-actions"), null);
+  await click(msgs[0].querySelector(".as-user"));
+  assert.ok(msgs[0].classList.contains("shown"));
+  await click(msgs[0].querySelector('[aria-label="Copy message"]'));
+  await click(msgs[1].querySelector(".as-assistant"));
+  await click(msgs[1].querySelector('[aria-label="Copy message"]'));
+  assert.deepEqual(copied, ["Rename the **button**", "Renamed it to `Save`."], "as written");
   assert.deepEqual(dom.errors, []);
 });
 

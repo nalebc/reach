@@ -5,6 +5,22 @@ on:
 permissions:
   contents: read
 jobs:
+  go-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Check the browser networking dependency graph
+        working-directory: tailnet
+        run: govulncheck ./...
+        env:
+          GOOS: js
+          GOARCH: wasm
   verify:
     strategy:
       fail-fast: false
