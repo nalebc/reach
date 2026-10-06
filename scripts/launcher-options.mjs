@@ -25,6 +25,8 @@ export function parseOptions(args) {
         "link",
         "update",
         "import",
+        "stop",
+        "restart",
       ].includes(arg)
     )
       options.command = arg;
@@ -46,6 +48,8 @@ export function parseOptions(args) {
     else if (arg === "--background") options.background = true;
     else if (arg === "--stop-background") options.stopBackground = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
+    // `reach stop|restart --yes`: close Reach's terminals without asking.
+    else if ((arg === "--yes" || arg === "-y") && ["stop", "restart"].includes(options.command)) options.yes = true;
     else if (arg === "--agent-policy") {
       if (!args[i + 1] || args[i + 1].startsWith("--"))
         throw Error("--agent-policy needs a JSON file.");
@@ -79,7 +83,7 @@ export function parseOptions(args) {
   if (
     options.command &&
     options.command !== "install" &&
-    args.length >
+    args.length - (options.yes ? 1 : 0) >
       (["import", "link", "setup"].includes(options.command) ? 2 : 1) &&
     !options.help
   )

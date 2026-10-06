@@ -199,6 +199,32 @@ async function startInBackground(options) {
   const { backgroundService } = await import("./background-service.mjs");
   await backgroundService({ ...options, command: "install" }, root);
 }
+// `reach restart`: everything stops, then Reach starts again the way it ran:
+// the background service, or in a terminal: this one, or (asked without a
+// terminal, as agents do) a new Terminal window, where Reach keeps Terminal's
+// Screen Recording and Accessibility and device approvals have a place.
+// False means: start right here, below.
+async function restart(options) {
+  const { stopReach, startInTerminal, startService } = await import("./stop.mjs");
+  const done = await stopReach(root, { yes: options.yes, restarting: true });
+  if (done.cancelled) return true;
+  if (done.service) {
+    console.log("Reach's background service restarted.");
+    return true;
+  }
+  if (!done.stopped && done.serviceInstalled) {
+    startService(root);
+    console.log("Reach's background service started.");
+    return true;
+  }
+  if (process.platform === "darwin" && !process.stdin.isTTY) {
+    startInTerminal(root, { state });
+    console.log("Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.");
+    return true;
+  }
+  options.command = undefined;
+  return false;
+}
 try {
   let options = parseOptions(process.argv.slice(2));
   const { configure, readPreferences, applyPreferences } =
@@ -222,6 +248,11 @@ ${command} install             Mac: install a background LaunchAgent
 ${command} install --stay-awake Keep system/display awake while plugged in
 ${command} uninstall           Stop and remove the service and its own Serve route
 ${command} status              Running/stopped, your phone's link, and logs
+${command} stop                Stop every Reach running from this folder: in any terminal,
+                               started detached, or the background service (asks first
+                               if its terminals are open; --yes closes them)
+${command} restart             Stop them all, then start Reach again: the background
+                               service, or here (in a new Terminal window if run without one)
 ${command} pair                Fresh one-use pairing code and QR
 ${command} --stay-awake         Stay awake only while plugged in
 ${command} --stay-awake-always  Keep system/display awake, including on battery
@@ -236,6 +267,11 @@ Stay-awake uses temporary power assertions; it never changes system settings
 or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
+  } else if (options.command === "stop") {
+    const { stopReach } = await import("./stop.mjs");
+    await stopReach(root, { yes: options.yes });
+  } else if (options.command === "restart" && (await restart(options))) {
+    // Restarted in the background, or in a new Terminal window.
   } else if (options.command === "setup") {
     if (!process.stdin.isTTY)
       throw Error(`Run ${command} setup in an interactive terminal.`);
