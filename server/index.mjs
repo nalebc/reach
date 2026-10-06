@@ -3,6 +3,7 @@ import {
   createIdentityResolver,
   listenPrivateIngress,
   trustedRequest,
+  serveRequestHost,
   ownerIdentity,
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
@@ -69,19 +70,26 @@ import {
 import { AgentApps } from "./agent-apps.mjs";
 import { AgentInputHelper } from "./agent-input.mjs";
 import { createPush } from "./push.mjs";
+import { createNotifications, readAttention } from "./notifications.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
+import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
+import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
+import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
+import { createFunnelAgentGateway } from "./funnel-agent.mjs";
+import { createBrowserApprovals } from "./browser-approvals.mjs";
+import { runTerminalCommand } from "./restricted-terminal.mjs";
 import {
   apps,
   launchApp,
@@ -96,6 +104,9 @@ export async function createReach(overrides = {}) {
   if (ptyWarning) console.warn(`Reach: ${ptyWarning}`);
   const instance = crypto.randomUUID();
   let transportAvailable = true;
+  const funnelRequests = new WeakMap();
+  let prepareFunnel;
+  let publicAgent = () => false;
   const config = getConfig(overrides);
   config.roots = config.roots.map((p) => fs.realpathSync.native(p));
   if (config.agentPolicyRequired || fs.existsSync(config.agentPolicyFile))
@@ -231,10 +242,18 @@ export async function createReach(overrides = {}) {
     setInterval(tidyGuests, 5 * 60000),
   ];
   for (const timer of guestTimers) timer.unref();
-  const verify = (req, token) => auth.verify(token, req.reachIdentity);
+  const verify = (req, token) => {
+    const context = funnelRequests.get(req);
+    const client = context
+      ? context.token === token && !paused && transportAvailable &&
+        auth.verifyFunnel(token, context.keyThumbprint)
+      : auth.verify(token, req.reachIdentity);
+    return client?.policy?.browser && req.headers.upgrade?.toLowerCase() === "websocket"
+      ? null : client;
+  };
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
   const trackIdentity = (req, end) => {
-    if (!config.tailscaleOwner) return () => {};
+    if (!config.tailscaleOwner || funnelRequests.has(req)) return () => {};
     let busy = false;
     const timer = setInterval(async () => {
       if (busy) return;
@@ -331,6 +350,20 @@ export async function createReach(overrides = {}) {
       if (reason === "opened") record("app", `${thread.name} on phone`);
     },
   });
+  // Messages from the phone waiting for their Claude app chat: listed in
+  // Reach's menu bar item, where a click opens the chat.
+  if (agentSessions.onOutbox && agentSessions.waitingOnMac) {
+    let listed = "[]";
+    const showWaiting = () => {
+      const chats = agentSessions.waitingOnMac();
+      const next = JSON.stringify(chats);
+      if (next === listed) return;
+      listed = next;
+      appThreads.waiting(chats);
+    };
+    agentSessions.onOutbox(showWaiting);
+    showWaiting();
+  }
   const appScreens = new AppScreenHub(
     appThreads,
     overrides.appScreenFactory || ((options) => appScreenSource(config, options)),
@@ -356,20 +389,17 @@ export async function createReach(overrides = {}) {
       )
       .map((c) => c.id);
   const notify = (message) =>
-    void push.notify(ownDevices(), message).catch(() => {});
-  // A question an agent holds for your phone (agent-asks.mjs).
-  const askCounts = new Map();
-  agentSessions.asks?.onChange?.((agent, sessionId) => {
-    const key = `${agent}:${sessionId}`;
-    const count = agentSessions.asks.prompts?.(agent, sessionId)?.length || 0;
-    if (count > (askCounts.get(key) || 0))
-      notify({
-        title: `${agentName(agent)} needs your answer`,
-        tag: `ask-${String(sessionId).slice(0, 8)}`,
-      });
-    if (count) askCounts.set(key, count);
-    else askCounts.delete(key);
+    push.notify(ownDevices(), { url: "/?notifications=1", ...message }).catch(() => ({ sent: 0 }));
+  // "Your chat is done", once, unless a phone has that chat open
+  // (agent-sessions/done-watch.mjs). A phone with a chat open asks for its
+  // live state every few seconds; that's how "open" is known here.
+  const chatOpenAt = new Map();
+  const doneWatch = createDoneWatch({
+    list: () => agentSessions.list(),
+    notify,
+    watching: (agent, id) => Date.now() - (chatOpenAt.get(`${agent}:${id}`) || 0) < 15000,
   });
+  agentSessions.onActivity?.(() => void doneWatch.look());
   // Tag in: agents use apps on their own hidden displays and hand them to
   // you on the phone (server/agent-apps.mjs).
   const agentApps = new AgentApps({
@@ -397,7 +427,10 @@ export async function createReach(overrides = {}) {
       if (reason === "handoff")
         notify({
           title: `${handoff.agent} needs you in ${handoff.app}`,
+          category: "handoffs",
           tag: `handoff-${handoff.id.slice(0, 8)}`,
+          // One tap: the app itself (src/deep-link.ts).
+          ...(handoff.threadId && { url: `/?page=apps&threadId=${encodeURIComponent(handoff.threadId)}` }),
         });
     },
   });
@@ -440,12 +473,15 @@ export async function createReach(overrides = {}) {
       settings.paused = value;
       atomicJson(settingsFile, settings);
       if (value) {
+        browserApprovals.cancelPending();
+        browserSnapshots.clear();
         screenControl.clear();
         // The phone takes control back on Resume when it hears why.
         closeInput(undefined, PAUSED);
         // Retryable: a phone that doesn't know about pausing reconnects by
         // itself once the computer resumes.
         screenStreams.stop(PAUSED);
+        browserScreenSnapshots.stop(PAUSED);
         remoteScreens.stop(PAUSED, true);
         appScreens.stop(PAUSED, true);
       }
@@ -493,6 +529,96 @@ export async function createReach(overrides = {}) {
     events.unshift({ id: id(), kind, title, at: new Date().toISOString() });
     events.length = Math.min(events.length, 100);
   };
+  const browserScreenAvailable = () => config.screen &&
+    (overrides.browserScreenSupported ?? ["darwin", "win32"].includes(process.platform));
+  const browserCapture = async (authorize, fresh = false) => {
+    notPaused();
+    authorize();
+    // Approval verification needs a capture made after the owner approved,
+    // rather than an in-flight frame from an earlier viewer.
+    const frame = fresh
+      ? await (overrides.browserCapture || screenCapture)(config)
+      : await (captureInFlight ||= (overrides.browserCapture || screenCapture)(config).finally(() => {
+          captureInFlight = null;
+        }));
+    notPaused();
+    authorize();
+    return frame;
+  };
+  // Viewing reuses a short-lived native capture session and sends a JPEG
+  // bounded to 1600 pixels wide. Approval evidence and execution checks keep
+  // using browserCapture's independent, full-resolution fresh captures.
+  const browserScreenSnapshots = new BrowserScreenSnapshots(
+    overrides.browserScreenFactory || (() => createScreenSource(config)),
+    { fallback: () => (overrides.browserCapture || screenCapture)(config) },
+  );
+  const browserViewCapture = async (authorize) => {
+    // Existing fixture captures must never start native capture in tests.
+    if (overrides.browserCapture && !overrides.browserScreenFactory)
+      return browserCapture(authorize);
+    return browserScreenSnapshots.capture(() => {
+      notPaused();
+      if (!browserScreenAvailable()) throw fail(403, "Screen access was turned off.");
+      return authorize();
+    });
+  };
+  const browserSnapshots = new Map();
+  const browserInputCheck = (authorize) => {
+    const client = authorize();
+    notPaused();
+    if (!browserScreenAvailable()) throw fail(403, "Screen access was turned off.");
+    screenControl.ownerOnly(client);
+    if (screenControl.holder())
+      throw fail(409, "Someone is controlling the screen. Try again after they finish.");
+    return client;
+  };
+  const browserApprovals = createBrowserApprovals({
+    verifyClient: (clientId) => {
+      const client = auth.list().find((c) => c.id === clientId);
+      if (!client || client.status !== "accepted" || client.expiresAt <= Date.now()) return null;
+      return applyAgentPolicy(client, config);
+    },
+    notify,
+    record,
+    execute: async (action, authorize, request) => {
+      if (action.type === "terminal") {
+        return runTerminalCommand(action, () => {
+          notPaused();
+          return authorize();
+        }, resolve);
+      }
+      // Legacy commands remain a human handoff. Never route them to a PTY.
+      if (action.type === "command") throw fail(403, "Commands must be handled by you on the computer.");
+      browserInputCheck(authorize);
+      if (inputInFlight) throw fail(409, "Wait for the previous screen action to finish.");
+      inputInFlight = true;
+      try {
+        const original = browserSnapshots.get(request.id);
+        if (!original) throw fail(409, "That screen snapshot has expired. Ask for a new request.");
+        const frame = await browserCapture(() => browserInputCheck(authorize), true);
+        if (hash(frame) !== original.hash)
+          throw fail(409, "The screen changed. Nothing was done. Ask for a new request.");
+        const checkedAt = Date.now();
+        const check = () => {
+          browserInputCheck(authorize);
+          if (Date.now() - checkedAt > 1000)
+            throw fail(409, "The screen check is too old. Nothing was done. Ask for a new request.");
+        };
+        const payload = action.type === "scroll"
+          ? { type: "scroll", delta: (action.direction === "up" ? 1 : -1) * action.amount }
+          : action;
+        await (overrides.browserInput || screenInput)(config, payload, check);
+      } finally {
+        inputInFlight = false;
+        browserSnapshots.delete(request.id);
+      }
+    },
+  });
+  const snapshotSweep = setInterval(() => {
+    const pending = new Set(browserApprovals.listOwner().map((r) => r.id));
+    for (const id of browserSnapshots.keys()) if (!pending.has(id)) browserSnapshots.delete(id);
+  }, 5000);
+  snapshotSweep.unref();
   let network = { connected: false, peers: [] };
   let networkAt = 0;
   const getNetwork = async () => {
@@ -544,8 +670,11 @@ export async function createReach(overrides = {}) {
     return resource;
   };
   app.disable("x-powered-by");
+  // A tailnet device may open the same invitation address. The same signed
+  // gateway contract applies there too, before the ordinary private API.
+  app.use((req, res, next) => publicAgent(req, res) || next());
   app.use((req, res, next) => {
-    if (req.headers["tailscale-funnel-request"] !== undefined)
+    if (req.headers["tailscale-funnel-request"] !== undefined && !funnelRequests.has(req))
       return res
         .status(403)
         .json({ error: "Public Funnel access is disabled." });
@@ -579,7 +708,8 @@ export async function createReach(overrides = {}) {
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
   });
-  app.use(express.json({ limit: "256kb" }));
+  const parseJSON = express.json({ limit: "256kb" });
+  app.use((req, res, next) => funnelRequests.has(req) ? next() : parseJSON(req, res, next));
   app.use("/api", compressJson());
   app.use((req, res, next) => {
     if (!transportAvailable)
@@ -609,7 +739,7 @@ export async function createReach(overrides = {}) {
     }),
   );
   app.use("/api", (req, res, next) => {
-    if (config.tailscaleOwner && (!trustedRequest(req) || !req.reachIdentity))
+    if (config.tailscaleOwner && !funnelRequests.has(req) && (!trustedRequest(req) || !req.reachIdentity))
       return res.status(403).json({
         error:
           "Connect through this computer's private Tailscale link. Localhost cannot authenticate a Tailscale device.",
@@ -617,6 +747,14 @@ export async function createReach(overrides = {}) {
     const cleanup = trackIdentity(req, () => res.destroy());
     res.once("close", cleanup);
     res.once("finish", cleanup);
+    next();
+  });
+  // Browser credentials cannot use public admission routes to request another
+  // identity or grant. Apply their allowlist before those handlers, too.
+  app.use("/api", (req, res, next) => {
+    const client = verify(req, req.headers.authorization?.replace(/^Bearer /, ""));
+    if (client?.policy?.browser && !browserRouteAllowed(client, req.method, req.path))
+      return res.status(403).json({ error: "This browser invitation cannot grant or request other access." });
     next();
   });
   app.post("/api/auth/requests", (req, res) => {
@@ -796,17 +934,32 @@ export async function createReach(overrides = {}) {
     });
   });
   // An invitation (a guest's or an agent's), used once.
-  app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) =>
-    res.json({
-      ...auth.redeemGuest(req.body.invitation, req.reachIdentity),
-      device: {
-        id: device.id,
-        computerId: device.computerId,
-        name: config.name,
-        platform: process.platform,
-      },
-    }),
-  );
+  const invitationDevice = () => ({
+    id: device.id,
+    computerId: device.computerId,
+    name: config.name,
+    platform: process.platform,
+  });
+  app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) => {
+    const joined = auth.redeemGuest(req.body.invitation, req.reachIdentity);
+    if (joined.status === "pending") {
+      record("agent", "An invited agent is waiting for connection approval");
+      notify({ category: "access", title: "An invited agent wants to connect", tag: `agent-admission-${joined.requestId}`, url: `/?page=overview&needs=${encodeURIComponent(`agent-admission:${joined.requestId}`)}` });
+      for (const nudge of presenceNudges) nudge();
+    }
+    res.status(joined.status === "pending" ? 202 : 200).json({
+      ...joined,
+      device: invitationDevice(),
+    });
+  });
+  // A waiting receipt can only collect its own decision. It is not a Reach
+  // credential and cannot read files, terminals, screens, or other requests.
+  app.post("/api/invitations/claims/:requestId/status", (req, res) => {
+    if (Object.keys(req.body || {}).some((key) => key !== "secret"))
+      throw fail(400, "Send only this connection's receipt secret.");
+    const result = auth.pollAgentAdmission(req.params.requestId, req.body?.secret, req.reachIdentity);
+    res.json({ ...result, device: invitationDevice() });
+  });
   app.post("/api/pair", (req, res) =>
     res.json({
       ...auth.pair(
@@ -870,7 +1023,7 @@ export async function createReach(overrides = {}) {
     };
     accessRequests.set(request.id, request);
     record("agent", `${name} asked for access`);
-    notify({ title: `${name} asks for access to ${config.name}`, tag: "agent-request" });
+    notify({ category: "access", title: `${name} asks for access to ${config.name}`, tag: "agent-request", url: "/?page=agents" });
     res.status(202).json({
       id: request.id,
       secret,
@@ -984,6 +1137,8 @@ export async function createReach(overrides = {}) {
       handoffs: "admin",
       // Notifications on this device's browser.
       push: "admin",
+      notifications: "admin",
+      browser: "browser:read",
     }[route];
     // An invitation that may watch chosen apps' windows reaches only those
     // routes: the app list and the app windows themselves (no quit, no typing).
@@ -998,14 +1153,16 @@ export async function createReach(overrides = {}) {
           ((req.method === "GET" && subpath === "/apps") ||
             (req.method === "POST" && subpath === "/apps/icons"))));
     const allowed = (identity) =>
-      identity &&
+      identity?.policy?.browser
+        ? browserRouteAllowed(identity, req.method, subpath)
+        : identity &&
       !(
         identity.kind === "guest" && GUEST_BLOCKED_ROUTES.includes(route)
       ) &&
       // Every AI session and the Mac's own dialogs: the owner's own devices
       // only. A list of who may, not of who may not: no other credential,
       // whatever it grants (or a kind added later), ever reaches them.
-      (route !== "sessions" || identity.kind === "device") &&
+      (!["sessions", "push", "notifications"].includes(route) || identity.kind === "device") &&
       (route === "device" ||
         appWindows(identity) ||
         (scope &&
@@ -1090,6 +1247,7 @@ export async function createReach(overrides = {}) {
         scopes: req.client.scopes,
         expiresAt: req.client.expiresAt,
         profile: req.client.policy?.profile,
+        ...(req.client.policy?.browser && { browser: true }),
       },
       capabilities: deviceCapabilities({
         platform: process.platform,
@@ -1104,6 +1262,8 @@ export async function createReach(overrides = {}) {
   });
   app.delete("/api/device/access", (req, res) => {
     auth.revoke(req.client.id);
+    browserApprovals.cancelClient(req.client.id);
+    browserScreenSnapshots.stop();
     res.type("json").send(JSON.stringify({ ok: true }));
   });
   app.get("/api/settings", (req, res) => res.json(settings));
@@ -1117,8 +1277,11 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Send screen as true or false.");
     settings.screen = config.screen = req.body.screen;
     if (!config.screen) {
+      browserApprovals.cancelPending();
+      browserSnapshots.clear();
       screenControl.clear();
       screenStreams.stop();
+      browserScreenSnapshots.stop();
       remoteScreens.stop();
       appScreens.stop();
       void appThreads.closeAll();
@@ -1248,6 +1411,26 @@ export async function createReach(overrides = {}) {
     res.status(201).json({ key: key.key, hostname: key.hostname });
   });
   // Invite an agent: its folders and access, one-time join (see inviteAgent).
+  const admissionOwner = (req) => {
+    const client = req.reauthorize();
+    if (client.kind !== "device" || !client.scopes.includes("admin"))
+      throw fail(403, "Only an owner device can approve an invited agent's connection.");
+    return client;
+  };
+  app.get("/api/agents/admissions", (req, res) => {
+    admissionOwner(req);
+    res.json(auth.listAgentAdmissions());
+  });
+  app.post("/api/agents/admissions/:requestId", (req, res) => {
+    admissionOwner(req);
+    if (Object.keys(req.body || {}).some((key) => key !== "decision"))
+      throw fail(400, "Approve or deny the exact connection shown.");
+    const result = auth.decideAgentAdmission(req.params.requestId, req.body?.decision);
+    record("agent", req.body.decision === "approve"
+      ? "Approved an invited agent's connection" : "Denied an invited agent's connection");
+    for (const nudge of presenceNudges) nudge();
+    res.json(result);
+  });
   app.post("/api/agents/invitations", (req, res) => {
     if (req.client.kind === "guest")
       throw fail(403, "Only the computer's owner can invite agents.");
@@ -1333,6 +1516,8 @@ export async function createReach(overrides = {}) {
   // Ends a credential now: requests, sockets, screen control.
   const endClient = (id) => {
     auth.revoke(id);
+    browserApprovals.cancelClient(id);
+    browserScreenSnapshots.stop();
     presence.removeClient(id);
     screenControl.revoke(id);
     closeInput(id);
@@ -1384,6 +1569,27 @@ export async function createReach(overrides = {}) {
       await safePathAsync(client?.agentRoots || config.roots, root, p),
       privates,
     );
+  browserAccessRoutes(app, {
+    auth, config, terminals, desktopTerminals, resolve, resolveAsync, record,
+    prepareFunnel: async () => {
+      if (!prepareFunnel || paused || !transportAvailable)
+        throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
+      await prepareFunnel();
+      return new URL(config.publicOrigin).origin.replace(/:\d+$/, "");
+    },
+    approvals: browserApprovals, snapshots: browserSnapshots,
+    screenAvailable: browserScreenAvailable,
+    capture: browserCapture,
+    viewCapture: browserViewCapture,
+    scroll: async (payload, authorize) => {
+      const check = () => browserInputCheck(authorize);
+      check();
+      if (inputInFlight) throw fail(409, "Wait for the previous screen action to finish.");
+      inputInFlight = true;
+      try { await (overrides.browserInput || screenInput)(config, payload, check); }
+      finally { inputInFlight = false; }
+    },
+  });
   app.get("/api/files", async (req, res) => {
     const dir = resolve(req.query.root, req.query.path || "", req.client);
     const info = await fsp.stat(dir);
@@ -1437,6 +1643,9 @@ export async function createReach(overrides = {}) {
     const file = resolve(req.query.root, req.query.path || "", req.client);
     const s = await fsp.stat(file);
     if (!s.isFile()) throw fail(400, "Choose a file.");
+    const current = req.reauthorize();
+    if (resolve(req.query.root, req.query.path || "", current) !== file)
+      throw fail(403, "This file is no longer shared.");
     res.setHeader(
       "Access-Control-Expose-Headers",
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
@@ -1964,13 +2173,23 @@ export async function createReach(overrides = {}) {
     return real;
   };
   // Slash commands the agent offers after "/" in its composer.
+  // With a chat's id: that chat's (its folder's skills and commands).
   app.get("/api/sessions/commands", async (req, res) =>
     res.json({
       commands: await agentSessions.commands(
         ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
+        typeof req.query.id === "string" && /^[\w-]{1,80}$/.test(req.query.id) ? { id: req.query.id } : {},
       ),
     }),
   );
+  // One of Codex's own commands from "/", run in the chat (status, compact,
+  // review, …); only those its menu offers.
+  app.post("/api/sessions/:agent/:id/commands", async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name : "";
+    const result = await agentSessions.runCommand(req.params.agent, req.params.id, name, req.body?.args);
+    record("session", `Ran /${name.slice(0, 40)} in ${agentLabel(req.params.agent)}`);
+    res.json(result);
+  });
   // The agents' real logos from the apps on this Mac, sent once per version.
   app.get("/api/sessions/logos", async (req, res) => {
     const { version, logos } = await agentSessions.logos();
@@ -2047,6 +2266,8 @@ export async function createReach(overrides = {}) {
       ...turnOptions(body),
       cwd: sessionFolder(body.cwd),
       ...(body.mode ? modes[body.mode] : {}),
+      // Codex: remembered for the chat's next messages (chat-modes.mjs).
+      ...(agent === "codex" && body.mode ? { modeName: body.mode } : {}),
       name: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
     });
     record("session", `Started a ${agentLabel(agent)} session from Reach`);
@@ -2056,7 +2277,14 @@ export async function createReach(overrides = {}) {
     const result = await agentSessions.send(
       req.params.agent,
       req.params.id,
-      { ...turnOptions(req.body || {}, req.params.agent), owner: req.client.id },
+      {
+        ...turnOptions(req.body || {}, req.params.agent),
+        // A Codex skill picked from "/", by name (its path is Codex's own).
+        ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body.skill)
+          ? { skill: req.body.skill }
+          : {}),
+        owner: req.client.id,
+      },
     );
     record("session", `Sent a message to ${agentLabel(req.params.agent)}`);
     res.json(result);
@@ -2088,12 +2316,28 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Invalid draft.");
     res.json(await agentSessions.draft(req.params.agent, req.params.id, { text, owner: req.client.id }));
   });
+  // Send now can switch the Claude app's window on the Mac: the owner's call.
+  app.post("/api/sessions/:agent/:id/queue/:message/now", async (req, res) => {
+    macOwner(req);
+    res.json(await agentSessions.sendQueuedNow(req.params.agent, req.params.id, req.params.message));
+  });
+  app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
+    res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
+  );
   app.post("/api/sessions/:agent/:id/queue/:message/cancel", async (req, res) =>
     res.json(await agentSessions.cancelQueued(req.params.agent, req.params.id, req.params.message)),
   );
+  // Messages whose chat was deleted, and one sent to another chat instead.
+  app.get("/api/sessions/stranded", (req, res) => res.json({ messages: agentSessions.stranded?.() || [] }));
+  app.post("/api/sessions/stranded/:message/send", async (req, res) => {
+    const to = { agent: String(req.body?.agent || ""), id: String(req.body?.id || "") };
+    res.json(await agentSessions.sendStranded(req.params.message, to, req.client.id));
+  });
   // Long poll: answers when the session changes (streamed text, prompts,
   // status) or after 25 seconds.
   app.get("/api/sessions/:agent/:id/live", async (req, res) => {
+    chatOpenAt.set(`${req.params.agent}:${req.params.id}`, Date.now());
+    if (chatOpenAt.size > 500) chatOpenAt.delete(chatOpenAt.keys().next().value);
     const since = Number(req.query.since);
     const gone = new AbortController();
     res.on("close", () => gone.abort());
@@ -2366,10 +2610,28 @@ export async function createReach(overrides = {}) {
   app.get("/api/handoffs", (req, res) => {
     res.set("Cache-Control", "no-store").json(agentApps.pending());
   });
+  const notifications = createNotifications({
+    read: () => readAttention({
+      agentSessions, openClaw,
+      handoffs: () => agentApps.pending(),
+      browserRequests: () => browserApprovals.listOwner(),
+      admissions: () => auth.listAgentAdmissions(),
+      accessRequests: pendingRequests,
+    }),
+    notify,
+    enabled: () => ownDevices().some((id) => push.subscribed(id)),
+    file: path.join(config.dataDir, "notification-seen.json"),
+    ...(overrides.notifications || {}),
+  });
+  server.once("listening", () => notifications.start());
+  app.get("/api/notifications", async (req, res) => {
+    res.set("Cache-Control", "no-store").json(await notifications.refresh());
+  });
   // Notifications: this browser's subscription (server/push.mjs).
   app.get("/api/push", (req, res) => {
     res.set("Cache-Control", "no-store").json({
       key: push.key(),
+      preferences: push.preferences(req.client.id, req.query.endpoint),
       subscribed: push.subscribed(
         req.client.id,
         typeof req.query.endpoint === "string" ? req.query.endpoint : undefined,
@@ -2379,8 +2641,26 @@ export async function createReach(overrides = {}) {
   app.post("/api/push", (req, res) => {
     res.json(push.subscribe(req.client.id, req.body?.subscription));
   });
+  app.patch("/api/push", (req, res) => {
+    res.json({ preferences: push.updatePreferences(req.client.id, req.body?.endpoint, req.body?.preferences, req.body?.pauseMinutes) });
+  });
   app.delete("/api/push", (req, res) => {
     res.json(push.unsubscribe(req.client.id, req.body?.endpoint));
+  });
+  const pushTests = new Map();
+  app.post("/api/push/test", async (req, res) => {
+    const endpoint = req.body?.endpoint;
+    if (typeof endpoint !== "string" || !push.subscribed(req.client.id, endpoint))
+      throw fail(409, "Enable notifications on this device first.");
+    const now = Date.now();
+    for (const [id, at] of pushTests) if (now - at >= 15000) pushTests.delete(id);
+    if (pushTests.has(req.client.id)) throw fail(429, "Wait a few seconds before sending another test.");
+    pushTests.set(req.client.id, now);
+    const result = await push.notify([req.client.id], {
+      title: "Reach notifications are working", tag: "reach-test", url: "/?notifications=1",
+    }, { endpoint, test: true });
+    if (!result.sent) throw fail(502, "The notification service didn't accept the test. Try enabling notifications again.");
+    res.json({ sent: true });
   });
   app.post("/api/handoffs/:id", (req, res) => {
     res.json(
@@ -2645,6 +2925,10 @@ export async function createReach(overrides = {}) {
             ...(scopes.includes("admin") &&
               client.kind !== "guest" && {
                 handoffs: digest(agentApps.pending().map((h) => h.id)),
+                browserRequests: digest(browserApprovals.listOwner().map((r) => r.id)),
+                ...(client.kind === "device" && {
+                  agentAdmissions: digest(auth.listAgentAdmissions().map((r) => r.requestId)),
+                }),
               }),
             ...(scopes.includes("admin") && {
               activity: digest(events[0]?.id ?? ""), // newest first
@@ -3029,6 +3313,32 @@ export async function createReach(overrides = {}) {
     });
     return true;
   };
+  publicAgent = config.publicOrigin?.startsWith("https://")
+    ? createFunnelAgentGateway({
+        auth,
+        origin: new URL(config.publicOrigin).origin.replace(/:\d+$/, ""),
+        requestHost: serveRequestHost,
+        available: () => !paused && transportAvailable && auth.funnelWindow().open,
+        device: invitationDevice,
+        claimed: (joined) => {
+          record("agent", "An invited browser agent is waiting for connection approval");
+          notify({ category: "access", title: "An invited agent wants to connect", tag: `agent-admission-${joined.requestId}`, url: `/?page=overview&needs=${encodeURIComponent(`agent-admission:${joined.requestId}`)}` });
+          for (const nudge of presenceNudges) nudge();
+        },
+        dispatch: (req, res, context) => {
+          // Only the signature-verifying gateway can mark a request. Neither a
+          // header nor a public token can manufacture a private Tailscale identity.
+          funnelRequests.set(req, context);
+          req.method = context.method;
+          req.url = context.path;
+          req.body = context.body || {};
+          req.headers.authorization = `Bearer ${context.token}`;
+          delete req._parsedUrl;
+          delete req._parsedOriginalUrl;
+          app(req, res);
+        },
+      })
+    : () => false;
   return {
     app,
     server,
@@ -3037,6 +3347,10 @@ export async function createReach(overrides = {}) {
     fleet,
     // For the start page at the one address (scripts/launch.mjs).
     publicFaceId,
+    publicAgent,
+    funnelWindow: () => paused || !transportAvailable
+      ? { open: false, until: 0, reason: null } : auth.funnelWindow(),
+    setFunnelController(controller) { prepareFunnel = controller; },
     faceIdAvailable: () => !!faceJoin?.available(),
     approvals,
     guestKeys,
@@ -3072,10 +3386,15 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      notifications.close();
+      clearInterval(snapshotSweep);
+      browserApprovals.close();
+      browserSnapshots.clear();
       clearInterval(approvalCleanup);
       for (const timer of guestTimers) clearTimeout(timer);
       clearInterval(originSync);
       screenStreams.stop("Reach is shutting down.");
+      browserScreenSnapshots.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);
       // Requests still running (a phone's download, a long poll) get a
@@ -3097,6 +3416,7 @@ export async function createReach(overrides = {}) {
       wss.close();
       agentSessions.close?.();
       openClaw.close?.();
+      doneWatch.stop();
       const terminalExit = terminals.dispose();
       codex.dispose();
       jobs.dispose();

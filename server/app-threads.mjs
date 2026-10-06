@@ -311,8 +311,10 @@ export class AppThreads {
           throw fail(503, "Reach is quitting.");
         }
         // A fresh helper shows Reach's menu bar item again.
-        if (this.resident)
+        if (this.resident) {
           helper.request("state", { paused: this.paused }).catch(() => {});
+          if (this.waitingChats?.length) helper.request("waiting", { chats: this.waitingChats }).catch(() => {});
+        }
         return helper;
       })
       .finally(() => {
@@ -329,6 +331,13 @@ export class AppThreads {
     const fresh = !this.helper || this.helper.stopped;
     const helper = await this.ready();
     if (!fresh) await helper.request("state", { paused: this.paused });
+  }
+  // Messages from the phone waiting for their Claude app chat, listed in the
+  // menu bar item (a click opens the chat). Shown only with that item.
+  waiting(chats) {
+    this.waitingChats = chats;
+    if (!this.resident || !this.helper || this.helper.stopped) return;
+    this.helper.request("waiting", { chats }).catch(() => {});
   }
   pause(t) {
     t.state = "paused";

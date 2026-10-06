@@ -139,6 +139,8 @@ export function publicStartHandler({
       return res.end();
     }
     const url = (req.url || "/").split("?")[0];
+    if (url === "/agent-browser")
+      return send(req, res, path.join(dist, "agent.html"), "no-store");
     if (url === "/" || url === "/guest" || url === "/agent")
       return send(req, res, path.join(dist, "start.html"), "no-cache");
     if (url === "/reach-start.json") {
@@ -170,6 +172,7 @@ export function publicStartHandler({
         "/favicon.svg",
         "/fonts.css",
         "/manifest.webmanifest",
+        "/sw.js",
         "/agent.mjs",
       ].includes(url)
     )

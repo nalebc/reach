@@ -1,0 +1,61 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { linkCli } from "../scripts/cli-link.mjs";
+
+// `./reach cli`: `reach` in every Terminal, so `reach status`, `reach stop`
+// and `reach restart` work from any folder, as with an installed CLI. The
+// launcher has to find its folder through the link (before, it looked for
+// scripts/ next to the link and failed).
+const launcher = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../reach");
+const scratch = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "reach-cli-")));
+
+test("links reach into a folder on PATH; the link runs this Reach and its hints say reach", () => {
+  const home = scratch();
+  const bin = path.join(home, ".local/bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const env = { PATH: bin };
+  const result = linkCli({ script: launcher, env, home });
+  assert.equal(result.ok, true);
+  assert.equal(fs.realpathSync(path.join(bin, "reach")), fs.realpathSync(launcher));
+  assert.match(result.text, /reach now works in any Terminal/);
+  const help = execFileSync(path.join(bin, "reach"), ["--help"], { encoding: "utf8", env: { ...process.env, REACH_COMMAND: "" } });
+  assert.match(help, /^reach status +Where Reach runs/m);
+  assert.match(help, /^reach cli +Make reach a command/m);
+  // Again: nothing to do.
+  assert.match(linkCli({ script: launcher, env, home }).text, /already runs this Reach/);
+});
+
+test("replaces a link to another Reach folder, leaves anything else alone", () => {
+  const home = scratch();
+  const bin = path.join(home, ".local/bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const older = path.join(home, "old reach");
+  fs.mkdirSync(path.join(older, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(older, "scripts/bootstrap.mjs"), "");
+  fs.writeFileSync(path.join(older, "reach"), "#!/bin/sh\n", { mode: 0o755 });
+  fs.symlinkSync(path.join(older, "reach"), path.join(bin, "reach"));
+  const moved = linkCli({ script: launcher, env: { PATH: bin }, home });
+  assert.equal(moved.ok, true);
+  assert.match(moved.text, /It pointed to .*old reach\/reach before/);
+  assert.equal(fs.realpathSync(path.join(bin, "reach")), fs.realpathSync(launcher));
+
+  fs.unlinkSync(path.join(bin, "reach"));
+  fs.writeFileSync(path.join(bin, "reach"), "someone else's tool");
+  const refused = linkCli({ script: launcher, env: { PATH: bin }, home });
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /is something else, not Reach/);
+  assert.equal(fs.readFileSync(path.join(bin, "reach"), "utf8"), "someone else's tool");
+});
+
+test("with no folder of yours on PATH, says how to add one and links nothing", () => {
+  const home = scratch();
+  const result = linkCli({ script: launcher, env: { PATH: "/usr/bin:/bin" }, home });
+  assert.equal(result.ok, false);
+  assert.match(result.text, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
+  assert.equal(fs.existsSync(path.join(home, ".local/bin/reach")), false);
+});

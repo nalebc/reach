@@ -38,7 +38,6 @@ import {
   ExternalLink,
   Shield,
   KeyRound,
-  Cpu,
   Activity as ActivityIcon,
   Smartphone,
   Server,
@@ -115,7 +114,9 @@ import { accessChanged } from "./live-access";
 import { useFleetJoin } from "./fleet-join";
 import { groupDevices } from "./device-groups";
 import { FaceIdSettings } from "./FaceIdSettings";
-import { NotifySettings } from "./NotifySettings";
+import { NotificationBell, NotificationCenter } from "./Notifications";
+import { openTarget, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
+import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
 // when first opened, then quietly in the background once the app is idle.
@@ -125,9 +126,6 @@ const Screen = lazy(loadScreen);
 const TerminalView = lazy(() =>
   loadSessions().then((m) => ({ default: m.TerminalView })),
 );
-const ChatView = lazy(() =>
-  loadSessions().then((m) => ({ default: m.ChatView })),
-);
 const pages = [
   { id: "overview", name: "Home", icon: LayoutGrid },
   // Every Codex and Claude Code session on the computer.
@@ -135,9 +133,7 @@ const pages = [
   { id: "files", name: "Files", icon: Folder },
   { id: "apps", name: "Apps", icon: AppWindow },
   { id: "terminal", name: "Terminals", icon: Terminal },
-  { id: "chat", name: "Codex", icon: MessageSquare },
   { id: "screen", name: "Screen", icon: Monitor },
-  { id: "agents", name: "Agent access", icon: Bot },
   { id: "invite", name: "Invite someone", icon: UserRoundPlus },
 ];
 // Bottom bar on phones; everything else is under More.
@@ -230,7 +226,7 @@ function ReachWorkspace() {
   const agentFeed = useAgentSessions(chatPeer);
   // The Chat tab wears the logo of the agent it shows (real app icons).
   const agentLogos = useAgentLogos(chatPeer);
-  const [chatAgent] = useChatAgent();
+  const [chatAgent, setChatAgent] = useChatAgent();
   const pageIcon = (p: (typeof pages)[number], size: number) =>
     p.id === "sessions" && agentLogos[chatAgent] ? (
       <AgentLogo
@@ -246,7 +242,7 @@ function ReachWorkspace() {
     (s) => s.status === "waiting",
   ).length;
   const [chatTarget, setChatTarget] = useState<{
-    agent: AgentName;
+    agent: AgentName | "openclaw";
     id: string;
   } | null>(null);
   const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
@@ -521,6 +517,29 @@ function ReachWorkspace() {
     setPage(id);
     setMobileMenu(false);
   };
+  // A notification's link (?page=…): opened once Reach knows what this phone
+  // may see, then dropped from the address so a reload doesn't open it again.
+  // With Reach already open, the service worker passes the link instead.
+  const [linkTarget, setLinkTarget] = useState<OpenTarget | null>(() => {
+    const target = openTarget(location.href);
+    if (target) history.replaceState(history.state, "", withoutTarget(location.href));
+    return target;
+  });
+  useEffect(() => {
+    const message = (event: MessageEvent) => {
+      if (event.data?.type === "reach-open" && typeof event.data.url === "string") {
+        const target = openTarget(event.data.url);
+        if (target) setLinkTarget(target);
+      }
+    };
+    navigator.serviceWorker?.addEventListener("message", message);
+    return () => navigator.serviceWorker?.removeEventListener("message", message);
+  }, []);
+  useEffect(() => {
+    if (!linkTarget || !peer || !device || !pageAccessible(linkTarget.page, features)) return;
+    openTargetNow(linkTarget);
+    setLinkTarget(null);
+  }, [linkTarget, peer?.id, device, features]);
   // A Mac dialog to answer on the live screen (from a "Show on screen" card),
   // and the page to go back to after.
   const [screenAsk, setScreenAsk] = useState<{ prompt: MacPrompt; from: string } | null>(null);
@@ -589,7 +608,18 @@ function ReachWorkspace() {
         )}
       </>
     );
+  // Opens what a notification (or the bell's list) points at, in one go:
+  // the chat itself, the app handed to you, or the request opened for review.
+  function openTargetNow(target: OpenTarget) {
+    if (target.page === "sessions" && ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "") && target.id)
+      setChatTarget({ agent: target.agent as AgentName | "openclaw", id: target.id });
+    if (target.page === "sessions" && target.agent === "openclaw") setChatAgent("openclaw");
+    if (target.page === "apps" && target.threadId) requestOpenThread(peer.id, target.threadId);
+    if (target.needs) wantNeed(target.needs);
+    navigate(target.page);
+  }
   return (
+    <NotificationCenter peer={peer} enabled={!!device && !!features.settings} onOpen={({ target }) => openTargetNow(target)}>
     <div className="app-shell">
       <aside className="sidebar">
         <Logo companion={page !== "overview" && page !== "screen"} />
@@ -677,6 +707,7 @@ function ReachWorkspace() {
             </strong>
           </div>
           <div className="topbar-right">
+            {page === "overview" && <NotificationBell compact />}
             {page !== "screen" && features.shortcuts && (
               <button
                 className="icon-button"
@@ -778,11 +809,7 @@ function ReachWorkspace() {
                     pending={requests.filter((r) => deferred.includes(r.id))}
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
-                    openChat={(id) => {
-                      setChatId(id);
-                      navigate("chat");
-                      setChatFocused(true);
-                    }}
+                    openChat={() => navigate("sessions")}
                     openTerminal={(id) => {
                       setTerminalId(id);
                       navigate("terminal");
@@ -861,19 +888,6 @@ function ReachWorkspace() {
                     onScreen={features.screen ? () => navigate("screen") : undefined}
                   />
                 )}
-                {page === "chat" && (
-                  <ChatView
-                    peer={peer}
-                    chats={chats}
-                    selected={chatId}
-                    focused={chatFocused}
-                    onFocus={setChatFocused}
-                    onSelect={setChatId}
-                    onNew={() => session("chat")}
-                    onRefresh={refreshSessions}
-                    toast={toast}
-                  />
-                )}
                 {page === "apps" && (
                   <Apps
                     peer={peer}
@@ -887,6 +901,7 @@ function ReachWorkspace() {
                 )}
                 {page === "screen" && (
                   <Screen
+                    onClose={() => navigate("sessions")}
                     peer={peer}
                     device={device}
                     toast={toast}
@@ -916,26 +931,14 @@ function ReachWorkspace() {
                     }}
                   />
                 )}
-                {page === "agents" && (
-                  <Agents
-                    peer={peer}
-                    requests={requests}
-                    decide={decide}
-                    canJobs={features.jobs}
-                  />
-                )}
                 {page === "invite" &&
                   (!device.access ||
                     (device.access.scopes.includes("admin") &&
                       device.access.kind !== "guest")) && (
                     <>
-                      <PageTitle
-                        title="Invite someone"
-                        description="A little access. Only for a little while."
-                      />
                       <InviteSheet peer={peer} device={device} peers={peers} />
                       <button
-                        className="button secondary"
+                        className="ivt-manage"
                         onClick={() => navigate("settings")}
                       >
                         <Shield size={17} />
@@ -1073,11 +1076,7 @@ function ReachWorkspace() {
                 setTerminalId(s.id);
                 setTerminalSource("reach");
                 setPage("terminal");
-              } else {
-                setChatId(s.id);
-                setChatFocused(true);
-                setPage("chat");
-              }
+              } else setPage("sessions");
               setNewSession(null);
               refreshSessions();
             }}
@@ -1090,6 +1089,7 @@ function ReachWorkspace() {
         </div>
       )}
     </div>
+    </NotificationCenter>
   );
 }
 const deviceLabel = () =>
@@ -1867,158 +1867,12 @@ function SettingsPage({
             ))}
         </section>
         <FaceIdSettings peer={peer} />
-        <NotifySettings peer={peer} />
+        {/* Notifications live in the bell's panel only: nothing about them here. */}
       </div>
       <button className="forget-computer" onClick={forget}>
         <LogOut size={17} />
         Forget this computer
       </button>
     </div>
-  );
-}
-function Agents({
-  canJobs,
-  peer,
-  requests,
-  decide,
-}: {
-  peer: Peer;
-  requests: AgentRequest[];
-  canJobs: boolean;
-  decide: (r: AgentRequest, d: "approve" | "deny") => Promise<void>;
-}) {
-  const [jobs, setJobs] = useState<any[]>([]),
-    [error, setError] = useState("");
-  useEffect(() => {
-    if (!canJobs) {
-      setJobs([]);
-      return;
-    }
-    let active = true;
-    const load = () =>
-      request(peer, "/api/jobs")
-        .then((r) => {
-          if (!Array.isArray(r))
-            throw new Error("Agent jobs couldn’t load. Retrying…");
-          if (active) {
-            setJobs(r);
-            setError("");
-          }
-        })
-        .catch((e) => active && setError(e.message));
-    load();
-    const t = setInterval(load, 4000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
-  }, [peer.id, peer.url, peer.token, canJobs]);
-  return (
-    <>
-      <PageTitle
-        title="Agent access"
-        description="Approve connections. Follow their work. Stay in control."
-      />
-      {requests.length > 0 && (
-        <section className="panel settings-panel request-panel">
-          <h2>Waiting for you</h2>
-          {requests.map((r) => (
-            <div className="client-row" key={r.id}>
-              <Bot size={20} />
-              <div>
-                <strong>{r.name}</strong>
-                <small>{r.scopes.map(scopeLabel).join(" · ")}</small>
-              </div>
-              <button
-                className="button secondary small"
-                onClick={() => decide(r, "deny")}
-              >
-                Deny
-              </button>
-              <button
-                className="button primary small"
-                onClick={() => decide(r, "approve")}
-              >
-                Authorize
-              </button>
-            </div>
-          ))}
-        </section>
-      )}
-      <div className="agents-grid">
-        <details className="panel settings-panel agent-setup">
-          <summary>
-            <span>
-              <strong>Connect an agent</strong>
-              <small>Private access through the Reach CLI</small>
-            </span>
-            <Plus size={20} />
-          </summary>
-          <div className="quick-icon green">
-            <Code2 size={24} />
-          </div>
-          <h2>One backend. Your tools.</h2>
-          <p>
-            Agents can run commands, exchange files, and manage sessions through
-            the same authenticated API.
-          </p>
-          <ol className="steps">
-            <li>
-              <strong>Ask for access from the agent’s machine</strong>
-              <code>
-                {`REACH_URL="${peer.url}" node scripts/agent.mjs connect --name MyAgent --scopes files,exec`}
-              </code>
-            </li>
-            <li>
-              <strong>Tap Authorize on your phone</strong>
-              <code>
-                The request pops up in Reach. The agent receives its own
-                revocable key.
-              </code>
-            </li>
-            <li>
-              <strong>Run a command</strong>
-              <pre>
-                {'REACH_URL="' +
-                  peer.url +
-                  '" \\\nREACH_TOKEN="your-agent-key" \\\nnode scripts/agent.mjs exec "pwd"'}
-              </pre>
-            </li>
-          </ol>
-          <p className="muted">
-            Every agent gets its own key with only the access you approve.
-            Revoke it anytime in Settings. Command access runs with your
-            computer account’s permissions.
-          </p>
-        </details>
-        {canJobs && (
-          <section className="panel settings-panel agent-jobs">
-            <h2>Recent work</h2>
-            <ErrorLine error={error} />
-            {error && !jobs.length ? (
-              <p>Reach will retry loading your jobs automatically.</p>
-            ) : !jobs.length ? (
-              <Empty icon={Cpu} title="Ready for your first job">
-                Commands started through the API will appear here.
-              </Empty>
-            ) : (
-              jobs.slice(0, 12).map((j) => (
-                <details className="job-row" key={j.id}>
-                  <summary>
-                    <code>{j.command}</code>
-                    <span
-                      className={`badge ${j.status === "completed" ? "green" : ""}`}
-                    >
-                      {j.status}
-                    </span>
-                  </summary>
-                  <pre>{j.output || "No output yet."}</pre>
-                </details>
-              ))
-            )}
-          </section>
-        )}
-      </div>
-    </>
   );
 }

@@ -15,8 +15,7 @@ import "./move-chat.css";
 // Continuing a chat in another app, as if it had been forked in the same app
 // and carried on with another agent (server: agent-sessions/move.mjs): the
 // other agent gets what this one knows so far, and this chat stays as it is.
-// Offered where switching feels natural: the agent at the top of a chat, the
-// model picker, and the moment an agent runs out of usage or is signed out.
+// Offered in one place: the chat's ⋯ menu (and an OpenClaw chat's header).
 
 // What a chat needs to be moved: which app and chat it is.
 export type MoveSource = { agent: string; id: string; title?: string; cwd?: string };
@@ -33,8 +32,10 @@ export function moveBlocked(to: string, health: AgentHealth[], word = "Mac") {
   const name = agentLabel(to);
   if (!h) return "";
   if (!h.installed) return `${name} isn't installed on your ${word}.`;
-  // OpenClaw's own Gateway answers for it when the chat moves.
-  if (to === "openclaw") return "";
+  // OpenClaw's own Gateway answers for it when the chat moves, if it can
+  // take one (older Gateways can't add the history).
+  if (to === "openclaw")
+    return h.canTakeMoves === false ? `Update OpenClaw on your ${word} to move chats there.` : "";
   if (!h.signedIn) return `${name} is signed out on your ${word}.`;
   if (h.usable === false)
     return `${name} is out of usage${h.resetsAt ? ` until ${resetTime(h.resetsAt, false)}` : ""}.`;
@@ -60,8 +61,9 @@ export const movedChat = (from: MoveSource, to: { agent: string; id: string }): 
     movedFrom: { agent: from.agent, id: from.id, title: from.title },
   }) as AgentSession;
 
-// The hint is shown a few times, never again once a chat has moved.
+// The hint is shown twice at most, never again once tapped or a chat has moved.
 const HINT = "reach.moveHint";
+const HINT_TIMES = 2;
 const hintSeen = () => {
   try {
     return Number(localStorage.getItem(HINT) || 0);
@@ -187,7 +189,78 @@ export function MoveOffer({
   );
 }
 
-// A quiet line under the chat's header, the first few times: where to find it.
+// In the chat's ⋯ menu: one row per app that can take the chat now, with
+// its logo. One tap says what happens, the next one moves it.
+export function MoveItems({
+  peer,
+  session,
+  health,
+  logos,
+  word,
+  onMoved,
+}: {
+  peer: Peer;
+  session: MoveSource;
+  health: AgentHealth[];
+  logos: AgentLogos;
+  word?: string;
+  onMoved: (s: AgentSession) => void;
+}) {
+  const targets = moveTargets(session.agent, health).filter((t) => !moveBlocked(t, health, word));
+  const [asking, setAsking] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  if (!targets.length) return null;
+  const from = agentLabel(session.agent);
+  const go = async (to: string) => {
+    setBusy(true);
+    setProblem("");
+    try {
+      const moved = await moveSession(peer, session, to);
+      noteHint(99);
+      onMoved(movedChat(session, moved));
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      {targets.map((to) => {
+        const name = agentLabel(to);
+        const here = asking === to;
+        return (
+          <button
+            key={to}
+            role="menuitem"
+            className={`move-item ${here ? "asking" : ""}`}
+            disabled={busy}
+            onClick={() => (here ? void go(to) : setAsking(to))}
+          >
+            <AgentLogo agent={to} name={name} logos={logos} size={20} />
+            <span className="move-item-text">
+              <span>{here ? name : `Continue in ${name}`}</span>
+              <small>
+                {here && problem
+                  ? problem
+                  : here
+                    ? `gets what ${from} knows so far`
+                    : "Picks up from here; this chat stays"}
+              </small>
+            </span>
+            {busy && here ? (
+              <Loader2 size={16} className="spin" />
+            ) : here ? (
+              <span className="move-item-go">Continue</span>
+            ) : null}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+// A quiet line under the chat's header, twice at most; a tap opens ⋯.
 export function MoveHint({
   session,
   health,
@@ -200,7 +273,7 @@ export function MoveHint({
   onOpen: () => void;
 }) {
   const targets = moveTargets(session.agent, health).filter((t) => !moveBlocked(t, health));
-  const [shown] = useState(() => hintSeen() < 3 && !session.movedFrom);
+  const [shown] = useState(() => hintSeen() < HINT_TIMES && !session.movedFrom);
   const show = shown && targets.length > 0;
   useEffect(() => {
     if (show) noteHint(hintSeen() + 1);
@@ -209,9 +282,15 @@ export function MoveHint({
   const to = targets[0];
   const where = targets.length === 1 ? agentLabel(to) : "another app";
   return (
-    <button className="move-hint" onClick={onOpen}>
+    <button
+      className="move-hint"
+      onClick={() => {
+        noteHint(99);
+        onOpen();
+      }}
+    >
       <AgentLogo agent={to} name={agentLabel(to)} logos={logos} size={16} />
-      <span>New: continue this chat in {where}, as if forked here</span>
+      <span>New: continue this chat in {where}</span>
       <ChevronRight size={14} />
     </button>
   );

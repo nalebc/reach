@@ -134,9 +134,11 @@ export function answerFor(prompt, answer) {
   }
 }
 
-export function codexInput({ text = "", images = [] } = {}) {
+export function codexInput({ text = "", images = [], skill } = {}) {
   const input = [];
   if (typeof text !== "string" || text.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+  // A skill picked from "/", as the Codex app sends it (commands.mjs).
+  if (skill?.name && skill?.path) input.push({ type: "skill", name: skill.name, path: skill.path });
   if (text.trim()) input.push({ type: "text", text, text_elements: [] });
   for (const path of images) input.push({ type: "localImage", path });
   if (!input.length) throw bad("Write a message or add an image.");
@@ -277,18 +279,35 @@ export function createCodexLive({
   };
   daemon.onNotification((m) => {
     const p = m.params || {};
+    // Some resolved notifications identify only the server request. Clear the
+    // original card even without a threadId (or with a string request id).
+    if (m.method === "serverRequest/resolved") {
+      for (const [threadId, t] of threads) {
+        let dropped = false;
+        for (const [key, prompt] of t.prompts)
+          if (String(prompt.requestId) === String(p.requestId)) dropped = t.prompts.delete(key) || dropped;
+        if (dropped) {
+          if (!t.prompts.size && t.status === "waiting") t.status = "running";
+          changed(threadId);
+        }
+      }
+      return;
+    }
     const id = p.threadId || p.turn?.threadId;
     if (!id) return;
     if (m.method === "thread/queue/changed") return void (queues && readQueue(id));
     const t = state(id);
     switch (m.method) {
       case "turn/started":
+        // A queued message may have just become this turn.
+        if (queues && t.queue?.length) void readQueue(id);
         t.status = "running";
         t.turnId = p.turn?.id || p.turnId || t.turnId;
         t.error = null;
         break;
       case "turn/completed": {
         const turn = p.turn || {};
+        if (queues && t.queue?.length) void readQueue(id);
         Object.assign(t, { status: "idle", turnId: null, streaming: null, activity: null });
         t.lastCompleted = turn.id || null;
         if (turn.status === "failed" && turn.error?.message) t.error = turn.error.message;
@@ -311,14 +330,6 @@ export function createCodexLive({
         else return;
         break;
       }
-      case "serverRequest/resolved": {
-        // Answered elsewhere (e.g. in a terminal): drop it here too.
-        let dropped = false;
-        for (const [key, prompt] of t.prompts)
-          if (prompt.requestId === p.requestId) dropped = t.prompts.delete(key);
-        if (!dropped) return;
-        break;
-      }
       case "item/started": {
         const activity = activityFor(p.item);
         if (!activity) return;
@@ -338,7 +349,10 @@ export function createCodexLive({
         break;
       case "thread/closed":
         subscribed.delete(id);
-        return;
+        t.prompts.clear();
+        t.status = "idle";
+        t.turnId = null;
+        break;
       default:
         return;
     }
@@ -368,27 +382,46 @@ export function createCodexLive({
     return !!turn && !finished(turn);
   }
   // The thread is held by another engine (usually the Codex app showing it).
+  // Once in Codex's queue the phone has its answer; whether that engine takes
+  // the message is watched from here on (taken, below).
   async function queueElsewhere(threadId, input) {
     const added = await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input });
     const queued = added?.queuedSubmission?.id;
     if (queues) void readQueue(threadId);
-    const deadline = now() + deliverMs;
-    while (now() < deadline) {
-      await wait(500);
-      const list = await daemon.rpc("thread/queue/list", { threadId }).catch(() => null);
-      if (list && !(list.data || []).some((q) => q.id === queued)) return { queued: true, delivered: true };
+    void taken(threadId, queued, input);
+    return { queued: true, delivered: false, ...(queued ? { messageId: String(queued) } : {}) };
+  }
+  async function taken(threadId, queued, input) {
+    try {
+      const deadline = now() + deliverMs;
+      while (now() < deadline) {
+        await wait(500);
+        const list = await daemon.rpc("thread/queue/list", { threadId }).catch(() => null);
+        if (list && !(list.data || []).some((q) => q.id === queued)) return;
+      }
+      // A running turn there takes queued messages next, as in the app.
+      if (await runningOnDisk(threadId)) return;
+      // Nothing picked it up: taken back so it cannot run later by surprise,
+      // and kept on the phone, saying why, until it's dismissed there.
+      const removed = await daemon
+        .rpc("thread/queue/delete", { threadId, queuedSubmissionId: queued })
+        .catch(() => null);
+      if (removed?.deleted === false) return;
+      const t = state(threadId);
+      t.returned = [
+        ...(t.returned || []),
+        {
+          id: String(queued),
+          text: visibleUserText(input.filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
+          images: input.filter((i) => i?.type === "image" || i?.type === "localImage").length,
+          error: "Another Codex window has this chat open and didn't take it. Open the chat in the Codex app on your Mac, then send it again.",
+        },
+      ];
+      if (queues) await readQueue(threadId);
+      changed(threadId);
+    } catch {
+      /* Reach quitting, or Codex gone: the queue shows what's left */
     }
-    // A running turn there takes queued messages next, as in the app.
-    if (await runningOnDisk(threadId)) return { queued: true, delivered: false };
-    // Nothing picked it up: take it back so it cannot run later by surprise.
-    const removed = await daemon
-      .rpc("thread/queue/delete", { threadId, queuedSubmissionId: queued })
-      .catch(() => null);
-    if (removed?.deleted === false) return { queued: true, delivered: true };
-    throw bad(
-      "Another Codex window has this chat open and didn't take the message. Open it in the Codex app on your Mac, or close it there, then try again.",
-      409,
-    );
   }
   const begin = (threadId, turn) => {
     const t = state(threadId);
@@ -403,9 +436,60 @@ export function createCodexLive({
     drives: (threadId) => subscribed.has(threadId),
     // A phone has the thread open right now (its live view is waiting).
     watched: (threadId) => !!threads.get(threadId)?.waiters.size,
-    async send(threadId, { text, images, model, effort, mode } = {}) {
+    // News from the Codex app's own files (agent-watch.mjs): its queue or its
+    // history changed, though not which chat's. The chats the phone has open
+    // are read again at once (the re-reads in view() stay as the fallback).
+    nudge(kind) {
+      for (const [id, t] of threads) {
+        if (!t.waiters.size) continue;
+        if (kind === "queue") {
+          if (queues) void readQueue(id);
+        } else {
+          t.items++; // the phone reads the chat again
+          changed(id);
+        }
+      }
+    },
+    // A command from "/" that works in the chat (compact, review): the thread
+    // is taken up here as for a message, and what it starts shows as a turn.
+    async call(threadId, method, params = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
-      const input = codexInput({ text, images });
+      const t = state(threadId);
+      if (subscribed.has(threadId) && t.status !== "idle") throw bad("Codex is working in this chat. Try again when it's done.", 409);
+      try {
+        await attach(threadId);
+      } catch (e) {
+        if (WRITER_HELD.test(e.message))
+          throw bad("The Codex app has this chat open, so it runs this there. Run it in the Codex app, or close the chat there and try again.", 409);
+        throw e;
+      }
+      t.error = null;
+      let r;
+      try {
+        r = await daemon.rpc(method, { threadId, ...params });
+      } catch (e) {
+        release(threadId);
+        throw e;
+      }
+      if (r?.turn) begin(threadId, r.turn);
+      else {
+        // Compact answers before its turn starts; let go if none comes.
+        t.status = "running";
+        changed(threadId);
+        const timer = setTimeout(() => {
+          if (t.status === "running" && !t.turnId) {
+            t.status = "idle";
+            release(threadId);
+            changed(threadId);
+          }
+        }, 15000);
+        timer.unref?.();
+      }
+      return r || {};
+    },
+    async send(threadId, { text, images, model, effort, mode, skill } = {}) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      const input = codexInput({ text, images, skill });
       const t = state(threadId);
       if (subscribed.has(threadId) && t.status !== "idle" && t.turnId) {
         // Like typing while Codex works: steer the running turn.
@@ -510,25 +594,41 @@ export function createCodexLive({
     async cancelQueued(threadId, messageId) {
       if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
         throw bad("Unknown queued message.", 404);
+      // One Reach took back: dismissed here.
+      const t = threads.get(threadId);
+      if (t?.returned?.some((m) => m.id === messageId)) {
+        t.returned = t.returned.filter((m) => m.id !== messageId);
+        changed(threadId);
+        return { deleted: true };
+      }
       const result = await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId });
       if (result?.deleted !== true) throw bad("That message already left the queue.", 409);
       await readQueue(threadId);
       return { deleted: true };
     },
-    respond(threadId, promptId, answer) {
+    async respond(threadId, promptId, answer) {
       const t = state(threadId);
       const prompt = t.prompts.get(String(promptId));
       if (!prompt) throw bad("This prompt was already answered.", 409);
+      if (prompt.replying) throw bad("This answer is already being sent.", 409);
       const response = answerFor(prompt, answer);
-      t.prompts.delete(String(promptId));
-      if (!t.prompts.size && t.status === "waiting") t.status = "running";
-      prompt.resolve(response);
-      changed(threadId);
-      return { answered: true };
+      prompt.replying = true;
+      try {
+        await prompt.resolve(response);
+        t.prompts.delete(String(promptId));
+        if (!t.prompts.size && t.status === "waiting") t.status = "running";
+        changed(threadId);
+        return { answered: true };
+      } finally {
+        prompt.replying = false;
+      }
     },
     view(threadId) {
       // The phone is looking: what waits in Codex's queue, if not read lately.
-      if (queues && now() - (threads.get(threadId)?.queueAt || 0) > 5000) void readQueue(threadId);
+      // While something waits, often: the Codex app takes queued messages
+      // without telling Reach, and a card stayed up after its message ran.
+      const every = threads.get(threadId)?.queue?.length ? 1500 : 5000;
+      if (queues && now() - (threads.get(threadId)?.queueAt || 0) > every) void readQueue(threadId);
       const t = threads.get(threadId);
       if (!t)
         return { version: 0, status: null, error: null, turnId: null, prompts: [], streaming: "", activity: null, items: 0 };
@@ -539,17 +639,20 @@ export function createCodexLive({
         status: t.status,
         error: t.error,
         turnId: t.turnId,
-        prompts: [...t.prompts.values()].map(({ resolve, requestId, ...p }) => p),
+        prompts: [...t.prompts.values()].map(({ resolve, requestId, replying, ...p }) => p),
         streaming: t.streaming?.text || "",
         activity: t.activity,
         items: t.items,
-        ...(t.queue?.length ? { outbox: t.queue } : {}),
+        // Codex's queue, then what Reach took back after nobody took it.
+        ...(t.queue?.length || t.returned?.length ? { outbox: [...(t.queue || []), ...(t.returned || [])] } : {}),
       };
     },
     // Resolves when the thread changes (or after `ms`), for long polling.
     changes(threadId, since, ms = 25000, signal) {
       const t = state(threadId);
       if (t.version !== Number(since)) return Promise.resolve();
+      // Something waits in Codex's queue: look again soon (view() re-reads it).
+      if (queues && t.queue?.length) ms = Math.min(ms, 3000);
       return new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);

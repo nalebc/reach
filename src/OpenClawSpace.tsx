@@ -5,6 +5,7 @@ import {
   ChevronRight,
   GitFork,
   Loader2,
+  Plus,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -28,7 +29,9 @@ type Session = {
   updatedAt: number;
   model: string;
   status: string;
-  canDeliver?: boolean;
+  canStop?: boolean;
+  // Reach writes only in chats it made (server/openclaw.mjs writable()).
+  writable?: boolean;
 };
 type Approval = {
   id: string;
@@ -36,6 +39,7 @@ type Approval = {
   command: string;
   cwd: string;
   expiresAt: number;
+  canRespond?: boolean;
 };
 type Overview = {
   connected: boolean;
@@ -45,11 +49,17 @@ type Overview = {
 };
 type History = {
   session: Session;
-  items: { id: string; role: string; text: string; tool: boolean }[];
+  // sentTo: OpenClaw also posted this reply to that app (e.g. "whatsapp").
+  items: { id: string; role: string; text: string; tool: boolean; sentTo?: string }[];
   streaming: string;
   error: string;
   approvals: Approval[];
   mayHaveOlder: boolean;
+  phase?: "generation" | "delivery";
+  delivery?: {
+    channel: string;
+    status: "pending" | "sent" | "failed" | "suppressed" | "unconfirmed";
+  } | null;
 };
 const channelName = (channel: string) =>
   ({
@@ -106,13 +116,16 @@ function approvalItems(
   peer: Peer,
   prompts: Approval[],
   done: () => void,
+  onScreen?: () => void,
 ): NeedItem[] {
   return prompts.map((prompt) => ({
     key: prompt.id,
     icon: <ShieldCheck size={18} />,
     title: "OpenClaw needs permission",
     detail: [prompt.command, prompt.cwd].filter(Boolean).join(" · "),
-    actions: [
+    note: prompt.canRespond === false ? "Answer this request in OpenClaw on your computer." : undefined,
+    screen: onScreen,
+    actions: prompt.canRespond === false ? [] : [
       { label: "Deny", decision: "deny" },
       { label: "Allow once", decision: "allow-once" },
     ].map((action) => ({
@@ -139,6 +152,7 @@ function Conversation({
   logos,
   health = [],
   onOpenChat,
+  onScreen,
 }: {
   peer: Peer;
   session: Session;
@@ -149,6 +163,7 @@ function Conversation({
   // Continuing this chat in another app (MoveChat.tsx).
   health?: AgentHealth[];
   onOpenChat?: (s: AgentSession) => void;
+  onScreen?: () => void;
 }) {
   const [moving, setMoving] = useState(false);
   const [refresh, setRefresh] = useState(0);
@@ -167,17 +182,16 @@ function Conversation({
       return "";
     }
   });
-  const [deliver, setDeliver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const sending = useRef(false);
-  const attempt = useRef<{ text: string; deliver: boolean; id: string } | null>(
-    null,
-  );
+  const attempt = useRef<{ text: string; id: string } | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const current = data?.session || session;
   const working = current.status === "running";
+  const unsettled =
+    working || current.status === "unknown" || current.status === "waiting";
   useEffect(() => {
     try {
       if (text) sessionStorage.setItem(draftKey, text);
@@ -190,23 +204,20 @@ function Conversation({
   }, [data?.items.at(-1)?.id, data?.streaming]);
   const reload = () => setRefresh((v) => v + 1);
   const send = async () => {
-    if (!text.trim() || sending.current || working || error) return;
+    if (!text.trim() || sending.current || unsettled || error) return;
     sending.current = true;
     setBusy(true);
     setProblem("");
     const message = text;
     // A failed/uncertain response can be retried without starting a second run.
-    if (
-      !attempt.current ||
-      attempt.current.text !== message ||
-      attempt.current.deliver !== deliver
-    )
-      attempt.current = { text: message, deliver, id: crypto.randomUUID() };
+    if (!attempt.current || attempt.current.text !== message)
+      attempt.current = { text: message, id: crypto.randomUUID() };
     try {
+      // Replies stay in Reach: Reach never asks OpenClaw to post to WhatsApp
+      // etc. (the server refuses it too).
       await post(peer, `${base}/send`, {
         key: session.key,
         text: message,
-        deliver,
         requestId: attempt.current.id,
       });
       setText((value) => (value === message ? "" : value));
@@ -237,6 +248,13 @@ function Conversation({
             {current.model ? ` · ${current.model}` : ""}
           </span>
         </div>
+        <button
+          className="claw-icon"
+          aria-label="Refresh OpenClaw conversation"
+          onClick={reload}
+        >
+          <RefreshCw size={16} />
+        </button>
         {!!deviceRequests && (
           <button
             className="claw-icon"
@@ -317,6 +335,7 @@ function Conversation({
                   : item.role === "assistant"
                     ? "OpenClaw"
                     : "System"}
+                {item.sentTo ? ` · sent to ${channelName(item.sentTo)}` : ""}
               </small>
               <AgentMarkdown text={item.text} />
             </article>
@@ -331,20 +350,69 @@ function Conversation({
             <AgentMarkdown text={data.streaming} />
           </article>
         )}
-        {working && (
+        {working && !error && (
           <p className="claw-note" role="status">
-            <Loader2 size={13} className="spin" /> OpenClaw is working…
+            <Loader2 size={13} className="spin" />
+            {data?.phase === "delivery"
+              ? "OpenClaw is finishing delivery…"
+              : "OpenClaw is working…"}
+          </p>
+        )}
+        {data?.delivery && data.delivery.status !== "pending" && (
+          <p className="claw-note" role="status">
+            {data.delivery.status === "sent"
+              ? `OpenClaw reports the reply was sent to ${channelName(data.delivery.channel)}.`
+              : data.delivery.status === "failed"
+                ? `Delivery to ${channelName(data.delivery.channel)} failed. Check OpenClaw before retrying.`
+                : data.delivery.status === "suppressed"
+                  ? "OpenClaw chose not to send an external reply."
+                  : `${channelName(data.delivery.channel)} delivery is unconfirmed. Check that conversation before retrying.`}
           </p>
         )}
       </div>
       {!!data?.approvals.length && (
-        <NeedsYouStrip items={approvalItems(peer, data.approvals, reload)} />
+        <NeedsYouStrip items={approvalItems(peer, data.approvals, reload, onScreen)} />
       )}
       {(error || problem || data?.error) && (
         <p className="claw-error" role="alert">
           {error || problem || data?.error}
         </p>
       )}
+      {/* A WhatsApp group's, a Discord channel's or a cron job's chat: shown,
+          never written to from here (a message would run the agent inside
+          that group's context). */}
+      {current.writable !== true ? (
+        <div className="claw-composer claw-readonly" role="note">
+          <p>
+            This chat belongs to {current.title || "another app"}. Reach shows it but
+            doesn’t write in it, so nothing reaches{" "}
+            {current.channel && current.channel !== "webchat" ? channelName(current.channel) : "it"} from
+            here.
+          </p>
+          {unsettled && current.canStop !== false && (
+            <button
+              type="button"
+              className="claw-icon"
+              aria-label="Stop OpenClaw"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setProblem("");
+                try {
+                  await post(peer, `${base}/stop`, { key: session.key });
+                  reload();
+                } catch (e) {
+                  setProblem((e as Error).message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              <Square size={16} />
+            </button>
+          )}
+        </div>
+      ) : (
       <form
         className="claw-composer"
         onSubmit={(e) => {
@@ -361,24 +429,8 @@ function Conversation({
           disabled={busy}
         />
         <div className="claw-compose-tools">
-          {current.canDeliver ? (
-            <label className="claw-destination">
-              <select
-                aria-label="Reply destination"
-                value={deliver ? "channel" : "reach"}
-                disabled={busy}
-                onChange={(e) => setDeliver(e.target.value === "channel")}
-              >
-                <option value="reach">Reply in Reach</option>
-                <option value="channel">
-                  Reply via {channelName(current.channel)}
-                </option>
-              </select>
-            </label>
-          ) : (
-            <span className="claw-note">Reply in Reach</span>
-          )}
-          {working ? (
+          <span className="claw-note">Reply in Reach</span>
+          {unsettled && current.canStop !== false ? (
             <button
               type="button"
               className="claw-icon"
@@ -403,7 +455,7 @@ function Conversation({
             <button
               className="as-send"
               aria-label="Send to OpenClaw"
-              disabled={!text.trim() || busy || !!error || !data}
+              disabled={!text.trim() || busy || unsettled || !!error || !data}
             >
               {busy ? (
                 <Loader2 size={16} className="spin" />
@@ -413,13 +465,17 @@ function Conversation({
             </button>
           )}
         </div>
-        {deliver && (
+        <small className="claw-delivery-note">
+          Continue in Reach and OpenClaw. No reply is forwarded to another app.
+        </small>
+        {unsettled && current.canStop === false && (
           <small className="claw-delivery-note">
-            OpenClaw’s reply will also be sent to this session’s{" "}
-            {channelName(current.channel)} conversation.
+            To stop this channel reply, use OpenClaw on your computer. This
+            Gateway does not expose a stop control for it.
           </small>
         )}
       </form>
+      )}
     </section>
   );
 }
@@ -437,6 +493,8 @@ export default function OpenClawSpace({
   onOpened,
   health,
   onOpenChat,
+  onScreen,
+  onNew,
 }: {
   peer: Peer;
   apps: ChatAppChoice[];
@@ -452,6 +510,9 @@ export default function OpenClawSpace({
   // Continuing an OpenClaw chat in another app (MoveChat.tsx).
   health?: AgentHealth[];
   onOpenChat?: (s: AgentSession) => void;
+  onScreen?: () => void;
+  // A new OpenClaw chat of Reach's own (EverythingChat NewClawChat).
+  onNew?: () => void;
 }) {
   const [refresh, setRefresh] = useState(0);
   const { data, error } = usePolling<Overview>(
@@ -493,6 +554,7 @@ export default function OpenClawSpace({
         logos={logos}
         health={health}
         onOpenChat={onOpenChat}
+        onScreen={onScreen}
       />
     );
   return (
@@ -506,10 +568,19 @@ export default function OpenClawSpace({
           <button
             className="claw-icon"
             aria-label="Refresh OpenClaw sessions"
-            onClick={() => { setRefresh((n) => n + 1); onDiscover?.(); }}
+            onClick={() => {
+              setRefresh((n) => n + 1);
+              onDiscover?.();
+            }}
           >
             <RefreshCw size={16} />
           </button>
+          {onNew && (
+            <button className="chat-create" aria-label="New chat" onClick={onNew}>
+              <Plus size={16} />
+              <span>New chat</span>
+            </button>
+          )}
         </header>
         <div className="chat-library-tools">
           <ChatAppPicker

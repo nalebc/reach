@@ -1,0 +1,105 @@
+/* Messages whose chat was deleted (StrandedMessages.tsx): one quiet glass row
+   each, above the chat list, with the chats to send it to opening inline. */
+.stranded {
+  max-width: 880px;
+  margin: 12px auto 0;
+  display: grid;
+  gap: 8px;
+}
+.stranded-item {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface, #141a17) 86%, transparent);
+  overflow: hidden;
+}
+.stranded-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 8px 8px 14px;
+}
+.stranded-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.stranded-text strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stranded-text small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.stranded-send,
+.stranded-delete {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text, #e8efe9) 8%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+.stranded-send {
+  padding: 0 12px;
+}
+.stranded-send[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--lime) 18%, transparent);
+}
+.stranded-delete {
+  justify-content: center;
+  width: 36px;
+  color: var(--muted);
+}
+.stranded-pick {
+  display: grid;
+  padding: 0 6px 6px;
+}
+.stranded-pick button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.stranded-pick button:hover,
+.stranded-pick button:focus-visible {
+  background: color-mix(in srgb, var(--text, #e8efe9) 7%, transparent);
+}
+.stranded-pick-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.stranded-pick small,
+.stranded-pick p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.stranded-pick p {
+  margin: 8px 10px;
+}
+.stranded-problem {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--danger, #f3a1a1);
+  font-size: 13px;
+}

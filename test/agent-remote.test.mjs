@@ -64,8 +64,7 @@ test("agent links: only /agent links on a tailnet, one computer each", () => {
   );
 });
 
-const run = (args, { env = {}, input } = {}) =>
-  new Promise((resolve, reject) => {
+function launch(args, { env = {}, input } = {}) {
     const child = spawn(process.execPath, [runtime, ...args], {
       env: { ...process.env, ...env },
     });
@@ -73,10 +72,23 @@ const run = (args, { env = {}, input } = {}) =>
       stderr = "";
     child.stdout.on("data", (c) => (stdout += c));
     child.stderr.on("data", (c) => (stderr += c));
+    const done = new Promise((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
+    });
     child.stdin.end(input);
-  });
+    return { child, done, output: () => ({ stdout, stderr }) };
+}
+const run = (args, options) => launch(args, options).done;
+async function waitUntil(read, timeout = 10000) {
+  const deadline = Date.now() + timeout;
+  do {
+    const result = read();
+    if (result) return result;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  assert.fail("Timed out waiting for the CLI admission request and verification code");
+}
 
 test(
   "a one-time key signs in by itself (guest links, agents), through Node's fetch, never on stdout",
@@ -144,7 +156,7 @@ test(
       await reach.close();
       fs.rmSync(dir, { recursive: true, force: true });
     });
-    reach.auth.issue("owner", ALL_SCOPES);
+    const owner = reach.auth.issue("owner", ALL_SCOPES);
     const origin = `http://127.0.0.1:${reach.server.address().port}`;
     const grant = reach.auth.inviteAgent({
       name: "Builder",
@@ -156,7 +168,21 @@ test(
     const env = { REACH_AGENT_HOME: path.join(dir, "agent-home") };
 
     // The link can come on stdin (kept out of the shell history).
-    const joined = await run(["join", "--allow-local"], { env, input: link });
+    const joining = launch(["join", "--allow-local"], { env, input: link });
+    t.after(() => joining.child.kill());
+    const admission = await waitUntil(() => {
+      const request = reach.auth.listAgentAdmissions().find((entry) => entry.clientId === grant.clientId);
+      return request && joining.output().stderr.includes(request.verificationCode) ? request : null;
+    });
+    assert.equal(joining.output().stdout, "", "no successful connection output before owner approval");
+    assert.equal(fs.existsSync(path.join(env.REACH_AGENT_HOME, "127", "credential.json")), false);
+    const approved = await fetch(`${origin}/api/agents/admissions/${admission.id || admission.requestId}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "approve" }),
+    });
+    assert.equal(approved.status, 200, await approved.text());
+    const joined = await joining.done;
     assert.equal(joined.code, 0, joined.stderr);
     assert.match(joined.stdout, /Connected to /);
     assert.match(
@@ -255,6 +281,36 @@ test(
     assert.equal(fs.existsSync(conn), false, "a failed join leaves nothing");
   },
 );
+
+test("a denied CLI invitation never saves an active credential or connection", { timeout: 20000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-denied-"));
+  const reach = await createReach({ roots: [dir], dataDir: path.join(dir, "private"), agentPolicyFile: path.join(dir, "none.json") });
+  await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const owner = reach.auth.issue("Owner", ALL_SCOPES);
+  const origin = `http://127.0.0.1:${reach.server.address().port}`;
+  const grant = reach.auth.inviteAgent({ name: "Builder", ttlSeconds: 600, folders: [{ root: 0, path: "" }] });
+  const env = { REACH_AGENT_HOME: path.join(dir, "agent-home") };
+  const joining = launch(["join", "--allow-local"], { env, input: `${origin}/agent#i=${encodeURIComponent(`${origin}~${grant.invitation}`)}` });
+  t.after(() => joining.child.kill());
+  const admission = await waitUntil(() => {
+    const request = reach.auth.listAgentAdmissions().find((entry) => entry.clientId === grant.clientId);
+    return request && joining.output().stderr.includes(request.verificationCode) ? request : null;
+  });
+  assert.equal(joining.output().stdout, "");
+  assert.equal(fs.existsSync(path.join(env.REACH_AGENT_HOME, "127", "credential.json")), false);
+  const denied = await fetch(`${origin}/api/agents/admissions/${admission.id || admission.requestId}`, {
+    method: "POST", headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ decision: "deny" }),
+  });
+  assert.equal(denied.status, 200, await denied.text());
+  const result = await joining.done;
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /denied/i);
+  assert.equal(result.stdout, "");
+  assert.equal(fs.existsSync(path.join(env.REACH_AGENT_HOME, "127")), false);
+  assert.equal(reach.auth.list().some((client) => client.id === grant.clientId && client.status === "accepted"), false);
+});
 
 test(
   "one connection per computer, shared: a second agent session uses it, and takes over when it's gone",

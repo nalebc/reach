@@ -1,3 +1,4 @@
+import { useOpenWantedNeed } from "./deep-link";
 import { useEffect, useRef, useState } from "react";
 import { macTerminalsFingerprint } from "./mac-terminal-live";
 import {
@@ -29,6 +30,8 @@ import { ReachScene } from "./ReachIdentity";
 import type { AgentSession, MacPrompt } from "./agent-sessions";
 import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
 import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
+import { useBrowserApprovals } from "./browser-approvals";
+import { useAgentAdmissions } from "./agent-admissions";
 import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
@@ -334,7 +337,19 @@ export default function HomeLive({
     },
     ended: (h) => setHandoffs((list) => list.filter((x) => x.id !== h.id)),
   });
+  const browserApprovals = useBrowserApprovals(
+    peer,
+    features.owner && visible,
+    connections[active]?.changes,
+  );
+  const agentAdmissions = useAgentAdmissions(
+    peer,
+    features.owner && visible,
+    connections[active]?.changes,
+  );
   const needItems: NeedItem[] = [
+    ...agentAdmissions.items,
+    ...browserApprovals.items,
     ...handed,
     ...pending.map(
       (r): NeedItem => ({
@@ -361,6 +376,8 @@ export default function HomeLive({
     ...agentItems.filter((i) => i.key.startsWith("mac:")),
   ];
   const needsYou = needItems.length > 0;
+  // A notification's request: opened for review the moment it's here.
+  useOpenWantedNeed(needItems);
   const recent = (at: number) => at > 0 && now - at < ACTIVE_MS;
   const stories: Story[] = [
     ...(features.terminal ? terminals : [])
@@ -391,24 +408,6 @@ export default function HomeLive({
         open: () => openMacTab(t.id),
       };
     }),
-    ...(features.codex ? chats : [])
-      .filter((c) =>
-        ["waiting", "running", "starting", "idle"].includes(c.status),
-      )
-      .slice(0, 4)
-      .map((c): Story => ({
-        key: `chat:${c.id}`,
-        name: c.name,
-        kind: "chat",
-        state:
-          c.status === "waiting"
-            ? "attention"
-            : c.status === "idle"
-              ? "idle"
-              : "active",
-        at: 0,
-        open: () => openChat(c.id),
-      })),
     // Agent sessions working anywhere on the Mac: apps, terminals, Reach.
     ...(openAgentSession ? agentSessions : [])
       .filter((s) => !s.archived && (s.live || s.status !== "idle"))
@@ -560,6 +559,9 @@ export default function HomeLive({
         </div>
       )}
 
+      {browserApprovals.review}
+      {agentAdmissions.review}
+
       {(canPlus || stories.length > 0) && (
         <section
           className="home-section"
@@ -652,22 +654,6 @@ export default function HomeLive({
                   <span>
                     Terminal
                     <small>A new shell in your shared folder</small>
-                  </span>
-                </button>
-              )}
-              {features.codex && (
-                <button
-                  onClick={() => {
-                    setSheet(false);
-                    navigate("chat");
-                  }}
-                >
-                  <span className="home-plus-icon">
-                    <MessageSquare size={20} />
-                  </span>
-                  <span>
-                    Codex chat
-                    <small>Talk to Codex with approvals</small>
                   </span>
                 </button>
               )}

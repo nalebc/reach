@@ -10,11 +10,13 @@ const isIos = () =>
   /iPhone|iPad|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const standalone = () =>
-  matchMedia?.("(display-mode: standalone)").matches ||
+  (typeof matchMedia === "function" &&
+    matchMedia("(display-mode: standalone)").matches) ||
   (navigator as { standalone?: boolean }).standalone === true;
 
 // Whether this browser can get notifications, or what it needs first.
 export function pushSupport(): PushSupport {
+  if (isIos() && !standalone()) return "home-screen";
   const capable =
     "serviceWorker" in navigator &&
     typeof window !== "undefined" &&
@@ -43,9 +45,10 @@ async function registration() {
 
 // Whether this browser gets notifications from this computer now.
 export async function pushEnabled(peer: Peer) {
-  const existing = await navigator.serviceWorker
-    .getRegistration("/")
-    .then((r) => r?.pushManager.getSubscription());
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  const existing = await reg?.pushManager.getSubscription();
+  // Keep the worker current for phones that enabled push before this build.
+  if (existing) void reg?.update?.().catch(() => {});
   if (!existing || Notification.permission !== "granted") return false;
   const { subscribed } = await request<{ subscribed: boolean }>(
     peer,
@@ -58,7 +61,11 @@ export async function pushEnabled(peer: Peer) {
 export async function enablePush(peer: Peer) {
   const permission = await Notification.requestPermission();
   if (permission !== "granted")
-    throw Error("Notifications are off for Reach in this phone's settings.");
+    throw Error(
+      permission === "denied"
+        ? "Notifications are off for Reach in this device's settings."
+        : "Notifications weren't enabled. Tap Enable notifications when you're ready.",
+    );
   const [{ key }, reg] = await Promise.all([
     request<{ key: string }>(peer, "/api/push"),
     registration(),
@@ -87,4 +94,52 @@ export async function disablePush(peer: Peer) {
     body: JSON.stringify({ endpoint: subscription.endpoint }),
   });
   await subscription.unsubscribe();
+}
+
+export async function testPush(peer: Peer) {
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  const subscription = await reg?.pushManager.getSubscription();
+  if (!subscription) throw Error("Enable notifications on this device first.");
+  return post(peer, "/api/push/test", { endpoint: subscription.endpoint });
+}
+
+export type NotificationPreferences = {
+  chat: boolean;
+  // A chat finished its work.
+  done: boolean;
+  computer: boolean;
+  handoffs: boolean;
+  access: boolean;
+  pausedUntil: number;
+};
+
+export async function notificationPreferences(
+  peer: Peer,
+  change?: {
+    preferences?: Partial<Omit<NotificationPreferences, "pausedUntil">>;
+    pauseMinutes?: number;
+  },
+) {
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  const subscription = await reg?.pushManager.getSubscription();
+  if (!subscription) throw Error("Enable notifications on this device first.");
+  const result = await request<{ preferences: NotificationPreferences }>(
+    peer,
+    change
+      ? "/api/push"
+      : `/api/push?endpoint=${encodeURIComponent(subscription.endpoint)}`,
+    change
+      ? {
+          method: "PATCH",
+          body: JSON.stringify({
+            endpoint: subscription.endpoint,
+            preferences: {},
+            ...change,
+          }),
+        }
+      : undefined,
+  );
+  if (!result.preferences)
+    throw Error("Couldn't load notification controls. Try again.");
+  return result.preferences;
 }

@@ -76,3 +76,16 @@ test("the press goes through Reach's helper with only the chosen button, and its
   );
   await assert.rejects(pressClaudeConsent("Deny", helper("garbage")), (e) => e.status === 502);
 });
+
+test("Claude native consent rejects concurrent taps and rechecks the request after switching chats", async () => {
+  let release;
+  const switched = new Promise(resolve => { release = resolve; });
+  const mac = app();
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(B, A), wait: () => switched });
+  const answer = consent.answer(A, "consent:toolu_1", { decision: "allow" });
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "deny" }), /already being sent/);
+  mac.asked = null;
+  release();
+  await assert.rejects(answer, /already answered/);
+  assert.equal(mac.presses.length, 0);
+});

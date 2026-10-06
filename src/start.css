@@ -65,6 +65,32 @@ body {
   color: #93a096;
   font: inherit;
 }
+.start-diagnostics {
+  margin-top: 4px;
+  color: #93a096;
+  text-align: left;
+  font-size: 13px;
+}
+.start-diagnostics summary {
+  cursor: pointer;
+  text-align: center;
+}
+.start-diagnostics pre {
+  padding: 12px;
+  border: 1px solid #2b332d;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+  user-select: text;
+}
+.start-diagnostics button {
+  display: block;
+  margin: 0 auto;
+  font-size: 13px;
+}
 .start .start-hint {
   font-size: 13px;
 }

@@ -73,15 +73,19 @@ export function createCodexDaemon({
       } else if (message.method && message.id !== undefined) {
         // A request from Codex to this client (approvals, questions). Exactly
         // one handler answers; unhandled requests get a JSON-RPC error.
-        const reply = (payload) =>
-          socket?.readyState === WebSocket.OPEN &&
-          socket.send(JSON.stringify({ id: message.id, ...payload }));
+        // A reply belongs to the connection that asked, never a replacement.
+        // Report delivery failure instead of silently treating a no-op as answered.
+        const reply = (payload) => new Promise((resolve, reject) => {
+          if (socket !== ws || ws.readyState !== WebSocket.OPEN)
+            return reject(new Error("Lost the connection to Codex. This answer was not sent."));
+          ws.send(JSON.stringify({ id: message.id, ...payload }), (error) => error ? reject(error) : resolve());
+        });
         const handler = requestHandler;
-        if (!handler) reply({ error: { code: -32601, message: "Not supported by Reach." } });
+        if (!handler) void reply({ error: { code: -32601, message: "Not supported by Reach." } }).catch(() => {});
         else
           Promise.resolve()
             .then(() => handler(message, (result) => reply({ result }), (error) => reply({ error })))
-            .catch(() => reply({ error: { code: -32603, message: "Reach could not answer." } }));
+            .catch(() => reply({ error: { code: -32603, message: "Reach could not answer." } }).catch(() => {}));
       } else if (message.method) {
         for (const listener of listeners) listener(message);
       }

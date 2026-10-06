@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { detachedWarning } from "./detached.mjs";
+import { alreadyRunning, handoverFile, processTable, reachHosts, startTimes, statusText, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -16,7 +18,20 @@ const abort = () => {
   child?.kill();
   process.exit(130);
 };
+// Any other Reach on this computer, whichever folder it runs from.
+function othersRunning() {
+  if (process.platform === "win32") return [];
+  try {
+    return reachHosts(processTable());
+  } catch {
+    return [];
+  }
+}
 function lock() {
+  // One Reach per computer: a second one says where the first runs instead.
+  const others = withoutHandover(othersRunning(), state);
+  if (others.length)
+    throw Error(alreadyRunning(others, { command, started: startTimes(others.map((h) => h.pid)) }));
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   let bootSession;
   try {
@@ -192,6 +207,15 @@ async function startInBackground(options) {
     fs.rmSync(lockFile, { force: true });
     locked = false;
   }
+  // The service it starts must not take this one for a second Reach.
+  const handover = handoverFile(state);
+  fs.mkdirSync(state, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(handover, String(process.pid), { mode: 0o600 });
+  process.once("exit", () => {
+    try {
+      if (fs.readFileSync(handover, "utf8") === String(process.pid)) fs.rmSync(handover);
+    } catch {}
+  });
   if (process.platform === "darwin") {
     const { ensureRuntime } = await import("./runtime.mjs");
     await ensureRuntime(state);
@@ -244,13 +268,14 @@ ${command} link [name]         Link another Reach computer (approve phones once)
 ${command} update              Update to the latest Reach (installed with npm)
 ${command} import <folder>     Bring paired phones and settings from another Reach folder
 ${command} --version           Show the installed version
+${command} cli                 Make reach a command in every Terminal
 ${command} install             Mac: install a background LaunchAgent
 ${command} install --stay-awake Keep system/display awake while plugged in
 ${command} uninstall           Stop and remove the service and its own Serve route
-${command} status              Running/stopped, your phone's link, and logs
-${command} stop                Stop every Reach running from this folder: in any terminal,
-                               started detached, or the background service (asks first
-                               if its terminals are open; --yes closes them)
+${command} status              Where Reach runs (whichever folder), since when, its link
+${command} stop                Stop every Reach on this computer: in any terminal, started
+                               detached, or the background service (asks first if its
+                               terminals are open; --yes closes them). One Reach runs at a time.
 ${command} restart             Stop them all, then start Reach again: the background
                                service, or here (in a new Terminal window if run without one)
 ${command} pair                Fresh one-use pairing code and QR
@@ -267,6 +292,18 @@ Stay-awake uses temporary power assertions; it never changes system settings
 or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
+  } else if (options.command === "status" && process.platform !== "win32") {
+    // What really runs (any folder, any way), not only the background service.
+    const hosts = othersRunning();
+    console.log(statusText(hosts, { command, started: startTimes(hosts.map((h) => h.pid)) }));
+  } else if (options.command === "cli") {
+    if (packaged) console.log("reach is already a command in every Terminal (installed with npm).");
+    else {
+      const { linkCli } = await import("./cli-link.mjs");
+      const result = linkCli({ script: path.join(root, "reach") });
+      console.log(result.text);
+      if (!result.ok) process.exitCode = 1;
+    }
   } else if (options.command === "stop") {
     const { stopReach } = await import("./stop.mjs");
     await stopReach(root, { yes: options.yes });
@@ -419,6 +456,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
     let firstRun = null;
+    const detached = detachedWarning({ service: !!options.service });
+    if (detached) console.warn(detached);
     if (!options.local && process.platform !== "win32") {
       if (packaged && !readPreferences(root))
         console.log(

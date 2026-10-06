@@ -145,7 +145,7 @@ export function createClaudeHost({
   readFile = fs.readFileSync,
 }) {
   const sessions = new Map();
-  let modelCache = null;
+  const catalogs = new Map(); // folder → its handshake
   let modeList = null;
   // Reach's own environment, never a host app's (a terminal inside Claude Code
   // sets CLAUDECODE) or its own pairing settings.
@@ -198,6 +198,11 @@ export function createClaudeHost({
     const proc = s.proc;
     if (!proc) return;
     s.proc = null;
+    s.prompts.clear();
+    for (const waiting of s.pending.values()) waiting.reject(bad("Claude Code disconnected.", 503));
+    s.pending.clear();
+    s.status = "idle";
+    changed(s);
     try {
       proc.stdin.end();
     } catch {}
@@ -211,6 +216,7 @@ export function createClaudeHost({
   function handle(s, m) {
     switch (m.type) {
       case "control_request": {
+        if (typeof m.request_id !== "string" || !m.request_id) return;
         const request = m.request || {};
         if (request.subtype === "can_use_tool") {
           s.prompts.set(m.request_id, describeClaudePrompt(m.request_id, request));
@@ -306,6 +312,11 @@ export function createClaudeHost({
       "--verbose",
       "--permission-prompts",
       "host",
+      // Without it, Claude Code 2.1.291 denies on its own whatever would
+      // prompt (a file write, an edit) and the phone never sees the question;
+      // with it, each one comes to Reach as a can_use_tool request.
+      "--permission-prompt-tool",
+      "stdio",
       "--include-partial-messages",
       "--replay-user-messages",
       ...(resume ? ["--resume", s.id] : ["--session-id", s.id]),
@@ -319,6 +330,7 @@ export function createClaudeHost({
     let buffer = "";
     proc.stdout.setEncoding?.("utf8");
     proc.stdout.on("data", (chunk) => {
+      if (s.proc !== proc) return;
       buffer += chunk;
       for (let i; (i = buffer.indexOf("\n")) >= 0; ) {
         const line = buffer.slice(0, i);
@@ -334,11 +346,13 @@ export function createClaudeHost({
     proc.stderr?.on("data", () => {});
     proc.stdin.on?.("error", () => {});
     proc.on("error", (e) => {
+      if (s.proc !== proc) return;
       s.error = e.message;
       changed(s);
     });
     proc.on("exit", () => {
-      if (s.proc === proc) s.proc = null;
+      if (s.proc !== proc) return;
+      s.proc = null;
       for (const waiting of s.pending.values()) waiting.reject(bad("Claude Code stopped.", 503));
       s.pending.clear();
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
@@ -411,16 +425,41 @@ export function createClaudeHost({
       await control(s, { subtype: "interrupt" });
       return { stopped: true };
     },
-    respond(id, promptId, answer) {
+    async respond(id, promptId, answer) {
       const s = sessions.get(id);
       const prompt = s?.prompts.get(String(promptId));
       if (!prompt) throw bad("This prompt was already answered.", 409);
+      if (prompt.replying) throw bad("This answer is already being sent.", 409);
       const response = claudeAnswer(prompt, answer);
-      s.prompts.delete(String(promptId));
-      if (!s.prompts.size && s.status === "waiting") s.status = "running";
-      write(s, { type: "control_response", response: { subtype: "success", request_id: prompt.id, response } });
-      changed(s);
-      return { answered: true };
+      const proc = s.proc;
+      if (!proc || proc.stdin.destroyed || proc.stdin.writableEnded || proc.stdin.writable === false)
+        throw bad("Claude Code disconnected. Open the live screen to check the request.", 503);
+      prompt.replying = true;
+      try {
+        await new Promise((resolve, reject) => {
+          const stopped = () => finish(bad("Claude Code disconnected before the answer was delivered.", 503));
+          const finish = (error) => {
+            clearTimeout(timer);
+            proc.removeListener("exit", stopped);
+            proc.removeListener("error", stopped);
+            if (error) reject(error);
+            else if (s.proc !== proc) stopped();
+            else resolve();
+          };
+          const timer = setTimeout(() => finish(bad("Claude Code did not confirm delivery. Check the request before retrying.", 504)), 10000);
+          proc.once("exit", stopped);
+          proc.once("error", stopped);
+          try {
+            proc.stdin.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: prompt.id, response } })}\n`, finish);
+          } catch (error) { finish(error); }
+        });
+        if (s.prompts.get(String(promptId)) === prompt) s.prompts.delete(String(promptId));
+        if (!s.prompts.size && s.status === "waiting") s.status = "running";
+        changed(s);
+        return { answered: true };
+      } finally {
+        prompt.replying = false;
+      }
     },
     // Ends Reach's process for a session (before the Claude app takes it).
     release(id) {
@@ -437,7 +476,7 @@ export function createClaudeHost({
         version: s.version,
         status: s.status,
         error: s.error,
-        prompts: [...s.prompts.values()].map(({ input, suggestions, ...p }) => p),
+        prompts: [...s.prompts.values()].map(({ input, suggestions, replying, ...p }) => p),
         streaming: s.streaming,
         activity: s.activity,
         items: s.items,
@@ -479,19 +518,22 @@ export function createClaudeHost({
       if (modes.length) modeList = modes;
       return modes;
     },
-    // Slash commands, as the composer offers them after "/".
-    async commands() {
-      return (await this.catalog()).commands;
+    // Slash commands, as the composer offers them after "/": those of the
+    // chat's folder (its own commands and skills join Claude Code's).
+    async commands(cwd) {
+      return (await this.catalog(cwd)).commands;
     },
     // What this Claude Code offers (models, commands), from a handshake that
-    // starts no session; kept half an hour.
-    async catalog() {
-      if (modelCache && now() - modelCache.at < 30 * 60 * 1000) return modelCache.value;
+    // starts no session, in a folder (the chat's, or none); kept half an hour.
+    async catalog(cwd) {
+      const where = typeof cwd === "string" && path.isAbsolute(cwd) && fs.existsSync(cwd) ? cwd : os.tmpdir();
+      const kept = catalogs.get(where);
+      if (kept && now() - kept.at < 30 * 60 * 1000) return kept.value;
       const claude = await locate();
       if (!claude) return { models: [], commands: [] };
       const value = await new Promise((resolve) => {
         const proc = spawn(claude, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
-          cwd: os.tmpdir(),
+          cwd: where,
           env: clean,
           stdio: ["pipe", "pipe", "pipe"],
         });
@@ -520,7 +562,7 @@ export function createClaudeHost({
         });
         proc.stdin.write(`${JSON.stringify({ type: "control_request", request_id: "models", request: { subtype: "initialize" } })}\n`);
       });
-      if (value.models.length) modelCache = { at: now(), value };
+      if (value.models.length) catalogs.set(where, { at: now(), value });
       return value;
     },
     // Reach is quitting: let every Claude Code process go.

@@ -92,7 +92,6 @@ test("shows the computer, the places as a list, and Settings at the end", async 
     "Files",
     "Apps",
     "Codex",
-    "Agent access",
     "Invite someone",
   ]);
   assert.equal(
@@ -106,7 +105,7 @@ test("shows the computer, the places as a list, and Settings at the end", async 
   );
   assert.equal(
     root.querySelectorAll('nav[aria-label="Go to"] .app-icon.small svg').length,
-    4,
+    3,
   );
   // The computer you're on wears its platform's mark; "Online" says the rest.
   assert.ok(root.querySelector(".more-computer .app-icon.tone-mac svg"));
@@ -197,7 +196,7 @@ test("a place still being checked keeps its row but can't be opened yet", async 
   const rows = [...root.querySelectorAll('nav[aria-label="Go to"] .more-row')];
   assert.deepEqual(
     rows.map((r) => r.querySelector(".more-row-label").textContent),
-    ["Files", "Apps", "Codex", "Agent access", "Invite someone"],
+    ["Files", "Apps", "Codex", "Invite someone"],
   );
   assert.equal(rows[2].getAttribute("aria-disabled"), "true");
   rows[2].click();

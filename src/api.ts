@@ -7,6 +7,8 @@ export type Peer = {
   url: string;
   token: string;
   platform: string;
+  transport?: "funnel";
+  sessionId?: string;
 };
 export type Root = { id: number; name: string; path: string };
 export type Device = {
@@ -268,21 +270,34 @@ export function normalizeUrl(input: string) {
     throw Error("Use the HTTPS link shown by Reach on your computer.");
   return u.origin;
 }
-export async function request<T = any>(
+// Funnel sessions sign only their own requests. Owner and tailnet peers retain
+// their existing transport and never inherit a browser agent's credentials.
+export async function peerFetch(
   peer: Peer,
   route: string,
   options: RequestInit = {},
-): Promise<T> {
+) {
+  if (peer.transport === "funnel") {
+    const { funnelFetch } = await import("./funnel-agent");
+    return funnelFetch(peer, route, options);
+  }
   const headers = new Headers(options.headers);
   headers.set("Authorization", `Bearer ${peer.token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
-  const response = await fetch(peer.url + route, {
+  return fetch(peer.url + route, {
     ...options,
     headers,
     redirect: "error",
     signal: options.signal || AbortSignal.timeout(35000),
   });
+}
+export async function request<T = any>(
+  peer: Peer,
+  route: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const response = await peerFetch(peer, route, options);
   if (!response.ok) {
     const body = await response.json().catch(() => ({
       error: "This computer could not complete the request.",
@@ -343,7 +358,8 @@ export async function fileBlob(
     onProgress?: (received: number, total: number) => void;
   } = {},
 ) {
-  const url = `${peer.url}/api/files/content?${new URLSearchParams({ path, root: String(root) })}`;
+  const route = `/api/files/content?${new URLSearchParams({ path, root: String(root) })}`;
+  const url = peer.url + route;
   const limit = options.maxBytes ?? Infinity;
   const tooLarge = () =>
     Object.assign(
@@ -379,7 +395,9 @@ export async function fileBlob(
         headers.Range = `bytes=${received}-`;
         headers["If-Range"] = etag;
       }
-      const response = await fetch(url, { headers, redirect: "error", signal });
+      const response = peer.transport === "funnel"
+        ? await peerFetch(peer, route, { headers, signal })
+        : await fetch(url, { headers, redirect: "error", signal });
       if (!response.ok) {
         const e = await response.json().catch(() => ({}));
         throw Object.assign(

@@ -100,7 +100,7 @@ const name = async (c, value) => {
 const menu = (c, i) => c.querySelectorAll(".ivt-menu-button")[i];
 const item = (c, text) => [...c.querySelectorAll(".ivt-item")].find((b) => b.textContent.startsWith(text));
 const toggle = (c, text) => [...c.querySelectorAll(".ivt-toggle")].find((t) => t.textContent.startsWith(text)).querySelector("input");
-const inviteButton = (c) => [...c.querySelectorAll("button")].find((b) => /^Invit/.test(b.textContent.trim()));
+const inviteButton = (c) => c.querySelector(".ivt-submit");
 const render = (props) =>
   dom.render(React.createElement(InviteSheet, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
 // An invitation carries one id for all its computers (so its access can be
@@ -509,7 +509,14 @@ test("set up after inviting: the waiting link gets its key, so they just open it
 });
 
 // Inviting an agent: the same dialog, then one command it runs to join.
-const kindButton = (c, text) => [...c.querySelectorAll('.ivt-kind [role="radio"]')].find((b) => b.textContent === text);
+const kindButton = (c, text) => [...c.querySelectorAll('.ivt-kind button')].find((b) => b.textContent.trim() === text);
+const chooseAgent = async (c) => {
+  await click(kindButton(c, "Agent"));
+  const select = c.querySelector('[aria-label="Assistant connection"]');
+  select.value = "agent";
+  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await settle(40);
+};
 const commandLink = (command) => command.match(/ join '([^']+)'$/)[1];
 
 test("an agent: one computer, a folder, what it may do, then one command to give it", async () => {
@@ -517,8 +524,8 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
   await settle(40);
-  await click(kindButton(c, "Agent"));
-  assert.equal(kindButton(c, "Agent").getAttribute("aria-checked"), "true");
+  await chooseAgent(c);
+  assert.equal(kindButton(c, "Agent").getAttribute("aria-pressed"), "true");
   assert.equal(c.querySelector(".ivt-name").placeholder, "Name the agent");
   await name(c, "Claude on my server");
   assert.equal(menu(c, 0).textContent, "Can edit");
@@ -579,7 +586,7 @@ test("an agent on a computer without the setup: its key comes from a linked one"
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
   await settle(40);
-  await click(kindButton(c, "Agent"));
+  await chooseAgent(c);
   await name(c, "Codex");
   await click(menu(c, 1));
   await click(item(c, "Mac B"));
@@ -600,13 +607,16 @@ test("an agent on a computer without the setup: its key comes from a linked one"
   await view.unmount();
 });
 
-test("agents with access: what they can do, joined or not, or didn't join in time", async () => {
+test("agent invitations show waiting, approved, denied, joined and expired connection states", async () => {
   const later = Date.now() + 7 * 86400 * 1000;
   const log = computers({
     guests: [
       { id: "a1", kind: "agent", name: "Builder", policy: { invite: true }, status: "accepted", expiresAt: later, scopes: ["device", "files:read", "files:write", "exec"] },
       { id: "a2", kind: "agent", name: "Reader", policy: { invite: true }, status: "invited", expiresAt: later, scopes: ["device", "files:read"] },
       { id: "a3", kind: "agent", name: "Late", policy: { invite: true }, status: "expired", expiresAt: later, scopes: ["device", "files:read"] },
+      { id: "a4", kind: "agent", name: "Waiting", policy: { invite: true }, status: "pending", expiresAt: later, scopes: ["device", "files:read"] },
+      { id: "a5", kind: "agent", name: "Allowed", policy: { invite: true }, status: "approved", expiresAt: later, scopes: ["device", "files:read"] },
+      { id: "a6", kind: "agent", name: "Denied", policy: { invite: true }, status: "denied", expiresAt: later, scopes: ["device", "files:read"] },
       { id: "cli", kind: "agent", name: "Policy agent", policy: { profile: "work" }, expiresAt: later, scopes: ["device", "files:read"] },
     ],
   });
@@ -618,7 +628,10 @@ test("agents with access: what they can do, joined or not, or didn't join in tim
     "You | Mac A | Owner",
     "Builder | Joined · 168 h 0 min left | Can run commands",
     "Reader | Not joined yet · 168 h 0 min left | Can read",
-    "Late | Didn’t join in time | Can read",
+    "Late | Access or connection request expired | Can read",
+    "Waiting | Waiting for your approval · Home → Needs you | Can read",
+    "Allowed | Approved · waiting for the agent to connect | Can read",
+    "Denied | Connection denied · invite again to retry | Can read",
   ]);
   dom.window.confirm = globalThis.confirm = () => true;
   await click(c.querySelector('[aria-label="End Builder’s access"]'));
@@ -632,7 +645,7 @@ test("an agent without invite links: still a command (for a machine on your tail
   const view = await render();
   const c = view.container;
   await settle(40);
-  await click(kindButton(c, "Agent"));
+  await chooseAgent(c);
   await name(c, "Codex");
   await click(c.querySelector('[aria-label="Share Projects"]'));
   await click(inviteButton(c));

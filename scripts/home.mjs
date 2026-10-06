@@ -18,4 +18,5 @@ export function stateDir(
 }
 
 // The command to show in help and hints.
-export const command = packaged ? "reach" : "./reach";
+// Run as `reach` (the link from ./reach cli): say that.
+export const command = packaged || process.env.REACH_COMMAND === "reach" ? "reach" : "./reach";

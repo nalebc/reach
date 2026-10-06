@@ -11,6 +11,14 @@ const b64 = (buffer) => Buffer.from(buffer).toString("base64url");
 const unb64 = (text) => Buffer.from(String(text), "base64url");
 const RECORD_SIZE = 4096;
 const MAX_PER_CLIENT = 5;
+// "done": a chat finished its work (agent-sessions/done-watch.mjs).
+const categories = ["chat", "done", "computer", "handoffs", "access"];
+const preferences = (s) => ({
+  ...Object.fromEntries(
+    categories.map((key) => [key, s?.preferences?.[key] !== false]),
+  ),
+  pausedUntil: Number(s?.preferences?.pausedUntil) || 0,
+});
 
 // Only the browsers' own push services: a phone can't make this computer
 // send requests anywhere else.
@@ -152,13 +160,15 @@ export function createPush({
     const saved = JSON.parse(fs.readFileSync(file, "utf8"));
     if (Array.isArray(saved.subscriptions)) subscriptions = saved.subscriptions;
   } catch {}
-  const save = () => {
+  const save = (strict = false) => {
     const tmp = `${file}.${process.pid}.tmp`;
     try {
       fs.writeFileSync(tmp, JSON.stringify({ subscriptions }), { mode: 0o600 });
       fs.renameSync(tmp, file);
     } catch {
       fs.rmSync(tmp, { force: true });
+      if (strict)
+        throw fail(503, "Could not save notification preferences. Try again.");
     }
   };
   return {
@@ -182,6 +192,9 @@ export function createPush({
         unb64(auth).length !== 16
       )
         throw fail(400, "Invalid push subscription keys.");
+      const previous = subscriptions.find(
+        (s) => s.clientId === clientId && s.endpoint === endpoint,
+      );
       // One browser's endpoint belongs to whoever subscribed it last.
       subscriptions = subscriptions.filter((s) => s.endpoint !== endpoint);
       const mine = subscriptions.filter((s) => s.clientId === clientId);
@@ -192,9 +205,48 @@ export function createPush({
         endpoint,
         keys: { p256dh, auth },
         createdAt: new Date(now()).toISOString(),
+        preferences: preferences(previous),
       });
       save();
       return { subscribed: true };
+    },
+    preferences(clientId, endpoint) {
+      const s = subscriptions.find(
+        (s) => s.clientId === clientId && s.endpoint === endpoint,
+      );
+      return s ? preferences(s) : null;
+    },
+    updatePreferences(clientId, endpoint, patch, pauseMinutes) {
+      const s = subscriptions.find(
+        (s) => s.clientId === clientId && s.endpoint === endpoint,
+      );
+      if (!s) throw fail(409, "Enable notifications on this device first.");
+      if (
+        !patch ||
+        typeof patch !== "object" ||
+        Array.isArray(patch) ||
+        Object.entries(patch).some(
+          ([key, value]) =>
+            !categories.includes(key) || typeof value !== "boolean",
+        ) ||
+        (pauseMinutes !== undefined && ![0, 60, 480].includes(pauseMinutes))
+      )
+        throw fail(400, "Invalid notification preferences.");
+      const old = s.preferences;
+      s.preferences = {
+        ...preferences(s),
+        ...patch,
+        ...(pauseMinutes !== undefined && {
+          pausedUntil: pauseMinutes ? now() + pauseMinutes * 60000 : 0,
+        }),
+      };
+      try {
+        save(true);
+      } catch (error) {
+        s.preferences = old;
+        throw error;
+      }
+      return preferences(s);
     },
     unsubscribe(clientId, endpoint) {
       const before = subscriptions.length;
@@ -216,9 +268,22 @@ export function createPush({
       if (subscriptions.length !== before) save();
     },
     // `message`: { title, tag?, url? }. Sent to these clients' browsers.
-    async notify(clientIds, message) {
+    async notify(clientIds, message, { endpoint, test = false } = {}) {
       const wanted = new Set(clientIds);
-      const targets = subscriptions.filter((s) => wanted.has(s.clientId));
+      const candidates = subscriptions.filter(
+        (s) => wanted.has(s.clientId) && (!endpoint || s.endpoint === endpoint),
+      );
+      const targets = candidates.filter((s) => {
+        const prefs = preferences(s);
+        return (
+          test ||
+          (prefs.pausedUntil <= now() &&
+            prefs[message.category || "chat"] !== false)
+        );
+      });
+      // Suppressed events are consumed, not queued for a burst after unmuting.
+      if (candidates.length && !targets.length)
+        return { sent: 0, suppressed: candidates.length };
       if (!targets.length) return { sent: 0 };
       const { privateKey, publicKey } = vapid();
       const payload = JSON.stringify({

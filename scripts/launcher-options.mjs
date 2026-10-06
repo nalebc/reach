@@ -27,6 +27,7 @@ export function parseOptions(args) {
         "import",
         "stop",
         "restart",
+        "cli",
       ].includes(arg)
     )
       options.command = arg;

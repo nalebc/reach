@@ -74,9 +74,11 @@ const click = async (el) => {
 };
 
 test("Gemini CLI's chats are listed with the others, open in Gemini's look, and offer to continue elsewhere", async () => {
+  let screens = 0;
   const view = await dom.render(
     React.createElement(EverythingChat, {
       peer,
+      onScreen: () => screens++,
       feed: { sessions: [geminiChat], errors: {}, health, failure: "", reload: async () => {}, recheck: () => {} },
     }),
   );
@@ -90,11 +92,16 @@ test("Gemini CLI's chats are listed with the others, open in Gemini's look, and 
   await dom.waitFor(() => $$(".as-assistant").length === 2);
   assert.equal($(".as-page.gemini textarea").getAttribute("placeholder"), "Type your message or @path/to/file");
   assert.match($(".as-scroll").textContent, /Fix the build[\s\S]*Looking at the build\.[\s\S]*Fixed it\./);
-  assert.match(dom.document.body.textContent, /Gemini CLI no longer answers personal Google accounts \(Google moved them to Antigravity\)\. Continue this chat in another app\./);
-  // The way on: the apps that can take it, right above the box.
+  assert.match(dom.document.body.textContent, /Gemini CLI no longer answers personal Google accounts \(Google moved them to Antigravity\)\. Continue this chat in another app from ⋯\./);
+  // The way on: in ⋯ only, the apps that can take it; no card above the box.
+  assert.equal($(".move-offer"), null);
+  await click($$("button").find((b) => b.getAttribute("aria-label") === "More"));
   assert.deepEqual(
-    $$(".move-offer.usage .move-offer-row strong").map((s) => s.textContent),
+    $$(".as-details .move-item .move-item-text > span").map((s) => s.textContent),
     ["Continue in Codex", "Continue in Claude Code"],
   );
+  assert.equal($(".as-prompt"), null, "read-only histories never become actionable approvals");
+  await click($$("button").find(b => b.textContent === "Open live screen"));
+  assert.equal(screens, 1);
   assert.deepEqual(dom.errors, []);
 });

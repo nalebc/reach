@@ -2,11 +2,42 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { agentProfile, applyAgentPolicy, within } from "./agent-policy.mjs";
+import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
+export const isPlainRecord = (value) => value !== null && typeof value === "object" &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value));
+// Names and review explanations must not hide or reorder the action being approved.
+export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
+export function validateBrowserInvitation(input) {
+  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "transport"];
+  if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
+    throw fail(400, "This invitation contains unsupported fields.");
+  const {
+    name, ttlSeconds, joinSeconds = 900, folders = [], terminalIds = [],
+    screen = "off", commandRequests = false, restrictedTerminal = false, transport = "tailnet",
+  } = input;
+  if (
+    typeof name !== "string" || !name.trim() || name.length > 80 || hasReviewControls(name) || /[\n\t]/.test(name) ||
+    !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400 ||
+    !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||
+    !Array.isArray(terminalIds) || terminalIds.length > 20 ||
+    terminalIds.some((id) => !validBrowserTerminalId(id)) ||
+    !["off", "view", "scroll", "ask"].includes(screen) ||
+    typeof commandRequests !== "boolean" || typeof restrictedTerminal !== "boolean" ||
+    (restrictedTerminal && (screen === "ask" || commandRequests)) ||
+    !["tailnet", "funnel"].includes(transport) ||
+    (transport === "funnel" && (ttlSeconds > 3600 || joinSeconds > 900))
+  ) throw fail(400, "Name the browser agent, choose its access, and a duration from 1 minute to 24 hours.");
+  if (!Array.isArray(folders) || folders.length > 20 || folders.some((folder) =>
+    !isPlainRecord(folder) || Object.keys(folder).some((key) => !["root", "path"].includes(key)) ||
+    !Number.isSafeInteger(folder.root) || folder.root < 0 ||
+    typeof folder.path !== "string" || folder.path.length > 4096 || hasReviewControls(folder.path)))
+    throw fail(400, "Choose up to 20 folders on this computer.");
+  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, transport };
+}
 export const id = () => crypto.randomUUID();
 export const hash = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
@@ -216,6 +247,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const client = clients.find(
       (c) =>
         c.hash === digest &&
+        c.browserTransport !== "funnel" &&
+        !c.browserBinding &&
+        (!c.admission || c.admission.status === "collected") &&
         Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
     );
     if (
@@ -516,6 +550,54 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       scopes,
     };
   }
+  // A browser agent gets structured reads and, optionally, screen scrolling
+  // or requests for one owner-reviewed action. Restricted commands are reads;
+  // legacy command requests remain manual handoffs.
+  // It never inherits shell, ordinary screen-input, or owner capabilities.
+  function inviteBrowser(input) {
+    const {
+      name, ttlSeconds, joinSeconds, folders, terminalIds, screen,
+      commandRequests, restrictedTerminal, transport,
+    } = validateBrowserInvitation(input);
+    const roots = [...new Set(chooseFolders(folders))];
+    if (restrictedTerminal && !roots.length)
+      throw fail(400, "Choose at least one folder for restricted terminal commands.");
+    if (!roots.length && !terminalIds.length && screen === "off" && !commandRequests && !restrictedTerminal)
+      throw fail(400, "Choose a folder, terminal output, screen access, or command requests.");
+    const scopes = [
+      "device",
+      ...(roots.length ? ["files:read"] : []),
+      "browser:read",
+      ...(screen === "scroll" ? ["browser:scroll"] : []),
+      ...(screen === "ask" || commandRequests || restrictedTerminal ? ["browser:request"] : []),
+    ];
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const client = {
+      id: id(), kind: "agent", name: name.trim(), scopes,
+      ...(transport === "funnel" ? { browserTransport: "funnel" } : {}),
+      policy: {
+        invite: true, browser: true, roots,
+        terminalIds: [...new Set(terminalIds)], screen,
+        ...(commandRequests ? { commandRequests: true } : {}),
+        ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
+      },
+      inviteHash: hash(token),
+      inviteExpiresAt: now + Math.min(joinSeconds, ttlSeconds) * 1000,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: now + ttlSeconds * 1000,
+    };
+    changeClients((latest) => {
+      if (latest.filter((entry) => entry.policy?.browser === true &&
+          entry.expiresAt > now && (!entry.inviteExpiresAt || entry.inviteExpiresAt > now)).length >= 50)
+        throw fail(429, "End an existing browser invitation before creating another.");
+      return [...latest, client];
+    });
+    return {
+      invitation: token, clientId: client.id,
+      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+    };
+  }
   // What an agent may do in its folders (inviting it, or changing it later).
   // Never the screen, apps or managing access: only agent scopes.
   function agentAccess({ write = false, exec = false, terminal = false, codex = false }, roots) {
@@ -556,6 +638,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         (client.inviteExpiresAt && client.inviteExpiresAt <= Date.now())
       )
         throw fail(404, "That invitation has ended.");
+      if (client.policy?.browser === true)
+        throw fail(400, "End this browser invitation and create a new one to change its access.");
+      if (client.admission && client.admission.status !== "collected")
+        throw fail(409, "This agent's first connection is waiting or has ended. Create a new invitation to change its access.");
       const guest = client.kind === "guest";
       const had = guest
         ? client.scopes.includes("admin")
@@ -611,9 +697,73 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return result;
   }
-  // A guest or agent invitation, used once. The credential works only on the
-  // Tailscale device that redeemed it.
+  const admissionGrant = (client) => hash(JSON.stringify({
+    id: client.id,
+    name: client.name,
+    kind: client.kind,
+    scopes: client.scopes,
+    policy: client.policy,
+    expiresAt: client.expiresAt,
+    tailscale: client.tailscale,
+    browserTransport: client.browserTransport,
+    browserBinding: client.browserBinding,
+  }));
+  const admissionStatus = (client, now = Date.now()) => {
+    const request = client.admission;
+    if (!request) return null;
+    if (client.expiresAt <= now) return "expired";
+    if (client.browserTransport === "funnel" && request.grant !== admissionGrant(client)) return "expired";
+    if (request.status === "collected")
+      return client.browserTransport === "funnel" && !(client.browserIdleExpiresAt > now)
+        ? "expired" : "accepted";
+    if (request.status === "denied") return "denied";
+    if (request.expiresAt <= now || request.grant !== admissionGrant(client)) return "expired";
+    return ["pending", "approved"].includes(request.status) ? request.status : "expired";
+  };
+  const admissionView = (client) => ({
+    requestId: client.admission.requestId,
+    clientId: client.id,
+    name: client.name,
+    scopes: [...client.scopes],
+    roots: [...(client.policy?.roots || [])],
+    browser: client.policy?.browser === true,
+    ...(client.policy?.browser ? {
+      screen: client.policy.screen,
+      terminalIds: [...client.policy.terminalIds],
+      commandRequests: client.policy.commandRequests === true,
+      ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
+      ...(client.browserTransport === "funnel" ? { browserTransport: "funnel" } : {}),
+    } : {}),
+    requestedAt: client.admission.requestedAt,
+    expiresAt: client.admission.expiresAt,
+    accessExpiresAt: client.expiresAt,
+    verificationCode: client.admission.verificationCode,
+    ...(client.nodeName ? { nodeName: client.nodeName } : {}),
+    ...(client.tailscale?.nodeId ? { nodeId: client.tailscale.nodeId } : {}),
+  });
+  // Invited people keep immediate single-use redemption. Invited agents first
+  // consume the link into a receipt with no access credential. A paired owner
+  // must separately approve that exact claim before the claimant can collect.
+  const validBrowserBinding = (value) =>
+    typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value) &&
+    Buffer.from(value, "base64url").toString("base64url") === value;
+  const isFunnelBrowser = (client) =>
+    client?.kind === "agent" && client.policy?.invite === true &&
+    client.policy.browser === true && client.browserTransport === "funnel" &&
+    !client.tailscale;
+  const claimSource = (client) => client.browserTransport === "funnel"
+    ? `browser:${client.browserBinding}`
+    : `tailnet:${client.tailscale?.nodeId || "unbound"}`;
   function redeemGuest(invitation, identity) {
+    return redeemInvitation(invitation, identity);
+  }
+  function redeemFunnelBrowser(invitation, keyThumbprint) {
+    if (!validBrowserBinding(keyThumbprint))
+      throw fail(401, "A valid browser key is required to claim this invitation.");
+    return redeemInvitation(invitation, undefined, keyThumbprint);
+  }
+  function redeemInvitation(invitation, identity, keyThumbprint) {
+    const funnel = keyThumbprint !== undefined;
     if (
       typeof invitation !== "string" ||
       !/^[A-Za-z0-9_-]{43}$/.test(invitation)
@@ -627,6 +777,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const client = latest.find(
         (c) =>
           ["guest", "agent"].includes(c.kind) &&
+          (funnel ? isFunnelBrowser(c) : c.browserTransport !== "funnel" && !c.browserBinding) &&
           c.inviteHash === hash(invitation) &&
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
@@ -636,6 +787,49 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           401,
           "This guest link expired, was revoked, or has already been used.",
         );
+      const now = Date.now();
+      if (client.kind === "agent") {
+        if (!funnel && (config.tailscaleOwner || identity) &&
+            (!identity?.nodeId || !(identity.validUntil > now)))
+          throw fail(401, "A current Tailscale identity is required to claim this agent invitation.");
+        const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
+        const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
+        if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
+          throw fail(429, "An agent connection is already waiting. Finish it before opening another invitation.");
+        const recent = latest.filter((c) => c.admission?.requestedAt > now - 60000);
+        if (recent.length >= 60 || recent.filter((c) => claimSource(c) === source).length >= 10)
+          throw fail(429, "Too many agent connection requests. Wait a minute and try again.");
+        delete client.inviteHash;
+        delete client.hash;
+        delete client.inviteExpiresAt;
+        if (funnel) client.browserBinding = keyThumbprint;
+        if (identity?.nodeId) client.tailscale = {
+          userId: identity.userId || "",
+          nodeId: identity.nodeId,
+          ...(identity.tagged ? { tagged: true } : {}),
+        };
+        if (typeof identity?.nodeName === "string") client.nodeName = identity.nodeName.slice(0, 160);
+        const requestSecret = crypto.randomBytes(32).toString("base64url");
+        client.admission = {
+          requestId: id(),
+          secretHash: hash(requestSecret),
+          verificationCode: crypto.randomInt(100000, 1000000).toString(),
+          requestedAt: now,
+          expiresAt: Math.min(now + 300000, client.expiresAt),
+          status: "pending",
+          grant: admissionGrant(client),
+        };
+        result = {
+          status: "pending",
+          requestId: client.admission.requestId,
+          requestSecret,
+          verificationCode: client.admission.verificationCode,
+          expiresAt: client.admission.expiresAt,
+          clientId: client.id,
+          kind: "agent",
+        };
+        return latest;
+      }
       const token = crypto.randomBytes(32).toString("base64url");
       delete client.inviteHash;
       client.hash = hash(token);
@@ -656,6 +850,146 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       };
       return latest;
     });
+    return result;
+  }
+  function listAgentAdmissions() {
+    return loadJson(file, []).filter((client) =>
+      client.kind === "agent" && admissionStatus(client) === "pending",
+    ).map(admissionView);
+  }
+  function decideAgentAdmission(requestId, decision) {
+    if (!["approve", "deny"].includes(decision))
+      throw fail(400, "Approve or deny this agent connection.");
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.kind === "agent" && c.admission?.requestId === requestId);
+      if (!client) throw fail(404, "This agent connection request was not found.");
+      if (admissionStatus(client) !== "pending")
+        throw fail(409, "This agent connection request is no longer pending.");
+      client.admission.status = decision === "approve" ? "approved" : "denied";
+      result = { requestId, clientId: client.id, status: client.admission.status };
+      return latest;
+    });
+    return result;
+  }
+  function pollAgentAdmission(requestId, requestSecret, identity) {
+    return pollAdmission(requestId, requestSecret, identity);
+  }
+  function pollFunnelAdmission(requestId, requestSecret, keyThumbprint) {
+    if (!validBrowserBinding(keyThumbprint))
+      throw fail(401, "This agent connection receipt is invalid or belongs to another browser.");
+    return pollAdmission(requestId, requestSecret, undefined, keyThumbprint);
+  }
+  function pollAdmission(requestId, requestSecret, identity, keyThumbprint) {
+    const funnel = keyThumbprint !== undefined;
+    if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId) ||
+        typeof requestSecret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(requestSecret))
+      throw fail(401, "This agent connection receipt is invalid.");
+    const inspect = (latest) => {
+      const client = latest.find((c) => c.kind === "agent" && c.admission?.requestId === requestId);
+      if (!client) return { result: { status: "expired" } };
+      const request = client.admission;
+      if (funnel ? !isFunnelBrowser(client) || client.browserBinding !== keyThumbprint
+        : client.browserTransport === "funnel" || client.browserBinding)
+        throw fail(401, "This agent connection receipt belongs to another connection type or browser.");
+      if (hash(requestSecret) !== request.secretHash ||
+          (!funnel && config.tailscaleOwner && !(identity?.validUntil > Date.now())) ||
+          (client.tailscale && (!identity || !(identity.validUntil > Date.now()) ||
+            client.tailscale.nodeId !== identity.nodeId || client.tailscale.userId !== (identity.userId || ""))))
+        throw fail(401, "This agent connection receipt is invalid or belongs to another device.");
+      const status = admissionStatus(client);
+      if (["pending", "denied", "expired"].includes(status))
+        return { result: { status, expiresAt: request.expiresAt } };
+      if (status === "accepted")
+        throw fail(409, "This agent credential was already collected. If the response was lost, ask for a new invitation.");
+      if (status !== "approved") throw fail(401, "This agent connection receipt is invalid.");
+      return { client };
+    };
+    // Public receipt polling is read-only until a valid, approved claimant
+    // collects. Unknown IDs must never rewrite credentials or hold their lock.
+    const initial = inspect(loadJson(file, []));
+    if (initial.result) return initial.result;
+    let result;
+    changeClients((latest) => {
+      // Another process may have denied, revoked, or collected after the read.
+      // Recheck the secret, identity, exact grant, state, and deadline under lock.
+      const checked = inspect(latest);
+      if (checked.result) { result = checked.result; return latest; }
+      const client = checked.client;
+      const request = client.admission;
+      const permitted = applyAgentPolicy(client, config);
+      if (!permitted) {
+        request.status = "denied";
+        result = { status: "denied", expiresAt: request.expiresAt };
+        return latest;
+      }
+      const token = crypto.randomBytes(32).toString("base64url");
+      client.hash = hash(token);
+      client.redeemedAt = new Date().toISOString();
+      request.status = "collected";
+      if (funnel) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      // Persist the consumed receipt and token hash in one atomic write before
+      // returning. A dropped response can never mint a second credential.
+      result = {
+        status: "approved", token, clientId: client.id, kind: "agent",
+        scopes: permitted.scopes, expiresAt: client.expiresAt,
+      };
+      return latest;
+    });
+    return result;
+  }
+  function funnelSession(client, keyThumbprint, now = Date.now()) {
+    if (!isFunnelBrowser(client) || !validBrowserBinding(keyThumbprint) ||
+        client.browserBinding !== keyThumbprint || !client.hash ||
+        client.admission?.status !== "collected" || !(client.expiresAt > now) ||
+        !(client.browserIdleExpiresAt > now) ||
+        client.admission.grant !== admissionGrant(client)) return null;
+    return applyAgentPolicy(client, config);
+  }
+  function verifyFunnel(token, keyThumbprint) {
+    if (typeof token !== "string" || !token || token.length > 256 ||
+        !validBrowserBinding(keyThumbprint)) return null;
+    const digest = hash(token);
+    const client = loadJson(file, []).find((entry) => entry.hash === digest);
+    return funnelSession(client, keyThumbprint);
+  }
+  // Only an authenticated browser request renews this short lease. Internal
+  // stream authorization checks are read-only and cannot keep a dead tab alive.
+  function touchFunnel(token, keyThumbprint) {
+    const permitted = verifyFunnel(token, keyThumbprint);
+    if (!permitted) throw fail(401, "This browser connection has ended.");
+    const now = Date.now();
+    if (permitted.browserIdleExpiresAt >= Math.min(permitted.expiresAt, now + 110000))
+      return;
+    const digest = hash(token);
+    changeClients((latest) => {
+      const client = latest.find((entry) => entry.hash === digest);
+      if (!funnelSession(client, keyThumbprint)) throw fail(401, "This browser connection has ended.");
+      client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      return latest;
+    });
+  }
+  // Only explicit public browser invitations keep the shared Funnel open.
+  // A pending admission has a five-minute deadline, not its longer grant.
+  // Opening a new invitation never extends any existing client's credential.
+  function funnelWindow() {
+    const now = Date.now();
+    let result = { open: false, until: 0, reason: null };
+    for (const client of loadJson(file, [])) {
+      if (!isFunnelBrowser(client) || !(client.expiresAt > now) ||
+          !applyAgentPolicy(client, config)) continue;
+      let until = 0, reason = "invitation";
+      if (client.inviteHash && !client.admission && !client.hash && !client.browserBinding)
+        until = Math.min(client.inviteExpiresAt || 0, client.expiresAt);
+      else if (["pending", "approved"].includes(admissionStatus(client, now)) &&
+          validBrowserBinding(client.browserBinding))
+        until = Math.min(client.admission.expiresAt, client.expiresAt);
+      else if (funnelSession(client, client.browserBinding, now)) {
+        until = Math.min(client.expiresAt, client.browserIdleExpiresAt);
+        reason = "session";
+      }
+      if (until > now && until > result.until) result = { open: true, until, reason };
+    }
     return result;
   }
   function issue(name, scopes, kind = "device", options = {}) {
@@ -719,20 +1053,29 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   return {
     verify,
     verifyDigest,
+    verifyFunnel,
+    touchFunnel,
+    funnelWindow,
     inviteGuest,
     inviteAgent,
+    inviteBrowser,
     changeAccess,
     redeemGuest,
+    redeemFunnelBrowser,
+    listAgentAdmissions,
+    decideAgentAdmission,
+    pollAgentAdmission,
+    pollFunnelAdmission,
     pair,
     issue,
     list: () =>
-      loadJson(file, []).map(({ hash, inviteHash, ...rest }) => ({
+      loadJson(file, []).map(({ hash, inviteHash, admission, ...rest }) => ({
         ...rest,
         ...(rest.kind === "guest" || rest.policy?.invite
           ? {
               // An agent that never joined in time can't anymore.
               status:
-                rest.expiresAt <= Date.now() ||
+                admission ? admissionStatus({ ...rest, admission }) : rest.expiresAt <= Date.now() ||
                 (inviteHash && rest.inviteExpiresAt <= Date.now())
                   ? "expired"
                   : inviteHash

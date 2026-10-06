@@ -4,7 +4,10 @@
 export function visibleUserText(value) {
   let text = String(value ?? "");
   let removed = false;
-  const envelope = /^\s*<(in-app-browser-context|external_codex_apps_open_page|environment_context|ide_context)\b[^>]*>[\s\S]*?<\/\1>\s*/;
+  // Context an app adds ahead of what the person typed: Codex's, and the
+  // Claude app's <system-reminder> (its instructions, when a chat moves into
+  // it), which showed in the person's own bubble.
+  const envelope = /^\s*<(in-app-browser-context|external_codex_apps_open_page|environment_context|ide_context|system-reminder)\b[^>]*>[\s\S]*?<\/\1>\s*/;
   for (;;) {
     const match = text.match(envelope);
     if (!match) break;

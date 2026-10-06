@@ -256,15 +256,36 @@ test("decoders that fail mid-stream keep the video", async () => {
   const { view, state } = await watch();
   const socket = FakeSocket.all[0];
   socket.says({ type: "ready", format: "h264", display: "1" });
-  for (let id = 1; id <= 9; id++) {
+  for (let id = 1; id <= 2; id++) {
     socket.frame(id, keyframe);
     FakeDecoder.all.at(-1).shows();
     FakeDecoder.all.at(-1).fails();
   }
-  assert.equal(FakeDecoder.all.length, 9, "each failure gets a new decoder");
+  assert.equal(FakeDecoder.all.length, 2, "each failure gets a new decoder");
   await settle(50);
   assert.equal(FakeSocket.all.length, 1);
   assert.equal(FakeSocket.all[0].readyState, 1, "the connection stays open");
   assert.equal(state().fallback, false);
   await view.unmount();
+});
+
+// The phone's decoder failing mid-stream again and again at full size (the
+// log showed it at 2868×1862): one size smaller, still video, never still
+// images for that.
+test("a third mid-stream decoder failure in a minute steps the video down a size", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  for (let id = 1; id <= 3; id++) {
+    socket.frame(id, keyframe);
+    FakeDecoder.all.at(-1).shows();
+    FakeDecoder.all.at(-1).fails();
+  }
+  assert.match(socket.sent.filter((m) => m.type === "diagnostic").at(-1).text, /stepping down from 1320×2868/);
+  await dom.waitFor(() => FakeSocket.all[1]?.sent.length, 3000);
+  assert.equal(auth(1).format, "h264", "still video");
+  assert.equal(auth(1).maxWidth, Math.round(2868 * 0.75), "one size smaller");
+  assert.equal(state().fallback, false);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
 });

@@ -32,7 +32,6 @@ import DesktopSurface from "./DesktopSurface";
 import { useScreenPresentation } from "./useScreenPresentation";
 import { useImmersiveChrome } from "./useImmersiveChrome";
 import NativeRemoteTyping from "./NativeRemoteTyping";
-import ScrollHandle from "./ScrollHandle";
 import { useAppContext } from "./useAppContext";
 import { allCommands, contextPicks, type ContextAction } from "./app-context";
 import { AppCommandList } from "./AppCommands";
@@ -57,6 +56,7 @@ type Props = {
   device: Device;
   toast: (s: string) => void;
   onChanged: () => void;
+  onClose?: () => void;
   // The computer's change fingerprints: they say at once when it's paused.
   changes?: string;
   // Opened on a Mac dialog to answer (a "Show on screen" card): where it is,
@@ -81,6 +81,7 @@ export default function Screen({
   device,
   toast,
   onChanged,
+  onClose,
   changes,
   ask = null,
   onAskDone,
@@ -105,7 +106,10 @@ export default function Screen({
     [error, setError] = useState("");
   // Someone else controls the screen (who, and whether this phone may take
   // over); cleared when control changes hands.
-  const [holder, setHolder] = useState<{ name: string; canTakeOver: boolean } | null>(null);
+  const [holder, setHolder] = useState<{
+    name: string;
+    canTakeOver: boolean;
+  } | null>(null);
   const [displays, setDisplays] = useState<Display[]>([]),
     [display, setDisplay] = useState("primary"),
     [quality] = useState("auto"),
@@ -117,9 +121,9 @@ export default function Screen({
     [feedback, setFeedback] = useState("");
   const [clipboard, setClipboard] = useState(""),
     [clipboardBusy, setClipboardBusy] = useState(false);
-  const [panel, setPanel] = useState<
-    "clipboard" | "more" | "actions" | null
-  >(null);
+  const [panel, setPanel] = useState<"clipboard" | "more" | "actions" | null>(
+    null,
+  );
   const [helperBusy, setHelperBusy] = useState(false);
   const helperPending = useRef(false);
   const [typingTarget, setTypingTarget] = useState<
@@ -240,7 +244,8 @@ export default function Screen({
         setFeedback("");
       }
     } catch {
-      if (epoch === typingEpoch.current && typingRef.current?.pending) clearTyping();
+      if (epoch === typingEpoch.current && typingRef.current?.pending)
+        clearTyping();
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
   };
@@ -291,7 +296,7 @@ export default function Screen({
         peer,
         "/api/screen/displays",
       );
-      setDisplays(result.displays);
+      setDisplays(result.displays || []);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -345,7 +350,10 @@ export default function Screen({
         setControl(true);
       else release();
     } catch (e) {
-      const answer = e as { status?: number; body?: { holder?: { name?: string }; canTakeOver?: boolean } };
+      const answer = e as {
+        status?: number;
+        body?: { holder?: { name?: string }; canTakeOver?: boolean };
+      };
       if (answer.status === 409 && answer.body?.holder)
         setHolder({
           name: answer.body.holder.name || "Someone",
@@ -364,7 +372,9 @@ export default function Screen({
     ? displays.find((d) => {
         const cx = askBounds.x + askBounds.width / 2,
           cy = askBounds.y + askBounds.height / 2;
-        return cx >= d.x && cx < d.x + d.width && cy >= d.y && cy < d.y + d.height;
+        return (
+          cx >= d.x && cx < d.x + d.width && cy >= d.y && cy < d.y + d.height
+        );
       })
     : undefined;
   const askRect =
@@ -381,10 +391,18 @@ export default function Screen({
   }, [ask?.id, askDisplay?.id]);
   const askedControl = useRef<string | null>(null);
   useEffect(() => {
-    if (!ask || !enabled || !canControl || control || busy || askedControl.current === ask.id) return;
+    if (
+      !ask?.open ||
+      !enabled ||
+      !canControl ||
+      control ||
+      busy ||
+      askedControl.current === ask.id
+    )
+      return;
     askedControl.current = ask.id;
     void toggleControl();
-  }, [ask?.id, enabled, canControl, control]);
+  }, [ask?.id, ask?.open, enabled, canControl, control]);
   const [askSaid, setAskSaid] = useState("");
   // Pause ends control (the computer ends it too); Resume takes it back if
   // it was on, so everything is where it was.
@@ -412,7 +430,13 @@ export default function Screen({
     flushSync(() => {
       typingEpoch.current++;
       setPanel(null);
-      setTypingTarget({ editable: true, secure, point, opened: true, pending: true });
+      setTypingTarget({
+        editable: true,
+        secure,
+        point,
+        opened: true,
+        pending: true,
+      });
     });
     typingEditor.current?.focus({ preventScroll: true });
   };
@@ -510,7 +534,9 @@ export default function Screen({
       const done = await pasteFromPhone(reading, send, device.platform);
       if (mounted.current)
         setFeedback(
-          done === "pasted" ? "Pasted from your phone" : "Nothing to paste on this phone",
+          done === "pasted"
+            ? "Pasted from your phone"
+            : "Nothing to paste on this phone",
         );
     } catch (e) {
       if (mounted.current) setError((e as Error).message);
@@ -559,8 +585,14 @@ export default function Screen({
           {ask && (
             <div className="screen-ask" role="status">
               <strong>{ask.title}</strong>
-              <span>Screen viewing is off. Enable it to inspect the dialog. If Reach needs Screen Recording or Accessibility access, grant it on the Mac first.</span>
-              <div className="screen-ask-actions"><button onClick={onAskDone}>Back to request</button></div>
+              <span>
+                Screen viewing is off. Enable it to inspect the dialog. If Reach
+                needs Screen Recording or Accessibility access, grant it on the
+                Mac first.
+              </span>
+              <div className="screen-ask-actions">
+                <button onClick={onAskDone}>Back to request</button>
+              </div>
             </div>
           )}
           <Empty
@@ -583,7 +615,13 @@ export default function Screen({
         </section>
       ) : (
         <section
+          aria-label="Screen session viewer"
           ref={viewer}
+          style={
+            {
+              "--screen-aspect": stream.width / Math.max(1, stream.height),
+            } as React.CSSProperties
+          }
           className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"}`}
         >
           <div className="screen-toolbar simple-screen-toolbar">
@@ -605,6 +643,29 @@ export default function Screen({
                 if (typing) event.preventDefault();
               }}
             >
+              {control && (
+                <button
+                  className="button secondary small keyboard-button"
+                  aria-label={
+                    typing
+                      ? "Dismiss phone keyboard"
+                      : mobile
+                        ? "Open phone keyboard"
+                        : "Type on computer"
+                  }
+                  disabled={!usable}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    if (typing) {
+                      typingEditor.current?.blur();
+                      clearTyping();
+                    } else openKeyboard();
+                  }}
+                >
+                  <Keyboard size={17} />
+                  {typing ? "Done" : "Type"}
+                </button>
+              )}
               <button
                 className="icon-button"
                 aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
@@ -622,18 +683,41 @@ export default function Screen({
               >
                 <MoreHorizontal size={21} />
               </button>
+              {onClose && (
+                <button
+                  className="icon-button"
+                  aria-label="Close screen session"
+                  onClick={() => {
+                    release();
+                    onClose();
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              )}
             </div>
           </div>
           {expanded && (
             <ErrorLine error={paused ? "" : error || stream.error} />
           )}
           {ask && (
-            <div className={`screen-ask ${ask.open ? "" : "done"}`} role="status">
+            <div
+              className={`screen-ask ${ask.open ? "" : "done"}`}
+              role="status"
+            >
               {ask.open && ask.kind === "password" ? (
                 <>
                   <strong>{ask.title}</strong>
-                  <span>Enter it here: Reach types it only into that dialog. It isn't kept.</span>
-                  {onAskPassword && <MacPasswordField placeholder="Your Mac's password" submit={onAskPassword} />}
+                  <span>
+                    Enter it here: Reach types it only into that dialog. It
+                    isn't kept.
+                  </span>
+                  {onAskPassword && (
+                    <MacPasswordField
+                      placeholder="Your Mac's password"
+                      submit={onAskPassword}
+                    />
+                  )}
                   <div className="screen-ask-actions">
                     <button onClick={onAskDone}>Done</button>
                   </div>
@@ -642,12 +726,17 @@ export default function Screen({
                 <>
                   <strong>{ask.title}</strong>
                   <span>Tap its button on the screen below to answer it.</span>
-                  <small>{askSaid || "If viewing or control is unavailable, or macOS blocks the click, approve on the Mac itself."}</small>
+                  <small>
+                    {askSaid ||
+                      "If viewing or control is unavailable, or macOS blocks the click, approve on the Mac itself."}
+                  </small>
                   <div className="screen-ask-actions">
                     {ask.setting && onAskSetting && (
                       <button
                         onClick={() =>
-                          void onAskSetting().then(setAskSaid, (e: Error) => setAskSaid(e.message))
+                          void onAskSetting().then(setAskSaid, (e: Error) =>
+                            setAskSaid(e.message),
+                          )
                         }
                       >
                         Open setting on Mac
@@ -670,6 +759,7 @@ export default function Screen({
             </div>
           )}
           <DesktopSurface
+            touchScroll
             focusRect={askRect}
             canvas={stream.canvas}
             width={stream.width}
@@ -709,56 +799,50 @@ export default function Screen({
               )
             }
           />
-          {control && stream.ready && !typing && !panel && (
-            <ScrollHandle send={send} disabled={!usable} />
-          )}
-          {typing && typingTarget && (
-            nativeKeyboard ? (
-              !typingTarget.pending && <NativeRemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
-                target={typingTarget}
-                send={send}
-                onClose={clearTyping}
-                onError={setError}
-              />
+          {typing &&
+            typingTarget &&
+            (nativeKeyboard ? (
+              !typingTarget.pending && (
+                <NativeRemoteTyping
+                  key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                  target={typingTarget}
+                  send={send}
+                  onClose={clearTyping}
+                  onError={setError}
+                />
+              )
             ) : (
               <RemoteTyping
                 key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 keyRow={mobile}
-                modifier={device.platform === "win32" ? "control" : "meta"}
+                modifier={device.platform === "darwin" ? "meta" : "control"}
                 editorRef={typingEditor}
                 send={send}
                 onClose={clearTyping}
                 onError={setError}
               />
-            )
-          )}
-          {typing && typingTarget && !typingTarget.opened && !nativeKeyboard && mobile && (
-            // Its own key: a sibling sharing RemoteTyping's key made React
-            // duplicate the keyboard field and key row, and reset the field
-            // between keystrokes (each next letter then deleted the last).
-            <TapToType
-              key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
-              editorRef={typingEditor}
-            />
-          )}
+            ))}
+          {typing &&
+            typingTarget &&
+            !typingTarget.pending &&
+            !nativeKeyboard &&
+            mobile && (
+              // Its own key: a sibling sharing RemoteTyping's key made React
+              // duplicate the keyboard field and key row, and reset the field
+              // between keystrokes (each next letter then deleted the last).
+              <TapToType
+                key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
+                editorRef={typingEditor}
+              />
+            )}
           <div className="simple-screen-dock">
             <span className="simple-screen-caption" role="status">
-              {feedback || (control && !input.ready ? "Connecting controls…" : "")}
+              {feedback ||
+                (control && !input.ready ? "Connecting controls…" : "")}
             </span>
             {control && (
               <>
-                {(!input.probe || blindSpot) && <button
-                  className="button primary small keyboard-button"
-                  aria-label="Open phone keyboard"
-                  onPointerDown={(event) => event.preventDefault()}
-                  disabled={!usable}
-                  onClick={openKeyboard}
-                >
-                  <Keyboard size={17} />
-                  Type
-                </button>}
                 <button
                   className="button secondary small paste-button"
                   aria-label="Paste from your phone"
@@ -807,7 +891,11 @@ export default function Screen({
                 onClick={() => void toggleControl()}
               >
                 <MousePointer2 size={15} />
-                {control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
+                {control
+                  ? "Stop"
+                  : holder?.canTakeOver
+                    ? "Take over"
+                    : "Control"}
               </button>
             )}
             {!live && !paused && (
@@ -816,13 +904,13 @@ export default function Screen({
               </button>
             )}
           </div>
-          {fullscreen && !chromeShown && canControl && (
+          {fullscreen && !chromeShown && (
             <div
               className="screen-immersive-pill"
               data-immersive-keep
               onPointerDown={(event) => event.preventDefault()}
             >
-              {control && (!input.probe || blindSpot) && (
+              {control && (
                 <button
                   aria-label="Open phone keyboard"
                   disabled={!usable}
@@ -843,13 +931,25 @@ export default function Screen({
                 </button>
               )}
               <button
-                aria-label={control ? "Stop controlling" : "Control your computer"}
+                aria-label="Exit fullscreen"
+                onClick={() => void toggleFullscreen()}
+              >
+                <Minimize size={18} />
+              </button>
+              <button
+                aria-label={
+                  control ? "Stop controlling" : "Control your computer"
+                }
                 aria-pressed={control}
                 disabled={!stream.ready || busy || !live}
                 onClick={() => void toggleControl()}
               >
                 <MousePointer2 size={17} />
-                {control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
+                {control
+                  ? "Stop"
+                  : holder?.canTakeOver
+                    ? "Take over"
+                    : "Control"}
               </button>
             </div>
           )}
@@ -874,8 +974,12 @@ export default function Screen({
                 />
               )}
               {panel === "actions" && control && (
-                <button className="button secondary" aria-label="Open phone keyboard"
-                  disabled={!usable} onClick={openKeyboard}>
+                <button
+                  className="button secondary"
+                  aria-label="Open phone keyboard"
+                  disabled={!usable}
+                  onClick={openKeyboard}
+                >
                   <Keyboard size={17} /> Keyboard
                 </button>
               )}
@@ -886,18 +990,20 @@ export default function Screen({
                   run={(helper) => void runHelper(helper)}
                 />
               )}
-              {panel === "actions" && canControl && device.capabilities.apps && (
-                <section className="screen-open-shortcuts">
-                  {control && <h3>Open on {device.name}</h3>}
-                  <QuickLauncher
-                    peer={peer}
-                    onDone={(name) => {
-                      setPanel(null);
-                      setFeedback(`${name} opened`);
-                    }}
-                  />
-                </section>
-              )}
+              {panel === "actions" &&
+                canControl &&
+                device.capabilities.apps && (
+                  <section className="screen-open-shortcuts">
+                    {control && <h3>Open on {device.name}</h3>}
+                    <QuickLauncher
+                      peer={peer}
+                      onDone={(name) => {
+                        setPanel(null);
+                        setFeedback(`${name} opened`);
+                      }}
+                    />
+                  </section>
+                )}
               {panel === "clipboard" && <ErrorLine error={error} />}
               {panel === "clipboard" && control && (
                 <>

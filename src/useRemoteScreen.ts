@@ -215,19 +215,27 @@ export function useRemoteScreen(
       if (firstFrame)
         codecFailures.current = lastMinute(codecFailures.current, now);
       else hiccups.current = lastMinute(hiccups.current, now);
+      // Failing mid-stream again and again at this size: a notch smaller
+      // (as when the phone falls behind) before ever giving up on video.
+      const smaller = !firstFrame && hiccups.current.length >= 3 && step < 2;
       const giveUp =
-        codecFailures.current.length >= 3 || hiccups.current.length >= 10;
+        codecFailures.current.length >= 3 ||
+        (step >= 2 && hiccups.current.length >= 10);
       // Enough to tell why from the computer's log.
       const where = thread ? "app" : quality === "preview" ? "home" : "screen";
       const chunk = lastChunk;
       const resets = codecFailures.current.length + hiccups.current.length;
       report(
-        `${giveUp ? "switching to still images" : `decoder restarted (${resets} this minute)`}: ${error} · ${where} ${chunk.width}×${chunk.height} ${chunk.codec} · ${firstFrame ? "before its first frame" : `after ${decoded} frames`} · on a ${chunk.key ? "keyframe" : "delta"} · ${queued} queued · ${openDecoders()} decoders open · page ${document.hidden ? "hidden" : "visible"} · ${Math.round((now - opened) / 1000)} s in`,
+        `${giveUp ? "switching to still images" : smaller ? `stepping down from ${chunk.width}×${chunk.height} after ${resets} decoder restarts this minute` : `decoder restarted (${resets} this minute)`}: ${error} · ${where} ${chunk.width}×${chunk.height} ${chunk.codec} · ${firstFrame ? "before its first frame" : `after ${decoded} frames`} · on a ${chunk.key ? "keyframe" : "delta"} · ${queued} queued · ${openDecoders()} decoders open · page ${document.hidden ? "hidden" : "visible"} · ${Math.round((now - opened) / 1000)} s in`,
       );
       decoded = 0;
       if (firstFrame)
         retryAt = now + 1000 * 2 ** (codecFailures.current.length - 1);
       if (giveUp) fail(error, true, true);
+      else if (smaller) {
+        hiccups.current = [];
+        setStep((n) => n + 1);
+      }
     };
     const metrics = setInterval(() => {
       setState((s) => ({

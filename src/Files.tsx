@@ -42,7 +42,7 @@ import {
   X,
 } from "lucide-react";
 import { Peer, Device, FileEntry, request, post, fileBlob, bytes } from "./api";
-import { Folder, Terminal, MessageSquare, Empty, ErrorLine } from "./ui";
+import { Folder, Terminal, Empty, ErrorLine } from "./ui";
 import {
   fileKind,
   friendlyDate,
@@ -409,7 +409,7 @@ export default function Files({
   const parent = parts.slice(0, -1).join("/");
   const parentName = parts.length > 1 ? parts.at(-2)! : rootName;
   const multipleRoots = device.roots.length > 1;
-  const folderActions = !guest && (features.terminal || features.codex);
+  const folderActions = !guest && features.terminal;
   const toggle = (next: typeof panel) =>
     setPanel((p) => (p === next ? "" : next));
 
@@ -475,11 +475,6 @@ export default function Files({
               onClick={() => onSession("terminal", file.path, root)}
             >
               <Terminal size={16} /> Terminal here
-            </button>
-          ),
-          features.codex && (
-            <button key="c" onClick={() => onSession("chat", file.path, root)}>
-              <MessageSquare size={16} /> Ask Codex
             </button>
           ),
         ].filter(Boolean)
@@ -687,11 +682,6 @@ export default function Files({
               {!guest && features.terminal && (
                 <button onClick={() => onSession("terminal", dir, root)}>
                   <Terminal size={18} /> Terminal here
-                </button>
-              )}
-              {!guest && features.codex && (
-                <button onClick={() => onSession("chat", dir, root)}>
-                  <MessageSquare size={18} /> Ask Codex
                 </button>
               )}
             </div>

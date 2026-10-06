@@ -13,7 +13,7 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       // start.html: the public start page (server/public-start.mjs).
-      input: { index: "index.html", start: "start.html" },
+      input: { index: "index.html", start: "start.html", agent: "agent.html" },
       output: {
         // xterm loads only with a terminal. Other libraries (React, icons) get
         // their own chunk, which stays cached across Reach updates. Capacitor's

@@ -20,7 +20,11 @@ export type TailnetStatus = {
   peers: { dnsName: string; online: boolean }[];
 };
 export type TailnetNode = {
-  start(cb: { state(s: string): void; authURL(url: string): void }): void;
+  start(cb: {
+    state(s: string): void;
+    authURL(url: string): void;
+    error?(kind: string): void;
+  }): void;
   login(): void;
   logout(): void;
   status(): TailnetStatus;
@@ -221,9 +225,14 @@ export class TailnetSocket extends EventTarget {
         if (!clean) this.emit(new Event("error"));
         // Node 22 exposes WebSocket but not CloseEvent. The CLI shares this
         // transport; preserve the browser event shape there as well.
-        const event = typeof CloseEvent === "function"
-          ? new CloseEvent("close", { code, reason, wasClean: clean })
-          : Object.assign(new Event("close"), { code, reason, wasClean: clean });
+        const event =
+          typeof CloseEvent === "function"
+            ? new CloseEvent("close", { code, reason, wasClean: clean })
+            : Object.assign(new Event("close"), {
+                code,
+                reason,
+                wasClean: clean,
+              });
         this.emit(event);
       },
     });

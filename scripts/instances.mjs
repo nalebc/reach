@@ -1,0 +1,196 @@
+// One Reach per computer. Every Reach running here, whichever folder it was
+// started from, read from the process list itself (nothing to go stale): where
+// it runs (a Terminal window, the background with no window, the background
+// service), since when, from which folder, and its link. Starting a second one
+// says where the first is and what to run instead; `reach status`, `reach stop`
+// and `reach restart` work on whichever one runs.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { stateDir } from "./home.mjs";
+
+// The processes now: id, parent, terminal, command line.
+export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20 })) {
+  return String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]))
+    .split("\n")
+    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
+    .filter(Boolean)
+    .map(([, pid, ppid, tty, command]) => ({ pid: Number(pid), ppid: Number(ppid), tty, command }));
+}
+
+const SHELLS = new Set(["zsh", "bash", "sh", "fish", "tcsh", "csh", "ksh", "dash", "nu", "pwsh"]);
+const nameOf = (command) => path.basename(command.split(/\s+/)[0]).replace(/^-/, "");
+// How a Reach is launched: ./reach (scripts/bootstrap.mjs) or the installed
+// `reach` (bin/reach.mjs).
+const ENTRIES = ["/scripts/bootstrap.mjs", "/bin/reach.mjs"];
+// Flags that make it a one-off command (it hands over or prints), not a Reach.
+const ONE_OFF = new Set(["--background", "--stop-background", "--help", "-h", "--version", "-v"]);
+
+// The Reach folder a command runs from, and what follows the script.
+function entryOf(command, exists = fs.existsSync) {
+  for (const entry of ENTRIES) {
+    const at = command.indexOf(`${entry} `) >= 0 ? command.indexOf(`${entry} `) : command.endsWith(entry) ? command.length - entry.length : -1;
+    if (at < 0) continue;
+    const end = at + entry.length;
+    // The script's path: after the interpreter (paths may hold spaces).
+    const start = command.indexOf(" /");
+    let script = start >= 0 && start < at ? command.slice(start + 1, end) : "";
+    if (!script || !exists(script)) script = (command.slice(0, end).match(/(\S+)$/) || [""])[0];
+    return { root: path.dirname(path.dirname(script)), rest: command.slice(end).trim() };
+  }
+  return null;
+}
+
+// The pid holding a folder's launcher lock (the Reach running from it).
+const lockHolder = (root) => {
+  try {
+    return Number(JSON.parse(fs.readFileSync(path.join(stateOf(root), "launcher.lock"), "utf8")).pid) || null;
+  } catch {
+    return null;
+  }
+};
+
+// Every Reach running (never `self`), each with everything it started and the
+// terminals among those. `root` limits it to one folder's.
+export function reachHosts(table, { self = process.pid, root = null, exists, locked = lockHolder } = {}) {
+  const children = new Map();
+  for (const p of table) children.set(p.ppid, [...(children.get(p.ppid) || []), p]);
+  const below = (pid) => (children.get(pid) || []).flatMap((c) => [c, ...below(c.pid)]);
+  return table
+    .map((p) => ({ p, entry: p.pid === self ? null : entryOf(p.command, exists) }))
+    .filter(({ p, entry }) => {
+      if (!entry) return false;
+      // A host runs with no command (flags only); `reach approve` and the
+      // like running beside it are left alone.
+      const args = entry.rest.split(/\s+/).filter(Boolean);
+      // `reach restart` run in a terminal goes on to run Reach itself: a
+      // Reach once it holds its folder's lock.
+      if (args[0] === "restart") return locked(entry.root) === p.pid;
+      return (!args.length || args[0].startsWith("-")) && !args.some((a) => ONE_OFF.has(a));
+    })
+    .filter(({ entry }) => !root || path.resolve(entry.root) === path.resolve(root))
+    .map(({ p: host, entry }) => {
+      const descendants = below(host.pid);
+      const terminals = descendants
+        .filter((p) => SHELLS.has(nameOf(p.command)))
+        .map((shell) => {
+          const inside = (children.get(shell.pid) || []).map((c) => nameOf(c.command)).filter(Boolean);
+          return { pid: shell.pid, tty: shell.tty, shell: nameOf(shell.command), running: inside };
+        });
+      return {
+        pid: host.pid,
+        tty: host.tty,
+        root: entry.root,
+        service: /\s--service(\s|$)/.test(host.command),
+        descendants,
+        terminals,
+      };
+    });
+}
+
+// A Reach handing itself over to the background service (first-run setup)
+// stays open until the phone connects; the service it starts isn't a second copy.
+export const handoverFile = (state) => path.join(state, "handover.pid");
+export function withoutHandover(hosts, state, read = (f) => fs.readFileSync(f, "utf8")) {
+  let pid = 0;
+  try {
+    pid = Number(read(handoverFile(state)));
+  } catch {}
+  return pid ? hosts.filter((h) => h.pid !== pid) : hosts;
+}
+
+// When each started (one ps call for all of them).
+export function startTimes(pids, run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" })) {
+  if (!pids.length) return new Map();
+  try {
+    const out = String(run("/bin/ps", ["-o", "pid=,lstart=", "-p", pids.join(",")]));
+    return new Map(
+      out
+        .split("\n")
+        .map((line) => line.match(/^\s*(\d+)\s+(.+?)\s*$/))
+        .filter(Boolean)
+        .map(([, pid, when]) => [Number(pid), Date.parse(when)]),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+const home = (folder, dir = os.homedir()) => (folder.startsWith(`${dir}/`) ? `~${folder.slice(dir.length)}` : folder);
+const clock = (ms, now = Date.now()) => {
+  if (!Number.isFinite(ms)) return "";
+  const at = new Date(ms);
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(now).toDateString() === at.toDateString()
+    ? time
+    : `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+};
+
+// Where it runs, in words.
+export function whereItRuns(host) {
+  if (host.service) return "as the background service";
+  if (!host.tty || host.tty === "??" || host.tty === "?") return "in the background, with no window";
+  return `in a Terminal window (${host.tty})`;
+}
+
+// Its saved state: a source folder keeps .reach inside; an npm install, ~/.reach.
+export const stateOf = (root, exists = fs.existsSync) => stateDir(root, { installed: !exists(path.join(root, "src/main.tsx")) });
+
+// What its server reports while it runs: its link, and whether it keeps the Mac awake.
+export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
+  try {
+    return read(path.join(state(host.root), "host-status.json")) || {};
+  } catch {
+    return {};
+  }
+}
+
+export function describe(host, { started, now, dir } = {}) {
+  const since = clock(started, now);
+  return `${whereItRuns(host)}${since ? `, since ${since}` : ""}, from ${home(host.root, dir)}`;
+}
+
+// Starting a second Reach: where the first one runs, and what to run instead.
+export function alreadyRunning(hosts, { command = "reach", started = new Map(), now, dir } = {}) {
+  const lines = hosts.map((h) => describe(h, { started: started.get(h.pid), now, dir }));
+  if (hosts.length > 1)
+    return [
+      `${hosts.length} copies are running:`,
+      ...lines.map((l) => `  · ${l}`),
+      `Only one should run. Run ${command} stop to stop them all, or ${command} restart to stop them and start one here.`,
+    ].join("\n");
+  const [host] = hosts;
+  const hidden = !host.service && whereItRuns(host).startsWith("in the background");
+  return [
+    `already running ${lines[0]}.`,
+    hidden
+      ? "With no window it can't show or control your screen, and it can't take device approvals."
+      : host.service
+        ? "It runs on its own; nothing more to start."
+        : "Use that window, or:",
+    `  ${command} restart   stop it and start Reach here`,
+    `  ${command} stop      stop it`,
+  ].join("\n");
+}
+
+// `reach status`: what runs, where, since when, and its link.
+export function statusText(hosts, { command = "reach", started = new Map(), now, dir, runtime = runtimeOf, state = stateOf } = {}) {
+  if (!hosts.length) return `Reach isn't running. Start it with ${command}.`;
+  const blocks = hosts.map((h) => {
+    const { link, origin, awake } = runtime(h);
+    const url = link || origin;
+    return [
+      `Reach: running ${describe(h, { started: started.get(h.pid), now, dir })}`,
+      ...(url ? [`Link: ${url}`] : []),
+      ...(awake?.mode ? [`Sleep prevention: ${awake.mode} · ${awake.active ? "active" : "not active"}${awake.error ? ` · ${awake.error}` : ""}`] : []),
+      // The service writes its output to files; a window shows it.
+      ...(h.service ? [`Logs: ${home(path.join(state(h.root), "logs"), dir)}`] : []),
+    ].join("\n");
+  });
+  if (hosts.length > 1)
+    blocks.push(`${hosts.length} copies are running; only one should. Run ${command} stop to stop them all, or ${command} restart.`);
+  else if (whereItRuns(hosts[0]).startsWith("in the background, with no"))
+    blocks.push(`It has no window: it can't show or control your screen, or take device approvals. Run ${command} restart to run it in Terminal.`);
+  return blocks.join("\n");
+}

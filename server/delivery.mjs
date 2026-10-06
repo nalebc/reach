@@ -11,6 +11,9 @@ const accepts = (req, encoding) =>
 // so they never change: cache them for a year and serve the copy precompressed
 // at build time. The page itself is revalidated on every open.
 export function serveBuild(app, express, dist) {
+  app.get("/agent-browser", (req, res) =>
+    res.sendFile(path.join(dist, "agent.html"), { headers: { "Cache-Control": "no-store" } }),
+  );
   const exists = new Map();
   const has = (file) => {
     if (!exists.has(file)) exists.set(file, fs.existsSync(file));

@@ -1,86 +1,402 @@
-import { useEffect, useState } from "react";
-import { Bell } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Bell, BellOff, Moon, Share, SquarePlus } from "lucide-react";
 import { request, type Peer } from "./api";
-import { AppIcon } from "./AppIcon";
 import { sameComputer } from "./passkeys";
 import {
   disablePush,
   enablePush,
   pushEnabled,
   pushSupport,
-  type PushSupport,
+  testPush,
+  notificationPreferences,
+  type NotificationPreferences,
 } from "./push";
+import "./notifications.css";
 
-// Settings: notifications on this phone when something needs you (an agent
-// hands you an app, asks a question, or asks for access). Only from the
-// computer this page comes from; on iPhone, only from the Home Screen.
-export function NotifySettings({ peer }: { peer: Peer }) {
-  const [support] = useState<PushSupport>(() => pushSupport());
+export function useNotificationSetup(peer: Peer, active = true) {
+  const [support, setSupport] = useState(pushSupport);
+  const [preferences, setPreferences] =
+    useState<NotificationPreferences | null>(null);
   const [on, setOn] = useState(false);
-  // Only your own devices may: guests and others see nothing here.
   const [allowed, setAllowed] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const generation = useRef(0);
+  const pending = useRef(false);
   const here = sameComputer(peer.url);
+  const refresh = useCallback(async () => {
+    const version = generation.current;
+    const current = pushSupport();
+    setSupport(current);
+    if (!active || !here || current === "unsupported") {
+      setLoading(false);
+      return;
+    }
+    try {
+      await request(peer, "/api/push");
+      if (version !== generation.current) return;
+      setAllowed(true);
+      const enabled = current === "ready" && (await pushEnabled(peer));
+      if (version === generation.current) setOn(enabled);
+      if (enabled) {
+        const prefs = await notificationPreferences(peer);
+        if (version === generation.current) setPreferences(prefs);
+      }
+    } catch (e) {
+      if (version === generation.current) {
+        if ([401, 403].includes((e as { status?: number }).status || 0))
+          setAllowed(false);
+        else
+          setNote(
+            "Couldn't check notifications. Reconnect to your computer and try again.",
+          );
+      }
+    } finally {
+      if (version === generation.current) setLoading(false);
+    }
+  }, [peer.url, peer.token, here, active]);
   useEffect(() => {
-    if (support === "unsupported" || !here) return;
-    let live = true;
-    request(peer, "/api/push")
-      .then(() => {
-        if (!live) return;
-        setAllowed(true);
-        if (support === "ready")
-          return pushEnabled(peer).then((value) => live && setOn(value));
-      })
-      .catch(() => live && setAllowed(false));
-    return () => {
-      live = false;
+    generation.current++;
+    setOn(false);
+    setPreferences(null);
+    setAllowed(false);
+    setLoading(true);
+    setNote("");
+    setBusy(false);
+    pending.current = false;
+    void refresh();
+    const visible = () => {
+      if (!document.hidden) void refresh();
     };
-  }, [peer.url, peer.token, support, here]);
-  if (!here || support === "unsupported" || !allowed) return null;
-  const toggle = async () => {
+    window.addEventListener("focus", visible);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("reach-push-changed", visible);
+    return () => {
+      generation.current++;
+      window.removeEventListener("focus", visible);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("reach-push-changed", visible);
+    };
+  }, [refresh]);
+  const act = async (test = false) => {
+    if (pending.current) return;
+    const version = generation.current;
+    pending.current = true;
     setBusy(true);
     setNote("");
     try {
-      if (on) await disablePush(peer);
+      // Keep requestPermission in the tap's call stack; Safari requires it.
+      if (test) await testPush(peer);
+      else if (on) await disablePush(peer);
       else await enablePush(peer);
-      setOn(!on);
+      if (version !== generation.current) return;
+      if (test)
+        setNote(
+          "Test sent. Check Notification Center on this device. Focus settings may silence the banner.",
+        );
+      else {
+        setOn(!on);
+        window.dispatchEvent(new Event("reach-push-changed"));
+      }
     } catch (e) {
-      setNote((e as Error).message);
+      if (version === generation.current) {
+        setSupport(pushSupport());
+        setNote((e as Error).message);
+      }
     } finally {
-      setBusy(false);
+      if (version === generation.current) {
+        pending.current = false;
+        setBusy(false);
+      }
+    }
+  };
+  const update = async (
+    change: Parameters<typeof notificationPreferences>[1],
+  ) => {
+    if (pending.current) return;
+    const version = generation.current;
+    pending.current = true;
+    setBusy(true);
+    setNote("");
+    try {
+      const prefs = await notificationPreferences(peer, change);
+      if (version !== generation.current) return;
+      setPreferences(prefs);
+      setNote("Saved for this device.");
+      window.dispatchEvent(new Event("reach-push-changed"));
+    } catch (e) {
+      if (version === generation.current) setNote((e as Error).message);
+    } finally {
+      if (version === generation.current) {
+        pending.current = false;
+        setBusy(false);
+      }
+    }
+  };
+  return {
+    preferences,
+    update,
+    support,
+    on,
+    allowed,
+    loading,
+    busy,
+    note,
+    here,
+    toggle: () => act(),
+    test: () => act(true),
+    refresh,
+  };
+}
+
+// The Home Screen's address: this page, without one-time query bits.
+const homeUrl = () => location.origin + location.pathname;
+// What each switch is about, in people's words.
+const CATEGORIES = [
+  ["done", "Chats finished"],
+  ["chat", "Agent questions & approvals"],
+  ["computer", "Mac permission prompts"],
+  ["handoffs", "Apps handed to you"],
+  ["access", "Access requests"],
+] as const;
+
+// iPhone sends notifications only to Home Screen apps. A web page can't add
+// itself there: the nearest is the Share sheet, one tap from "Add to Home
+// Screen", so the button opens it; the two steps show once it's open.
+function HomeScreenSetup() {
+  const canShare = typeof navigator.share === "function";
+  const [asked, setAsked] = useState(!canShare);
+  const share = async () => {
+    setAsked(true);
+    try {
+      await navigator.share({ title: "Reach", url: homeUrl() });
+    } catch {
+      /* closed without choosing: the steps stay */
     }
   };
   return (
-    <section className="panel settings-panel" aria-label="Notifications">
-      <div className="switch-row">
-        <AppIcon tone="screen" size="small">
-          <Bell size={17} strokeWidth={2} />
-        </AppIcon>
-        <div>
-          <strong>Notifications</strong>
-          <small>
-            {support === "home-screen"
-              ? "Add Reach to your Home Screen to get them."
-              : support === "denied"
-                ? "Turned off for Reach in this phone's settings."
-                : "When an agent needs you, and Reach isn't open."}
-          </small>
-        </div>
-        {support === "ready" && (
-          <button
+    <section className="ns ns-install" aria-label="Notification setup">
+      <div className="ns-install-head">
+        <img className="ns-app-icon" src="/favicon.svg" alt="" />
+        <span className="ns-text">
+          <strong>Add Reach to your Home Screen</strong>
+          <small>iPhone sends notifications only to Home Screen apps.</small>
+        </span>
+      </div>
+      {canShare && (
+        <button className="ns-primary" onClick={() => void share()}>
+          <Share size={17} aria-hidden="true" /> Add to Home Screen
+        </button>
+      )}
+      {asked && (
+        <ol className="ns-steps">
+          <li>
+            <span className="ns-step-icon">
+              <SquarePlus size={15} aria-hidden="true" />
+            </span>
+            <span>
+              {canShare ? "In the sheet, tap " : "In Safari, tap Share, then "}
+              <strong>Add to Home Screen</strong>
+            </span>
+          </li>
+          <li>
+            <span className="ns-step-icon">
+              <img src="/favicon.svg" alt="" />
+            </span>
+            <span>
+              Open <strong>Reach</strong> from your Home Screen
+            </span>
+          </li>
+        </ol>
+      )}
+    </section>
+  );
+}
+
+// Notifications for this device: one switch, then (once on) pause and what
+// to be told about, as a calm settings list. Nothing to read unless needed.
+export function NotificationSetup({
+  state,
+}: {
+  state: ReturnType<typeof useNotificationSetup>;
+}) {
+  const { support, on, allowed, loading, busy, note, here, preferences } =
+    state;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const paused = on && !!preferences && preferences.pausedUntil > now;
+  const until = preferences
+    ? new Date(preferences.pausedUntil).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "";
+  const line = (text: ReactNode, role?: "status") => (
+    <section className="ns" aria-label="Notification setup">
+      <p className="ns-line" role={role}>
+        {text}
+      </p>
+      {note && (
+        <p className="ns-note" role="status">
+          {note}
+        </p>
+      )}
+    </section>
+  );
+  if (!here)
+    return line("Open this computer's own Reach address to get its notifications here.");
+  if (loading) return line("Checking this device…", "status");
+  if (support === "home-screen") return <HomeScreenSetup />;
+  if (support === "denied")
+    return line(
+      <>
+        <BellOff size={15} aria-hidden="true" />
+        <span>
+          Notifications are blocked. Allow them in{" "}
+          <strong>Settings → Notifications → Reach</strong>.
+        </span>
+      </>,
+    );
+  if (support === "unsupported")
+    return line("This browser can't receive notifications. On iPhone, open Reach from the Home Screen.");
+  if (!allowed)
+    return (
+      <section className="ns" aria-label="Notification setup">
+        <button className="ns-link" onClick={() => void state.refresh()}>
+          Check again
+        </button>
+      </section>
+    );
+  return (
+    <section className="ns" aria-label="Notification setup">
+      <div className="ns-group">
+        <label className="ns-row">
+          <span className="ns-icon">
+            {paused ? <BellOff size={18} /> : <Bell size={18} />}
+          </span>
+          <span className="ns-text">
+            <strong>Notifications</strong>
+            <small>
+              {!on
+                ? "A ping when an agent or your Mac needs you"
+                : paused
+                  ? `Paused until ${until}`
+                  : "On for this device"}
+            </small>
+          </span>
+          {/* In the tap's call stack: Safari asks for permission only then. */}
+          <input
+            type="checkbox"
             role="switch"
-            aria-checked={on}
             aria-label="Notifications"
-            className={`switch ${on ? "on" : ""}`}
+            checked={on}
             disabled={busy}
-            onClick={() => void toggle()}
-          >
-            <span />
-          </button>
+            onChange={() => void state.toggle()}
+          />
+        </label>
+        {on && preferences && (
+          <div className="ns-row">
+            <span className="ns-icon">
+              <Moon size={18} />
+            </span>
+            <span className="ns-text">
+              <strong>Pause</strong>
+            </span>
+            {paused ? (
+              <button
+                className="ns-chip"
+                disabled={busy}
+                onClick={() => void state.update({ pauseMinutes: 0 })}
+              >
+                Resume
+              </button>
+            ) : (
+              <>
+                <button
+                  className="ns-chip"
+                  disabled={busy}
+                  onClick={() => void state.update({ pauseMinutes: 60 })}
+                >
+                  1 hour
+                </button>
+                <button
+                  className="ns-chip"
+                  disabled={busy}
+                  onClick={() => void state.update({ pauseMinutes: 480 })}
+                >
+                  8 hours
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
-      {note && <p className="form-note">{note}</p>}
+      {on &&
+        (preferences ? (
+          <div className="ns-group" role="group" aria-label="Notify me about">
+            {CATEGORIES.map(([key, label]) => (
+              <label className="ns-row" key={key}>
+                <span className="ns-text">
+                  <strong>{label}</strong>
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={preferences[key]}
+                  disabled={busy}
+                  onChange={(e) =>
+                    void state.update({
+                      preferences: { [key]: e.target.checked },
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        ) : (
+          <button
+            className="ns-link"
+            disabled={busy}
+            onClick={() => void state.refresh()}
+          >
+            Reload notification controls
+          </button>
+        ))}
+      {on && (
+        <button
+          className="ns-link"
+          disabled={busy}
+          onClick={() => void state.test()}
+        >
+          Send a test notification
+        </button>
+      )}
+      {note && (
+        <p className="ns-note" role="status">
+          {note}
+        </p>
+      )}
+      {on && (
+        <small className="ns-foot">
+          For this device only. Your Mac needs to be awake and running Reach.
+        </small>
+      )}
     </section>
+  );
+}
+
+// The setup on its own, as the bell's panel shows it (Settings doesn't).
+export function NotifySettings({ peer }: { peer: Peer }) {
+  const state = useNotificationSetup(peer);
+  if (!state.here || state.support === "unsupported" || !state.allowed)
+    return null;
+  return (
+    <div className="panel settings-panel">
+      <NotificationSetup state={state} />
+    </div>
   );
 }

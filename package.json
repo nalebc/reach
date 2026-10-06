@@ -45,7 +45,8 @@
     "package": "node scripts/package.mjs",
     "agent-token": "node scripts/agent-token.mjs",
     "mcp": "node scripts/mcp.mjs",
-    "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs"
+    "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs",
+    "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

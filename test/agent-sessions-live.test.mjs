@@ -12,6 +12,11 @@ import { ALL_SCOPES } from "../server/core.mjs";
 const T = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82]);
 
+// Lets a background watch finish (its waits are instant in these tests).
+const settled = async () => {
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+};
+
 test("Stop can address the exact running app turn without taking over the thread", async () => {
   const daemon = fakeDaemon({ "thread/turns/list": { data: [{ id: "app-turn", status: "inProgress" }] } });
   const live = createCodexLive({ daemon });
@@ -116,7 +121,12 @@ test("a thread open in the Codex app gets the message through Codex's queue", as
     "thread/queue/list": () => (++looks < 3 ? { data: [{ id: "q1" }] } : { data: [] }),
   });
   const live = createCodexLive({ daemon, wait: async () => {} });
-  assert.deepEqual(await live.send(T, { text: "from the phone" }), { queued: true, delivered: true });
+  // The phone has its answer once it's in the queue (no wait for the app).
+  assert.deepEqual(await live.send(T, { text: "from the phone" }), { queued: true, delivered: false, messageId: "q1" });
+  await settled();
+  // The Codex app took it: nothing taken back, nothing left on the phone.
+  assert.ok(!daemon.methods().includes("thread/queue/delete"));
+  assert.equal(live.view(T).outbox, undefined);
   const add = daemon.calls.find(([m]) => m === "thread/queue/add")[1];
   assert.equal(add.threadId, T);
   assert.equal(add.input[0].text, "from the phone");
@@ -124,7 +134,7 @@ test("a thread open in the Codex app gets the message through Codex's queue", as
   assert.ok(!daemon.methods().includes("turn/start"));
 });
 
-test("a queued message nobody takes is taken back, unless a turn is running there", async () => {
+test("a queued message nobody takes is taken back and stays on the phone saying why, unless a turn is running there", async () => {
   const held = (turn) => {
     let clock = 0;
     const daemon = fakeDaemon({
@@ -138,15 +148,26 @@ test("a queued message nobody takes is taken back, unless a turn is running ther
     return { daemon, live };
   };
   const idle = held({ id: "t0", status: "completed", completedAt: 5 });
-  await assert.rejects(idle.live.send(T, { text: "hi" }), (e) => e.status === 409 && /Codex app/.test(e.message));
+  // Answered at once; nothing fails on the phone after 10 s.
+  assert.deepEqual(await idle.live.send(T, { text: "hi" }), { queued: true, delivered: false, messageId: "q1" });
+  await settled();
   assert.ok(idle.daemon.calls.some(([m, p]) => m === "thread/queue/delete" && p.queuedSubmissionId === "q1"));
+  // Taken back, it stays on the phone with its text and why, until dismissed.
+  const [back] = idle.live.view(T).outbox;
+  assert.equal(back.id, "q1");
+  assert.equal(back.text, "hi");
+  assert.match(back.error, /Codex app/);
+  assert.deepEqual(await idle.live.cancelQueued(T, "q1"), { deleted: true });
+  assert.equal(idle.live.view(T).outbox, undefined);
 
   const busy = held({ id: "t1", status: "inProgress", completedAt: null });
-  assert.deepEqual(await busy.live.send(T, { text: "hi" }), { queued: true, delivered: false });
+  assert.deepEqual(await busy.live.send(T, { text: "hi" }), { queued: true, delivered: false, messageId: "q1" });
+  await settled();
   assert.ok(!busy.daemon.methods().includes("thread/queue/delete"));
   // How a turn the Codex app is running reads from its file (verified).
   const elsewhere = held({ id: "t2", status: "interrupted", completedAt: null });
-  assert.deepEqual(await elsewhere.live.send(T, { text: "hi" }), { queued: true, delivered: false });
+  assert.deepEqual(await elsewhere.live.send(T, { text: "hi" }), { queued: true, delivered: false, messageId: "q1" });
+  await settled();
   assert.ok(!elsewhere.daemon.methods().includes("thread/queue/delete"));
 });
 
@@ -165,19 +186,19 @@ test("prompts show on the phone and take only the choices Codex offered", async 
   assert.equal(view.prompts[0].command, "rm -rf build");
   assert.deepEqual(view.prompts[0].decisions, ["accept", "decline"]);
   assert.equal(view.prompts[0].resolve, undefined);
-  assert.throws(() => live.respond(T, "7", { decision: "acceptForSession" }), /not available/);
-  live.respond(T, "7", { decision: "accept" });
+  await assert.rejects(() => live.respond(T, "7", { decision: "acceptForSession" }), /not available/);
+  await live.respond(T, "7", { decision: "accept" });
   assert.deepEqual(await answered, { decision: "accept" });
   assert.equal(live.view(T).prompts.length, 0);
   assert.equal(live.view(T).status, "running");
-  assert.throws(() => live.respond(T, "7", { decision: "accept" }), (e) => e.status === 409);
+  await assert.rejects(() => live.respond(T, "7", { decision: "accept" }), (e) => e.status === 409);
 
   const question = daemon.ask(8, "item/tool/requestUserInput", {
     threadId: T,
     questions: [{ id: "q", header: "Deploy", question: "Which target?", options: [{ label: "staging" }] }],
   });
-  assert.throws(() => live.respond(T, "8", { answers: {} }), /Answer every question/);
-  live.respond(T, "8", { answers: { q: ["staging"] } });
+  await assert.rejects(() => live.respond(T, "8", { answers: {} }), /Answer every question/);
+  await live.respond(T, "8", { answers: { q: ["staging"] } });
   assert.deepEqual(await question, { answers: { q: { answers: ["staging"] } } });
 
   // Answered in another window: the card goes away here too.
@@ -592,4 +613,43 @@ test("messages waiting in the Codex app's own queue show on the phone, read when
   failing.view(T);
   await settle();
   assert.equal(failing.view(T).outbox, undefined);
+});
+
+
+test("resolved or closed requests cannot leave decorative approval buttons", async () => {
+  const daemon = fakeDaemon();
+  const live = createCodexLive({ daemon });
+  void daemon.ask(17, "item/commandExecution/requestApproval", { threadId: T, command: "echo check" });
+  daemon.emit("serverRequest/resolved", { requestId: "17" });
+  assert.deepEqual(live.view(T).prompts, []);
+  await assert.rejects(live.respond(T, "17", { decision: "accept" }), (e) => e.status === 409);
+  void daemon.ask(18, "item/tool/requestUserInput", { threadId: T, questions: [{ id: "q", question: "Which?" }] });
+  daemon.emit("thread/closed", { threadId: T });
+  assert.deepEqual(live.view(T).prompts, []);
+  await assert.rejects(live.respond(T, "18", { answers: { q: ["first"] } }), (e) => e.status === 409);
+});
+
+test("approval is successful only after its real response is delivered; failed delivery stays retryable", async () => {
+  const daemon = fakeDaemon();
+  let request;
+  daemon.onRequest = (handler) => request = handler;
+  const live = createCodexLive({ daemon });
+  let deliver;
+  let fail;
+  let attempts = 0;
+  request({ id: 19, method: "item/commandExecution/requestApproval", params: { threadId: T, command: "echo test" } }, () => {
+    attempts++;
+    return new Promise((resolve, reject) => { deliver = resolve; fail = reject; });
+  });
+  const first = live.respond(T, "19", { decision: "accept" });
+  assert.equal(live.view(T).prompts.length, 1, "still pending while sending");
+  await assert.rejects(live.respond(T, "19", { decision: "accept" }), /already being sent/);
+  fail(new Error("Connection lost"));
+  await assert.rejects(first, /Connection lost/);
+  assert.equal(live.view(T).prompts.length, 1);
+  const retry = live.respond(T, "19", { decision: "accept" });
+  deliver();
+  assert.deepEqual(await retry, { answered: true });
+  assert.equal(attempts, 2);
+  assert.deepEqual(live.view(T).prompts, []);
 });

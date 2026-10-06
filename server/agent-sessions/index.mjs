@@ -12,16 +12,18 @@ import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
-import { claudeAppAccess, claudeAppRunning, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
-import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
+import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createOutbox } from "./outbox.mjs";
-import { createClaudeCompose, typeIntoClaude } from "./claude-compose.mjs";
+import { createChatModes } from "./chat-modes.mjs";
+import { createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
 import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
+import { createAgentWatch } from "./agent-watch.mjs";
+import { createCodexMethods, createSlashCommands } from "./commands.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -153,10 +155,6 @@ export function createAgentSessions({
         open,
         asking: () => [...readSessionRegistry().values()].some((e) => e.where === "claude-app" && e.waiting),
       }),
-  // Claude Code's and Codex's prompts in any session (their apps' too),
-  // answered from the phone through their PermissionRequest hooks
-  // (agent-asks.mjs); made below when not given.
-  agentAsks: givenAsks = null,
   // Pressing a button on the Claude app's own consent card (claude-consent.mjs); never in tests.
   pressConsent = process.env.NODE_TEST_CONTEXT
     ? async () => {
@@ -165,6 +163,8 @@ export function createAgentSessions({
     : (choice, expect) => pressClaudeConsent(choice, { dataDir, expect }),
   claudeShown,
   // Messages waiting for a busy Claude app session, kept until handed over
+  // The chats the Claude app lists, the one on screen first (claude-import.mjs).
+  appShown = claudeAppShown,
   // (outbox.mjs); in memory only in tests.
   outbox = createOutbox({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-outbox.json") }),
   // Apps installed here, to show a consent card's apps with their icons.
@@ -174,8 +174,6 @@ export function createAgentSessions({
   claudeCompose: givenCompose = null,
   claudeOpen = claudeAppRunning,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
-  // Seconds since the Mac was last used (agent-asks.mjs reads it by default).
-  macIdle,
   // Whether the Claude app is installed and signed in (it signs in apart
   // from the CLI Reach replies through).
   claudeApp = () => claudeAppAccess({ registry: readSessionRegistry }),
@@ -185,8 +183,23 @@ export function createAgentSessions({
   // OpenClaw's Gateway (../openclaw.mjs), when Reach has one: chats move to
   // and from it too.
   openClaw = null,
+  // News the moment an agent's app writes it, from its own files
+  // (agent-watch.mjs); never in tests.
+  agentWatch = process.env.NODE_TEST_CONTEXT ? null : createAgentWatch(),
   // Chats continued with the other agent, both ways (move.mjs).
   moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
+  // The permission mode picked for each Codex chat from Reach (chat-modes.mjs).
+  chatModes = createChatModes({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "codex-modes.json") }),
+  // What "/" offers in a chat, from each agent itself (commands.mjs); the
+  // installed Codex isn't asked in tests.
+  slash = createSlashCommands({
+    claudeHost,
+    daemon,
+    codexLive,
+    codex,
+    claude,
+    ...(process.env.NODE_TEST_CONTEXT ? { codexMethods: async () => new Set() } : { codexMethods: createCodexMethods() }),
+  }),
 } = {}) {
   const adapters = { codex, claude, gemini };
   const adapter = (agent) => {
@@ -221,37 +234,13 @@ export function createAgentSessions({
       return running.get(id)?.where === "claude-app" ? session.consent : null;
     },
   });
-  // Prompts wait for the phone only in sessions it can show: the Claude app's
-  // and terminals', and Codex threads in its list. Headless runs (claude -p,
-  // codex exec) and sessions Reach drives itself step aside at once.
-  const agentAsks =
-    givenAsks ||
-    createAgentAsks({
-      socketPath: agentAskSocket(dataDir),
-      ...(macIdle ? { idle: macIdle } : {}),
-      skip: (agent, id) => !!hosts[agent]?.drives(id),
-      watching: (agent, id) => !!hosts[agent]?.watched?.(id),
-      shows: async (agent, id) => {
-        if (agent === "claude") {
-          const where = (await liveNow()).get(id)?.where;
-          return where === "claude-app" || where === "terminal";
-        }
-        const thread = (await codex.list()).find((s) => s.id === id);
-        return !!thread && !thread.headless;
-      },
-    });
-  if (listenForAsks) {
-    agentAsks.listen?.().catch(() => {});
-    macPrompts.start?.();
-  }
+  // Approval cards come only from live agent protocol requests. Desktop waits
+  // without a reply connection are detected from agent state and use the screen.
+  if (listenForAsks) macPrompts.start?.();
   // Working, not merely open: Reach's own turn, or an open process whose
   // transcript is mid-turn (recently) or just changed. The Claude app keeps a
   // process for every open session, so a process alone means nothing.
   const claudeStatus = (s) => {
-    if (agentAsks.has?.("claude", s.id)) {
-      s.status = "waiting";
-      return;
-    }
     if (claudeHost.running(s.id)) {
       s.status = claudeHost.view(s.id).status === "waiting" ? "waiting" : "running";
       return;
@@ -273,10 +262,6 @@ export function createAgentSessions({
   };
   // Turns Reach runs on Codex know their own state (approvals included).
   const codexStatus = (s) => {
-    if (agentAsks.has?.("codex", s.id)) {
-      s.status = "waiting";
-      return;
-    }
     if (!codexLive.drives(s.id)) return;
     const status = codexLive.view(s.id).status;
     if (status === "running" || status === "waiting") s.status = status;
@@ -303,7 +288,11 @@ export function createAgentSessions({
   // Never a second writer, never a copy.
   const signedIn = async () => {
     const health = await claude.health().catch(() => null);
-    if (health && !health.signedIn) throw blocked("Claude Code is signed out on your Mac. Sign in to reply from here.");
+    // Only a definite "signed out" stops it. A status Claude Code was too slow
+    // to give (busy Mac, 10 s limit) isn't one: new chats failed with
+    // "signed out" while Claude Code was signed in.
+    if (health && health.signedIn === false && !health.error)
+      throw blocked("Claude Code is signed out on your Mac. Sign in to reply from here.");
   };
   // Working, or stopped on a question or permission in the app: either way
   // the app's process is mid-turn and must not be ended.
@@ -343,7 +332,9 @@ export function createAgentSessions({
       : createClaudeCompose({
           type: (message) => typeIntoClaude(message, { dataDir }),
           open,
-          arrived: (id, text, since) => claude.arrived(id, text, since),
+          arrived: (id, text, since, sent) => claude.arrived(id, text, since, sent),
+          // What Reach last put in each chat's box, kept across restarts.
+          store: draftFile(path.join(dataDir, "agent-drafts.json")),
         }));
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
@@ -351,24 +342,50 @@ export function createAgentSessions({
   let closed = false;
   const delivering = new Set();
   const deliveringMessage = new Map();
+  const wakers = new Map();
   const deliver = async (id) => {
     if (delivering.has(id)) return;
     delivering.add(id);
     const started = Date.now();
+    // The last try put its message in: the next one goes on the usual beat
+    // (what it says it waits for is from a try before that one).
+    let wentIn = false;
+    // The first try goes at once (a message just sent shouldn't sit idle).
+    let tried = false;
     try {
       while (!closed && outbox.list(id).length) {
+        // A deleted chat's messages wait for the phone, not for their chat.
+        if (outbox.list(id)[0]?.stranded) break;
         // Waiting never keeps Reach from quitting; after two hours, less often.
         // One waiting for the Claude app's window looks again every 5 s.
-        const pause = Date.now() - started > 2 * 60 * 60 * 1000 ? 30000 : outbox.list(id)[0]?.via === "app" && outbox.list(id)[0]?.error ? 5000 : queueMs;
-        await new Promise((r) => setTimeout(r, pause).unref?.());
+        const first = outbox.list(id)[0];
+        const pause = !tried
+          ? 0
+          : Date.now() - started > 2 * 60 * 60 * 1000
+            ? 30000
+            : first?.via === "app" && first?.error && !wentIn
+              ? 5000
+              : queueMs;
+        tried = true;
+        // Send now (or a new order) wakes it at once.
+        await new Promise((r) => {
+          const timer = setTimeout(r, outbox.list(id)[0]?.now ? 0 : pause);
+          timer.unref?.();
+          wakers.set(id, () => {
+            clearTimeout(timer);
+            r();
+          });
+        });
+        wakers.delete(id);
         if (closed) break;
         const next = outbox.list(id)[0];
         if (!next) break;
         try {
           deliveringMessage.set(id, next.id);
           if (next.via === "app") {
-            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}) });
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}) });
             outbox.remove(id, next.id);
+            wentIn = true;
             continue;
           }
           const holder = await holderOf(id);
@@ -380,6 +397,13 @@ export function createAgentSessions({
           await claudeHost.send(id, message);
           outbox.remove(id, messageId);
         } catch (e) {
+          wentIn = false;
+          // Not in the Claude app's list, and Claude Code has no such chat
+          // either: it was deleted. Its messages wait for the phone instead.
+          if (e?.unlisted && claude.exists && !(await claude.exists(id).catch(() => true))) {
+            outbox.strand(id);
+            continue;
+          }
           outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
         } finally {
           deliveringMessage.delete(id);
@@ -429,6 +453,24 @@ export function createAgentSessions({
       }),
   };
   const liveHost = (agent) => (adapter(agent), hosts[agent] || quiet);
+  // A chat written to on the Mac (a Claude Code transcript growing, as the
+  // Claude app or a terminal writes it): counted for the chats the phone has
+  // open, so their long poll wakes at once and the phone reads them again.
+  const touched = new Map(); // "agent:id" -> writes seen
+  const touchWaiters = new Map(); // "agent:id" -> long polls waiting
+  const touch = (agent, id) => {
+    const key = `${agent}:${id}`;
+    const waiting = touchWaiters.get(key);
+    if (!waiting?.size) return;
+    touched.set(key, (touched.get(key) || 0) + 1);
+    for (const wake of [...waiting]) wake();
+  };
+  agentWatch?.onChange((news) => {
+    // The Codex app's queue or history: the open chats read again.
+    if (news.agent === "codex") codexLive.nudge?.(news.kind);
+    // A Claude Code transcript: unless Reach is the one writing it.
+    else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) touch("claude", news.id);
+  });
   // Each agent's working/waiting status, from what its host knows.
   const statusOf = (agent) => (agent === "claude" ? claudeStatus : agent === "codex" ? codexStatus : () => {});
   // A whole Codex chat, oldest first, kept a minute (a moved chat pages
@@ -477,7 +519,7 @@ export function createAgentSessions({
           ? gemini.history(id)
           : codexHistory(id);
   // The apps a chat can move between.
-  const movable = () => ["codex", "claude", ...(openClaw ? ["openclaw"] : [])];
+  const movable = () => ["codex", "claude", ...(openClaw && openClaw.canMove?.() !== false ? ["openclaw"] : [])];
   // Where a chat was when it moved: up to its last item then (or as many
   // items as it had, should that one read differently now).
   const cutAt = (items, from) => {
@@ -569,12 +611,18 @@ export function createAgentSessions({
     },
     signIn,
     logos,
-    // Asks held for the phone (agent-asks.mjs): Reach notifies your phone.
-    asks: agentAsks,
+    // An agent's files changed (agent-watch): what a chat's status reads from.
+    onActivity: (listener) => agentWatch?.onChange(listener) || (() => {}),
     // Sending, approving and stopping, exactly as in the agent's own app.
     async send(agent, id, body) {
-      // As from the Codex app: without a pick, its composer's current mode.
-      if (host(agent) === codexLive) return codexLive.send(id, { ...body, mode: body.mode || codex.appMode?.() || undefined });
+      // Without a pick: the mode this chat was given from Reach; for a chat
+      // Reach never set, the Codex app composer's current mode, as from the app.
+      if (host(agent) === codexLive) {
+        // A skill picked from "/": found in Codex's own list for the chat.
+        const skill = typeof body.skill === "string" && body.skill ? await slash.skill(id, body.skill) : undefined;
+        if (body.mode) chatModes.set(id, body.mode);
+        return codexLive.send(id, { ...body, skill, mode: body.mode || chatModes.get(id) || codex.appMode?.() || undefined });
+      }
       // Claude Code keeps sessions per folder: resume it where it began.
       const { session } = await claude.read(id, { limit: 1 });
       const message = { ...body, cwd: session.cwd };
@@ -584,6 +632,8 @@ export function createAgentSessions({
       // process never showed there). The app signs in on its own.
       if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}) });
+        // A loop already waiting tries again now, with this one in line.
+        wakers.get(id)?.();
         void deliver(id);
         return { queued: true, delivered: false, messageId: queued.id, via: "app" };
       }
@@ -597,7 +647,12 @@ export function createAgentSessions({
       return claudeHost.send(id, message);
     },
     async start(agent, body) {
-      if (host(agent) === codexLive) return codexLive.start(body);
+      if (host(agent) === codexLive) {
+        const started = await codexLive.start(body);
+        // Its next messages keep the mode it started in.
+        if (body.modeName) chatModes.set(started.threadId, body.modeName);
+        return started;
+      }
       await signedIn();
       const started = await claudeHost.start(body);
       startedHere.add(started.threadId);
@@ -619,6 +674,32 @@ export function createAgentSessions({
       }
       return current.stop(id);
     },
+    // Send now, as the agents' apps have it: first in line and in at once
+    // (a Claude app chat switches to it even while the Mac is in use). Codex
+    // runs its own queue; Reach can't jump it.
+    async sendQueuedNow(agent, id, messageId) {
+      if (host(agent) === codexLive)
+        throw Object.assign(new Error("The Codex app runs its queue itself. Steer it from the Codex app."), { status: 409 });
+      const message = outbox.list(id).find((m) => m.id === messageId);
+      if (!message) throw Object.assign(new Error("That message already left the queue."), { status: 409 });
+      if (message.via !== "app")
+        throw Object.assign(new Error("It goes as soon as Claude finishes where it's running."), { status: 409 });
+      if (deliveringMessage.get(id) !== messageId) outbox.hurry(id, messageId);
+      wakers.get(id)?.();
+      void deliver(id);
+      return { hurried: true };
+    },
+    // A new order for what waits, dragged on the phone (Claude's outbox only:
+    // Codex keeps its own queue).
+    async reorderQueued(agent, id, order) {
+      if (host(agent) === codexLive)
+        throw Object.assign(new Error("The Codex app keeps its own queue order."), { status: 409 });
+      if (!Array.isArray(order) || order.length > 100 || !order.every((m) => typeof m === "string"))
+        throw Object.assign(new Error("Invalid order."), { status: 400 });
+      if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
+        throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
+      return { reordered: true };
+    },
     async cancelQueued(agent, id, messageId) {
       if (host(agent) === codexLive) return codexLive.cancelQueued(id, messageId);
       if (deliveringMessage.get(id) === messageId)
@@ -628,6 +709,34 @@ export function createAgentSessions({
       outbox.remove(id, messageId);
       return { deleted: true };
     },
+    // A message whose chat was deleted, sent to another chat from the phone:
+    // it leaves the outbox only once the other chat has it.
+    async sendStranded(messageId, to = {}, owner) {
+      const found = outbox.stranded().find((m) => m.id === messageId);
+      if (!found) throw Object.assign(new Error("That message is no longer waiting."), { status: 409 });
+      if (typeof to.agent !== "string" || typeof to.id !== "string" || to.id === found.session)
+        throw Object.assign(new Error("Pick another chat."), { status: 400 });
+      const message = outbox.list(found.session).find((m) => m.id === messageId);
+      const result = await this.send(to.agent, to.id, { text: message.text, images: message.images, ...(owner ? { owner } : {}) });
+      outbox.remove(found.session, messageId);
+      return result;
+    },
+    // Messages from the phone waiting for their Claude app chat to be on
+    // screen (you use the Claude app in another chat, or the chat's box holds
+    // your text): Reach's menu bar item lists them; a click opens the chat.
+    waitingOnMac() {
+      const records = appShown();
+      return outbox.sessions().flatMap((id) => {
+        const list = outbox.list(id);
+        const head = list[0];
+        const record = records.find((r) => r.id === id);
+        if (!head || head.via !== "app" || head.stranded || !head.error || !record) return [];
+        return [{ id, title: head.title || "Untitled", count: list.length, link: `claude://code/continue?session=${record.session}` }];
+      });
+    },
+    onOutbox: (listener) => outbox.onChange(listener),
+    // Messages from the phone whose chat was deleted, to send elsewhere.
+    stranded: () => outbox.stranded(),
     // A Mac dialog answered from the phone: one of its own buttons, or the
     // Mac's password typed into its password dialog.
     pressMacPrompt: async (id, button) => {
@@ -652,30 +761,30 @@ export function createAgentSessions({
       return claude.image(id, item, n);
     },
     respond: async (agent, id, promptId, answer) =>
-      agentAsks.owns?.(promptId)
-        ? agentAsks.answer(agent, id, promptId, answer)
-        : agent === "claude" && claudeConsent.owns(promptId)
+      agent === "claude" && claudeConsent.owns(promptId)
           ? claudeConsent.answer(id, promptId, answer)
           : host(agent).respond(id, promptId, answer),
     view(agent, id) {
       const view = liveHost(agent).view(id);
-      const asked = agentAsks.prompts?.(agent, id) || [];
+      const writes = touched.get(`${agent}:${id}`) || 0;
       return {
         ...view,
-        // One version for both, so the long poll wakes on either.
-        version: view.version + (agentAsks.version?.(agent, id) || 0) + outbox.version(),
-        ...(asked.length ? { status: "waiting", prompts: [...view.prompts, ...asked] } : {}),
+        // One version for all, so the long poll wakes on any; a write on the
+        // Mac counts as something new to read.
+        version: view.version + outbox.version() + writes,
+        items: (view.items || 0) + writes,
         ...(agent === "claude"
           ? {
               queued: outbox.list(id).length,
               // Sent from the phone, waiting their turn (shown until they're in the transcript).
-              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error, via }) => ({
+              outbox: outbox.list(id).map(({ id: messageId, text, images, at, error, via, now }) => ({
                 id: messageId,
                 text,
                 images: images.length,
                 at,
                 ...(via ? { via } : {}),
                 ...(error ? { error } : {}),
+                ...(now || deliveringMessage.get(id) === messageId ? { sending: true } : {}),
               })),
             }
           : {}),
@@ -684,14 +793,20 @@ export function createAgentSessions({
     // Long poll: resolves when the session changes, or after `ms`.
     changes(agent, id, since, ms, signal) {
       const hostVersion = liveHost(agent).view(id).version;
-      if (hostVersion + (agentAsks.version?.(agent, id) || 0) + outbox.version() !== Number(since)) return Promise.resolve();
+      const key = `${agent}:${id}`;
+      if (hostVersion + outbox.version() + (touched.get(key) || 0) !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
         const stops = [];
         const done = () => {
           for (const stop of stops) stop();
           resolve();
         };
-        if (agentAsks.onChange) stops.push(agentAsks.onChange((a, sessionId) => a === agent && sessionId === id && done()));
+        const waiting = touchWaiters.get(key) || new Set();
+        touchWaiters.set(key, waiting.add(done));
+        stops.push(() => {
+          waiting.delete(done);
+          if (!waiting.size) touchWaiters.delete(key);
+        });
         stops.push(outbox.onChange((sessionId) => agent === "claude" && sessionId === id && done()));
         liveHost(agent).changes(id, hostVersion, ms, signal).then(done);
       });
@@ -735,18 +850,18 @@ export function createAgentSessions({
       claudeHost?.close?.();
       claudeImports?.close?.();
       claudeRefresh?.close?.();
-      agentAsks?.close?.();
       macPrompts?.close?.();
+      agentWatch?.close?.();
       daemon.close?.();
     },
     async list() {
       const [c, k, p, g] = await Promise.allSettled([codex.list(), claude.list(), codex.projects?.() ?? [], gemini.list()]);
       const sessions = [...(c.value || []), ...(k.value || []), ...(g.value || [])];
-      // The prompts each waits on (answerable from the Needs-you strip): Reach's
-      // own turns' and the agents' hooks'.
+      // Only live protocol requests have an answer channel. Transcript text
+      // and pre-review checks never become actionable approval cards.
       for (const s of sessions) {
         const driven = !!hosts[s.agent]?.drives(s.id);
-        const asked = [...(driven ? hosts[s.agent].view(s.id).prompts || [] : []), ...(agentAsks.prompts?.(s.agent, s.id) || [])];
+        const asked = driven ? hosts[s.agent].view(s.id).prompts || [] : [];
         if (asked.length) s.prompts = asked;
       }
       try {
@@ -789,6 +904,8 @@ export function createAgentSessions({
         return { items: items.slice(start, end), before: start > 0 ? `moved:${start}` : null };
       }
       const result = await adapter(agent).read(id, options);
+      // What its next message will use, shown as its mode.
+      if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
       if (origin?.to.hidden) {
         // Its first messages are the history written for it: shown once,
         // as the original chat's (Claude pages count from its start).
@@ -872,19 +989,29 @@ export function createAgentSessions({
       // Gemini CLI: its chats are read here (gemini.mjs), so it's one Reach
       // supports, whatever the generic detection says.
       const gem = await gemini.health().catch(() => null);
-      const merged = others.map((o) => (o.agent === "gemini" && gem?.installed ? { ...o, ...gem, name: o.name || "Gemini CLI", supported: true } : o));
+      const merged = others.map((o) =>
+        o.agent === "gemini" && gem?.installed
+          ? { ...o, ...gem, name: o.name || "Gemini CLI", supported: true }
+          : // OpenClaw: whether its Gateway can take a moved chat (2026.3.13 can't).
+            o.agent === "openclaw" && openClaw
+            ? { ...o, canTakeMoves: openClaw.canMove?.() !== false }
+            : o,
+      );
       if (gem?.installed && !merged.some((o) => o.agent === "gemini")) merged.push({ ...gem, name: "Gemini CLI", supported: true });
       return [...driven, ...merged];
     },
     // Slash commands the agent offers after "/" (Claude Code's from its handshake).
-    async commands(agent) {
+    // (Claude Code's from its handshake in the chat's folder; Codex's own
+    // commands its installed version answers, and its skills there.)
+    async commands(agent, { id } = {}) {
       adapter(agent);
-      if (agent !== "claude") return [];
-      return (await claudeHost.commands()).map((c) => ({
-        name: c.name,
-        description: c.description || "",
-        hint: c.argumentHint || "",
-      }));
+      return slash.list(agent, { id });
+    },
+    // One of Codex's own commands, run in the chat (Claude Code runs its
+    // commands as the message itself).
+    async runCommand(agent, id, name, args) {
+      adapter(agent);
+      return slash.run(agent, id, name, args);
     },
     // Brings the session up in its own app on the Mac.
     async openInApp(agent, id) {

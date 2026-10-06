@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { visibleUserText } from "./message-text.mjs";
+import { codexWaitingApproval } from "./codex-asks.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -70,8 +71,12 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
         .filter((c) => c?.type === "text")
         .map((c) => c.text)
         .join("\n"));
-      const images = (item.content || []).filter((c) => c?.type !== "text").length;
-      return text || images ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), at, turnId } : null;
+      const images = (item.content || []).filter((c) => c?.type === "image" || c?.type === "localImage").length;
+      // Skills picked from "/" go with the message, as the Codex app shows them.
+      const skills = (item.content || []).filter((c) => c?.type === "skill" && c.name).map((c) => String(c.name));
+      return text || images || skills.length
+        ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(skills.length ? { skills } : {}), at, turnId }
+        : null;
     }
     case "agentMessage":
       return item.text?.trim()
@@ -113,6 +118,13 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
       };
     case "contextCompaction":
       return { id: item.id, role: "system", kind: "compaction", text: "Context compacted", at, turnId };
+    // /review: where it began, then what it found.
+    case "enteredReviewMode":
+      return { id: item.id, role: "system", kind: "notice", text: "Code review started", at, turnId };
+    case "exitedReviewMode":
+      return item.review?.trim()
+        ? { id: item.id, role: "assistant", kind: "text", text: item.review, at, turnId }
+        : { id: item.id, role: "system", kind: "notice", text: "Code review finished", at, turnId };
     default:
       return null; // reasoning and internal items stay hidden
   }
@@ -243,9 +255,18 @@ export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
 // daemon. For recently active threads another engine holds, the latest turn
 // on disk says it: no end time means it's still running there (verified).
 // One check per thread every few seconds, a handful at a time.
-export function codexRunningElsewhere({ daemon, locks = LOCKS, now = Date.now, ttl = 4000, recent = 15 * 60 * 1000, max = 6 }) {
-  const cache = new Map(); // id -> { at, running }
-  return async (sessions) => {
+export function codexRunningElsewhere({
+  daemon,
+  locks = LOCKS,
+  now = Date.now,
+  ttl = 4000,
+  recent = 15 * 60 * 1000,
+  max = 6,
+  waiting = codexWaitingApproval,
+}) {
+  const cache = new Map(); // id -> { at, running, asking }
+  // `files`: each thread's file, where a running one shows it waits on you.
+  return async (sessions, files = new Map()) => {
     const due = sessions
       .filter((s) => s.status === "idle" && now() - s.updatedAt < recent && fs.existsSync(path.join(locks, `${s.id}.lock`)))
       .slice(0, max);
@@ -257,9 +278,12 @@ export function codexRunningElsewhere({ daemon, locks = LOCKS, now = Date.now, t
             .rpc("thread/turns/list", { threadId: s.id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" })
             .catch(() => null);
           const turn = r?.data?.[0];
-          cache.set(s.id, { at: now(), running: !!turn && !turn.completedAt && ["inProgress", "interrupted"].includes(turn.status) });
+          const running = !!turn && !turn.completedAt && ["inProgress", "interrupted"].includes(turn.status);
+          const file = files.get(s.id);
+          const asking = running && file ? !!(await waiting(file).catch(() => null)) : false;
+          cache.set(s.id, { at: now(), running, asking });
         }
-        if (cache.get(s.id).running) s.status = "running";
+        if (cache.get(s.id).running) s.status = cache.get(s.id).asking ? "waiting" : "running";
       }),
     );
     return sessions;
@@ -271,6 +295,7 @@ export function createCodexSessions({
   holder = codexHolder,
   appState = codexAppState(),
   runningElsewhere = codexRunningElsewhere({ daemon }),
+  waitingApproval = codexWaitingApproval,
 }) {
   return {
     // The mode the Codex app's composer is in now; its next message uses it.
@@ -293,7 +318,10 @@ export function createCodexSessions({
         threads.push(...(r.data || []));
         cursor = r.nextCursor;
       } while (cursor && ++page < pages);
-      return runningElsewhere(threads.map(codexSession));
+      return runningElsewhere(
+        threads.map(codexSession),
+        new Map(threads.filter((t) => t.path).map((t) => [t.id, t.path])),
+      );
     },
     async read(id, { cursor = null, limit = 200 } = {}) {
       if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
@@ -333,6 +361,16 @@ export function createCodexSessions({
           ? latest.id
           : null;
       if (runningTurn && session.status === "idle") session.status = "running";
+      // Held by another engine (the Codex app, a terminal) and asking you
+      // there: what it asks, read from the chat's file (that engine tells no
+      // one else). Said here, answered there.
+      if (runningTurn && held && held !== "reach" && thread.path) {
+        const asking = await waitingApproval(thread.path).catch(() => null);
+        if (asking) {
+          session.status = "waiting";
+          session.asking = asking;
+        }
+      }
       return {
         session,
         items: withTurnNotes(items, turns?.data, { olderPage: !!cursor, runningTurn }),

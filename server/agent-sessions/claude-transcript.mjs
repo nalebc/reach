@@ -8,6 +8,8 @@
 // - Messages typed while a turn runs are "queued_command" attachments.
 // Nothing here executes or follows paths from the transcript.
 
+import { visibleUserText } from "./message-text.mjs";
+
 const clip = (text, max) => {
   const value = String(text ?? "");
   if (value.length <= max) return value;
@@ -164,6 +166,20 @@ function slimToolUse(b) {
   if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600) };
   return { type: "tool_use", id: b.id, name: b.name, input: Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, input[k]])) };
 }
+// Claude Code records a slash command as <command-name>/x</command-name>
+// <command-message>…</command-message><command-args>…</command-args>, and
+// what it printed as <local-command-stdout>…</local-command-stdout>.
+export function slashCommandOf(text) {
+  const name = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/.exec(String(text || ""));
+  if (!name) return "";
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim() || "";
+  return `/${name[1]}${args ? ` ${args}` : ""}`;
+}
+export function commandOutput(value) {
+  const text = String(value ?? "");
+  const parts = [...text.matchAll(/<local-command-(?:stdout|stderr)>([\s\S]*?)(?:<\/local-command-(?:stdout|stderr)>|$)/g)].map((m) => m[1].trim());
+  return (parts.length ? parts.filter(Boolean).join("\n\n") : text).replace(/\x1b\[[0-9;]*m/g, "").trim();
+}
 const FIELDS = ["uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "isSidechain", "isMeta", "isCompactSummary", "isApiErrorMessage", "error", "timestamp"];
 // One transcript line as the conversation needs it; tool results go to
 // `results` by their call's id (already cut to what's shown), images stay
@@ -171,6 +187,11 @@ const FIELDS = ["uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "i
 function slimEntry(e, results, maxOutput) {
   const out = {};
   for (const key of FIELDS) if (e[key] !== undefined) out[key] = e[key];
+  // Who a user turn came from: a person, or Claude Code itself (a background
+  // task's notice).
+  if (typeof e.origin?.kind === "string") out.origin = { kind: e.origin.kind };
+  // A command's output ("/context"), as Claude Code shows it under the command.
+  if (e.type === "system" && e.subtype === "local_command") out.content = clip(String(e.content ?? ""), Math.max(maxOutput, 20000));
   if (e.type === "attachment") {
     const a = e.attachment || {};
     out.attachment = a.type === "queued_command" ? { type: a.type, humanTurn: a.humanTurn, prompt: a.prompt } : { type: a.type };
@@ -234,7 +255,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (slim.uuid) byId.set(slim.uuid, slim);
         if (at !== null && slim.uuid && Array.isArray(slim.message?.content) && slim.message.content.some((b) => b.type === "image"))
           imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
-        if (slim.uuid && (slim.type === "user" || slim.type === "assistant") && !slim.isSidechain) last = slim;
+        // A command's output can be the newest message too.
+        if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
         if (e.type === "assistant" && e.timestamp) {
@@ -276,10 +298,20 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
         if (e.type === "system" && e.subtype === "compact_boundary") {
           items.push({ id: e.uuid, role: "system", kind: "compaction", text: "Context compacted", at });
+        } else if (e.type === "system" && e.subtype === "local_command") {
+          const output = commandOutput(e.content);
+          if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });
         } else if (e.type === "attachment") {
           const a = e.attachment || {};
-          if (a.type === "queued_command" && a.humanTurn && a.prompt)
-            items.push({ id: e.uuid, role: "user", kind: "text", text: String(a.prompt), queued: true, at });
+          if (a.type === "queued_command" && a.humanTurn && a.prompt) {
+            // Typed while it worked; with a picture, its words and pictures
+            // come as pieces (it showed "[object Object],[object Object]").
+            const pieces = Array.isArray(a.prompt) ? a.prompt : [{ type: "text", text: String(a.prompt) }];
+            const words = visibleUserText(pieces.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n"));
+            const pictures = pieces.filter((b) => b?.type === "image").length;
+            if (words || pictures)
+              items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), queued: true, at });
+          }
         } else if (e.type === "user") {
           if (e.isCompactSummary) {
             const summary = textOf(e.message?.content).trim();
@@ -289,11 +321,34 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           if (e.isMeta) continue;
           const content = e.message?.content;
           const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
-          const text = blocks
-            .filter((b) => b && b.type === "text" && b.text)
-            .map((b) => b.text)
-            .join("\n");
+          // Without what an app put ahead of the person's words (the Claude
+          // app's <system-reminder> when a chat moves into it).
+          const text = visibleUserText(
+            blocks
+              .filter((b) => b && b.type === "text" && b.text)
+              .map((b) => b.text)
+              .join("\n"),
+          );
           const images = blocks.filter((b) => b?.type === "image").length;
+          // A background task's notice (a watcher reporting, a task ending) is
+          // written as a user turn but isn't from you: as in the Claude app,
+          // only text outside the notice shows, as a quiet line.
+          if (e.origin?.kind === "task-notification") {
+            const rest = text.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, "").trim();
+            if (rest) items.push({ id: e.uuid, role: "system", kind: "notice", text: rest, at });
+            continue;
+          }
+          // A slash command, as typed; its output, from older Claude Codes.
+          const command = slashCommandOf(text);
+          if (command) {
+            items.push({ id: e.uuid, role: "user", kind: "text", text: command, slash: true, at });
+            continue;
+          }
+          if (/^\s*<local-command-(stdout|stderr)>/.test(text)) {
+            const output = commandOutput(text);
+            if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });
+            continue;
+          }
           if (!text && !images) continue;
           if (!firstUser && text) firstUser = text;
           items.push({

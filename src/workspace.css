@@ -1294,60 +1294,6 @@
 .guest-invite fieldset {
   background: #0b11193d;
 }
-.page-agents .agents-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  max-width: 880px;
-}
-.page-agents .agents-grid > * {
-  width: 100%;
-  margin-bottom: 0;
-}
-.agent-setup > summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  cursor: pointer;
-  list-style: none;
-  min-height: 48px;
-}
-.agent-setup > summary::-webkit-details-marker {
-  display: none;
-}
-.agent-setup > summary > span {
-  flex: 1;
-}
-.agent-setup > summary strong,
-.agent-setup > summary small {
-  display: block;
-}
-.agent-setup > summary strong {
-  font-size: 15px;
-  color: #c8fff0;
-}
-.agent-setup > summary small {
-  margin-top: 7px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.agent-setup[open] > summary {
-  margin-bottom: 24px;
-}
-.agent-setup[open] > summary svg {
-  transform: rotate(45deg);
-}
-.agent-setup .quick-icon {
-  display: none;
-}
-.agent-setup code,
-.agent-setup pre {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.agent-jobs .empty {
-  padding-block: 42px;
-}
 @media (max-width: 650px) {
   .workspace-segments {
     width: 100%;
@@ -1359,7 +1305,6 @@
     font-size: 12px;
   }
   .page-chat .page-title,
-  .page-agents .page-title,
   .page-files .page-title {
     margin-bottom: 22px;
   }
@@ -1542,11 +1487,6 @@
   font-size: 10px;
   color: var(--muted);
   margin-top: 5px;
-}
-.agent-jobs .empty-icon {
-  color: #b9f7e8;
-  background: #b9f7e810;
-  border-color: #b9f7e825;
 }
 @media (max-width: 360px) {
   .invite-identity {

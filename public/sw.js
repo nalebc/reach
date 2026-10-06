@@ -48,8 +48,17 @@ self.addEventListener("notificationclick", (event) => {
         if (
           new URL(client.url).origin === self.location.origin &&
           "focus" in client
-        )
-          return client.focus();
+        ) {
+          const focused = await client.focus();
+          // Pointing somewhere (a chat, a request to review): the open Reach
+          // goes straight there (src/deep-link.ts); otherwise its list.
+          focused.postMessage(
+            new URL(url).searchParams.has("page")
+              ? { type: "reach-open", url }
+              : { type: "reach-notifications" },
+          );
+          return focused;
+        }
       return self.clients.openWindow(url);
     })(),
   );

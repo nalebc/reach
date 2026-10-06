@@ -193,3 +193,48 @@ export function guestLinkUrl(
   for (const x of link.invites) params.append("i", `${x.origin}~${x.secret}`);
   return `${start}${path}#${params.toString()}`;
 }
+
+const GUEST_START = "reach.guest-start";
+const GUEST_NODE = "reach.guest-invitation";
+// Keep the pending network handoff in this tab while its key is removed from
+// the address. Reopening the same invitation must not erase its joined node.
+export function resumeGuestStart(
+  incoming: GuestLink,
+  session: Pick<Storage, "getItem" | "setItem">,
+  persistent: Storage,
+): GuestLink {
+  let link = incoming;
+  try {
+    const old = JSON.parse(session.getItem(GUEST_START) || "null");
+    const saved =
+      old && Array.isArray(old.invites)
+        ? parseGuestLink(new URL(guestLinkUrl("https://reach.test", old)).hash)
+        : null;
+    const same =
+      saved &&
+      JSON.stringify(saved.invites) === JSON.stringify(incoming.invites);
+    if (!incoming.key && saved && (same || !incoming.invites.length))
+      link = saved;
+    if (link.key && link.hostname) {
+      if (persistent.getItem(GUEST_NODE) !== link.hostname) {
+        for (const key of Object.keys(persistent))
+          if (key.startsWith("reach.guest:")) persistent.removeItem(key);
+        persistent.setItem(GUEST_NODE, link.hostname);
+      }
+    }
+    if (link.invites.length) session.setItem(GUEST_START, JSON.stringify(link));
+  } catch {
+    /* Storage may be disabled; the current link can still connect. */
+  }
+  return link;
+}
+
+export function guestStartConnected(
+  session: Pick<Storage, "getItem" | "setItem">,
+) {
+  try {
+    const saved = JSON.parse(session.getItem(GUEST_START) || "null");
+    if (saved)
+      session.setItem(GUEST_START, JSON.stringify({ ...saved, key: "" }));
+  } catch {}
+}

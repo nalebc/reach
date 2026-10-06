@@ -114,15 +114,17 @@ test("a chat offers every app that can take it, and moved to OpenClaw, opens the
   );
   views.push(view);
   await click(await dom.waitFor(() => $$("button").find((b) => b.getAttribute("aria-label")?.startsWith("Login page"))));
-  await click(await dom.waitFor(() => button("Switch conversations")));
-  await dom.waitFor(() => rowFor("OpenClaw"));
+  await click(await dom.waitFor(() => button("More")));
+  const itemFor = (name) => $$(".as-details .move-item").find((r) => r.textContent.startsWith(`Continue in ${name}`));
+  await dom.waitFor(() => itemFor("OpenClaw"));
   // Codex and OpenClaw; not Gemini CLI, which Reach doesn't chat with yet.
   assert.deepEqual(
-    $$(".move-offer-row strong").map((s) => s.textContent),
+    $$(".as-details .move-item .move-item-text > span").map((s) => s.textContent),
     ["Continue in Codex", "Continue in OpenClaw"],
   );
-  await click(rowFor("OpenClaw"));
-  await click(rowFor("OpenClaw"));
+  await click(itemFor("OpenClaw"));
+  // One tap says what happens; the next one moves it.
+  await click($(".as-details .move-item.asking"));
   assert.deepEqual(claw.moves, [["claude", "openclaw"]]);
   // The OpenClaw space, on the new session, its moved history in it.
   await dom.waitFor(() => $(".claw-conversation"));

@@ -18,14 +18,13 @@ import {
   Globe,
   Info,
   Copy,
+  Ellipsis,
   Laptop,
   Loader2,
   Monitor,
-  MoreHorizontal,
   Plus,
   Share,
   ShieldCheck,
-  Sparkle,
   SquarePen,
   Square,
   Terminal,
@@ -39,12 +38,15 @@ import { createDraftSync } from "./draft-sync";
 import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
-import ChatSheet from "./ChatSheet";
-import { ContinuedIn, MoveHint, MoveOffer } from "./MoveChat";
-import ChatList from "./ChatList";
+import QueuedMessages from "./QueuedMessages";
+import { ContinuedIn, MoveHint, MoveItems, moveTargets } from "./MoveChat";
+import UsageStrip from "./UsageStrip";
+import MascotTyping from "./MascotTyping";
+import AgentCoin from "./AgentCoin";
+import { SkillChip, SlashMenu, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
-import { AgentLogo, ClaudeSpark, type AgentLogos } from "./agent-logos";
+import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
 import {
@@ -52,18 +54,18 @@ import {
   answerPrompt,
   sessionImage,
   effortLabel,
-  listCommands,
   listModels,
   modeLabel,
   modesFor,
   CODEX_MODE_CHOICES,
-  openInApp,
   projectName,
   resetTime,
   resetUsage,
   readSession,
   sendMessage,
   cancelQueuedMessage,
+  reorderQueued,
+  sendQueuedNow,
   syncAgentDraft,
   stopSession,
   uploadImage,
@@ -73,7 +75,6 @@ import {
   type AgentAsking,
   type AgentHealth,
   type AgentMode,
-  type AgentCommand,
   type UsageLink,
   type AgentModel,
   type AgentName,
@@ -82,6 +83,7 @@ import {
   type SessionItem,
   type SessionPage,
   type SessionPrompt,
+  type OutboxMessage,
 } from "./agent-sessions";
 import "./agent-session.css";
 import "./chat-home.css";
@@ -223,6 +225,7 @@ function useKeyboardOpen() {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const check = () => setOpen(window.innerHeight - viewport.height > 120);
+    check();
     viewport.addEventListener("resize", check);
     return () => viewport.removeEventListener("resize", check);
   }, []);
@@ -444,16 +447,18 @@ function SentImages({
   );
 }
 
-// A question or permission request Claude waits on in another app (the
-// Claude app, a terminal), already showing there: said here, answered there.
-// word: "Mac" or "computer" (pause.ts computerWord).
+// A question or permission request an agent waits on in another app (the
+// Claude app, the Codex app, a terminal), already showing there: said here,
+// answered there. word: "Mac" or "computer" (pause.ts computerWord).
 function AskingCard({
+  agent,
   asking,
   logos,
   where,
   word,
   onScreen,
 }: {
+  agent: string;
   asking: AgentAsking;
   logos: AgentLogos;
   where: string;
@@ -466,7 +471,7 @@ function AskingCard({
       aria-live="polite"
     >
       <header>
-        <AgentLogo agent="claude" logos={logos} size={18} />
+        <AgentLogo agent={agent} logos={logos} size={18} />
         <strong>
           Waiting for your answer in the {where} on your {word}
         </strong>
@@ -873,6 +878,8 @@ export default function AgentSessionView({
   onScreen?: () => void;
 }) {
   const agent = initial.agent;
+  // The apps this chat can continue in (its menu's "Continue in…").
+  const otherApps = useMemo(() => moveTargets(agent, health), [agent, health]);
   const siblings = useMemo(
     () => allSiblings.filter((s) => s.agent === agent && !s.archived),
     [allSiblings, agent],
@@ -911,7 +918,6 @@ export default function AgentSessionView({
   }, [peer.url, peer.token, initial.id, agent, initial.inApp]);
   const [queueBusy, setQueueBusy] = useState<string | null>(null);
   const [removedQueue, setRemovedQueue] = useState<string[]>([]);
-  const [switching, setSwitching] = useState(false);
   const [settings, setSettings] = useState(false);
   const [reviewing, setReviewing] = useState(true);
   const [reviewId, setReviewId] = useState("");
@@ -933,8 +939,6 @@ export default function AgentSessionView({
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [resetting, setResetting] = useState(false);
   const [choice, setChoice] = useState<{
     model?: string;
     effort?: string;
@@ -942,7 +946,6 @@ export default function AgentSessionView({
   }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
-  const [commands, setCommands] = useState<AgentCommand[] | null>(null);
   const { view: live } = useSessionLive(peer, initial);
   const promptIds = live.prompts.map((p) => p.id).join(",");
   const askingKey = JSON.stringify(info.asking);
@@ -957,6 +960,7 @@ export default function AgentSessionView({
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const atBottom = useRef(true);
+  const touchingTranscript = useRef(false);
   const [readingHistory, setReadingHistory] = useState(false);
   const prepend = useRef<{ height: number; top: number } | null>(null);
   const latest = () => {
@@ -1048,7 +1052,7 @@ export default function AgentSessionView({
       el.scrollTop =
         prepend.current.top + el.scrollHeight - prepend.current.height;
       prepend.current = null;
-    } else if (atBottom.current) el.scrollTop = el.scrollHeight;
+    } else if (atBottom.current && !touchingTranscript.current) el.scrollTop = el.scrollHeight;
   }, [items, pending, live.streaming, live.prompts.length, working]);
   // Follow the last message through keyboard/composer resizing only when the
   // reader was already at the end. Reading history never fights new output.
@@ -1056,7 +1060,7 @@ export default function AgentSessionView({
     const el = scroller.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (atBottom.current) el.scrollTop = el.scrollHeight;
+      if (atBottom.current && !touchingTranscript.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -1101,7 +1105,7 @@ export default function AgentSessionView({
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
-      if (item.role === "user" && !item.text && !item.images) continue;
+      if (item.role === "user" && !item.text && !item.images && !item.skills?.length) continue;
       const last = out[out.length - 1];
       if (item.role === "tool") {
         if (last?.type === "tools") last.items.push(item);
@@ -1132,7 +1136,7 @@ export default function AgentSessionView({
     !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
   const blocked =
     agent === "gemini"
-      ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app."
+      ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
       : agent === "claude"
       ? elsewhere === "terminal"
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
@@ -1160,7 +1164,6 @@ export default function AgentSessionView({
   const limitShown = lastItem?.kind === "error" && lastItem.text === claudeLimit;
   // Spends the account's rate-limit reset, only after the person confirms.
   const useReset = async () => {
-    setResetting(true);
     try {
       const { outcome } = await resetUsage(peer, "codex");
       setNote(
@@ -1172,12 +1175,9 @@ export default function AgentSessionView({
               ? "There's no reset left on your account."
               : "This reset was already used.",
       );
-      setConfirmReset(false);
       onSignedIn();
     } catch (e) {
       setProblem((e as Error).message);
-    } finally {
-      setResetting(false);
     }
   };
   // Signing in is what's missing (not an app or terminal holding the session).
@@ -1226,10 +1226,22 @@ export default function AgentSessionView({
       return list.filter((a) => a.key !== key);
     });
   const uploading = attachments.some((a) => !a.id && !a.error);
+  // "/" in the box: the agent's own commands (SlashMenu.tsx).
+  const slashMenu = useSlashMenu({
+    peer,
+    session: initial,
+    text,
+    setText,
+    focus: () => field.current?.focus({ preventScroll: true }),
+    onModel: () => setPicking(true),
+    onNew,
+    onOpen: onSelect,
+    onDone: () => void load(false),
+  });
   const canSend =
     !sending &&
     !uploading &&
-    (text.trim().length > 0 || attachments.some((a) => a.id));
+    (text.trim().length > 0 || attachments.some((a) => a.id) || !!slashMenu.skill);
   // Permission modes the session can switch to: what the agent offers now, in
   // its own words (until that arrives, the ones it always has).
   const modeChoices = modesFor(
@@ -1249,24 +1261,11 @@ export default function AgentSessionView({
           (m) => m.id === id || (id === "default" && m.id === "manual"),
         )?.label || modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
-  // Claude Code's slash commands while the message starts with "/".
-  const slash =
-    agent === "claude" && /^\/[\w:-]*$/.test(text)
-      ? text.slice(1).toLowerCase()
-      : null;
-  useEffect(() => {
-    if (slash !== null && !commands)
-      listCommands(peer, "claude").then(setCommands, () => setCommands([]));
-  }, [slash !== null]);
-  const suggestions =
-    slash === null || !commands
-      ? []
-      : commands
-          .filter((c) => c.name.toLowerCase().startsWith(slash))
-          .slice(0, 6);
-
   const send = async () => {
     if (!canSend) return;
+    // One of Codex's own commands ("/status") runs instead of being sent.
+    if (!attachments.length && slashMenu.runOnSend(text)) return;
+    const skill = slashMenu.skill;
     const ready = attachments.filter((a) => a.id);
     const seen = (items || []).filter(
       (i) => i.role === "user" && i.text.trim() === text.trim(),
@@ -1294,7 +1293,9 @@ export default function AgentSessionView({
         ...(!heldByApp && choice.model ? { model: choice.model } : {}),
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
+        ...(skill ? { skill: skill.name } : {}),
       });
+      if (skill) slashMenu.clearSkill();
       sentUrls.current.push(...ready.map((a) => a.url));
       // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
       if (r.messageId)
@@ -1416,67 +1417,76 @@ export default function AgentSessionView({
             ].join(" · ")}
           </small>
         </button>
-        <button
-          className="as-app-switch"
-          aria-label="Switch conversations"
-          aria-haspopup="dialog"
-          aria-expanded={switching}
-          onClick={() => setSwitching(true)}
-        >
-          <AgentLogo agent={agent} logos={logos} size={22} />
-          <span className="as-app-switch-name">{agentLabel(agent)}</span>
-          <ChevronDown size={13} />
-        </button>
         <span className="as-bar-pill">
+          {/* The Mac asks for something (a password, a permission): a small sign. */}
+          {!!deviceRequests && onReviewDevice && (
+            <button
+              className="as-icon as-mac-needs"
+              aria-label={deviceRequests === 1 ? "Your Mac needs you" : `${deviceRequests} Mac requests need you`}
+              title="Your Mac needs you"
+              onClick={onReviewDevice}
+            >
+              <Monitor size={18} />
+              <small>{deviceRequests}</small>
+            </button>
+          )}
           {onNew && (
             <button className="as-icon" aria-label="New chat" onClick={onNew}>
               <skin.compose size={19} />
             </button>
           )}
+          {/* The chat's menu holds "Continue in…" the other apps, so it wears
+              them: a coin flipping through their icons. */}
           <button
-            className="as-icon"
+            className="as-icon as-coin"
             aria-label="More"
+            title={otherApps.length ? "Continue in another app" : "Chat details"}
             aria-expanded={details}
             onClick={() => setDetails(!details)}
           >
-            <MoreHorizontal size={20} />
+            {otherApps.length ? <AgentCoin agents={otherApps} logos={logos} size={26} /> : <Ellipsis size={20} />}
           </button>
         </span>
       </header>
       {items && items.length > 2 && (
-        <MoveHint session={info} health={health} logos={logos} onOpen={() => setSwitching(true)} />
+        <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
       )}
       {details && (
-        <div className="as-details">
-          <strong className="as-details-title">{info.title}</strong>
-          <span>
-            {agentLabel(agent)}
-            {info.branch ? ` · ${info.branch}` : ""}
-            {info.cwd ? ` · ${info.cwd}` : ""}
-          </span>
-          <button
-            className="as-details-open"
-            onClick={async () => {
-              try {
-                await openInApp(peer, info);
-                setNote(`Opened in the ${skin.app} on your ${word}.`);
+        <>
+          {/* A tap anywhere else closes the menu. */}
+          <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
+          <div className="as-details" role="menu" aria-label="Chat details">
+            <div className="as-details-head">
+              <strong className="as-details-title">{info.title}</strong>
+              <small>
+                {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
+              </small>
+            </div>
+            {/* Continue this chat in the other app. */}
+            <MoveItems
+              peer={peer}
+              session={info}
+              health={health}
+              logos={logos}
+              word={word}
+              onMoved={(s) => {
                 setDetails(false);
-              } catch (e) {
-                setProblem((e as Error).message);
-              }
-            }}
-          >
-            <Monitor size={14} /> Open in the {skin.app}
-          </button>
-        </div>
+                onSelect(s);
+              }}
+            />
+          </div>
+        </>
       )}
       <div
         className="as-scroll"
         ref={scroller}
+        onTouchStart={() => { touchingTranscript.current = true; }}
+        onTouchEnd={() => { touchingTranscript.current = false; }}
+        onTouchCancel={() => { touchingTranscript.current = false; }}
         onScroll={(e) => {
           const el = e.currentTarget;
           atBottom.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
           setReadingHistory(!atBottom.current);
         }}
       >
@@ -1521,6 +1531,17 @@ export default function AgentSessionView({
                     </span>
                   )
                 ) : null}
+                {b.item.skills?.map((name) => (
+                  <span key={name} className="as-skill">{name}</span>
+                ))}
+                {b.item.slash ? (
+                  <code className="as-slash">{b.item.text}</code>
+                ) : (
+                  <AgentMarkdown text={b.item.text} />
+                )}
+              </div>
+            ) : b.item.kind === "output" ? (
+              <div key={b.item.id} className="as-output">
                 <AgentMarkdown text={b.item.text} />
               </div>
             ) : b.item.kind === "compaction" ? (
@@ -1583,9 +1604,8 @@ export default function AgentSessionView({
           )}
         {working && !live.prompts.length && (
           <div className={`as-working ${agent}`} role="status">
-            {agent === "claude" ? (
-              <ClaudeSpark logos={logos} size={17} spinning />
-            ) : null}
+            {/* Reach's mascot, typing at its laptop. */}
+            <MascotTyping />
             {/* Claude Code puts the time first: "1h 6m 42s · Almost done thinking…". */}
             {agent === "claude" && elapsed > 0 && (
               <small>{elapsedLabel} ·</small>
@@ -1598,54 +1618,17 @@ export default function AgentSessionView({
         )}
         {!working && <ContinuedIn session={info} logos={logos} onOpen={onSelect} />}
       </div>
-      {switching && (
-        <ChatSheet
-          title="Switch conversation"
-          onClose={() => setSwitching(false)}
-        >
-          <MoveOffer
-            peer={peer}
-            session={info}
-            health={health}
-            logos={logos}
-            word={word}
-            onMoved={(s) => {
-              setSwitching(false);
-              onSelect(s);
-            }}
-          />
-          <ChatList
-            compact
-            peer={peer}
-            sessions={siblings.length ? siblings : [initial]}
-            agent={initial.agent}
-            apps={[
-              {
-                agent: initial.agent,
-                name: agentLabel(initial.agent),
-                supported: true,
-              },
-            ]}
-            logos={logos}
-            onOpen={(s) => {
-              setSwitching(false);
-              if (s.agent !== initial.agent || s.id !== initial.id) onSelect(s);
-            }}
-            onNew={() => {
-              setSwitching(false);
-              onNew?.();
-            }}
-          />
-        </ChatSheet>
-      )}
-      {!!deviceRequests && onReviewDevice && (
-        <section className="as-review-dock" aria-label="Computer permissions">
-          <button className="as-review-toggle" onClick={onReviewDevice}>
-            <span><Monitor size={16} />{deviceRequests === 1 ? "Your Mac needs you" : `${deviceRequests} Mac requests need you`}</span>
-            <ChevronRight size={16} />
+      <div className="as-latest-anchor">
+        {readingHistory && (
+          <button
+            className="as-latest"
+            onClick={latest}
+            aria-label="Jump to latest message"
+          >
+            <ChevronDown size={16} /> Latest
           </button>
-        </section>
-      )}
+        )}
+      </div>
       {!!reviewCount && (
         <section className="as-review-dock" aria-label="Pending decisions">
           <button
@@ -1703,10 +1686,13 @@ export default function AgentSessionView({
                 />
               ) : (
                 <AskingCard
+                  agent={agent}
                   asking={info.asking}
                   logos={logos}
                   where={
-                    info.live?.where === "terminal" ? "terminal" : "Claude app"
+                    agent === "codex"
+                      ? info.held === "terminal" ? "terminal" : "Codex app"
+                      : info.live?.where === "terminal" ? "terminal" : "Claude app"
                   }
                   word={word}
                   onScreen={onScreen}
@@ -1737,117 +1723,38 @@ export default function AgentSessionView({
         </section>
       )}
       <footer className="as-composer">
-        {!!live.outbox?.filter((m) => !removedQueue.includes(m.id)).length && (
-          <section className="as-queue" aria-label="Queued messages">
-            <header>Queued</header>
-            {live.outbox.filter((m) => !removedQueue.includes(m.id)).map((m) => (
-              <div className="as-queue-row" key={m.id}>
-                <div className="as-queue-message">
-                  <p>{visibleUserText(m.text) || (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message")}</p>
-                  {m.images > 0 && m.text && <small>{m.images} image{m.images === 1 ? "" : "s"}</small>}
-                  {m.error && <small role="status">{m.error}</small>}
-                </div>
-                {!m.images && <button aria-label="Edit queued message" title="Edit" disabled={!!queueBusy || !!text.trim()} onClick={async () => {
-                  setQueueBusy(m.id);
-                  try {
-                    await cancelQueuedMessage(peer, initial, m.id);
-                    setRemovedQueue((old) => [...old, m.id]);
-                    setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
-                    setText(visibleUserText(m.text));
-                    field.current?.focus({ preventScroll: true });
-                  } catch (error) { setProblem((error as Error).message); }
-                  finally { setQueueBusy(null); }
-                }}><SquarePen size={14} /></button>}
-                <button aria-label="Remove queued message" title="Remove" disabled={!!queueBusy} onClick={async () => {
-                  setQueueBusy(m.id);
-                  try {
-                    await cancelQueuedMessage(peer, initial, m.id);
-                    setRemovedQueue((old) => [...old, m.id]);
-                    setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
-                  } catch (error) { setProblem((error as Error).message); }
-                  finally { setQueueBusy(null); }
-                }}><X size={14} /></button>
-              </div>
-            ))}
-          </section>
-        )}
-        {readingHistory && (
-          <button
-            className="as-latest"
-            onClick={latest}
-            aria-label="Jump to latest message"
-          >
-            <ChevronDown size={16} /> Latest
-          </button>
-        )}
-        {claudeLimit && !limitShown && (
-          <ErrorNote agent="claude" text={claudeLimit} detail="rate_limit" />
-        )}
-        {outOfUsage && (
-          <div className="as-banner codex-usage">
-            <div>
-              <strong>You’re out of Codex usage</strong>
-              <span>
-                {codexHealth?.resetsAt
-                  ? `Your rate limit resets on ${resetTime(codexHealth.resetsAt, false)}. `
-                  : ""}
-                {codexHealth?.resetCredits
-                  ? "Upgrade or use one of your rate limit resets now."
-                  : "Upgrade to keep going."}
-              </span>
-            </div>
-            {confirmReset ? (
-              <div className="as-banner-actions">
-                <span>Use your rate limit reset now? It can’t be undone.</span>
-                <button
-                  className="as-banner-btn"
-                  onClick={() => setConfirmReset(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="as-banner-btn primary"
-                  disabled={resetting}
-                  onClick={() => void useReset()}
-                >
-                  {resetting ? (
-                    <Loader2 size={14} className="spin" />
-                  ) : (
-                    "Reset usage"
-                  )}
-                </button>
-              </div>
-            ) : (
-              <div className="as-banner-actions">
-                {!!codexHealth?.resetCredits && (
-                  <button
-                    className="as-banner-btn"
-                    onClick={() => setConfirmReset(true)}
-                  >
-                    Reset usage
-                  </button>
-                )}
-                <a
-                  className="as-banner-btn primary"
-                  href={
-                    usageLink("codex", { detail: "usageLimitExceeded" })?.url
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Sparkle size={14} fill="currentColor" /> Upgrade
-                </a>
-              </div>
-            )}
-          </div>
-        )}
-        {(claudeLimit || outOfUsage || agent === "gemini") && (
-          <MoveOffer variant="usage" peer={peer} session={info} health={health} logos={logos} word={word} onMoved={onSelect} />
+
+        {/* Out of usage: one slim line, with the way to more (the other app is in ⋯). */}
+        {(outOfUsage || claudeLimit) && (
+          <UsageStrip
+            agent={agent}
+            text={
+              outOfUsage
+                ? `Out of Codex usage${codexHealth?.resetsAt ? ` until ${resetTime(codexHealth.resetsAt, false)}` : ""}`
+                : claudeHealth?.resetsAt
+                  ? `Out of Claude usage until ${resetTime(claudeHealth.resetsAt, false)}`
+                  : claudeLimit
+            }
+            upgrade={
+              outOfUsage
+                ? usageLink("codex", { detail: "usageLimitExceeded" })
+                : limitShown
+                  ? null
+                  : usageLink("claude", { text: claudeLimit, detail: "rate_limit" })
+            }
+            resets={outOfUsage ? codexHealth?.resetCredits || 0 : 0}
+            onReset={useReset}
+          />
         )}
         {(problem || note || blocked) && (
           <p className={`as-hint ${problem ? "bad" : ""}`}>
             {problem || blocked || note}
           </p>
+        )}
+        {agent === "gemini" && onScreen && (
+          <div className="as-prompt-actions">
+            <button onClick={onScreen}>Open live screen</button>
+          </div>
         )}
         {needsSignIn && (
           <AgentAccess
@@ -1857,10 +1764,6 @@ export default function AgentSessionView({
             logos={logos}
             onSignedIn={onSignedIn}
           />
-        )}
-        {/* Signed out here: or keep going with the other agent. */}
-        {needsSignIn && (
-          <MoveOffer variant="usage" peer={peer} session={info} health={health} logos={logos} word={word} onMoved={onSelect} />
         )}
         {settings && choosingMode && (
           <div
@@ -1888,25 +1791,7 @@ export default function AgentSessionView({
             </div>
           </div>
         )}
-        {suggestions.length > 0 && (
-          <div className="as-commands" role="listbox" aria-label="Commands">
-            {suggestions.map((c) => (
-              <button
-                key={c.name}
-                role="option"
-                aria-selected={false}
-                onClick={() => {
-                  setText(`/${c.name} `);
-                  field.current?.focus({ preventScroll: true });
-                }}
-              >
-                <b>/{c.name}</b>
-                {c.hint && <code>{c.hint}</code>}
-                <span>{c.description}</span>
-              </button>
-            ))}
-          </div>
-        )}
+        <SlashMenu menu={slashMenu} />
         {settings && picking && (
           <ModelPicker
             agent={agent}
@@ -1919,18 +1804,47 @@ export default function AgentSessionView({
             }}
           />
         )}
-        {settings && picking && (
-          <MoveOffer
-            variant="picker"
-            peer={peer}
-            session={info}
-            health={health}
-            logos={logos}
-            word={word}
-            onMoved={(s) => {
-              setPicking(false);
-              onSelect(s);
+        {/* Right on top of the message box, as both apps put their queue. */}
+        {!!live.outbox?.filter((m) => !removedQueue.includes(m.id)).length && (
+          <QueuedMessages
+            agent={agent}
+            messages={live.outbox.filter((m) => !removedQueue.includes(m.id))}
+            busy={queueBusy}
+            canEdit={!queueBusy && !text.trim()}
+            onEdit={async (m) => {
+              setQueueBusy(m.id);
+              try {
+                await cancelQueuedMessage(peer, initial, m.id);
+                setRemovedQueue((old) => [...old, m.id]);
+                setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
+                setText(visibleUserText(m.text));
+                field.current?.focus({ preventScroll: true });
+              } catch (error) { setProblem((error as Error).message); }
+              finally { setQueueBusy(null); }
             }}
+            onRemove={async (m) => {
+              setQueueBusy(m.id);
+              try {
+                await cancelQueuedMessage(peer, initial, m.id);
+                setRemovedQueue((old) => [...old, m.id]);
+                setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
+              } catch (error) { setProblem((error as Error).message); }
+              finally { setQueueBusy(null); }
+            }}
+            {...(agent === "claude" && {
+              onSendNow: async (m: OutboxMessage) => {
+                setQueueBusy(m.id);
+                try {
+                  await sendQueuedNow(peer, initial, m.id);
+                } catch (error) { setProblem((error as Error).message); }
+                finally { setQueueBusy(null); }
+              },
+              onReorder: async (ids: string[]) => {
+                try {
+                  await reorderQueued(peer, initial, ids);
+                } catch (error) { setProblem((error as Error).message); }
+              },
+            })}
           />
         )}
         <div className="as-box">
@@ -1957,6 +1871,7 @@ export default function AgentSessionView({
                 ))}
               </div>
             )}
+            <SkillChip menu={slashMenu} />
             <textarea
               ref={field}
               aria-label="Message"
@@ -1971,6 +1886,7 @@ export default function AgentSessionView({
                 addFiles(files);
               }}
               onKeyDown={(e) => {
+                if (slashMenu.onKeyDown(e)) return;
                 // Enter sends on a computer; on a phone it's a new line, as in the apps.
                 if (
                   e.key === "Enter" &&
@@ -2057,7 +1973,7 @@ export default function AgentSessionView({
               </button>
             ) : (
               <button
-                className={`as-send ${text.trim() || attachments.length ? "ready" : ""}`}
+                className={`as-send ${text.trim() || attachments.length || slashMenu.skill ? "ready" : ""}`}
                 aria-label="Send"
                 disabled={!canSend}
                 onClick={() => void send()}

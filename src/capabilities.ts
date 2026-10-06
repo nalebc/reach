@@ -58,7 +58,7 @@ export function pageAccessible(page: string, features: WorkspaceCapabilities) {
   if (page === "sessions") return features.owner;
   if (page === "terminal") return features.terminal;
   return (
-    ["files", "apps", "screen", "agents", "settings", "invite"].includes(
+    ["files", "apps", "screen", "settings", "invite"].includes(
       page,
     ) && !!features[page as keyof WorkspaceCapabilities]
   );

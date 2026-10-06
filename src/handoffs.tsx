@@ -85,7 +85,7 @@ export function handoffNeeds({
       actions: [
         { label: "Stop", run: answer(h, true) },
         { label: "Done", run: answer(h, false) },
-        { label: "Open", primary: true, run: () => open(h) },
+        { label: "Open", primary: true, opens: true, run: () => open(h) },
       ],
     };
   });

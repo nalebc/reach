@@ -260,6 +260,9 @@ static double num(id value, double fallback) { return [value isKindOfClass:NSNum
 // "state" command), with Pause or Resume in it.
 @property BOOL paused, resident;
 @property(strong) NSStatusItem *item;
+// Messages from the phone waiting for their Claude app chat ("waiting"):
+// [{title, count, link}], listed in the menu; a click opens the chat.
+@property(strong) NSArray *waiting;
 @end
 
 static Displays *shared;
@@ -1000,6 +1003,11 @@ static id commandN(NSArray *items, int depth) {
 - (void)resumeClicked:(id)sender {
   emit(@{@"event": @"resume"});
 }
+// A waiting message's chat, opened in the Claude app (it goes in from there).
+- (void)openWaitingClicked:(NSMenuItem *)sender {
+  NSURL *url = [NSURL URLWithString:sender.representedObject ?: @""];
+  if ([url.scheme isEqual:@"claude"]) [NSWorkspace.sharedWorkspace openURL:url];
+}
 // The Mac always shows that apps are on a phone, and can take them back.
 // While Reach runs it also keeps a small item of its own: Pause gives this
 // Mac back to whoever is at it; Resume lends it to the phone again.
@@ -1008,6 +1016,8 @@ static id commandN(NSArray *items, int depth) {
   for (Thread *t in self.threads.allValues)
     if (!t.held) [names addObject:t.name ?: @"App"];
   [names sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+  NSUInteger waitingCount = 0;
+  for (NSDictionary *chat in self.waiting) waitingCount += MAX(1, [chat[@"count"] unsignedIntegerValue]);
   if (!names.count && !self.resident) {
     if (self.item) [NSStatusBar.systemStatusBar removeStatusItem:self.item];
     self.item = nil;
@@ -1022,6 +1032,12 @@ static id commandN(NSArray *items, int depth) {
                            : names.count ? [NSString stringWithFormat:@"Reach · %lu apps", (unsigned long)names.count]
                            : image ? @"" : self.paused ? @"Reach · Paused" : @"Reach";
   self.item.button.toolTip = self.paused ? @"Reach is paused" : @"Open on a phone through Reach";
+  // A message from the phone waiting: its count beside the mark.
+  if (waitingCount && !names.count) {
+    self.item.button.image = image;
+    self.item.button.title = [NSString stringWithFormat:@" %lu", (unsigned long)waitingCount];
+    self.item.button.toolTip = waitingCount == 1 ? @"A message from your phone is waiting for its chat" : @"Messages from your phone are waiting for their chats";
+  }
   NSMenu *menu = [NSMenu new];
   NSString *title = self.paused ? @"Paused · your phone can't see or use this Mac"
                     : names.count ? [NSString stringWithFormat:@"On your phone: %@", [names componentsJoinedByString:@", "]]
@@ -1029,6 +1045,22 @@ static id commandN(NSArray *items, int depth) {
   NSMenuItem *heading = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
   heading.enabled = NO;
   [menu addItem:heading];
+  if (self.waiting.count) {
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:@"From your phone, waiting in the Claude app" action:nil keyEquivalent:@""];
+    about.enabled = NO;
+    [menu addItem:about];
+    for (NSDictionary *chat in self.waiting) {
+      NSUInteger count = MAX(1, [chat[@"count"] unsignedIntegerValue]);
+      NSString *line = count == 1 ? [NSString stringWithFormat:@"Open \u201c%@\u201d", str(chat[@"title"])]
+                                  : [NSString stringWithFormat:@"Open \u201c%@\u201d \u00b7 %lu messages", str(chat[@"title"]), (unsigned long)count];
+      NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:line action:@selector(openWaitingClicked:) keyEquivalent:@""];
+      open.target = self;
+      open.representedObject = str(chat[@"link"]);
+      [menu addItem:open];
+    }
+    [menu addItem:[NSMenuItem separatorItem]];
+  }
   if (names.count) {
     NSMenuItem *give = [[NSMenuItem alloc] initWithTitle:@"Return all to this Mac" action:@selector(returnAllClicked:) keyEquivalent:@""];
     give.target = self;
@@ -1085,6 +1117,11 @@ static id commandN(NSArray *items, int depth) {
     } else if ([cmd isEqual:@"return-all"]) {
       [self returnAll];
       return;
+    }
+    else if ([cmd isEqual:@"waiting"]) {
+      self.waiting = [request[@"chats"] isKindOfClass:NSArray.class] ? request[@"chats"] : @[];
+      [self updateMenu];
+      result = @{@"waiting": @(self.waiting.count)};
     }
     else if ([cmd isEqual:@"list"]) {
       NSMutableArray *list = [NSMutableArray array];

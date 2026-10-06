@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Reach for an AI agent on another computer. The owner invites it from the
-// phone (Share → Agent); the agent runs one command and is in: it joins the
+// phone (Share → Agent); the agent runs one command and waits for the owner's
+// connection approval in Reach: it joins the
 // owner's tailnet with the invitation's one-time key, as its own small
 // Tailscale node inside this process (nothing to install, the machine's own
 // network is untouched), then serves Reach's MCP tools for that computer.
@@ -401,10 +402,10 @@ function reachableDirect(origin) {
 const directApi = (origin, token, allowLocal) =>
   createAgentClient({ url: `${origin}/`, token }, { allowLocal, proxy: "" });
 // Using the invitation needs no credential yet.
-function redeemDirect(origin, invitation) {
+function admissionDirect(origin, route, body) {
   return new Promise((resolve, reject) => {
-    const u = new URL("/api/invitations/redeem", origin);
-    const data = JSON.stringify({ invitation });
+    const u = new URL(route, origin);
+    const data = JSON.stringify(body);
     const req = (u.protocol === "https:" ? https : http).request(
       u,
       {
@@ -422,7 +423,7 @@ function redeemDirect(origin, invitation) {
         res.on("end", () => {
           try {
             const result = JSON.parse(text);
-            if (res.statusCode !== 200)
+            if (![200, 202].includes(res.statusCode))
               throw Error(
                 result.error || `Reach returned HTTP ${res.statusCode}.`,
               );
@@ -437,6 +438,43 @@ function redeemDirect(origin, invitation) {
     req.on("error", reject);
     req.end(data);
   });
+}
+
+// A receipt never becomes a credential locally. Only the approved server
+// response supplies the token written to disk and used by MCP afterwards.
+export async function waitForAgentAdmission(receipt, api, {
+  now = Date.now,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  announce = (code) => process.stderr.write(
+    `Reach: waiting for your approval in Reach. Connection code: ${code}\nCompare this code in Home → Needs you before approving.\n`,
+  ),
+} = {}) {
+  if (receipt.status !== "pending") return receipt;
+  if (typeof receipt.requestId !== "string" || !receipt.requestId ||
+      typeof receipt.requestSecret !== "string" || !SECRET.test(receipt.requestSecret) ||
+      !/^\d{6}$/.test(receipt.verificationCode) ||
+      !Number.isFinite(receipt.expiresAt))
+    throw Error("Reach returned an invalid connection approval receipt.");
+  const deadline = Math.min(receipt.expiresAt, now() + 5 * 60000);
+  announce(receipt.verificationCode);
+  while (now() < deadline) {
+    const result = await api(
+      `/api/invitations/claims/${encodeURIComponent(receipt.requestId)}/status`,
+      "POST", { secret: receipt.requestSecret },
+    );
+    if (result.status === "approved") {
+      if (result.kind !== "agent" || typeof result.token !== "string" || !result.token ||
+          !Array.isArray(result.scopes) || !Number.isFinite(result.expiresAt) || result.expiresAt <= now())
+        throw Error("Reach returned an invalid approved connection. Ask for a new invitation.");
+      return result;
+    }
+    if (result.status === "denied")
+      throw Error("The owner denied this connection. Ask them for a new agent invitation.");
+    if (result.status !== "pending")
+      throw Error("This connection approval expired or was revoked. Ask for a new agent invitation.");
+    await delay(Math.min(2000, Math.max(0, deadline - now())));
+  }
+  throw Error("Connection approval timed out. Ask the owner for a new agent invitation.");
 }
 
 // One tailnet node per computer: two copies of one node would fight. The
@@ -676,10 +714,12 @@ export async function join(o) {
   // Somewhere safe to keep the credential, before the invitation is used.
   const credentialFile = path.join(conn, "credential.json");
   writePrivate(credentialFile, "{}");
+  fs.rmSync(credentialFile);
   try {
     const direct = await reachableDirect(link.origin);
-    let joined;
-    if (direct) joined = await redeemDirect(link.origin, link.secret);
+    let admissionApi;
+    if (direct)
+      admissionApi = (route, _method, body) => admissionDirect(link.origin, route, body);
     else {
       if (!link.key)
         throw Error(
@@ -687,14 +727,10 @@ export async function join(o) {
         );
       process.stderr.write("Reach: joining the tailnet…\n");
       const node = await connectTailnet({ home, conn, ...link });
-      joined = await tailnetApi(node, link.origin, "")(
-        "/api/invitations/redeem",
-        "POST",
-        {
-          invitation: link.secret,
-        },
-      );
+      admissionApi = tailnetApi(node, link.origin, "");
     }
+    let joined = await admissionApi("/api/invitations/redeem", "POST", { invitation: link.secret });
+    joined = await waitForAgentAdmission(joined, admissionApi);
     if (joined.kind !== "agent")
       throw Error("That invitation isn't for an agent.");
     const credential = {

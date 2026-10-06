@@ -34,11 +34,8 @@ import {
 } from "./tailscale.mjs";
 import { stateDir } from "./home.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
-import {
-  PublicLink,
-  ensurePersistentFunnel,
-  startOrigin,
-} from "./public-link.mjs";
+import { startOrigin } from "./public-link.mjs";
+import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 
 export async function launch(options, root) {
   // When Reach was first set up here (its settings file), for the one link.
@@ -200,7 +197,7 @@ export async function launch(options, root) {
         // The start page, and its Face ID sign-in (its only requests that
         // reach Reach itself).
         publicApp: startPage
-          ? (req, res) => reach.publicFaceId(req, res) || startPage(req, res)
+          ? (req, res) => reach.publicAgent(req, res) || reach.publicFaceId(req, res) || startPage(req, res)
           : undefined,
       });
       // Older Reach's separate start-page socket, if one was left behind.
@@ -334,53 +331,18 @@ export async function launch(options, root) {
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
       if (publicStart && !stopped) {
-        // One link for every phone, the same every time: Reach itself with the
-        // Tailscale app on, the browser sign-in without it. Funnel brings the
-        // internet to the same listener, which gives it only the start page.
-        const target = serveTarget;
-        if (options.service) {
-          try {
-            await ensurePersistentFunnel({
-              file: funnelFile,
-              origin: publicStart,
-              target,
-            });
-            startUrl = publicStart;
-          } catch (error) {
-            console.log(`Reach: ${error.message}`);
-          }
-        } else {
-          publicLink = new PublicLink({
-            origin: publicStart,
-            target,
-            file: funnelFile,
-            log,
-            report: (message) => console.log(`Reach: ${message}`),
-            setupUrl: (url) => {
-              if (setupOpened.has(url)) return;
-              setupOpened.add(url);
-              console.log(`Reach: allow the public start page (Tailscale Funnel): ${url}`);
-              if (process.stdout.isTTY && process.platform === "darwin")
-                spawn("open", [url], { stdio: "ignore" }).on("error", () => {});
-            },
-          });
-          const until = Date.now() + 20000;
-          while (!stopped && Date.now() < until && !(await publicLink.check()))
-            await delay(500);
-          if (publicLink.live) startUrl = publicStart;
-          else
-            console.log(
-              "Reach: the public start link isn't up yet. Phones with the Tailscale app can use the private link meanwhile.",
-            );
-          publicMonitor = setInterval(async () => {
-            const wasLive = publicLink.live;
-            if ((await publicLink.check()) && !wasLive && !startUrl) {
-              console.log(`Reach: public start link is ready: ${publicStart}`);
-              noteLink(publicStart);
-            }
-          }, 5000);
-          publicMonitor.unref();
-        }
+        // Public access exists only while an invitation/admission/session is
+        // alive. The worker owns a foreground route and a five-second lease.
+        publicLink = new EphemeralFunnel({
+          origin: publicStart,
+          target: serveTarget,
+          file: funnelFile,
+          window: reach.funnelWindow,
+          log,
+          report: (message) => console.log(`Reach: ${message}`),
+        });
+        await publicLink.start();
+        reach.setFunnelController(() => publicLink.ensure());
       }
     }
     if (stopped) return;

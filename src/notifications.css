@@ -1,0 +1,506 @@
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 8px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text, #e7eeea);
+  cursor: pointer;
+}
+.notification-bell:hover {
+  background: #a5c4b410;
+}
+.notification-bell:focus-visible {
+  outline: 2px solid var(--accent, #a4d9be);
+  outline-offset: 2px;
+}
+.notification-bell-label {
+  color: var(--muted, #99aaa0);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.notification-count,
+.notification-setup-dot {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  background: #daca91;
+  color: #171b16;
+  border: 2px solid var(--panel, #151c18);
+}
+.notification-count {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.notification-setup-dot {
+  width: 8px;
+  height: 8px;
+  top: 7px;
+  right: 7px;
+  border-radius: 50%;
+  background: #a4d9be;
+}
+.screen-popup.notification-center {
+  width: min(440px, calc(100vw - 28px));
+}
+.notification-center .screen-popup-body {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 20px;
+}
+.notification-center .notification-computer {
+  margin: -4px 0 16px;
+  color: var(--muted, #99aaa0);
+  font-size: 13px;
+}
+.notification-list {
+  margin-bottom: 22px;
+}
+.notification-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 15px 0;
+  border: 0;
+  border-bottom: 1px solid #ffffff0b;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.notification-row > svg {
+  flex: 0 0 auto;
+  color: var(--muted, #99aaa0);
+}
+.notification-row:last-child {
+  border-bottom: 0;
+}
+.claw-thread-head .notification-count {
+  display: grid;
+  font-size: 10px;
+  color: #171b16;
+}
+.notification-row > span {
+  flex: 1;
+  min-width: 0;
+}
+.notification-row strong,
+.notification-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.notification-row strong {
+  font-size: 14px;
+  font-weight: 550;
+}
+.notification-row small {
+  margin-top: 5px;
+  color: var(--muted, #99aaa0);
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Nothing waiting: one quiet line, not a big empty state. */
+.notification-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px 14px;
+  color: var(--muted, #99aaa0);
+  font-size: 13px;
+}
+.notification-empty svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: #a4d9be;
+}
+.notification-empty strong {
+  color: var(--text, #e7eeea);
+  font-size: 14px;
+  font-weight: 500;
+}
+.notification-empty span {
+  display: none;
+}
+.notification-setup {
+  padding-top: 16px;
+  border-top: 1px solid #ffffff12;
+}
+.notification-setup-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.notification-setup-heading strong {
+  font-size: 14px;
+  font-weight: 550;
+}
+.notification-setup-heading svg {
+  color: #a4d9be;
+  flex-shrink: 0;
+}
+.notification-setup p,
+.notification-steps {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted, #99aaa0);
+}
+.notification-setup p {
+  margin: 10px 0;
+}
+.notification-setup small {
+  display: block;
+  color: var(--muted, #99aaa0);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.notification-steps {
+  padding-left: 21px;
+  margin: 14px 0;
+}
+.notification-steps li {
+  margin-bottom: 10px;
+  padding-left: 3px;
+}
+.notification-steps svg {
+  display: inline-block;
+  vertical-align: -2px;
+}
+.notification-steps strong {
+  color: var(--text, #e7eeea);
+  font-weight: 500;
+}
+.notification-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 10px;
+}
+.notification-setup-actions .button {
+  min-height: 44px;
+  font-size: 13px;
+}
+.settings-panel > .notification-setup {
+  border: 0;
+  padding: 0;
+}
+@media (min-width: 1025px) and (pointer: fine) {
+  .chat-list-top .notification-bell,
+  .as-bar .notification-bell,
+  .claw-thread-head .notification-bell {
+    display: none;
+  }
+}
+@media (max-width: 650px) {
+  .notification-bell-label {
+    display: none;
+  }
+  .notification-center .screen-popup-body {
+    width: 100%;
+    padding: 20px 20px calc(22px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+  }
+}
+
+.notification-controls {
+  margin: 18px 0;
+}
+.notification-controls fieldset {
+  border: 0;
+  padding: 0;
+  margin: 18px 0 12px;
+  min-width: 0;
+}
+.notification-controls legend {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 0 0 8px;
+}
+.notification-preference {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  font-size: 13px;
+  border-bottom: 1px solid #ffffff0b;
+  cursor: pointer;
+}
+.notification-controls .notification-preference input[role="switch"] {
+  appearance: none;
+  width: 36px;
+  height: 22px;
+  border: 1px solid var(--muted);
+  border-radius: 20px;
+  flex: 0 0 36px;
+  padding: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+.notification-controls .notification-preference input[role="switch"]::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s;
+}
+.notification-controls .notification-preference input[role="switch"]:checked {
+  background: #a4d9be;
+  border-color: #a4d9be;
+}
+.notification-controls .notification-preference input[role="switch"]:checked::before {
+  background: #151c18;
+  transform: translateX(14px);
+}
+.notification-controls .notification-preference input[role="switch"]:focus-visible,
+.notification-pause select:focus-visible {
+  outline: 2px solid #a4d9be;
+  outline-offset: 3px;
+}
+.notification-controls .notification-preference input[role="switch"]:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.notification-pause label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.notification-pause select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel, #151c18);
+  border: 1px solid #ffffff25;
+  border-radius: 8px;
+  padding: 10px 8px;
+  min-height: 44px;
+  max-width: 100%;
+}
+.notification-controls + small {
+  margin-top: 12px;
+}
+
+/* The mobile computer picker floats in the header. Reserve the Home bell's
+   44px tap target plus the header inset, instead of stacking it over Add. */
+@media (max-width: 1024px), (pointer: coarse) {
+  .app-shell .main-shell > .topbar:has(.notification-bell) + .fleet-switcher {
+    right: 64px;
+    max-width: calc(100% - 192px);
+    padding-right: 6px;
+  }
+}
+
+/* Notifications for this device (NotifySettings.tsx): a calm settings list.
+   One switch, then pause and what to be told about once it's on. */
+.ns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #ffffff12;
+}
+.ns-group {
+  overflow: hidden;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--text, #e7eeea) 5%, transparent);
+}
+.ns-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 14px;
+}
+.ns-row + .ns-row {
+  border-top: 1px solid #ffffff0d;
+}
+.ns-icon {
+  display: inline-flex;
+  flex: none;
+  color: #a4d9be;
+}
+.ns-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ns-text strong {
+  color: var(--text, #e7eeea);
+  font-size: 15px;
+  font-weight: 500;
+}
+.ns-text small {
+  color: var(--muted, #99aaa0);
+  font-size: 12.5px;
+}
+.ns input[role="switch"] {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 28px;
+  margin: 0;
+  border-radius: 999px;
+  background: #ffffff24;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+.ns input[role="switch"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s ease;
+}
+.ns input[role="switch"]:checked {
+  background: #a4d9be;
+}
+.ns input[role="switch"]:checked::before {
+  transform: translateX(18px);
+}
+.ns input[role="switch"]:disabled {
+  opacity: 0.5;
+}
+.ns input[role="switch"]:focus-visible,
+.ns-chip:focus-visible,
+.ns-link:focus-visible,
+.ns-primary:focus-visible {
+  outline: 2px solid #a4d9be;
+  outline-offset: 2px;
+}
+.ns-chip {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: none;
+  color: var(--text, #e7eeea);
+  font: inherit;
+  font-size: 13px;
+}
+.ns-link {
+  align-self: flex-start;
+  min-height: 36px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: #a4d9be;
+  font: inherit;
+  font-size: 14px;
+}
+.ns-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted, #99aaa0);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ns-line svg {
+  flex: none;
+}
+.ns-line strong {
+  color: var(--text, #e7eeea);
+  font-weight: 500;
+}
+.ns-note {
+  margin: 0;
+  color: var(--muted, #99aaa0);
+  font-size: 12.5px;
+}
+.ns-foot {
+  color: var(--muted, #99aaa0);
+  font-size: 11.5px;
+}
+/* iPhone, before Reach is on the Home Screen. */
+.ns-install-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ns-app-icon {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  background: #0d1611;
+}
+.ns-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  border: 0;
+  border-radius: 14px;
+  background: #a4d9be;
+  color: #0d1611;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+}
+.ns-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ns-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted, #99aaa0);
+  font-size: 13px;
+}
+.ns-steps strong {
+  color: var(--text, #e7eeea);
+  font-weight: 500;
+}
+.ns-step-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #ffffff12;
+  color: var(--text, #e7eeea);
+}
+.ns-step-icon img {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}

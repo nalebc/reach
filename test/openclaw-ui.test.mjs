@@ -29,12 +29,27 @@ const sessions = [
     model: "test",
     status: "idle",
   },
+  // A chat Reach made itself: the only kind Reach writes in.
+  {
+    key: "agent:main:reach-1a2b3c4d",
+    title: "Login page",
+    agentId: "main",
+    channel: "webchat",
+    writable: true,
+    updatedAt: Date.now() - 1000,
+    model: "test",
+    status: "idle",
+  },
 ];
 let dom,
   Component,
+  started = [],
   sent = [],
   reads = [],
   fail = false,
+  approvals = [],
+  decisions = [],
+  screenOpens = 0,
   view;
 const base = "/api/sessions/openclaw";
 before(async () => {
@@ -57,11 +72,30 @@ before(async () => {
               text: "Ready to continue.",
               tool: false,
             },
+            {
+              id: "posted",
+              role: "assistant",
+              text: "Posted earlier.",
+              tool: false,
+              sentTo: "whatsapp",
+            },
           ],
-          approvals: [],
+          approvals,
           streaming: "",
           error: "",
         };
+      },
+      [base + "/approval"]: (init) => {
+        decisions.push(JSON.parse(init.body));
+        if (fail) return Response.json({ error: "Gateway disconnected" }, { status: 503 });
+        approvals = [];
+        return { ok: true };
+      },
+      [base + "/new"]: (init) => {
+        started.push(JSON.parse(init.body));
+        const made = { key: "agent:main:reach-newchat", title: "Plan the trip", agentId: "main", channel: "webchat", writable: true, updatedAt: Date.now(), model: "test", status: "running" };
+        if (!sessions.some((s) => s.key === made.key)) sessions.push(made);
+        return { key: made.key };
       },
       [base + "/send"]: (init) => {
         sent.push(JSON.parse(init.body));
@@ -97,11 +131,15 @@ async function mount() {
   sent = [];
   reads = [];
   fail = false;
+  approvals = [];
+  decisions = [];
+  screenOpens = 0;
   dom.window.localStorage.clear();
   dom.window.sessionStorage.clear();
   view = await dom.render(
     dom.React.createElement(Component, {
       peer,
+      onScreen: () => screenOpens++,
       feed: {
         sessions: [
           {
@@ -140,27 +178,85 @@ test("auto discovery is app-separated, searchable, and reads no messages until s
   assert.equal(dom.document.body.textContent.includes("Launch notes"), false);
   await click("Weekend plans");
   assert.equal(reads[0], sessions[0].key);
-  assert.equal(dom.document.querySelector("select").value, "reach");
 });
-test("failed send retains draft and reuses id; external delivery must be explicitly selected", async () => {
+test("failed send retains draft and reuses id; nothing offers to post to WhatsApp or other apps", async () => {
   await mount();
   await click("Weekend plans");
+  // Even when a server reports the session could deliver (canDeliver above):
+  // Oct 5, a "reply via WhatsApp" reached a WhatsApp group of friends.
+  await dom.waitFor(() => dom.document.body.textContent.includes("Posted earlier."));
+  assert.equal(dom.document.querySelectorAll("select").length, 0);
+  assert.match(dom.document.body.textContent, /OpenClaw · sent to WhatsApp/);
+  // A WhatsApp group's chat: shown, never written to from Reach (a message
+  // there runs the agent inside that group's context).
+  assert.equal(dom.document.querySelector("textarea"), null);
+  assert.equal(button("Send to OpenClaw"), undefined);
+  assert.match(dom.document.querySelector(".claw-readonly").textContent, /belongs to Weekend plans\. Reach shows it but doesn’t write in it, so nothing reaches WhatsApp from here\./);
+  await view.unmount();
+  await mount();
+  // A chat Reach made: written to, replies stay in Reach.
+  await click("Login page");
+  await dom.waitFor(() => dom.document.querySelector("textarea"));
+  assert.match(dom.document.body.textContent, /No reply is forwarded to another app/);
   await typeInto(dom.document.querySelector("textarea"), "Please continue");
   fail = true;
   await click("Send to OpenClaw");
   assert.equal(dom.document.querySelector("textarea").value, "Please continue");
-  assert.equal(sent[0].deliver, false);
-  assert.equal(sent[0].key, sessions[0].key);
+  assert.deepEqual(Object.keys(sent[0]).sort(), ["key", "requestId", "text"]);
+  assert.equal(sent[0].key, sessions[2].key);
   fail = false;
   await click("Send to OpenClaw");
   assert.equal(sent[0].requestId, sent[1].requestId);
   assert.equal(dom.document.querySelector("textarea").value, "");
-  const select = dom.document.querySelector("select");
-  select.value = "channel";
-  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  await settle();
-  await typeInto(dom.document.querySelector("textarea"), "Reply there");
+  await typeInto(dom.document.querySelector("textarea"), "Next one");
   await click("Send to OpenClaw");
-  assert.equal(sent.at(-1).deliver, true);
+  assert.deepEqual(Object.keys(sent.at(-1)).sort(), ["key", "requestId", "text"]);
   assert.notEqual(sent.at(-1).requestId, sent[0].requestId);
+});
+
+
+test("real OpenClaw approval failures remain actionable, successful replies carry the exact pending id", async () => {
+  await mount();
+  approvals = [{ id: "real-approval", command: "npm test", canRespond: true }];
+  await click("Weekend plans");
+  await dom.waitFor(() => button("Allow once"));
+  fail = true;
+  await click("Allow once");
+  assert.deepEqual(decisions[0], { id: "real-approval", decision: "allow-once" });
+  assert.match(dom.document.body.textContent, /Gateway disconnected/);
+  assert.equal(button("Allow once").disabled, false);
+  fail = false;
+  await click("Deny");
+  assert.deepEqual(decisions[1], { id: "real-approval", decision: "deny" });
+  await dom.waitFor(() => !button("Allow once"));
+});
+
+test("OpenClaw without a response channel offers live screen and no pretend approval buttons", async () => {
+  await mount();
+  approvals = [{ id: "screen-only", command: "npm test", canRespond: false }];
+  await click("Weekend plans");
+  await dom.waitFor(() => dom.document.body.textContent.includes("Answer this request in OpenClaw"));
+  assert.equal(button("Allow once"), undefined);
+  assert.equal(button("Deny"), undefined);
+  const screen = dom.document.querySelector(".need-screen button");
+  assert.ok(screen);
+  screen.click();
+  assert.equal(screenOpens, 1);
+  assert.equal(decisions.length, 0);
+});
+
+test("a new OpenClaw chat starts from New chat, as a chat of Reach's own, and opens", async () => {
+  // Before: "Your OpenClaw sessions are discovered automatically", and no way to start one.
+  await mount();
+  started = [];
+  await click("New chat");
+  const sheet = () => dom.document.querySelector('[role="dialog"]');
+  [...sheet().querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "OpenClaw").click();
+  await settle();
+  assert.doesNotMatch(sheet().textContent, /discovered automatically/);
+  await typeInto(sheet().querySelector('textarea[aria-label="New OpenClaw chat"]'), "Plan the trip");
+  [...sheet().querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Start").click();
+  await dom.waitFor(() => reads.includes("agent:main:reach-newchat"));
+  assert.deepEqual(started, [{ text: "Plan the trip" }]);
+  assert.equal(dom.document.querySelector('[role="dialog"]'), null);
 });

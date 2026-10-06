@@ -59,7 +59,21 @@ export function FolderBrowser({
     };
   }, [peer.url, peer.token, at?.root, at?.path]);
 
-  const roots = device?.roots || [];
+  const roots = (device?.roots || []).map((root) => ({
+    ...root,
+    name: root.path === "/" || /^[A-Za-z]:[\\/]$/.test(root.path) ? "Root" : root.name,
+  }));
+  // Hide shortcuts already reachable inside another root. Keep the original
+  // IDs: existing selections and server permission checks use those IDs.
+  const normalized = (value: string) => {
+    const windows = /^[A-Za-z]:[\\/]/.test(value);
+    const full = (windows ? value.replaceAll("\\", "/").toLowerCase() : value).replace(/\/$/, "");
+    return full + "/";
+  };
+  const visibleRoots = roots.filter((root, index) => !roots.some((other, otherIndex) =>
+    otherIndex !== index && normalized(root.path).startsWith(normalized(other.path)) &&
+    (normalized(root.path) !== normalized(other.path) || otherIndex < index),
+  ));
   const rootOf = (id: number) => roots.find((r) => r.id === id);
   const folder = (root: number, path: string): PickedFolder => {
     const r = rootOf(root);
@@ -188,7 +202,7 @@ export function FolderBrowser({
       )}
       <div className="fb-list" role="list" aria-busy={loading}>
         {!at ? (
-          roots.map((r) =>
+          visibleRoots.map((r) =>
             row(`r${r.id}`, r.name, r.path, r.id, "", <HardDrive size={17} />),
           )
         ) : error ? (

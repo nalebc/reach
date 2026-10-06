@@ -1422,11 +1422,6 @@ svg {
 .danger {
   color: #dca095;
 }
-.agents-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
 .steps {
   padding-left: 21px;
   line-height: 1.7;
@@ -1675,9 +1670,6 @@ svg {
   }
   .chat-layout {
     grid-template-columns: 160px minmax(0, 1fr);
-  }
-  .agents-grid {
-    grid-template-columns: 1fr;
   }
   h1 {
     font-size: 29px;

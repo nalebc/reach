@@ -130,8 +130,9 @@ export function createClaudeSessions({
       model: appRecord?.model || parsed.model || null,
       effort: appRecord?.effort || null,
       mode: appRecord?.permissionMode || null,
-      // The transcript ends mid-turn (a prompt or a tool call, no answer yet).
-      pending: ["user", "tool"].includes(parsed.items.at(-1)?.role),
+      // The transcript ends mid-turn (a prompt or a tool call, no answer
+      // yet); a slash command like /clear has no answer to wait for.
+      pending: ["user", "tool"].includes(parsed.items.at(-1)?.role) && !parsed.items.at(-1)?.slash,
       // The Claude app's own consent card waits on you (claude-transcript.mjs).
       ...(parsed.items.at(-1)?.consent ? { consent: parsed.items.at(-1).consent } : {}),
     };
@@ -248,9 +249,15 @@ export function createClaudeSessions({
         before: start > 0 ? String(start) : null,
       };
     },
+    // Whether Claude Code still has this chat (deleted: no transcript).
+    async exists(id) {
+      return !!(await locate(id));
+    },
     // Whether the Claude app took a message after `since`: its own entry for
-    // it (the turn started) or its queue entry (the chat was working).
-    async arrived(id, text, since) {
+    // it (the turn started) or its queue entry (the chat was working). A
+    // message with pictures is queued with no text (verified, the Claude app
+    // on 2026-10-05), so an empty queue entry is it.
+    async arrived(id, text, since, { images = 0 } = {}) {
       const found = await locate(id);
       if (!found) return false;
       const stat = await fs.stat(found.file);
@@ -272,7 +279,10 @@ export function createClaudeSessions({
           continue;
         }
         if (!e?.timestamp || Date.parse(e.timestamp) < since) continue;
-        if (e.type === "queue-operation" && e.operation === "enqueue" && (!wanted || String(e.content ?? "").trim() === wanted)) return true;
+        if (e.type === "queue-operation" && e.operation === "enqueue") {
+          const queued = String(e.content ?? "").trim();
+          if (!wanted || queued === wanted || (images > 0 && !queued)) return true;
+        }
         if (e.type === "user" && e.entrypoint === "claude-desktop") {
           const content = e.message?.content;
           const said = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";

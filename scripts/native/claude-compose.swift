@@ -95,7 +95,15 @@ struct ClaudeCompose {
     }
     guard let title = option("--title") else { out(["error": "Say which chat to use."]) }
     let text = (payload["text"] as? String) ?? option("--text") ?? ""
-    // The right chat, one message box, nothing typed in it.
+    // The right chat, one message box, nothing typed in it. Right after Reach
+    // switches the window to this chat, its header can still name the one
+    // before for a moment: look again for up to 2 s before giving up.
+    var looks = 0
+    while window.titles != [title], looks < 8 {
+      usleep(250_000)
+      window = look(app)
+      looks += 1
+    }
     guard window.titles == [title] else { out(["error": "The Claude app is showing another chat.", "titles": window.titles]) }
     if args.contains("--stop") {
       guard let stop = window.stop, enabled(stop), AXUIElementPerformAction(stop, kAXPressAction as CFString) == .success
@@ -104,11 +112,19 @@ struct ClaudeCompose {
     }
     guard window.boxes.count == 1, let box = window.boxes.first else { out(["error": "Couldn't find the Claude app's message box."]) }
     let expected = (payload["expected"] as? String) ?? ""
-    guard str(box, kAXValueAttribute) == expected else { out(["error": "The draft changed on your Mac. Reach hasn't overwritten it.", "draft": true]) }
+    // What Reach put there, or the very message being sent (its own draft,
+    // synced as it was typed): fine. Anything else was typed on the Mac and is
+    // never overwritten. An empty box reads "\n" (its editor keeps a line
+    // break), so the space around the text doesn't count.
+    let trimmed = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let current = value(box)
+    guard current == trimmed(expected) || (!text.isEmpty && current == trimmed(text)) else {
+      out(["error": "This chat's box in the Claude app has text typed on your Mac. Reach won't overwrite it: send or clear it there.", "draft": true])
+    }
     if payload["draft"] as? Bool == true {
       // No focus changes, clipboard access, key presses or Send during typing.
       guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success,
-        look(app).titles == [title], str(box, kAXValueAttribute) == text
+        look(app).titles == [title], value(box) == trimmed(text)
       else { out(["error": "Claude couldn't update this draft."]) }
       out(["drafted": true])
     }
@@ -144,7 +160,7 @@ struct ClaudeCompose {
     }
     window = look(app)
     guard window.titles == [title] else { out(["error": "The Claude app switched to another chat."]) }
-    guard window.boxes.count == 1, let currentBox = window.boxes.first, str(currentBox, kAXValueAttribute) == text
+    guard window.boxes.count == 1, let currentBox = window.boxes.first, value(currentBox) == trimmed(text)
     else { out(["error": "The message changed before Send. Reach hasn't sent it."]) }
     guard let send = window.send, enabled(send) else { out(["error": "The Claude app's Send isn't available."]) }
     guard AXUIElementPerformAction(send, kAXPressAction as CFString) == .success else { out(["error": "Couldn't press Send in the Claude app."]) }

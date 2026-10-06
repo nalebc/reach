@@ -26,7 +26,9 @@ export type NeedItem = {
   // Instead of answers: where it is answered ("Answer it on your Mac").
   note?: string;
   // An action may return words to show on its card after (what to do next).
-  actions?: { label: string; primary?: boolean; completes?: boolean; run: () => unknown }[];
+  // opens: it opens the request to review (never a decision), so a
+  // notification's link may run it for you (src/deep-link.ts).
+  actions?: { label: string; primary?: boolean; completes?: boolean; opens?: boolean; run: () => unknown }[];
   // Shown under the strip when its card is tapped (the Mac's own dialog).
   more?: ReactNode;
   // A password to send instead of buttons (the Mac's password dialog).

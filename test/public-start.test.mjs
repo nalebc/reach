@@ -22,7 +22,9 @@ function fixture() {
   fs.mkdirSync(tailnet);
   fs.writeFileSync(path.join(dist, "start.html"), "<!doctype html>start");
   fs.writeFileSync(path.join(dist, "index.html"), "<!doctype html>app");
+  fs.writeFileSync(path.join(dist, "agent.html"), "<!doctype html>browser agent");
   fs.writeFileSync(path.join(dist, "favicon.svg"), "<svg/>");
+  fs.writeFileSync(path.join(dist, "sw.js"), "// notifications only");
   fs.writeFileSync(path.join(dist, "agent.mjs"), "// reach for agents");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js"), "console.log(1)");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js.br"), "BR");
@@ -104,6 +106,10 @@ test("serves the start page, its config and the browser client, nothing else", a
   }
   assert.match(PUBLIC_CSP, /script-src 'self' 'wasm-unsafe-eval';/);
   assert.match(PUBLIC_CSP, /frame-ancestors 'none'/);
+  const browserAgent = await get("/agent-browser");
+  assert.equal(browserAgent.status, 200);
+  assert.equal(browserAgent.body, "<!doctype html>browser agent");
+  assert.equal(browserAgent.headers["cache-control"], "no-store");
   const config = await get("/reach-start.json");
   assert.equal(config.headers["cache-control"], "no-store");
   assert.deepEqual(JSON.parse(config.body), {
@@ -129,6 +135,10 @@ test("serves the start page, its config and the browser client, nothing else", a
   assert.equal(plain.body, "console.log(1)");
   assert.equal(plain.headers["content-encoding"], undefined);
   assert.equal((await get("/favicon.svg")).status, 200);
+  const worker = await get("/sw.js");
+  assert.equal(worker.status, 200);
+  assert.equal(worker.headers["content-type"], "text/javascript; charset=utf-8");
+  assert.equal(worker.headers["cache-control"], "no-cache");
   // What an invited agent downloads and runs: always the current one.
   const agent = await get("/agent.mjs");
   assert.equal(agent.status, 200);

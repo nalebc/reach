@@ -53,12 +53,12 @@ test("platform, permissions and ready tools determine every workspace entry", ()
       "apps",
       "screen",
       "chat",
-      "agents",
       "invite",
       "settings",
     ])
       assert.equal(pageAccessible(page, caps), true, `${platform}: ${page}`);
   }
+  assert.equal(pageAccessible("agents", workspaceCapabilities(host("darwin"), ready)), false);
   const linux = workspaceCapabilities(host("linux"), ready);
   assert.equal(linux.apps, false);
   assert.equal(linux.screen, false);

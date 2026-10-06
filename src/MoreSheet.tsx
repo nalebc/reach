@@ -7,7 +7,6 @@ import {
   MessageSquare,
   Plus,
   Settings,
-  ShieldCheck,
   UserRoundPlus,
   X,
 } from "lucide-react";
@@ -27,7 +26,6 @@ const PLACES: Record<string, { label: string; glyph: ReactNode }> = {
   files: { label: "Files", glyph: <Folder size={21} /> },
   apps: { label: "Apps", glyph: <LayoutGrid size={21} /> },
   chat: { label: "Codex", glyph: <MessageSquare size={21} /> },
-  agents: { label: "Agent access", glyph: <ShieldCheck size={21} /> },
   invite: { label: "Invite someone", glyph: <UserRoundPlus size={21} /> },
 };
 

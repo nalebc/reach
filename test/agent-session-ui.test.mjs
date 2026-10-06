@@ -123,13 +123,15 @@ test("app-owned Codex turns have Stop; queued messages sit above the composer an
   const route = `/api/sessions/codex/${CODEX}/queue/q-edit/cancel`;
   routes[route] = () => ({ deleted: true });
   await open(session);
-  await dom.waitFor(() => $(".as-queue-row"));
+  await dom.waitFor(() => $(".qm-row"));
   assert.ok(button("Stop"));
-  assert.equal($(".as-scroll .as-queue"), null);
-  assert.ok($(".as-composer .as-queue"));
-  await click(button("Edit queued message"));
+  assert.equal($(".as-scroll .qm"), null);
+  assert.ok($(".as-composer .qm"));
+  // Edit is in the row's menu, as in the Codex app.
+  await click(button("Queued message actions"));
+  await click($('[role="menuitem"]'));
   await dom.waitFor(() => $("textarea").value === "Then test");
-  assert.equal($(".as-queue-row"), null);
+  assert.equal($(".qm-row"), null);
   assert.deepEqual(dom.errors, []);
   delete routes[route];
 });
@@ -463,9 +465,15 @@ test("a Codex chat reads like the Codex app", async () => {
   assert.equal($(".as-title small").textContent, "app · Codex app");
   assert.deepEqual(
     $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
-    ["Back to all sessions", null, "Switch conversations", "More"],
+    ["Back to all sessions", null, "More"],
   );
-  assert.ok($(".as-bar img.agent-logo"));
+  // No agent switcher up there (the user found it useless). The menu with
+  // "Continue in…" wears the apps it can continue in: a coin of their real
+  // icons (here only Claude's), not ⋯.
+  assert.equal($(".as-app-switch"), null);
+  const coin = $(".as-bar button[aria-label='More'] .agent-coin");
+  assert.ok(coin.classList.contains("n1"));
+  assert.deepEqual([...coin.querySelectorAll("img")].map((i) => [i.getAttribute("alt"), i.getAttribute("src")]), [["Claude Code", LOGO]]);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -878,6 +886,8 @@ test("while Codex works, the send button stops it; typing turns it back into Sen
   await open(codexSession());
   await dom.waitFor(() => button("Stop"));
   assert.equal($(".as-working span").textContent, "Running npm test");
+  // Reach's mascot types at its laptop while the agent works.
+  assert.ok($(".as-working svg.mascot-typing[aria-hidden='true']"));
   assert.equal($(".as-assistant.streaming").textContent, "Looking at");
   await click(button("Stop"));
   assert.deepEqual(mac.sent, [
@@ -1038,13 +1048,12 @@ test("out of usage, each agent's own way to more usage opens here, and nothing e
     ],
   );
   assert.equal($(".as-error.codex a, .as-error.codex button"), null);
-  // Its card: Reset usage (asks first, spends nothing until confirmed) and Upgrade.
-  assert.equal($(".as-banner strong").textContent, "You’re out of Codex usage");
-  assert.match(
-    $(".as-banner span").textContent,
-    /Upgrade or use one of your rate limit resets now\./,
-  );
-  const upgrade = [...$$(".as-banner a")].find(
+  // One slim line, not a card: until when, Reset (asks first, spends nothing
+  // until confirmed) and Upgrade.
+  assert.equal($(".as-banner"), null);
+  const strip = $(".usage-strip");
+  assert.match(strip.querySelector(".usage-strip-text").textContent, /^Out of Codex usage until Oct 16/);
+  const upgrade = [...strip.querySelectorAll("a")].find(
     (a) => a.textContent.trim() === "Upgrade",
   );
   assert.equal(
@@ -1054,12 +1063,13 @@ test("out of usage, each agent's own way to more usage opens here, and nothing e
   assert.equal(upgrade.getAttribute("target"), "_blank");
   assert.equal(upgrade.getAttribute("rel"), "noopener noreferrer");
   await click(
-    [...$$(".as-banner button")].find((b) => b.textContent === "Reset usage"),
+    [...strip.querySelectorAll("button")].find((b) => b.textContent === "Reset"),
   );
-  assert.match($(".as-banner-actions span").textContent, /can’t be undone/);
+  assert.match(strip.querySelector(".usage-strip-text").textContent, /can’t be undone/);
   await click(
-    [...$$(".as-banner button")].find((b) => b.textContent === "Cancel"),
+    [...strip.querySelectorAll("button")].find((b) => b.textContent === "Cancel"),
   );
+  assert.match(strip.querySelector(".usage-strip-text").textContent, /^Out of Codex usage/);
   assert.deepEqual(mac.sent, [], "nothing spent");
   await view.unmount();
   views.length = 0;
@@ -1366,20 +1376,18 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
     ],
   };
   await open(claudeSession({ status: "running" }));
-  await dom.waitFor(() => $$(".as-queue-row").length === 2);
-  const [first, second] = $$(".as-queue-row");
-  assert.equal(first.querySelector("p").textContent, "Run the tests");
-  assert.deepEqual(
-    [...first.querySelectorAll("small")].map((t) => t.textContent),
-    ["1 image"],
-  );
-  assert.equal(
-    second.querySelector("[role=status]").textContent,
-    "Claude Code is signed out on your Mac.",
-  );
+  // Claude's queue folds into a stack, as in the Claude app: a tap opens it.
+  await dom.waitFor(() => $(".qm-head"));
+  assert.match($(".qm-head").textContent, /2 queued/);
+  await click($(".qm-head"));
+  await dom.waitFor(() => $$(".qm-row").length === 2);
+  const [first, second] = $$(".qm-row");
+  assert.equal(first.querySelector(".qm-text p").textContent, "Run the tests");
+  assert.equal(first.querySelector(".qm-images").getAttribute("aria-label"), "1 image");
+  assert.equal(second.querySelector(".qm-why").textContent, "Claude Code is signed out on your Mac.");
   // Handed over: it leaves the outbox (and shows from the transcript).
   mac.bump({ outbox: [mac.live.outbox[1]] });
-  await dom.waitFor(() => $$(".as-queue-row").length === 1);
+  await dom.waitFor(() => $$(".qm-row").length === 1);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -2361,10 +2369,12 @@ test("a Claude chat wears the Claude app's floating buttons; New chat and More w
   // The list of chats on the left; where it runs, a new chat and more on the right.
   assert.deepEqual(
     $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
-    ["Back to all sessions", null, "Switch conversations", "New chat", "More"],
+    ["Back to all sessions", null, "New chat", "More"],
   );
   assert.ok($(".as-bar .as-bar-pill [aria-label='New chat']"));
-  assert.ok($(".as-bar img.agent-logo"));
+  // No logo of its own up there; More wears the app it can continue in.
+  assert.equal($$(".as-bar .agent-logo").filter((l) => !l.closest(".agent-coin")).length, 0);
+  assert.ok($(".as-bar [aria-label='More'] .agent-coin img[alt='Codex']"));
   // The title isn't on screen, as in the app; More shows it with the details.
   assert.equal($(".as-details"), null);
   await click(button("More"));
@@ -2590,14 +2600,10 @@ test("on a Windows computer, a Codex session says computer: signed out, sent to 
   } finally {
     routes[route] = saved;
   }
-  // Opened in the app from the title's details.
+  // The title's details: no "Open in the app" (the user found it useless).
   await click($(".as-title"));
-  await click($(".as-details-open"));
-  await dom.waitFor(() => $(".as-hint")?.textContent.startsWith("Opened"));
-  assert.equal(
-    $(".as-hint").textContent,
-    "Opened in the Codex app on your computer.",
-  );
+  assert.ok(await dom.waitFor(() => $(".as-details")));
+  assert.equal($(".as-details-open"), null);
   assert.deepEqual(saidMac(), []);
   assert.deepEqual(dom.errors, []);
 });
@@ -2683,31 +2689,18 @@ test("settings stay out of the conversation until opened", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
-test("the conversation switcher stays within an app and separate app drafts survive navigation", async () => {
-  const seen = [];
+test("separate app drafts survive navigation", async () => {
   let view = await mount(
     React.createElement(AgentSessionView, {
       peer,
       session: codexSession(),
       siblings: [codexSession(), codexSession({ id: NEW, title: "Add tests" }), claudeSession()],
       health: signedIn,
-      onSelect(s) {
-        seen.push(s.agent + ":" + s.id);
-      },
+      onSelect() {},
       onBack() {},
     }),
   );
   await typeInto($("textarea"), "Keep the Codex draft");
-  await click(button("Switch conversations"));
-  assert.equal(
-    $("[role=dialog]").getAttribute("aria-label"),
-    "Switch conversation",
-  );
-  assert.equal($(".chat-card[aria-label='Refactor auth, Claude Code']"), null);
-  assert.equal($$(".chat-card").length, 2);
-  await click($(".chat-card[aria-label='Add tests, Codex']"));
-  assert.deepEqual(seen, ["codex:" + NEW]);
-  assert.equal($("[role=dialog]"), null);
   await view.unmount();
   view = await open(claudeSession());
   assert.equal($("textarea").value, "");
@@ -3021,4 +3014,78 @@ test("an unavailable remembered optional app falls back to Codex on this compute
   assert.equal($(".chat-app-rail [aria-pressed=true]").getAttribute("aria-label"), "Codex");
   assert.equal($$(".chat-card").length, 1);
   assert.equal(button("OpenClaw"), undefined);
+});
+
+test("a permission the Codex app asks for shows here as Codex's, answered in the Codex app", async () => {
+  // The Codex app holds the chat and shows its own approval card; Reach reads
+  // the question from the chat's file (codex-asks.mjs).
+  const asking = {
+    kind: "permission",
+    text: "May I apply and build the restored Reach screen and verified typing fix in the running checkout?",
+  };
+  const session = codexSession({ status: "waiting", held: "codex-app", asking });
+  mac.pages[`codex:${CODEX}`].session = session;
+  await open(session, signedIn, peer, { onScreen() {} });
+  await dom.waitFor(() => $(".as-prompt.elsewhere"));
+  const card = $(".as-prompt.elsewhere");
+  assert.equal(
+    card.querySelector("header strong").textContent,
+    "Waiting for your answer in the Codex app on your Mac",
+  );
+  // Codex's own logo, not Claude's.
+  const logo = card.querySelector("header [alt], header [aria-label]");
+  assert.equal(logo.getAttribute("alt") || logo.getAttribute("aria-label"), "Codex");
+  assert.match(card.textContent, /May I apply and build the restored Reach screen/);
+  assert.match(card.textContent, /already open in the Codex app/);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a Claude chat opened while the keyboard is already visible uses the compact layout immediately", async () => {
+  const previous = Object.getOwnPropertyDescriptor(dom.window, "visualViewport");
+  const viewport = new dom.window.EventTarget();
+  Object.assign(viewport, { height: 330, width: 390, offsetTop: 0, offsetLeft: 0 });
+  Object.defineProperty(dom.window, "visualViewport", { configurable: true, value: viewport });
+  try {
+    const view = await mount(React.createElement(AgentSessionView, {
+      peer, session: claudeSession(), siblings: [], health: signedIn, onSelect() {}, onBack() {},
+    }));
+    assert.ok($(".as-page.kb-open"));
+    assert.equal($(".as-page").style.getPropertyValue("--vv-height"), "330px");
+    viewport.height = dom.window.innerHeight;
+    viewport.dispatchEvent(new dom.window.Event("resize"));
+    await dom.waitFor(() => !$(".as-page.kb-open"));
+    await view.unmount();
+  } finally {
+    if (previous) Object.defineProperty(dom.window, "visualViewport", previous);
+    else delete dom.window.visualViewport;
+  }
+});
+
+test("a small upward scroll and an active touch are not pulled back by Claude updates", async () => {
+  await mount(React.createElement(AgentSessionView, {
+    peer, session: claudeSession(), siblings: [], health: signedIn, onSelect() {}, onBack() {},
+  }));
+  await dom.waitFor(() => $(".as-scroll") && !$(".as-note"));
+  const scroller = $(".as-scroll");
+  let top = 590;
+  Object.defineProperties(scroller, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 400 },
+    scrollTop: { configurable: true, get: () => top, set: (value) => { top = Math.min(600, value); } },
+  });
+  scroller.dispatchEvent(new dom.window.Event("scroll", { bubbles: true }));
+  mac.bump({ streaming: "New streamed text" });
+  await dom.waitFor(() => $(".streaming")?.textContent.includes("New streamed text"));
+  assert.equal(top, 590, "even 10px into history is kept stable");
+  await click(button("Jump to latest message"));
+  assert.equal(top, 600);
+  scroller.dispatchEvent(new dom.window.Event("touchstart", { bubbles: true }));
+  top = 580; // A native gesture has started; its scroll event hasn't arrived yet.
+  mac.bump({ streaming: "Update during a swipe" });
+  await dom.waitFor(() => $(".streaming")?.textContent.includes("Update during a swipe"));
+  assert.equal(top, 580, "don't cancel an in-progress touch with scrollTop writes");
+  scroller.dispatchEvent(new dom.window.Event("touchcancel", { bubbles: true }));
+  mac.bump({ streaming: "Follow after cancellation" });
+  await dom.waitFor(() => $(".streaming")?.textContent.includes("Follow after cancellation"));
+  assert.equal(top, 600, "cancelled touches don't disable following forever");
 });

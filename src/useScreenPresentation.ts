@@ -13,9 +13,13 @@ export function useScreenPresentation(
   viewer: RefObject<HTMLElement | null>,
   typing: boolean,
 ) {
-  const query = "(any-pointer: coarse), (max-width: 700px)";
+  // A laptop with an optional touchscreen still uses its mouse/keyboard UI.
+  // Only the primary pointer (or a genuinely narrow window) selects touch UI.
+  const query = "(pointer: coarse), (max-width: 700px)";
   const [mobile, setMobile] = useState(() => matchMedia(query).matches);
   const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(fullscreen);
+  fullscreenRef.current = fullscreen;
   const nativeActive = useRef(false);
   const nativeEnteredAt = useRef(0);
   const expanded = fullscreen || (typing && mobile);
@@ -42,16 +46,24 @@ export function useScreenPresentation(
     const escape = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
-        (nativeActive.current || !document.fullscreenElement) &&
-        !event.defaultPrevented
-      )
+        fullscreenRef.current &&
+        (!document.fullscreenElement ||
+          document.fullscreenElement === viewer.current)
+      ) {
+        // Capture before the remote surface forwards Escape to the computer.
+        // This also exits the viewport fallback in embedded browsers.
+        event.preventDefault();
+        event.stopPropagation();
+        if (document.fullscreenElement === viewer.current)
+          void document.exitFullscreen().catch(() => {});
         setFullscreen(false);
+      }
     };
     document.addEventListener("fullscreenchange", changed);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("fullscreenchange", changed);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
   }, [viewer]);
   useViewportBox(viewer, expanded, "screen");

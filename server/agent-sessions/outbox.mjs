@@ -20,7 +20,8 @@ export function createOutbox({ file = null } = {}) {
   const queues = new Map();
   try {
     for (const [id, list] of Object.entries(JSON.parse(fs.readFileSync(file, "utf8")))) {
-      const kept = Array.isArray(list) ? list.filter(valid) : [];
+      // Send now was for that moment: after a restart they wait like the rest.
+      const kept = Array.isArray(list) ? list.filter(valid).map(({ now, ...m }) => m) : [];
       if (UUID.test(id) && kept.length) queues.set(id, kept);
     }
   } catch {
@@ -63,14 +64,62 @@ export function createOutbox({ file = null } = {}) {
       else queues.delete(id);
       changed(id);
     },
-    // Why the next one can't go yet (cleared once it goes).
+    // A new order from the phone (dragged), as message ids. The one being
+    // handed over stays first; ids it doesn't know change nothing.
+    reorder(id, order, delivering = null) {
+      const list = queues.get(id) || [];
+      const rank = new Map(order.map((messageId, i) => [messageId, i]));
+      if (list.length < 2 || !list.every((m) => rank.has(m.id))) return false;
+      const sorted = [...list].sort((a, b) =>
+        a.id === delivering ? -1 : b.id === delivering ? 1 : rank.get(a.id) - rank.get(b.id),
+      );
+      if (sorted.every((m, i) => m === list[i])) return true;
+      queues.set(id, sorted);
+      changed(id);
+      return true;
+    },
+    // Send now: first in line, and allowed to go at once.
+    hurry(id, messageId) {
+      const list = queues.get(id) || [];
+      const message = list.find((m) => m.id === messageId);
+      if (!message) return false;
+      message.now = true;
+      queues.set(id, [message, ...list.filter((m) => m !== message)]);
+      changed(id);
+      return true;
+    },
+    // Why the next one can't go yet (cleared once it goes). Send now is one
+    // try: once it couldn't go, the message waits like the others (it never
+    // retries at once, over and over, switching the Claude app each time).
     problem(id, messageId, error) {
       const message = queues.get(id)?.find((m) => m.id === messageId);
-      if (!message || message.error === error) return;
+      if (!message || (message.error === error && !message.now)) return;
+      delete message.now;
       if (error) message.error = error;
       else delete message.error;
       changed(id);
     },
+    // The chat was deleted: its messages stop trying and wait for the phone
+    // to send them to another chat or delete them (never dropped).
+    strand(id) {
+      const list = queues.get(id) || [];
+      if (!list.length || list.every((m) => m.stranded)) return;
+      for (const message of list) {
+        delete message.now;
+        message.stranded = true;
+        message.error = "Its chat was deleted. Send it to another chat, or delete it.";
+      }
+      changed(id);
+    },
+    // Every message whose chat is gone, oldest first, as the phone lists them.
+    stranded: () =>
+      [...queues.entries()]
+        .flatMap(([session, list]) =>
+          list
+            .filter((m) => m.stranded)
+            .map((m) => ({ session, id: m.id, text: m.text, images: m.images.length, at: m.at, title: m.title || "" })),
+        )
+        .sort((a, b) => a.at - b.at),
     version: () => version,
     onChange(listener) {
       listeners.add(listener);

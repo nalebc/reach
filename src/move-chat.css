@@ -60,6 +60,52 @@
 .move-offer.picker {
   margin: 4px 0 6px;
 }
+/* In the chat's ⋯ menu: a row with the app's logo. */
+.move-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.move-item:active,
+.move-item.asking {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+.move-item-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.move-item-text > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.move-item-text small {
+  color: var(--as-muted, currentColor);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.move-item-go {
+  flex: 0 0 auto;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: var(--as-text, currentColor);
+  color: var(--as-float, #000);
+  font-size: 12.5px;
+  font-weight: 600;
+}
 .move-hint {
   display: flex;
   align-items: center;

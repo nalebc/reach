@@ -6,53 +6,19 @@ import { createInterface } from "node:readline/promises";
 import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
 import { loginScript } from "./login-start.mjs";
 
-// `reach stop` / `reach restart`: every Reach running from this folder, in a
-// terminal tab, started detached, or the background service, stops the way
+// `reach stop` / `reach restart`: every Reach running on this computer (one
+// should; any folder), in a terminal tab, started detached, or the background
+// service, stops the way
 // Ctrl+C stops it (its terminals and jobs end with it), then any helper it
 // left behind. Restart starts it again: the background service if that's how
 // it ran, otherwise right here in this terminal.
 
-// The processes now: id, parent, terminal, command line.
-export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20 })) {
-  return String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]))
-    .split("\n")
-    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
-    .filter(Boolean)
-    .map(([, pid, ppid, tty, command]) => ({ pid: Number(pid), ppid: Number(ppid), tty, command }));
-}
-
-const SHELLS = new Set(["zsh", "bash", "sh", "fish", "tcsh", "csh", "ksh", "dash", "nu", "pwsh"]);
-const nameOf = (command) => path.basename(command.split(/\s+/)[0]).replace(/^-/, "");
-
-// Every Reach running from this folder (never this command itself), each with
-// everything it started, and the terminals among those (shells, with what
-// runs in them).
-export function findReach(root, table, self = process.pid) {
-  const script = path.join(root, "scripts", "bootstrap.mjs");
-  const children = new Map();
-  for (const p of table) children.set(p.ppid, [...(children.get(p.ppid) || []), p]);
-  const below = (pid) => (children.get(pid) || []).flatMap((c) => [c, ...below(c.pid)]);
-  return table
-    .filter((p) => {
-      if (p.pid === self) return false;
-      const at = p.command.indexOf(script);
-      if (at < 0) return false;
-      // A host runs with no command (flags only); `reach approve` and the
-      // like running beside it are left alone.
-      const first = p.command.slice(at + script.length).trim().split(/\s+/)[0];
-      return !first || first.startsWith("--");
-    })
-    .map((host) => {
-      const descendants = below(host.pid);
-      const terminals = descendants
-        .filter((p) => SHELLS.has(nameOf(p.command)))
-        .map((shell) => {
-          const inside = (children.get(shell.pid) || []).map((c) => nameOf(c.command)).filter(Boolean);
-          return { pid: shell.pid, tty: shell.tty, shell: nameOf(shell.command), running: inside };
-        });
-      return { pid: host.pid, tty: host.tty, service: /\s--service(\s|$)/.test(host.command), descendants, terminals };
-    });
-}
+// The processes and every Reach among them (instances.mjs): one Reach per
+// computer, so stop and restart reach it whichever folder it came from.
+import { processTable, reachHosts } from "./instances.mjs";
+export { processTable };
+// Every Reach running (never this command itself); `root` limits it to one folder's.
+export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
 
 // The background service (./reach install), and whether it's this folder's.
 export function serviceState(root, { run, home = os.homedir(), uid = process.getuid?.() } = {}) {
@@ -108,11 +74,12 @@ export async function stopReach(
     termMs = 5000,
   } = {},
 ) {
-  const hosts = findReach(root, table(), self);
+  const hosts = findReach(null, table(), self);
   const service = platform === "darwin" ? serviceState(root, { run: launchctl, home, uid }) : { loaded: false, ours: false };
-  const serviceRunning = service.loaded && service.ours;
+  // Reach's one background service, whichever folder installed it.
+  const serviceRunning = service.loaded;
   if (!hosts.length && !serviceRunning) {
-    if (!restarting) print("Reach isn't running from this folder.");
+    if (!restarting) print("Reach isn't running.");
     return { stopped: 0, service: false, terminals: 0, serviceInstalled: !!service.ours };
   }
   // What closes with it: said first, and asked about.

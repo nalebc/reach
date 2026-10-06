@@ -4,6 +4,8 @@
 // the private address). Without the app, sign in to Tailscale right here in
 // the browser and run Reach through the page's own tailnet node.
 import { watchForApp } from "./app-watch";
+import { guestConnection } from "./guest-connection";
+import { observeGuestNetwork } from "./guest-network";
 import {
   FACE_DEVICE,
   faceDevice,
@@ -25,11 +27,13 @@ import {
   browserHostname,
   directUrl,
   guestHash,
+  guestStartConnected,
   homeReachable,
   ownOrigin,
   parseGuestLink,
   parseStartConfig,
   probeDirect,
+  resumeGuestStart,
   tailnetSuffix,
   type GuestLink,
   type StartConfig,
@@ -85,7 +89,10 @@ function render(parts: {
   hint?: boolean;
   // Where you are, signing in without the app: "Step 1 of 2 · Join your network".
   step?: string;
+  diagnostics?: string;
 }) {
+  const diagnosticsOpen =
+    !!view.querySelector<HTMLDetailsElement>(".start-diagnostics")?.open;
   view.replaceChildren();
   const card = document.createElement("section");
   card.className = "start-card";
@@ -127,6 +134,28 @@ function render(parts: {
     b.textContent = parts.secondary.label;
     b.addEventListener("click", parts.secondary.onClick);
     card.append(b);
+  }
+  if (parts.diagnostics) {
+    const details = document.createElement("details");
+    details.className = "start-diagnostics";
+    details.open = diagnosticsOpen;
+    const summary = document.createElement("summary");
+    summary.textContent = "Connection details";
+    const pre = document.createElement("pre");
+    pre.textContent = parts.diagnostics;
+    const copy = document.createElement("button");
+    copy.className = "start-secondary";
+    copy.textContent = "Copy details";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(pre.textContent || "");
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Select and copy the details above";
+      }
+    });
+    details.append(summary, pre, copy);
+    card.append(details);
   }
   if (parts.hint) {
     // The app connects device to device; the browser goes through a relay.
@@ -244,6 +273,33 @@ async function browserMode(
   const JOIN = guest || face ? undefined : "Step 1 of 2 · Join your network";
   render({ title: `Connecting to ${config.name}…`, hint: !guest, step: JOIN });
   let node: TailnetNode;
+  const guestJoin = guest
+    ? guestConnection({
+        show: ({ title, detail, retry, diagnostics }) =>
+          render({
+            title,
+            detail,
+            diagnostics,
+            ...(retry
+              ? {
+                  action: {
+                    label: "Retry connection",
+                    onClick: () => location.reload(),
+                  },
+                }
+              : {}),
+          }),
+        ready: () => {
+          stopNetworkObservation();
+          guestStartConnected(sessionStorage);
+          checks = 0;
+          running();
+        },
+      })
+    : null;
+  const stopNetworkObservation = guestJoin
+    ? observeGuestNetwork(globalThis, (step) => guestJoin.network(step))
+    : () => {};
   try {
     node = await startNode(
       config,
@@ -252,6 +308,7 @@ async function browserMode(
       face,
     );
   } catch {
+    stopNetworkObservation();
     render({
       title: "This browser couldn’t start the secure connection",
       detail: "Try again, or use the Tailscale app.",
@@ -336,30 +393,23 @@ async function browserMode(
                 "Try again in a moment. If it keeps happening, run ./reach setup invites on your computer.",
               action: { label: "Try again", onClick: () => location.reload() },
             }
-        : {
-            title: `This account can’t reach ${config.name}`,
-            detail: `Signed in as ${login || "another account"}. Sign in with the Tailscale account your computer uses.`,
-            action: {
-              label: "Use another account",
-              onClick: () => {
-                asked = false;
-                authURL = "";
-                node.logout();
+          : {
+              title: `This account can’t reach ${config.name}`,
+              detail: `Signed in as ${login || "another account"}. Sign in with the Tailscale account your computer uses.`,
+              action: {
+                label: "Use another account",
+                onClick: () => {
+                  asked = false;
+                  authURL = "";
+                  node.logout();
+                },
               },
             },
-          },
     );
   };
-  // A guest never signs in: the link's key does it. If Tailscale still asks,
-  // the key was used already or expired (or the invitation ended).
+  // Network startup can briefly report NeedsLogin while registering a valid
+  // key. Only a real key rejection may say the key was not accepted.
   let keyTimer: ReturnType<typeof setTimeout> | undefined;
-  const guestEnded = () =>
-    render({
-      title: guest?.key
-        ? "This invitation link was already used or has expired"
-        : "Your invitation has ended",
-      detail: "Ask the person who invited you for a new link.",
-    });
   // The same for a Face ID sign-in's key (it lasts ten minutes).
   const faceFailed = () =>
     render({
@@ -369,14 +419,8 @@ async function browserMode(
     });
   node.start({
     state: (state) => {
-      if (guest) {
-        if (state === "NeedsLogin") keyTimer ||= setTimeout(guestEnded, 8000);
-        else if (state === "Running") {
-          clearTimeout(keyTimer);
-          checks = 0;
-          running();
-        } else if (!booted && state === "Starting")
-          render({ title: `Connecting to ${config.name}…` });
+      if (guestJoin) {
+        guestJoin.state(state);
         return;
       }
       if (state === "NeedsLogin") {
@@ -418,9 +462,14 @@ async function browserMode(
         });
     },
     authURL: (url) => {
+      if (guestJoin) {
+        guestJoin.error("key");
+        return;
+      }
       authURL = url;
       signIn();
     },
+    error: (kind) => guestJoin?.error(kind),
   });
 }
 
@@ -532,17 +581,14 @@ async function main() {
   // An invitation: the key is single use; take it out of the address now.
   const guest =
     location.pathname === "/guest"
-      ? parseGuestLink(location.hash, config.origin)
+      ? resumeGuestStart(
+          parseGuestLink(location.hash, config.origin),
+          sessionStorage,
+          localStorage,
+        )
       : null;
   if (guest)
     history.replaceState(null, "", `/guest${guestHash(guest.invites)}`);
-  // A new invitation is a new guest device: forget an earlier guest's one
-  // in this browser, so its old (maybe removed) device isn't resumed.
-  if (guest?.key)
-    try {
-      for (const k of Object.keys(localStorage))
-        if (k.startsWith("reach.guest:")) localStorage.removeItem(k);
-    } catch {}
   const first = guest?.invites[0]?.origin;
   const target =
     first && first !== config.origin

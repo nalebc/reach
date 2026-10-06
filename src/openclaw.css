@@ -225,3 +225,17 @@
   }
 }
 .claw-conversation .need-text small { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; }
+/* A chat that belongs to a WhatsApp group, a Discord channel or a cron job:
+   one quiet line where the message box would be (OpenClawSpace.tsx). */
+.claw-readonly {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.claw-readonly p {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}

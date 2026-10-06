@@ -58,12 +58,15 @@ export type AgentAsking =
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
-  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice";
+  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output";
   text: string;
   detail?: string;
   status?: string;
   queued?: boolean;
   images?: number;
+  // A slash command as typed ("/context"); Codex skills sent with a message.
+  slash?: boolean;
+  skills?: string[];
   at?: number;
   turnId?: string;
 };
@@ -83,6 +86,8 @@ export type AgentHealth = {
   app?: { installed: boolean; signedIn: boolean };
   // Claude, while out of usage: the limit it hit, in Claude Code's own words.
   limit?: string;
+  // OpenClaw: whether its Gateway can take a chat moved from another agent.
+  canTakeMoves?: boolean;
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
@@ -128,7 +133,16 @@ export type LiveView = {
   // Codex's in the Codex app's own queue.
   outbox?: OutboxMessage[];
 };
-export type OutboxMessage = { id: string; text: string; images: number; at?: number; error?: string; via?: "app" };
+export type OutboxMessage = {
+  id: string;
+  text: string;
+  images: number;
+  at?: number;
+  error?: string;
+  via?: "app";
+  // Send now pressed, or being handed over right now.
+  sending?: boolean;
+};
 export type AgentModel = {
   id: string;
   name: string;
@@ -392,9 +406,22 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; mode?: string };
+export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; mode?: string; skill?: string };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
+// Messages from the phone whose chat was deleted (server outbox.mjs): sent to
+// another chat from here, or deleted (cancelQueuedMessage, with their chat).
+export type StrandedMessage = { session: string; id: string; text: string; images: number; at: number; title: string };
+export const readStranded = (peer: Peer) =>
+  request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
+export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
+  post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// Send now, as in the agent's app: first in line, in at once.
+export const sendQueuedNow = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
+  post<{ hurried: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/now`);
+// A new order for what waits (dragged on the phone).
+export const reorderQueued = (peer: Peer, s: { agent: AgentName; id: string }, order: string[]) =>
+  post<{ reordered: true }>(peer, `${sessionPath(s)}/queue/order`, { order });
 export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, text: string) =>
   post<{ synced: boolean; supported?: boolean }>(peer, `${sessionPath(s)}/draft`, { text });
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>

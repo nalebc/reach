@@ -14,3 +14,13 @@ test("ordinary HTML, request headings and quoted context examples remain intact"
   for (const text of ['<div>My app</div>', '## My request:\nKeep this', 'Explain:\n' + wrapped, '```xml\n' + wrapped + '\n```'])
     assert.equal(visibleUserText(text), text);
 });
+
+test("the Claude app's instructions never show as the person's words", () => {
+  // A chat moved into the Claude app: its next user turn starts with the
+  // app's <system-reminder> (7 KB of instructions), then what was typed.
+  const moved = "<system-reminder>\nThis conversation is now continuing in the Claude desktop app (Code tab).\n<simulator_tools>\n…\n</simulator_tools>\n</system-reminder>\n\n\nreconcile changes";
+  assert.equal(visibleUserText(moved), "reconcile changes");
+  // Quoted or explained further down, it stays as written.
+  const quoted = "What is this?\n<system-reminder>x</system-reminder>";
+  assert.equal(visibleUserText(quoted), quoted);
+});

@@ -40,18 +40,14 @@ before(async () => {
   React = screenDom.React;
   ({ default: Screen } = await screenDom.load("/src/Screen.tsx"));
   ({ computer } = await screenDom.load("/test/dom/fakes/computer.mjs"));
-  surfaceDom = await startDom({ mobile: true });
-  ({ default: DesktopSurface } = await surfaceDom.load("/src/DesktopSurface.tsx"));
-  surfaceDom.window.HTMLElement.prototype.setPointerCapture ??= function () {};
-  surfaceDom.window.HTMLElement.prototype.releasePointerCapture ??= function () {};
-  surfaceDom.window.HTMLElement.prototype.hasPointerCapture ??= () => false;
+
 });
 after(async () => {
   await screenDom?.close();
   await surfaceDom?.close();
 });
 beforeEach(() => {
-  screenDom.errors.length = 0;
+  if (screenDom) screenDom.errors.length = 0;
   computer.reset();
   computer.surface = null;
   computer.probeSupported = true;
@@ -60,24 +56,31 @@ beforeEach(() => {
 const typeButton = () =>
   [...screenDom.document.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === "Open phone keyboard");
 
-test("the Type button comes back after a tap where the Mac can't see, and leaves after one where it can", async () => {
+test("Type remains available whether or not the computer can detect a field", async () => {
   const view = await screenDom.render(
     React.createElement(Screen, { peer, device, toast: () => {}, onChanged: () => {} }),
   );
   [...screenDom.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Control").click();
   await screenDom.waitFor(() => computer.surface?.canControl);
-  assert.equal(typeButton().length, 0, "fields open the keyboard by themselves");
+  assert.equal(typeButton().length, 1, "manual keyboard stays available alongside detection");
   computer.surface.onBlind(true);
   await settle(20);
   assert.equal(typeButton().length, 1, "a game or a canvas: the button is there");
   computer.surface.onBlind(false);
   await settle(20);
-  assert.equal(typeButton().length, 0);
+  assert.equal(typeButton().length, 1);
   await view.unmount();
   assert.deepEqual(screenDom.errors, []);
 });
 
 test("the surface passes on the Mac's word that it can't see under the finger", async () => {
+  await screenDom.close();
+  screenDom = null;
+  surfaceDom = await startDom({ mobile: true });
+  ({ default: DesktopSurface } = await surfaceDom.load("/src/DesktopSurface.tsx"));
+  surfaceDom.window.HTMLElement.prototype.setPointerCapture ??= function () {};
+  surfaceDom.window.HTMLElement.prototype.releasePointerCapture ??= function () {};
+  surfaceDom.window.HTMLElement.prototype.hasPointerCapture ??= () => false;
   const React = surfaceDom.React;
   const said = [];
   let answer = { field: false, blind: true };

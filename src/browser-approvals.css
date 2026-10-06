@@ -1,0 +1,58 @@
+.browser-approval .screen-popup-body {
+  max-width: 760px;
+}
+.browser-approval p {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.browser-approval h3 {
+  font-size: 13px;
+  margin: 18px 0 8px;
+}
+.browser-approval pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+  padding: 14px;
+  background: var(--bg, #080b10);
+  color: var(--text-strong, #f2f2f2);
+  border: 1px solid var(--border, #ffffff20);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.browser-request-reason {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.browser-approval-snapshot {
+  position: relative;
+  margin-top: 18px;
+}
+.browser-approval-snapshot img {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+}
+.browser-click-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  border: 3px solid #ff423d;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px white;
+  pointer-events: none;
+}
+.browser-approval .browser-approval-note {
+  color: var(--muted, #aab3be);
+  font-size: 12px;
+}
+.browser-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}

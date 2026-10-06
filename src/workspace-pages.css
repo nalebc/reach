@@ -756,15 +756,6 @@
 .screen-popup.workspace-launcher {
   background: #181f1a;
 }
-.page-agents .agent-setup,
-.page-agents .agent-jobs {
-  border-radius: 12px;
-  background: #19231b;
-  border-color: #d3ead21e;
-}
-.page-agents .agent-setup summary {
-  min-height: 62px;
-}
 .page-terminal .terminal-panel {
   border: 1px solid #b9efd426;
   border-radius: 12px;
@@ -777,8 +768,5 @@
   .app-shell:has(.codex-workspace.is-thread) .topbar,
   .app-shell:has(.codex-workspace.is-thread) .fleet-switcher {
     visibility: hidden;
-  }
-  .page-agents .agents-grid {
-    grid-template-columns: 1fr;
   }
 }

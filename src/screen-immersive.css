@@ -16,8 +16,9 @@
 }
 .simple-screen.screen-immersive > .simple-screen-toolbar {
   top: 0;
-  padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
-    10px max(14px, env(safe-area-inset-left));
+  padding: max(10px, env(safe-area-inset-top))
+    max(14px, env(safe-area-inset-right)) 10px
+    max(14px, env(safe-area-inset-left));
   background: linear-gradient(#080c0ee6, #080c0e00);
 }
 .simple-screen.screen-immersive > .simple-screen-dock {
@@ -127,10 +128,74 @@
   transform: none;
   opacity: 1;
 }
-.simple-screen.screen-immersive.screen-typing .remote-zoom.compact { bottom: 10px; }
-.simple-screen .remote-zoom.compact .button { min-height: 40px; border-radius: 999px; }
+.simple-screen.screen-immersive.screen-typing .remote-zoom.compact {
+  bottom: 10px;
+}
+.simple-screen .remote-zoom.compact .button {
+  min-height: 40px;
+  border-radius: 999px;
+}
 .simple-screen.screen-immersive.chrome-hidden .remote-zoom.compact {
   opacity: 1;
   pointer-events: auto;
   bottom: max(14px, env(safe-area-inset-bottom));
+}
+
+/* Keep Reach's original ink-and-mint screen, with no browser-sized gray frame. */
+.simple-screen {
+  background: var(--panel);
+}
+.simple-screen .remote-stage {
+  background: #080c0a;
+}
+.simple-screen .simple-screen-toolbar {
+  flex-wrap: nowrap;
+  min-height: 52px;
+}
+.simple-screen .simple-screen-toolbar .screen-state {
+  min-width: 0;
+  max-width: none;
+  flex: 1;
+}
+.simple-screen .simple-screen-actions {
+  flex: none;
+}
+.simple-screen .simple-screen-actions .icon-button {
+  flex: none;
+  min-width: 36px;
+}
+.simple-screen .keyboard-button {
+  white-space: nowrap;
+}
+.simple-screen:not(.screen-expanded) .remote-stage {
+  height: auto;
+  min-height: 0;
+  aspect-ratio: var(--screen-aspect, 1.6);
+  max-height: 70dvh;
+}
+.simple-screen.screen-expanded {
+  border-radius: 0;
+  border: 0;
+}
+.simple-screen.screen-expanded.screen-typing > .screen-toolbar {
+  display: flex;
+  min-height: 44px;
+}
+.simple-screen.screen-expanded .screen-immersive-pill {
+  max-width: calc(100% - 24px);
+}
+.app-shell:has(.screen-expanded) .mobile-nav {
+  visibility: hidden;
+}
+@media (max-width: 700px) {
+  .simple-screen .simple-screen-toolbar {
+    padding: 8px;
+    gap: 6px;
+  }
+  .simple-screen .simple-screen-actions {
+    gap: 2px;
+  }
+  .simple-screen .simple-screen-dock {
+    gap: 6px;
+  }
 }

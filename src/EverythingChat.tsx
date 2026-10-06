@@ -10,7 +10,7 @@ import {
   Sparkle,
   X,
 } from "lucide-react";
-import type { Peer } from "./api";
+import { post, type Peer } from "./api";
 import AgentSessionView, { ModelPicker } from "./AgentSession";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
@@ -19,6 +19,7 @@ import ChatList, {
   ChatComingSoon,
   type ChatAppChoice,
 } from "./ChatList";
+import StrandedMessages from "./StrandedMessages";
 import ChatSheet from "./ChatSheet";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
@@ -526,7 +527,7 @@ function AgentStatus({
   return null;
 }
 
-type Target = { agent: AgentName; id: string };
+type Target = { agent: AgentName | "openclaw"; id: string };
 
 export default function EverythingChat({
   peer,
@@ -590,6 +591,10 @@ export default function EverythingChat({
   };
   useEffect(() => {
     if (!target) return;
+    if (target.agent === "openclaw") {
+      setAgent("openclaw"); setSheet(""); setOpen(null); setClawOpen(target.id);
+      onTargetOpened?.(); return;
+    }
     const found = sessions?.find(
       (s) => s.agent === target.agent && s.id === target.id,
     );
@@ -684,11 +689,15 @@ export default function EverythingChat({
         />
       ) : picked.agent === "openclaw" ? (
         <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
+          onScreen={onScreen}
           openKey={clawOpen} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
           onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
-          deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")} />
+          deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
+          onNew={() => setSheet("new")} />
       ) : (
         <div className="chat-workspace" aria-hidden={!!sheet || undefined}>
+          {/* Messages whose chat was deleted, to send elsewhere or delete. */}
+          <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />
           <ChatList
             key={peer.id}
             peer={peer}
@@ -726,7 +735,16 @@ export default function EverythingChat({
             />
           </div>
           {picked.agent === "openclaw" ? (
-            <p className="chat-sheet-intro">Your OpenClaw sessions are discovered automatically. Close this panel to open one.</p>
+            // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
+            <NewClawChat
+              peer={peer}
+              onStarted={(key) => {
+                setAgent("openclaw");
+                setSheet("");
+                setOpen(null);
+                setClawOpen(key);
+              }}
+            />
           ) : !picked.supported ? (
             <ChatComingSoon app={picked} logos={logos} />
           ) : (
@@ -767,5 +785,55 @@ export default function EverythingChat({
         </ChatSheet>
       )}
     </>
+  );
+}
+
+// A new OpenClaw chat from Reach: a session of its own (never one of WhatsApp's
+// or Discord's), its first message sent as it starts (server/openclaw.mjs).
+function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string) => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const start = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text });
+      onStarted(key);
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="chat-new-claw"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void start();
+      }}
+    >
+      <textarea
+        aria-label="New OpenClaw chat"
+        placeholder="What would you like OpenClaw to do?"
+        rows={3}
+        value={text}
+        autoFocus
+        onChange={(e) => setText(e.target.value)}
+        disabled={busy}
+      />
+      <div className="chat-new-claw-tools">
+        <small>Replies stay in Reach and OpenClaw.</small>
+        <button className="as-send ready" aria-label="Start" disabled={!text.trim() || busy}>
+          {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
+        </button>
+      </div>
+      {problem && (
+        <p className="chat-sheet-intro" role="alert">
+          {problem}
+        </p>
+      )}
+    </form>
   );
 }

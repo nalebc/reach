@@ -9,6 +9,14 @@ import { fail, hash } from "./core.mjs";
 // Never exported as an HTTP header. Only the filesystem-protected listener can
 // set this marker. The host OS user/root is trusted, just like clients.json.
 const trusted = new WeakSet();
+const ingress = new WeakSet();
+// Tailscale's Unix-socket proxy rewrites Host to localhost and overwrites
+// X-Forwarded-Host with the original authority. Trust that value only on the
+// protected listener, including Funnel requests, without granting identity.
+export const serveRequestHost = (req) =>
+  ingress.has(req)
+    ? req.headers["x-forwarded-host"] || req.headers.host
+    : req.headers.host;
 export const identityBinding = (identity) => ({
   userId: identity.userId,
   nodeId: identity.nodeId,
@@ -158,6 +166,7 @@ export async function listenPrivateIngress({
     req.reachIdentity = await resolveIdentity(req);
   };
   const server = http.createServer((req, res) => {
+    ingress.add(req);
     if (fromInternet(req)) {
       if (publicApp) return publicApp(req, res);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

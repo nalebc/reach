@@ -154,11 +154,11 @@ test("an older Reach that can't answer is never asked", async () => {
   await view.unmount();
 });
 
-test("typing waits for confirmed focus and the normal screen has no Type button", async () => {
+test("typing waits for confirmed focus and manual Type stays available", async () => {
   let confirm;
   computer.replies.focus = () => new Promise((resolve) => { confirm = resolve; });
   const view = await controlled();
-  assert.equal(button("Open phone keyboard"), undefined);
+  assert.ok(button("Open phone keyboard"));
   const point = { x: 0.3, y: 0.6 };
   computer.surface.onField(point, false);
   const field = sink();

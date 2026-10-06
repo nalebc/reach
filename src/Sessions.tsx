@@ -1017,7 +1017,7 @@ export function ChatView({
               }}
             >
               <textarea
-                placeholder="Ask Codex to do something…"
+                placeholder="Message…"
                 aria-label="Message Codex"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { admitAgent, approveAgentClaim } from "./helpers/agent-admission.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -61,12 +62,12 @@ async function start(t, { policy } = {}) {
         ...extra,
       },
     });
-  const redeem = (invitation) =>
-    call("/api/invitations/redeem", {
+  const redeem = async (invitation) =>
+    approveAgentClaim(call, await call("/api/invitations/redeem", {
       token: "",
       method: "POST",
       body: { invitation },
-    });
+    }));
   return { reach, call, invite, redeem, owner, files, dir };
 }
 
@@ -249,7 +250,7 @@ test("an agent's credential works only on the Tailscale device that joined", asy
     tagged: true,
     validUntil: Date.now() + 60000,
   };
-  const joined = reach.auth.redeemGuest(created.body.invitation, node);
+  const joined = admitAgent(reach.auth, created.body.invitation, node);
   assert.equal(reach.auth.verify(joined.token, node)?.id, joined.clientId);
   assert.equal(
     reach.auth.verify(joined.token, { ...node, nodeId: "nElsewhere" }),

@@ -7,7 +7,12 @@ import {
   type RefObject,
 } from "react";
 import type { DesktopAction } from "./useDesktopInput";
-import { boundView, focusView, pinchView, typingView } from "./desktop-geometry";
+import {
+  boundView,
+  focusView,
+  pinchView,
+  typingView,
+} from "./desktop-geometry";
 import { screenPoint } from "./screen-pointer";
 import ScreenConnection from "./ScreenConnection";
 const clamp = (n: number, min: number, max: number) =>
@@ -38,6 +43,7 @@ export default function DesktopSurface({
   focusPoint,
   focusRect,
   typing = false,
+  touchScroll = false,
   idle,
 }: {
   canvas: RefObject<HTMLCanvasElement | null>;
@@ -69,6 +75,8 @@ export default function DesktopSurface({
   // An area to open on (fractions of the screen): a Mac dialog to answer.
   focusRect?: { x: number; y: number; width: number; height: number } | null;
   typing?: boolean;
+  // Direct swipes scroll the computer; Pan & zoom remains available in options.
+  touchScroll?: boolean;
   // Shown instead of "Live view is paused" while nothing streams.
   idle?: ReactNode;
 }) {
@@ -109,6 +117,7 @@ export default function DesktopSurface({
     point: Point;
     secure: boolean;
     at: number;
+    acknowledged: boolean;
   } | null>(null);
   const wheelHandler = useRef<(event: WheelEvent) => void>(() => {});
   useEffect(() => {
@@ -136,6 +145,9 @@ export default function DesktopSurface({
     }
     gesture.current = null;
     pointers.current.clear();
+    tappedField.current = null;
+    serial.current++;
+    probeSerial.current++;
   };
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) =>
@@ -156,7 +168,10 @@ export default function DesktopSurface({
   }, [resetKey]);
   useEffect(() => {
     release();
-  }, [mode, canControl]);
+  }, [mode]);
+  useEffect(() => {
+    if (!canControl) release();
+  }, [canControl]);
   useEffect(() => {
     if (initialCursor) moveCursor(initialCursor);
   }, [initialCursor]);
@@ -210,7 +225,17 @@ export default function DesktopSurface({
     if (framed.current === key) return;
     framed.current = key;
     setView(focusView(focusRect, baseW, baseH, size.width, size.height));
-  }, [resetKey, focusRect?.x, focusRect?.y, focusRect?.width, focusRect?.height, baseW, baseH, size.width, size.height]);
+  }, [
+    resetKey,
+    focusRect?.x,
+    focusRect?.y,
+    focusRect?.width,
+    focusRect?.height,
+    baseW,
+    baseH,
+    size.width,
+    size.height,
+  ]);
   const imageW = baseW * view.scale,
     imageH = baseH * view.scale,
     left = (size.width - imageW) / 2 + view.x,
@@ -267,15 +292,26 @@ export default function DesktopSurface({
           r.map((x) => (x.id === id ? { ...x, status: "sent" } : x)),
         );
         onFeedback("Click sent");
-        if (id === serial.current && !right && clickMode !== "right")
+        if (id === serial.current && !right && clickMode !== "right") {
+          // The host can acknowledge before Safari delivers the tap's click.
+          // Wait for that click to open the keyboard before confirming focus.
+          const field = tappedField.current;
+          if (field?.point === point) {
+            field.acknowledged = true;
+            return;
+          }
           onTextTarget(point);
+        }
       })
       .catch(() => {
         setRipples((r) =>
           r.map((x) => (x.id === id ? { ...x, status: "failed" } : x)),
         );
         onFeedback("Click was not sent");
-        if (id === serial.current) onInteraction();
+        if (id === serial.current) {
+          tappedField.current = null;
+          onInteraction();
+        }
       });
   };
   wheelHandler.current = (e) => {
@@ -284,12 +320,18 @@ export default function DesktopSurface({
         view.scale * Math.exp(-e.deltaY * 0.002),
         local(e.clientX, e.clientY),
       );
-    else
+    else {
+      const point = normalized(e.clientX, e.clientY);
+      if (!point) return;
+      action({ type: "move", ...point });
+      const units =
+        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size.height : 1;
       action({
         type: "scroll",
-        dx: clamp(-e.deltaX, -120, 120),
-        dy: clamp(-e.deltaY, -120, 120),
+        dx: clamp(-e.deltaX * units, -120, 120) || 0,
+        dy: clamp(-e.deltaY * units, -120, 120) || 0,
       });
+    }
   };
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!ready) return;
@@ -453,6 +495,19 @@ export default function DesktopSurface({
       };
       moveCursor(point);
       action({ type: "move", ...point });
+    } else if (
+      g.moved &&
+      touchScroll &&
+      mode === "direct" &&
+      canControl &&
+      event.pointerType === "touch"
+    ) {
+      action({ type: "move", ...cursorRef.current });
+      action({
+        type: "scroll",
+        dx: clamp(dx, -120, 120),
+        dy: clamp(dy, -120, 120),
+      });
     } else if (g.moved) setView((v) => bounded(v.scale, v.x + dx, v.y + dy));
     g.last = p;
   };
@@ -487,13 +542,19 @@ export default function DesktopSurface({
         const answer = probeAnswer.current;
         // Reserve Safari's keyboard activation during the user's tap even if
         // the network reply is late. Screen buffers edits until focus confirms.
-        if (canControl && clickMode !== "right" && onField && g.probe &&
+        if (
+          canControl &&
+          clickMode !== "right" &&
+          onField &&
+          g.probe &&
           ((answer?.id === g.probe && answer.field) ||
-            (answer?.id !== g.probe && event.pointerType === "touch")))
+            (answer?.id !== g.probe && event.pointerType === "touch"))
+        )
           tappedField.current = {
             point,
             secure: answer?.id === g.probe ? answer.secure : false,
             at: performance.now(),
+            acknowledged: false,
           };
         ripple(point);
       }
@@ -504,8 +565,10 @@ export default function DesktopSurface({
   const clicked = () => {
     const field = tappedField.current;
     tappedField.current = null;
-    if (field && performance.now() - field.at < 1000)
+    if (field && canControl && ready && performance.now() - field.at < 1000) {
       onField?.(field.point, field.secure);
+      if (field.acknowledged) onTextTarget(field.point);
+    }
   };
   return (
     <>
@@ -607,7 +670,7 @@ export default function DesktopSurface({
         ))}
         {/* Zoom means nothing before there's a picture: it sat on the
             connecting scene's words ("100% · Fit" over the cable line). */}
-        {ready && (
+        {ready && (!compact || view.scale > 1.01) && (
           <div
             className={`remote-zoom ${compact ? "compact" : ""}`}
             onPointerDown={(event) => {

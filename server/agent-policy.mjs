@@ -13,6 +13,13 @@ export const POLICY_SCOPES = [
   // Use apps on hidden displays and hand them to you (server/agent-apps.mjs).
   "apps:drive",
 ];
+// Browser invitations only reach the narrow browser action API. These are
+// deliberately absent from ordinary agent profiles and token issuance.
+export const BROWSER_SCOPES = [
+  "device", "files:read", "browser:read", "browser:scroll", "browser:request",
+];
+export const validBrowserTerminalId = (id) =>
+  typeof id === "string" && /^(reach|desktop):[A-Za-z0-9_-]{1,128}$/.test(id);
 const invalid = (message) => Object.assign(Error(message), { status: 403 });
 export const within = (root, file) => {
   const relative = path.relative(root, file);
@@ -103,6 +110,37 @@ export function agentProfile(config, name) {
 }
 export function applyAgentPolicy(client, config) {
   if (client.kind !== "agent") return client;
+  if (client.policy?.browser === true) {
+    const policy = client.policy;
+    if (
+      policy.invite !== true ||
+      !Array.isArray(policy.roots) ||
+      policy.roots.some((root) => typeof root !== "string" || !path.isAbsolute(root)) ||
+      !Array.isArray(policy.terminalIds) ||
+      policy.terminalIds.length > 20 ||
+      policy.terminalIds.some((id) => !validBrowserTerminalId(id)) ||
+      !["off", "view", "scroll", "ask"].includes(policy.screen) ||
+      (policy.commandRequests !== undefined && typeof policy.commandRequests !== "boolean") ||
+      (policy.restrictedTerminal !== undefined && typeof policy.restrictedTerminal !== "boolean") ||
+      (policy.restrictedTerminal === true && (!policy.roots.length || policy.screen === "ask" || policy.commandRequests === true)) ||
+      !Array.isArray(client.scopes)
+    ) return null;
+    const roots = policy.roots.filter((root) =>
+      config.roots.some((shared) => within(shared, root)),
+    );
+    if (policy.restrictedTerminal === true && !roots.length) return null;
+    return {
+      ...client,
+      scopes: client.scopes.filter((scope) =>
+        BROWSER_SCOPES.includes(scope) &&
+        (scope !== "files:read" || roots.length > 0) &&
+        (scope !== "browser:scroll" || policy.screen === "scroll") &&
+        (scope !== "browser:request" || policy.screen === "ask" || policy.commandRequests === true || (policy.restrictedTerminal === true && roots.length > 0)),
+      ),
+      policy: { ...policy, roots },
+      agentRoots: roots,
+    };
+  }
   // Invited from the phone: its own folders and limits, chosen by you when
   // inviting (not a profile in the policy file), still inside what Reach
   // shares, and never screen control or apps.

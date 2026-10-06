@@ -165,34 +165,6 @@ button.as-title:active {
 .as-bar .agent-logo {
   margin-right: 8px;
 }
-.as-details {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 8px 14px 10px;
-  border-bottom: 1px solid var(--as-line);
-  color: var(--as-muted);
-  font-size: 12.5px;
-}
-.as-details span {
-  flex: 1 1 200px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.as-details-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 11px;
-  border: 1px solid #ffffff22;
-  border-radius: 999px;
-  background: none;
-  color: var(--as-text);
-  font: inherit;
-  font-size: 12.5px;
-}
 .as-title strong,
 .as-title small {
   overflow: hidden;
@@ -1177,25 +1149,55 @@ button.as-mode:disabled {
 .as-page.claude .as-bar .as-title {
   visibility: visible;
 }
+/* The ⋯ menu: a small floating menu under ⋯, as in the agents' apps. */
+.as-details-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+}
 .as-details {
   position: absolute;
-  z-index: 3;
-  top: calc(env(safe-area-inset-top) + 60px);
-  left: 14px;
-  right: 14px;
-  padding: 14px 16px;
-  border: 0;
-  border-radius: 18px;
+  z-index: 5;
+  top: calc(env(safe-area-inset-top) + 56px);
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  width: min(300px, calc(100vw - 24px));
+  max-height: 50%;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 16px;
   background: var(--as-float);
+  color: var(--as-text);
   box-shadow:
     inset 0 0 0 0.5px var(--as-float-line),
-    0 12px 32px -8px rgb(0 0 0 / 0.6);
+    0 12px 32px -8px rgb(0 0 0 / 0.5);
+}
+.as-details-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 10px;
+}
+.as-details-head:not(:last-child) {
+  margin-bottom: 4px;
+  border-bottom: 0.5px solid var(--as-float-line);
 }
 .as-details-title {
-  flex: 1 1 100%;
-  color: var(--as-text);
-  font-size: 15px;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.3;
+}
+.as-details-head small {
+  overflow: hidden;
+  color: var(--as-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .as-scroll {
   padding: 20px clamp(16px, 4vw, 32px);
@@ -1392,22 +1394,6 @@ button.as-mode:disabled {
 }
 .as-page.kb-open .as-composer { padding-bottom: 8px; }
 .as-box .as-field textarea { max-height: min(160px, 25dvh); overflow-y: auto; }
-.as-details { max-height: 50%; overflow-y: auto; }
 .as-page[data-compact-viewport="true"] .as-bar { min-height: 44px; padding-block: 0; }
 .as-page[data-compact-viewport="true"] .as-scroll { padding-block: 10px; }
-.as-queue {
-  border: 1px solid var(--as-composer-line, var(--border));
-  border-radius: 16px 16px 0 0;
-  background: var(--as-composer);
-  padding: 12px 14px 8px;
-  margin: 0 8px -5px;
-  max-height: min(180px, 24dvh);
-  overflow-y: auto;
-}
-.as-queue > header { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.as-queue-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
-.as-queue-message { flex: 1; min-width: 0; }
-.as-queue-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
-.as-queue-message small { display: block; color: var(--muted); font-size: 12px; }
-.as-queue-row > button { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border: 0; background: transparent; color: var(--as-text); border-radius: 50%; }
-.as-queue-row > button:disabled { opacity: .35; }
+/* Queued messages: queued-messages.css (QueuedMessages.tsx). */

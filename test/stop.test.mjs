@@ -6,9 +6,10 @@ import path from "node:path";
 import { findReach, startInTerminal, startService, stopReach } from "../scripts/stop.mjs";
 import { parseOptions } from "../scripts/launcher-options.mjs";
 
-// `reach stop` and `reach restart`: every Reach from this folder stops (any
-// terminal, detached, or the background service), as Ctrl+C stops it, then
-// what it left behind; never another folder's, never this command itself.
+// `reach stop` and `reach restart`: every Reach on this computer stops, from
+// any folder (one should run; a second one, in a terminal, detached, or the
+// background service, goes too), as Ctrl+C stops it, then what it left behind;
+// never this command itself, nor `reach approve` and the like beside it.
 const ROOT = "/Users/me/reach";
 const OTHER = "/Users/me/other-reach";
 const node = "/opt/homebrew/bin/node";
@@ -30,6 +31,12 @@ test("it finds every Reach from this folder (a terminal one, a detached one), wi
   assert.deepEqual(found[0].descendants.map((d) => d.pid), [101, 102, 103, 104]);
   assert.deepEqual(found[0].terminals, [{ pid: 103, tty: "ttys012", shell: "zsh", running: ["npm"] }]);
   assert.deepEqual(found[1].terminals, []);
+  // Every folder's: one Reach per computer.
+  assert.deepEqual(findReach(null, table(), 500).map((h) => [h.pid, h.root]), [
+    [100, ROOT],
+    [200, ROOT],
+    [300, OTHER],
+  ]);
 });
 
 // Processes that end when told: hosts on Ctrl+C (unless `hung`), the rest on SIGTERM.
@@ -43,7 +50,7 @@ const world = ({ hung = [], helpersLinger = true } = {}) => {
     }
     signals.push([pid, signal]);
     if (signal === "SIGINT" && hung.includes(pid)) return;
-    if (signal === "SIGINT" && [100, 200].includes(pid)) {
+    if (signal === "SIGINT" && [100, 200, 300].includes(pid)) {
       alive.delete(pid);
       if (!helpersLinger) for (const p of [101, 102, 103, 104]) alive.delete(p);
       return;
@@ -65,14 +72,15 @@ const base = (w, extra = {}) => ({
   ...extra,
 });
 
-test("stop: each the way Ctrl+C stops it, then the helpers it left; another folder's and this command left alone", async () => {
+test("stop: each the way Ctrl+C stops it, then the helpers it left; another folder's too, this command left alone", async () => {
   const w = world();
   const done = await stopReach(ROOT, base(w, { yes: true }));
-  assert.deepEqual(done, { stopped: 2, service: false, terminals: 1, serviceInstalled: false });
-  assert.deepEqual(w.signals.filter(([, s]) => s === "SIGINT").map(([p]) => p), [100, 200]);
-  // Helpers left behind get SIGTERM; nothing of the other folder's or ours.
+  assert.deepEqual(done, { stopped: 3, service: false, terminals: 1, serviceInstalled: false });
+  assert.deepEqual(w.signals.filter(([, s]) => s === "SIGINT").map(([p]) => p), [100, 200, 300]);
+  // Helpers left behind get SIGTERM; nothing of ours.
   assert.deepEqual(w.signals.filter(([, s]) => s === "SIGTERM").map(([p]) => p).sort(), [101, 102, 103, 104]);
-  assert.ok(w.alive.has(300) && w.alive.has(400) && w.alive.has(500));
+  assert.ok(!w.alive.has(300), "the other folder's Reach stopped too");
+  assert.ok(w.alive.has(400) && w.alive.has(500));
 });
 
 test("a Reach that hangs on Ctrl+C is ended harder, step by step", async () => {
@@ -93,7 +101,7 @@ test("its terminals close with it: said first and asked; without a terminal to a
   await assert.rejects(stopReach(ROOT, base(unattended, { interactive: false })), /Reach has 1 terminal open\. Run again with --yes to close them too\./);
   assert.deepEqual(unattended.signals, []);
   const agreed = world();
-  assert.equal((await stopReach(ROOT, base(agreed, { interactive: true, ask: async () => "y" }))).stopped, 2);
+  assert.equal((await stopReach(ROOT, base(agreed, { interactive: true, ask: async () => "y" }))).stopped, 3);
 });
 
 const serviceHome = (root = ROOT) => {
@@ -124,18 +132,18 @@ test("the background service stops through launchd (it would come back otherwise
   const stopped = await stopReach(ROOT, base(w, { yes: true, platform: "darwin", home, uid: 501, launchctl: stopping.launchctl }));
   assert.deepEqual(stopping.calls.at(-1), ["bootout", "gui/501/com.reach.companion"]);
   assert.equal(stopped.service, true);
-  // Only the one in the terminal was sent Ctrl+C; launchd ends the service.
-  assert.deepEqual(w.signals.filter(([, s]) => s === "SIGINT").map(([p]) => p), [100]);
+  // Ctrl+C for the others (the terminal one, another folder's); launchd ends the service.
+  assert.deepEqual(w.signals.filter(([, s]) => s === "SIGINT").map(([p]) => p), [100, 300]);
   const restarting = launchd(true);
   const r = world();
   await stopReach(ROOT, base(r, { yes: true, restarting: true, platform: "darwin", home, uid: 501, launchctl: restarting.launchctl }));
   assert.deepEqual(restarting.calls.at(-1), ["kickstart", "-k", "gui/501/com.reach.companion"]);
   assert.ok(r.alive.has(200), "the service is restarted by launchd, not killed");
-  // Another folder's service is left to that folder.
+  // Reach's one background service, whichever folder installed it.
   const elsewhere = launchd(true);
   const theirs = await stopReach(ROOT, base(world(), { yes: true, platform: "darwin", home: serviceHome(OTHER), uid: 501, launchctl: elsewhere.launchctl }));
-  assert.equal(theirs.service, false);
-  assert.ok(!elsewhere.calls.some(([verb]) => verb === "bootout" || verb === "kickstart"));
+  assert.equal(theirs.service, true);
+  assert.deepEqual(elsewhere.calls.at(-1), ["bootout", "gui/501/com.reach.companion"]);
   // Installed but stopped: started again.
   const stoppedService = launchd(false);
   startService(ROOT, { launchctl: stoppedService.launchctl, home, uid: 501 });
@@ -146,7 +154,7 @@ test("the background service stops through launchd (it would come back otherwise
 test("nothing running: it says so", async () => {
   const printed = [];
   const done = await stopReach(ROOT, { ...base(world()), table: () => [], print: (t) => printed.push(t) });
-  assert.deepEqual(printed, ["Reach isn't running from this folder."]);
+  assert.deepEqual(printed, ["Reach isn't running."]);
   assert.equal(done.stopped, 0);
 });
 

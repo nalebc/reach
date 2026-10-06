@@ -44,6 +44,14 @@ function browser({
 } = {}) {
   const log = [];
   let subscription = null;
+  let preferences = {
+    chat: true,
+    done: true,
+    computer: true,
+    handoffs: true,
+    access: true,
+    pausedUntil: 0,
+  };
   const reply = (status, v) =>
     new Response(JSON.stringify(v), {
       status,
@@ -61,9 +69,23 @@ function browser({
       return reply(403, {
         error: "This credential does not grant admin access.",
       });
+    if (u.pathname === "/api/push" && method === "PATCH") {
+      const body = JSON.parse(init.body);
+      preferences = {
+        ...preferences,
+        ...body.preferences,
+        ...(body.pauseMinutes !== undefined && {
+          pausedUntil: body.pauseMinutes
+            ? Date.now() + body.pauseMinutes * 60000
+            : 0,
+        }),
+      };
+      return reply(200, { preferences });
+    }
     if (u.pathname === "/api/push" && method === "GET")
       return reply(200, {
         key: KEY,
+        preferences,
         subscribed:
           !!subscription &&
           u.searchParams.get("endpoint") === subscription.endpoint,
@@ -118,7 +140,10 @@ function browser({
     set("PushManager", function () {});
     set("Notification", {
       permission,
-      requestPermission: async () => ((permission = "granted"), "granted"),
+      requestPermission: async () => {
+        window.Notification.permission = "granted";
+        return "granted";
+      },
     });
   } else {
     delete dom.window.navigator.serviceWorker;
@@ -130,6 +155,14 @@ function browser({
   }
   return log;
 }
+// The main switch, and the category switches once it's on.
+const mainSwitch = (view) => view.container.querySelector('[role="switch"][aria-label="Notifications"]');
+const categories = (view) => [...view.container.querySelectorAll('[role="group"] [role="switch"]')];
+const tap = async (el, ms = 60) => {
+  el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await settle(ms);
+};
+const buttonNamed = (view, text) => [...view.container.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 const render = async () => {
   const view = await dom.render(React.createElement(NotifySettings, { peer }));
   await settle(60);
@@ -139,11 +172,12 @@ const render = async () => {
 test("the switch subscribes this browser with the computer's key, then turns it off", async () => {
   const log = browser();
   const view = await render();
-  const toggle = view.container.querySelector('[role="switch"]');
-  assert.equal(toggle.getAttribute("aria-checked"), "false");
-  toggle.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-  await settle(60);
-  assert.equal(toggle.getAttribute("aria-checked"), "true");
+  // One switch, off, with what it's for; nothing else to read.
+  assert.equal(mainSwitch(view).checked, false);
+  assert.match(view.container.textContent, /A ping when an agent or your Mac needs you/);
+  await tap(mainSwitch(view));
+  assert.equal(mainSwitch(view).checked, true);
+  assert.match(view.container.textContent, /On for this device/);
   assert.deepEqual(
     log.filter(([m]) => m !== "GET"),
     [
@@ -161,10 +195,9 @@ test("the switch subscribes this browser with the computer's key, then turns it 
       ],
     ],
   );
-  toggle.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-  await settle(60);
-  assert.equal(toggle.getAttribute("aria-checked"), "false");
-  assert.deepEqual(log.slice(-2), [
+  await tap(mainSwitch(view));
+  assert.equal(mainSwitch(view).checked, false);
+  assert.deepEqual(log.filter(([m]) => m !== "GET").slice(-2), [
     [
       "DELETE",
       "/api/push",
@@ -179,12 +212,30 @@ test("the switch subscribes this browser with the computer's key, then turns it 
 test("on iPhone outside the Home Screen it says how, with no switch", async () => {
   browser({ capable: false, ios: true });
   const view = await render();
-  assert.match(
-    view.container.textContent,
-    /Add Reach to your Home Screen to get them\./,
-  );
+  assert.match(view.container.textContent, /Add to Home Screen/);
   assert.equal(view.container.querySelectorAll('[role="switch"]').length, 0);
   await view.unmount();
+});
+
+test("on iPhone, Add to Home Screen opens the Share sheet for this page, then shows the two steps", async () => {
+  browser({ capable: false, ios: true });
+  const shared = [];
+  dom.window.navigator.share = async (data) => {
+    shared.push(data);
+  };
+  try {
+    const view = await render();
+    // One button, no instruction wall before it.
+    assert.equal(view.container.querySelector(".ns-steps"), null);
+    await tap(buttonNamed(view, "Add to Home Screen"));
+    assert.equal(shared.length, 1);
+    assert.equal(shared[0].title, "Reach");
+    assert.equal(shared[0].url, dom.window.location.origin + dom.window.location.pathname);
+    assert.match(view.container.querySelector(".ns-steps").textContent, /In the sheet, tap Add to Home Screen[\s\S]*Open Reach from your Home Screen/);
+    await view.unmount();
+  } finally {
+    delete dom.window.navigator.share;
+  }
 });
 
 test("guests and browsers that can't get notifications see nothing", async () => {
@@ -195,5 +246,107 @@ test("guests and browsers that can't get notifications see nothing", async () =>
   browser({ capable: false, ios: false });
   view = await render();
   assert.equal(view.container.textContent, "");
+  await view.unmount();
+});
+
+test("Home Screen mode enables push and sends a real server test for this subscription", async () => {
+  const log = browser({ ios: true, standalone: true });
+  const view = await render();
+  await tap(mainSwitch(view));
+  const testButton = buttonNamed(view, "Send a test notification");
+  assert.ok(testButton);
+  testButton.click();
+  await settle(60);
+  assert.ok(
+    log.some(
+      ([method, route, body]) =>
+        method === "POST" &&
+        route === "/api/push/test" &&
+        body.endpoint === "https://fcm.googleapis.com/fcm/send/abc",
+    ),
+  );
+  assert.match(view.container.textContent, /Test sent/);
+  await view.unmount();
+});
+
+test("an iPhone browser always gets install guidance, even if push interfaces exist", async () => {
+  browser({ ios: true, capable: true, standalone: false });
+  const view = await render();
+  assert.match(view.container.textContent, /Add to Home Screen/);
+  assert.equal(view.container.querySelectorAll("button").length, 0);
+  await view.unmount();
+});
+
+test("returning from iOS Settings refreshes denied permission without reloading Reach", async () => {
+  browser({ ios: true, standalone: true, permission: "denied" });
+  const view = await render();
+  assert.match(view.container.textContent, /Settings → Notifications → Reach/);
+  assert.equal(view.container.querySelectorAll("button").length, 0);
+  window.Notification.permission = "default";
+  window.dispatchEvent(new window.Event("focus"));
+  await settle(60);
+  assert.equal(mainSwitch(view).checked, false);
+  await view.unmount();
+});
+
+test("declining notifications doesn't leave a nonworking enable button", async () => {
+  browser({ ios: true, standalone: true });
+  window.Notification.requestPermission = async () => {
+    window.Notification.permission = "denied";
+    return "denied";
+  };
+  const view = await render();
+  await tap(mainSwitch(view));
+  assert.match(view.container.textContent, /Notifications are blocked/);
+  assert.equal(view.container.querySelectorAll("button").length, 0);
+  assert.equal(view.container.querySelectorAll('[role="switch"]').length, 0);
+  await view.unmount();
+});
+
+test("enabled devices can mute categories, pause, resume and keep their choices after reopening", async () => {
+  const log = browser();
+  let view = await render();
+  await tap(mainSwitch(view), 80);
+  const switches = () => categories(view);
+  // Chats finished, agent questions, Mac prompts, apps handed over, access.
+  assert.equal(switches().length, 5);
+  assert.ok(switches().every((input) => input.checked));
+  switches()[0].click();
+  await settle(80);
+  assert.equal(switches()[0].checked, false);
+  assert.ok(
+    switches()
+      .slice(1)
+      .every((input) => input.checked),
+  );
+  // Pause is two chips, not a select.
+  assert.equal(view.container.querySelector("select"), null);
+  await tap(buttonNamed(view, "1 hour"), 80);
+  assert.match(view.container.textContent, /Paused until/);
+  await view.unmount();
+  view = await render();
+  assert.equal(switches()[0].checked, false);
+  assert.match(view.container.textContent, /Paused until/);
+  await tap(buttonNamed(view, "Resume"), 80);
+  assert.ok(buttonNamed(view, "1 hour"));
+  assert.equal(switches()[0].checked, false);
+  assert.equal(log.filter(([method]) => method === "PATCH").length, 3);
+  await view.unmount();
+});
+
+test("failed preference saves retain the previous choice and show an error", async () => {
+  browser();
+  const view = await render();
+  await tap(mainSwitch(view), 80);
+  const original = globalThis.fetch;
+  globalThis.fetch = dom.window.fetch = async (url, init) =>
+    init?.method === "PATCH"
+      ? new Response(JSON.stringify({ error: "Computer disconnected" }), {
+          status: 503,
+        })
+      : original(url, init);
+  await tap(categories(view)[0], 80);
+  assert.equal(categories(view)[0].checked, true);
+  assert.match(view.container.textContent, /Computer disconnected/);
   await view.unmount();
 });

@@ -23,7 +23,10 @@ const rows = [
     deliveryContext: { channel: "discord", to: "456" },
   },
   { key: "agent:main:main", displayName: "Direct", updatedAt: 1 },
+  // A chat Reach made itself (webchat): the only kind Reach writes in.
+  { key: "agent:main:reach-1a2b3c4d", label: "Login page", channel: "webchat", updatedAt: 50 },
 ];
+const REACH = rows[3].key;
 async function fixture(t, extra = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-test-"));
   const calls = [],
@@ -50,11 +53,13 @@ async function fixture(t, extra = {}) {
       queueMicrotask(() => {
         if (this.readyState !== 1) return;
         const custom = handler?.(req, this);
+        if (custom?.hold) return;
         const payload =
           custom?.payload ??
           {
             connect: { type: "hello-ok", protocol: 3 },
             "sessions.list": { sessions: rows },
+            "channels.status": { channelAccounts: { whatsapp: [{ accountId: "default", connected: true }] } },
             "chat.history": {
               messages: [
                 { id: "1", role: "user", content: "Hello" },
@@ -73,7 +78,10 @@ async function fixture(t, extra = {}) {
                 },
               ],
             },
-            "chat.send": { runId: "run-1", status: "started" },
+            "chat.send": { runId: req.params.idempotencyKey, status: "started" },
+            agent: { runId: req.params.idempotencyKey, status: "accepted" },
+            "chat.abort": { aborted: true },
+            "exec.approval.resolve": { ok: true },
           }[req.method] ??
           {};
         this.emit(
@@ -127,7 +135,17 @@ test("all agents/channels discovered with metadata only; signed minimal-scope ha
   const { c, calls, dir } = await fixture(t);
   const r = await c.overview();
   assert.equal(r.connected, true);
-  assert.equal(r.sessions.length, 3);
+  assert.equal(r.sessions.length, 4);
+  // Named for people, never OpenClaw's raw ids; only Reach's own chat is writable.
+  assert.deepEqual(
+    Object.fromEntries(r.sessions.map((s) => [s.key, [s.title, s.writable]])),
+    {
+      [rows[0].key]: ["Family plans", false],
+      [rows[1].key]: ["Launch", false],
+      [rows[2].key]: ["Direct", false],
+      [REACH]: ["Login page", true],
+    },
+  );
   assert.deepEqual(
     new Set(r.sessions.map((s) => s.agentId)),
     new Set(["main", "work"]),
@@ -202,34 +220,101 @@ test("history loads only selected known session, filters reasoning, clamps limit
   await assert.rejects(c.history("bad\nkey"), /Choose/);
 });
 
-test("reply routing is explicit and retry uses caller idempotency key", async (t) => {
-  const { c, calls } = await fixture(t);
+test("Reach never asks OpenClaw to post outside Reach; retry uses caller idempotency key", async (t) => {
+  const { c, calls, sockets } = await fixture(t);
   const message = {
-    key: rows[0].key,
+    key: REACH,
     text: "Draft",
     requestId: "retry-same-id",
   };
   await c.send(message);
   await c.send(message);
-  await c.send({ ...message, deliver: true, requestId: "external-reply" });
+  assert.equal(calls.filter(c => c.method === "chat.send").length, 1);
+  sockets[0].event("chat", { sessionKey: message.key, runId: message.requestId, state: "final" });
+  // Oct 5: a "reply via WhatsApp" reached a WhatsApp group of friends.
+  // Refused before any Gateway call, for every session and any non-false value.
+  const before = calls.length;
+  for (const [i, [key, deliver]] of [
+    [rows[0].key, true],
+    [rows[1].key, true],
+    [rows[2].key, true],
+    [rows[0].key, "true"],
+    [rows[0].key, 1],
+  ].entries())
+    await assert.rejects(
+      c.send({ ...message, key, deliver, requestId: `external-reply-${i}` }),
+      (e) => e.status === 403 && /doesn’t post to WhatsApp/.test(e.message),
+    );
+  assert.deepEqual(calls.slice(before).map((c) => c.method), []);
+  // A WhatsApp, Discord or other chat Reach didn't make: never written to,
+  // even without asking to post outside (a message there runs the agent in
+  // that group's context).
+  for (const [i, row] of rows.slice(0, 3).entries())
+    await assert.rejects(
+      c.send({ ...message, key: row.key, requestId: `foreign-${i}` }),
+      (e) => e.status === 403 && /Reach shows it but doesn’t write in it/.test(e.message) && /Nothing was sent/.test(e.message),
+    );
+  assert.equal(calls.slice(before).some((c) => ["chat.send", "agent"].includes(c.method)), false);
   const sends = calls
-    .filter((c) => c.method === "chat.send")
+    .filter((c) => ["chat.send", "agent"].includes(c.method))
     .map((c) => c.params);
-  assert.deepEqual(sends[0], {
-    sessionKey: rows[0].key,
-    message: "Draft",
-    deliver: false,
-    idempotencyKey: message.requestId,
-  });
-  assert.deepEqual(sends[0], sends[1]);
-  assert.equal(sends[2].deliver, true);
-  await assert.rejects(
-    c.send({ ...message, key: rows[2].key, deliver: true }),
-    /no external reply/,
-  );
+  assert.deepEqual(sends, [
+    {
+      sessionKey: REACH,
+      message: "Draft",
+      deliver: false,
+      idempotencyKey: message.requestId,
+    },
+  ]);
+  const { sessions } = await c.overview();
+  assert.equal(sessions.some((s) => "canDeliver" in s), false);
   await assert.rejects(c.send({ ...message, text: "" }), /Enter a message/);
   await c.stop(rows[0].key);
   assert.deepEqual(calls.at(-1).params, { sessionKey: rows[0].key });
+});
+
+test("history shows each turn once: fallback retries and delivery mirrors are OpenClaw's bookkeeping", async (t) => {
+  const { c, handle } = await fixture(t);
+  const retry =
+    "Continue where you left off. The previous model attempt failed or timed out.";
+  const user = (text) => ({ role: "user", content: text });
+  const failed = (model) => ({ role: "assistant", content: [], model, stopReason: "error", errorMessage: "billing" });
+  const said = (text, extra = {}) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: "gpt-4o",
+    stopReason: "stop",
+    ...extra,
+  });
+  const mirror = (text) => said(text, { provider: "openclaw", model: "delivery-mirror" });
+  // The shape OpenClaw wrote on Oct 5 (a chat.send turn, then an agent turn),
+  // plus genuine repeats and messages after a failed run, which must stay.
+  const messages = [
+    user("Test"), failed("claude-opus-4-6"), user("Test"), failed("gpt-5.1-codex"), user("Test"),
+    said("Multiple entries?"), mirror("Multiple entries?"),
+    user("Hey"), failed("claude-opus-4-6"), user(retry), failed("gpt-5.1-codex"), user(retry), said("I'm here"),
+    user("yes"), said("Done"), user("yes"), said("Done"),
+    user("Hi"), failed("claude-opus-4-6"), user("Are you there?"),
+    mirror("Sent by a tool"),
+  ];
+  handle((req) => (req.method === "chat.history" ? { payload: { messages } } : undefined));
+  const h = await c.history(rows[0].key);
+  assert.deepEqual(
+    h.items.map((i) => [i.id, i.role, i.text, i.sentTo]),
+    [
+      ["0:0", "user", "Test", undefined],
+      ["0:5", "assistant", "Multiple entries?", "whatsapp"],
+      ["0:7", "user", "Hey", undefined],
+      ["0:12", "assistant", "I'm here", undefined],
+      ["0:13", "user", "yes", undefined],
+      ["0:14", "assistant", "Done", undefined],
+      ["0:15", "user", "yes", undefined],
+      ["0:16", "assistant", "Done", undefined],
+      ["0:17", "user", "Hi", undefined],
+      ["0:19", "user", "Are you there?", undefined],
+      ["0:20", "assistant", "Sent by a tool", undefined],
+    ],
+  );
 });
 
 test("streaming, completed-before-response race, approval expiry and explicit resolution", async (t) => {
@@ -243,16 +328,17 @@ test("streaming, completed-before-response race, approval expiry and explicit re
     message: { content: "Streaming" },
   });
   assert.equal((await c.history(rows[0].key)).streaming, "Streaming");
+  ws.event("chat", { sessionKey: rows[0].key, runId: "r", state: "final" });
   handle((req, socket) => {
     if (req.method === "chat.send")
       socket.event("chat", {
-        sessionKey: rows[0].key,
-        runId: "run-1",
+        sessionKey: REACH,
+        runId: req.params.idempotencyKey,
         state: "final",
       });
   });
-  await c.send({ key: rows[0].key, text: "Hi", requestId: "message-id" });
-  assert.equal((await c.history(rows[0].key)).session.status, "idle");
+  await c.send({ key: REACH, text: "Hi", requestId: "message-id" });
+  assert.equal((await c.history(REACH)).session.status, "idle");
   const prompt = {
     id: "approval",
     request: { command: "npm test", sessionKey: rows[0].key },
@@ -339,4 +425,87 @@ test('OpenClaw HTTP routes inherit owner-device authentication before reaching t
   assert.equal(calls.length, 0);
   for (const [route, method] of routes) assert.equal((await fetch(`${url}/${route}`, { method, headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify({ key: rows[0].key, text: 'test', requestId: 'test-request', id: 'approval', decision: 'deny' }) } : {}) })).status, 200);
   assert.deepEqual(calls.map(c => c.method), ['overview', 'history', 'send', 'stop', 'approve']);
+});
+
+test("OpenClaw keeps approvals until acknowledged, rejects duplicates, and retains failed answers", async t => {
+  const { c, sockets, handle, calls } = await fixture(t);
+  await c.overview();
+  const ws = sockets[0];
+  ws.event("exec.approval.requested", { id: "real", request: { command: "npm test", sessionKey: rows[0].key }, expiresAtMs: Date.now() + 60000 });
+  handle(req => req.method === "exec.approval.resolve" ? { hold: true } : undefined);
+  const pending = c.approve("real", "allow-once");
+  await assert.rejects(c.approve("real", "deny"), /already being sent/);
+  const request = calls.find(r => r.method === "exec.approval.resolve");
+  assert.equal((await c.history(rows[0].key)).approvals.length, 1);
+  ws.emit("message", Buffer.from(JSON.stringify({ type: "res", id: request.id, ok: true, payload: { ok: false } })));
+  await assert.rejects(pending, /did not confirm/);
+  assert.equal((await c.history(rows[0].key)).approvals.length, 1);
+  handle(() => undefined);
+  assert.deepEqual(await c.approve("real", "deny"), { ok: true });
+  assert.equal((await c.history(rows[0].key)).approvals.length, 0);
+  await assert.rejects(c.approve("real", "allow-once"), /already answered/);
+});
+
+test("OpenClaw exposes only native pending requests, clears resolutions and disconnects, and gates unavailable responses", async t => {
+  const { c, sockets, handle, calls } = await fixture(t);
+  handle(req => req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "chat.history"] } } } : undefined);
+  await c.overview();
+  const ws = sockets[0];
+  const prompt = { id: "real", request: { command: "npm test", sessionKey: rows[0].key }, expiresAtMs: Date.now() + 60000 };
+  ws.event("exec.approval.requested", { ...prompt, id: undefined });
+  ws.event("exec.approval.requested", { ...prompt, request: {} });
+  ws.event("chat", { message: { content: "Please approve npm test" } });
+  assert.equal((await c.history(rows[0].key)).approvals.length, 0);
+  ws.event("exec.approval.requested", prompt);
+  assert.equal((await c.history(rows[0].key)).approvals[0].canRespond, false);
+  await assert.rejects(c.approve("real", "deny"), /cannot accept approvals/);
+  ws.event("exec.approval.resolved", { id: "real" });
+  await assert.rejects(c.approve("real", "deny"), /already answered/);
+  ws.event("exec.approval.requested", { ...prompt, id: "lost" });
+  ws.close();
+  await assert.rejects(c.approve("lost", "allow-once"), /already answered/);
+  assert.equal(sockets.length, 1, "answering does not reconnect to deliver an old decision");
+  assert.equal(calls.some(r => r.method === "exec.approval.resolve"), false);
+});
+
+test("OpenClaw disconnect while an answer is in flight fails instead of reporting success", async t => {
+  const { c, sockets, handle } = await fixture(t);
+  await c.overview();
+  sockets[0].event("exec.approval.requested", { id: "lost", request: { command: "npm test" }, expiresAtMs: Date.now() + 60000 });
+  handle(req => req.method === "exec.approval.resolve" ? { hold: true } : undefined);
+  const answer = c.approve("lost", "deny");
+  sockets[0].close();
+  await assert.rejects(answer, /unavailable/);
+});
+
+test("a new chat from Reach is a webchat session of Reach's own; Reach removes only those", async (t) => {
+  // "I couldn't start an OpenClaw chat in Reach": every chat on this Mac
+  // belonged to WhatsApp, Discord or a cron job, and none could be written to.
+  const { c, calls } = await fixture(t);
+  const { key } = await c.create({ title: "Plan the trip" });
+  assert.match(key, /^agent:main:reach-[\w-]{8}$/);
+  assert.deepEqual(
+    calls.filter((x) => ["sessions.reset", "sessions.patch"].includes(x.method)).map((x) => [x.method, x.params]),
+    [
+      ["sessions.reset", { key, reason: "new" }],
+      ["sessions.patch", { key, label: "Plan the trip" }],
+    ],
+  );
+  await assert.rejects(c.remove(rows[0].key), (e) => e.status === 403);
+  assert.equal(calls.some((x) => x.method === "sessions.delete"), false);
+  await c.remove(key);
+  assert.deepEqual(calls.at(-1).params, { key, deleteTranscript: true });
+});
+
+test("a Gateway that can't add a moved chat's history says so up front", async (t) => {
+  // OpenClaw 2026.3.13 has no chat.inject: "Continue in OpenClaw" failed
+  // only after confirming.
+  const { c, handle } = await fixture(t);
+  handle((req) => (req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "sessions.reset", "chat.send"] } } } : undefined));
+  await c.overview();
+  assert.equal(c.canMove(), false);
+  const fresh = await fixture(t);
+  fresh.handle((req) => (req.method === "connect" ? { payload: { features: { methods: ["sessions.list", "chat.inject"] } } } : undefined));
+  await fresh.c.overview();
+  assert.equal(fresh.c.canMove(), true);
 });

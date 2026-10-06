@@ -1,16 +1,16 @@
-/* Invite someone: a share dialog in the style of Claude and ChatGPT.
-   Neutral greys, one white primary button, small menus with descriptions. */
+/* Invitation composer. Calm green surfaces with progressive disclosure. */
 .ivt {
-  --ivt-text: #ececec;
-  --ivt-muted: #9b9b9b;
-  --ivt-line: #ffffff17;
-  --ivt-field: #2a2a2a;
-  --ivt-raised: #303030;
+  --ivt-text: #e9eee9;
+  --ivt-muted: #9aa89f;
+  --ivt-line: #d2eedb1a;
+  --ivt-field: #111a15;
+  --ivt-raised: #202c24;
   --ivt-hover: #ffffff0f;
   display: grid;
   gap: 14px;
-  max-width: 560px;
-  margin-bottom: 22px;
+  width: 100%;
+  max-width: 580px;
+  margin: 0 auto 12px;
   color: var(--ivt-text);
   font-size: 15px;
 }
@@ -57,7 +57,7 @@
 }
 .ivt-primary {
   border: 0;
-  background: #f4f4f4;
+  background: #b9efd4;
   color: #0d0d0d !important;
 }
 .ivt-primary.small {
@@ -218,7 +218,7 @@
   transition: transform 0.15s;
 }
 .ivt-toggle input:checked {
-  background: #f4f4f4;
+  background: #b9efd4;
 }
 .ivt-toggle input:checked::after {
   background: #0d0d0d;
@@ -476,7 +476,7 @@
   height: 28px;
   padding: 0 4px 0 10px;
   border-radius: 999px;
-  background: #f4f4f4;
+  background: #b9efd4;
   color: #0d0d0d;
   font-size: 13px;
   font-weight: 500;
@@ -542,7 +542,7 @@
 }
 .fb-share.on {
   border-color: transparent;
-  background: #f4f4f4;
+  background: #b9efd4;
   color: #0d0d0d !important;
   font-weight: 600;
 }
@@ -572,7 +572,7 @@
 }
 .fb-pick.on {
   border-color: #f4f4f4;
-  background: #f4f4f4;
+  background: #b9efd4;
   color: #0d0d0d !important;
 }
 .fb-open {
@@ -677,7 +677,7 @@
   background: #ffffff26;
 }
 .ivt-steps i.on {
-  background: #f4f4f4;
+  background: #b9efd4;
 }
 .ivt-setup > strong {
   font-size: 15px;
@@ -773,4 +773,297 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+/* The invitation page uses one centered composer and a quiet access drawer. */
+.page-invite {
+  padding-top: clamp(24px, 5vh, 64px);
+  padding-bottom: 100px;
+}
+.ivt-heading {
+  text-align: center;
+  margin: 0 auto 18px;
+  max-width: 370px;
+}
+.ivt-heading-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 18px;
+  color: #b9efd4;
+  border: 1px solid #b9efd429;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #b9efd417, #b9efd404);
+}
+.ivt-heading h1 {
+  margin: 0 0 10px;
+  font-size: clamp(28px, 4vw, 34px);
+  letter-spacing: -1.2px;
+  font-weight: 550;
+  line-height: 1.15;
+}
+.ivt-heading p {
+  margin: 0;
+  color: var(--ivt-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.ivt-composer {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  padding: 26px;
+  border: 1px solid var(--ivt-line);
+  border-radius: 24px;
+  background: linear-gradient(150deg, #1b261f, #161e19 65%);
+  box-shadow: 0 16px 48px #00000018;
+}
+.ivt-kind {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: #0c130f;
+}
+.ivt-kind button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--ivt-muted);
+  font-size: 14px;
+  font-weight: 500;
+}
+.ivt-kind button[aria-pressed="true"] {
+  background: #26352c;
+  color: #d7f5e4;
+  border-color: #b9efd426;
+  box-shadow: 0 2px 6px #0002;
+}
+.ivt-form-heading h2 {
+  margin: 6px 0;
+  font-size: 19px;
+  font-weight: 550;
+  letter-spacing: -0.4px;
+}
+.ivt-form-heading p {
+  margin: 0;
+  color: var(--ivt-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ivt-composer .ivt-add {
+  display: grid;
+  gap: 8px;
+}
+.ivt-field-label {
+  margin: 0;
+  color: #bac7bf;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ivt-name {
+  width: 100%;
+  height: 48px;
+}
+.ivt-permission-row,
+.ivt-connection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  color: #bac7bf;
+  font-size: 13px;
+}
+.ivt-setting-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ivt-muted);
+  font-size: 13px;
+}
+.ivt-permission-row .ivt-menu-button {
+  height: 38px;
+  background: #ffffff05;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.ivt-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 12px;
+  margin-top: -8px;
+}
+.ivt-meta .ivt-menu {
+  justify-self: end;
+  min-width: 0;
+}
+.ivt-meta .ivt-menu-button {
+  max-width: 100%;
+  height: 36px;
+  font-size: 13px;
+  white-space: normal;
+  text-align: left;
+}
+.ivt-meta .ivt-menu-list {
+  left: auto;
+  right: 0;
+}
+.ivt-connection select {
+  width: auto;
+  max-width: 65%;
+  min-height: 38px;
+  height: 38px;
+  margin: 0;
+  padding: 0 28px 0 10px;
+  border-color: var(--ivt-line);
+  border-radius: 10px;
+  background-color: var(--ivt-field);
+  color: var(--ivt-text);
+  font-size: 13px;
+}
+.ivt-send {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--ivt-line);
+}
+.ivt-send .ivt-summary {
+  margin: 0;
+  color: var(--ivt-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.ivt-submit {
+  width: 100%;
+  min-height: 46px;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #153626 !important;
+  transition: background 0.15s;
+}
+.ivt-submit:not(:disabled):hover {
+  background: #cff7e2;
+}
+.ivt-submit:disabled {
+  opacity: 0.45;
+}
+.ivt-reassurance {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ivt-muted);
+  font-size: 11px;
+  text-align: center;
+}
+.ivt-reassurance svg {
+  flex: none;
+}
+.ivt-people {
+  display: block;
+  margin: 0;
+  padding: 6px 16px;
+  border: 1px solid var(--ivt-line);
+  border-radius: 16px;
+}
+.ivt-people > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  color: #bac7bf;
+  font-size: 13px;
+  cursor: pointer;
+  list-style: none;
+}
+.ivt-people > summary > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.ivt-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 21px;
+  height: 21px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: #ffffff0a;
+  color: var(--ivt-muted);
+  font-size: 11px;
+}
+.ivt-people[open] {
+  padding-bottom: 12px;
+}
+.ivt-people[open] > summary > svg {
+  transform: rotate(180deg);
+}
+.ivt-manage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: fit-content;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  color: #9aa89f;
+  font-size: 12px;
+}
+.ivt-manage svg {
+  width: 14px;
+}
+.ivt :is(button, summary, select, input):focus-visible {
+  outline: 2px solid #b9efd4;
+  outline-offset: 3px;
+}
+.ivt summary::-webkit-details-marker {
+  display: none;
+}
+.ivt-toggle input[type="checkbox"] {
+  width: 40px;
+  height: 24px;
+  margin: 0;
+}
+@media (max-width: 480px) {
+  .ivt {
+    gap: 12px;
+  }
+  .ivt-heading {
+    margin-bottom: 12px;
+    max-width: 290px;
+  }
+  .ivt-heading-icon {
+    margin-bottom: 14px;
+    width: 46px;
+    height: 46px;
+  }
+  .ivt-composer {
+    padding: 20px 18px;
+    border-radius: 20px;
+    gap: 16px;
+  }
+  .ivt-permission-row .ivt-role {
+    flex: none;
+  }
+  .ivt-permission-row .ivt-role .ivt-menu-list {
+    left: auto;
+    right: 0;
+    width: min(280px, calc(100vw - 72px));
+  }
+  .ivt-reassurance {
+    font-size: 10.5px;
+  }
 }

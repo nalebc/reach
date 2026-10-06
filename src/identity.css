@@ -457,9 +457,7 @@ select {
 }
 .chat-list,
 .chat-panel,
-.terminal-panel,
-.agent-setup,
-.agent-jobs {
+.terminal-panel {
   background: #151f18;
   border-color: var(--border);
   border-radius: 12px;

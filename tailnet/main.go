@@ -177,10 +177,49 @@ func newNode(cfg js.Value) map[string]any {
 }
 
 func (n *node) start(cb js.Value) {
+	// Start can return before the first NeedsLogin notification. Trigger the
+	// key login from either path, exactly once, after Start has initialized it.
+	started := make(chan struct{})
+	var loginOnce sync.Once
+	report := func(kind string) {
+		if cb.Get("error").Type() == js.TypeFunction {
+			cb.Call("error", kind)
+		}
+	}
+	loginWithKey := func() {
+		if n.authKey == "" {
+			return
+		}
+		loginOnce.Do(func() {
+			goSafe(func() {
+				<-started
+				if n.lb.State() == ipn.NeedsLogin {
+					if err := n.lb.StartLoginInteractive(context.Background()); err != nil {
+						report("startup")
+					}
+				}
+			})
+		})
+	}
 	n.lb.SetNotifyCallback(func(no ipn.Notify) {
 		defer func() { recover() }()
 		if no.State != nil {
 			cb.Call("state", no.State.String())
+			if *no.State == ipn.NeedsLogin {
+				loginWithKey()
+			}
+		}
+		if no.ErrMessage != nil {
+			// Only an explicit key error can label the network key rejected.
+			// Never pass control-plane error text (which may contain secrets).
+			message := strings.ToLower(*no.ErrMessage)
+			kind := "network"
+			if strings.Contains(message, "authkey") || strings.Contains(message, "auth key") {
+				if strings.Contains(message, "invalid") || strings.Contains(message, "expired") || strings.Contains(message, "revoked") || strings.Contains(message, "not found") {
+					kind = "key"
+				}
+			}
+			report(kind)
 		}
 		if no.BrowseToURL != nil {
 			cb.Call("authURL", *no.BrowseToURL)
@@ -195,17 +234,17 @@ func (n *node) start(cb js.Value) {
 			},
 			AuthKey: n.authKey,
 		})
+		close(started)
 		if err != nil {
 			log.Printf("reach-tailnet: start: %v", err)
+			report("startup")
 			return
 		}
 		// Start alone waits for someone to sign in. A new node with a one-time
 		// key signs in with it now, as tsnet does; one already registered
 		// rejoins by itself and never reuses the (spent) key.
 		if n.authKey != "" && n.lb.State() == ipn.NeedsLogin {
-			if err := n.lb.StartLoginInteractive(context.Background()); err != nil {
-				log.Printf("reach-tailnet: login: %v", err)
-			}
+			loginWithKey()
 		}
 	})
 }

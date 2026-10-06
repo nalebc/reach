@@ -194,6 +194,8 @@ async function start(t) {
   const reach = await createReach({
     roots: [dir],
     dataDir: path.join(dir, "private"),
+    agentSessions: { list: async () => ({ sessions: [] }), close() {} },
+    openClaw: { overview: async () => ({ connected: false }), close() {} },
     screen: true,
     appPlatform: "darwin",
     agentIdle: async () => 600,
@@ -296,7 +298,9 @@ test("your phone subscribes; an agent handing you an app notifies it, title only
   assert.equal(sent[0].headers.Urgency, "high");
   // What the phone reads: who needs you, where. Never the agent's words.
   const message = JSON.parse(sub.open(sent[0].body));
-  assert.deepEqual(Object.keys(message), ["title", "tag"]);
+  assert.deepEqual(Object.keys(message), ["title", "tag", "url"]);
+  // One tap opens the app handed to you, not the list (src/deep-link.ts).
+  assert.match(message.url, /^\/\?page=apps&threadId=[\w-]+$/);
   assert.equal(message.title, "Claude needs you in Notes");
   assert.match(message.tag, /^handoff-[0-9a-f]{8}$/);
 });
@@ -493,57 +497,132 @@ test("the service worker shows every push (iPhone requires it) and never handles
     "https://mac.tail1.ts.net:8443/",
     "https://mac.tail1.ts.net:8443/",
   ]);
+  const messages = [];
+  const client = { url: "https://mac.tail1.ts.net:8443/", focus: async () => client, postMessage: (message) => messages.push(message.type) };
+  self.clients.matchAll = async () => [client];
+  listeners.notificationclick({ notification: { close() {}, data: { url: "/?notifications=1" } }, waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+  assert.deepEqual(messages, ["reach-notifications"]);
+  assert.equal(opened.length, 2, "reuse Reach without navigating away from its current work");
 });
 
-test("an agent's question held for your phone notifies it once", async (t) => {
+test("a live agent wait notifies with every browser closed, once, without hooks", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-push-asks-"));
   const sent = [];
-  let listener = () => {};
-  let prompts = [];
+  let sessions = [];
   const reach = await createReach({
-    roots: [dir],
-    dataDir: path.join(dir, "private"),
-    agentSessions: {
-      asks: {
-        onChange: (fn) => (listener = fn),
-        prompts: () => prompts,
-      },
-      close() {},
-    },
-    push: {
-      post: async (url, init) => (sent.push(init), { status: 201, ok: true }),
-      log: () => {},
-    },
+    roots: [dir], dataDir: path.join(dir, "private"),
+    agentSessions: { list: async () => ({ sessions }), close() {} },
+    openClaw: { overview: async () => ({ connected: false }), close() {} },
+    notifications: { intervalMs: 25 },
+    push: { post: async (url, init) => (sent.push(init), { status: 201, ok: true }), log: () => {} },
   });
   t.after(() => reach.close());
   const owner = reach.auth.issue("iPhone", ALL_SCOPES);
-  void owner;
-  // Subscribed straight through the store the routes use.
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const sub = subscription();
-  const r = await fetch(
-    `http://127.0.0.1:${reach.server.address().port}/api/push`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${owner.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ subscription: sub }),
-    },
-  );
-  assert.equal(r.status, 200);
-  const session = "0b3c7f7e-1111-4222-8333-944444444444";
-  prompts = [{ id: "p1", title: "Run this command?" }];
-  listener("claude", session);
-  // The same ask changing again, then answered: no more notifications.
-  listener("claude", session);
-  prompts = [];
-  listener("claude", session);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(sent.length, 1);
-  assert.deepEqual(JSON.parse(sub.open(sent[0].body)), {
-    title: "Claude Code needs your answer",
-    tag: "ask-0b3c7f7e",
+  const r = await fetch(`http://127.0.0.1:${reach.server.address().port}/api/push`, {
+    method: "POST", headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription: sub }),
   });
+  assert.equal(r.status, 200);
+  sessions = [{ agent: "claude", id: "session1", status: "waiting", prompts: [{ id: "p1" }], title: "PRIVATE CHAT" }];
+  const end = Date.now() + 2000;
+  while (!sent.length && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sent.length, 1);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(sent.length, 1);
+  sessions = [];
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(sent.length, 1);
+  const message = JSON.parse(sub.open(sent[0].body));
+  assert.equal(message.title, "Claude Code needs your answer");
+  assert.equal(message.url, "/?notifications=1");
+  assert.match(message.tag, /^need-[a-f0-9]{24}$/);
+  assert.doesNotMatch(JSON.stringify(message), /PRIVATE CHAT|session1|p1/);
+});
+
+test("test push reaches only the requesting browser and reports provider failure", async (t) => {
+  const { reach, call, sent, setStatus } = await start(t);
+  const owner = reach.auth.issue("iPhone", ALL_SCOPES);
+  const other = reach.auth.issue("iPad", ALL_SCOPES);
+  const agent = reach.auth.issue("Agent", ["device", "apps:drive"], "agent");
+  const phone = subscription("https://web.push.apple.com/phone");
+  const desktop = subscription("https://web.push.apple.com/desktop");
+  for (const subscription of [phone, desktop]) await call("/api/push", { token: owner.token, method: "POST", body: { subscription } });
+  for (const token of [agent.token]) {
+    assert.equal((await call("/api/push", { token })).status, 403);
+    assert.equal((await call("/api/notifications", { token })).status, 403);
+  }
+  assert.equal((await call("/api/push/test", { token: other.token, method: "POST", body: { endpoint: phone.endpoint } })).status, 409);
+  assert.equal((await call("/api/push/test", { token: owner.token, method: "POST", body: { endpoint: phone.endpoint } })).status, 200);
+  assert.deepEqual(sent.map((s) => s.url), [phone.endpoint]);
+  assert.equal(JSON.parse(phone.open(sent[0].body)).title, "Reach notifications are working");
+  assert.equal((await call("/api/push/test", { token: owner.token, method: "POST", body: { endpoint: phone.endpoint } })).status, 429);
+  const failing = subscription("https://web.push.apple.com/failing");
+  await call("/api/push", { token: other.token, method: "POST", body: { subscription: failing } });
+  setStatus(410);
+  assert.equal((await call("/api/push/test", { token: other.token, method: "POST", body: { endpoint: failing.endpoint } })).status, 502);
+  assert.equal((await call("/api/push", { token: other.token })).body.subscribed, false);
+  const response = await call("/api/notifications", { token: owner.token });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.items, []);
+});
+
+test("notification preferences persist per browser, suppress categories and pause without blocking tests", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-push-preferences-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const sent = [];
+  let clock = Date.now();
+  const options = { dataDir: dir, subject: () => "https://localhost", now: () => clock,
+    post: async (url) => (sent.push(url), { status: 201, ok: true }) };
+  let push = createPush(options);
+  const phone = subscription("https://web.push.apple.com/phone");
+  const desktop = subscription("https://web.push.apple.com/desktop");
+  push.subscribe("owner", phone);
+  push.subscribe("owner", desktop);
+  push.updatePreferences("owner", phone.endpoint, { chat: false }, 60);
+  assert.throws(() => push.updatePreferences("other", phone.endpoint, { chat: true }), /Enable notifications/);
+  assert.throws(() => push.updatePreferences("owner", phone.endpoint, { chat: "no" }), /Invalid/);
+  assert.throws(() => push.updatePreferences("owner", phone.endpoint, {}, -1), /Invalid/);
+  push = createPush(options);
+  push.subscribe("owner", phone); // Re-subscribing must preserve preferences.
+  assert.equal(push.preferences("owner", phone.endpoint).chat, false);
+  assert.equal(push.preferences("owner", desktop.endpoint).chat, true);
+  assert.equal(push.preferences("other", phone.endpoint), null);
+  await push.notify(["owner"], { title: "Attention", category: "computer" });
+  assert.deepEqual(sent.splice(0), [desktop.endpoint]);
+  await push.notify(["owner"], { title: "Test" }, { endpoint: phone.endpoint, test: true });
+  assert.deepEqual(sent.splice(0), [phone.endpoint]);
+  clock += 3600001;
+  await push.notify(["owner"], { title: "Attention", category: "computer" });
+  assert.deepEqual(sent.splice(0).sort(), [phone.endpoint, desktop.endpoint].sort());
+  assert.deepEqual(await push.notify(["owner"], { title: "Question", category: "chat" }, { endpoint: phone.endpoint }), { sent: 0, suppressed: 1 });
+  for (const category of ["computer", "handoffs", "access"]) {
+    push.updatePreferences("owner", phone.endpoint, { [category]: false });
+    assert.equal((await push.notify(["owner"], { title: "Attention", category }, { endpoint: phone.endpoint })).suppressed, 1);
+  }
+  push.updatePreferences("owner", phone.endpoint, { chat: true }, 0);
+  assert.equal((await push.notify(["owner"], { title: "Question", category: "chat" }, { endpoint: phone.endpoint })).sent, 1);
+});
+
+test("preference API edits only an owned subscription and preserves other switches", async (t) => {
+  const { reach, call } = await start(t);
+  const owner = reach.auth.issue("Phone", ALL_SCOPES);
+  const other = reach.auth.issue("Other", ALL_SCOPES);
+  const guest = reach.auth.issue("Guest", ["device"]);
+  const sub = subscription();
+  await call("/api/push", { token: owner.token, method: "POST", body: { subscription: sub } });
+  const edit = (token, preferences, pauseMinutes) => call("/api/push", { token, method: "PATCH", body: { endpoint: sub.endpoint, preferences, pauseMinutes } });
+  assert.equal((await edit(guest.token, {})).status, 403);
+  assert.equal((await edit(other.token, {})).status, 409);
+  assert.equal((await edit(owner.token, { surprise: false })).status, 400);
+  assert.equal((await edit(owner.token, { chat: false }, 60)).status, 200);
+  assert.equal((await edit(owner.token, { access: false })).status, 200);
+  const prefs = (await call(`/api/push?endpoint=${encodeURIComponent(sub.endpoint)}`, { token: owner.token })).body.preferences;
+  assert.equal(prefs.chat, false);
+  assert.equal(prefs.access, false);
+  assert.equal(prefs.handoffs, true);
+  assert.ok(prefs.pausedUntil > Date.now());
+  assert.equal((await edit(owner.token, {}, 0)).body.preferences.pausedUntil, 0);
 });

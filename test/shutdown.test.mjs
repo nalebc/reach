@@ -90,7 +90,9 @@ async function startReach(t, { preload } = {}) {
       ...(preload ? ["--import", preload] : []),
       "--input-type=module",
       "-e",
-      `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
+      // Left behind when the test runner dies (killed, timed out): it stops
+      // itself, helpers and menu bar item included, rather than run for good.
+      `setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(root)}], port: 0 }, ${JSON.stringify(root)});`,
     ],
     { env, stdio: ["pipe", "pipe", "pipe"] },
   );

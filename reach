@@ -1,7 +1,21 @@
 #!/bin/sh
 # One entry point; a missing Node runtime is installed privately, without sudo.
 set -eu
-REACH_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Run through a link (the `reach` command, from ./reach cli): the real folder.
+SELF=$0
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in
+    /*) SELF=$LINK ;;
+    *) SELF=$(dirname -- "$SELF")/$LINK ;;
+  esac
+done
+REACH_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
+# Hints then say `reach …`, as typed.
+if [ "$SELF" != "$0" ]; then
+  REACH_COMMAND=reach
+  export REACH_COMMAND
+fi
 PRIVATE_RUNTIME=0
 for ARG in "$@"; do
   case "$ARG" in install|--background) PRIVATE_RUNTIME=1 ;; esac
