@@ -47,7 +47,8 @@ jobs:
       - run: .\reach.cmd --help
         if: runner.os == 'Windows'
       - run: npm run build:release
-      - run: npm test
+      # Native helper and ConPTY tests share the small hosted runner.
+      - run: npm run test:ci
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
