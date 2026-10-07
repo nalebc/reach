@@ -23,6 +23,7 @@ const xml = (value) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 const envKeys = [
+  "REACH_HOME",
   "REACH_DATA",
   "REACH_ROOTS",
   "REACH_NAME",

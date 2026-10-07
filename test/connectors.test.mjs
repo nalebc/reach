@@ -52,7 +52,10 @@ function fakeDaemon(answers = {}) {
       const a = answers[method];
       return typeof a === "function" ? a(params) : a || {};
     },
-    onNotification: (fn) => (notify = fn),
+    onNotification: (fn) => {
+      notify = fn;
+      return () => { notify = () => {}; };
+    },
   };
 }
 function fakeTerminal() {
@@ -313,7 +316,9 @@ test("connector routes are the owner's only; one connector goes to several agent
         { agent: "gemini", ok: false, error: "Gemini CLI isn't installed on this computer." },
       ],
     });
-    assert.deepEqual(seen[0], ["add", "claude", { ...github, token: "ghp_x12345678" }]);
+    const { authorize, ...added } = seen[0][2];
+    assert.equal(typeof authorize, "function");
+    assert.deepEqual([seen[0][0], seen[0][1], added], ["add", "claude", { ...github, token: "ghp_x12345678" }]);
     // The GitHub CLI's token is read on the computer, never sent by the phone.
     await call("/api/sessions/connectors", owner.token, "POST", { agents: ["claude"], ...github, tokenFrom: "gh" });
     assert.equal(seen.at(-1)[2].token, "gho_fromthecli123");
@@ -328,5 +333,119 @@ test("connector routes are the owner's only; one connector goes to several agent
     reach.server.close();
     await reach.close?.();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("connector CLI failures do not disclose bearer tokens or command lines", async () => {
+  const token = "ghp_private123456";
+  for (const stderr of ["", `Rejected Authorization: Bearer ${token}`]) {
+    const c = createConnectors({ locate: located, run: async () => {
+      throw Object.assign(Error(`exec failed -H 'Authorization: Bearer ${token}'`), { stderr });
+    } });
+    await assert.rejects(c.add("gemini", { name: "github", url: "https://api.githubcopilot.com/mcp/", token }), (error) => {
+      assert.equal(error.message.includes(token), false);
+      assert.equal(error.message.includes("exec failed"), false);
+      return true;
+    });
+    c.close();
+  }
+});
+
+test("a failed Claude replacement restores the previous connector through its CLI", async (t) => {
+  const dir = await home();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const original = { type: "http", url: "https://old.example/mcp", headers: { Authorization: "Bearer old-private" } };
+  await fs.writeFile(path.join(dir, ".claude.json"), JSON.stringify({ mcpServers: { github: original } }));
+  const calls = [];
+  const c = createConnectors({ home: dir, locate: located, run: async (file, args) => {
+    const command = args.at(-1);calls.push(command);
+    if (command.includes("'add'")) throw Error("spawn failed with new credential");
+    return { stdout: "" };
+  } });
+  await assert.rejects(c.add("claude", { name: "github", url: "https://new.example/mcp", token: "new-private" }), /command failed/);
+  assert.equal(calls.length, 3);
+  assert.match(calls[0], /'remove'/);
+  assert.match(calls[2], /'add-json'/);
+  assert.ok(calls[2].includes(JSON.stringify(original)));
+  c.close();
+});
+
+test("cancelling or closing a delayed Codex login never resurrects it", async () => {
+  for (const stop of ["cancel", "close"]) {
+    let answer;
+    const daemon = fakeDaemon({ "mcpServer/oauth/login": () => new Promise((r) => { answer = r; }) });
+    const c = createConnectors({ daemon, locate: located });
+    const pending = c.login("codex", "linear");
+    await settle();
+    if (stop === "cancel") c.cancel("codex", "linear");else c.close();
+    answer({ authorizationUrl: AUTH });
+    assert.equal((await pending).state, "cancelled");
+    assert.equal(c.loginView("codex", "linear").state, "cancelled");
+    c.close();
+  }
+});
+
+test("closing connectors terminates PTYs and removes the daemon subscription", async () => {
+  const term = fakeTerminal();let unsubscribed = 0;
+  const c = createConnectors({ spawn: term.spawn, locate: located, daemon: { onNotification: () => () => unsubscribed++ }, linkMs: 1000 });
+  const pending = c.login("claude", "linear");
+  await settle();
+  c.close();
+  assert.equal((await pending).state, "cancelled");
+  assert.equal(term.proc.killed, true);
+  assert.equal(unsubscribed, 1);
+  await assert.rejects(c.login("claude", "linear"), /closed/);
+});
+
+test("revocation while locating a CLI prevents a connector mutation", async () => {
+  let locate, allowed = true, runs = 0;
+  const c = createConnectors({ locate: { gemini: () => new Promise((r) => { locate = r; }) }, run: async () => { runs++;return { stdout: "" }; } });
+  const pending = c.add("gemini", { name: "linear", url: "https://mcp.linear.app/mcp", authorize: () => { if (!allowed) throw Object.assign(Error("Revoked"), { status: 403 }); } });
+  await settle();allowed = false;locate("/usr/bin/gemini");
+  await assert.rejects(pending, /Revoked/);
+  assert.equal(runs, 0);
+  c.close();
+});
+
+test("GitHub CLI token reuse is bound to the GitHub connector destination", async () => {
+  let reads = 0;
+  const c = createConnectors({ run: async () => { reads++;return { stdout: "gho_token123456" }; } });
+  await assert.rejects(c.githubToken("https://other.example/mcp"), /GitHub connector address/);
+  assert.equal(reads, 0);
+  assert.equal(await c.githubToken("https://api.githubcopilot.com/mcp/"), "gho_token123456");
+  c.close();
+});
+
+test("Codex config errors and OAuth failures never return provider credentials", async () => {
+  const marker = "gho_private_server_token";
+  const daemon = fakeDaemon({
+    "config/batchWrite": (params) => { throw Error(JSON.stringify(params)); },
+    "mcpServer/oauth/login": { authorizationUrl: AUTH },
+  });
+  const c = createConnectors({ daemon, locate: located });
+  await assert.rejects(c.add("codex", { name: "github", url: "https://api.githubcopilot.com/mcp/", token: marker }), (error) => {
+    assert.equal(error.message.includes(marker), false);
+    assert.match(error.message, /connector request/);
+    return true;
+  });
+  await c.login("codex", "linear");
+  daemon.notify({ method: "mcpServer/oauthLogin/completed", params: { name: "linear", success: false, error: marker } });
+  assert.equal(JSON.stringify(c.loginView("codex", "linear")).includes(marker), false);
+  c.close();
+});
+
+test("revocation during a Codex config write prevents the subsequent server reload", async () => {
+  for (const action of ["add", "remove"]) {
+    let written, allowed = true;
+    const daemon = fakeDaemon({ "config/batchWrite": () => new Promise((r) => { written = r; }) });
+    const c = createConnectors({ daemon, locate: located });
+    const authorize = () => { if (!allowed) throw Error("Revoked"); };
+    const pending = action === "add"
+      ? c.add("codex", { name: "linear", url: "https://mcp.linear.app/mcp", authorize })
+      : c.remove("codex", "linear", { authorize });
+    await settle();allowed = false;written({});
+    await assert.rejects(pending, /Revoked/);
+    assert.equal(daemon.calls.filter(([method]) => method === "config/mcpServer/reload").length, 0);
+    c.close();
   }
 });

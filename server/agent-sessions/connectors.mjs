@@ -159,6 +159,16 @@ const lastLine = (output) =>
     .map((l) => l.trim())
     .filter((l) => l && !/paste the redirect URL|^Waiting for authorization/i.test(l))
     .pop() || "";
+// execFile errors include their command line; bearer tokens are arguments.
+// Never return that message, and redact tokens even when the CLI echoes them.
+const safeCliError = (error, args) => {
+  let said = lastLine(`${error.stdout || ""}\n${error.stderr || ""}`);
+  for (const arg of args) {
+    const token = String(arg).match(/^Authorization:\s*Bearer\s+(.+)$/i)?.[1];
+    if (token) said = said.split(token).join("[redacted]");
+  }
+  return said || (error.killed ? "The agent didn't answer in time." : "The agent command failed.");
+};
 
 const shown = (url) => {
   try {
@@ -176,6 +186,7 @@ export function createConnectors({
   run = exec, // (file, args, options) => { stdout }
   spawn = pty.spawn,
   shell = process.env.SHELL || "/bin/zsh",
+  platform = process.platform,
   env = process.env,
   // Finishing a sign-in on this computer: the localhost address the agent waits on.
   visit = (url) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10000) }),
@@ -200,8 +211,10 @@ export function createConnectors({
   };
   // An agent's CLI as the owner's login shell runs it, from their home folder
   // (so `-s user` is the only scope touched).
-  const cli = async (agent, args, timeout = 30000) => {
+  const cli = async (agent, args, timeout = 30000, authorize = () => {}) => {
+    if (platform === "win32") throw bad("Connector CLI management is not supported on Windows yet.", 409);
     const file = await need(agent);
+    authorize();
     try {
       const { stdout } = await run(shell, ["-lc", `exec ${[file, ...args].map(quote).join(" ")}`], {
         cwd: home,
@@ -211,8 +224,7 @@ export function createConnectors({
       });
       return String(stdout);
     } catch (e) {
-      const said = lastLine(`${e.stdout || ""}\n${e.stderr || ""}`);
-      throw bad(said || e.message || "The agent didn't answer.", 502);
+      throw bad(safeCliError(e, args), 502);
     }
   };
   const readJson = async (file) => {
@@ -220,6 +232,14 @@ export function createConnectors({
       return JSON.parse(await fs.readFile(file, "utf8"));
     } catch {
       return {};
+    }
+  };
+  const codexRequest = async (method, params) => {
+    try {
+      return await daemon.rpc(method, params);
+    } catch {
+      // Provider failures can include serialized config (including headers).
+      throw bad("Codex couldn't complete the connector request. Check its settings on the computer and try again.", 502);
     }
   };
   // Only a server's name, address and state leave the computer: never its
@@ -259,7 +279,7 @@ export function createConnectors({
         const all = [];
         let cursor = null;
         for (let page = 0; page < 10; page++) {
-          const r = await daemon.rpc("app/list", { limit: 200, cursor, ...(fresh && !page ? { forceRefetch: true } : {}) });
+          const r = await codexRequest("app/list", { limit: 200, cursor, ...(fresh && !page ? { forceRefetch: true } : {}) });
           for (const a of Array.isArray(r?.data) ? r.data : [])
             if (a && typeof a.id === "string" && typeof a.name === "string") all.push(a);
           cursor = r?.nextCursor;
@@ -286,8 +306,8 @@ export function createConnectors({
     if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
     const [apps, config, status] = await Promise.all([
       listApps(fresh).catch(() => []),
-      daemon.rpc("config/read", {}),
-      daemon.rpc("mcpServerStatus/list", { detail: "toolsAndAuthOnly" }).catch(() => ({ data: [] })),
+      codexRequest("config/read", {}),
+      codexRequest("mcpServerStatus/list", { detail: "toolsAndAuthOnly" }).catch(() => ({ data: [] })),
     ]);
     const statuses = new Map((status?.data || []).map((s) => [s.name, s]));
     const configured = config?.config?.mcp_servers || {};
@@ -317,7 +337,9 @@ export function createConnectors({
   }
 
   // ── Signing in to a server ──
+  let closed = false;
   const flows = new Map(); // `${agent}:${name}` -> flow
+  const active = (flow) => !closed && ["starting", "link", "checking"].includes(flow.state);
   const view = (flow) =>
     flow
       ? { agent: flow.agent, name: flow.name, state: flow.state, url: flow.url, error: flow.error }
@@ -341,16 +363,19 @@ export function createConnectors({
             resolve();
           });
         });
-  daemon?.onNotification?.((m) => {
+  const unsubscribe = daemon?.onNotification?.((m) => {
     if (m.method !== "mcpServer/oauthLogin/completed") return;
     const flow = flows.get(`codex:${m.params?.name}`);
-    if (!flow || ["done", "failed", "cancelled"].includes(flow.state)) return;
+    if (!flow || !active(flow)) return;
     if (m.params?.success) finish(flow, "done");
-    else finish(flow, "failed", m.params?.error || "Sign-in didn't finish.");
+    else finish(flow, "failed", "Sign-in didn't finish. Start again.");
   });
 
   async function loginClaude(flow) {
+    if (platform === "win32") throw bad("Connector CLI sign-in is not supported on Windows yet.", 409);
     const file = await need("claude");
+    if (!active(flow)) return;
+    flow.authorize();
     const proc = spawn(shell, ["-lc", `exec ${[file, "mcp", "login", "--no-browser", flow.name].map(quote).join(" ")}`], {
       name: "xterm-256color",
       cols: 400,
@@ -361,6 +386,7 @@ export function createConnectors({
     flow.proc = proc;
     flow.output = "";
     proc.onData((data) => {
+      if (!active(flow)) return;
       flow.output = (flow.output + data).slice(-20000);
       if (flow.state === "starting") {
         const url = claudeLoginLink(flow.output);
@@ -378,7 +404,10 @@ export function createConnectors({
   }
   async function loginCodex(flow) {
     if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
-    const r = await daemon.rpc("mcpServer/oauth/login", { name: flow.name });
+    flow.authorize();
+    const r = await codexRequest("mcpServer/oauth/login", { name: flow.name });
+    if (!active(flow)) return;
+    flow.authorize();
     if (typeof r?.authorizationUrl !== "string" || !/^https:\/\//.test(r.authorizationUrl))
       throw bad("Codex didn't give a sign-in link for this server.", 502);
     flow.url = r.authorizationUrl;
@@ -396,7 +425,7 @@ export function createConnectors({
     },
     // A remote server added in the agent's own configuration, for every
     // project; with a token, sent as its Authorization header.
-    async add(agent, { name, url, token = null }) {
+    async add(agent, { name, url, token = null, authorize = () => {} }) {
       if (!AGENTS.includes(agent)) throw bad("Unknown agent.", 404);
       name = validName(name);
       url = validUrl(url);
@@ -404,7 +433,8 @@ export function createConnectors({
       const header = bearer && `Authorization: ${bearer}`;
       if (agent === "codex") {
         if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
-        await daemon.rpc("config/batchWrite", {
+        authorize();
+        await codexRequest("config/batchWrite", {
           edits: [
             {
               keyPath: `mcp_servers.${name}`,
@@ -414,38 +444,54 @@ export function createConnectors({
           ],
           reloadUserConfig: true,
         });
-        await daemon.rpc("config/mcpServer/reload", null).catch(() => {});
+        authorize();
+        await codexRequest("config/mcpServer/reload", null).catch(() => {});
       } else if (agent === "claude") {
-        // Replacing one: Claude Code refuses a name it already has.
-        await cli("claude", ["mcp", "remove", "-s", "user", name]).catch(() => {});
-        await cli("claude", ["mcp", "add", "-s", "user", "-t", "http", ...(header ? ["-H", header] : []), name, url]);
+        // Preserve an existing user connector if its replacement fails.
+        const original = (await readJson(path.join(home, ".claude.json"))).mcpServers?.[name];
+        if (original) await cli("claude", ["mcp", "remove", "-s", "user", name], 30000, authorize);
+        try {
+          await cli("claude", ["mcp", "add", "-s", "user", "-t", "http", ...(header ? ["-H", header] : []), name, url], 30000, authorize);
+        } catch (error) {
+          if (original) {
+            try {
+              await cli("claude", ["mcp", "add-json", "-s", "user", name, JSON.stringify(original)]);
+            } catch {
+              throw bad("Replacement failed and the previous connector could not be restored. Check Claude Code's connector settings on the computer.", 502);
+            }
+          }
+          throw error;
+        }
         claudeList = null;
       } else {
-        await cli("gemini", ["mcp", "add", "-s", "user", "-t", "http", ...(header ? ["-H", header] : []), name, url]);
+        await cli("gemini", ["mcp", "add", "-s", "user", "-t", "http", ...(header ? ["-H", header] : []), name, url], 30000, authorize);
       }
       return { agent, name };
     },
-    async remove(agent, name) {
+    async remove(agent, name, { authorize = () => {} } = {}) {
       if (!AGENTS.includes(agent)) throw bad("Unknown agent.", 404);
       name = validName(name);
       if (agent === "codex") {
         if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
-        await daemon.rpc("config/batchWrite", {
+        authorize();
+        await codexRequest("config/batchWrite", {
           edits: [{ keyPath: `mcp_servers.${name}`, value: null, mergeStrategy: "replace" }],
           reloadUserConfig: true,
         });
-        await daemon.rpc("config/mcpServer/reload", null).catch(() => {});
+        authorize();
+        await codexRequest("config/mcpServer/reload", null).catch(() => {});
       } else {
-        await cli(agent, ["mcp", "remove", "-s", "user", name]);
+        await cli(agent, ["mcp", "remove", "-s", "user", name], 30000, authorize);
         if (agent === "claude") claudeList = null;
       }
       return { agent, name };
     },
     // One of ChatGPT's apps on or off for Codex (linking it is ChatGPT's).
-    async setApp(id, enabled) {
+    async setApp(id, enabled, { authorize = () => {} } = {}) {
       if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
       if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw bad("Unknown app.", 404);
-      await daemon.rpc("config/batchWrite", {
+      authorize();
+      await codexRequest("config/batchWrite", {
         edits: [{ keyPath: `apps.${id}.enabled`, value: !!enabled, mergeStrategy: "upsert" }],
         reloadUserConfig: true,
       });
@@ -454,7 +500,9 @@ export function createConnectors({
     },
     // GitHub's token from the GitHub CLI signed in on this computer, for the
     // owner who chose it; it never goes to the phone.
-    async githubToken() {
+    async githubToken(url) {
+      if (validUrl(url) !== CATALOG.find((entry) => entry.id === "github").url)
+        throw bad("Use the GitHub connector address when reusing the GitHub CLI token.");
       try {
         const { stdout } = await run(shell, ["-lc", "exec gh auth token"], { cwd: home, env: clean, timeout: 10000 });
         return validToken(stdout);
@@ -462,7 +510,8 @@ export function createConnectors({
         throw bad("The GitHub CLI isn't signed in on this computer. Run `gh auth login` there, or paste a token.", 409);
       }
     },
-    async login(agent, name) {
+    async login(agent, name, { authorize = () => {} } = {}) {
+      if (closed) throw bad("Connector service is closed.", 409);
       if (agent === "gemini")
         throw bad(`Gemini CLI signs in itself: on your computer, run gemini, then /mcp auth ${name} (a Reach terminal works).`, 409);
       if (agent !== "claude" && agent !== "codex") throw bad("Unknown agent.", 404);
@@ -470,13 +519,14 @@ export function createConnectors({
       const key = `${agent}:${name}`;
       const current = flows.get(key);
       if (current && ["starting", "link", "checking"].includes(current.state)) return view(current);
-      const flow = { agent, name, state: "starting", url: null, error: null, waiters: [] };
+      const flow = { agent, name, state: "starting", url: null, error: null, waiters: [], authorize };
       flows.set(key, flow);
       flow.timer = setTimeout(() => {
         this.cancel(agent, name);
         flow.state = "failed";
         flow.error = "Sign-in timed out. Start again.";
       }, timeoutMs);
+      flow.timer.unref?.();
       try {
         if (agent === "claude") await loginClaude(flow);
         else await loginCodex(flow);
@@ -502,6 +552,7 @@ export function createConnectors({
       } catch {
         finish(flow, "failed", "Codex stopped waiting for this sign-in. Start again.");
       }
+      if (!active(flow)) return view(flow);
       // Codex reports the result itself; usually at once.
       await settled(flow, 5000, "checking");
       return view(flow);
@@ -517,6 +568,12 @@ export function createConnectors({
         finish(flow, "cancelled");
       }
       return view(flow);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const flow of flows.values()) this.cancel(flow.agent, flow.name);
+      if (typeof unsubscribe === "function") unsubscribe();
     },
   };
 }

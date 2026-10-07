@@ -5,6 +5,9 @@
 // this page's.
 let first: string | null = null;
 let waiting = false;
+let generation = 0;
+let pageChecked = false;
+let checkingPage = false;
 // Live screens and app windows open on this page: a reload mid-stream threw
 // the phone back to the loading scene each time an agent edited the interface.
 let streams = 0;
@@ -27,23 +30,64 @@ export function busyHere(doc: Document = document) {
   return !!doc.querySelector(".sign-in[role=group], .as-prompt .chosen, .as-banner-actions > span");
 }
 
+// A restored Home Screen page may first reconnect after the host has already
+// changed builds. Its first presence packet is then the NEW build, not proof
+// that the page loaded that build. Compare the page's hashed assets as well.
+export async function currentPageMatches(
+  doc: Document = document,
+  load: typeof fetch = fetch,
+) {
+  const signature = (page: Document) =>
+    Array.from(page.querySelectorAll('script[type="module"][src], link[rel="stylesheet"][href]'))
+      .map((el) => el.getAttribute("src") || el.getAttribute("href") || "")
+      .filter((url) => url.startsWith("/assets/"))
+      .sort().join("\n");
+  const loaded = signature(doc);
+  if (!loaded || !/^https?:$/.test(location.protocol)) return true;
+  try {
+    const response = await load(location.href, { cache: "no-store", credentials: "same-origin" });
+    if (!response.ok) return null;
+    const fresh = signature(new DOMParser().parseFromString(await response.text(), "text/html"));
+    return fresh ? fresh === loaded : null;
+  } catch {
+    return null; // an offline page keeps working; presence will retry later
+  }
+}
+
 export function noteBuild(
   build: unknown,
-  { reload = () => location.reload(), busy = () => busyHere(), wait = (f: () => void) => setTimeout(f, 5000) } = {},
+  { reload = () => location.reload(), busy = () => busyHere(), wait = (f: () => void) => setTimeout(f, 5000), currentPage = () => currentPageMatches() } = {},
 ) {
   if (typeof build !== "string" || !build) return;
+  const attempt = () => (busy() ? wait(attempt) : reload());
   if (first === null) {
     first = build;
+  }
+  if (build !== first && !waiting) {
+    waiting = true;
+    attempt();
     return;
   }
-  if (build === first || waiting) return;
-  waiting = true;
-  const attempt = () => (busy() ? wait(attempt) : reload());
-  attempt();
+  if (!pageChecked && !checkingPage && !waiting) {
+    checkingPage = true;
+    const seen = generation;
+    void currentPage().then((matches) => {
+      if (seen !== generation) return;
+      checkingPage = false;
+      if (matches === null) return;
+      pageChecked = true;
+      if (matches || waiting) return;
+      waiting = true;
+      attempt();
+    }).catch(() => { if (seen === generation) checkingPage = false; });
+  }
 }
 
 // Tests start each case afresh.
 export function forgetBuild() {
   first = null;
   waiting = false;
+  generation++;
+  pageChecked = false;
+  checkingPage = false;
 }

@@ -28,13 +28,16 @@ export function reachCommand(root, nodeDir, exists = fs.existsSync) {
     return `${shell(path.posix.join(nodeDir, "node"))} ${shell(path.posix.join(root, "bin/reach.mjs"))}`;
   return "./reach";
 }
-export function loginScript(root, nodeDir, { args = "", restart = false, exists } = {}) {
+export function loginScript(root, nodeDir, { args = "", restart = false, exists, env = process.env } = {}) {
   const command = reachCommand(root, nodeDir, exists);
   return [
     "#!/bin/bash",
     restart ? "# Reach: opened in Terminal by ./reach restart." : "# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:",
     ...(restart ? [] : [`#   node ${shell(path.posix.join(root, "scripts/login-start.mjs"))} uninstall`]),
     `export PATH=${shell(nodeDir)}:/opt/homebrew/bin:/usr/local/bin:$PATH`,
+    ...["REACH_HOME", "REACH_DATA"]
+      .filter((key) => env[key] !== undefined)
+      .map((key) => `export ${key}=${shell(env[key])}`),
     `cd ${shell(root)} || exit 1`,
     args ? `${command} ${args}` : command,
     "exit 0",

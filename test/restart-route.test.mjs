@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { atomicJson } from "../server/core.mjs";
 import { stopReach } from "../scripts/stop.mjs";
+import { startInTerminal } from "../scripts/stop.mjs";
+import { backgroundPlist } from "../scripts/background-service.mjs";
 import { handoffPersistentRoute, ensurePersistentRoute } from "../scripts/persistent-serve.mjs";
 
 const origin = "https://computer.example.ts.net:8443";
@@ -100,4 +102,19 @@ test("cancelled restarts and ordinary stops never transfer ownership", async () 
     assert.equal(kills, restarting ? 0 : 1);
     if (restarting) assert.equal(done.cancelled, true);
   }
+});
+
+test("Terminal and service launches retain explicit Reach settings and data paths", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-restart-state-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const env = { REACH_HOME: "/Users/me/shared reach's state", REACH_DATA: "/Users/me/shared data", REACH_SECRET: "must-not-export" };
+  const file = startInTerminal("/new", { state: dir, env, open() {} });
+  const script = await fs.readFile(file, "utf8");
+  assert.ok(script.includes("export REACH_HOME='/Users/me/shared reach'\\''s state'"));
+  assert.ok(script.includes("export REACH_DATA='/Users/me/shared data'"));
+  assert.equal(script.includes("must-not-export"), false);
+  const plist = backgroundPlist({ httpsPort: 8443, folders: [] }, "/new", "/node", env, "/logs");
+  assert.ok(plist.includes("<key>REACH_HOME</key><string>/Users/me/shared reach's state</string>"));
+  assert.ok(plist.includes("<key>REACH_DATA</key><string>/Users/me/shared data</string>"));
+  assert.equal(plist.includes("must-not-export"), false);
 });

@@ -2,6 +2,8 @@
 
 Reach 0.1.0 remains an early-access candidate. The repository is currently **private**. Do not describe this audit as complete end-to-end qualification or an independent penetration-test certification. The [October 7 audit](AUDIT_2026-10-07.md) records the fixes, tests, live evidence, limitations and preservation of local work.
 
+The owner subsequently selected a combined main containing the newer Files, connector and restart work. The original audited cutoff remains on `codex/audited-release-2026-10-07`; the original qualification below describes that cutoff. See the [source reconciliation](RECONCILIATION_2026-10-07.md) for the integrated changes and verification boundary.
+
 ## Verified on this candidate
 
 - Node 22.23.3 on macOS ARM64: **1,892 passed, 0 failed, 7 skipped** out of 1,899 tests, with native policy/file-boundary/script-sandbox flags enabled.
@@ -18,7 +20,7 @@ Reach 0.1.0 remains an early-access candidate. The repository is currently **pri
 
 | Gate | Current status / next action |
 | --- | --- |
-| Concurrent feature work | Connector management and additional file-viewer work began in another working copy after this candidate was tested. Those ongoing edits are preserved separately; they are not qualified or activated by this audit. Finish, review and test them before including them in a release. |
+| Reconciled feature work | The owner selected integration of the newer Files viewers, connector management, restart handoff and restored-page refresh fixes onto main. Review and regression/build checks are recorded in the reconciliation; require final combined-main CI, artifact qualification and physical-device acceptance before release. The original audited cutoff remains separately preserved. |
 | Repository-wide history privacy | The owner-authorized publication history preserves source and attributes Reach commits to the verified owner. Private backups retain the original history. **Visibility remains blocked:** other remote branches/PR refs and Actions logs/artifacts may retain old personal metadata. Review those hosted copies separately, or publish the verified history to a fresh empty repository while retaining this repository privately. |
 | Full desktop control | **Unverified live:** native field detection failed because the audit process lacks Accessibility permission. Run the real capture, click, text, keys, scroll, owner-takeover, pause/revoke and video checks from a permissioned host process. Native policy compilation and simulated input are not substitutes. |
 | Claude end-to-end | **Partly verified:** native desktop prompt/reply and model → Reach observation passed. The separate CLI is signed out, and Reach's native write helper lacks Accessibility permission. Model selection is now implemented with exact-chat/menu acknowledgement tests; run real Reach → Claude settings/approval/queue/move/restart checks from a permissioned host before claiming universal sync. |

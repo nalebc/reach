@@ -191,8 +191,8 @@ test("an invitation to watch one app: that app's window only, nothing else", asy
   // The app list shows only Chrome; Chrome's window opens and streams.
   const listed = await as("/api/apps");
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
-  assert.ok(
-    listed.body.every((a) => a.id === CHROME),
+  assert.deepEqual(
+    listed.body.map((a) => a.id), [CHROME],
     "only the invited app",
   );
   // Guests don't open apps (that can move your window off your screen):

@@ -2574,14 +2574,14 @@ export async function createReach(overrides = {}) {
     const agents = [...new Set((Array.isArray(body.agents) ? body.agents : [body.agent]).map(String))].slice(0, 3);
     const token =
       body.tokenFrom === "gh"
-        ? await connectors.githubToken()
+        ? await connectors.githubToken(body.url)
         : typeof body.token === "string" && body.token.trim()
           ? body.token
           : null;
     const results = [];
     for (const agent of agents) {
       try {
-        const { name } = await connectors.add(agent, { name: body.name, url: body.url, token });
+        const { name } = await connectors.add(agent, { name: body.name, url: body.url, token, authorize: () => req.reauthorize() });
         record("session", `Added connector ${name} to ${agentLabel(agent)}`);
         results.push({ agent, ok: true });
       } catch (e) {
@@ -2594,12 +2594,12 @@ export async function createReach(overrides = {}) {
   });
   app.delete("/api/sessions/connectors", async (req, res) => {
     const agent = String(req.query.agent || "");
-    const result = await connectors.remove(agent, connectorName(req.query.name));
+    const result = await connectors.remove(agent, connectorName(req.query.name), { authorize: () => req.reauthorize() });
     record("session", `Removed connector ${result.name} from ${agentLabel(agent)}`);
     res.json(result);
   });
   app.post("/api/sessions/connectors/apps", async (req, res) => {
-    const result = await connectors.setApp(req.body?.id, req.body?.enabled === true);
+    const result = await connectors.setApp(req.body?.id, req.body?.enabled === true, { authorize: () => req.reauthorize() });
     record("session", `Turned a ChatGPT app ${result.enabled ? "on" : "off"} for Codex`);
     res.json(result);
   });
@@ -2608,7 +2608,7 @@ export async function createReach(overrides = {}) {
   );
   app.post("/api/sessions/connectors/login", async (req, res) => {
     const agent = String(req.body?.agent || "");
-    const result = await connectors.login(agent, connectorName(req.body?.name));
+    const result = await connectors.login(agent, connectorName(req.body?.name), { authorize: () => req.reauthorize() });
     record("session", `Started signing ${agentLabel(agent)} in to connector ${result.name}`);
     res.json(result);
   });
@@ -2850,7 +2850,7 @@ export async function createReach(overrides = {}) {
     res.json(result);
   });
   app.get("/api/apps", async (req, res) => {
-    const list = await apps();
+    const list = await (overrides.appList || apps)();
     res.json(
       req.client.scopes.includes("admin") || !req.client.guestApps
         ? list

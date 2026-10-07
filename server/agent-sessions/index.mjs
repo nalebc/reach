@@ -1356,6 +1356,7 @@ export function createAgentSessions({
     // the Codex daemon (its open socket would keep Reach running).
     close() {
       closed = true;
+      connectors.close();
       for (const agent of ["claude", "codex"]) signIn?.cancel?.(agent);
       claudeHost?.close?.();
       claudeImports?.close?.();

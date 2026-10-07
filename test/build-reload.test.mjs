@@ -53,6 +53,48 @@ test("a page left open on an old phone interface reloads once Reach serves a new
   assert.equal(busyHere(dom.document), false);
 });
 
+test("a restored old Home Screen page updates even when its first presence packet is the new build", async () => {
+  reload.forgetBuild();
+  let reloads = 0, busy = true;
+  const waits = [];
+  reload.noteBuild("new", {
+    reload: () => reloads++, busy: () => busy,
+    wait: (f) => waits.push(f), currentPage: async () => false,
+  });
+  await Promise.resolve();
+  assert.equal(reloads, 0);
+  assert.equal(waits.length, 1);
+  busy = false;waits.shift()();
+  assert.equal(reloads, 1);
+  reload.noteBuild("newer", { reload: () => reloads++ });
+  assert.equal(reloads, 1);
+});
+
+test("page comparison detects changed hashed assets and tolerates offline responses", async () => {
+  const doc = dom.document.implementation.createHTMLDocument();
+  doc.head.innerHTML = '<script type="module" src="/assets/main-old.js"></script><link rel="stylesheet" href="/assets/main-old.css">';
+  const { currentPageMatches } = reload;
+  assert.equal(await currentPageMatches(doc, async (url, options) => {
+    assert.equal(options.cache, "no-store");
+    return new Response('<script type="module" src="/assets/main-new.js"></script><link rel="stylesheet" href="/assets/main-new.css">');
+  }), false);
+  assert.equal(await currentPageMatches(doc, async () => new Response(doc.documentElement.outerHTML)), true);
+  assert.equal(await currentPageMatches(doc, async () => { throw Error("offline"); }), null);
+});
+
+test("a failed initial page comparison retries on the next same-build presence packet", async () => {
+  reload.forgetBuild();
+  let checks = 0, reloads = 0;
+  const options = { reload: () => reloads++, busy: () => false, currentPage: async () => ++checks === 1 ? null : false };
+  reload.noteBuild("new", options);
+  await Promise.resolve();
+  assert.equal(reloads, 0);
+  reload.noteBuild("new", options);
+  await Promise.resolve();
+  assert.equal(reloads, 1);
+  assert.equal(checks, 2);
+});
+
 test("Reach's live connection says which phone interface it serves", { timeout: 15000 }, async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "reach-build-"));
   const reach = await createReach({ roots: [dir], dataDir: path.join(dir, ".reach") });
