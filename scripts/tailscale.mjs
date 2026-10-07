@@ -12,18 +12,25 @@ export function findTailscaleCli({
   exists = fs.existsSync,
 } = {}) {
   if (env.REACH_TAILSCALE) return env.REACH_TAILSCALE;
-  const paths = platform === "win32" ? path.win32 : path.posix;
-  const onPath = (env.PATH || "")
-    .split(paths.delimiter)
-    .some((dir) => dir && exists(paths.join(dir, "tailscale")));
-  return platform === "darwin" && !onPath && exists(MAC_APP_CLI)
-    ? MAC_APP_CLI
-    : "tailscale";
+  // On a Mac with the Tailscale app, its own command line is the one that
+  // matches the running daemon; a Homebrew copy on the PATH often doesn't,
+  // and long-lived sessions through a mismatched client drop.
+  if (platform === "darwin" && exists(MAC_APP_CLI)) return MAC_APP_CLI;
+  return "tailscale";
 }
 let cli;
 export const tailscaleCli = () =>
   process.env.REACH_TAILSCALE ||
   (cli && cli !== "tailscale" ? cli : (cli = findTailscaleCli()));
+// The command line's version and the daemon's: when they differ, say so once.
+export async function tailscaleVersions() {
+  const [client, status] = await Promise.all([
+    exec(tailscaleCli(), ["version"], { timeout: 5000, maxBuffer: 65536, windowsHide: true }).then(({ stdout }) => stdout.split("\n")[0].trim()).catch(() => ""),
+    tailscaleJson(["status", "--json"]).catch(() => null),
+  ]);
+  const daemon = typeof status?.Version === "string" ? status.Version.split("-")[0] : "";
+  return { client, daemon, mismatch: !!client && !!daemon && client !== daemon };
+}
 export async function tailscaleJson(args) {
   try {
     const { stdout } = await exec(tailscaleCli(), args, {

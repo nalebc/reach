@@ -239,13 +239,14 @@ test("finds the CLI inside the Mac app when it isn't on PATH", () => {
     }),
     "/x/ts",
   );
+  // The app's own command line wins over a Homebrew copy: it matches the daemon.
   assert.equal(
     findTailscaleCli({
       env: { PATH: "/opt/homebrew/bin:/bin" },
       platform: "darwin",
       exists: only("/opt/homebrew/bin/tailscale", app),
     }),
-    "tailscale",
+    app,
   );
   assert.equal(
     findTailscaleCli({

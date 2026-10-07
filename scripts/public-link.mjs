@@ -40,6 +40,18 @@ export function funnelRoute(config, origin, target) {
   return taken ? "taken" : ours ? "ours" : "free";
 }
 
+// Exactly Reach's own background Funnel route, and nothing else on port 443:
+// what Reach may switch off, and what it may keep using after a restart.
+export function exactBackgroundFunnel(config, origin, target) {
+  const entries = serveConfigs(config).filter((entry) =>
+    entry?.TCP?.[PUBLIC_PORT] || Object.keys(entry?.Web || {}).some((host) => host.endsWith(`:${PUBLIC_PORT}`)),
+  );
+  if (entries.length !== 1 || entries[0] !== config || funnelRoute(config, origin, target) !== "ours") return false;
+  const host = `${new URL(origin).hostname}:${PUBLIC_PORT}`;
+  const tcp = config.TCP[PUBLIC_PORT], web = config.Web[host], handler = web.Handlers["/"];
+  return Object.keys(tcp).length === 1 && Object.keys(web).length === 1 && Object.keys(handler).length === 1;
+}
+
 export const PORT_TAKEN =
   "Port 443 on this computer's Tailscale address is used by another service, so phones without the Tailscale app can't sign in from the browser. Phones with the app still connect.";
 

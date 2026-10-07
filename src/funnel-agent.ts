@@ -469,6 +469,24 @@ export function browserFunnelAgent() {
     fetch: (...args) => fetch(...args),
   }));
 }
-export function funnelFetch(peer: Peer, path: string, init: RequestInit = {}) {
-  return browserFunnelAgent().request(peer, path, init);
+// A read that failed on the network (a TypeError: the connection dropped,
+// the public route blinked) is tried once more after a moment, so a live
+// screen or a file listing doesn't fail on one lost round trip. Writes are
+// never repeated: a click or a shell command must land exactly once.
+export async function funnelFetch(
+  peer: Peer,
+  path: string,
+  init: RequestInit = {},
+  agent: Pick<FunnelAgentClient, "request"> = browserFunnelAgent(),
+  retryAfterMs = 800,
+) {
+  try {
+    return await agent.request(peer, path, init);
+  } catch (error) {
+    const method = (init.method || "GET").toUpperCase();
+    if (!["GET", "HEAD"].includes(method) || init.signal?.aborted || !(error instanceof TypeError)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
+    if (init.signal?.aborted) throw error;
+    return agent.request(peer, path, init);
+  }
 }

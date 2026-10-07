@@ -129,18 +129,26 @@ test("Tailscale interruption pauses access, preserves the host, and recovers the
     available: (v) => states.push(v),
   });
   await recovery.check();
+  // One failed read is noise: the route is daemon state and stays available.
   down = true;
   await recovery.check();
+  assert.deepEqual(states, [true]);
   assert.equal(starts, 0);
+  // A second miss in a row pauses access and recovers the same route.
   down = false;
   config = {};
   await recovery.check();
-  await recovery.check();
-  assert.deepEqual(states, [true, false, false, true]);
+  assert.deepEqual(states, [true, false]);
   assert.equal(starts, 1);
+  await recovery.check();
+  assert.deepEqual(states, [true, false, true]);
+  // A single miss later never flips access again.
+  down = true;
+  await recovery.check();
+  assert.deepEqual(states, [true, false, true]);
   recovery.stop();
   await recovery.check();
-  assert.equal(states.length, 4);
+  assert.equal(states.length, 3);
 });
 test("recovery never overwrites a conflicting route or enables Funnel", async () => {
   let config,
@@ -157,10 +165,9 @@ test("recovery never overwrites a conflicting route or enables Funnel", async ()
     { ...owned, AllowFunnel: { "computer.example.ts.net:8443": true } },
     { TCP: { 8443: { HTTPS: true } } },
     { Foreground: { other: { TCP: { 8443: { HTTPS: true } } } } },
-  ])
-    await recovery.check();
+  ]) { await recovery.check(); await recovery.check(); }
   assert.equal(starts, 0);
-  assert(states.every((v) => v === false));
+  assert(states.length > 0 && states.every((v) => v === false));
 });
 test("a stopped or already checking link cannot spawn another recovery", async () => {
   let resolve,

@@ -59,6 +59,17 @@ test("reach status tells what really runs, with its link", { skip: process.platf
   const runtime = () => ({ link: "https://mac.tail.ts.net", awake: { mode: "always", active: true } });
   const text = statusText([hosts[0]], { command: "reach", dir: HOME, runtime });
   assert.equal(text, "Reach: running in a Terminal window (ttys007), from ~/reach\nLink: https://mac.tail.ts.net\nSleep prevention: always · active");
+  // Its routes: the private one phones use (and how often it dropped), the public one.
+  const now = new Date(2026, 9, 5, 19, 0).getTime();
+  const routes = { private: { up: true, since: new Date(2026, 9, 5, 18, 9).getTime(), interruptions: 2 }, public: { open: true, since: new Date(2026, 9, 5, 18, 20).getTime() } };
+  assert.match(
+    statusText([hosts[0]], { dir: HOME, now, runtime: () => ({ link: "https://mac.tail.ts.net", routes }) }),
+    /\nLink: https:\/\/mac\.tail\.ts\.net\nPrivate route: up since [^\n]*:09[^\n]* · 2 interruptions\nPublic link: open since [^\n]*:20[^\n]*$/,
+  );
+  assert.match(
+    statusText([hosts[0]], { dir: HOME, runtime: () => ({ routes: { private: { up: false, since: 0, interruptions: 0 }, public: { open: false, since: 0 } } }) }),
+    /\nPrivate route: down\nPublic link: closed$/,
+  );
   assert.match(statusText([hosts[1]], { dir: HOME, runtime: () => ({}) }), /It has no window/);
   assert.match(statusText(hosts, { dir: HOME, runtime: () => ({}) }), /3 copies are running; only one should\./);
   assert.equal(statusText([], { command: "reach" }), "Reach isn't running. Start it with reach.");

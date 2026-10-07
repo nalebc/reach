@@ -7,11 +7,11 @@ import { startDom, settle } from "./dom/harness.mjs";
 const origin = "https://reach.test";
 const invitation = "a".repeat(43);
 const device = { id: "mac", name: "My Mac", platform: "darwin" };
-let dom, React, createFunnelAgent, funnelStorageKey, FunnelAgent, peerFetch, fileBlob;
+let dom, React, createFunnelAgent, funnelStorageKey, funnelFetch, FunnelAgent, peerFetch, fileBlob;
 before(async () => {
   dom = await startDom();
   React = dom.React;
-  ({ createFunnelAgent, funnelStorageKey } = await dom.load(
+  ({ createFunnelAgent, funnelStorageKey, funnelFetch } = await dom.load(
     "/src/funnel-agent.ts",
   ));
   ({ default: FunnelAgent } = await dom.load("/src/FunnelAgent.tsx"));
@@ -430,6 +430,38 @@ test("ordinary owner calls keep their bearer transport and the agent entry loads
     /tailnet-transport|tailscale\.com|WebAssembly|\/api\/guests\/key/,
   );
   assert.deepEqual(dom.errors, []);
+});
+
+test("a read that dropped on the network is tried once more; writes, aborted reads and refusals are not", async () => {
+  const peer = { ...device, url: origin, token: "t" };
+  const attempts = [];
+  const agent = (outcomes) => ({
+    request: async (_peer, path, init) => {
+      attempts.push(`${init.method || "GET"} ${path}`);
+      const outcome = outcomes.shift();
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
+  });
+  // One lost round trip on a GET: the second attempt's answer comes back.
+  const ok = reply({ image: "…" });
+  assert.equal(await funnelFetch(peer, "/api/browser/desktop/screen", {}, agent([new TypeError("Load failed"), ok]), 5), ok);
+  assert.deepEqual(attempts.splice(0), ["GET /api/browser/desktop/screen", "GET /api/browser/desktop/screen"]);
+  // Twice lost: the failure is reported, after exactly two attempts.
+  await assert.rejects(funnelFetch(peer, "/api/device", {}, agent([new TypeError("Load failed"), new TypeError("Load failed")]), 5), TypeError);
+  assert.equal(attempts.splice(0).length, 2);
+  // A write is never repeated: a click or a command must land exactly once.
+  await assert.rejects(funnelFetch(peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }, agent([new TypeError("Load failed"), ok]), 5), TypeError);
+  assert.deepEqual(attempts.splice(0), ["POST /api/browser/desktop/input"]);
+  // A refusal from Reach is an answer, not a dropped connection.
+  const refused = Object.assign(Error("401"), { status: 401 });
+  await assert.rejects(funnelFetch(peer, "/api/device", {}, agent([refused, ok]), 5), { status: 401 });
+  assert.equal(attempts.splice(0).length, 1);
+  // The page moved on (the request was aborted): nothing is retried.
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(funnelFetch(peer, "/api/device", { signal: controller.signal }, agent([new TypeError("aborted"), ok]), 5), TypeError);
+  assert.equal(attempts.splice(0).length, 1);
 });
 
 test("a signed browser verifies an owner extension after its original local deadline", async () => {

@@ -21,6 +21,7 @@ import { PrivateLinkRecovery } from "./private-link-recovery.mjs";
 import {
   ensurePersistentRoute,
   recordedRouteMatches,
+  recordedRouteOwned,
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
 import { createReach } from "../server/index.mjs";
@@ -30,7 +31,7 @@ import {
   tailscaleCli,
   tailscaleJson,
   ownsServeRoute,
-  checkUnused,
+  tailscaleVersions,
 } from "./tailscale.mjs";
 import { packaged, stateDir } from "./home.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
@@ -66,17 +67,9 @@ export async function launch(options, root) {
     ? ""
     : await prepareTailscale(
         httpsPort,
-        options.service
-          ? (config, origin) =>
-              recordedRouteMatches(
-                routeFile,
-                config,
-                origin,
-                socketPath
-                  ? `unix:${socketPath}`
-                  : `http://127.0.0.1:${options.port}`,
-              )
-          : undefined,
+        // Reach's own route from an earlier run is reused, or replaced when
+        // its target changed; anybody else's on the port refuses to start.
+        (config, origin) => recordedRouteOwned(routeFile, config, origin),
       );
   // The one address (https://<computer>.ts.net): Reach for your devices, the
   // start page for the internet. Its page may call Reach here too.
@@ -105,8 +98,7 @@ export async function launch(options, root) {
         : { agentPolicyFile: path.join(privateDir, "agent-policy.json") }),
     ...(options.folders.length ? { roots: options.folders } : {}),
   });
-  let tunnel,
-    input,
+  let input,
     stopped = false,
     stopPromise;
   let finish;
@@ -146,14 +138,6 @@ export async function launch(options, root) {
       await publicLink?.stop();
       recovery?.stop();
       power?.stop();
-      if (tunnel && tunnel.exitCode === null && tunnel.signalCode === null) {
-        const exited = new Promise((resolve) => tunnel.once("close", resolve));
-        tunnel.kill();
-        const timer = setTimeout(() => tunnel.kill("SIGKILL"), 3000);
-        timer.unref();
-        await exited;
-        clearTimeout(timer);
-      }
       await reach.close();
       forgetStatus();
       log?.end();
@@ -229,79 +213,74 @@ export async function launch(options, root) {
     if (privateOrigin) {
       origin = privateOrigin;
       console.log("Reach: connecting through your private Tailscale network…");
-      log = fs.createWriteStream(path.join(dataDir, "tailscale.log"), {
+      // Every line in tailscale.log carries its time: route changes are rare
+      // and worth dating when something was flaky.
+      const rawLog = fs.createWriteStream(path.join(dataDir, "tailscale.log"), {
         flags: "a",
         mode: 0o600,
       });
-      if (!options.service) await checkUnused(httpsPort);
+      log = {
+        write: (chunk) => {
+          const stamp = new Date().toISOString();
+          const lines = String(chunk).split("\n").filter((line) => line.trim());
+          if (lines.length) rawLog.write(lines.map((line) => `${stamp} ${line}`).join("\n") + "\n");
+        },
+        end: () => rawLog.end(),
+      };
+      // The routes as the phone's status shows them (./reach status).
+      const routes = { private: { up: false, since: 0, interruptions: 0 }, public: { open: false, since: 0 } };
+      const noteRoutes = () => {
+        const current = loadJson(statusFile, null);
+        if (current?.instance === reach.instance) atomicJson(statusFile, { ...current, routes });
+      };
+      const privateUp = (value) => {
+        reach.setTransportAvailable(value);
+        if (routes.private.up === value) return;
+        if (value) routes.private.since = Date.now();
+        else routes.private.interruptions++;
+        routes.private.up = value;
+        noteRoutes();
+      };
+      try {
+        const versions = await tailscaleVersions();
+        if (versions.mismatch) {
+          const warning = `Tailscale's command line (${versions.client}) and its daemon (${versions.daemon}) are different versions. Update Tailscale so they match; mismatched versions drop connections.`;
+          console.log(`Reach: ${warning}`);
+          log.write(`Reach: ${warning}`);
+        }
+      } catch {}
+      // Tailscale sometimes answers with a page to visit (usually: turn on
+      // HTTPS for the tailnet). Say so once, and open it from a Terminal.
       const setupOpened = new Set();
+      const setupHint = (message) => {
+        const setup = String(message).match(/https:\/\/(?:login|console)\.tailscale\.com\/[^\s"']+/);
+        if (!setup || setupOpened.has(setup[0])) return;
+        setupOpened.add(setup[0]);
+        console.log(`Reach: finish Tailscale setup: ${setup[0]}`);
+        if (process.stdout.isTTY && process.platform === "darwin")
+          spawn("open", [setup[0]], { stdio: "ignore" }).on("error", () => {});
+      };
+      // The private route is Tailscale daemon state (a background Serve), in
+      // every mode: it survives dropped sessions, sleeps and Reach restarts,
+      // and an unchanged route is reused without a blink.
       const startTunnel = async () => {
         if (stopped) return;
-        if (options.service) {
-          await ensurePersistentRoute({
-            file: routeFile,
-            origin,
-            target: serveTarget,
-          });
-          return;
+        try {
+          const created = await ensurePersistentRoute({ file: routeFile, origin, target: serveTarget });
+          if (created) log.write(`Reach: private route set: ${origin} -> ${serveTarget}`);
+        } catch (error) {
+          setupHint(error.message);
+          throw error;
         }
-        if (tunnel && tunnel.exitCode === null && tunnel.signalCode === null) {
-          const old = tunnel;
-          const closed = new Promise((resolve) => old.once("close", resolve));
-          old.kill();
-          const timer = setTimeout(() => old.kill("SIGKILL"), 3000);
-          timer.unref();
-          await closed;
-          clearTimeout(timer);
-        }
-        if (stopped) return;
-        // Check again immediately before mutation, including after an awaited stop.
-        await checkUnused(httpsPort);
-        if (stopped) return;
-        tunnel = spawn(
-          tailscaleCli(),
-          ["serve", `--https=${httpsPort}`, serveTarget],
-          {
-            stdio: ["ignore", "pipe", "pipe"],
-            windowsHide: true,
-          },
-        );
-        const current = tunnel;
-        const consume = (chunk) => {
-          log.write(chunk);
-          const setup = chunk
-            .toString()
-            .match(/https:\/\/(?:login|console)\.tailscale\.com\/[^\s]+/);
-          if (setup && !setupOpened.has(setup[0])) {
-            setupOpened.add(setup[0]);
-            console.log(`Reach: finish Tailscale setup: ${setup[0]}`);
-            // Usually "turn on HTTPS for your tailnet": one click in the browser.
-            if (process.stdout.isTTY && process.platform === "darwin")
-              spawn("open", [setup[0]], { stdio: "ignore" }).on("error", () => {});
-          }
-        };
-        tunnel.stdout.on("data", consume);
-        tunnel.stderr.on("data", consume);
-        const interrupted = () => {
-          if (stopped || current !== tunnel) return;
-          recovery?.unavailable(
-            "Tailscale connection interrupted. Reconnecting automatically.",
-          );
-        };
-        tunnel.once("error", interrupted);
-        tunnel.once("exit", interrupted);
       };
       recovery = new PrivateLinkRecovery({
         origin,
         target: serveTarget,
-        owns: options.service
-          ? (config, address, target) =>
-              recordedRouteMatches(routeFile, config, address, target)
-          : ownsServeRoute,
+        owns: (config, address, target) => recordedRouteMatches(routeFile, config, address, target),
         inspect: () => tailscaleJson(["serve", "status", "--json"]),
         restart: startTunnel,
-        available: (value) => reach.setTransportAvailable(value),
-        report: (message) => console.log(`Reach: ${message}`),
+        available: privateUp,
+        report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); setupHint(message); },
       });
       reach.setTransportAvailable(false);
       await startTunnel();
@@ -334,14 +313,20 @@ export async function launch(options, root) {
       monitor.unref();
       if (publicStart && !stopped) {
         // Public access exists only while an invitation/admission/session is
-        // alive. The worker owns a foreground route and a five-second lease.
+        // alive: a background Funnel route, switched on and off with the
+        // window; a janitor process holds a five-second lease on it.
         publicLink = new EphemeralFunnel({
           origin: publicStart,
           target: serveTarget,
           file: funnelFile,
           window: reach.funnelWindow,
           log,
-          report: (message) => console.log(`Reach: ${message}`),
+          report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); },
+          changed: (open) => {
+            if (open) routes.public.since = Date.now();
+            routes.public.open = open;
+            noteRoutes();
+          },
         });
         await publicLink.start();
         reach.setFunnelController(() => publicLink.ensure());

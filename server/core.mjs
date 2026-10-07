@@ -1084,7 +1084,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       client.hash = hash(token);
       client.redeemedAt = new Date().toISOString();
       request.status = "collected";
-      if (funnel) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      if (funnel) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
       // Persist the consumed receipt and token hash in one atomic write before
       // returning. A dropped response can never mint a second credential.
       result = {
@@ -1125,7 +1125,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     changeClients((latest) => {
       const client = latest.find((entry) => entry.hash === digest);
       if (!funnelSession(client, keyThumbprint)) throw fail(401, "This browser connection has ended.");
-      client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
       return latest;
     });
   }

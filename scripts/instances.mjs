@@ -199,11 +199,17 @@ export function alreadyRunning(hosts, { command = "reach", started = new Map(), 
 export function statusText(hosts, { command = "reach", started = new Map(), now, dir, runtime = runtimeOf, state = stateOf } = {}) {
   if (!hosts.length) return `Reach isn't running. Start it with ${command}.`;
   const blocks = hosts.map((h) => {
-    const { link, origin, awake } = runtime(h);
+    const { link, origin, awake, routes } = runtime(h);
     const url = link || origin;
+    const since = (route) => (route.since ? ` since ${clock(route.since, now)}` : "");
+    const interruptions = routes?.private?.interruptions || 0;
     return [
       `Reach: running ${describe(h, { started: started.get(h.pid), now, dir })}`,
       ...(url ? [`Link: ${url}`] : []),
+      // Its routes in Tailscale: the private one phones use, the public one
+      // open while an invitation or agent session is live.
+      ...(routes?.private ? [`Private route: ${routes.private.up ? `up${since(routes.private)}` : "down"}${interruptions ? ` · ${interruptions} interruption${interruptions === 1 ? "" : "s"}` : ""}`] : []),
+      ...(routes?.public ? [`Public link: ${routes.public.open ? `open${since(routes.public)}` : "closed"}`] : []),
       ...(awake?.mode ? [`Sleep prevention: ${awake.mode} · ${awake.active ? "active" : "not active"}${awake.error ? ` · ${awake.error}` : ""}`] : []),
       // The service writes its output to files; a window shows it.
       ...(h.service ? [`Logs: ${home(path.join(state(h.root), "logs"), dir)}`] : []),

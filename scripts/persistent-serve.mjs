@@ -56,6 +56,18 @@ export function recordedRouteMatches(file, config, origin, target) {
     exactPersistentRoute(config, origin, target)
   );
 }
+// The route on the port is one Reach made for this address, whatever target
+// it recorded then (a local port may have changed since).
+export function recordedRouteOwned(file, config, origin) {
+  const record = loadJson(file, null);
+  return (
+    record?.origin === origin &&
+    typeof record?.target === "string" &&
+    exactPersistentRoute(config, origin, record.target)
+  );
+}
+// Returns true when a route was created, false when the recorded one was
+// reused as it is (nothing on the port changed).
 export async function ensurePersistentRoute({
   file,
   origin,
@@ -63,9 +75,15 @@ export async function ensurePersistentRoute({
   inspect = () => tailscaleJson(["serve", "status", "--json"]),
   run = runTailscale,
 }) {
-  const config = await inspect();
-  if (recordedRouteMatches(file, config, origin, target)) return;
+  let config = await inspect();
+  if (recordedRouteMatches(file, config, origin, target)) return false;
   const port = Number(new URL(origin).port || 443);
+  if (recordedRouteOwned(file, config, origin)) {
+    // Reach's own route from an earlier run, pointing at an old target:
+    // replaced. Nobody else's route on the port ever is.
+    await run(["serve", `--https=${port}`, "off"]);
+    config = await inspect();
+  }
   assertUnusedPort(config, port);
   // Save intent before mutation so a crash after Serve succeeds is recoverable.
   atomicJson(file, { version: 1, origin, target });
@@ -74,6 +92,7 @@ export async function ensurePersistentRoute({
     throw Error(
       "The private Serve route could not be verified. Access stays paused.",
     );
+  return true;
 }
 export async function removePersistentRoute({
   file,

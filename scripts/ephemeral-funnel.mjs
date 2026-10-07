@@ -1,31 +1,22 @@
 import fs from "node:fs";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { loadJson } from "../server/core.mjs";
-import { funnelRoute } from "./public-link.mjs";
+import { atomicJson, loadJson } from "../server/core.mjs";
+import { exactBackgroundFunnel, funnelRoute } from "./public-link.mjs";
 import { runTailscale } from "./persistent-serve.mjs";
-import { serveConfigs, tailscaleJson } from "./tailscale.mjs";
+import { tailscaleJson } from "./tailscale.mjs";
 import { MAX_FUNNEL_LEASE_MS } from "./funnel-lease-worker.mjs";
 
-const CONFLICT = "Tailscale port 443 is used by another service. Reach cannot open this agent invitation without replacing that service.";
+export { exactBackgroundFunnel };
+export const CONFLICT = "Tailscale port 443 is used by another service. Reach cannot open this agent invitation without replacing that service.";
 const workerFile = fileURLToPath(new URL("./funnel-lease-worker.mjs", import.meta.url));
-const portEntries = (config) => serveConfigs(config).filter((entry) =>
-  entry.TCP?.[443] || Object.keys(entry.Web || {}).some((host) => host.endsWith(":443")),
-);
-export function exactBackgroundFunnel(config, origin, target) {
-  const entries = portEntries(config);
-  if (entries.length !== 1 || entries[0] !== config || funnelRoute(config, origin, target) !== "ours") return false;
-  const host = `${new URL(origin).hostname}:443`;
-  const tcp = config.TCP[443], web = config.Web[host], handler = web.Handlers["/"];
-  return Object.keys(tcp).length === 1 && Object.keys(web).length === 1 && Object.keys(handler).length === 1;
-}
-const ownedForeground = (config, origin, target) => {
-  const entries = portEntries(config);
-  return entries.length === 1 && entries[0] !== config && funnelRoute(config, origin, target) === "ours";
-};
 
-// A public route exists only while an explicit browser invitation or session
-// is live. Its independent watchdog must receive a fresh lease every second.
+// The public route is Tailscale daemon state: a background Funnel on port 443,
+// switched on while an invitation or agent session is live and off when none
+// is. Daemon state survives dropped CLI sessions, sleeps and Reach restarts,
+// so an agent's connection never blinks with a relaunched process. A separate
+// janitor (funnel-lease-worker.mjs) holds a five-second lease and switches the
+// route off if Reach itself dies; Reach also clears a stale route at startup.
 export class EphemeralFunnel {
   constructor({
     origin, target, file = "", window,
@@ -33,18 +24,29 @@ export class EphemeralFunnel {
     run = runTailscale,
     spawnWorker = () => fork(workerFile, [], { stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true }),
     report = () => {}, log = null,
+    // Called with true when the public route comes up and false when it goes.
+    changed = () => {},
     now = Date.now,
     every = setInterval, clearEvery = clearInterval,
     delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     ensureMs = 15000,
+    inspectMs = 10000,
   }) {
-    Object.assign(this, { origin, target, file, window, inspect, run, spawnWorker, report, log, now, every, clearEvery, delay, ensureMs });
+    Object.assign(this, { origin, target, file, window, inspect, run, spawnWorker, report, log, changed, now, every, clearEvery, delay, ensureMs, inspectMs });
     this.worker = null;
-    this.live = false;
+    this.isLive = false;
     this.stopped = false;
     this.started = false;
     this.lastError = "";
     this.nextStart = 0;
+    this.config = null;
+    this.inspected = 0;
+  }
+  get live() { return this.isLive; }
+  set live(value) {
+    if (value === this.isLive) return;
+    this.isLive = value;
+    try { this.changed(value); } catch (error) { this.warn(error.message); }
   }
   activeWindow() {
     const value = this.window();
@@ -54,18 +56,33 @@ export class EphemeralFunnel {
     if (message !== this.lastError) this.report(message);
     this.lastError = message;
   }
+  // The daemon's serve configuration, read at most every inspectMs unless
+  // forced. A failed read is reported, never acted on: the route stays as it is.
+  async readConfig(force = false) {
+    if (!force && this.config && this.now() - this.inspected < this.inspectMs) return this.config;
+    const config = await this.inspect();
+    this.config = config;
+    this.inspected = this.now();
+    return config;
+  }
   async start() {
     if (this.starting) return this.starting;
     if (this.started || this.stopped) return this.live;
     this.starting = (async () => {
+      // A route left by an earlier Reach: kept when it is exactly ours and a
+      // window is open now, switched off otherwise. Anything else on the port
+      // is somebody else's and is never touched.
       const record = this.file ? loadJson(this.file, null) : null;
       if (record?.version === 1 && record.origin === this.origin && typeof record.target === "string") {
-        const config = await this.inspect();
+        const config = await this.readConfig(true);
         if (exactBackgroundFunnel(config, record.origin, record.target)) {
-          await this.run(["funnel", "--https=443", "off"]);
-          if (funnelRoute(await this.inspect(), record.origin, record.target) !== "free")
-            throw Error("The previous public Funnel could not be closed. Agent access remains unavailable.");
-          fs.rmSync(this.file, { force: true });
+          if (record.target === this.target && this.activeWindow()) this.live = true;
+          else {
+            await this.run(["funnel", "--https=443", "off"]);
+            if (funnelRoute(await this.readConfig(true), record.origin, record.target) !== "free")
+              throw Error("The previous public Funnel could not be closed. Agent access remains unavailable.");
+            fs.rmSync(this.file, { force: true });
+          }
         } else if (funnelRoute(config, record.origin, record.target) === "free") {
           fs.rmSync(this.file, { force: true });
         }
@@ -83,10 +100,9 @@ export class EphemeralFunnel {
     const child = this.worker;
     if (!child?.connected || child.exitCode !== null || child.signalCode != null) return false;
     try {
-      child.send(message, (error) => { if (error) { this.live = false; this.warn(error.message); } });
+      child.send(message, (error) => { if (error) this.warn(error.message); });
       return true;
     } catch (error) {
-      this.live = false;
       this.warn(error.message);
       return false;
     }
@@ -94,8 +110,8 @@ export class EphemeralFunnel {
   lease(active, type = "lease") {
     return { type, leaseUntil: Math.min(this.now() + MAX_FUNNEL_LEASE_MS, active.until), windowUntil: active.until };
   }
+  // The janitor exits quietly when Reach asks; losing Reach makes it act.
   async closeWorker() {
-    this.live = false;
     const child = this.worker;
     this.worker = null;
     if (!child) return;
@@ -103,11 +119,46 @@ export class EphemeralFunnel {
     const closed = new Promise((resolve) => { child.once("exit", resolve); child.once("close", resolve); });
     if (child.connected) {
       try { child.send({ type: "stop" }, () => {}); } catch {}
-      // IPC loss independently instructs the watchdog to stop. Do not kill
-      // the watchdog before it has reaped its own foreground Funnel process.
       try { child.disconnect(); } catch {}
     } else child.kill("SIGTERM");
     await closed;
+  }
+  startWorker(active) {
+    const child = this.spawnWorker();
+    this.worker = child;
+    child.once("error", (error) => this.warn(error.message));
+    const ended = () => { if (this.worker === child) this.worker = null; };
+    child.once("exit", ended);
+    child.once("close", ended);
+    child.on("message", (message) => {
+      if (message?.type === "error") this.warn(message.message);
+      if (message?.type === "output") this.log?.write(message.text);
+      if (message?.type === "off" && message.changed) { this.live = false; this.report("Public link switched off by the watchdog."); }
+    });
+    child.stdout?.on("data", (chunk) => this.log?.write(chunk));
+    child.stderr?.on("data", (chunk) => this.log?.write(chunk));
+    if (!this.send({ ...this.lease(active, "init"), target: this.target, origin: this.origin })) this.worker = null;
+  }
+  // Switch Reach's own route off (the window closed, or Reach is stopping).
+  // Only an exact route of Reach's own is touched, judged from a fresh read
+  // of the daemon unless the caller has one in hand.
+  async release(config = null) {
+    // Never live and no record of a route created: nothing of Reach's can be
+    // on the port, so the daemon is not even asked.
+    if (!config && !this.live && this.file && !fs.existsSync(this.file)) return;
+    try {
+      config ??= await this.readConfig(true);
+      if (exactBackgroundFunnel(config, this.origin, this.target)) {
+        await this.run(["funnel", "--https=443", "off"]);
+        this.config = null;
+        if (this.file) fs.rmSync(this.file, { force: true });
+        this.report("Public link closed: no invitation or agent session is live.");
+      } else if (this.file && funnelRoute(config, this.origin, this.target) === "free") {
+        // A record with no route behind it (switching on failed): dropped.
+        fs.rmSync(this.file, { force: true });
+      }
+    } catch (error) { this.warn(error.message); }
+    this.live = false;
   }
   sync() {
     if (this.syncing) return this.syncing;
@@ -118,45 +169,40 @@ export class EphemeralFunnel {
     if (this.stopped || !this.started) return false;
     let active;
     try { active = this.activeWindow(); }
-    catch (error) { await this.closeWorker(); this.warn(error.message); return false; }
-    if (!active) { await this.closeWorker(); this.lastError = ""; return false; }
-    if (this.worker && !this.send(this.lease(active))) await this.closeWorker();
-    let config;
-    try { config = await this.inspect(); }
-    catch (error) { await this.closeWorker(); this.warn(error.message); return false; }
-    if (this.stopped || !this.activeWindow()) { await this.closeWorker(); return false; }
-    if (this.worker) {
-      this.live = ownedForeground(config, this.origin, this.target);
-      if (funnelRoute(config, this.origin, this.target) === "taken") {
-        await this.closeWorker();
-        this.warn(CONFLICT);
-      }
-      return this.live;
-    }
-    if (funnelRoute(config, this.origin, this.target) !== "free") {
-      this.warn(CONFLICT);
+    catch (error) { this.warn(error.message); return this.live; }
+    if (!active) {
+      if (this.worker || this.live) { await this.closeWorker(); await this.release(); }
+      this.lastError = "";
       return false;
     }
+    // Keep the janitor leased; a janitor that went away is started again.
+    if (this.worker && !this.send(this.lease(active))) await this.closeWorker();
+    if (!this.worker) this.startWorker(active);
+    // The route itself is checked every inspectMs while live, and now if not.
+    if (this.live && this.now() - this.inspected < this.inspectMs) return true;
+    let config;
+    try { config = await this.readConfig(true); }
+    catch (error) { this.warn(error.message); return this.live; }
+    if (this.stopped || !this.activeWindow()) { await this.closeWorker(); await this.release(config); return false; }
+    // Exactly our own background route is used as is (a restart never blinks);
+    // a free port gets one; anything else on the port is somebody else's.
+    if (exactBackgroundFunnel(config, this.origin, this.target)) { this.live = true; this.lastError = ""; return true; }
+    if (funnelRoute(config, this.origin, this.target) !== "free") { this.live = false; this.warn(CONFLICT); return false; }
     if (this.now() < this.nextStart) return false;
     this.nextStart = this.now() + 1500;
-    active = this.activeWindow();
-    if (!active || this.stopped) return false;
-    const child = this.spawnWorker();
-    this.worker = child;
-    this.lastError = "";
-    child.once("error", (error) => { this.live = false; this.warn(error.message); });
-    const ended = () => { if (this.worker === child) { this.worker = null; this.live = false; } };
-    child.once("exit", ended);
-    child.once("close", ended);
-    child.on("message", (message) => {
-      if (message?.type === "error") this.warn(message.message);
-      if (message?.type === "output") this.log?.write(message.text);
-      if (["closed", "stopping"].includes(message?.type)) this.live = false;
-    });
-    child.stdout?.on("data", (chunk) => this.log?.write(chunk));
-    child.stderr?.on("data", (chunk) => this.log?.write(chunk));
-    if (!this.send({ ...this.lease(active, "init"), target: this.target })) await this.closeWorker();
-    return false;
+    try {
+      if (this.file) atomicJson(this.file, { version: 1, origin: this.origin, target: this.target });
+      await this.run(["funnel", "--bg", "--https=443", this.target]);
+      if (!exactBackgroundFunnel(await this.readConfig(true), this.origin, this.target))
+        throw Error("The public Funnel route could not be verified. Agent access stays closed.");
+      this.live = true;
+      this.lastError = "";
+      this.report("Public link open: an invitation or agent session is live.");
+    } catch (error) {
+      this.live = false;
+      this.warn(error.message);
+    }
+    return this.live;
   }
   async ensure() {
     if (this.stopped) throw Error("Agent sharing has stopped.");
@@ -174,5 +220,6 @@ export class EphemeralFunnel {
     this.stopped = true;
     this.clearEvery(this.monitor);
     await this.closeWorker();
+    await this.release();
   }
 }

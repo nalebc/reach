@@ -14,6 +14,7 @@ import {
   ensurePersistentRoute,
   removePersistentRoute,
   exactPersistentRoute,
+  recordedRouteOwned,
 } from "../scripts/persistent-serve.mjs";
 import {
   stayAwakeOnAC,
@@ -162,6 +163,46 @@ test("Serve intent survives a crash after successful background creation", async
     await assert.rejects(ensurePersistentRoute(options), /interrupted/);
     await ensurePersistentRoute(options);
     assert.equal(calls, 1);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Serve reuses its recorded route as is, replaces only its own route when the target changed, and says which", async () => {
+  const dir = await temp(),
+    file = path.join(dir, "serve-owner.json");
+  const oldTarget = "http://127.0.0.1:50000";
+  const ownedBy = (proxy) => ({
+    TCP: { 8443: { HTTPS: true } },
+    Web: { "computer.example.ts.net:8443": { Handlers: { "/": { Proxy: proxy } } } },
+  });
+  let config = ownedBy(oldTarget),
+    calls = [];
+  const run = async (args) => {
+    calls.push(args);
+    config = args.at(-1) === "off" ? {} : ownedBy(args.at(-1));
+  };
+  const options = { file, origin, target, inspect: async () => config, run };
+  try {
+    // Reach's own route from an earlier run, pointing at a local port that
+    // changed: replaced, in two commands.
+    atomicJson(file, { version: 1, origin, target: oldTarget });
+    assert.equal(recordedRouteOwned(file, config, origin), true);
+    assert.equal(recordedRouteOwned(file, config, "https://other.example.ts.net:8443"), false);
+    assert.equal(await ensurePersistentRoute(options), true);
+    assert.deepEqual(calls, [
+      ["serve", "--https=8443", "off"],
+      ["serve", "--bg", "--https=8443", target],
+    ]);
+    // The route it just made: reused without a command, every time.
+    assert.equal(await ensurePersistentRoute(options), false);
+    assert.equal(calls.length, 2);
+    // The same route without Reach's record is somebody else's.
+    await fs.rm(file);
+    config = ownedBy(oldTarget);
+    assert.equal(recordedRouteOwned(file, config, origin), false);
+    await assert.rejects(ensurePersistentRoute(options), /already in use/);
+    assert.equal(calls.length, 2);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

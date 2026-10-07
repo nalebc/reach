@@ -58,6 +58,18 @@ real-device checks that are still open.
 
 ### Changed
 
+- Routes are Tailscale daemon state, in every mode. The private Serve route
+  (port 8443) and the on-demand Funnel route (port 443) are background routes:
+  a dropped command-line session, a sleep or a Reach restart no longer
+  interrupts phones or agents, and an unchanged route is reused without a gap.
+  A janitor process (`scripts/funnel-lease-worker.mjs`) holding a five-second
+  lease switches the public route off if Reach dies; the private route stays
+  while Reach is stopped and `./reach uninstall` removes it. Reach replaces its
+  own recorded route when its target changed and never anybody else's. On a
+  Mac with the Tailscale app, Reach uses the app's own command line (the one
+  that matches the running daemon) and warns once when the command line and
+  the daemon differ in version. `./reach status` shows both routes, and
+  `tailscale.log` lines carry their time.
 - The signed Funnel gateway (one endpoint, P-256 signed POST requests, nonce
   and clock-window replay protection) answers only while an invitation window
   is open; at other times public Funnel requests are refused. Preset agents'
@@ -70,6 +82,13 @@ real-device checks that are still open.
 
 ### Fixed
 
+- Screen sharing with a browser agent dropped for seconds at a time. The
+  foreground `tailscale serve` and `tailscale funnel` processes that carried
+  the routes kept exiting (124 and 65 relaunches in one day's log, through a
+  Homebrew command line one version apart from the daemon), and a single failed
+  status read marked the private link unavailable. Routes are daemon state now,
+  the private link needs two failed reads in a row before it is called
+  interrupted, and the agent page retries one failed read.
 - Stale browser sign-in builds no longer ship: `scripts/build-tailnet.mjs`
   removes `tailnet/dist` outputs the manifest does not list, and
   `npm run verify:package` fails if the tarball carries unlisted files or
