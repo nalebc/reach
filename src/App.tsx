@@ -1,4 +1,9 @@
-import AccessEditor, { appScopedAccess, accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
+import AccessEditor, {
+  appScopedAccess,
+  accessSummary,
+  canEditAccess,
+  type EditableAccess,
+} from "./AccessEditor";
 import { usePageVisible } from "./page-visible";
 import DeviceAccessBadge from "./DeviceAccessBadge";
 import BrowserAgents from "./BrowserAgents";
@@ -16,14 +21,7 @@ import ConnectForm from "./ConnectForm";
 import QuickLauncher from "./QuickLauncher";
 import { ReconnectTimer } from "./reconnect";
 import ScreenPopup from "./ScreenPopup";
-import {
-  lazy,
-  useEffect,
-  useMemo,
-  useState,
-  useCallback,
-  useRef,
-} from "react";
+import { lazy, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   LayoutGrid,
   UserRoundPlus,
@@ -96,7 +94,14 @@ import {
 } from "./ui";
 import Files from "./Files";
 import EverythingChat from "./EverythingChat";
-import { openMacSetting, sendMacPassword, useAgentSessions, useChatAgent, type AgentName, type MacPrompt } from "./agent-sessions";
+import {
+  openMacSetting,
+  sendMacPassword,
+  useAgentSessions,
+  useChatAgent,
+  type AgentName,
+  type MacPrompt,
+} from "./agent-sessions";
 import { AgentLogo, useAgentLogos } from "./agent-logos";
 import Apps from "./Apps";
 import { InviteSheet } from "./InviteSheet";
@@ -116,7 +121,14 @@ import { groupDevices } from "./device-groups";
 import { FaceIdSettings } from "./FaceIdSettings";
 import { NotificationBell, NotificationCenter } from "./Notifications";
 import { wantPrompt } from "./notification-focus";
-import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
+import {
+  lastPlace,
+  openTarget,
+  rememberPlace,
+  wantNeed,
+  withoutTarget,
+  type OpenTarget,
+} from "./deep-link";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
@@ -300,8 +312,7 @@ function ReachWorkspace() {
     )
       .then((next) => {
         // A pairing/removal made while checks ran always wins over this migration.
-        if (!current || localStorage.getItem(peersKey()) !== original)
-          return;
+        if (!current || localStorage.getItem(peersKey()) !== original) return;
         const previous =
           saved.find((p) => p.id === localStorage.getItem(activeKey())) ||
           saved[0];
@@ -310,7 +321,7 @@ function ReachWorkspace() {
         const selected = next.find((p) => sameComputer(p, previous)) || next[0];
         if (selected) {
           setActive(selected.id);
-          localStorage.setItem(activeKey(),selected.id);
+          localStorage.setItem(activeKey(), selected.id);
         }
       })
       .finally(() => clearTimeout(timeout));
@@ -539,7 +550,8 @@ function ReachWorkspace() {
   // With Reach already open, the service worker passes the link instead.
   const [linkTarget, setLinkTarget] = useState<OpenTarget | null>(() => {
     const target = openTarget(location.href);
-    if (target) history.replaceState(history.state, "", withoutTarget(location.href));
+    if (target)
+      history.replaceState(history.state, "", withoutTarget(location.href));
     // Without one, a reload comes back to where you were.
     return target || lastPlace(active);
   });
@@ -548,19 +560,31 @@ function ReachWorkspace() {
   }, [page, peer?.id]);
   useEffect(() => {
     const message = (event: MessageEvent) => {
-      if (event.data?.type === "reach-open" && typeof event.data.url === "string") {
+      if (
+        event.data?.type === "reach-open" &&
+        typeof event.data.url === "string"
+      ) {
         const target = openTarget(event.data.url);
         if (target) setLinkTarget(target);
       }
     };
     navigator.serviceWorker?.addEventListener("message", message);
-    return () => navigator.serviceWorker?.removeEventListener("message", message);
+    return () =>
+      navigator.serviceWorker?.removeEventListener("message", message);
   }, []);
   useEffect(() => {
     if (!linkTarget || !peer || !device) return;
-    if (linkTarget.computer && ![peer.id, peer.computerId].includes(linkTarget.computer)) {
-      const computer = peers.find((p) => [p.id, p.computerId].includes(linkTarget.computer));
-      if (computer) { setActive(computer.id); localStorage.setItem(activeKey(), computer.id); }
+    if (
+      linkTarget.computer &&
+      ![peer.id, peer.computerId].includes(linkTarget.computer)
+    ) {
+      const computer = peers.find((p) =>
+        [p.id, p.computerId].includes(linkTarget.computer),
+      );
+      if (computer) {
+        setActive(computer.id);
+        localStorage.setItem(activeKey(), computer.id);
+      }
       return;
     }
     if (!pageAccessible(linkTarget.page, features)) return;
@@ -569,7 +593,10 @@ function ReachWorkspace() {
   }, [linkTarget, peer?.id, device, features]);
   // A Mac dialog to answer on the live screen (from a "Show on screen" card),
   // and the page to go back to after.
-  const [screenAsk, setScreenAsk] = useState<{ prompt: MacPrompt; from: string } | null>(null);
+  const [screenAsk, setScreenAsk] = useState<{
+    prompt: MacPrompt;
+    from: string;
+  } | null>(null);
   const showOnScreen = features.screen
     ? (prompt: MacPrompt) => {
         setScreenAsk({ prompt, from: page });
@@ -581,7 +608,7 @@ function ReachWorkspace() {
     savePeers(next);
     setPeers(next);
     setActive(p.id);
-    localStorage.setItem(activeKey(),p.id);
+    localStorage.setItem(activeKey(), p.id);
     setPairing(false);
     setPage("overview");
     toast(`${p.name} is within reach`);
@@ -609,7 +636,7 @@ function ReachWorkspace() {
     connectionGeneration.current++;
     const saved = workspaces.current[id];
     setActive(id);
-    localStorage.setItem(activeKey(),id);
+    localStorage.setItem(activeKey(), id);
     setPage(saved?.page || "overview");
     setTerminalId(saved?.terminalId || "");
     setTerminalSource(saved?.terminalSource || "reach");
@@ -638,487 +665,549 @@ function ReachWorkspace() {
   // Opens what a notification (or the bell's list) points at, in one go:
   // the chat itself, the app handed to you, or the request opened for review.
   function openTargetNow(target: OpenTarget) {
-    if (target.page === "sessions" && target.agent && target.id && target.prompt)
-      wantPrompt({ agent: target.agent, session: target.id, id: target.prompt });
-    if (target.page === "sessions" && ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "") && target.id)
-      setChatTarget({ agent: target.agent as AgentName | "openclaw", id: target.id });
-    if (target.page === "sessions" && target.agent === "openclaw") setChatAgent("openclaw");
-    if (target.page === "apps" && target.threadId) requestOpenThread(peer.id, target.threadId);
+    if (
+      target.page === "sessions" &&
+      target.agent &&
+      target.id &&
+      target.prompt
+    )
+      wantPrompt({
+        agent: target.agent,
+        session: target.id,
+        id: target.prompt,
+      });
+    if (
+      target.page === "sessions" &&
+      ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "") &&
+      target.id
+    )
+      setChatTarget({
+        agent: target.agent as AgentName | "openclaw",
+        id: target.id,
+      });
+    if (target.page === "sessions" && target.agent === "openclaw")
+      setChatAgent("openclaw");
+    if (target.page === "apps" && target.threadId)
+      requestOpenThread(peer.id, target.threadId);
     if (target.needs) wantNeed(target.needs);
     navigate(target.page);
   }
   return (
-    <NotificationCenter peer={peer} enabled={!!device && !!features.settings} changes={live} onOpen={({ target }) => openTargetNow(target)}>
-    <div className="app-shell">
-      <aside className="sidebar">
-        <Logo companion={page !== "overview" && page !== "screen"} />
-        <div className="workspace-label">WORKSPACE</div>
-        <nav>
-          {visiblePages.map((p) => (
-            <button
-              key={p.id}
-              className={page === p.id ? "active" : ""}
-              aria-current={page === p.id ? "page" : undefined}
-              onClick={() => navigate(p.id)}
-            >
-              {pageIcon(p, 19)}
-              {p.name}
-              {p.id === "terminal" &&
-                terminals.filter((s) => s.status === "running").length > 0 && (
-                  <span className="nav-count">
-                    {terminals.filter((s) => s.status === "running").length}
-                  </span>
-                )}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-devices">
-          <div className="workspace-label">
-            YOUR COMPUTERS
-            <button
-              className="icon-button"
-              title="Add computer"
-              onClick={() => setPairing(true)}
-            >
-              <Plus size={15} />
-            </button>
-          </div>
-          {peers.map((p) => (
-            <button
-              className={`sidebar-device ${p.id === peer?.id ? "selected" : ""}`}
-              key={p.id}
-              onClick={() => choose(p.id)}
-            >
-              <Monitor size={17} />
-              <span>{p.name}</span>
-              {p.id === peer?.id && device && <i className="status-dot" />}
-            </button>
-          ))}
-        </div>
-        <div className="sidebar-bottom">
-          <div className="private-card">
-            <ShieldCheck size={20} />
-            <div>
-              Paired with you.
-              <small>{connectionLabel(peer.url)}</small>
-            </div>
-          </div>
-          {features.settings && (
-            <button
-              className={`settings-nav ${page === "settings" ? "active" : ""}`}
-              onClick={() => navigate("settings")}
-            >
-              <Settings size={18} />
-              Settings
-            </button>
-          )}
-          <div className="profile">
-            <span className="avatar">
-              {peer?.name.slice(0, 1).toUpperCase()}
-            </span>
-            <div>
-              My workspace<small>Personal devices</small>
-            </div>
-            <span className="version">v0.1</span>
-          </div>
-        </div>
-      </aside>
-      <div className="main-shell">
-        <header className="topbar">
-          <div className="mobile-brand">
-            <Logo companion={page !== "overview" && page !== "screen"} />
-          </div>
-          <div className="topbar-crumb">
-            <span className="topbar-root">Workspace</span>
-            <ChevronRight size={14} />
-            <strong>
-              {pages.find((p) => p.id === page)?.name || "Settings"}
-            </strong>
-          </div>
-          <div className="topbar-right">
-            {page === "overview" && <NotificationBell compact />}
-            {page !== "screen" && features.shortcuts && (
+    <NotificationCenter
+      peer={peer}
+      enabled={!!device && !!features.settings}
+      changes={live}
+      onOpen={({ target }) => openTargetNow(target)}
+    >
+      <div className="app-shell">
+        <aside className="sidebar">
+          <Logo companion={page !== "overview" && page !== "screen"} />
+          <div className="workspace-label">WORKSPACE</div>
+          <nav>
+            {visiblePages.map((p) => (
+              <button
+                key={p.id}
+                className={page === p.id ? "active" : ""}
+                aria-current={page === p.id ? "page" : undefined}
+                onClick={() => navigate(p.id)}
+              >
+                {pageIcon(p, 19)}
+                {p.name}
+                {p.id === "terminal" &&
+                  terminals.filter((s) => s.status === "running").length >
+                    0 && (
+                    <span className="nav-count">
+                      {terminals.filter((s) => s.status === "running").length}
+                    </span>
+                  )}
+              </button>
+            ))}
+          </nav>
+          <div className="sidebar-devices">
+            <div className="workspace-label">
+              YOUR COMPUTERS
               <button
                 className="icon-button"
-                aria-label="Shortcuts"
-                title="Shortcuts"
-                onClick={() => setQuickLaunch(true)}
+                title="Add computer"
+                onClick={() => setPairing(true)}
               >
-                <Command size={18} />
+                <Plus size={15} />
+              </button>
+            </div>
+            {peers.map((p) => (
+              <button
+                className={`sidebar-device ${p.id === peer?.id ? "selected" : ""}`}
+                key={p.id}
+                onClick={() => choose(p.id)}
+              >
+                <Monitor size={17} />
+                <span>{p.name}</span>
+                {p.id === peer?.id && device && <i className="status-dot" />}
+              </button>
+            ))}
+          </div>
+          <div className="sidebar-bottom">
+            <div className="private-card">
+              <ShieldCheck size={20} />
+              <div>
+                Paired with you.
+                <small>{connectionLabel(peer.url)}</small>
+              </div>
+            </div>
+            {features.settings && (
+              <button
+                className={`settings-nav ${page === "settings" ? "active" : ""}`}
+                onClick={() => navigate("settings")}
+              >
+                <Settings size={18} />
+                Settings
               </button>
             )}
-            {/* Animation is on/off in Settings and follows Reduce Motion. */}
-            <span className="topbar-status">
-              <i className={`status-dot ${device && !error ? "" : "off"}`} />
-              {device ? (error ? "Reconnecting…" : "Computer connected") : "Disconnected"}
-            </span>
-            <button
-              className="icon-button"
-              title="Refresh connection"
-              onClick={refreshDevice}
-            >
-              <RefreshCw size={17} />
-            </button>
-            <span className="avatar small">
-              {peer?.name.slice(0, 1).toUpperCase()}
-            </span>
+            <div className="profile">
+              <span className="avatar">
+                {peer?.name.slice(0, 1).toUpperCase()}
+              </span>
+              <div>
+                My workspace<small>Personal devices</small>
+              </div>
+              <span className="version">v0.1</span>
+            </div>
           </div>
-        </header>
-        <ComputerSwitcher
-          peers={peers}
-          active={peer.id}
-          connections={connections}
-          choose={choose}
-          pair={() => setPairing(true)}
-          waiting={waitingComputers}
-          onWaiting={(c) =>
-            toast(
-              `Link ${c.name}: type "link ${new URL(c.origin).hostname.split(".")[0]}" in Reach on ${peer.name}, and "link ${new URL(peer.url).hostname.split(".")[0]}" in Reach on ${c.name}.`,
-            )
-          }
-        />
-        <main key={peer?.id} className={`main-content page-${page}`}>
-          <ScreenBoundary
-            key={`${peer?.id}:${page}`}
-            onHome={() => navigate("overview")}
-          >
-            {loading && !device ? (
-              <Spinner />
-            ) : error && !device ? (
-              <>
-                {page === "overview" && (
-                  <FleetMesh
-                    peers={peers}
-                    active={peer.id}
-                    connections={connections}
-                    choose={choose}
-                  />
-                )}
-                <PageTitle title="Let’s reconnect" description={peer?.name} />
-                <section className="panel">
-                  <Empty
-                    icon={Wifi}
-                    title="Your computer is out of reach"
-                    action={
-                      <div className="button-row">
-                        <button
-                          className="button primary"
-                          onClick={refreshDevice}
-                        >
-                          Try again
-                        </button>
-                        <button
-                          className="button secondary"
-                          onClick={() => setPairing(true)}
-                        >
-                          Pair again
-                        </button>
-                      </div>
-                    }
-                  >
-                    {error}
-                    <br />
-                    Reach retries connection interruptions automatically. Keep
-                    your computer awake and Tailscale connected on both devices.
-                  </Empty>
-                </section>
-              </>
-            ) : device && peer && pageAccessible(page, features) ? (
-              <>
-                {page === "overview" && (
-                  <HomeLive
-                    features={features}
-                    device={device}
-                    peer={peer}
-                    active={peer.id}
-                    connections={connections}
-                    connection={connectionLabel(peer.url)}
-                    terminals={terminals}
-                    chats={chats}
-                    pending={requests.filter((r) => deferred.includes(r.id))}
-                    decide={(r, decision) => void decide(r, decision)}
-                    navigate={navigate}
-                    openChat={() => navigate("sessions")}
-                    openTerminal={(id) => {
-                      setTerminalId(id);
-                      navigate("terminal");
-                      setTerminalSource("reach");
-                    }}
-                    openMacTab={(id) => {
-                      navigate("terminal");
-                      setTerminalSource(`mac:${id}`);
-                    }}
-                    agentSessions={agentFeed.sessions || []}
-                    macPrompts={agentFeed.macPrompts}
-                    showOnScreen={showOnScreen}
-                    openAgentSession={
-                      pageAccessible("sessions", features)
-                        ? (s) => {
-                            setChatTarget({ agent: s.agent, id: s.id });
-                            navigate("sessions");
-                          }
-                        : undefined
-                    }
-                    onShortcuts={() => setQuickLaunch(true)}
-                    refreshSessions={refreshSessions}
-                    toast={toast}
-                  />
-                )}
-                {page === "files" && (
-                  <Files
-                    features={features}
-                    peer={peer}
-                    peers={peers}
-                    device={device}
-                    initialLocation={workspaces.current[peer.id]?.files}
-                    onLocationChange={(files) => {
-                      const previous = workspaces.current[peer.id];
-                      workspaces.current[peer.id] = {
-                        ...(previous || {
-                          page,
-                          terminalId,
-                          terminalSource,
-                          chatId,
-                        }),
-                        files,
-                      };
-                    }}
-                    onSession={session}
-                    toast={toast}
-                  />
-                )}
-                {page === "terminal" && (
-                  <TerminalView
-                    desktopTerminals={features.desktopTerminals}
-                    source={terminalSource}
-                    setSource={setTerminalSource}
-                    peer={{ ...peer, platform: device.platform }}
-                    sessions={terminals}
-                    selected={terminalId}
-                    onSelect={setTerminalId}
-                    onNew={() => session("terminal")}
-                    onRefresh={refreshSessions}
-                    toast={toast}
-                    onExit={() => navigate("overview")}
-                    onOpenScreen={
-                      features.screen ? () => navigate("screen") : undefined
-                    }
-                    changes={live}
-                    owner={pageAccessible("sessions", features)}
-                  />
-                )}
-                {page === "sessions" && (
-                  <EverythingChat
-                    peer={peer}
-                    feed={agentFeed}
-                    target={chatTarget}
-                    onTargetOpened={() => setChatTarget(null)}
-                    showOnScreen={showOnScreen}
-                    onScreen={features.screen ? () => navigate("screen") : undefined}
-                  />
-                )}
-                {page === "apps" && (
-                  <Apps
-                    peer={peer}
-                    device={device}
-                    toast={toast}
-                    screen={
-                      features.screen ? () => navigate("screen") : undefined
-                    }
-                    changes={live}
-                  />
-                )}
-                {page === "screen" && (
-                  <Screen
-                    onClose={() => navigate("sessions")}
-                    peer={peer}
-                    device={device}
-                    toast={toast}
-                    onChanged={refreshDevice}
-                    changes={live}
-                    ask={
-                      screenAsk
-                        ? {
-                            id: screenAsk.prompt.id,
-                            kind: screenAsk.prompt.kind,
-                            title: screenAsk.prompt.lines?.[0] || screenAsk.prompt.title,
-                            bounds: screenAsk.prompt.bounds,
-                            setting: screenAsk.prompt.setting,
-                            open: (agentFeed.macPrompts || []).some((p) => p.id === screenAsk.prompt.id),
-                          }
-                        : null
-                    }
-                    onAskDone={() => {
-                      const from = screenAsk?.from;
-                      setScreenAsk(null);
-                      if (from && from !== "screen") navigate(from);
-                    }}
-                    onAskPassword={(password) => sendMacPassword(peer, screenAsk!.prompt.id, password)}
-                    onAskSetting={async () => {
-                      const r = await openMacSetting(peer, screenAsk!.prompt.id);
-                      return `Opened on your Mac: switch on ${r.app ? `“${r.app}”` : "it"} in ${r.opened}.`;
-                    }}
-                  />
-                )}
-                {page === "invite" &&
-                  (!device.access ||
-                    (device.access.scopes.includes("admin") &&
-                      device.access.kind !== "guest")) && (
-                    <>
-                      <InviteSheet peer={peer} device={device} peers={peers} initialKind={inviteKind} />
-                      <button
-                        className="ivt-manage"
-                        onClick={() => navigate("settings")}
-                      >
-                        <Shield size={17} />
-                        Manage existing access
-                      </button>
-                    </>
-                  )}
-                {page === "settings" && (
-                  <SettingsPage
-                    key={`${peer.id}:${peer.url}:${peer.token}`}
-                    features={features}
-                    peer={peer}
-                    device={device}
-                    toast={toast}
-                    onChanged={refreshDevice}
-                    invite={() => navigate("invite")}
-                    inviteAgent={() => { navigate("invite"); setInviteKind("browser"); }}
-                    forget={() => {
-                      const next = peers.filter((p) => p.id !== peer.id);
-                      savePeers(next);
-                      setPeers(next);
-                      setActive(next[0]?.id || "");
-                    }}
-                  />
-                )}
-              </>
-            ) : null}
-          </ScreenBoundary>
-        </main>
-        <MobileNav
-          items={mobilePages.map((p) => ({
-            id: p.id,
-            label:
-              p.id === "overview"
-                ? "Home"
-                : p.id === "terminal"
-                  ? "Terminal"
-                  : p.name,
-            icon: pageIcon(p, 20),
-            badge: p.id === "sessions" ? agentsWaiting : 0,
-          }))}
-          current={page}
-          moreOpen={mobileMenu}
-          onNavigate={navigate}
-          onMore={() => setMobileMenu(true)}
-        />
-      </div>
-      {mobileMenu && peer && (
-        <MoreSheet
-          peer={peer}
-          device={device}
-          {...morePlaces(
-            pages.map((p) => p.id),
-            mobileOrder,
-            features,
-            codexStatus,
-          )}
-          current={page}
-          settings={!!features.settings}
-          peers={peers}
-          active={active}
-          connections={connections}
-          onNavigate={navigate}
-          onChoose={choose}
-          onAdd={() => {
-            setMobileMenu(false);
-            setPairing(true);
-          }}
-          onClose={() => setMobileMenu(false)}
-        />
-      )}
-      {pairing && (
-        <Modal title="Add a computer" onClose={() => setPairing(false)}>
-          {isNative && (
-            <button
-              className="button primary full big scan-button"
-              onClick={() => {
-                setPairing(false);
-                scan();
-              }}
-            >
-              <ScanLine size={20} />
-              Scan to connect
-            </button>
-          )}
-          <p className="modal-description">
-            {isNative
-              ? "Or enter the address and code shown by Reach on the computer."
-              : "Run Reach on the other computer, then enter the link and pairing code it shows."}
-          </p>
-          <PairForm onPaired={paired} initialUrl={error ? peer?.url : ""} />
-        </Modal>
-      )}
-      {quickLaunch && peer && features.shortcuts && (
-        <ScreenPopup title="Shortcuts" onClose={() => setQuickLaunch(false)}>
-          <QuickLauncher
-            peer={peer}
-            onDone={(name) => {
-              setQuickLaunch(false);
-              toast(`${name} opened`);
-            }}
+        </aside>
+        <div className="main-shell">
+          <header className="topbar">
+            <div className="mobile-brand">
+              <Logo companion={page !== "overview" && page !== "screen"} />
+            </div>
+            <div className="topbar-crumb">
+              <span className="topbar-root">Workspace</span>
+              <ChevronRight size={14} />
+              <strong>
+                {pages.find((p) => p.id === page)?.name || "Settings"}
+              </strong>
+            </div>
+            <div className="topbar-right">
+              {page === "overview" && <NotificationBell compact />}
+              {page !== "screen" && features.shortcuts && (
+                <button
+                  className="icon-button"
+                  aria-label="Shortcuts"
+                  title="Shortcuts"
+                  onClick={() => setQuickLaunch(true)}
+                >
+                  <Command size={18} />
+                </button>
+              )}
+              {/* Animation is on/off in Settings and follows Reduce Motion. */}
+              <span className="topbar-status">
+                <i className={`status-dot ${device && !error ? "" : "off"}`} />
+                {device
+                  ? error
+                    ? "Reconnecting…"
+                    : "Computer connected"
+                  : "Disconnected"}
+              </span>
+              <button
+                className="icon-button"
+                title="Refresh connection"
+                onClick={refreshDevice}
+              >
+                <RefreshCw size={17} />
+              </button>
+              <span className="avatar small">
+                {peer?.name.slice(0, 1).toUpperCase()}
+              </span>
+            </div>
+          </header>
+          <ComputerSwitcher
+            peers={peers}
+            active={peer.id}
+            connections={connections}
+            choose={choose}
+            pair={() => setPairing(true)}
+            waiting={waitingComputers}
+            onWaiting={(c) =>
+              toast(
+                `Link ${c.name}: type "link ${new URL(c.origin).hostname.split(".")[0]}" in Reach on ${peer.name}, and "link ${new URL(peer.url).hostname.split(".")[0]}" in Reach on ${c.name}.`,
+              )
+            }
           />
-        </ScreenPopup>
-      )}
-      {authorizeSheet}
-      {!pairLink &&
-        features.agents &&
-        requests
-          .filter((r) => !deferred.includes(r.id))
-          .slice(0, 1)
-          .map((r) => (
-            <AgentRequestSheet
-              key={r.id}
-              request={r}
-              computer={peer?.name || "your computer"}
-              decide={decide}
-              later={() => setDeferred((d) => [...d, r.id])}
-            />
-          ))}
-      {newSession &&
-        peer &&
-        device &&
-        (newSession.kind === "terminal"
-          ? features.terminal
-          : features.codex) && (
-          <SessionModal
-            kind={newSession.kind}
-            initialPath={newSession.path}
-            initialRoot={newSession.root}
+          <main key={peer?.id} className={`main-content page-${page}`}>
+            <ScreenBoundary
+              key={`${peer?.id}:${page}`}
+              onHome={() => navigate("overview")}
+            >
+              {loading && !device ? (
+                <Spinner />
+              ) : error && !device ? (
+                <>
+                  {page === "overview" && (
+                    <FleetMesh
+                      peers={peers}
+                      active={peer.id}
+                      connections={connections}
+                      choose={choose}
+                    />
+                  )}
+                  <PageTitle title="Let’s reconnect" description={peer?.name} />
+                  <section className="panel">
+                    <Empty
+                      icon={Wifi}
+                      title="Your computer is out of reach"
+                      action={
+                        <div className="button-row">
+                          <button
+                            className="button primary"
+                            onClick={refreshDevice}
+                          >
+                            Try again
+                          </button>
+                          <button
+                            className="button secondary"
+                            onClick={() => setPairing(true)}
+                          >
+                            Pair again
+                          </button>
+                        </div>
+                      }
+                    >
+                      {error}
+                      <br />
+                      Reach retries connection interruptions automatically. Keep
+                      your computer awake and Tailscale connected on both
+                      devices.
+                    </Empty>
+                  </section>
+                </>
+              ) : device && peer && pageAccessible(page, features) ? (
+                <>
+                  {page === "overview" && (
+                    <HomeLive
+                      features={features}
+                      device={device}
+                      peer={peer}
+                      active={peer.id}
+                      connections={connections}
+                      connection={connectionLabel(peer.url)}
+                      terminals={terminals}
+                      chats={chats}
+                      pending={requests.filter((r) => deferred.includes(r.id))}
+                      decide={(r, decision) => void decide(r, decision)}
+                      navigate={navigate}
+                      openChat={() => navigate("sessions")}
+                      openTerminal={(id) => {
+                        setTerminalId(id);
+                        navigate("terminal");
+                        setTerminalSource("reach");
+                      }}
+                      openMacTab={(id) => {
+                        navigate("terminal");
+                        setTerminalSource(`mac:${id}`);
+                      }}
+                      agentSessions={agentFeed.sessions || []}
+                      macPrompts={agentFeed.macPrompts}
+                      showOnScreen={showOnScreen}
+                      openAgentSession={
+                        pageAccessible("sessions", features)
+                          ? (s) => {
+                              setChatTarget({ agent: s.agent, id: s.id });
+                              navigate("sessions");
+                            }
+                          : undefined
+                      }
+                      onShortcuts={() => setQuickLaunch(true)}
+                      refreshSessions={refreshSessions}
+                      toast={toast}
+                    />
+                  )}
+                  {page === "files" && (
+                    <Files
+                      features={features}
+                      peer={peer}
+                      peers={peers}
+                      device={device}
+                      initialLocation={workspaces.current[peer.id]?.files}
+                      onLocationChange={(files) => {
+                        const previous = workspaces.current[peer.id];
+                        workspaces.current[peer.id] = {
+                          ...(previous || {
+                            page,
+                            terminalId,
+                            terminalSource,
+                            chatId,
+                          }),
+                          files,
+                        };
+                      }}
+                      onSession={session}
+                      agentSessions={
+                        chatPeer?.id === peer.id
+                          ? agentFeed.sessions || []
+                          : undefined
+                      }
+                      agentLogos={agentLogos}
+                      openAgentSession={
+                        pageAccessible("sessions", features)
+                          ? (s) => {
+                              setChatTarget({ agent: s.agent, id: s.id });
+                              navigate("sessions");
+                            }
+                          : undefined
+                      }
+                      toast={toast}
+                    />
+                  )}
+                  {page === "terminal" && (
+                    <TerminalView
+                      desktopTerminals={features.desktopTerminals}
+                      source={terminalSource}
+                      setSource={setTerminalSource}
+                      peer={{ ...peer, platform: device.platform }}
+                      sessions={terminals}
+                      selected={terminalId}
+                      onSelect={setTerminalId}
+                      onNew={() => session("terminal")}
+                      onRefresh={refreshSessions}
+                      toast={toast}
+                      onExit={() => navigate("overview")}
+                      onOpenScreen={
+                        features.screen ? () => navigate("screen") : undefined
+                      }
+                      changes={live}
+                      owner={pageAccessible("sessions", features)}
+                    />
+                  )}
+                  {page === "sessions" && (
+                    <EverythingChat
+                      peer={peer}
+                      feed={agentFeed}
+                      target={chatTarget}
+                      onTargetOpened={() => setChatTarget(null)}
+                      showOnScreen={showOnScreen}
+                      onScreen={
+                        features.screen ? () => navigate("screen") : undefined
+                      }
+                    />
+                  )}
+                  {page === "apps" && (
+                    <Apps
+                      peer={peer}
+                      device={device}
+                      toast={toast}
+                      screen={
+                        features.screen ? () => navigate("screen") : undefined
+                      }
+                      changes={live}
+                    />
+                  )}
+                  {page === "screen" && (
+                    <Screen
+                      onClose={() => navigate("sessions")}
+                      peer={peer}
+                      device={device}
+                      toast={toast}
+                      onChanged={refreshDevice}
+                      changes={live}
+                      ask={
+                        screenAsk
+                          ? {
+                              id: screenAsk.prompt.id,
+                              kind: screenAsk.prompt.kind,
+                              title:
+                                screenAsk.prompt.lines?.[0] ||
+                                screenAsk.prompt.title,
+                              bounds: screenAsk.prompt.bounds,
+                              setting: screenAsk.prompt.setting,
+                              open: (agentFeed.macPrompts || []).some(
+                                (p) => p.id === screenAsk.prompt.id,
+                              ),
+                            }
+                          : null
+                      }
+                      onAskDone={() => {
+                        const from = screenAsk?.from;
+                        setScreenAsk(null);
+                        if (from && from !== "screen") navigate(from);
+                      }}
+                      onAskPassword={(password) =>
+                        sendMacPassword(peer, screenAsk!.prompt.id, password)
+                      }
+                      onAskSetting={async () => {
+                        const r = await openMacSetting(
+                          peer,
+                          screenAsk!.prompt.id,
+                        );
+                        return `Opened on your Mac: switch on ${r.app ? `“${r.app}”` : "it"} in ${r.opened}.`;
+                      }}
+                    />
+                  )}
+                  {page === "invite" &&
+                    (!device.access ||
+                      (device.access.scopes.includes("admin") &&
+                        device.access.kind !== "guest")) && (
+                      <>
+                        <InviteSheet
+                          peer={peer}
+                          device={device}
+                          peers={peers}
+                          initialKind={inviteKind}
+                        />
+                        <button
+                          className="ivt-manage"
+                          onClick={() => navigate("settings")}
+                        >
+                          <Shield size={17} />
+                          Manage existing access
+                        </button>
+                      </>
+                    )}
+                  {page === "settings" && (
+                    <SettingsPage
+                      key={`${peer.id}:${peer.url}:${peer.token}`}
+                      features={features}
+                      peer={peer}
+                      device={device}
+                      toast={toast}
+                      onChanged={refreshDevice}
+                      invite={() => navigate("invite")}
+                      inviteAgent={() => {
+                        navigate("invite");
+                        setInviteKind("browser");
+                      }}
+                      forget={() => {
+                        const next = peers.filter((p) => p.id !== peer.id);
+                        savePeers(next);
+                        setPeers(next);
+                        setActive(next[0]?.id || "");
+                      }}
+                    />
+                  )}
+                </>
+              ) : null}
+            </ScreenBoundary>
+          </main>
+          <MobileNav
+            items={mobilePages.map((p) => ({
+              id: p.id,
+              label:
+                p.id === "overview"
+                  ? "Home"
+                  : p.id === "terminal"
+                    ? "Terminal"
+                    : p.name,
+              icon: pageIcon(p, 20),
+              badge: p.id === "sessions" ? agentsWaiting : 0,
+            }))}
+            current={page}
+            moreOpen={mobileMenu}
+            onNavigate={navigate}
+            onMore={() => setMobileMenu(true)}
+          />
+        </div>
+        {mobileMenu && peer && (
+          <MoreSheet
             peer={peer}
             device={device}
-            close={() => setNewSession(null)}
-            created={(s) => {
-              if (currentPeerKey.current !== peerKey) return;
-              if (newSession.kind === "terminal") {
-                setTerminalId(s.id);
-                setTerminalSource("reach");
-                setPage("terminal");
-              } else setPage("sessions");
-              setNewSession(null);
-              refreshSessions();
+            {...morePlaces(
+              pages.map((p) => p.id),
+              mobileOrder,
+              features,
+              codexStatus,
+            )}
+            current={page}
+            settings={!!features.settings}
+            peers={peers}
+            active={active}
+            connections={connections}
+            onNavigate={navigate}
+            onChoose={choose}
+            onAdd={() => {
+              setMobileMenu(false);
+              setPairing(true);
             }}
+            onClose={() => setMobileMenu(false)}
           />
         )}
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {notice}
-        </div>
-      )}
-    </div>
+        {pairing && (
+          <Modal title="Add a computer" onClose={() => setPairing(false)}>
+            {isNative && (
+              <button
+                className="button primary full big scan-button"
+                onClick={() => {
+                  setPairing(false);
+                  scan();
+                }}
+              >
+                <ScanLine size={20} />
+                Scan to connect
+              </button>
+            )}
+            <p className="modal-description">
+              {isNative
+                ? "Or enter the address and code shown by Reach on the computer."
+                : "Run Reach on the other computer, then enter the link and pairing code it shows."}
+            </p>
+            <PairForm onPaired={paired} initialUrl={error ? peer?.url : ""} />
+          </Modal>
+        )}
+        {quickLaunch && peer && features.shortcuts && (
+          <ScreenPopup title="Shortcuts" onClose={() => setQuickLaunch(false)}>
+            <QuickLauncher
+              peer={peer}
+              onDone={(name) => {
+                setQuickLaunch(false);
+                toast(`${name} opened`);
+              }}
+            />
+          </ScreenPopup>
+        )}
+        {authorizeSheet}
+        {!pairLink &&
+          features.agents &&
+          requests
+            .filter((r) => !deferred.includes(r.id))
+            .slice(0, 1)
+            .map((r) => (
+              <AgentRequestSheet
+                key={r.id}
+                request={r}
+                computer={peer?.name || "your computer"}
+                decide={decide}
+                later={() => setDeferred((d) => [...d, r.id])}
+              />
+            ))}
+        {newSession &&
+          peer &&
+          device &&
+          (newSession.kind === "terminal"
+            ? features.terminal
+            : features.codex) && (
+            <SessionModal
+              kind={newSession.kind}
+              initialPath={newSession.path}
+              initialRoot={newSession.root}
+              peer={peer}
+              device={device}
+              close={() => setNewSession(null)}
+              created={(s) => {
+                if (currentPeerKey.current !== peerKey) return;
+                if (newSession.kind === "terminal") {
+                  setTerminalId(s.id);
+                  setTerminalSource("reach");
+                  setPage("terminal");
+                } else setPage("sessions");
+                setNewSession(null);
+                refreshSessions();
+              }}
+            />
+          )}
+        {notice && (
+          <div className="toast" role="status">
+            <Check size={17} />
+            {notice}
+          </div>
+        )}
+      </div>
     </NotificationCenter>
   );
 }
@@ -1365,9 +1454,7 @@ function LegacyPairForm({
   initialUrl?: string;
   compact?: boolean;
 }) {
-  const [url, setUrl] = useState(
-      initialUrl || (isNative ? "" : homeOrigin()),
-    ),
+  const [url, setUrl] = useState(initialUrl || (isNative ? "" : homeOrigin())),
     [code, setCode] = useState(""),
     [name, setName] = useState(deviceLabel),
     [busy, setBusy] = useState(false),
@@ -1625,8 +1712,15 @@ export function SettingsPage({
       clearInterval(timer);
     };
   }, [peer.id, peer.url, peer.token, pageVisible]);
-  const peopleAndDevices = clients.filter((client) => !(client.kind === "agent" && client.policy?.browser));
-  const browserAgentCount = clients.filter((client) => client.kind === "agent" && client.policy?.browser && (client.expiresAt || 0) > Date.now()).length;
+  const peopleAndDevices = clients.filter(
+    (client) => !(client.kind === "agent" && client.policy?.browser),
+  );
+  const browserAgentCount = clients.filter(
+    (client) =>
+      client.kind === "agent" &&
+      client.policy?.browser &&
+      (client.expiresAt || 0) > Date.now(),
+  ).length;
   return (
     <div className="settings-workspace">
       <PageTitle
@@ -1651,7 +1745,12 @@ export function SettingsPage({
         >
           Access <span>{groupDevices(peopleAndDevices).length}</span>
         </button>
-        <button aria-pressed={settingsView === "agents"} onClick={() => setSettingsView("agents")}>Agents <span>{browserAgentCount}</span></button>
+        <button
+          aria-pressed={settingsView === "agents"}
+          onClick={() => setSettingsView("agents")}
+        >
+          Agents <span>{browserAgentCount}</span>
+        </button>
       </div>
       <div className="settings-general" hidden={settingsView !== "general"}>
         <section className="panel settings-panel computer-settings-card">
@@ -1698,9 +1797,7 @@ export function SettingsPage({
               </AppIcon>
               <div>
                 <strong>Screen viewing</strong>
-                <small>
-                  Enable viewing from your devices.
-                </small>
+                <small>Enable viewing from your devices.</small>
               </div>
               <button
                 role="switch"
@@ -1792,9 +1889,7 @@ export function SettingsPage({
                         },
                       ]}
                     />
-                    <small>
-                      {accessSummary(c)}
-                    </small>
+                    <small>{accessSummary(c)}</small>
                     <details className="access-metadata">
                       <summary>Access details</summary>
                       <small>
@@ -1807,27 +1902,41 @@ export function SettingsPage({
                     </details>
                   </div>
                   <div className="access-row-actions">
-                  {canEditAccess(c) && <button className="button secondary small" aria-label={appScopedAccess(c) ? `Manage ${c.name}’s app requests` : `Edit ${c.name}’s access`} onClick={() => setEditing(c)}>{appScopedAccess(c) ? "Manage app requests" : "Edit access"}</button>}
-                  <button
-                    className="button ghost small danger revoke-access"
-                    aria-label={`Revoke ${c.name}`}
-                    onClick={async () => {
-                      if (!confirm(`Revoke access for ${c.name}?`)) return;
-                      try {
-                        // Every browser on that device.
-                        for (const id of c.ids)
-                          await request(peer, `/api/clients/${id}`, {
-                            method: "DELETE",
-                          });
-                        if (c.ids.includes(current)) forget();
-                        else load();
-                      } catch (e) {
-                        toast((e as Error).message);
-                      }
-                    }}
-                  >
-                    <span>Remove</span>
-                  </button>
+                    {canEditAccess(c) && (
+                      <button
+                        className="button secondary small"
+                        aria-label={
+                          appScopedAccess(c)
+                            ? `Manage ${c.name}’s app requests`
+                            : `Edit ${c.name}’s access`
+                        }
+                        onClick={() => setEditing(c)}
+                      >
+                        {appScopedAccess(c)
+                          ? "Manage app requests"
+                          : "Edit access"}
+                      </button>
+                    )}
+                    <button
+                      className="button ghost small danger revoke-access"
+                      aria-label={`Revoke ${c.name}`}
+                      onClick={async () => {
+                        if (!confirm(`Revoke access for ${c.name}?`)) return;
+                        try {
+                          // Every browser on that device.
+                          for (const id of c.ids)
+                            await request(peer, `/api/clients/${id}`, {
+                              method: "DELETE",
+                            });
+                          if (c.ids.includes(current)) forget();
+                          else load();
+                        } catch (e) {
+                          toast((e as Error).message);
+                        }
+                      }}
+                    >
+                      <span>Remove</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1836,8 +1945,28 @@ export function SettingsPage({
         <FaceIdSettings peer={peer} />
         {/* Notifications live in the bell's panel only: nothing about them here. */}
       </div>
-      {settingsView === "agents" && <BrowserAgents peer={peer} device={device} invite={inviteAgent || invite} toast={toast} />}
-      {editing && <AccessEditor key={`${peer.id}:${editing.id}`} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); void load(); toast(removed ? "Access removed" : "Access updated"); }} />}
+      {settingsView === "agents" && (
+        <BrowserAgents
+          peer={peer}
+          device={device}
+          invite={inviteAgent || invite}
+          toast={toast}
+        />
+      )}
+      {editing && (
+        <AccessEditor
+          key={`${peer.id}:${editing.id}`}
+          peer={peer}
+          device={device}
+          client={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(removed) => {
+            setEditing(null);
+            void load();
+            toast(removed ? "Access removed" : "Access updated");
+          }}
+        />
+      )}
       <button className="forget-computer" onClick={forget}>
         <LogOut size={17} />
         Forget this computer

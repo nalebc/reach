@@ -33,6 +33,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileRootName } from "./file-roots.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
+import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
@@ -2125,6 +2126,18 @@ export async function createReach(overrides = {}) {
     await fsp.mkdir(path.join(dir, name));
     record("file", `Created folder ${name}`);
     res.json({ ok: true });
+  });
+  // Unzip with one tap, like the Files app: the contents land beside it.
+  app.post("/api/files/extract", async (req, res) => {
+    if (req.client.policy?.browser) throw fail(403, "This action is not available.");
+    const file = resolve(req.body.root, req.body.path || "", req.client);
+    if (!(await fsp.stat(file)).isFile()) throw fail(400, "Choose an archive.");
+    if (!archiveBase(path.basename(file)))
+      throw fail(415, "Only zip and tar archives can be opened here.");
+    const name = await extractArchive(file);
+    record("file", `Extracted ${path.basename(file)}`);
+    const folder = path.posix.dirname(String(req.body.path));
+    res.json({ name, path: folder === "." ? name : `${folder}/${name}` });
   });
   app.get("/api/jobs", (req, res) =>
     res.json(jobs.list().filter((j) => mayAccess(req.client, j))),
