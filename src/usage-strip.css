@@ -1,0 +1,60 @@
+/* Out of usage (UsageStrip.tsx): one slim line above the message box. */
+.usage-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 6px 8px;
+  padding: 2px 4px 2px 10px;
+  color: var(--as-muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.usage-strip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.usage-strip-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+.usage-strip-actions > a,
+.usage-strip-actions > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.usage-strip-actions > .primary {
+  background: var(--as-text);
+  color: var(--as-float, #000);
+}
+
+/* "Your Mac needs you" (AgentSession.tsx): a small sign in the chat's header. */
+.as-page .as-bar-pill .as-icon.as-mac-needs {
+  position: relative;
+  color: #d6c38f;
+}
+.as-page .as-bar-pill .as-icon.as-mac-needs small {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d6c38f;
+  color: #1b1b1b;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}

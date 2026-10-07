@@ -1,0 +1,127 @@
+.access-editor {
+  display: grid;
+  gap: 22px;
+}
+.ae-person {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+.ae-person > svg {
+  color: var(--accent, #b9efd4);
+}
+.ae-person strong,
+.ae-person small {
+  display: block;
+}
+.ae-person small {
+  color: var(--muted, #94a399);
+  margin-top: 4px;
+  font-size: 12px;
+}
+.access-editor fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.ae-toggle,
+.ae-select,
+.ae-folders > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 12px 0;
+  border-bottom: 1px solid #ffffff12;
+  font-size: 14px;
+}
+.ae-toggle > span,
+.ae-select > span,
+.ae-folders > summary > span {
+  flex: 1;
+}
+.ae-toggle small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted, #94a399);
+  margin-top: 4px;
+}
+.ae-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent, #b9efd4);
+}
+.ae-select select {
+  max-width: 62%;
+  font: inherit;
+}
+.ae-folders > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.ae-folders > summary::-webkit-details-marker {
+  display: none;
+}
+.ae-folders > summary small {
+  color: var(--muted, #94a399);
+}
+.ae-folders[open] > summary {
+  margin-bottom: 12px;
+}
+.ae-expiry {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+  font-size: 13px;
+}
+.ae-expiry input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.ae-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.ae-times button {
+  border: 1px solid #ffffff20;
+  background: #ffffff05;
+  color: inherit;
+  border-radius: 8px;
+  min-height: 34px;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.ae-times button:hover {
+  background: #ffffff10;
+}
+.ae-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #ffffff12;
+  padding-top: 18px;
+}
+.access-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .settings-workspace .client-row {
+    flex-wrap: wrap;
+  }
+  .access-row-actions {
+    margin-left: 44px;
+  }
+}
+.settings-workspace .client-row > .access-row-actions {
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: 8px;
+}

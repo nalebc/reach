@@ -1,0 +1,95 @@
+.funnel-agent-page {
+  min-height: 100dvh;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 30px 24px 64px;
+  color: #f2f2f0;
+  box-sizing: border-box;
+}
+.funnel-agent-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+.funnel-agent-brand span {
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #929a98;
+}
+.funnel-agent-connect {
+  width: min(100%, 440px);
+  box-sizing: border-box;
+  margin: clamp(48px, 12vh, 120px) auto 0;
+  padding: 32px;
+  border: 1px solid #ffffff14;
+  border-radius: 28px;
+  background: #1b1c1c;
+  text-align: center;
+}
+.funnel-agent-lock {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 24px;
+  border-radius: 18px;
+  background: #b8ddc714;
+  color: #c0d9cb;
+}
+.funnel-agent-connect h1 {
+  font-size: 28px;
+  line-height: 1.16;
+  letter-spacing: -0.035em;
+  margin: 14px 0;
+}
+.funnel-agent-connect p {
+  color: #a3aba7;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.funnel-agent-connect .funnel-agent-eyebrow {
+  font-size: 11px;
+  margin: 0;
+  color: #b5c2ba;
+}
+.funnel-agent-connect .agent-admission-waiting {
+  border: 0;
+  margin: 24px 0;
+  padding: 0;
+}
+.funnel-agent-connect .agent-verification-code {
+  margin: 0 auto 20px;
+  padding: 16px 22px;
+  font-size: 34px;
+  background: #111413;
+}
+.funnel-agent-connect .agent-admission-waiting strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: #c1d6c9;
+}
+.funnel-agent-connect .agent-admission-waiting small {
+  margin-top: 8px;
+  color: #929a98;
+  font-size: 12px;
+}
+.funnel-agent-connect .funnel-agent-footnote {
+  border-top: 1px solid #ffffff12;
+  margin: 24px 0 0;
+  padding-top: 20px;
+  font-size: 12px;
+}
+.funnel-agent-connect .error {
+  color: #edb4a5;
+}
+@media (max-width: 480px) {
+  .funnel-agent-page {
+    padding: 24px 16px 40px;
+  }
+  .funnel-agent-connect {
+    padding: 26px 22px;
+  }
+}

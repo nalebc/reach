@@ -1,0 +1,192 @@
+.agent-logo {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 23%;
+  object-fit: cover;
+}
+.agent-logo.glyph {
+  color: inherit;
+}
+.claude-spark {
+  display: inline-block;
+  flex: 0 0 auto;
+  background: var(--as-accent, #d97757);
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+.claude-spark.plain {
+  background: none;
+  color: var(--as-accent, #d97757);
+}
+.claude-spark.spinning {
+  animation: as-spin 2.4s linear infinite;
+}
+
+/* Signing an agent in on the Mac from here (AgentSignIn). */
+/* What each agent needs signed in on the Mac: one row per sign-in. */
+.access {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 10px;
+  padding: 6px 12px 10px;
+  border: 1px solid var(--as-line);
+  border-radius: 16px;
+  background: var(--as-card);
+}
+.access-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 42px;
+}
+.access-logo {
+  display: grid;
+  place-items: center;
+}
+.access-name {
+  min-width: 0;
+  color: var(--as-text);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+.access-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--as-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.access-state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e5484d;
+}
+.access-state.ok::before {
+  background: #3fb950;
+}
+.access-action {
+  grid-column: 2 / -1;
+  padding-bottom: 6px;
+}
+.access-note {
+  margin: 4px 0 0;
+  color: var(--as-muted);
+  font-size: 12.5px;
+}
+.sign-in {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+div.sign-in {
+  display: flex;
+  margin: 2px 0 4px;
+}
+.sign-in p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.sign-in ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  text-align: left;
+}
+.sign-in li > span:first-child {
+  display: block;
+  margin-bottom: 4px;
+}
+.sign-in-start,
+.sign-in-open,
+.sign-in-code button,
+.sign-in-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 5px 11px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+.sign-in-cancel {
+  border-color: transparent;
+  font-weight: 400;
+  opacity: 0.75;
+}
+.sign-in-code {
+  display: flex;
+  gap: 6px;
+}
+.sign-in-code input {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid #ffffff2a;
+  border-radius: 10px;
+  background: #00000040;
+  color: inherit;
+  font:
+    16px "SF Mono",
+    SFMono-Regular,
+    ui-monospace,
+    Menlo,
+    monospace; /* no zoom on iOS */
+}
+.sign-in-device {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #00000040;
+  font:
+    600 15px "SF Mono",
+    SFMono-Regular,
+    ui-monospace,
+    Menlo,
+    monospace;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+.sign-in .bad {
+  color: #f1a08d;
+}
+
+/* Chat tab badge: sessions waiting for an answer. */
+.mobile-nav button:has(> .nav-badge) {
+  position: relative;
+}
+.nav-badge {
+  position: absolute;
+  top: 4px;
+  left: calc(50% + 6px);
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #f5c451;
+  color: #1d1606;
+  font:
+    700 10.5px/17px system-ui,
+    sans-serif;
+  font-style: normal;
+  text-align: center;
+}

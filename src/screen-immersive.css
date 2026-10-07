@@ -1,0 +1,201 @@
+/* Minimal fullscreen: the computer fills the display edge to edge. The top bar
+   and dock float over it and slide away until the screen is touched. */
+.simple-screen.screen-immersive {
+  padding: 0;
+}
+.simple-screen.screen-immersive > .simple-screen-toolbar,
+.simple-screen.screen-immersive > .simple-screen-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  border: 0;
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+.simple-screen.screen-immersive > .simple-screen-toolbar {
+  top: 0;
+  padding: max(10px, env(safe-area-inset-top))
+    max(14px, env(safe-area-inset-right)) 10px
+    max(14px, env(safe-area-inset-left));
+  background: linear-gradient(#080c0ee6, #080c0e00);
+}
+.simple-screen.screen-immersive > .simple-screen-dock {
+  bottom: 0;
+  padding: 10px max(14px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  background: linear-gradient(#080c0e00, #080c0ee6);
+}
+/* The dock floats over the stage in fullscreen; keep zoom clear of it. */
+.simple-screen.screen-immersive .remote-zoom.compact {
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  transition: opacity 0.22s ease;
+}
+.simple-screen.screen-immersive.chrome-hidden > .simple-screen-toolbar {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+.simple-screen.screen-immersive.chrome-hidden > .simple-screen-dock {
+  opacity: 0;
+  transform: translateY(100%);
+  pointer-events: none;
+}
+.simple-screen.screen-immersive.chrome-hidden .remote-zoom.compact {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Always-available essentials while the bars are hidden. */
+.screen-immersive-pill {
+  position: absolute;
+  z-index: 7;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #0b1012a6;
+  border: 1px solid #ffffff1f;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: immersive-pill-in 0.22s ease;
+}
+.screen-immersive-pill button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #e9f0ec;
+  font-size: 13px;
+  font-weight: 600;
+}
+.screen-immersive-pill button:active {
+  background: #ffffff1f;
+}
+.screen-immersive-pill button:disabled {
+  opacity: 0.45;
+}
+@keyframes immersive-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .simple-screen.screen-immersive > .simple-screen-toolbar,
+  .simple-screen.screen-immersive > .simple-screen-dock,
+  .screen-immersive-pill {
+    transition: none;
+    animation: none;
+  }
+}
+/* Safari: a text field was detected but the keyboard could not open itself. */
+.tap-to-type {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 15px;
+  box-shadow: 0 10px 40px #0008;
+  animation: tap-to-type-in 0.22s ease;
+}
+@keyframes tap-to-type-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* While typing, the bars take their own space so they never cover the field.
+   Fullscreen can still hide its chrome when the keyboard is closed. */
+.simple-screen.screen-immersive.screen-typing > .simple-screen-toolbar,
+.simple-screen.screen-immersive.screen-typing > .simple-screen-dock {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  background: #0b1012;
+  transform: none;
+  opacity: 1;
+}
+.simple-screen.screen-immersive.screen-typing .remote-zoom.compact {
+  bottom: 10px;
+}
+.simple-screen .remote-zoom.compact .button {
+  min-height: 40px;
+  border-radius: 999px;
+}
+.simple-screen.screen-immersive.chrome-hidden .remote-zoom.compact {
+  opacity: 1;
+  pointer-events: auto;
+  bottom: max(14px, env(safe-area-inset-bottom));
+}
+
+/* Keep Reach's original ink-and-mint screen, with no browser-sized gray frame. */
+.simple-screen {
+  background: var(--panel);
+}
+.simple-screen .remote-stage {
+  background: #080c0a;
+}
+.simple-screen .simple-screen-toolbar {
+  flex-wrap: nowrap;
+  min-height: 52px;
+}
+.simple-screen .simple-screen-toolbar .screen-state {
+  min-width: 0;
+  max-width: none;
+  flex: 1;
+}
+.simple-screen .simple-screen-actions {
+  flex: none;
+}
+.simple-screen .simple-screen-actions .icon-button {
+  flex: none;
+  min-width: 36px;
+}
+.simple-screen .keyboard-button {
+  white-space: nowrap;
+}
+.simple-screen:not(.screen-expanded) .remote-stage {
+  height: auto;
+  min-height: 0;
+  aspect-ratio: var(--screen-aspect, 1.6);
+  max-height: 70dvh;
+}
+.simple-screen.screen-expanded {
+  border-radius: 0;
+  border: 0;
+}
+.simple-screen.screen-expanded.screen-typing > .screen-toolbar {
+  display: flex;
+  min-height: 44px;
+}
+.simple-screen.screen-expanded .screen-immersive-pill {
+  max-width: calc(100% - 24px);
+}
+.app-shell:has(.screen-expanded) .mobile-nav {
+  visibility: hidden;
+}
+@media (max-width: 700px) {
+  .simple-screen .simple-screen-toolbar {
+    padding: 8px;
+    gap: 6px;
+  }
+  .simple-screen .simple-screen-actions {
+    gap: 2px;
+  }
+  .simple-screen .simple-screen-dock {
+    gap: 6px;
+  }
+}

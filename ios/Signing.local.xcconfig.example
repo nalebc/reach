@@ -1,0 +1,5 @@
+// Copy to Signing.local.xcconfig (ignored by Git) and set your own values.
+// Use with xcodebuild -xcconfig ios/Signing.local.xcconfig from the repo root.
+// Supply the same identifier as REACH_APP_ID when running Capacitor sync.
+PRODUCT_BUNDLE_IDENTIFIER = com.example.reach
+DEVELOPMENT_TEAM =

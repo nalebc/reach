@@ -1,0 +1,212 @@
+/* The More sheet (MoreSheet.tsx), as Claude and Codex lay out their menus:
+   a clean list with line icons, the computer switcher on top, Settings at
+   the end. Reach's dark glass and lime light; rows ease in once. */
+.screen-popup.workspace-launcher.more-sheet {
+  background:
+    radial-gradient(
+      140% 60% at 50% 0%,
+      color-mix(in srgb, var(--lime) 7%, transparent),
+      transparent 60%
+    ),
+    #111613;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 -20px 60px -20px rgb(0 0 0 / 0.8);
+}
+/* Our own header: the mascot, the title, a round glass close. */
+.more-sheet .screen-popup-body > header {
+  display: none;
+}
+.more-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.more-mascot {
+  width: 30px;
+  height: 38px;
+  margin: -6px 0 -2px -2px;
+}
+.more-mascot .brand-courier {
+  width: 100%;
+  height: 100%;
+}
+.more-top strong {
+  flex: 1;
+  font:
+    650 21px/1 system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: -0.3px;
+  color: #f1f6f2;
+}
+.glass-button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  color: #dbe5de;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.glass-button:active {
+  background: rgb(255 255 255 / 0.14);
+}
+
+/* The computer you're on: a glass card; tap it to switch. */
+.more-computer-wrap {
+  border-radius: 22px;
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      color-mix(in srgb, var(--lime) 10%, transparent),
+      transparent 55%
+    ),
+    rgb(255 255 255 / 0.04);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+  overflow: hidden;
+}
+.more-computer {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.more-computer-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.more-computer-text strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font:
+    650 17px/1.2 system-ui,
+    -apple-system,
+    sans-serif;
+  color: #f1f6f2;
+}
+.more-computer-text small {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+.more-chevron {
+  flex: 0 0 auto;
+  color: #7f8d83;
+  transition: transform 0.2s ease;
+}
+.more-computer[aria-expanded="true"] .more-chevron {
+  transform: rotate(180deg);
+}
+.more-computers {
+  padding: 0 6px 6px;
+  border-top: 1px solid rgb(255 255 255 / 0.06);
+  animation: more-open 0.22s ease-out both;
+}
+
+/* Rows: a line icon and a name, no boxes, no dividers. */
+.more-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 18px 0 0;
+}
+.more-list.more-end {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgb(255 255 255 / 0.06);
+}
+.more-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 50px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: #eef4ef;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s ease;
+}
+.more-row:active {
+  background: rgb(255 255 255 / 0.07);
+}
+.more-row[aria-current="page"] {
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+}
+.more-row[aria-current="page"] .app-icon:not(.real) {
+  color: var(--lime);
+}
+/* Still being checked on the computer: in place, quiet, not tappable. */
+.more-row.pending {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.more-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font:
+    500 16px system-ui,
+    -apple-system,
+    sans-serif;
+}
+.more-check {
+  flex: 0 0 auto;
+  color: var(--lime);
+}
+
+/* Once, on opening: each part rises in after the one before. */
+.more-computer-wrap,
+.more-list .more-row {
+  animation: more-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
+@keyframes more-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes more-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .more-computer-wrap,
+  .more-list .more-row,
+  .more-computers,
+  .more-chevron {
+    animation: none;
+    transition: none;
+  }
+}
+/* The sheet itself holds focus when it opens (ScreenPopup): no ring. */
+.screen-popup:focus {
+  outline: none;
+}

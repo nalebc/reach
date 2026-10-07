@@ -1,0 +1,40 @@
+/* A guest's time left and Leave: one slim line, out of the way. */
+.guest-bar {
+  position: fixed;
+  z-index: 900;
+  top: max(4px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid #2b332d;
+  border-radius: 999px;
+  background: #171e19e6;
+  color: #c9d3cb;
+  font:
+    12px/1.2 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  backdrop-filter: blur(8px);
+}
+.guest-bar span,
+.guest-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.guest-bar button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: #ffffff12;
+  color: inherit;
+  font: inherit;
+}
+/* Guests can't add computers. */
+html[data-guest] .fleet-add,
+html[data-guest] .sidebar-devices .icon-button {
+  display: none;
+}

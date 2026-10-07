@@ -1,0 +1,218 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  ChevronDown,
+  GripVertical,
+  Image as ImageIcon,
+  MoreHorizontal,
+  SquarePen,
+  X,
+} from "lucide-react";
+import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
+import type { AgentName, OutboxMessage } from "./agent-sessions";
+import "./queued-messages.css";
+
+// Messages waiting their turn, above the composer, as the agents' own apps
+// show them (read from the Claude and Codex apps on the Mac):
+// - one line each, its start only, pictures as a small count;
+// - Claude's: a stack that opens on a tap; each row has Send now (into the
+//   chat at once), Edit in composer, remove, and a handle to drag it up or down;
+// - Codex's: a plain list; Edit and remove (the Codex app runs its own queue,
+//   so its order and Steer stay in the Codex app).
+export default function QueuedMessages({
+  agent,
+  messages,
+  busy,
+  canEdit,
+  onEdit,
+  onRemove,
+  onSendNow,
+  onReorder,
+}: {
+  agent: AgentName;
+  messages: OutboxMessage[];
+  // The message an action is running for.
+  busy: string | null;
+  canEdit: boolean;
+  onEdit: (m: OutboxMessage) => void;
+  onRemove: (m: OutboxMessage) => void;
+  // Only where Reach can do it (a Claude app chat).
+  onSendNow?: (m: OutboxMessage) => void;
+  onReorder?: (ids: string[]) => void;
+}) {
+  const claude = agent === "claude";
+  const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState<string | null>(null);
+  // While a row is dragged: the order shown, sent once the finger lifts.
+  const [order, setOrder] = useState<string[] | null>(null);
+  const rows = useRef(new Map<string, HTMLDivElement>());
+  const drag = useRef<{ id: string } | null>(null);
+  useEffect(() => {
+    if (messages.length < 2) setOpen(false);
+  }, [messages.length]);
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const shown = (order || messages.map((m) => m.id))
+    .map((id) => byId.get(id))
+    .filter(Boolean) as OutboxMessage[];
+  const stacked = claude && messages.length > 1 && !open;
+  const sortable = claude && !!onReorder && messages.length > 1 && !stacked;
+  const label = (m: OutboxMessage) =>
+    visibleUserText(m.text) ||
+    (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message");
+
+  const move = (id: string, to: number) => {
+    const ids = (order || messages.map((m) => m.id)).filter((x) => x !== id);
+    ids.splice(Math.max(0, Math.min(ids.length, to)), 0, id);
+    return ids;
+  };
+  const finish = (ids: string[]) => {
+    const before = messages.map((m) => m.id).join();
+    if (ids.join() !== before) onReorder?.(ids);
+    setOrder(null);
+  };
+
+  const row = (m: OutboxMessage, index: number) => (
+    <div
+      key={m.id}
+      ref={(el) => {
+        if (el) rows.current.set(m.id, el);
+        else rows.current.delete(m.id);
+      }}
+      className={`qm-row ${order && drag.current?.id === m.id ? "dragging" : ""}`}
+    >
+      {sortable && !m.sending && (
+        <button
+          className="qm-grip"
+          aria-label={`Reorder queued message ${index + 1} of ${shown.length}`}
+          title="Drag or use the arrow keys to reorder"
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            drag.current = { id: m.id };
+            setOrder(messages.map((x) => x.id));
+          }}
+          onPointerMove={(e) => {
+            if (!drag.current) return;
+            // Over which row is the finger now? That's the new place.
+            for (const [id, el] of rows.current) {
+              const r = el.getBoundingClientRect();
+              if (
+                id !== drag.current.id &&
+                e.clientY >= r.top &&
+                e.clientY <= r.bottom
+              ) {
+                const ids = order || messages.map((x) => x.id);
+                setOrder(move(drag.current.id, ids.indexOf(id)));
+                break;
+              }
+            }
+          }}
+          onPointerUp={() => {
+            if (!drag.current) return;
+            drag.current = null;
+            finish(order || messages.map((x) => x.id));
+          }}
+          onPointerCancel={() => {
+            drag.current = null;
+            setOrder(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+            e.preventDefault();
+            const ids = messages.map((x) => x.id);
+            finish(
+              move(m.id, ids.indexOf(m.id) + (e.key === "ArrowUp" ? -1 : 1)),
+            );
+          }}
+        >
+          <GripVertical size={14} />
+        </button>
+      )}
+      {m.images > 0 && (
+        <span
+          className="qm-images"
+          aria-label={`${m.images} image${m.images === 1 ? "" : "s"}`}
+        >
+          <ImageIcon size={14} />
+          {m.images > 1 && <small>{m.images}</small>}
+        </span>
+      )}
+      <div className="qm-text">
+        <p title={label(m)}>{label(m)}</p>
+        {m.sending ? (
+          <small>Sending…</small>
+        ) : m.error ? (
+          <small className="qm-why" title={m.error}>
+            {m.error}
+          </small>
+        ) : null}
+      </div>
+      {onSendNow && m.via === "app" && !m.sending && (
+        <button
+          className="qm-now"
+          aria-label="Send now"
+          title="Send now"
+          disabled={!!busy}
+          onClick={() => onSendNow(m)}
+        >
+          <ArrowUp size={15} />
+        </button>
+      )}
+      {!m.images && (
+        <span className="qm-menu">
+          <button
+            aria-label="Queued message actions"
+            aria-expanded={menu === m.id}
+            disabled={!!busy}
+            onClick={() => setMenu(menu === m.id ? null : m.id)}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {menu === m.id && (
+            <div className="qm-popover" role="menu">
+              <button
+                role="menuitem"
+                disabled={!canEdit}
+                onClick={() => {
+                  setMenu(null);
+                  onEdit(m);
+                }}
+              >
+                <SquarePen size={14} />{" "}
+                {claude ? "Edit in composer" : "Edit message"}
+              </button>
+            </div>
+          )}
+        </span>
+      )}
+      <button
+        aria-label="Remove queued message"
+        title="Remove"
+        disabled={!!busy}
+        onClick={() => onRemove(m)}
+      >
+        <X size={15} />
+      </button>
+    </div>
+  );
+
+  return (
+    <section
+      className={`qm ${agent} ${stacked ? "stacked" : ""} ${sortable ? "sortable" : ""}`}
+      aria-label="Queued messages"
+    >
+      {claude && messages.length > 1 && (
+        <button
+          className="qm-head"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <span>{messages.length} queued</span>
+          <ChevronDown size={14} className={open ? "up" : ""} />
+        </button>
+      )}
+      <div className="qm-list">
+        {(stacked ? shown.slice(0, 1) : shown).map(row)}
+      </div>
+    </section>
+  );
+}
