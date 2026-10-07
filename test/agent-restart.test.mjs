@@ -48,7 +48,9 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   assert.equal(items.length, 1);
   const [item] = items;
   assert.equal(item.title, "Restart Reach?");
-  assert.equal(item.detail, "Asked from ChatGPT");
+  // The card names who asked (its sender line) and what it is.
+  assert.equal(item.sender, "ChatGPT");
+  assert.equal(item.detail, "Computer restart");
   assert.deepEqual(item.actions.map((a) => a.id), ["restart", "deny"]);
   const route = `/api/notifications/${encodeURIComponent(item.id)}/actions`;
   assert.equal((await call(route, guest, { revision: item.revision, action: "restart" })).status, 403);

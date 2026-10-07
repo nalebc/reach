@@ -172,7 +172,7 @@ export function createBrowserAppAccess({ native, verifyClient, screenAvailable, 
       if([...requests.values()].filter((r)=>r.status==='pending').length>=30)throw fail(429,'Wait for an existing app request to be answered.');
       const item={id:crypto.randomUUID(),clientId:client.id,name:clean(client.name),action:{type:'app-access',appId:app.id,appName:app.name,mode:input.mode},identity:app.identity,fingerprint:fingerprint(client),reason:input.reason||'',status:'pending',createdAt:now(),expiresAt:Math.min(now()+300000,client.expiresAt),sessionExpiresAt:client.expiresAt};
       requests.set(item.id,item);
-      Promise.resolve(notify({title:'App access requested',body:`${clean(client.name)} wants to ${input.mode==='control'?'use':'view'} ${app.name}.`,category:'access',tag:`browser-app-${client.id}`})).catch(()=>{});
+      Promise.resolve(notify({title:`${app.name} · Access request`,body:`${clean(client.name)} wants to view this app. Review access on your computer’s Home page.`,icon:'agent',url:`/?page=overview&needs=${encodeURIComponent(`browser:${item.id}`)}`,actions:[{action:'open',title:'Review access'}],category:'access',tag:`browser-app-${item.id}`})).catch(()=>{});
       return visibleRequest(item);
     },
     async ownerAccess(clientId, authorizeOwner) {

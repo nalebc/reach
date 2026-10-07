@@ -97,16 +97,16 @@ test("the receiving phone can decrypt it (a fresh key and salt each time)", () =
     p256dh: phone.getPublicKey().toString("base64url"),
     auth: auth.toString("base64url"),
   };
-  const a = encryptPush('{"title":"Claude needs you in Notes"}', keys);
-  const b = encryptPush('{"title":"Claude needs you in Notes"}', keys);
+  const a = encryptPush('{"title":"Notes · Your turn"}', keys);
+  const b = encryptPush('{"title":"Notes · Your turn"}', keys);
   assert.notDeepEqual(a, b);
   assert.equal(
     decrypt(a, phone, auth),
-    '{"title":"Claude needs you in Notes"}',
+    '{"title":"Notes · Your turn"}',
   );
   assert.equal(
     decrypt(b, phone, auth),
-    '{"title":"Claude needs you in Notes"}',
+    '{"title":"Notes · Your turn"}',
   );
 });
 
@@ -315,8 +315,8 @@ test("your phone subscribes; a handoff includes safe context, identity and its d
   assert.equal(destination.searchParams.get("page"), "apps");
   assert.match(destination.searchParams.get("threadId"), /^[\w-]+$/);
   assert.ok(destination.searchParams.get("computer"));
-  assert.equal(message.title, "Claude needs you in Notes");
-  assert.equal(message.body, "Open Notes to continue where Claude left off.");
+  assert.equal(message.title, "Notes · Your turn");
+  assert.equal(message.body, "Claude handed over control. Continue in the live app.");
   assert.match(message.tag, /^handoff-[0-9a-f]{8}$/);
 });
 
@@ -480,7 +480,7 @@ test("the service worker shows every push and only handles notification icons an
   };
   await push({
     json: () => ({
-      title: "Claude needs you in Notes",
+      title: "Notes · Your turn",
       tag: "handoff-1",
       url: "//evil.test/x",
     }),
@@ -494,9 +494,9 @@ test("the service worker shows every push and only handles notification icons an
   assert.deepEqual(
     shown.map(([title, o]) => [title, o.tag, o.data.url]),
     [
-      ["Claude needs you in Notes", "handoff-1", "/"],
-      ["Reach", "reach", "/"],
-      ["Reach", "reach", "/"],
+      ["Notes · Your turn", "handoff-1", "/"],
+      ["New activity", "reach", "/"],
+      ["New activity", "reach", "/"],
     ],
   );
   const waits = [];
@@ -586,8 +586,8 @@ test("a live agent wait notifies with every browser closed, once, without hooks"
   assert.equal(sent.length, 1);
   const message = JSON.parse(sub.open(sent[0].body));
   // The chat's name says which chat; the agent and its request follow.
-  assert.equal(message.title, "PRIVATE CHAT");
-  assert.equal(message.body, "Claude Code · Your answer is needed");
+  assert.equal(message.title, "PRIVATE CHAT · Needs you");
+  assert.equal(message.body, "Claude Code: Waiting for your response.");
   assert.equal(
     new URL(message.url, "https://reach.test").searchParams.get("page"),
     "sessions",
@@ -650,7 +650,7 @@ test("test push reaches only the requesting browser and reports provider failure
   );
   assert.equal(
     JSON.parse(phone.open(sent[0].body)).title,
-    "Reach notifications are working",
+    "Notifications enabled",
   );
   assert.equal(
     (

@@ -200,8 +200,12 @@ export function chatNotifications(session) {
         kind: prompt.kind,
         title,
         summary:
-          prompt.kind === "question" && question && !question.secret
-            ? clean(question.question, 1000)
+          prompt.kind === "question"
+            ? question && !question.secret
+              ? clean(question.question, 1000)
+              : prompt.questions?.some((q) => q.secret)
+                ? "A private answer is needed in the conversation."
+                : `${prompt.questions?.length || "Multiple"} questions need your answer.`
             : clean(prompt.reason || prompt.message),
         prompt: complete
           ? {
@@ -241,6 +245,8 @@ export function browserNotification(request) {
       scroll: "Scroll your screen?",
       terminal: "Run a read-only command?",
       "terminal-change": "Review a file-changing command",
+      "terminal-script": "Review a script",
+      "app-access": "Review app access",
       batch: "Review a group of actions",
       command: "A command needs your help",
     }[kind] || "Review an agent action";
@@ -302,7 +308,7 @@ export function restartNotification(request, terminals = 0) {
       icon: "agent",
       title: "Restart Reach?",
       kind: "permission",
-      detail: `Asked from ${asker}`,
+      detail: "Computer restart",
       summary: `Reach starts again in Terminal on your computer. ${terminals ? `Its ${terminals === 1 ? "terminal" : `${terminals} terminals`} and live screens end.` : "Live screens end."}`,
       signature: request.id,
       createdAt: request.requestedAt,
@@ -316,15 +322,13 @@ export function restartNotification(request, terminals = 0) {
     { type: "restart", id: request.id, evidence: [request.requestedAt, terminals] },
   );
 }
-// What a phone shows. On an iPhone Home Screen app the icon is always
-// Reach's and iOS adds "from Reach", so the text alone has to say which chat
-// and what it wants: the chat's name on top, then the agent and the request
-// itself (the command, the question, the files). Never a verification code,
-// a secret answer or text an agent would type; iOS hides the body on a
-// locked phone unless previews are set to Always.
+// Notification content carries the event and its context. System attribution
+// is controlled by the OS; repeating the app name in our copy adds no context.
 export const agentName = (source) =>
   ({ claude: "Claude Code" })[source] || sourceName(source);
-// One line for a notification: no markdown or breaks, cut on a word.
+const shorten = (text, limit) => text.length > limit
+  ? `${text.slice(0, limit - 1).replace(/\s+\S*$/, "")}…`
+  : text;
 export const pushLine = (value, limit = 180) => {
   const text = clean(value, 8000)
     .replace(/```[\s\S]*?(```|$)/g, " ")
@@ -333,15 +337,20 @@ export const pushLine = (value, limit = 180) => {
     .replace(/\*+|`+|~~/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return text.length > limit
-    ? `${text.slice(0, limit - 1).replace(/\s+\S*$/, "")}…`
-    : text;
+  return shorten(text, limit);
 };
-// A chat's own name, unless it never got one.
+// Commands aren't Markdown: preserve globs, backticks, flags and operators.
+// Indicate a multiline preview instead of presenting its first line as complete.
+const commandLine = (value) => {
+  const lines = String(value).trim().split(/\r?\n/);
+  return shorten(lines[0], 110) + (lines.length > 1 ? " …" : "");
+};
 export const chatName = (title) =>
   /^(untitled\b|conversation$)/i.test(String(title || "").trim())
     ? ""
     : pushLine(title, 80);
+export const chatEventTitle = (title, source, event) =>
+  `${chatName(title) || agentName(source)} · ${event}`;
 const folder = (cwd) =>
   pushLine(String(cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop(), 40);
 const fileList = (files = [], count = files.length) => {
@@ -351,85 +360,58 @@ const fileList = (files = [], count = files.length) => {
 };
 function chatPush(item) {
   const who = agentName(item.source);
-  const command = item.prompt?.command
-    ? pushLine(item.prompt.command.split("\n")[0], 120)
-    : "";
-  const where = folder(item.prompt?.cwd);
-  const summary = pushLine(item.summary);
   const waiting = item.waiting;
-  const asked = pushLine(waiting?.text, 200);
-  const said = waiting
-    ? asked
-      ? waiting.kind === "question"
-        ? `${who} asks: ${asked}`
-        : waiting.command
-          ? `${who} wants to run ${pushLine(waiting.text.split("\n")[0], 120)}`
-          : waiting.kind === "permission"
-            ? `${who} needs permission: ${asked}`
-            : asked.startsWith(who)
-              ? asked
-              : `${who}: ${asked}`
-      : waiting.kind === "permission"
-        ? `${who} needs your permission`
-        : `${who} is waiting for you`
-    : item.kind === "question" && summary
-      ? `${who} asks: ${summary}`
-      : command
-        ? `${who} wants to run ${command}${where ? ` in ${where}` : ""}`
-        : item.kind === "file-change"
-          ? `${who} wants to change ${item.fileCount ? fileList(item.files, item.fileCount) : "files"}`
-          : item.kind === "permissions"
-            ? `${who} asks for more access${summary ? `: ${summary}` : ""}`
-            : item.kind === "question"
-              ? `${who} is waiting for your answer`
-              : `${who} · ${pushLine(item.title, 80)}${summary ? `: ${summary}` : ""}`;
+  const kind = waiting ? waiting.kind : item.kind;
+  const question = kind === "question";
+  const permission = ["permission", "permissions", "command", "tool", "file-change"].includes(kind);
+  const event = question ? "Reply needed" : permission ? "Approval needed" : "Needs you";
+  const prefix = chatName(item.chatTitle) ? `${who}: ` : "";
+  const command = item.prompt?.command || (waiting?.command && waiting.text);
+  const where = folder(item.prompt?.cwd);
+  const summary = pushLine(waiting ? waiting.text : item.summary, 190);
+  let text;
+  if (command) text = `Run ${commandLine(command)}${where ? ` in ${where}` : ""}?`;
+  else if (item.kind === "file-change")
+    text = `Change ${item.fileCount ? fileList(item.files, item.fileCount) : "files"}?`;
+  else if (question) text = summary || "Waiting for your answer.";
+  else if (kind === "permissions") text = summary || "Review the requested permissions.";
+  else text = summary || (permission ? "Review the pending request." : "Waiting for your response.");
+  // A fallback explanation isn't the actual question.
+  if (text === "Open the conversation to respond.") text = "Waiting for your response.";
   return {
-    title: chatName(item.chatTitle) || who,
-    body: pushLine(said, 220),
+    title: chatEventTitle(item.chatTitle, item.source, event),
+    body: shorten(text.startsWith(who) ? text : prefix + text, 220),
   };
 }
 function otherPush(item) {
-  const invited = `✦ ${pushLine(item.sender || "Agent", 48)}`;
+  const who = pushLine(item.sender || "Agent", 48);
   if (item.source === "admission")
-    return {
-      title: `${invited} wants to connect`,
-      body: "Compare the code on your computer before you allow it.",
-    };
+    return { title: `${who} · Connection request`, body: "Compare the pairing code, then choose what this agent can access." };
   if (item.source === "access")
-    return {
-      title: `${invited} asks for access`,
-      body: "Review what it wants to use before you allow it.",
-    };
+    return { title: `${who} · Access request`, body: "Review the requested permissions before allowing access." };
   if (item.source === "restart")
-    return {
-      title: `${invited} wants to restart Reach`,
-      body: "Allow it in Reach. Its terminals and live screens end.",
-    };
+    return { title: "Restart requested", body: `${who} wants to restart the server. Active terminals and live screens will disconnect.` };
   if (item.source === "browser")
-    return {
-      // The agent's own reason stays in Reach (browser-approvals.mjs).
-      title: invited,
-      body: `${pushLine(item.title, 60)} Allow or deny it in Reach.`,
-    };
-  // A macOS prompt: its own words ("Terminal" would like to access…).
+    return { title: `${who} · Approval needed`, body: pushLine(item.title, 200) };
   return {
-    title: pushLine(item.title, 100) || "Your computer is asking",
-    body:
-      pushLine(item.summary, 200) || "Answer it on your computer's screen.",
+    title: "Computer · Permission needed",
+    body: pushLine(item.title, 180) || "A system dialog needs your response on the live screen.",
   };
 }
 export function notificationPush(item) {
+  const open = item.target?.page === "screen" ? "Open live screen"
+    : item.kind === "connection" ? "Review access"
+    : item.kind === "question" ? "Reply"
+    : item.source === "restart" ? "Review restart" : "Review request";
   return {
     ...(["mac", "browser", "admission", "access", "restart"].includes(item.source)
-      ? otherPush(item)
-      : chatPush(item)),
+      ? otherPush(item) : chatPush(item)),
     icon: sourceIcon(item.source),
     url: targetUrl(item.target),
     actions: [
-      { action: "open", title: item.kind === "question" ? "Reply" : "Review" },
+      { action: "open", title: open },
       ...(item.actions?.some((action) => action.id === "deny")
-        ? [{ action: "deny", title: "Deny" }]
-        : []),
+        ? [{ action: "deny", title: item.source === "restart" ? "Not now" : "Deny" }] : []),
     ],
     notification: { id: item.id, revision: item.revision },
   };

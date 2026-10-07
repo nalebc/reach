@@ -48,6 +48,11 @@ real-device checks that are still open.
   form keep their one-hour cap).
 - The agent screen states why a screenshot was refused or failed and keeps
   refreshing, more slowly, in a hidden tab.
+- A Claude Code session started from the phone is named from its first
+  message the way the Claude app names its own: Claude Code proposes a title
+  and it is written into the transcript, so the app lists the session by name
+  instead of "General coding session". Without a proposal, the message's first
+  line is the name.
 - Release workflow (`.github/workflows/release.yml`): a `v<version>` tag builds,
   tests, packages and verifies once, publishes the verified tarball to npm with
   provenance, and creates the GitHub release with SHA-256 checksums and these
@@ -76,6 +81,16 @@ real-device checks that are still open.
   screen, input, shell and file routes pass through it; each invitation's own
   allowlist still decides.
 - Invitations made with the earlier form keep working until they end.
+- Notifications say the event and its context. Titles read "chat or agent ·
+  event" (Reply needed, Approval needed, Finished, Access request, Connection
+  request, Your turn); bodies carry the request itself ("Run npm test in
+  project?", "Change 3 files: …?", the question asked), with commands kept
+  verbatim and a marker for a multi-line one; the action button says what it
+  opens (Reply, Review access, Open live screen, Review restart). Questions
+  with a private or several answers get a safe summary, a browser agent's app
+  request links to the Home page, the test notification explains what the
+  device will receive, and the restart card shows who asked next to "Computer
+  restart".
 - CI: GitHub Actions pinned to commit SHAs, superseded runs cancelled,
   `npm audit` moved to a separate advisory job, the verified `.tgz` uploaded
   with the portable folder.

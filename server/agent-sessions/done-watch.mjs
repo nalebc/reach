@@ -2,7 +2,7 @@
 // finished sends one notification, unless a phone has that chat open right
 // then. It looks again when an agent's files change (pushed by agent-watch)
 // and, as a fallback, every so often; the first look only learns the states.
-import { agentName, chatName, pushLine } from "../notification-items.mjs";
+import { agentName, chatName, chatEventTitle, pushLine } from "../notification-items.mjs";
 
 const BUSY = new Set(["running", "waiting"]);
 
@@ -49,8 +49,8 @@ export function createDoneWatch({
           const name = chatName(s.title);
           await notify({
             category: "done",
-            title: name || app,
-            body: said ? (name ? `${app}: ${said}` : said) : `${app} finished.`,
+            title: chatEventTitle(s.title, s.agent, "Finished"),
+            body: said ? (name ? `${app}: ${said}` : said) : name ? `${app}’s reply is ready.` : "Your reply is ready.",
             icon: s.agent,
             actions: [{ action: "open", title: "Open conversation" }],
             tag: `done-${s.agent}-${String(s.id).slice(0, 12)}`,

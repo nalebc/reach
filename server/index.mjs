@@ -472,10 +472,10 @@ export async function createReach(overrides = {}) {
       for (const nudge of presenceNudges) nudge();
       if (reason === "handoff")
         notify({
-          title: `${handoff.agent} needs you in ${handoff.app}`,
+          title: `${pushLine(handoff.app, 70)} · Your turn`,
           category: "handoffs",
           // Reach's words, never the agent's: an invited agent could write anything.
-          body: `Open ${handoff.app} to continue where ${handoff.agent} left off.`,
+          body: `${pushLine(handoff.agent, 60)} handed over control. Continue in the live app.`,
           icon: /claude/i.test(handoff.agent) ? "claude" : /codex/i.test(handoff.agent) ? "codex" : "agent",
           actions: [{ action: "open", title: "Open app" }],
           tag: `handoff-${handoff.id.slice(0, 8)}`,
@@ -1140,7 +1140,7 @@ export async function createReach(overrides = {}) {
     };
     accessRequests.set(request.id, request);
     record("agent", `${name} asked for access`);
-    notify({ category: "access", title: `✦ ${pushLine(name, 48)} asks for access`, body: "Review what it wants to use before you allow it.", icon: "agent", tag: `agent-request-${request.id}`, url: `/?page=overview&needs=${encodeURIComponent(`device:${request.id}`)}`, actions: [{ action: "open", title: "Review access" }] });
+    notify({ category: "access", title: `${pushLine(name, 48)} · Access request`, body: "Review the requested permissions before allowing access.", icon: "agent", tag: `agent-request-${request.id}`, url: `/?page=overview&needs=${encodeURIComponent(`device:${request.id}`)}`, actions: [{ action: "open", title: "Review access" }] });
     res.status(202).json({
       id: request.id,
       secret,
@@ -3026,7 +3026,7 @@ export async function createReach(overrides = {}) {
     if (pushTests.has(req.client.id)) throw fail(429, "Wait a few seconds before sending another test.");
     pushTests.set(req.client.id, now);
     const result = await push.notify([req.client.id], {
-      title: "Reach notifications are working", tag: "reach-test", url: "/?notifications=1",
+      title: "Notifications enabled", body: "This device can receive replies, approval requests and computer alerts. Choose which ones in notification settings.", tag: "reach-test", url: "/?notifications=1",
     }, { endpoint, test: true });
     if (!result.sent) throw fail(502, "The notification service didn't accept the test. Try enabling notifications again.");
     res.json({ sent: true });

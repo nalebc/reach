@@ -305,7 +305,7 @@ export function createPush({
       if (!targets.length) return { sent: 0 };
       const { privateKey, publicKey } = vapid();
       const payload = JSON.stringify({
-        title: String(message.title || "Reach").slice(0, 120),
+        title: String(message.title || "New activity").slice(0, 120),
         ...(message.tag && { tag: String(message.tag).slice(0, 64) }),
         ...(message.url && { url: String(message.url).length <= 2000 ? String(message.url) : "/" }),
         ...(message.body && { body: String(message.body).slice(0, 240) }),

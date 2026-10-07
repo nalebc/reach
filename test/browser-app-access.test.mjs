@@ -4,7 +4,7 @@ import { createBrowserAppAccess } from '../server/browser-app-access.mjs';
 import { validAppAccess } from '../server/browser-app-policy.mjs';
 import { browserRouteAllowed } from '../server/browser-access.mjs';
 
-function fixture({persistRestriction} = {}) {
+function fixture({persistRestriction, notify} = {}) {
   let clock=100000;const identity='a'.repeat(64), clients=new Map(), calls=[];
   const base={kind:'agent',name:'Muse',expiresAt:clock+600000,scopes:['device','browser:read','browser:request'],policy:{invite:true,browser:true,screen:'apps',roots:[],terminalIds:[],appAccess:[{id:'/System/Applications/Notes.app',mode:'control',identity}]}};
   const make=(id='one')=>{const c={...structuredClone(base),id};clients.set(id,c);return c;};const client=make();
@@ -16,7 +16,7 @@ function fixture({persistRestriction} = {}) {
     async capture(target,check,signal){await onCapture?.({target,check,signal});check();if(apps.find(a=>a.id===target.appId)?.identity!==target.identity)throw Object.assign(Error('signature changed'),{status:403});calls.push(['capture',target.appId]);return {jpeg:Buffer.from('jpeg-fixture').toString('base64')};},
     async input(target,action,check,signal){await onInput?.({target,action,check,signal});check();calls.push(['input',target.appId,action]);return {done:true};},
   };
-  const manager=createBrowserAppAccess({native,verifyClient:id=>clients.get(id),screenAvailable:()=>allowed,persistRestriction,now:()=>clock});
+  const manager=createBrowserAppAccess({native,verifyClient:id=>clients.get(id),screenAvailable:()=>allowed,persistRestriction,notify,now:()=>clock});
   const check=()=>{if(!clients.has(client.id))throw Object.assign(Error('revoked'),{status:403});};
   return {manager,client,clients,make,apps,calls,check,advance:(ms)=>clock+=ms,pause:()=>allowed=false,setCapture:f=>onCapture=f,setInput:f=>onInput=f};
 }
@@ -171,4 +171,14 @@ test('invalid permission reduction does not retire other app targets or consume 
  await assert.rejects(f.manager.restrict(f.client.id,{appId:f.apps[1].id,mode:'view'},f.check),{status:403});
  await f.manager.capture(f.client,windows[0].id,f.check);
  assert.equal(f.manager.listOwner().find(item=>item.id===request.id).status,'pending');
+});
+
+
+test('app access notification opens its pending request without sharing the private reason', async () => {
+ const sent=[]; const f=fixture({notify:async message=>sent.push(message)});
+ const request=await f.manager.request(f.client,{appId:f.apps[1].id,mode:'view',reason:'private document 123456'},f.check);
+ assert.equal(sent.length,1);
+ assert.equal(sent[0].title,'Notes · Access request');
+ assert.equal(new URL(sent[0].url,'https://reach.test').searchParams.get('needs'),`browser:${request.id}`);
+ assert.doesNotMatch(JSON.stringify(sent[0]),/123456/);
 });

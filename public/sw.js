@@ -117,7 +117,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(
       typeof data.title === "string" && data.title
         ? data.title.slice(0, 120)
-        : "Reach",
+        : "New activity",
       {
         body: typeof data.body === "string" ? data.body.slice(0, 240) : "",
         tag: typeof data.tag === "string" ? data.tag : "reach",

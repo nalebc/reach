@@ -30,8 +30,8 @@ test("a chat that finishes sends one notification that opens it", async () => {
     {
       category: "done",
       // On an iPhone the icon is always Reach's: the chat's name says which.
-      title: "Fix login",
-      body: "Claude Code finished.",
+      title: "Fix login · Finished",
+      body: "Claude Code’s reply is ready.",
       icon: "claude",
       actions: [{ action: "open", title: "Open conversation" }],
       tag: "done-claude-11111111-222",
@@ -87,7 +87,7 @@ test("the notification shows the agent's last reply, not your prompt", async () 
   await w.look();
   await w.look();
   assert.deepEqual(asked, [["codex", codex.id]]);
-  assert.equal(sent[0].title, "Fix login");
+  assert.equal(sent[0].title, "Fix login · Finished");
   assert.equal(sent[0].body, "Codex: Done Fixed the redirect in auth.ts; all 42 tests pass.");
 });
 
@@ -97,9 +97,9 @@ test("a chat without a name, or a reply that can't be read, still says who", asy
   });
   await w.look();
   await w.look();
-  assert.deepEqual([sent[0].title, sent[0].body], ["Claude Code", "Looks good."]);
+  assert.deepEqual([sent[0].title, sent[0].body], ["Claude Code · Finished", "Looks good."]);
   ({ w, sent } = watch([[chat("running")], [chat("idle")]], { reply: async () => { throw new Error("gone"); } }));
   await w.look();
   await w.look();
-  assert.deepEqual([sent[0].title, sent[0].body], ["Fix login", "Claude Code finished."]);
+  assert.deepEqual([sent[0].title, sent[0].body], ["Fix login · Finished", "Claude Code’s reply is ready."]);
 });
