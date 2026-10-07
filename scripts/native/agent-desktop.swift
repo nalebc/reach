@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ScreenCaptureKit
+import Security
 
 // This Mac's screen and input for an agent preset (server/agent-desktop.mjs).
 // One process per agent session, fed JSON lines: first the rules, then one
@@ -85,22 +86,57 @@ func appReason(_ bundleId: String, _ name: String, _ path: String, _ rules: Rule
 }
 // Reach's own windows (by title), System Settings' privacy panes, and the
 // windows that show saved passwords or run code.
-func titleReason(_ title: String, _ bundleId: String, _ rules: Rules) -> String? {
+func mailIdentityCandidate(_ bundleId: String, _ path: String) -> Bool {
+  bundleId == "com.apple.mail" && path == "/System/Applications/Mail.app"
+}
+func titleReason(_ title: String, _ bundleId: String, _ rules: Rules, verifiedMail: Bool = false) -> String? {
   let value = lower(title)
+  // Only the native verifier may supply this context. Mail message subjects
+  // are not browser/terminal titles; failed or unknown identity stays closed.
+  let mailContent = verifiedMail && bundleId == "com.apple.mail"
   if value.isEmpty { return nil }
-  if rules.titles.contains(where: { !$0.isEmpty && value.contains($0) }) && mentionsReach(value, rules) { return reachReason }
+  if !mailContent && rules.titles.contains(where: { !$0.isEmpty && value.contains($0) }) && mentionsReach(value, rules) { return reachReason }
   if settingsApp(bundleId) && rules.privatePanes.contains(where: value.contains) { return protectedReason }
   for word in rules.protectedTitleWords {
+    if word == "keychain", mailContent, value.contains(word) {
+      // Keep credential dialogs conservative, including singular "password".
+      let credential = #"\b(passwords?|passphrase|unlock|locked|security|access|authentication|permissions?|credentials?|authori[sz]e|sign[ -]?in|log[ -]?in)\b"#
+      if value.trimmingCharacters(in: .whitespacesAndNewlines) == word || value.range(of: credential, options: .regularExpression) != nil { return protectedReason }
+      continue
+    }
     if word == "passwords" { if value == word || value.hasPrefix(word + " ") || value.hasSuffix(" " + word) || value.contains("saved passwords") { return protectedReason } }
     else if value.contains(word) { return protectedReason }
   }
   return nil
 }
+// Match the server's narrow HTTP(S) exception. Ambiguous input keeps the
+// original conservative check; no host alias canonicalization happens here.
+func reachHostSubject(_ value: String) -> String {
+  func matches(_ pattern: String, _ text: String) -> Bool { text.range(of: pattern, options: .regularExpression) != nil }
+  if matches(#"[\s\\"'`<>\x00-\x1f\x7f-\x9f\u200e\u200f\u2028-\u202e\u2066-\u2069]"#, value) || matches(#"%(?![a-f0-9]{2})"#, value) { return value }
+  guard let start = value.range(of: #"^https?://"#, options: .regularExpression) else { return value }
+  let authority = String(value[start.upperBound...].prefix { !"/?#".contains($0) })
+  guard !authority.isEmpty, matches(#"^[a-z0-9.!$&'()*+,;=_~:@\[\]-]+$"#, authority),
+    let expression = try? NSRegularExpression(pattern: #"^(?:[^@]*@)?(\[[a-f0-9:.]+\]|[a-z0-9._-]+)(?::([0-9]{1,5}))?$"#),
+    let parts = expression.firstMatch(in: authority, range: NSRange(authority.startIndex..., in: authority)),
+    let hostRange = Range(parts.range(at: 1), in: authority) else { return value }
+  if let portRange = Range(parts.range(at: 2), in: authority), (Int(authority[portRange]) ?? 65536) > 65535 { return value }
+  let rawHost = String(authority[hostRange])
+  let host = rawHost.hasPrefix("[") ? String(rawHost.dropFirst().dropLast()) : rawHost
+  var ipv4 = in_addr(), ipv6 = in6_addr()
+  let validIP = rawHost.hasPrefix("[") ? inet_pton(AF_INET6, host, &ipv6) == 1 : inet_pton(AF_INET, host, &ipv4) == 1
+  let dns = #"^(?:[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\.)*[a-z_](?:[a-z0-9_-]*[a-z0-9_])?\.?$"#
+  if !validIP && (rawHost.hasPrefix("[") || !matches(dns, host)) { return value }
+  guard let parsed = URLComponents(string: value), ["http", "https"].contains(parsed.scheme ?? ""),
+    !(parsed.host ?? "").isEmpty, parsed.url != nil else { return value }
+  return authority
+}
 // A page address: Reach's own, or one that reveals saved passwords or runs code.
 func urlReason(_ url: String, _ rules: Rules) -> String? {
-  let value = lower(url).trimmingCharacters(in: .whitespaces)
+  let value = lower(url).trimmingCharacters(in: .whitespacesAndNewlines)
   if value.isEmpty { return nil }
-  if rules.hosts.contains(where: { !$0.isEmpty && value.contains($0) }) { return reachReason }
+  let subject = reachHostSubject(value)
+  if rules.hosts.contains(where: { !$0.isEmpty && subject.contains($0) }) { return reachReason }
   for pattern in rules.patterns where pattern.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil { return protectedReason }
   return nil
 }
@@ -133,6 +169,25 @@ func keyboardChunks(_ text: String) -> [[UInt16]] {
 }
 // END PURE DESKTOP TEXT
 
+// BEGIN NATIVE MAIL IDENTITY — Foundation/Security only; no UI access.
+// Do not cache a successful PID: process IDs can be reused. Validate the code
+// currently running, its Apple requirement, and its own path each time.
+func trustedMailIdentity(_ pid: pid_t, _ bundleId: String, _ path: String) -> Bool {
+  guard pid > 0, mailIdentityCandidate(bundleId, path) else { return false }
+  var requirement: SecRequirement?
+  guard SecRequirementCreateWithString(#"anchor apple and identifier "com.apple.mail""# as CFString, [], &requirement) == errSecSuccess,
+    let requirement else { return false }
+  var code: SecCode?
+  guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: pid] as CFDictionary, [], &code) == errSecSuccess,
+    let code, SecCodeCheckValidity(code, [], requirement) == errSecSuccess else { return false }
+  var staticCode: SecStaticCode?
+  guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return false }
+  var codeURL: CFURL?
+  guard SecCodeCopyPath(staticCode, [], &codeURL) == errSecSuccess, let codeURL else { return false }
+  return (codeURL as URL).standardizedFileURL.resolvingSymlinksInPath().path == path
+}
+// END NATIVE MAIL IDENTITY
+
 
 func out(_ value: [String: Any]) {
   let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8)
@@ -158,7 +213,7 @@ func string(_ element: AXUIElement, _ name: String) -> String {
 }
 func pidOf(_ element: AXUIElement) -> pid_t { var pid: pid_t = 0; AXUIElementGetPid(element, &pid); return pid }
 
-struct Seen { var bundle = ""; var name = ""; var path = ""; var title = ""; var url = ""; var secure = false; var role = "" }
+struct Seen { var bundle = ""; var name = ""; var path = ""; var title = ""; var url = ""; var secure = false; var role = ""; var pid: pid_t = 0 }
 func canonical(_ url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
 func appInfo(_ pid: pid_t) -> (String, String, String) {
   let app = NSRunningApplication(processIdentifier: pid)
@@ -167,8 +222,8 @@ func appInfo(_ pid: pid_t) -> (String, String, String) {
 // What an accessibility element belongs to: its app, its window's title, for
 // web content the page address, and whether it takes a password.
 func seen(_ element: AXUIElement) -> Seen {
-  var s = Seen()
-  (s.bundle, s.name, s.path) = appInfo(pidOf(element))
+  var s = Seen(pid: pidOf(element))
+  (s.bundle, s.name, s.path) = appInfo(s.pid)
   s.role = string(element, kAXRoleAttribute)
   let subrole = string(element, kAXSubroleAttribute)
   s.secure = s.role == "AXSecureTextField" || subrole == "AXSecureTextField"
@@ -188,9 +243,12 @@ func seen(_ element: AXUIElement) -> Seen {
   }
   return s
 }
+func windowTitleReason(_ title: String, _ bundleId: String, _ path: String, _ pid: pid_t, _ rules: Rules) -> String? {
+  titleReason(title, bundleId, rules, verifiedMail: trustedMailIdentity(pid, bundleId, path))
+}
 func check(_ s: Seen, _ rules: Rules) throws {
   if let reason = appReason(s.bundle, s.name, s.path, rules) { try refuse(reason) }
-  if let reason = titleReason(s.title, s.bundle, rules) { try refuse(reason) }
+  if let reason = windowTitleReason(s.title, s.bundle, s.path, s.pid, rules) { try refuse(reason) }
   if let reason = urlReason(s.url, rules) { try refuse(reason) }
 }
 // The window server's view of a point: the topmost window there, from any
@@ -202,7 +260,7 @@ func windowAt(_ point: CGPoint) -> Seen? {
       CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0).contains(point),
       (info[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
     let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
-    var s = Seen()
+    var s = Seen(pid: pid)
     (s.bundle, s.name, s.path) = appInfo(pid)
     if s.name.isEmpty { s.name = info[kCGWindowOwnerName as String] as? String ?? "" }
     s.title = info[kCGWindowName as String] as? String ?? ""
@@ -240,7 +298,7 @@ func checkPoint(_ point: CGPoint, _ rules: Rules) throws {
 func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool {
   let element = AXUIElementCreateApplication(app.processIdentifier)
   guard let windows = attr(element, kAXWindowsAttribute) as? [AXUIElement] else { return false }
-  return windows.contains { titleReason(string($0, kAXTitleAttribute), app.bundleIdentifier ?? "", rules) == reachReason }
+  return windows.contains { windowTitleReason(string($0, kAXTitleAttribute), app.bundleIdentifier ?? "", app.bundleURL.map(canonical) ?? "", app.processIdentifier, rules) == reachReason }
 }
 struct Focus { let app: NSRunningApplication; let element: Seen; let terminalLike: Bool }
 // Keys and text go to the focused element; check it and its app.
@@ -249,7 +307,7 @@ func focus(_ rules: Rules) throws -> Focus {
   let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
   if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
   let app = AXUIElementCreateApplication(front.processIdentifier)
-  var s = Seen(bundle: bundle, name: name, path: path)
+  var s = Seen(bundle: bundle, name: name, path: path, pid: front.processIdentifier)
   if let window = elementAttr(app, kAXFocusedWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
   try check(s, rules)
   if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) {
@@ -401,7 +459,7 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
     let app = window.owningApplication
     let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
     return appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
-      titleReason(window.title ?? "", app?.bundleIdentifier ?? "", rules) != nil
+      windowTitleReason(window.title ?? "", app?.bundleIdentifier ?? "", path, app?.processID ?? 0, rules) != nil
   }
   var hidden = 0
   if rules.mode == "apps" {
@@ -480,12 +538,12 @@ func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
 func front(_ rules: Rules) -> [String: Any] {
   guard let app = NSWorkspace.shared.frontmostApplication else { return ["ok": true, "app": "", "bundle": ""] }
   let bundle = app.bundleIdentifier ?? "", name = app.localizedName ?? "", path = app.bundleURL.map(canonical) ?? ""
-  var s = Seen(bundle: bundle, name: name, path: path)
+  var s = Seen(bundle: bundle, name: name, path: path, pid: app.processIdentifier)
   if let window = elementAttr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
   if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute), pidOf(focused) == app.processIdentifier {
     let element = seen(focused); s.url = element.url; s.secure = element.secure
   }
-  let blocked = appReason(bundle, name, path, rules) ?? titleReason(s.title, bundle, rules) ?? urlReason(s.url, rules)
+  let blocked = appReason(bundle, name, path, rules) ?? windowTitleReason(s.title, bundle, path, s.pid, rules) ?? urlReason(s.url, rules)
   return ["ok": true, "app": name, "bundle": bundle, "title": blocked == nil ? String(s.title.prefix(200)) : "",
     "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? ""]
 }
