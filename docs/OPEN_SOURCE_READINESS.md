@@ -10,6 +10,8 @@ The owner authorized inclusion of the newer Files viewers, connector management,
 
 Independent review prompted additional regressions for credential-safe errors, cancelled login notifications, shutdown during CLI discovery, reauthorization after config writes, custom-state route handoff, failed page-verification retry and deterministic Windows app discovery. Final combined-main hosted CI is pending. The original cutoff is preserved separately; the historical evidence below does not establish native desktop or physical-device acceptance for these additions. Those gates remain open.
 
+The subsequent phone-update follow-up at product source `4be8232` passed **1,943 tests: 1,936 passed, 0 failed, 7 skipped**, its release build and clean production-only artifact install. Automatic checks cover foreground/page restoration, reconnect and periodic checks without presence packets; regression coverage includes lazy stylesheet loading, offline/time-out recovery, waiting for unfinished text/streams, and retaining the same address. Settings was visually checked at 320px and 390px. Temporary Claude probe failures now report a connection-check failure instead of an incompatible-version claim. GitHub's billing/spending restriction prevented the preceding combined-main workflows from starting; final hosted platform qualification and physical-phone refresh acceptance remain open.
+
 ## Verified on the original audited candidate
 
 - Node 22.23.3 on macOS ARM64: **1,892 passed, 0 failed, 7 skipped** out of 1,899 tests, with native policy/file-boundary/script-sandbox flags enabled.
