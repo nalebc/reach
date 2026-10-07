@@ -11,8 +11,9 @@ import { fail } from "./core.mjs";
 // is the slow AppleScript list or read run, and the phone is told through
 // its live connection. Nothing runs while the terminals are idle.
 export function terminalWatchHelper(config) {
-  return async () => {
-    const binary = await desktopBinary(config, "terminal-watch");
+  return async ({ signal } = {}) => {
+    const binary = await desktopBinary(config, "terminal-watch", { signal });
+    signal?.throwIfAborted();
     const child = spawn(binary, [], { stdio: ["pipe", "pipe", "ignore"] });
     const helper = new EventEmitter();
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
@@ -94,7 +95,7 @@ export class MacTerminalWatch {
   retain() {
     this.users++;
     clearTimeout(this.timers.linger);
-    if (!this.helper && !this.starting) this.starting = this.begin();
+    if (!this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
   }
   release() {
     this.users = Math.max(0, this.users - 1);
@@ -104,26 +105,35 @@ export class MacTerminalWatch {
     this.timers.linger.unref?.();
   }
   async begin() {
+    const preparing = new AbortController();
+    this.preparing = preparing;
     try {
-      const helper = await this.start();
-      if (!this.users) return helper.stop();
+      const helper = await this.start({ signal: preparing.signal });
+      if (preparing.signal.aborted || !this.users) return helper.stop();
       this.helper = helper;
-      helper.on("event", (event) => this.event(event));
+      helper.on("event", (event) => {
+        if (this.helper === helper) this.event(event);
+      });
       helper.on("exit", () => {
         if (this.helper !== helper) return;
         // Back to asking, until the next phone connects.
         this.end();
       });
       await this.refresh();
+      if (this.helper !== helper) return;
       this.timers.safety = setInterval(() => void this.refresh(), this.safety);
       this.timers.safety.unref?.();
     } catch {
       // No helper (no Command Line Tools): phones keep asking as before.
     } finally {
-      this.starting = null;
+      if (this.preparing === preparing) {
+        this.preparing = null;
+        this.starting = null;
+      }
     }
   }
   end() {
+    this.preparing?.abort();
     for (const timer of Object.values(this.timers)) {
       clearTimeout(timer);
       clearInterval(timer);

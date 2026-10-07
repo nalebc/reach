@@ -96,12 +96,14 @@ export function macAnswerRunner({ dataDir, spawn = spawnChild, binary = () => de
 export function createMacPrompts({
   dataDir,
   platform = process.platform,
-  binary = () => desktopBinary({ dataDir }, "mac-prompts"),
+  binary = null,
   spawn = spawnChild,
   retryMs = 5000,
   // Presses a dialog's button or types the Mac's password (mac-answer.swift).
   answer = macAnswerRunner({ dataDir, spawn }),
 }) {
+  const preparing = new AbortController();
+  const prepare = binary || (({ signal }) => desktopBinary({ dataDir }, "mac-prompts", { signal }));
   let prompts = [];
   let version = 0;
   let child = null;
@@ -119,7 +121,7 @@ export function createMacPrompts({
     if (closed || platform !== "darwin") return;
     let file;
     try {
-      file = await binary();
+      file = await prepare({ signal: preparing.signal });
     } catch {
       return; // no Command Line Tools: no Mac prompts on the phone
     }
@@ -200,6 +202,7 @@ export function createMacPrompts({
     },
     close() {
       closed = true;
+      preparing.abort();
       clearTimeout(timer);
       child?.stdin?.end();
       child?.kill("SIGTERM");

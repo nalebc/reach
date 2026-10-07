@@ -8,7 +8,8 @@ import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
 const exec = promisify(execFile),
   native =fileURLToPath(new URL("../scripts/native/", import.meta.url));
-export async function desktopBinary(config, kind) {
+export async function desktopBinary(config, kind, { signal } = {}) {
+  signal?.throwIfAborted();
   // Name the cached build after its source, so any helper edit recompiles.
   const source = await fs.readFile(path.join(native, `${kind}.swift`));
   const file = path.join(
@@ -16,8 +17,10 @@ export async function desktopBinary(config, kind) {
     `reach-${kind}-${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`,
   );
   try {
-    await buildNative(file, ["swiftc", "-parse-as-library", "-O", path.join(native, `${kind}.swift`)]);
-  } catch {
+    await buildNative(file, ["swiftc", "-parse-as-library", "-O", path.join(native, `${kind}.swift`)], { signal });
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (signal?.aborted) throw error;
     throw fail(
       503,
       `Could not prepare the ${kind} helper. Install Apple Command Line Tools and check macOS permissions.`,
