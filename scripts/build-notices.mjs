@@ -17,6 +17,18 @@ for (const name of ["react", "react-dom", "scheduler", "lucide-react", "@xterm/x
   const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
   license(`${name} ${pkg.version}`, directory);
 }
+// Markdown's parser is composed of small packages; include their runtime
+// licenses along with the file viewer's syntax highlighter.
+const fileViewerPackages = new Set();
+function fileViewerLicense(name) {
+  if (name.startsWith("@types/") || name === "react" || fileViewerPackages.has(name)) return;
+  fileViewerPackages.add(name);
+  const directory = path.join(root, "node_modules", name);
+  const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+  license(`${name} ${pkg.version}`, directory);
+  for (const dependency of Object.keys(pkg.dependencies || {}).sort()) fileViewerLicense(dependency);
+}
+for (const name of ["highlight.js", "react-markdown", "remark-gfm"]) fileViewerLicense(name);
 for (const directory of ["cmaps", "standard_fonts", "wasm"])
   license(`PDF.js ${directory} assets`, path.join(root, "node_modules/pdfjs-dist", directory));
 // go list emits successive JSON objects. Package records end at a column-zero brace.
