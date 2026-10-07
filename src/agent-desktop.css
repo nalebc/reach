@@ -1,0 +1,44 @@
+/* The agent's view of the Mac: a picture that is also the pointer, plain
+   buttons for keys and apps, a shell with its history. Same calm look as the
+   rest of the agent pages (agent-ui.css, agent-workspace.css). */
+.ag-desk-frame {
+  position: relative;
+  margin-top: 10px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0b0d10;
+  border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08));
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+}
+.ag-desk-frame img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.ag-desk-frame.can-act { cursor: crosshair; }
+.ag-desk-frame.can-act:focus-visible { outline: 2px solid var(--ag-accent, #2f9e6f); outline-offset: 2px; }
+.ag-desk-status { margin: 8px 0 0; font-size: 14px; color: var(--ag-ink-2, #4b5563); }
+.ag-desk-status.is-wait { color: #946200; }
+.ag-desk-status.is-blocked { color: #b4232c; }
+.ag-desk-controls { display: grid; gap: 10px; margin-top: 12px; }
+.ag-desk-type { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ag-desk-type .ag-search { flex: 1 1 240px; }
+.ag-desk-keys { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ag-desk-shortcut { display: inline-flex; gap: 6px; align-items: center; }
+.ag-desk-shortcut input { width: 110px; padding: 7px 9px; border-radius: 9px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); font: inherit; font-size: 14px; }
+.ag-desk-front { margin: 0; font-size: 14px; color: var(--ag-ink-2, #4b5563); }
+.ag-desk-apps { margin-top: 14px; }
+.ag-desk-apps .ag-label { display: inline-flex; gap: 6px; align-items: center; }
+.ag-shell-form { display: grid; gap: 8px; grid-template-columns: minmax(140px, 1fr) minmax(200px, 2fr) auto; align-items: center; margin-top: 10px; }
+@media (max-width: 640px) { .ag-shell-form { grid-template-columns: 1fr; } }
+.ag-shell-result { margin-top: 12px; }
+.ag-shell-result p { margin: 0 0 6px; }
+.ag-shell-result code { font-size: 13px; }
+.ag-shell-refusal { color: #b4232c; font-size: 14px; margin: 4px 0; }
+.ag-shell-result.is-blocked pre { display: none; }
+.ag-changes { display: grid; gap: 10px; margin: 10px 0 14px; }
+.ag-changes-new { display: flex; flex-wrap: wrap; gap: 10px; }
+.ag-changes-new form { display: inline-flex; gap: 6px; align-items: center; }
+.ag-changes-new input { width: 170px; padding: 7px 9px; border-radius: 9px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); font: inherit; font-size: 14px; }
+.ag-changes-file { display: flex; flex-wrap: wrap; gap: 8px; }
+.ag-changes-editor textarea { width: 100%; box-sizing: border-box; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px; border-radius: 10px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); }
+.ag-changes-editor div { display: flex; gap: 8px; margin-top: 8px; }
+.ag-app-text small.is-note { color: #946200; }

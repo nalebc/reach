@@ -28,7 +28,7 @@ function normalize(input, previous, now) {
   if (input.clientId !== undefined || !previous) record.clientId = id(input.clientId, "client ID");
   if (input.action !== undefined || !previous) {
     const action = input.action;
-    if (!plain(action) || !["terminal", "terminal-change", "terminal-script"].includes(action.type) || !Number.isSafeInteger(action.root) || action.root < 0) throw fail(400, "Invalid command history action.");
+    if (!plain(action) || !["terminal", "terminal-change", "terminal-script", "shell"].includes(action.type) || !Number.isSafeInteger(action.root) || action.root < 0) throw fail(400, "Invalid command history action.");
     record.action = { type: action.type, command: short(action.command, 4000, "command"), root: action.root, ...(action.cwd !== undefined ? { cwd: short(action.cwd, 4096, "working directory") } : {}) };
   }
   for (const [key, max] of [["name", 80], ["reason", 1000], ["folder", 4096], ["directory", 4096], ["error", 1000]])

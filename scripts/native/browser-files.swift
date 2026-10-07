@@ -179,6 +179,23 @@ final class Boundary {
                 }
             }
             guard fsync(destination.value) == 0 else { try deny() }
+        case "write":
+            // Whole-file content from the agent (base64, at most 1 MiB), to a new or existing regular file inside the root.
+            guard let encoded = input["data"] as? String, let data = Data(base64Encoded: encoded), data.count <= 1048576 else { try deny("Write up to 1 MiB of content.", status: 413) }
+            // An existing regular file is replaced; a new one is created. Never through a link.
+            let destination: Descriptor
+            do { destination = try file(relative, write: true) }
+            catch { destination = try file(relative, write: true, create: true) }
+            try verify(destination.value)
+            guard ftruncate(destination.value, 0) == 0 else { try deny() }
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < data.count {
+                    let count = Darwin.write(destination.value, bytes.baseAddress!.advanced(by: offset), data.count - offset)
+                    if count < 0 { if errno == EINTR { continue }; try deny() }; guard count > 0 else { try deny() }; offset += count
+                }
+            }
+            guard fsync(destination.value) == 0 else { try deny() }
         default: try deny("Unsupported file operation.")
         }
         return ["ok": true]
@@ -187,7 +204,7 @@ final class Boundary {
 @main struct BrowserFiles {
     static func main() {
         do {
-            let maximum = 65536
+            let maximum = 2 * 1048576
             var data = Data()
             while data.count <= maximum {
                 let chunk = FileHandle.standardInput.readData(ofLength: min(65536, maximum + 1 - data.count))

@@ -23,6 +23,9 @@ import { installBrowserTools } from "./browser-tools";
 import BrowserScreenControls from "./BrowserScreenControls";
 import BrowserTerminal from "./BrowserTerminal";
 import BrowserAppScreen from "./BrowserAppScreen";
+import AgentDesktop, { type DesktopAccess } from "./AgentDesktop";
+import AgentShell from "./AgentShell";
+import AgentFileChanges from "./AgentFileChanges";
 import { OptionButtons } from "./agent-ui";
 import "./browser-workspace.css";
 import "./agent-workspace.css";
@@ -32,7 +35,16 @@ type Access = {
   expiresAt: number;
   roots: { name: string; path: string; index: number }[];
   terminals: { id: string; name: string }[];
-  screen: "off" | "view" | "scroll" | "ask" | "apps";
+  screen: "off" | "view" | "scroll" | "ask" | "apps" | boolean;
+  // Preset sessions (server/agent-presets.mjs): what this one may do.
+  preset?: "full" | "apps" | "files" | "readonly";
+  presetName?: string;
+  control?: boolean;
+  open?: boolean;
+  shell?: boolean;
+  write?: boolean;
+  apps?: { id: string; name?: string; bundleId?: string }[];
+  hidden?: { id: string; name?: string }[];
   screenNotice?: string;
   appAccess?: { id: string; mode: "view" | "control" }[];
   commandRequests?: boolean;
@@ -150,13 +162,13 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
   }, [peer.url, peer.token, fail]);
 
   const hasFiles = !!access?.roots.length;
-  const hasScreen = !!access && access.screen !== "off";
-  const hasTerminal = !!access?.terminals.length || !!access?.commandRequests || !!access?.restrictedTerminal;
+  const hasScreen = !!access && access.screen !== "off" && access.screen !== false;
+  const hasTerminal = !!access?.terminals.length || !!access?.commandRequests || !!access?.restrictedTerminal || !!access?.shell;
   const availableTabs = { screen: hasScreen, files: hasFiles, terminal: hasTerminal };
   const activeTab = selectedTab && availableTabs[selectedTab]
     ? selectedTab
     : hasScreen ? "screen" : hasFiles ? "files" : "terminal";
-  const screenActive = hasScreen && access?.screen !== "apps" && activeTab === "screen" && visible && !screenDraft;
+  const screenActive = hasScreen && access?.preset === undefined && access?.screen !== "apps" && activeTab === "screen" && visible && !screenDraft;
   const screenActiveRef = useRef(screenActive);
   screenActiveRef.current = screenActive;
   const currentRoot = access?.roots.some((item) => item.index === root)
@@ -364,8 +376,14 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
     hasScreen && {
       tab: "screen" as const,
       icon: <AppWindow size={18} />,
-      title: "Apps",
-      text: access.screen === "apps"
+      title: access.preset ? "Screen" : "Apps",
+      text: access.preset
+        ? access.control
+          ? access.preset === "apps"
+            ? "See and use only the apps the owner chose. Click the picture to click there; type and press keys below. Password fields and Reach stay closed."
+            : "The Mac as the owner uses it. Click the picture to click there; type, press keys and open apps below. Passwords, security prompts and Reach stay closed."
+          : "Look at the screen. Nothing here clicks or types."
+        : access.screen === "apps"
         ? "View the app windows the owner shared. To see another app, choose it in Screen and ask."
         : access.screen === "scroll" ? "View and scroll the shared screen."
           : access.screen === "ask" ? "View the screen; every click or key needs the owner’s approval." : "View the shared screen.",
@@ -374,7 +392,13 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
       tab: "files" as const,
       icon: <Folder size={18} />,
       title: "Files",
-      text: `Read, search and download in ${access.roots.map((item) => item.name).join(", ")}.`,
+      text: `${access.write ? "Read, search, download and change files" : "Read, search and download"} in ${access.roots.map((item) => item.name).join(", ")}.${access.write ? " Changes land in the owner's real folders at once." : ""}`,
+    },
+    !!access.shell && {
+      tab: "terminal" as const,
+      icon: <Terminal size={18} />,
+      title: "Commands",
+      text: "Run shell commands as the owner, from inside the shared folders. Commands that need the owner's password, erase the Mac, read secrets or touch Reach are refused. Everything is logged.",
     },
     !!access.terminals.length && {
       tab: "terminal" as const,
@@ -466,10 +490,13 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         aria-labelledby={`browser-tab-${activeTab}`}
         tabIndex={0}
       >
-        {access.screen === "apps" && activeTab === "screen" && visible && (
+        {access.preset !== undefined && hasScreen && activeTab === "screen" && (
+          <AgentDesktop peer={peer} access={access as DesktopAccess} visible={visible} onError={fail} />
+        )}
+        {access.preset === undefined && access.screen === "apps" && activeTab === "screen" && visible && (
           <BrowserAppScreen peer={peer} expiresAt={access.expiresAt} onError={fail} />
         )}
-        {hasScreen && access.screen !== "apps" && (
+        {hasScreen && access.preset === undefined && access.screen !== "apps" && (
           <section className="browser-screen" aria-labelledby="browser-screen-title" hidden={activeTab !== "screen"}>
             <div className="browser-section-heading ag-ws-section-head">
               <div>
@@ -527,7 +554,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
             <div className="browser-section-heading ag-ws-section-head">
               <div>
                 <h2 id="browser-files-title">Files</h2>
-                <p className="browser-policy">Read or download files from shared folders. Nothing can be changed from here.</p>
+                <p className="browser-policy">{access.write ? "Read, download and change files in the shared folders. Changes are immediate." : "Read or download files from shared folders. Nothing can be changed from here."}</p>
               </div>
               <button className="ag-secondary ag-small" aria-label="Refresh files" disabled={filesBusy} onClick={() => setFilesRevision((r) => r + 1)}>
                 <RefreshCw size={15} /> Refresh
@@ -587,6 +614,16 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
                 </button>
               )}
             </nav>
+            {access.write && (
+              <AgentFileChanges
+                peer={peer}
+                root={currentRoot}
+                dir={dir}
+                file={file}
+                onChanged={(opened) => { setFilesRevision((r) => r + 1); if (opened !== undefined) setFile(opened); }}
+                onError={fail}
+              />
+            )}
             <div className={`browser-file-layout ag-ws-file-layout${file || fileBusy ? " has-preview" : ""}`}>
               <div className="browser-file-directory">
                 {filesBusy ? <p className="browser-empty" role="status">Loading files…</p> : listing.items.length ? (
@@ -619,7 +656,10 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
             </div>
           </section>
         )}
-        {activeTab === "terminal" && hasTerminal && (
+        {activeTab === "terminal" && access.shell && (
+          <AgentShell peer={peer} roots={access.roots} onError={fail} />
+        )}
+        {activeTab === "terminal" && hasTerminal && !access.shell && (
           <section className="browser-terminal" aria-labelledby="browser-terminals-title">
             <div className="browser-section-heading ag-ws-section-head">
               <div>

@@ -61,6 +61,9 @@ import {
 import crypto from "node:crypto";
 import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
+import { presetAppsFromCatalog } from "./agent-presets.mjs";
+import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installPlan } from "./agent-install.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
@@ -591,6 +594,15 @@ export async function createReach(overrides = {}) {
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
   });
+  // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
+  // Tests inject a stand-in; null means this Mac can't offer them, and the
+  // screen presets refuse to be created.
+  const agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" ? createAgentDesktop(config, {
+    available: () => browserScreenAvailable() && !paused && transportAvailable,
+    hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
+    verifyClient: (id) => auth.list().find((client) => client.id === id),
+    phoneControls: () => !!screenControl.holder(), paused: () => paused, record,
+  }) : null);
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
     authorize();
@@ -631,6 +643,10 @@ export async function createReach(overrides = {}) {
     throw fail(403, "Whole-desktop agent control is no longer available. Ask the owner for a new Selected apps invitation.");
   };
   const browserCommandLog = await createBrowserCommandLog({ dir: path.join(config.dataDir, "browser-commands") });
+  // The shell for Full control agents (server/agent-shell.mjs): logged with
+  // the other agent commands.
+  const agentShell = createAgentShell({ commandLog: browserCommandLog, hosts: () => reachAddresses(config), protectedPaths: () => browserPaths(),
+    protectedPids: () => [process.pid, process.ppid], record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1218,7 +1234,7 @@ export async function createReach(overrides = {}) {
           "Access expired or was revoked. Ask the laptop owner for a new invitation, or pair your own device again.",
       });
     const route = req.path.split("/")[1].toLowerCase();
-    const scope = ["/browser/agents", "/browser/agents/stop"].includes(req.path) ? "admin" : {
+    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause"].includes(req.path) ? "admin" : {
       files: "files",
       terminals: "terminal",
       apps: "apps",
@@ -1618,7 +1634,23 @@ export async function createReach(overrides = {}) {
     const previousClient = auth.list().find((entry) => entry.id === id);
     if (req.body?.screen === "apps" || previousClient?.policy?.screen === "apps")
       throw fail(409, "Use app requests to grant additional apps. End this invitation and create a new one to change its base access.");
+    // A preset agent: the screen presets need this Mac's screen helpers, and
+    // chosen or hidden apps are matched to the Mac's catalog first.
+    if (previousClient?.policy?.preset !== undefined && req.body && typeof req.body === "object") {
+      const preset = req.body.preset ?? previousClient.policy.preset;
+      if (["full", "apps", "readonly"].includes(preset) && !agentDesktop?.available?.())
+        throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+      const chosen = Array.isArray(req.body.apps) && req.body.apps.length, hidden = Array.isArray(req.body.hidden) && req.body.hidden.length;
+      if (chosen || hidden) {
+        if (!agentDesktop) throw fail(503, "The app list is unavailable on this computer.");
+        const catalog = await agentDesktop.catalog(() => req.reauthorize());
+        if (chosen) req.body.apps = presetAppsFromCatalog(catalog, req.body.apps);
+        if (hidden) req.body.hidden = presetAppsFromCatalog(catalog, req.body.hidden, { allowProtected: true });
+      }
+      req.reauthorize();
+    }
     const { client, before, after } = auth.changeAccess(id, req.body || {});
+    agentDesktop?.cancelClient?.(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1661,6 +1693,7 @@ export async function createReach(overrides = {}) {
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
+    agentDesktop?.cancelClient(id);
     browserScreenSnapshots.stop();
     presence.removeClient(id);
     screenControl.revoke(id);
@@ -1673,7 +1706,7 @@ export async function createReach(overrides = {}) {
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
   browserAgentRoutes(app, {
-    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient,
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, desktop: agentDesktop,
     onStopped: (id) => {
       void guestKeys?.revokeClient(id).catch((e) => console.log(`Reach: ${e.message}`));
       record("agent", "Stopped a browser agent session");
@@ -1762,6 +1795,7 @@ export async function createReach(overrides = {}) {
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
+    desktop: agentDesktop, shell: agentShell,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -3769,6 +3803,7 @@ export async function createReach(overrides = {}) {
       browserApprovals.close();
       browserAppAccess.close();
       await browserApprovals.flushChanges();
+      agentDesktop?.close?.();
       await browserCommandLog.close();
       browserSnapshots.clear();
       clearInterval(approvalCleanup);
@@ -3816,6 +3851,9 @@ if (
       process.env.REACH_ORIGIN ||
       (network.hostname ? `https://${network.hostname}:8443` : ""),
   });
+  // Reach's Terminal window carries its name, so the agents' checker always
+  // recognises it.
+  if (process.stdout.isTTY && process.platform === "darwin") process.stdout.write("\u001b]0;Reach\u0007");
   reach.server.listen(reach.config.port, reach.config.host, () => {
     console.log(
       `\n  Reach is ready · http://localhost:${reach.config.port}\n  Pairing code: ${reach.auth.pairing.code.slice(0, 4)} ${reach.auth.pairing.code.slice(4)} (one use, expires in 10 minutes)\n  Shared folders: ${reach.config.roots.join(", ")}\n  Run npm run share to connect through Tailscale.\n`,

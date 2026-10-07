@@ -10,7 +10,7 @@ let defaultCache;
 const cache = () => defaultCache ||= fs.mkdtempSync(path.join(os.tmpdir(), 'reach-browser-files-'));
 let activeOperations = 0;
 const activeClients = new Map();
-const allowed = new Set(['read', 'list', 'stat', 'mkdir', 'touch', 'rm', 'cp']);
+const allowed = new Set(['read', 'list', 'stat', 'mkdir', 'touch', 'rm', 'cp', 'write']);
 const relative = value => typeof value === 'string' && value.length <= 4096 && !path.isAbsolute(value) && !value.split('/').includes('..') && !/[\u0000-\u001f\u007f\\]/u.test(value);
 const literal = value => JSON.stringify(value);
 export function fileBoundaryProfile(root, privatePaths, writable = false) {
@@ -55,9 +55,14 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     const request = { op: input.op, root: input.root, rootDev: String(root.dev), rootIno: String(root.ino), path: input.path ?? '',
       ...(input.to !== undefined ? { to: input.to } : {}), maxBytes: input.maxBytes ?? 1024 * 1024, maxEntries: input.maxEntries ?? 2000,
       privatePaths: [...browserPrivatePaths(config), ...(input.privatePaths ?? [])], privateNames: [...browserPrivateNames] };
-    request.sandbox = fileBoundaryProfile(request.root, request.privatePaths, ['mkdir', 'touch', 'rm', 'cp'].includes(request.op));
+    if (input.op === 'write') {
+      if (typeof input.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.data) || input.data.length > Math.ceil(1048576 / 3) * 4)
+        throw fail(413, 'Write up to 1 MiB of content.');
+      request.data = input.data;
+    }
+    request.sandbox = fileBoundaryProfile(request.root, request.privatePaths, ['mkdir', 'touch', 'rm', 'cp', 'write'].includes(request.op));
     const body = JSON.stringify(request);
-    if (Buffer.byteLength(body) > 65536) throw fail(400, 'The file request is too large.');
+    if (Buffer.byteLength(body) > 2 * 1048576) throw fail(400, 'The file request is too large.');
     const binary = run ? null : await desktopBinary(config, 'browser-files');
     check();
     const value = run ? await run(request, check) : await new Promise((resolve, reject) => {

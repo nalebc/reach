@@ -2,6 +2,7 @@ import { tailscaleJson } from "../scripts/tailscale.mjs";
 import { fail } from "./core.mjs";
 import { trustedRequest } from "./tailscale-auth.mjs";
 import { browserRouteAllowed } from "./browser-access.mjs";
+import { hostGuardedPreset } from "./agent-presets.mjs";
 
 export const browserHostGuardMessage =
   "An agent has app access on this Mac. Manage Reach from the trusted device that created its invitation.";
@@ -15,7 +16,7 @@ const binding = (value) => value && ["nodeId", "userId", "clientId"].every((key)
 // not leave a gap in which the agent can obtain a normal owner credential.
 export function browserAppSessionActive(client, now = Date.now()) {
   return client?.kind === "agent" && client.policy?.browser === true &&
-    client.policy.screen === "apps" &&
+    (client.policy.screen === "apps" || hostGuardedPreset(client.policy)) &&
     (!Number.isFinite(client.expiresAt) || client.expiresAt > now);
 }
 
@@ -128,7 +129,7 @@ export function createBrowserHostGuard({
     if (client?.kind !== "agent" || client.policy?.browser !== true ||
         !Number.isFinite(client.expiresAt) || client.expiresAt <= now() ||
         !Array.isArray(client.scopes) || req.headers?.upgrade !== undefined) return false;
-    if (client.policy.screen === "apps") {
+    if (client.policy.screen === "apps" || hostGuardedPreset(client.policy)) {
       // Losing the device that can supervise this invitation must stop the
       // agent too. Otherwise revoking an owner leaves app control running
       // while the guard prevents every remaining owner from stopping it.

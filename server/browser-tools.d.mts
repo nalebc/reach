@@ -3,7 +3,16 @@ export type BrowserAccess = {
   expiresAt: number;
   roots: { name: string; path: string; index: number }[];
   terminals: { id: string; name: string }[];
-  screen: "off" | "view" | "scroll" | "ask" | "apps";
+  screen: "off" | "view" | "scroll" | "ask" | "apps" | boolean;
+  // Preset sessions (server/agent-presets.mjs).
+  preset?: "full" | "apps" | "files" | "readonly";
+  presetName?: string;
+  control?: boolean;
+  open?: boolean;
+  shell?: boolean;
+  write?: boolean;
+  apps?: { id: string; name?: string; bundleId?: string }[];
+  hidden?: { id: string; name?: string }[];
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
   terminalApproval?: boolean;

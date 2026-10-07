@@ -4,18 +4,22 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { fail, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
+import { fail, hasReviewControls, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
 import { fileRootName } from "./file-roots.mjs";
 import { validBrowserTerminalId } from "./agent-policy.mjs";
 import { validateBrowserRequest, browserRequestActions } from "./browser-approvals.mjs";
 import { parseTerminalCommand, terminalLocation } from "./restricted-terminal.mjs";
 import { parseBrowserMutation, validateBrowserMutation } from "./browser-mutations.mjs";
 import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-command-records.mjs";
+import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
+import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
 export function browserRouteAllowed(client, method, route) {
   if (!client?.policy?.browser) return false;
+  // Preset invitations have their own complete allowlist (agent-presets.mjs).
+  if (client.policy.preset !== undefined) return presetRouteAllowed(client, method, route);
   if (method === "DELETE" && route === "/device/access") return true;
   if (client.policy.screen === "apps" && client.scopes.includes("browser:read")) {
     if (["GET", "HEAD"].includes(method) && ["/browser/apps", "/browser/apps/windows", "/browser/apps/screen"].includes(route)) return true;
@@ -67,6 +71,10 @@ export function browserAccessRoutes(
     snapshots,
     prepareFunnel,
     appAccess, appAccessAvailable = false, hostGuard,
+    // Screen, input, app list and shell for preset invitations
+    // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
+    // can't offer them.
+    desktop = null, shell = null,
   },
 ) {
   const owner = (req) => {
@@ -111,11 +119,81 @@ export function browserAccessRoutes(
       catch (error) { appAccessError = error.status ? error.message : "Protected app sharing is unavailable. Check macOS permissions."; }
     }
     owner(req);
-    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {})});
+    // The app picker for the Apps preset and the hidden-apps list: every app
+    // on this Mac, the always-protected ones marked, and the ones that run
+    // commands (terminals, IDEs) flagged so the owner knows what they share.
+    let presetApps = [], presetAppsError;
+    if (desktop?.available?.()) {
+      try {
+        presetApps = (await desktop.catalog(() => owner(req))).map((app) => {
+          const reason = protectedAppReason(app);
+          return { id: app.id, name: app.name, bundleId: app.bundleId || "", running: app.running === true,
+            protected: !!reason, ...(reason ? { reason } : {}), ...(terminalLikeApp(app) ? { runsCommands: true } : {}) };
+        });
+      } catch (error) { presetAppsError = error.status ? error.message : "The app list is unavailable right now."; }
+    }
+    owner(req);
+    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
+      desktopAvailable: !!desktop?.available?.(), presetApps, ...(presetAppsError ? { presetAppsError } : {})});
   });
+  // The link the agent opens, once the credential exists. Funnel links are
+  // prepared after issuing; a failure takes the credential back.
+  const issued = async (req, res, grant, input) => {
+    let url;
+    if (input.transport === "funnel") {
+      try {
+        if (!prepareFunnel) throw fail(503, "Temporary browser access is not available.");
+        const origin = await prepareFunnel();
+        owner(req);
+        // The invite may have expired while Tailscale was starting.
+        if (grant.joinBy <= Date.now()) throw fail(410, "This invitation has expired. Create a new one.");
+        url = `${origin}/agent-browser#invite=${grant.invitation}`;
+      } catch (error) {
+        auth.revoke(grant.clientId);
+        throw error;
+      }
+    }
+    record("agent", `Invited ${input.name} through a browser`);
+    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}) });
+  };
+  // A preset invitation: folders checked the way the preset needs (Files
+  // stays out of Home and system folders; Full control and Read only may see
+  // any shared folder), apps matched to this Mac's catalog, and the host guard
+  // reserved when the agent will touch the Mac.
+  const createPresetInvitation = async (req, res, input) => {
+    for (const folder of input.folders) {
+      const chosen = resolve(folder.root, folder.path || "", { policy: { browser: true } });
+      if (input.preset === "files") validateBrowserRoot(chosen);
+    }
+    if (["full", "apps", "readonly"].includes(input.preset) && !desktop?.available?.())
+      throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+    if (input.terminalIds.length) {
+      const available = await terminalOptions(() => owner(req), input.terminalIds);
+      if (input.terminalIds.some((id) => !available.some((t) => t.id === id)))
+        throw fail(400, "A selected terminal is no longer available. Choose again.");
+    }
+    if (input.apps.length || input.hidden.length) {
+      const catalog = await desktop.catalog(() => owner(req));
+      input.apps = presetAppsFromCatalog(catalog, input.apps);
+      input.hidden = presetAppsFromCatalog(catalog, input.hidden, { allowProtected: true });
+    }
+    owner(req);
+    let reservation;
+    if (hostGuardedPreset({ browser: true, preset: input.preset })) {
+      if (!hostGuard) throw fail(503, "Taking the Mac is unavailable on this computer.");
+      reservation = await hostGuard.beginInvitation(req, req.reauthorize());
+    }
+    let grant;
+    try {
+      owner(req);
+      grant = auth.inviteBrowser(input, reservation?.approver);
+    } finally { reservation?.(); }
+    await issued(req, res, grant, input);
+  };
   app.post("/api/agents/browser-invitations", async (req, res) => {
     owner(req);
     const input = validateBrowserInvitation(req.body);
+    if (input.preset) return createPresetInvitation(req, res, input);
     if (Array.isArray(input.folders)) {
       for (const folder of input.folders) validateBrowserRoot(resolve(folder.root, folder.path || "", { policy: { browser: true } }));
     }
@@ -157,29 +235,23 @@ export function browserAccessRoutes(
       if (grant) auth.revoke(grant.clientId);
       throw error;
     } finally { reservation?.(); }
-    let url;
-    if (input.transport === "funnel") {
-      try {
-        if (!prepareFunnel) throw fail(503, "Temporary browser access is not available.");
-        const origin = await prepareFunnel();
-        owner(req);
-        // The invite may have expired while Tailscale was starting.
-        if (grant.joinBy <= Date.now()) throw fail(410, "This invitation has expired. Create a new one.");
-        url = `${origin}/agent-browser#invite=${grant.invitation}`;
-      } catch (error) {
-        auth.revoke(grant.clientId);
-        throw error;
-      }
-    }
-    record("agent", `Invited ${input.name} through a browser`);
-    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}) });
+    await issued(req, res, grant, input);
   });
   app.get("/api/browser", async (req, res) => {
     const client = browser(req);
     const selected = await terminalOptions(
       () => browser(req),
-      client.policy.terminalIds,
+      client.policy.terminalIds || [],
     );
+    if (client.policy.preset !== undefined) {
+      return res.json({
+        name: config.name,
+        expiresAt: client.expiresAt,
+        roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
+        terminals: selected,
+        ...presetAccess(client),
+      });
+    }
     res.json({
       name: config.name,
       expiresAt: client.expiresAt,
@@ -397,7 +469,7 @@ export function browserAccessRoutes(
   });
   app.get("/api/browser/terminals/:id", async (req, res) => {
     const authorize = () => {
-      if (!browser(req).policy.terminalIds.includes(req.params.id))
+      if (!(browser(req).policy.terminalIds || []).includes(req.params.id))
         throw fail(403, "This terminal was not shared with this invitation.");
     };
     authorize();
@@ -470,4 +542,127 @@ export function browserAccessRoutes(
   };
   app.get("/api/browser/screen", retiredScreen);
   app.post("/api/browser/scroll", retiredScreen);
+
+  // Preset agents: the Mac itself. Each call re-reads the live invitation; the
+  // native checker decides each event against its exact target.
+  const presetClient = (req, scope) => {
+    const client = browser(req);
+    if (client.policy.preset === undefined || !client.scopes.includes(scope)) throw fail(403, "This invitation does not include that.");
+    return client;
+  };
+  const needDesktop = () => { if (!desktop) throw fail(503, "Screen access for agents is unavailable on this computer."); };
+  // Refusals carry their kind (busy, paused, retry, blocked) so an agent knows
+  // whether to wait or to stop.
+  const answer = async (res, work) => {
+    try { res.json(await work()); }
+    catch (error) {
+      if (!error?.status || error.status >= 500 || !error.kind) throw error;
+      res.status(error.status).json({ error: error.message, kind: error.kind, ...(error.holder ? { holder: error.holder } : {}), ...(error.retryInMs ? { retryInMs: error.retryInMs } : {}) });
+    }
+  };
+  app.get("/api/browser/desktop/screen", async (req, res) => {
+    const client = presetClient(req, "browser:screen");
+    needDesktop();
+    if (Object.keys(req.query).some((key) => key !== "maxWidth")) throw fail(400, "Choose only the image width.");
+    const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 1440 });
+    res.set("Cache-Control", "no-store");
+    res.set("X-Reach-Screen", JSON.stringify({ width: shot.width, height: shot.height, hidden: shot.hidden }));
+    res.type("image/jpeg").send(shot.jpeg);
+  });
+  app.get("/api/browser/desktop/front", async (req, res) => {
+    const client = presetClient(req, "browser:screen");
+    needDesktop();
+    res.json(await desktop.front(client, () => presetClient(req, "browser:screen")));
+  });
+  app.post("/api/browser/desktop/input", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "action")) throw fail(400, "Send one action.");
+    await answer(res, () => desktop.act(client, body.action, () => presetClient(req, "browser:control")));
+  });
+  app.get("/api/browser/desktop/apps", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const catalog = await desktop.catalog(() => presetClient(req, "browser:open"));
+    const latest = presetClient(req, "browser:open");
+    const hidden = latest.policy.hidden || [];
+    const apps = latest.policy.preset === "apps"
+      ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
+      : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
+        .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
+    res.json({ apps });
+  });
+  app.post("/api/browser/desktop/open", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "app")) throw fail(400, "Choose one app by its path.");
+    await answer(res, () => desktop.open(client, body.app, () => presetClient(req, "browser:open")));
+  });
+  // The shell (Full control): one command, as the owner, checked against the
+  // deny list and logged. Not confined: Full control is full control.
+  app.post("/api/browser/shell", async (req, res) => {
+    const client = presetClient(req, "browser:shell");
+    if (!shell) throw fail(503, "Commands for agents are unavailable on this computer.");
+    const item = await shell.run(client, req.body, { resolve, authorize: () => presetClient(req, "browser:shell") });
+    record("agent", `${client.name} ${item.status === "blocked" ? "was refused a command" : "ran a command"}`);
+    res.status(item.status === "blocked" ? 200 : 200).json(item);
+  });
+  app.get("/api/browser/shell/history", async (req, res) => {
+    const client = presetClient(req, "browser:shell");
+    if (!shell) throw fail(503, "Commands for agents are unavailable on this computer.");
+    res.json(await shell.history(client));
+  });
+  // File changes: Files with editing goes through the sandboxed helper in its
+  // chosen folders; Full control writes directly, inside what Reach shares and
+  // never into private files.
+  const MAX_CONTENT = 1048576;
+  app.post("/api/browser/files/change", async (req, res) => {
+    const client = presetClient(req, "browser:write");
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["op", "root", "path", "to", "content"].includes(key)) ||
+        !["write", "mkdir", "rm", "cp"].includes(body.op) || !Number.isSafeInteger(body.root) || body.root < 0 ||
+        typeof body.path !== "string" || !body.path || body.path.length > 4096 || hasReviewControls(body.path) ||
+        (body.op === "cp") !== (typeof body.to === "string") || (body.to !== undefined && (!body.to || body.to.length > 4096 || hasReviewControls(body.to))) ||
+        (body.op === "write") !== (typeof body.content === "string") || (body.content !== undefined && Buffer.byteLength(body.content) > MAX_CONTENT))
+      throw fail(400, "Send one change: write (with content up to 1 MiB), mkdir, rm, or cp (with to), with a path inside a shared folder.");
+    if (!client.agentRoots?.[body.root]) throw fail(403, "Choose one of this session's shared folders.");
+    const relative = (value) => {
+      if (path.isAbsolute(value) || value.split(/[\\/]/).includes("..") || /[\u0000\\:]/.test(value)) throw fail(403, "Stay inside the shared folder.");
+      return value;
+    };
+    relative(body.path); if (body.to !== undefined) relative(body.to);
+    if (client.policy.preset === "files") {
+      if (!browserFiles) throw fail(503, "Protected file access is unavailable.");
+      const result = await browserFiles(body.op, body.root, body.path, () => presetClient(req, "browser:write"),
+        { ...(body.to !== undefined ? { to: body.to } : {}), ...(body.op === "write" ? { data: Buffer.from(body.content, "utf8").toString("base64") } : {}) });
+      record("agent", `${client.name} changed a file (${body.op})`);
+      return res.json({ ok: true, ...(result?.stat ? { stat: result.stat } : {}) });
+    }
+    // Full control: direct, with the same no-symlink and size rules.
+    const target = resolve(body.root, body.path, client, { allowMissing: true });
+    const existing = await fs.lstat(target).catch(() => null);
+    if (existing?.isSymbolicLink()) throw fail(403, "Links are not changed through Reach.");
+    if (body.op === "mkdir") { if (existing) throw fail(409, "That name already exists."); await fs.mkdir(target, { mode: 0o755 }); }
+    else if (body.op === "rm") {
+      if (!existing?.isFile()) throw fail(404, "Choose an existing file to remove.");
+      if (existing.size > MAX_CONTENT) throw fail(403, "Choose a file no larger than 1 MiB.");
+      await fs.unlink(target);
+    } else if (body.op === "write") {
+      if (existing && !existing.isFile()) throw fail(409, "That path is not a file.");
+      const handle = await fs.open(target, "w", 0o644);
+      try { await handle.writeFile(body.content, "utf8"); } finally { await handle.close(); }
+    } else {
+      const destination = resolve(body.root, body.to, client, { allowMissing: true });
+      if (!existing?.isFile()) throw fail(404, "Choose an existing file to copy.");
+      if (existing.size > 25 * 1048576) throw fail(403, "Choose a file no larger than 25 MiB.");
+      const there = await fs.lstat(destination).catch(() => null);
+      if (there?.isSymbolicLink() || there?.isDirectory()) throw fail(409, "Choose a file name for the copy.");
+      await fs.copyFile(target, destination);
+    }
+    record("agent", `${client.name} changed a file (${body.op})`);
+    presetClient(req, "browser:write");
+    res.json({ ok: true });
+  });
 }

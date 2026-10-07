@@ -24,8 +24,49 @@ const requestsAllowed = (access) => access.screen === "apps" || access.restricte
 const terminalAllowed = (access) => access.restrictedTerminal === true && !!access.roots?.length;
 const actionKinds = (access) => terminalAllowed(access) ? [terminalAction] : [];
 
+// Preset sessions (agent-presets.mjs): the Mac itself, within the preset.
+const fraction = { type: "number", minimum: 0, maximum: 1, description: "A fraction of the screen's width or height, 0 to 1, as seen in the last screenshot." };
+const desktopActions = [
+  object({ type: kinds("click"), x: fraction, y: fraction, button: kinds(["left", "right"]), count: integer(1, 3), modifiers: { type: "array", minItems: 0, maxItems: 4, items: kinds(["cmd", "shift", "option", "control"]) } }, ["type", "x", "y"]),
+  object({ type: kinds("move"), x: fraction, y: fraction }, ["type", "x", "y"]),
+  object({ type: kinds("drag"), x: fraction, y: fraction, toX: fraction, toY: fraction }, ["type", "x", "y", "toX", "toY"]),
+  object({ type: kinds("scroll"), x: fraction, y: fraction, dx: { type: "number", minimum: -2000, maximum: 2000 }, dy: { type: "number", minimum: -2000, maximum: 2000, description: "Positive scrolls down." } }, ["type", "x", "y"]),
+  object({ type: kinds("type"), text: { ...string(2000), description: "Typed into the focused field. Never a password: password fields are closed to you; ask the owner to sign in from their phone." } }, ["type", "text"]),
+  object({ type: kinds("key"), key: { ...string(16), description: "A key name: enter, tab, escape, backspace, delete, space, up, down, left, right, home, end, pageup, pagedown, f1-f11, a-z, 0-9 or punctuation." }, modifiers: { type: "array", minItems: 0, maxItems: 4, items: kinds(["cmd", "shift", "option", "control"]) } }, ["type", "key"]),
+];
+function presetTools(access) {
+  const firstRoot = access.roots?.[0]?.index ?? 0;
+  const tools = [definition("reach_access", "Access", "Read this session's preset, what it may do, its shared folders and when it ends.", object(), {})];
+  if (access.screen) tools.push(
+    definition("reach_screenshot", "Screenshot", "The Mac's screen now, as {image: base64 JPEG, mimeType}. Reach's own windows, password apps and apps the owner hid are left out; in the Apps preset only the chosen apps appear. Coordinates for actions are fractions of this image.", object({ maxWidth: integer(320, 2560) }), { maxWidth: 1440 }),
+    definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
+  );
+  if (access.control) tools.push(
+    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
+  );
+  if (access.open) tools.push(
+    definition("reach_desktop_apps", "Apps you may use", "The apps this session may open or bring forward, with whether each is running.", object(), {}),
+    definition("reach_open_app", "Open an app", "Open or bring forward one of those apps by its path, then take a screenshot.", object({ app: string(4096) }, ["app"]), { app: access.apps?.[0]?.id || "/Applications/Safari.app" }),
+  );
+  if (access.roots?.length) tools.push(
+    definition("reach_list_files", "List files", "List one shared folder.", object(location, ["root"]), { root: firstRoot, path: "" }),
+    definition("reach_search_files", "Find files", "Find files by name inside one shared folder.", object({ root, query: string(160) }, ["root", "query"]), { root: firstRoot, query: "readme" }),
+    definition("reach_read_file", "Read a file", "Read a UTF-8 file from a shared folder, up to 1 MiB.", object(location, ["root", "path"]), { root: firstRoot, path: "README.md" }),
+  );
+  if (access.write) tools.push(
+    definition("reach_change_file", "Change a file", "Write a whole file (content up to 1 MiB), make a folder, remove a file, or copy one, inside a shared folder. Changes are immediate and visible to the owner.", object({ op: kinds(["write", "mkdir", "rm", "cp"]), root, path: relativePath, to: relativePath, content: { type: "string", minLength: 0, maxLength: 1048576 } }, ["op", "root", "path"]), { op: "write", root: firstRoot, path: "notes.md", content: "# Notes\n" }),
+  );
+  if (access.terminals?.length) tools.push(definition("reach_read_terminal", "Read terminal output", "Read output from a terminal the owner chose to share. Output only.", object({ id: string(256) }, ["id"]), { id: access.terminals[0].id }));
+  if (access.shell) tools.push(
+    definition("reach_shell", "Run a command", "Run one shell command as the owner, from a folder inside a shared folder, with a 60-second and 256 KiB limit. Commands that need the owner's password, erase the Mac, read secrets or touch Reach are refused and logged; everything else runs at once and is logged. Returns the record with its output.", object({ command: string(4000), root, cwd: relativePath }, ["command", "root"]), { command: "ls -la", root: firstRoot, cwd: "" }),
+    definition("reach_shell_history", "Command history", "This session's commands and their outcomes.", object(), {}),
+  );
+  return tools;
+}
+
 /** Tools are created afresh so a caller cannot mutate a shared schema. */
 export function browserToolsFor(access = {}) {
+  if (access.preset !== undefined) return JSON.parse(JSON.stringify(presetTools(access)));
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", "Read the session's current limits, expiry, shared folders and terminals.", object(), {})];
   if (access.roots?.length) tools.push(
@@ -118,8 +159,22 @@ export function browserToolRequest(name, args, access) {
   const query = new URLSearchParams({ root: String(input.root ?? 0), path: input.path ?? "" });
   if (name === "reach_terminal_command") { rootAllowed(access, input.root); pathAllowed(input.cwd); }
   const get = (route, response = "json") => ({ route, method: "GET", response });
+  if (name === "reach_change_file") {
+    rootAllowed(access, input.root); pathAllowed(input.to);
+    if ((input.op === "cp") !== (input.to !== undefined)) invalid("cp needs to; other operations take no to.");
+    if ((input.op === "write") !== (input.content !== undefined)) invalid("write needs content; other operations take no content.");
+  }
+  if (name === "reach_shell") { rootAllowed(access, input.root); pathAllowed(input.cwd); }
   switch (name) {
     case "reach_access": return get("/api/browser");
+    case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 1440) })}`, "image");
+    case "reach_front": return get("/api/browser/desktop/front");
+    case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };
+    case "reach_desktop_apps": return get("/api/browser/desktop/apps");
+    case "reach_open_app": return { route: "/api/browser/desktop/open", method: "POST", body: { app: input.app }, response: "json" };
+    case "reach_change_file": return { route: "/api/browser/files/change", method: "POST", body: input, response: "json" };
+    case "reach_shell": return { route: "/api/browser/shell", method: "POST", body: input, response: "json" };
+    case "reach_shell_history": return get("/api/browser/shell/history");
     case "reach_apps": return get("/api/browser/apps");
     case "reach_app_windows": return get(`/api/browser/apps/windows?${new URLSearchParams({appId:input.appId})}`);
     case "reach_app_screen": return get(`/api/browser/apps/screen?${new URLSearchParams({target:input.target})}`, "image");

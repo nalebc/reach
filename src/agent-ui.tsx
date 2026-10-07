@@ -210,6 +210,8 @@ export type PickerApp = {
   name: string;
   protected?: boolean;
   reason?: string;
+  // A caution shown under an eligible app (a terminal runs commands as you).
+  note?: string;
 };
 const LIMIT = 40;
 
@@ -222,12 +224,16 @@ export function AppPicker({
   chosen,
   onChange,
   disabled = false,
+  chosenWords = "Can see its windows",
+  chipsLabel = "Allowed apps",
 }: {
   peer: Peer;
   apps: PickerApp[];
   chosen: string[];
   onChange: (ids: string[]) => void;
   disabled?: boolean;
+  chosenWords?: string;
+  chipsLabel?: string;
 }) {
   const [query, setQuery] = useState("");
   const [all, setAll] = useState(false);
@@ -259,7 +265,9 @@ export function AppPicker({
             <Lock size={11} /> {app.reason || "Always private"}
           </small>
         ) : chosen.includes(app.id) ? (
-          <small className="is-on">Can see its windows</small>
+          <small className="is-on">{chosenWords}</small>
+        ) : app.note ? (
+          <small className="is-note">{app.note}</small>
         ) : null}
       </span>
       {!app.protected && (
@@ -275,7 +283,7 @@ export function AppPicker({
   return (
     <div className="ag-apps">
       {chosenApps.length > 0 && (
-        <ul className="ag-app-chips" aria-label="Allowed apps">
+        <ul className="ag-app-chips" aria-label={chipsLabel}>
           {chosenApps.map((app) => (
             <li key={app.id}>
               <span className="ag-chip-logo">

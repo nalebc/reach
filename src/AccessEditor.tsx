@@ -6,12 +6,21 @@ import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { ErrorLine, Modal } from "./ui";
 import "./access-editor.css";
 import AppLogo from "./AppLogo";
-import { AccessRow, AgentAvatar, Choices, SwitchLine } from "./agent-ui";
+import { AccessRow, AgentAvatar, AppPicker, AppStack, Choices, Switch, SwitchLine, type PickerApp } from "./agent-ui";
+import { PRESET_WORDS, type Preset } from "./BrowserInvite";
 import { scopeLabel } from "./scope-words";
 import { BrowserApprovalReview, browserActionWords, type BrowserRequest } from "./browser-approvals";
 
+export const presetSummary = (policy: NonNullable<EditableAccess["policy"]>) => {
+  const preset = policy.preset as Preset;
+  const apps = (policy.apps || []).map((app) => app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id);
+  return preset === "apps" ? `Apps: ${apps.join(", ") || "none"}`
+    : preset === "files" ? `Files: ${policy.write ? "read and edit" : "read only"}`
+      : `${PRESET_WORDS[preset]?.title || preset}${policy.hidden?.length ? ` · ${policy.hidden.length} hidden ${policy.hidden.length === 1 ? "app" : "apps"}` : ""}`;
+};
 export function accessSummary(client: EditableAccess) {
   if (client.scopes?.includes("admin")) return "Full access";
+  if (client.policy?.browser && client.policy.preset) return presetSummary(client.policy);
   if (client.policy?.browser) {
     const policy = client.policy;
     return [
@@ -42,6 +51,11 @@ export type EditableAccess = {
     terminalIds?: string[];
     screen?: string;
     appAccess?: { id: string; name?: string; mode: "view" | "control" }[];
+    // Preset sessions.
+    preset?: string;
+    apps?: { id: string; name?: string; bundleId?: string }[];
+    write?: boolean;
+    hidden?: { id: string; name?: string }[];
     restrictedTerminal?: boolean;
     terminalApproval?: boolean;
     scriptApproval?: boolean;
@@ -101,7 +115,127 @@ type AccessEditorProps = {
   onSaved: (removed?: boolean) => void;
 };
 export default function AccessEditor(props: AccessEditorProps) {
+  if (props.client.policy?.browser && props.client.policy.preset) return <PresetAccessEditor {...props} />;
   return appScopedAccess(props.client) ? <AppSessionAccess {...props} /> : <GeneralAccessEditor {...props} />;
+}
+
+// A preset agent: change its preset, apps, folders, editing or hidden apps.
+// Taking the Mac (Full control, Apps) needs a new invitation from the phone,
+// so from Files or Read only only those two are offered.
+type PresetApp = { id: string; name: string; bundleId: string; running: boolean; protected: boolean; reason?: string; runsCommands?: boolean };
+function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEditorProps) {
+  const current = (client.policy?.preset || "readonly") as Preset;
+  const mayTakeMac = current === "full" || current === "apps";
+  const [preset, setPreset] = useState<Preset>(current);
+  const [apps, setApps] = useState<string[]>((client.policy?.apps || []).map((app) => app.id));
+  const [folders, setFolders] = useState(() => existingFolders(client, device));
+  const [write, setWrite] = useState(client.policy?.write === true);
+  const [hidden, setHidden] = useState<string[]>((client.policy?.hidden || []).map((app) => app.id));
+  const [catalog, setCatalog] = useState<PresetApp[] | null>(null);
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [until, setUntil] = useState(localTime(client.expiresAt || Date.now()));
+  const [expiryChanged, setExpiryChanged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    request<{ presetApps?: PresetApp[] }>(peer, "/api/agents/browser-options")
+      .then((result) => active && setCatalog(result.presetApps || []))
+      .catch((e) => active && setError(e.message));
+    return () => { active = false; };
+  }, [peer.url, peer.token]);
+  const pickerApps: PickerApp[] = (catalog || []).map((app) => ({ id: app.id, name: app.name, protected: app.protected, reason: app.reason, ...(app.runsCommands ? { note: "Runs commands as you" } : {}) }));
+  const hideable: PickerApp[] = (catalog || []).filter((app) => !app.protected).map((app) => ({ id: app.id, name: app.name }));
+  const named = (ids: string[]) => ids.map((id) => ({ id, name: catalog?.find((app) => app.id === id)?.name }));
+  const missing = preset === "apps" && !apps.length ? "Pick at least one app." : preset === "files" && !folders.length ? "Pick at least one folder." : "";
+  const toggleRow = (row: string) => setOpenRow((value) => (value === row ? null : row));
+  const save = async () => {
+    if (busy || missing) return;
+    setBusy(true); setError("");
+    try {
+      await post(peer, `/api/guests/${encodeURIComponent(client.id)}/access`, {
+        preset,
+        folders: preset === "apps" ? [] : folders.map(({ root, path }) => ({ root, path })),
+        ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
+        ...(preset === "files" ? { write } : {}),
+        ...(preset === "full" || preset === "readonly" ? { hidden: hidden.map((id) => ({ id })) } : {}),
+        ...(expiryChanged ? { expiresAt: new Date(until).getTime() } : {}),
+      });
+      onSaved();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!confirm(`Remove ${client.name}’s access now?`)) return;
+    setBusy(true); setError("");
+    try { await request(peer, `/api/clients/${encodeURIComponent(client.id)}`, { method: "DELETE" }); onSaved(true); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  const chosen = named(apps), hiddenApps = named(hidden);
+  return (
+    <Modal title="Edit access" onClose={() => !busy && onClose()}>
+      <section className="access-editor ag-manage" aria-label="Edit agent access">
+        <div className="ag-manage-who">
+          <AgentAvatar name={client.name} size={48} />
+          <div><strong>{client.name}</strong><small>{client.policy ? presetSummary(client.policy) : ""}</small></div>
+        </div>
+        <p className="ag-label">What it may do</p>
+        <Choices
+          name={`preset-${client.id}`}
+          label="Access preset"
+          value={preset}
+          onChange={(next) => { setPreset(next); setError(""); if (next !== "apps") setApps([]); }}
+          options={(["full", "apps", "files", "readonly"] as Preset[]).map((value) => ({
+            value, title: PRESET_WORDS[value].title,
+            detail: !mayTakeMac && (value === "full" || value === "apps") ? "Needs a new invitation from your phone." : PRESET_WORDS[value].detail,
+            disabled: !mayTakeMac && (value === "full" || value === "apps"),
+          }))}
+        />
+        <div className="ag-rows">
+          {preset === "apps" && (
+            <AccessRow icon={<Sparkles />} label="Apps it may use" value={chosen.length ? <AppStack peer={peer} apps={chosen} /> : "Pick apps"} open={openRow === "apps"} onToggle={() => toggleRow("apps")} attention={!apps.length}>
+              {catalog === null ? <p className="ag-quiet">Loading apps…</p> : <AppPicker peer={peer} apps={pickerApps} chosen={apps} onChange={setApps} chosenWords="Can use it" />}
+            </AccessRow>
+          )}
+          {preset !== "apps" && (
+            <AccessRow icon={<Folder />} label="Folders" value={folders.length ? (folders.length === 1 ? folders[0].label : `${folders.length} folders`) : preset === "files" ? "Pick folders" : "Everything you share"} open={openRow === "folders"} onToggle={() => toggleRow("folders")} attention={preset === "files" && !folders.length}>
+              <FolderBrowser peer={peer} device={device} picked={folders} onChange={setFolders} />
+            </AccessRow>
+          )}
+          {preset === "files" && (
+            <div className="ag-row">
+              <div className="ag-row-head ag-row-static">
+                <span className="ag-row-icon"><ShieldCheck /></span>
+                <span className="ag-row-label">Can edit</span>
+                <span className="ag-row-value">{write ? "Changes files directly" : "Read only"}</span>
+                <Switch label="Can edit files" checked={write} onChange={setWrite} />
+              </div>
+            </div>
+          )}
+          {(preset === "full" || preset === "readonly") && (
+            <AccessRow icon={<Monitor />} label="Hide apps from it" value={hiddenApps.length ? <AppStack peer={peer} apps={hiddenApps} /> : "None"} open={openRow === "hidden"} onToggle={() => toggleRow("hidden")}>
+              <p className="ag-quiet">Passwords and Reach are always hidden.</p>
+              {catalog === null ? <p className="ag-quiet">Loading apps…</p> : <AppPicker peer={peer} apps={hideable} chosen={hidden} onChange={setHidden} chosenWords="Hidden from it" chipsLabel="Hidden apps" />}
+            </AccessRow>
+          )}
+          <div className="ag-row">
+            <label className="ag-row-head ag-row-static">
+              <span className="ag-row-icon"><Terminal /></span>
+              <span className="ag-row-label">Ends</span>
+              <input type="datetime-local" aria-label="Access ends" className="ag-mode" value={until} onChange={(e) => { setUntil(e.target.value); setExpiryChanged(true); }} />
+            </label>
+          </div>
+        </div>
+        <ErrorLine error={error || missing} />
+        <div className="ag-actions">
+          <button className="ag-primary ag-small" disabled={busy || !!missing} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button>
+          <button className="ag-secondary ag-small" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="ag-danger ag-small" disabled={busy} onClick={() => void remove()}>End access</button>
+        </div>
+      </section>
+    </Modal>
+  );
 }
 function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps) {
   const [items, setItems] = useState<BrowserRequest[]>([]);

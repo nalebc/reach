@@ -126,70 +126,6 @@ const loadSnapshot = async (container, approvalLabel = "Approve once") => {
   );
 };
 
-test("restricted terminal requires folders and preserves independently granted screen control", async () => {
-  const calls = [];
-  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
-    const route = new URL(url).pathname;
-    if (init.method === "POST") calls.push([route, JSON.parse(init.body)]);
-    if (route === "/api/agents/browser-options")
-      return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [] });
-    if (route === "/api/agents/browser-invitations")
-      return reply({
-        invitation: "b".repeat(43),
-        url: `https://mac.tail.ts.net/agent-browser#invite=${"b".repeat(43)}`,
-        clientId: "muse",
-        expiresAt: Date.now() + 3600000,
-        joinBy: Date.now() + 900000,
-      });
-    if (route === "/api/guests/key")
-      return reply({
-        key: "tskey-auth-kTEST123456-abcdef",
-        hostname: "rg-ab12-k3m9x2p7qa",
-      });
-    return reply({});
-  };
-  const view = await render(
-    React.createElement(BrowserInvite, {
-      peer,
-      device: { ...device, roots: [{ id: 0, name: "Projects", path: "/shared" }] },
-      keyPeer: peer,
-      onSetup() {},
-      onCreated() {},
-    }),
-  );
-  const c = view.container;
-  assert.equal(button(c, "Create invite link").disabled, true);
-  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
-  await click(c.querySelector('[aria-label="Share apps"]'));
-  assert.match(c.textContent, /View only\. It can ask you for more apps later/);
-  await click(c.querySelector('[aria-label="Read-only commands"]'));
-  assert.equal(button(c, "Create invite link").disabled, true, "a shared folder is required");
-  assert.match(c.textContent, /Commands need a folder/, "the disabled button says why");
-  assert.equal(c.querySelector('[aria-label="Share apps"]').checked, true);
-  await click(c.querySelector('[aria-label="Share Projects"]'));
-  assert.equal(button(c, "Create invite link").disabled, false);
-  await click(button(c, "Create invite link"));
-  await dom.waitFor(() =>
-    calls.some(([route]) => route.endsWith("browser-invitations")),
-  );
-  assert.deepEqual(
-    calls.find(([route]) => route.endsWith("browser-invitations"))[1],
-    {
-      name: c.querySelector('[aria-label="AI browser name"]').value,
-      transport: "funnel",
-      ttlSeconds: 900,
-      folders: [{ root: 0, path: "" }],
-      terminalIds: [],
-      screen: "apps",
-      appAccess: [],
-      restrictedTerminal: true,
-    },
-  );
-  assert.match(c.textContent, /ls, cat, grep and the like, inside its folders/);
-  assert.doesNotMatch(c.textContent, /Screen control is off/);
-  await view.unmount();
-});
-
 test("supervised browser stages direct screen input only as a pending exact batch", async () => {
   const calls = [];
   let records = [];
@@ -729,10 +665,10 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
-  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
+  await dom.waitFor(() => c.querySelector('[aria-label="Access preset"]'));
   assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
-  assert.equal(c.querySelector('[aria-label="Share apps"]').disabled, false);
+  assert.ok(c.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]'));
   await view.unmount();
 });
 

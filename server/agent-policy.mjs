@@ -1,4 +1,5 @@
 import { validAppAccess } from "./browser-app-policy.mjs";
+import { presetScopes, validPresetPolicy } from "./agent-presets.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -111,6 +112,15 @@ export function agentProfile(config, name) {
 }
 export function applyAgentPolicy(client, config) {
   if (client.kind !== "agent") return client;
+  // A preset invitation: its scopes come from the preset every time, and its
+  // folders from what Reach still shares. Anything else about it grants nothing.
+  if (client.policy?.browser === true && client.policy.preset !== undefined) {
+    const policy = client.policy;
+    if (!validPresetPolicy(policy) || !Array.isArray(client.scopes) || client.browserWorkspaceId !== undefined) return null;
+    const roots = policy.roots.filter((root) => config.roots.some((shared) => within(shared, root)));
+    if (policy.preset === "files" && !roots.length) return null;
+    return { ...client, scopes: presetScopes(policy), policy: { ...policy, roots }, agentRoots: roots };
+  }
   if (client.policy?.browser === true) {
     const policy = client.policy;
     if (

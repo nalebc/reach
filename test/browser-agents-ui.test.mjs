@@ -347,7 +347,7 @@ test("agent invite preselection opens browser permissions without advanced MCP a
     view.container.querySelector('[aria-label="Assistant connection"] [aria-pressed="true"]').textContent,
     "Browser link",
   );
-  await dom.waitFor(() => view.container.querySelector('[aria-label="Share apps"]'));
+  await dom.waitFor(() => view.container.querySelector('[aria-label="Access preset"]'));
   assert.doesNotMatch(
     view.container.textContent,
     /Unrestricted command access/,

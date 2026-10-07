@@ -1,83 +1,75 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AppWindow,
   Check,
   ChevronDown,
   Copy,
   Dices,
+  Eye,
+  EyeOff,
   Folder,
   Lock,
+  Monitor,
+  Pencil,
   Share2,
   ShieldCheck,
-  SquareTerminal,
-  Terminal,
 } from "lucide-react";
 import { Share as NativeShare } from "@capacitor/share";
 import { isNative } from "./native";
 import { shareCancelled } from "./sharing";
 import { request, type Device, type Peer } from "./api";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
-import {
-  AgentAvatar,
-  AppPicker,
-  AppStack,
-  Choices,
-  Segments,
-  Switch,
-  SwitchLine,
-} from "./agent-ui";
+import { AccessRow, AgentAvatar, AppPicker, AppStack, Choices, Segments, Switch, type PickerApp } from "./agent-ui";
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
+// Inviting an agent that works from a browser (Muse, ChatGPT agent, a Grok
+// bot). One choice: a preset. Everything the agent may do follows from it;
+// what stays protected never changes (server/agent-guard.mjs).
+export type Preset = "full" | "apps" | "files" | "readonly";
+export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
+  full: { title: "Full control", detail: "Your Mac as you use it: screen, mouse, keyboard, files, commands." },
+  apps: { title: "Apps", detail: "Only the apps you pick. It sees and touches nothing else." },
+  files: { title: "Files", detail: "Folders you pick. Read them, or read and edit them." },
+  readonly: { title: "Read only", detail: "Looks at the screen and files. Touches nothing." },
+};
+type PresetApp = { id: string; name: string; bundleId: string; running: boolean; protected: boolean; reason?: string; runsCommands?: boolean };
 type Options = {
   terminals: { id: string; name: string }[];
-  screenAvailable: boolean;
-  appAccessAvailable?: boolean;
-  appAccessError?: string;
-  apps?: { id: string; name: string; protected: boolean; reason?: string }[];
+  desktopAvailable?: boolean;
+  presetApps?: PresetApp[];
+  presetAppsError?: string;
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
+type Issued = { preset: Preset; apps: string[]; folders: string[]; write: boolean; hidden: string[]; everything: boolean };
 
-type InvitePermissions = {
-  screen: "off" | "apps";
-  apps: { name: string; mode: "view" | "control" }[];
-  folders: string[];
-  terminalOutputs: number;
-  restrictedTerminal: boolean;
-  terminalApproval: boolean;
-};
-const museMessage = (link: string, permissions: InvitePermissions) => {
-  const screen =
-    permissions.screen === "apps"
-      ? `Apps: ${permissions.apps.length ? permissions.apps.map((app) => `${JSON.stringify(app.name)} (view only)`).join(", ") : "none shared yet"}. In Screen, view a shared window. Screen input is unavailable; use scoped terminal commands for approved changes. Other eligible apps are hidden; ask to view them. Reach, Tailscale and host browsers cannot be shared. Grants expire with this invitation.`
-      : "Screen: not shared.";
-  const folderNames = permissions.folders
-    .slice(0, 3)
-    .map((folder) =>
-      JSON.stringify(folder.length > 160 ? folder.slice(0, 157) + "…" : folder).replace(
-        /[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
-        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-      ),
-    )
-    .join(", ");
-  const files = permissions.folders.length
-    ? `Files: read/search/download only in ${folderNames}${permissions.folders.length > 3 ? ` and ${permissions.folders.length - 3} more shown in Files` : ""}.`
-    : "Files: not shared.";
-  const shared = permissions.folders.length
-    ? " These are shared original folders; approved changes affect them directly."
+const quote = (value: string) =>
+  JSON.stringify(value.length > 160 ? value.slice(0, 157) + "\u2026" : value).replace(
+    /[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+const listWords = (items: string[]) =>
+  items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
+// What the agent reads: its preset, what stays closed, how to behave with
+// other agents and the owner. Describes the issued invitation, never later edits.
+export const museMessage = (link: string, issued: Issued) => {
+  const folders = issued.folders.slice(0, 3).map(quote).join(", ") + (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
+  const where = issued.everything ? "every folder the owner shares" : `only ${folders}`;
+  const hidden = issued.hidden.length ? ` The owner also hid ${listWords(issued.hidden.map(quote))}.` : "";
+  const grant = {
+    full: `Preset: Full control. You use this Mac as the owner does: its screen (reach_screenshot, reach_act), its apps (reach_open_app), files in ${where} (read and change), and a shell (reach_shell) that runs as the owner.`,
+    apps: `Preset: Apps. You see and use only ${listWords(issued.apps.map(quote))}, on the owner's screen (reach_screenshot, reach_act, reach_open_app). Nothing else is visible or clickable.`,
+    files: `Preset: Files. You ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
+    readonly: `Preset: Read only. You look: screenshots, files in ${where}, shared terminal output. You can't click, type or change anything.`,
+  }[issued.preset];
+  const protectedWords = issued.preset === "files"
+    ? " Reach's own files and the owner's secret files stay closed."
+    : ` Always closed: password fields and password apps (ask the owner to sign in from their phone), Reach and Tailscale, the Mac's security prompts, and commands that need the owner's password or could erase the Mac.${hidden}`;
+  const sharing = ["full", "apps"].includes(issued.preset)
+    ? " One agent acts on the Mac at a time: a busy or paused reply means wait and retry. The owner's own hands come first. Take a screenshot before and after you act."
     : "";
-  const output = permissions.terminalOutputs
-    ? `Terminal output: ${permissions.terminalOutputs} selected session${permissions.terminalOutputs === 1 ? "" : "s"}, read-only.`
-    : "Terminal output: not shared.";
-  const commands = permissions.restrictedTerminal
-    ? permissions.terminalApproval
-      ? "Commands: reads run directly; file changes and scripts ask for approval once. No network, sudo or helper processes."
-      : "Commands: supported read-only commands run directly in shared folders; other commands are blocked."
-    : "Commands: not enabled.";
-  const boundary = permissions.restrictedTerminal
-    ? " Terminal commands cannot access outside these folders, even with approval."
-    : "";
-  return `Open this temporary Reach link in your VM browser. Keep it open; show the connection code for admission. ${screen} ${files}${shared} ${output} ${commands}${boundary} Use Screen/Files/Terminal (window.reach optional). Never invite anyone, delegate access, or share this link or credentials.\n\n${link}`;
+  return `Open this temporary Reach link in your browser and keep it open; the owner will match your connection code. ${grant}${protectedWords}${sharing} Use the Screen, Files and Terminal tabs or the window.reach tools (listTools). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
 // Every invite gets a fresh, silly name; the dice roll another.
@@ -89,62 +81,8 @@ export const inviteName = (random = Math.random, not = "") => {
     if (name !== not) return name;
   }
 };
-
-type Level = "off" | "watch" | "read" | "approve";
-
-// One thing the agent may use: a switch, and when it's on, its choices
-// open right under it.
-function Grant({
-  icon,
-  label,
-  switchLabel,
-  value,
-  on,
-  open,
-  disabled,
-  attention,
-  onSwitch,
-  onOpen,
-  children,
-}: {
-  icon: ReactNode;
-  label: string;
-  switchLabel: string;
-  value: ReactNode;
-  on: boolean;
-  open: boolean;
-  disabled?: boolean;
-  attention?: boolean;
-  onSwitch: (on: boolean) => void;
-  onOpen: () => void;
-  children: ReactNode;
-}) {
-  const shown = on && open;
-  return (
-    <div className={`ag-row ag-grant${shown ? " is-open" : ""}${on ? " is-on" : ""}`}>
-      <div className="ag-grant-head">
-        <button
-          type="button"
-          className="ag-row-head"
-          aria-expanded={shown}
-          disabled={disabled}
-          onClick={() => (on ? onOpen() : onSwitch(true))}
-        >
-          <span className="ag-row-icon">{icon}</span>
-          <span className="ag-row-label">{label}</span>
-          <span className={`ag-row-value${attention ? " is-attention" : ""}`}>
-            {on ? value : ""}
-          </span>
-        </button>
-        <Switch label={switchLabel} checked={on} disabled={disabled} onChange={onSwitch} />
-      </div>
-      {/* Kept in the page while closed, so choices and browsing survive. */}
-      <div className="ag-row-body" hidden={!shown}>
-        {children}
-      </div>
-    </div>
-  );
-}
+// Apps worth hiding first under Full control: where codes and mail arrive.
+const SUGGESTED_HIDDEN = ["com.apple.mobilesms", "com.apple.mail", "com.apple.facetime"];
 
 type Props = {
   peer: Peer;
@@ -154,234 +92,138 @@ type Props = {
   onCreated: (created: Created, link: string) => void;
 };
 export default function BrowserInvite(props: Props) {
-  return (
-    <BrowserInviteForm
-      key={`${props.peer.id}:${props.peer.url}:${props.peer.token}`}
-      {...props}
-    />
-  );
+  return <BrowserInviteForm key={`${props.peer.id}:${props.peer.url}:${props.peer.token}`} {...props} />;
 }
 function BrowserInviteForm({ peer, device, onCreated }: Props) {
   const [name, setName] = useState(() => inviteName());
-  const [minutes, setMinutes] = useState(15);
-  const [foldersOn, setFoldersOn] = useState(false);
+  const [preset, setPreset] = useState<Preset | null>(null);
+  const [minutes, setMinutes] = useState(30);
+  const [apps, setApps] = useState<string[]>([]);
   const [folders, setFolders] = useState<PickedFolder[]>([]);
-  const [terminalIds, setTerminalIds] = useState<string[]>([]);
-  const [screen, setScreen] = useState<"off" | "apps">("off");
-  const [appAccess, setAppAccess] = useState<
-    Record<string, "view" | "control">
-  >({});
-  const [level, setLevel] = useState<Level>("off");
-  const [options, setOptions] = useState<Options | null>(null);
-  // Which grant is open; one at a time keeps the page short.
+  const [write, setWrite] = useState(false);
+  const [hidden, setHidden] = useState<string[]>([]);
   const [openRow, setOpenRow] = useState<string | null>(null);
+  const [options, setOptions] = useState<Options | null>(null);
   const [showMessage, setShowMessage] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareNote, setShareNote] = useState("");
-  const [made, setMade] = useState<{
-    link: string;
-    name: string;
-    expiresAt: number;
-    joinBy: number;
-    message: string;
-  } | null>(null);
+  const [made, setMade] = useState<{ link: string; name: string; expiresAt: number; joinBy: number; message: string } | null>(null);
   const alive = useRef(true);
   const creation = useRef<AbortController | null>(null);
   useEffect(() => {
     alive.current = true;
-    return () => {
-      alive.current = false;
-      creation.current?.abort();
-    };
+    return () => { alive.current = false; creation.current?.abort(); };
   }, []);
-
   useEffect(() => {
     let live = true;
     request<Options>(peer, "/api/agents/browser-options")
       .then((value) => live && setOptions(value))
       .catch((e) => live && setError(e.message));
-    return () => {
-      live = false;
-    };
+    return () => { live = false; };
   }, [peer.url, peer.token]);
 
-  const restrictedTerminal = level === "read" || level === "approve";
-  const terminalApproval = level === "approve";
-  const nothing =
-    !folders.length && !terminalIds.length && screen === "off" && !restrictedTerminal;
+  const catalog = options?.presetApps || [];
+  const pickerApps: PickerApp[] = catalog.map((app) => ({
+    id: app.id, name: app.name, protected: app.protected, reason: app.reason,
+    ...(app.runsCommands ? { note: "Runs commands as you" } : {}),
+  }));
+  const hideableApps: PickerApp[] = catalog.filter((app) => !app.protected).map((app) => ({ id: app.id, name: app.name }));
+  const suggested = hideableApps.filter((app) => SUGGESTED_HIDDEN.includes((catalog.find((entry) => entry.id === app.id)?.bundleId || "").toLowerCase()));
+  const screenPreset = preset === "full" || preset === "apps" || preset === "readonly";
+  const desktopReady = options?.desktopAvailable !== false;
   const missing = !name.trim()
     ? "Name the agent."
-    : restrictedTerminal && !folders.length
-      ? "Commands need a folder. Choose one under Folders."
-      : nothing
-        ? "Turn on at least one thing it can use."
-        : "";
-
-  const create = async () => {
-    if (busy || missing || (!!folders.length && !options)) return;
-    setBusy(true);
+    : !preset
+      ? "Choose what it may do."
+      : preset === "apps" && !apps.length
+        ? "Pick at least one app."
+        : preset === "files" && !folders.length
+          ? "Pick at least one folder."
+          : screenPreset && options && !desktopReady
+            ? "This Mac can't share its screen with agents yet. Turn on Screen Recording and Accessibility for Reach."
+            : "";
+  const chosenApps = catalog.filter((app) => apps.includes(app.id));
+  const hiddenApps = catalog.filter((app) => hidden.includes(app.id));
+  const choose = (next: Preset) => {
+    setPreset(next);
     setError("");
-    setCopied(false);
-    setShareNote("");
+    if (next !== "apps") setApps([]);
+    if (next !== "files") setWrite(false);
+    if (next === "apps") setFolders([]);
+    if (next === "apps" || next === "files") setHidden([]);
+    setOpenRow(next === "apps" ? "apps" : next === "files" ? "folders" : null);
+  };
+  const create = async () => {
+    if (busy || missing || !preset) return;
+    setBusy(true); setError(""); setCopied(false); setShareNote("");
     let created: Created | null = null;
     const controller = new AbortController();
     creation.current = controller;
+    const everything = preset !== "files" && preset !== "apps" && !folders.length;
     try {
-      const result = await request<{
-        invitation: string;
-        clientId: string;
-        expiresAt: number;
-        joinBy: number;
-        url: string;
-      }>(peer, "/api/agents/browser-invitations", {
+      const result = await request<{ invitation: string; clientId: string; expiresAt: number; joinBy: number; url: string }>(peer, "/api/agents/browser-invitations", {
         method: "POST",
         signal: controller.signal,
         body: JSON.stringify({
-          name: name.trim(),
-          transport: "funnel",
-          ttlSeconds: minutes * 60,
-          folders: folders.map(({ root, path }) => ({ root, path })),
-          terminalIds,
-          screen,
-          ...(screen === "apps"
-            ? {
-                appAccess: Object.entries(appAccess).map(([id, mode]) => ({
-                  id,
-                  mode,
-                })),
-              }
-            : {}),
-          ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
-          ...(terminalApproval
-            ? { terminalApproval: true, scriptApproval: true }
-            : {}),
+          name: name.trim(), transport: "funnel", ttlSeconds: minutes * 60, preset,
+          ...(preset !== "apps" && folders.length ? { folders: folders.map(({ root, path }) => ({ root, path })) } : {}),
+          ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
+          ...(preset === "files" && write ? { write: true } : {}),
+          ...((preset === "full" || preset === "readonly") && hidden.length ? { hidden: hidden.map((id) => ({ id })) } : {}),
         }),
       });
-      created = {
-        peer,
-        clientId: result.clientId,
-        invitation: result.invitation,
-      };
-      if (!alive.current || controller.signal.aborted)
-        throw Error("Invitation creation was cancelled.");
+      created = { peer, clientId: result.clientId, invitation: result.invitation };
+      if (!alive.current || controller.signal.aborted) throw Error("Invitation creation was cancelled.");
       const url = new URL(result.url);
-      if (
-        url.protocol !== "https:" ||
-        url.pathname !== "/agent-browser" ||
-        url.username ||
-        url.password ||
-        url.search ||
-        new URLSearchParams(url.hash.slice(1)).get("invite") !==
-          result.invitation
-      )
+      if (url.protocol !== "https:" || url.pathname !== "/agent-browser" || url.username || url.password || url.search ||
+          new URLSearchParams(url.hash.slice(1)).get("invite") !== result.invitation)
         throw Error("The temporary connection link could not be prepared.");
       const link = url.href;
       setMade({
-        link,
-        name: name.trim(),
-        expiresAt: result.expiresAt,
-        joinBy: result.joinBy,
-        // Describe this issued invitation, not later unsaved form edits.
+        link, name: name.trim(), expiresAt: result.expiresAt, joinBy: result.joinBy,
         message: museMessage(link, {
-          screen,
-          apps: (options?.apps || [])
-            .filter((app) => appAccess[app.id] && !app.protected)
-            .map((app) => ({ name: app.name, mode: appAccess[app.id] })),
-          folders: folders.map((folder) => folder.full || folder.label),
-          terminalOutputs: terminalIds.length,
-          restrictedTerminal,
-          terminalApproval,
+          preset, apps: chosenApps.map((app) => app.name), folders: folders.map((folder) => folder.full || folder.label),
+          write: preset === "files" && write, hidden: hiddenApps.map((app) => app.name), everything,
         }),
       });
       onCreated(created, link);
     } catch (e) {
-      if (created)
-        await request(peer, `/api/clients/${created.clientId}`, {
-          method: "DELETE",
-        }).catch(() => {});
-      if (alive.current && !controller.signal.aborted)
-        setError((e as Error).message);
+      if (created) await request(peer, `/api/clients/${created.clientId}`, { method: "DELETE" }).catch(() => {});
+      if (alive.current && !controller.signal.aborted) setError((e as Error).message);
     } finally {
       if (alive.current && !controller.signal.aborted) setBusy(false);
       if (creation.current === controller) creation.current = null;
     }
   };
-
   const copyMessage = async () => {
     if (!made) return;
     setShareNote("");
-    try {
-      await navigator.clipboard.writeText(made.message);
-      setCopied(true);
-    } catch {
-      setShowMessage(true);
-      setShareNote("Select the message below and copy it.");
-    }
+    try { await navigator.clipboard.writeText(made.message); setCopied(true); }
+    catch { setShowMessage(true); setShareNote("Select the message below and copy it."); }
   };
   const shareMessage = async () => {
     if (!made) return;
     setShareNote("");
     try {
       const text = made.message;
-      if (isNative)
-        await NativeShare.share({ title: "Connect to Reach", text });
-      else if (navigator.share)
-        await navigator.share({ title: "Connect to Reach", text });
+      if (isNative) await NativeShare.share({ title: "Connect to Reach", text });
+      else if (navigator.share) await navigator.share({ title: "Connect to Reach", text });
       else await copyMessage();
     } catch (e) {
-      if (!shareCancelled(e))
-        setShareNote(
-          "Couldn’t open sharing. Copy the prompt and link instead.",
-        );
+      if (!shareCancelled(e)) setShareNote("Couldn’t open sharing. Copy the prompt and link instead.");
     }
   };
-
-  const eligibleApps = (options?.apps || []).filter((app) => !app.protected);
-  const chosenApps = eligibleApps.filter((app) => appAccess[app.id]);
-  const appsReady = !!options?.appAccessAvailable;
-  const terminalOn = level !== "off" || !!terminalIds.length;
-  const toggleRow = (row: string) =>
-    setOpenRow((current) => (current === row ? null : row));
-  const listWords = (items: string[]) =>
-    items.length <= 1
-      ? items.join("")
-      : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+  const toggleRow = (row: string) => setOpenRow((current) => (current === row ? null : row));
   const minutesLabel = minutes === 60 ? "1 hour" : `${minutes} minutes`;
-  const summary = `${name.trim()} can ${listWords(
-    [
-      folders.length
-        ? `read ${folders.length === 1 ? folders[0].label : `${folders.length} folders`}`
-        : "",
-      screen === "apps"
-        ? chosenApps.length
-          ? `see ${listWords(chosenApps.slice(0, 2).map((app) => app.name))}${chosenApps.length > 2 ? ` and ${chosenApps.length - 2} more` : ""}`
-          : "ask to see apps"
-        : "",
-      terminalIds.length
-        ? `watch ${terminalIds.length} ${terminalIds.length === 1 ? "terminal" : "terminals"}`
-        : "",
-      terminalApproval
-        ? "run commands you approve"
-        : restrictedTerminal
-          ? "run read-only commands"
-          : "",
-    ].filter(Boolean),
-  )} for ${minutesLabel}.`;
-  const at = (value: number) =>
-    new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  const pickFolders = (picked: PickedFolder[]) => {
-    setFolders(picked);
-    if (picked.length) setFoldersOn(true);
-  };
-  const pickLevel = (value: Level) => setLevel(value);
-  const watch = (id: string, on: boolean) => {
-    setTerminalIds((current) =>
-      on ? [...current, id] : current.filter((x) => x !== id),
-    );
-    if (on && level === "off") setLevel("watch");
-  };
+  const summary = !preset ? "" : `${name.trim()} gets ${{
+    full: `full control of this Mac${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}`,
+    apps: chosenApps.length ? `${listWords(chosenApps.slice(0, 3).map((app) => app.name))}${chosenApps.length > 3 ? ` and ${chosenApps.length - 3} more` : ""}, nothing else` : "the apps you pick",
+    files: folders.length ? `${folders.length === 1 ? folders[0].label : `${folders.length} folders`}, ${write ? "read and edit" : "read only"}` : "the folders you pick",
+    readonly: `a look at the screen and files${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}, no touching`,
+  }[preset]} for ${minutesLabel}.`;
+  const at = (value: number) => new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
     <section className="browser-invite ag-invite" aria-label="AI browser invitation">
@@ -398,201 +240,125 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
             autoComplete="off"
             onChange={(e) => setName(e.target.value)}
           />
-          <button
-            type="button"
-            className="ag-roll"
-            aria-label="New name"
-            onClick={() => setName((current) => inviteName(Math.random, current))}
-          >
+          <button type="button" className="ag-roll" aria-label="New name" onClick={() => setName((current) => inviteName(Math.random, current))}>
             <Dices size={19} />
           </button>
         </div>
 
-        <div className="ag-rows">
-          <Grant
-            icon={<Folder />}
-            label="Folders"
-            switchLabel="Share folders"
-            value={
-              folders.length
-                ? folders.length === 1
-                  ? folders[0].label
-                  : `${folders.length} folders`
-                : "Choose…"
-            }
-            attention={!folders.length && (foldersOn || restrictedTerminal)}
-            on={foldersOn || !!folders.length}
-            open={openRow === "folders"}
-            onOpen={() => toggleRow("folders")}
-            onSwitch={(on) => {
-              setFoldersOn(on);
-              if (!on) setFolders([]);
-              setOpenRow(on ? "folders" : null);
-            }}
-          >
-            <p className="ag-quiet">It reads your real folders. Changes only happen through commands you allow.</p>
-            <FolderBrowser
-              peer={peer}
-              device={device}
-              picked={folders}
-              onChange={pickFolders}
-            />
-          </Grant>
-
-          <Grant
-            icon={<AppWindow />}
-            label="Apps"
-            switchLabel="Share apps"
-            value={chosenApps.length ? <AppStack peer={peer} apps={chosenApps} /> : "Ask first"}
-            disabled={!appsReady}
-            on={screen === "apps"}
-            open={openRow === "apps"}
-            onOpen={() => toggleRow("apps")}
-            onSwitch={(on) => {
-              setScreen(on ? "apps" : "off");
-              if (!on) setAppAccess({});
-              setOpenRow(on ? "apps" : null);
-            }}
-          >
-            <p className="ag-quiet">View only. It can ask you for more apps later.</p>
-            {screen === "apps" && (
-              <AppPicker
-                peer={peer}
-                apps={options?.apps || []}
-                chosen={Object.keys(appAccess)}
-                onChange={(ids) =>
-                  setAppAccess(
-                    Object.fromEntries(
-                      ids.map((id) => [id, appAccess[id] || "view"]),
-                    ),
-                  )
-                }
-              />
-            )}
-            <p className="ag-note">
-              <ShieldCheck size={14} />
-              Reach on this Mac is locked during this invitation.
-            </p>
-          </Grant>
-
-          <Grant
-            icon={<SquareTerminal />}
-            label="Terminal"
-            switchLabel="Allow terminal"
-            value={
-              level === "approve"
-                ? "Ask me first"
-                : level === "read"
-                  ? "Read-only"
-                  : terminalIds.length
-                    ? `Watching ${terminalIds.length}`
-                    : "Watch only"
-            }
-            attention={restrictedTerminal && !folders.length}
-            on={terminalOn}
-            open={openRow === "terminal"}
-            onOpen={() => toggleRow("terminal")}
-            onSwitch={(on) => {
-              setLevel(on ? (folders.length ? "read" : "watch") : "off");
-              if (!on) setTerminalIds([]);
-              setOpenRow(on ? "terminal" : null);
-            }}
-          >
-            <Choices
-              name="terminal-level"
-              label="Terminal"
-              value={level === "off" ? "watch" : level}
-              onChange={pickLevel}
-              options={[
-                { value: "watch", title: "Watch only", detail: "It sees what the terminals below print. It runs nothing." },
-                { value: "read", title: "Read-only commands", detail: "ls, cat, grep and the like, inside its folders." },
-                { value: "approve", title: "Ask me first", detail: "Reads run directly. Changes wait for your OK, once each." },
-              ]}
-            />
-            {restrictedTerminal && !folders.length && (
-              <button
-                type="button"
-                className="ag-note is-warn ag-note-button"
-                onClick={() => {
-                  setFoldersOn(true);
-                  setOpenRow("folders");
-                }}
-              >
-                <Folder size={14} />
-                <span>
-                  Commands run inside its folders. <u>Choose a folder</u>
-                </span>
-              </button>
-            )}
-            {!options ? (
-              <p className="ag-quiet">Loading terminals…</p>
-            ) : options.terminals.length ? (
-              <div className="ag-lines">
-                <p className="ag-label">Let it watch</p>
-                {options.terminals.map((terminal) => (
-                  <SwitchLine
-                    key={terminal.id}
-                    label={`Watch ${terminal.name}`}
-                    icon={<Terminal size={18} />}
-                    title={terminal.name}
-                    checked={terminalIds.includes(terminal.id)}
-                    onChange={(on) => watch(terminal.id, on)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="ag-quiet">No terminals are open to watch.</p>
-            )}
-          </Grant>
-        </div>
-
-        <Segments
-          label="Access duration"
-          value={minutes}
-          onChange={setMinutes}
-          options={[
-            { value: 15, label: "15 min" },
-            { value: 30, label: "30 min" },
-            { value: 60, label: "1 hour" },
-          ]}
+        <p className="ag-label">What it may do</p>
+        <Choices
+          name="agent-preset"
+          label="Access preset"
+          value={preset ?? ("" as Preset)}
+          onChange={choose}
+          options={(["full", "apps", "files", "readonly"] as Preset[]).map((value) => ({
+            value, title: PRESET_WORDS[value].title, detail: PRESET_WORDS[value].detail,
+            disabled: value !== "files" && !!options && !desktopReady,
+          }))}
         />
 
-        <div className="ag-send">
-          <button
-            className="ag-primary ag-wide"
-            disabled={busy || !!missing || (!!folders.length && !options)}
-            onClick={() => void create()}
-          >
-            {busy ? "Creating link…" : "Create invite link"}
-          </button>
-          <p className={`ag-summary${missing ? " is-missing" : ""}`} aria-live="polite">
-            {missing || summary}
-          </p>
-        </div>
-        {error && (
-          <p className="ag-error" role="alert">
-            {error}
+        {preset === "apps" && (
+          <div className="ag-rows">
+            <AccessRow
+              icon={<AppWindow />}
+              label="Apps it may use"
+              value={chosenApps.length ? <AppStack peer={peer} apps={chosenApps} /> : "Pick apps"}
+              open={openRow === "apps"}
+              onToggle={() => toggleRow("apps")}
+              attention={!apps.length}
+            >
+              <p className="ag-quiet">It sees and touches only these. Your browser with its saved logins counts as one app.</p>
+              {!options ? <p className="ag-quiet">Loading apps…</p>
+                : options.presetAppsError ? <p className="ag-error" role="alert">{options.presetAppsError}</p>
+                  : <AppPicker peer={peer} apps={pickerApps} chosen={apps} onChange={setApps} chosenWords="Can use it" />}
+            </AccessRow>
+          </div>
+        )}
+        {preset === "files" && (
+          <div className="ag-rows">
+            <AccessRow
+              icon={<Folder />}
+              label="Folders"
+              value={folders.length ? (folders.length === 1 ? folders[0].label : `${folders.length} folders`) : "Pick folders"}
+              open={openRow === "folders"}
+              onToggle={() => toggleRow("folders")}
+              attention={!folders.length}
+            >
+              <p className="ag-quiet">Your real folders. Home itself and system folders can't be chosen.</p>
+              <FolderBrowser peer={peer} device={device} picked={folders} onChange={setFolders} />
+            </AccessRow>
+            <div className="ag-row">
+              <div className="ag-row-head ag-row-static">
+                <span className="ag-row-icon"><Pencil /></span>
+                <span className="ag-row-label">Can edit</span>
+                <span className="ag-row-value">{write ? "Changes files directly" : "Read only"}</span>
+                <Switch label="Can edit files" checked={write} onChange={setWrite} />
+              </div>
+            </div>
+          </div>
+        )}
+        {(preset === "full" || preset === "readonly") && (
+          <div className="ag-rows">
+            <AccessRow
+              icon={<Folder />}
+              label="Folders"
+              value={folders.length ? (folders.length === 1 ? folders[0].label : `${folders.length} folders`) : "Everything you share"}
+              open={openRow === "folders"}
+              onToggle={() => toggleRow("folders")}
+            >
+              <p className="ag-quiet">Leave empty for every folder Reach shares, or limit it to a few.</p>
+              <FolderBrowser peer={peer} device={device} picked={folders} onChange={setFolders} />
+            </AccessRow>
+            <AccessRow
+              icon={<EyeOff />}
+              label="Hide apps from it"
+              value={hiddenApps.length ? <AppStack peer={peer} apps={hiddenApps} /> : "None"}
+              open={openRow === "hidden"}
+              onToggle={() => toggleRow("hidden")}
+            >
+              <p className="ag-quiet">Passwords and Reach are always hidden. Add apps where your codes and mail arrive.</p>
+              {suggested.length > 0 && !hidden.length && (
+                <button type="button" className="ag-link" onClick={() => setHidden(suggested.map((app) => app.id))}>
+                  Hide {listWords(suggested.map((app) => app.name))}
+                </button>
+              )}
+              {!options ? <p className="ag-quiet">Loading apps…</p>
+                : <AppPicker peer={peer} apps={hideableApps} chosen={hidden} onChange={setHidden} chosenWords="Hidden from it" chipsLabel="Hidden apps" />}
+            </AccessRow>
+          </div>
+        )}
+
+        {preset && (
+          <p className="ag-note">
+            {preset === "full" ? <ShieldCheck size={14} /> : preset === "readonly" ? <Eye size={14} /> : <Lock size={14} />}
+            {{
+              full: "It can do anything you can, except passwords, security prompts and Reach. Anything already open or signed in is open to it. Your hands always win: touching the Mac pauses it.",
+              apps: "Only these apps appear on its screen and take its clicks. Password fields, Reach and security prompts stay closed even inside them.",
+              files: write ? "Changes land in your real folders at once. Reach's own files and your secret files stay closed." : "It reads your real folders. Nothing is copied, nothing changes.",
+              readonly: "It watches the screen and reads files. Passwords and Reach stay out of its pictures.",
+            }[preset]}
           </p>
         )}
-        {!appsReady && options && (
-          <p className="ag-quiet ag-center">
-            <Lock size={12} />{" "}
-            {options.appAccessError || "App sharing is unavailable on this computer."}
-          </p>
+
+        <Segments label="Access duration" value={minutes} onChange={setMinutes} options={[{ value: 15, label: "15 min" }, { value: 30, label: "30 min" }, { value: 60, label: "1 hour" }]} />
+
+        <div className="ag-send">
+          <button className="ag-primary ag-wide" disabled={busy || !!missing || !options} onClick={() => void create()}>
+            {busy ? "Creating link…" : "Create invite link"}
+          </button>
+          <p className={`ag-summary${missing ? " is-missing" : ""}`} aria-live="polite">{missing || summary}</p>
+        </div>
+        {error && <p className="ag-error" role="alert">{error}</p>}
+        {options && !desktopReady && (
+          <p className="ag-quiet ag-center"><Monitor size={12} /> Screen presets need this Mac's Screen Recording and Accessibility for Reach.</p>
         )}
       </div>
 
       {made && (
-        <section
-          className="ag-done"
-          aria-label="AI browser invite link"
-          aria-live="polite"
-        >
+        <section className="ag-done" aria-label="AI browser invite link" aria-live="polite">
           <AgentAvatar name={made.name} size={56} done />
           <h3>Link ready for {made.name}</h3>
-          <p className="ag-quiet">
-            Join by {at(made.joinBy)} · ends {at(made.expiresAt)}
-          </p>
+          <p className="ag-quiet">Join by {at(made.joinBy)} · ends {at(made.expiresAt)}</p>
           <div className="ag-done-actions">
             <button className="ag-primary" onClick={() => void copyMessage()}>
               {copied ? <Check size={17} /> : <Copy size={17} />}
@@ -602,40 +368,20 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
               <Share2 size={17} /> Share…
             </button>
           </div>
-          {shareNote && (
-            <p className="ag-note is-warn" role="status">
-              {shareNote}
-            </p>
-          )}
-          <p className="ag-quiet">
-            Paste it into {made.name}. When it connects, match the connection
-            code in Home → Needs you, then approve.
-          </p>
-          <details
-            className="ag-message"
-            open={showMessage}
-            onToggle={(e) => setShowMessage(e.currentTarget.open)}
-          >
-            <summary>
-              What {made.name} will read <ChevronDown size={15} />
-            </summary>
-            <textarea
-              className="browser-invite-message"
-              aria-label="AI browser invitation message"
-              readOnly
-              rows={6}
-              value={made.message}
-              onFocus={(e) => e.target.select()}
-            />
+          {shareNote && <p className="ag-note is-warn" role="status">{shareNote}</p>}
+          <p className="ag-quiet">Paste it into {made.name}. When it connects, match the connection code in Home → Needs you, then approve.</p>
+          <details className="ag-message" open={showMessage} onToggle={(e) => setShowMessage(e.currentTarget.open)}>
+            <summary>What {made.name} will read <ChevronDown size={15} /></summary>
+            <textarea className="browser-invite-message" aria-label="AI browser invitation message" readOnly rows={6} value={made.message} onFocus={(e) => e.target.select()} />
           </details>
           <button
             className="ag-link"
             onClick={() => {
+              // A fresh invitation: a new name and no choices carried over.
               setMade(null);
               setName((current) => inviteName(Math.random, current));
-              setCopied(false);
-              setShareNote("");
-              setShowMessage(false);
+              setPreset(null); setApps([]); setFolders([]); setWrite(false); setHidden([]); setOpenRow(null);
+              setCopied(false); setShareNote(""); setShowMessage(false);
             }}
           >
             Invite another agent

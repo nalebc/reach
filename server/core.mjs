@@ -5,6 +5,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
+import { hostGuardedPreset, presetPolicy, presetScopes, validatePresetInvitation } from "./agent-presets.mjs";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -12,7 +13,13 @@ export const isPlainRecord = (value) => value !== null && typeof value === "obje
   [Object.prototype, null].includes(Object.getPrototypeOf(value));
 // Names and review explanations must not hide or reorder the action being approved.
 export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
-export function validateBrowserInvitation(input) {
+export function validateBrowserInvitation(input, options = {}) {
+  // The presets (agent-presets.mjs) are the current form; the field list
+  // below is the earlier one, still accepted for invitations made with it.
+  if (isPlainRecord(input) && input.preset !== undefined) {
+    try { return validatePresetInvitation(input, options); }
+    catch (error) { throw fail(error.status || 400, error.message); }
+  }
   const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport", "appAccess", "workspaceMode"];
   if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw fail(400, "This invitation contains unsupported fields.");
@@ -273,7 +280,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
         (!c.admission || (c.admission.status === "collected" &&
-          (c.policy?.browser !== true || c.policy.screen !== "apps" || c.admission.grant === admissionGrant(c)))) &&
+          (c.policy?.browser !== true || (c.policy.screen !== "apps" && !hostGuardedPreset(c.policy)) || c.admission.grant === admissionGrant(c)))) &&
         Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
     );
     if (
@@ -579,10 +586,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // legacy command requests remain manual handoffs.
   // It never inherits shell, ordinary screen-input, or owner capabilities.
   function inviteBrowser(input, browserAppApprover) {
+    const checked = validateBrowserInvitation(input);
+    if (checked.preset) return invitePresetBrowser(checked, browserAppApprover);
     const {
       name, ttlSeconds, joinSeconds, folders, terminalIds, screen,
       commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess,
-    } = validateBrowserInvitation(input);
+    } = checked;
     const roots = [...new Set(chooseFolders(folders))];
     const { scopes, policy } = browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots);
     const token = crypto.randomBytes(32).toString("base64url");
@@ -605,6 +614,38 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return {
       invitation: token, clientId: client.id,
+      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+    };
+  }
+  // Full control and Read only without chosen folders see every folder Reach
+  // shares; Files needs chosen folders; Apps has none.
+  const presetRoots = (checked, chosen) =>
+    checked.preset === "apps" ? [] : chosen.length || checked.preset === "files" ? chosen : [...config.roots];
+  // One of four presets. Its apps were matched to this Mac's catalog by the
+  // route; its scopes are derived from the preset on every request.
+  function invitePresetBrowser(checked, browserAppApprover) {
+    const policy = presetPolicy(checked, presetRoots(checked, [...new Set(chooseFolders(checked.folders))]));
+    const scopes = presetScopes(policy);
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const client = {
+      id: id(), kind: "agent", name: checked.name.trim(), scopes,
+      ...(hostGuardedPreset(policy) && browserAppApprover ? { browserAppApprover: structuredClone(browserAppApprover) } : {}),
+      ...(checked.transport === "funnel" ? { browserTransport: "funnel" } : {}),
+      policy,
+      inviteHash: hash(token),
+      inviteExpiresAt: now + Math.min(checked.joinSeconds, checked.ttlSeconds) * 1000,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: now + checked.ttlSeconds * 1000,
+    };
+    changeClients((latest) => {
+      if (latest.filter((entry) => entry.policy?.browser === true &&
+          entry.expiresAt > now && (!entry.inviteExpiresAt || entry.inviteExpiresAt > now)).length >= 50)
+        throw fail(429, "End an existing browser invitation before creating another.");
+      return [...latest, client];
+    });
+    return {
+      invitation: token, clientId: client.id, preset: policy.preset,
       expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
     };
   }
@@ -661,7 +702,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // full access: those are chosen again).
   function changeAccess(clientId, changes = {}) {
     if (!isPlainRecord(changes) || Object.keys(changes).some((key) =>
-      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess"].includes(key)))
+      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess", "preset", "hidden"].includes(key)))
       throw fail(400, "Choose valid permissions and an end time.");
     let result;
     changeClients((latest) => {
@@ -701,7 +742,25 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         roots: guest ? [...(client.guestRoots || [])] : [...had],
         apps: client.guestApps,
       };
-      if (browser) {
+      if (browser && client.policy.preset !== undefined) {
+        // The same checks as inviting with a preset. Apps were matched to the
+        // catalog by the route; an unchanged Apps preset keeps its apps.
+        const { folders: ignoredFolders, expiresAt: ignoredExpiry, roots: ignoredRoots, ...permissions } = changes;
+        const preset = permissions.preset ?? client.policy.preset;
+        const apps = permissions.apps ?? (preset === "apps" && preset === client.policy.preset ? client.policy.apps : undefined);
+        const checked = validateBrowserInvitation({
+          ...permissions, preset, ...(apps !== undefined ? { apps } : {}), name: client.name, ttlSeconds: 60,
+          transport: client.browserTransport || "tailnet", folders: [],
+          ...(permissions.hidden === undefined && ["full", "readonly"].includes(preset) && client.policy.hidden ? { hidden: client.policy.hidden } : {}),
+        }, { folderCount: folders.length });
+        const policy = presetPolicy(checked, presetRoots(checked, folders));
+        // Taking the Mac needs the phone that creates the invitation (the host
+        // guard binds it); an invitation that didn't have it can't grow into it.
+        if (hostGuardedPreset(policy) && !hostGuardedPreset(client.policy))
+          throw fail(409, "Full control and Apps need a new invitation from your phone.");
+        client.scopes = presetScopes(policy);
+        client.policy = policy;
+      } else if (browser) {
         const { folders: ignoredFolders, expiresAt: ignoredExpiry, ...permissions } = changes;
         // Use the invitation's schema, so edits cannot add shell/admin scopes,
         // change transport, or enable unsupported command execution.
@@ -777,7 +836,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const request = client.admission;
     if (!request) return null;
     if (client.expiresAt <= now) return "expired";
-    if ((client.browserTransport === "funnel" || (client.policy?.browser === true && client.policy.screen === "apps")) &&
+    if ((client.browserTransport === "funnel" || (client.policy?.browser === true && (client.policy.screen === "apps" || hostGuardedPreset(client.policy)))) &&
         request.grant !== admissionGrant(client)) return "expired";
     if (request.status === "collected")
       return client.browserTransport === "funnel" && !(client.browserIdleExpiresAt > now)
@@ -794,8 +853,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     roots: [...(client.policy?.roots || [])],
     browser: client.policy?.browser === true,
     ...(client.policy?.browser ? {
+      ...(client.policy.preset ? { preset: client.policy.preset, apps: (client.policy.apps || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })), ...(client.policy.write ? { write: true } : {}) } : {}),
       screen: client.policy.screen,
-      terminalIds: [...client.policy.terminalIds],
+      terminalIds: [...(client.policy.terminalIds || [])],
       commandRequests: client.policy.commandRequests === true,
       ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
       ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
@@ -1175,7 +1235,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const body = req.body;
       if (!isPlainRecord(body)) return false;
       const entries = loadJson(file, []), now = Date.now();
-      const eligible = (client) => client.kind === "agent" && client.policy?.browser === true && client.policy.screen === "apps" && client.browserTransport !== "funnel" && client.expiresAt > now;
+      const eligible = (client) => client.kind === "agent" && client.policy?.browser === true && (client.policy.screen === "apps" || hostGuardedPreset(client.policy)) && client.browserTransport !== "funnel" && client.expiresAt > now;
       if (route === "/api/invitations/redeem" && typeof body.invitation === "string" && body.invitation.length <= 256) {
         const digest = hash(body.invitation);
         return entries.some((client) => eligible(client) && client.inviteExpiresAt > now && client.inviteHash === digest);

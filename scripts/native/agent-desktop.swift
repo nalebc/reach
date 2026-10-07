@@ -3,51 +3,121 @@ import ApplicationServices
 import Foundation
 import ScreenCaptureKit
 
-// Full control of this Mac for an invited agent, except Reach. One request per
-// run: a screenshot with Reach's windows left out, or one input action. Every
-// action is checked against exactly what it would reach (the window under the
-// pointer, or the focused one) right before it is posted, in this process.
+// This Mac's screen and input for an agent preset (server/agent-desktop.mjs).
+// One process per agent session, fed JSON lines: first the rules, then one
+// request at a time (a screenshot, one input action, an app to open, what is
+// in front, the app catalog). Every action is checked against exactly what it
+// would reach, the window under the pointer or the focused element, right
+// before it is posted, in this process. The rules are data from the server
+// (server/agent-guard.mjs): the protected apps, Reach's own names and
+// addresses, the preset's app set, the owner's hidden apps.
 struct Refusal: Error { let message: String; let kind: String }
 func refuse(_ message: String, _ kind: String = "blocked") throws -> Never { throw Refusal(message: message, kind: kind) }
-func out(_ value: [String: Any]) {
-  let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8)
-  FileHandle.standardOutput.write(data)
-}
 
 // BEGIN PURE DESKTOP POLICY — compiled directly by policy tests without macOS UI.
+struct Rules {
+  var mode = "view"                 // "full", "apps" (allowedApps only) or "view" (screenshots only)
+  var hosts: [String] = []          // Reach's addresses, lowercased
+  var titles: [String] = ["reach"]  // words marking Reach's own windows
+  var allowedApps: [[String: String]] = []   // Apps preset: {id, bundleId}
+  var hiddenApps: [[String: String]] = []    // the owner's extra hidden apps: {id, bundleId, name}
+  var protectedAppIds: [String] = []
+  var protectedAppNames: [String] = []
+  var reachWords: [String] = ["reach", "tailscale", "tailnet"]
+  var privatePanes: [String] = []
+  var protectedTitleWords: [String] = []
+  var protectedPagePatterns: [String] = []
+  var terminalLike: [String] = []
+  var patterns: [NSRegularExpression] = []
+}
 let reachReason = "That's Reach. The agent can't use Reach."
-// Back doors into Reach: Tailscale (who your phone is), iPhone Mirroring (your
-// phone itself), password prompts and keychains, Force Quit and Activity
-// Monitor (they stop Reach), and System Settings' privacy panes.
-func appBlocked(_ bundleId: String, _ name: String) -> Bool {
-  let id = bundleId.lowercased(), value = "\(id) \(name.lowercased())"
-  if ["reach", "tailscale", "tailnet"].contains(where: value.contains) { return true }
-  let ids = ["com.apple.screencontinuity", "com.apple.keychainaccess", "com.apple.passwords", "com.apple.securityagent",
-    "com.apple.localauthentication.uiagent", "com.apple.coreauthui", "com.apple.loginwindow", "com.apple.activitymonitor"]
-  if ids.contains(where: { id == $0 || id.hasPrefix($0 + ".") }) { return true }
-  return ["iphone mirroring", "securityagent", "keychain access", "activity monitor", "loginwindow"].contains(name.lowercased())
+let protectedReason = "That holds passwords or controls who may use this Mac. It stays closed to the agent."
+let hiddenReason = "The owner hid this app from the agent."
+let notAllowedReason = "That's not one of the apps this agent may use."
+let secureReason = "That's a password field. The agent never types passwords; the owner can sign in from Screen."
+func lower(_ value: String) -> String { value.precomposedStringWithCompatibilityMapping.lowercased() }
+// "reach" as a word: Reach.app, com.reach.app, "Reach — node"; not Preacher.
+func mentionsReach(_ value: String, _ rules: Rules) -> Bool {
+  let text = lower(value)
+  for word in rules.reachWords {
+    var search = text.startIndex
+    while let range = text.range(of: word, range: search..<text.endIndex) {
+      let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+      let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+      let letter: (Character?) -> Bool = { $0.map { $0.isLetter } ?? false }
+      if !letter(before) && !letter(after) { return true }
+      search = range.upperBound
+    }
+  }
+  return false
+}
+func matchesApp(_ bundleId: String, _ path: String, _ entry: [String: String]) -> Bool {
+  let id = lower(bundleId), wanted = lower(entry["bundleId"] ?? "")
+  if !wanted.isEmpty, !id.isEmpty, id == wanted { return true }
+  let want = lower(entry["id"] ?? "")
+  return !want.isEmpty && !path.isEmpty && lower(path) == want
+}
+func fileName(_ path: String) -> String {
+  let last = path.split(separator: "/").last.map(String.init) ?? ""
+  return lower(last.hasSuffix(".app") ? String(last.dropLast(4)) : last)
+}
+// Reach, Tailscale, the password stores, the security prompts, the tools that
+// stop Reach: never, whatever the preset.
+func protectedApp(_ bundleId: String, _ name: String, _ path: String, _ rules: Rules) -> String? {
+  let id = lower(bundleId), lname = lower(name), file = fileName(path)
+  if mentionsReach("\(id) \(lname) \(file)", rules) { return reachReason }
+  if rules.protectedAppIds.contains(where: { id == $0 || id.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") }) { return protectedReason }
+  if rules.protectedAppNames.contains(lname) || rules.protectedAppNames.contains(file) { return protectedReason }
+  return nil
 }
 func settingsApp(_ bundleId: String) -> Bool {
-  ["com.apple.systempreferences", "com.apple.settings"].contains(bundleId.lowercased())
+  ["com.apple.systempreferences", "com.apple.settings"].contains(lower(bundleId))
 }
-let privatePanes = ["privacy", "security", "accessibility", "screen recording", "screen & system audio", "login items",
-  "users & groups", "passwords", "full disk access", "automation", "input monitoring", "vpn", "tailscale"]
-// titles: words that mark Reach's own windows (its name, its start script).
-func titleBlocked(_ title: String, _ bundleId: String, _ titles: [String]) -> Bool {
-  let value = title.lowercased()
-  if titles.contains(where: { !$0.isEmpty && value.contains($0) }) { return true }
-  return settingsApp(bundleId) && privatePanes.contains(where: value.contains)
+// Which apps the agent may touch at all: the preset's set in Apps mode, every
+// app but the protected and hidden ones in Full mode, none in view mode.
+func appReason(_ bundleId: String, _ name: String, _ path: String, _ rules: Rules) -> String? {
+  if let reason = protectedApp(bundleId, name, path, rules) { return reason }
+  if rules.hiddenApps.contains(where: { matchesApp(bundleId, path, $0) || (!($0["name"] ?? "").isEmpty && lower($0["name"]!) == lower(name)) }) { return hiddenReason }
+  if rules.mode == "apps" {
+    if !rules.allowedApps.contains(where: { matchesApp(bundleId, path, $0) }) { return notAllowedReason }
+  }
+  return nil
 }
-// hosts: Reach's addresses (its tailnet name, and local host:port forms).
-func urlBlocked(_ url: String, _ hosts: [String]) -> Bool {
-  let value = url.lowercased()
-  return hosts.contains(where: { !$0.isEmpty && value.contains($0) })
+// Reach's own windows (by title), System Settings' privacy panes, and the
+// windows that show saved passwords or run code.
+func titleReason(_ title: String, _ bundleId: String, _ rules: Rules) -> String? {
+  let value = lower(title)
+  if value.isEmpty { return nil }
+  if rules.titles.contains(where: { !$0.isEmpty && value.contains($0) }) && mentionsReach(value, rules) { return reachReason }
+  if settingsApp(bundleId) && rules.privatePanes.contains(where: value.contains) { return protectedReason }
+  for word in rules.protectedTitleWords {
+    if word == "passwords" { if value == word || value.hasPrefix(word + " ") || value.hasSuffix(" " + word) || value.contains("saved passwords") { return protectedReason } }
+    else if value.contains(word) { return protectedReason }
+  }
+  return nil
 }
-func target(_ bundleId: String, _ name: String, _ title: String, _ url: String, _ titles: [String], _ hosts: [String]) -> String? {
-  appBlocked(bundleId, name) || titleBlocked(title, bundleId, titles) || urlBlocked(url, hosts) ? reachReason : nil
+// A page address: Reach's own, or one that reveals saved passwords or runs code.
+func urlReason(_ url: String, _ rules: Rules) -> String? {
+  let value = lower(url).trimmingCharacters(in: .whitespaces)
+  if value.isEmpty { return nil }
+  if rules.hosts.contains(where: { !$0.isEmpty && value.contains($0) }) { return reachReason }
+  for pattern in rules.patterns where pattern.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil { return protectedReason }
+  return nil
+}
+func terminalLikeApp(_ bundleId: String, _ name: String, _ path: String, _ rules: Rules) -> Bool {
+  let all = "\(lower(bundleId)) \(lower(name)) \(lower(path))"
+  return rules.terminalLike.contains(where: { !$0.isEmpty && all.contains($0) })
+}
+func compile(_ sources: [String]) -> [NSRegularExpression] {
+  sources.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 }
 // END PURE DESKTOP POLICY
 
+func out(_ value: [String: Any]) {
+  let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8)
+  FileHandle.standardOutput.write(data)
+  FileHandle.standardOutput.write(Data([10]))
+}
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
   AXUIElementSetMessagingTimeout(element, 0.25)
   var value: CFTypeRef?
@@ -65,33 +135,45 @@ func string(_ element: AXUIElement, _ name: String) -> String {
   }
   return ""
 }
+func pidOf(_ element: AXUIElement) -> pid_t { var pid: pid_t = 0; AXUIElementGetPid(element, &pid); return pid }
 
-struct Rules { let hosts: [String]; let titles: [String] }
-struct Seen { let bundle: String; let name: String; let title: String; let url: String }
-
-// What an accessibility element belongs to: its app, its window's title, and
-// for web content the page address.
-func seen(_ element: AXUIElement) -> Seen {
-  var pid: pid_t = 0
-  AXUIElementGetPid(element, &pid)
+struct Seen { var bundle = ""; var name = ""; var path = ""; var title = ""; var url = ""; var secure = false; var role = "" }
+func canonical(_ url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
+func appInfo(_ pid: pid_t) -> (String, String, String) {
   let app = NSRunningApplication(processIdentifier: pid)
-  var title = "", url = ""
+  return (app?.bundleIdentifier ?? "", app?.localizedName ?? "", app?.bundleURL.map(canonical) ?? "")
+}
+// What an accessibility element belongs to: its app, its window's title, for
+// web content the page address, and whether it takes a password.
+func seen(_ element: AXUIElement) -> Seen {
+  var s = Seen()
+  (s.bundle, s.name, s.path) = appInfo(pidOf(element))
+  s.role = string(element, kAXRoleAttribute)
+  let subrole = string(element, kAXSubroleAttribute)
+  s.secure = s.role == "AXSecureTextField" || subrole == "AXSecureTextField"
   var node: AXUIElement? = element
   for _ in 0..<60 {
     guard let current = node else { break }
     let role = string(current, kAXRoleAttribute)
-    if role == "AXWebArea", url.isEmpty { url = string(current, "AXURL") }
-    if role == kAXWindowRole { title = string(current, kAXTitleAttribute); break }
+    if role == "AXWebArea", s.url.isEmpty { s.url = string(current, "AXURL") }
+    if role == kAXWindowRole { s.title = string(current, kAXTitleAttribute); break }
     node = elementAttr(current, kAXParentAttribute)
   }
-  if title.isEmpty, let window = elementAttr(element, kAXWindowAttribute) { title = string(window, kAXTitleAttribute) }
-  return Seen(bundle: app?.bundleIdentifier ?? "", name: app?.localizedName ?? "", title: title, url: url)
+  if s.title.isEmpty, let window = elementAttr(element, kAXWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
+  // A browser's address bar holds the page the next key would reach.
+  if s.url.isEmpty, s.role == "AXTextField" || s.role == "AXComboBox" {
+    let value = string(element, kAXValueAttribute)
+    if value.contains("://") || value.contains(":") { s.url = value }
+  }
+  return s
 }
 func check(_ s: Seen, _ rules: Rules) throws {
-  if let reason = target(s.bundle, s.name, s.title, s.url, rules.titles, rules.hosts) { try refuse(reason) }
+  if let reason = appReason(s.bundle, s.name, s.path, rules) { try refuse(reason) }
+  if let reason = titleReason(s.title, s.bundle, rules) { try refuse(reason) }
+  if let reason = urlReason(s.url, rules) { try refuse(reason) }
 }
-// The window server's view of the same point: the topmost window there, from
-// any layer (menu bar items included). Checked as well as accessibility.
+// The window server's view of a point: the topmost window there, from any
+// layer (menu bar items and the Dock included). Checked as well as accessibility.
 func windowAt(_ point: CGPoint) -> Seen? {
   guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
   for info in list {
@@ -99,45 +181,64 @@ func windowAt(_ point: CGPoint) -> Seen? {
       CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0).contains(point),
       (info[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
     let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
-    let app = NSRunningApplication(processIdentifier: pid)
-    return Seen(bundle: app?.bundleIdentifier ?? "", name: info[kCGWindowOwnerName as String] as? String ?? "",
-      title: info[kCGWindowName as String] as? String ?? "", url: "")
+    var s = Seen()
+    (s.bundle, s.name, s.path) = appInfo(pid)
+    if s.name.isEmpty { s.name = info[kCGWindowOwnerName as String] as? String ?? "" }
+    s.title = info[kCGWindowName as String] as? String ?? ""
+    return s
   }
   return nil
 }
+// The system's own surfaces: the Dock opens any app, Spotlight and Control
+// Center reach everywhere. Full control may use them (except where Reach is);
+// the Apps preset may not.
+let systemSurfaces = ["com.apple.dock", "com.apple.spotlight", "com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.notificationcenterui", "com.apple.windowmanager"]
 func checkPoint(_ point: CGPoint, _ rules: Rules) throws {
-  if let window = windowAt(point) { try check(window, rules) }
+  if let window = windowAt(point) {
+    if rules.mode == "apps", systemSurfaces.contains(lower(window.bundle)) || window.bundle.isEmpty { try refuse(notAllowedReason) }
+    if systemSurfaces.contains(lower(window.bundle)) {
+      if mentionsReach(window.title, rules) { try refuse(reachReason) }
+    } else { try check(window, rules) }
+  }
   var element: AXUIElement?
   if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element) == .success, let element {
     let s = seen(element)
-    try check(s, rules)
-    // A terminal holding Reach can't be quit or closed from its menus or Dock.
-    if s.title.isEmpty, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
-    if s.bundle == "com.apple.dock", let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == string(element, kAXTitleAttribute) }),
-      hostsReach(app, rules) { try refuse(reachReason) }
+    if systemSurfaces.contains(lower(s.bundle)) {
+      if rules.mode == "apps" { try refuse(notAllowedReason) }
+      // A Dock item or menu of an app that hosts Reach (Reach's terminal, a Reach tab).
+      let label = string(element, kAXTitleAttribute)
+      if mentionsReach(label, rules) { try refuse(reachReason) }
+      if let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == label }), hostsReach(app, rules) { try refuse(reachReason) }
+    } else {
+      try check(s, rules)
+      if s.title.isEmpty, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
+    }
   }
 }
-func pidOf(_ element: AXUIElement) -> pid_t { var pid: pid_t = 0; AXUIElementGetPid(element, &pid); return pid }
 // Any of this app's windows is Reach's (Reach's terminal, a Reach tab).
 func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool {
   let element = AXUIElementCreateApplication(app.processIdentifier)
   guard let windows = attr(element, kAXWindowsAttribute) as? [AXUIElement] else { return false }
-  return windows.contains { titleBlocked(string($0, kAXTitleAttribute), app.bundleIdentifier ?? "", rules.titles) }
+  return windows.contains { titleReason(string($0, kAXTitleAttribute), app.bundleIdentifier ?? "", rules) == reachReason }
 }
+struct Focus { let app: NSRunningApplication; let element: Seen; let terminalLike: Bool }
 // Keys and text go to the focused element; check it and its app.
-func checkFocus(_ rules: Rules, quitting: Bool) throws {
-  guard let front = NSWorkspace.shared.frontmostApplication else { try refuse("Nothing is ready for typing.") }
-  if appBlocked(front.bundleIdentifier ?? "", front.localizedName ?? "") { try refuse(reachReason) }
-  if quitting, hostsReach(front, rules) { try refuse(reachReason) }
+func focus(_ rules: Rules) throws -> Focus {
+  guard let front = NSWorkspace.shared.frontmostApplication else { try refuse("Nothing is ready for typing.", "retry") }
+  let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
+  if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
   let app = AXUIElementCreateApplication(front.processIdentifier)
-  if let window = elementAttr(app, kAXFocusedWindowAttribute) {
-    try check(Seen(bundle: front.bundleIdentifier ?? "", name: front.localizedName ?? "", title: string(window, kAXTitleAttribute), url: ""), rules)
+  var s = Seen(bundle: bundle, name: name, path: path)
+  if let window = elementAttr(app, kAXFocusedWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
+  try check(s, rules)
+  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) {
+    let element = seen(focused)
+    if pidOf(focused) == front.processIdentifier { try check(element, rules); s = element; s.bundle = bundle; s.name = name; s.path = path }
   }
-  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) { try check(seen(focused), rules) }
+  return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules))
 }
-
 // The owner's own hands come first: any real input in the last moments pauses
-// the agent. sinceAgent is how long ago the agent's own last event was posted.
+// the agent. `sinceAgent` is how long ago this process posted its own event.
 func checkOwner(_ sinceAgent: Double) throws {
   let human = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
   if human < 1.5 && human + 0.3 < sinceAgent { try refuse("You're using the Mac. The agent waits until you stop.", "paused") }
@@ -146,13 +247,15 @@ func checkOwner(_ sinceAgent: Double) throws {
 let keyCodes: [String: CGKeyCode] = [
   "return": 36, "enter": 36, "tab": 48, "space": 49, "delete": 51, "backspace": 51, "escape": 53, "esc": 53,
   "left": 123, "right": 124, "down": 125, "up": 126, "forwarddelete": 117, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+  "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103,
   "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15,
   "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
   "]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
   "n": 45, "m": 46, ".": 47, "`": 50,
 ]
 let source = CGEventSource(stateID: .privateState)
-func post(_ event: CGEvent?) { event?.post(tap: .cghidEventTap); usleep(8000) }
+var lastPosted = Date.distantPast
+func post(_ event: CGEvent?) { event?.post(tap: .cghidEventTap); lastPosted = Date(); usleep(8000) }
 func flags(_ mods: [String]) -> CGEventFlags {
   var value: CGEventFlags = []
   for mod in mods {
@@ -166,8 +269,11 @@ func flags(_ mods: [String]) -> CGEventFlags {
   }
   return value
 }
+let browserIds = ["com.apple.safari", "com.google.chrome", "org.chromium", "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser", "com.operasoftware", "com.vivaldi", "com.duckduckgo", "com.kagi"]
+func isBrowser(_ bundle: String) -> Bool { let id = lower(bundle); return browserIds.contains(where: { id.hasPrefix($0) }) }
 
-func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws {
+func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws -> [String: Any] {
+  if rules.mode == "view" { try refuse("This agent can only look. It has no mouse or keyboard here.") }
   let type = action["type"] as? String ?? ""
   func point(_ x: String, _ y: String) throws -> CGPoint {
     guard let nx = action[x] as? Double, let ny = action[y] as? Double, (0...1).contains(nx), (0...1).contains(ny) else {
@@ -175,6 +281,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
     }
     return CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
   }
+  var reached: [String: Any] = [:]
   switch type {
   case "move":
     let p = try point("x", "y")
@@ -196,6 +303,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
         post(event)
       }
     }
+    if let window = windowAt(p) { reached = ["app": window.name, "bundle": window.bundle] }
   case "drag":
     let from = try point("x", "y"), to = try point("toX", "toY")
     try checkPoint(from, rules)
@@ -216,7 +324,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
     post(CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: -dy, wheel2: -dx, wheel3: 0))
   case "type":
     guard let text = action["text"] as? String, !text.isEmpty, text.utf16.count <= 2000 else { try refuse("Type up to 2000 characters.", "invalid") }
-    try checkFocus(rules, quitting: false)
+    let target = try focus(rules)
+    if target.element.secure { try refuse(secureReason) }
+    // The server checked the text as prose or as a command; if the focus
+    // moved to a terminal since, it must look again.
+    if target.terminalLike && action["terminalLikeChecked"] as? Bool != true { try refuse("A terminal is in front now. Try again.", "retry") }
     for line in text.components(separatedBy: "\n").enumerated() {
       if line.offset > 0 {
         post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true))
@@ -232,20 +344,29 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
         }
       }
     }
+    reached = ["app": target.app.localizedName ?? "", "bundle": target.app.bundleIdentifier ?? ""]
   case "key":
     guard let name = (action["key"] as? String)?.lowercased(), let code = keyCodes[name] else { try refuse("Unknown key.", "invalid") }
     let mods = action["modifiers"] as? [String] ?? []
     let shortcut = flags(mods)
-    // ⌘Q or ⌘W on a terminal holding Reach would close Reach.
-    try checkFocus(rules, quitting: shortcut.contains(.maskCommand) && ["q", "w"].contains(name))
+    let target = try focus(rules)
+    let command = shortcut.contains(.maskCommand), option = shortcut.contains(.maskAlternate)
+    // ⌘Q or ⌘W on a window holding Reach would close Reach.
+    if command, ["q", "w"].contains(name), hostsReach(target.app, rules) { try refuse(reachReason) }
+    // The developer tools read a page's passwords and run code.
+    if isBrowser(target.app.bundleIdentifier ?? ""), (command && option && ["i", "j", "c"].contains(name)) || name == "f12" { try refuse(protectedReason) }
+    if target.element.secure, !command, !["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"].contains(name) { try refuse(secureReason) }
     for down in [true, false] {
       let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
       event?.flags = shortcut
       post(event)
     }
+    reached = ["app": target.app.localizedName ?? "", "bundle": target.app.bundleIdentifier ?? ""]
   default:
     try refuse("Unknown action.", "invalid")
   }
+  reached["ok"] = true
+  return reached
 }
 
 @available(macOS 14.0, *)
@@ -254,12 +375,24 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
     try refuse("No screen to show.", "unavailable")
   }
-  // Reach's windows (and its back doors) are left out of the picture.
-  let hidden = content.windows.filter { window in
-    let app = window.owningApplication
-    return target(app?.bundleIdentifier ?? "", app?.applicationName ?? "", window.title ?? "", "", rules.titles, rules.hosts) != nil
+  let filter: SCContentFilter
+  var hidden = 0
+  if rules.mode == "apps" {
+    // Only the preset's apps appear; the rest of the screen is black.
+    let apps = content.applications.filter { app in rules.allowedApps.contains(where: { matchesApp(app.bundleIdentifier, "", $0) }) }
+    filter = SCContentFilter(display: display, including: apps, exceptingWindows: [])
+    hidden = content.windows.count - content.windows.filter { window in apps.contains(where: { $0.processID == window.owningApplication?.processID }) }.count
+  } else {
+    // Reach's windows, the protected apps and the owner's hidden apps are left out.
+    let excluded = content.windows.filter { window in
+      let app = window.owningApplication
+      let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
+      return appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
+        titleReason(window.title ?? "", app?.bundleIdentifier ?? "", rules) != nil
+    }
+    filter = SCContentFilter(display: display, excludingWindows: excluded)
+    hidden = excluded.count
   }
-  let filter = SCContentFilter(display: display, excludingWindows: hidden)
   let config = SCStreamConfiguration()
   let scale = min(1, Double(maxWidth) / Double(display.width))
   config.width = max(1, Int(Double(display.width) * scale))
@@ -271,37 +404,128 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7]), data.count < 6 * 1024 * 1024 else {
     try refuse("The screen couldn't be encoded.", "unavailable")
   }
-  return ["jpeg": data.base64EncodedString(), "width": image.width, "height": image.height, "hidden": hidden.count]
+  return ["ok": true, "jpeg": data.base64EncodedString(), "width": image.width, "height": image.height, "hidden": hidden,
+    "displayWidth": Int(display.width), "displayHeight": Int(display.height)]
+}
+
+// Every app on this Mac: running ones first, then the Applications folders.
+func catalog() -> [String: Any] {
+  let running = Dictionary(uniqueKeysWithValues: NSWorkspace.shared.runningApplications
+    .filter { $0.activationPolicy == .regular }.compactMap { app in app.bundleURL.map { (canonical($0), true) } }.filter { $0.0.hasSuffix(".app") }.reversed())
+  var paths = Set(running.keys)
+  let fm = FileManager.default
+  for root in ["/Applications", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"] {
+    guard let entries = try? fm.contentsOfDirectory(atPath: root) else { continue }
+    for entry in entries.prefix(500) {
+      let full = root + "/" + entry
+      if entry.hasSuffix(".app") { paths.insert(canonical(URL(fileURLWithPath: full))) }
+      else if !entry.hasPrefix("."), let nested = try? fm.contentsOfDirectory(atPath: full) {
+        for child in nested.prefix(100) where child.hasSuffix(".app") { paths.insert(canonical(URL(fileURLWithPath: full + "/" + child))) }
+      }
+    }
+  }
+  let apps: [[String: Any]] = paths.sorted().prefix(1024).compactMap { path in
+    guard let bundle = Bundle(path: path), let bundleId = bundle.bundleIdentifier else { return nil }
+    let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    return ["id": path, "name": String(name.prefix(100)), "bundleId": bundleId, "running": running[path] ?? false]
+  }
+  return ["ok": true, "apps": apps]
+}
+// Open or bring forward one app, by its path, within the rules.
+func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
+  if rules.mode == "view" { try refuse("This agent can only look.") }
+  guard path.hasPrefix("/"), path.hasSuffix(".app"), let bundle = Bundle(path: path), let bundleId = bundle.bundleIdentifier else { try refuse("Choose an app on this Mac.", "invalid") }
+  let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ""
+  if let reason = appReason(bundleId, name, canonical(URL(fileURLWithPath: path)), rules) { try refuse(reason) }
+  let configuration = NSWorkspace.OpenConfiguration()
+  configuration.activates = true
+  let done = DispatchSemaphore(value: 0)
+  var failure: Error?
+  NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: configuration) { _, error in failure = error; done.signal() }
+  if done.wait(timeout: .now() + 8) == .timedOut { try refuse("The app is taking too long to open.", "retry") }
+  if failure != nil { try refuse("The app couldn't be opened.", "unavailable") }
+  lastPosted = Date()
+  return ["ok": true, "app": name, "bundle": bundleId]
+}
+// What is in front right now: for the owner's "using X" line and for the
+// server's check of typed text (a terminal takes commands).
+func front(_ rules: Rules) -> [String: Any] {
+  guard let app = NSWorkspace.shared.frontmostApplication else { return ["ok": true, "app": "", "bundle": ""] }
+  let bundle = app.bundleIdentifier ?? "", name = app.localizedName ?? "", path = app.bundleURL.map(canonical) ?? ""
+  var s = Seen(bundle: bundle, name: name, path: path)
+  if let window = elementAttr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
+  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute), pidOf(focused) == app.processIdentifier {
+    let element = seen(focused); s.url = element.url; s.secure = element.secure
+  }
+  let blocked = appReason(bundle, name, path, rules) ?? titleReason(s.title, bundle, rules) ?? urlReason(s.url, rules)
+  return ["ok": true, "app": name, "bundle": bundle, "title": blocked == nil ? String(s.title.prefix(200)) : "",
+    "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? ""]
+}
+
+func rules(from request: [String: Any]) -> Rules {
+  var r = Rules()
+  func strings(_ key: String) -> [String] { (request[key] as? [String] ?? []).map(lower) }
+  func apps(_ key: String) -> [[String: String]] {
+    (request[key] as? [[String: Any]] ?? []).map { entry in
+      Dictionary(uniqueKeysWithValues: entry.compactMap { key, value in (value as? String).map { (key, $0) } })
+    }
+  }
+  r.mode = ["full", "apps", "view"].contains(request["mode"] as? String ?? "") ? request["mode"] as! String : "view"
+  r.hosts = strings("hosts"); r.titles = strings("titles").isEmpty ? ["reach"] : strings("titles")
+  r.allowedApps = apps("allowedApps"); r.hiddenApps = apps("hiddenApps")
+  r.protectedAppIds = strings("protectedAppIds"); r.protectedAppNames = strings("protectedAppNames")
+  if !strings("reachWords").isEmpty { r.reachWords = strings("reachWords") }
+  r.privatePanes = strings("privatePanes"); r.protectedTitleWords = strings("protectedTitleWords")
+  r.protectedPagePatterns = request["protectedPagePatterns"] as? [String] ?? []
+  r.terminalLike = strings("terminalLike")
+  r.patterns = compile(r.protectedPagePatterns)
+  return r
 }
 
 @main struct Main {
   static func main() async {
-    do {
-      let data = FileHandle.standardInput.readDataToEndOfFile()
-      guard data.count <= 65536, let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        try refuse("Invalid request.", "invalid")
+    var current: Rules?
+    signal(SIGTERM, SIG_IGN)
+    let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+    termination.setEventHandler { exit(0) }
+    termination.resume()
+    while let line = readLine() {
+      do {
+        guard line.utf8.count <= 262144, let data = line.data(using: .utf8),
+          let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { try refuse("Invalid request.", "invalid") }
+        let op = request["op"] as? String ?? ""
+        if op == "rules" {
+          current = rules(from: request)
+          out(["ok": true, "accessibility": AXIsProcessTrusted(), "screen": CGPreflightScreenCaptureAccess(), "mode": current!.mode])
+          continue
+        }
+        if op == "catalog" { out(catalog()); continue }
+        guard let rules = current else { try refuse("Rules come first.", "invalid") }
+        guard #available(macOS 14.0, *) else { try refuse("Screen access for agents needs macOS 14 or later.", "unavailable") }
+        switch op {
+        case "shot":
+          guard CGPreflightScreenCaptureAccess() else { try refuse("Reach needs Screen Recording to show the Mac to an agent.", "unavailable") }
+          out(try await shot(rules, max(320, min(2560, request["maxWidth"] as? Int ?? 1440))))
+        case "act":
+          guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
+          guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
+          try checkOwner(Date().timeIntervalSince(lastPosted))
+          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules))
+        case "open":
+          guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
+          try checkOwner(Date().timeIntervalSince(lastPosted))
+          out(try open(request["app"] as? String ?? "", rules))
+        case "front":
+          out(front(rules))
+        default:
+          try refuse("Unknown request.", "invalid")
+        }
+      } catch let refusal as Refusal {
+        out(["error": refusal.message, "kind": refusal.kind])
+      } catch {
+        out(["error": "The Mac couldn't do that.", "kind": "unavailable"])
       }
-      let rules = Rules(
-        hosts: (request["hosts"] as? [String] ?? []).map { $0.lowercased() },
-        titles: (request["titles"] as? [String] ?? []).map { $0.lowercased() })
-      guard !rules.titles.isEmpty else { try refuse("Reach's windows are unknown.", "invalid") }
-      guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to control this Mac.", "unavailable") }
-      guard #available(macOS 14.0, *) else { try refuse("Full control needs macOS 14 or later.", "unavailable") }
-      switch request["op"] as? String {
-      case "shot":
-        out(try await shot(rules, max(320, min(2560, request["maxWidth"] as? Int ?? 1440))))
-      case "act":
-        guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
-        try checkOwner(request["sinceAgent"] as? Double ?? 60)
-        try perform(action, CGDisplayBounds(CGMainDisplayID()), rules)
-        out(["ok": true])
-      default:
-        try refuse("Unknown request.", "invalid")
-      }
-    } catch let refusal as Refusal {
-      out(["error": refusal.message, "kind": refusal.kind])
-    } catch {
-      out(["error": "The Mac couldn't do that.", "kind": "unavailable"])
     }
+    termination.cancel()
   }
 }

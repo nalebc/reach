@@ -9,8 +9,10 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Sparkles,
   SquareTerminal,
 } from "lucide-react";
+import { PRESET_WORDS } from "./BrowserInvite";
 import AccessEditor, {
   accessSummary,
   appScopedAccess,
@@ -33,6 +35,11 @@ export type BrowserAgentSession = EditableAccess & {
   createdAt: string | number;
   folders: string[];
   pendingApprovals: number;
+  // Preset sessions: what the agent is doing on the Mac right now.
+  preset?: "full" | "apps" | "files" | "readonly";
+  using?: { at: number; kind: string; app: string; bundle: string };
+  holdsMac?: boolean;
+  paused?: boolean;
   activity: {
     state: "idle" | "waiting" | "running" | "stopping";
     folder?: string;
@@ -264,6 +271,18 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       if (alive.current && !controller.signal.aborted) setStopping([]);
     }
   };
+  // Pause one agent on the Mac: it keeps looking, its actions wait.
+  const pause = async (agent: BrowserAgentSession, paused: boolean) => {
+    setActionError("");
+    try {
+      await request(peer, "/api/browser/agents/pause", { method: "POST", body: JSON.stringify({ clientId: agent.id, paused }) });
+      setAgents((old) => old.map((item) => (item.id === agent.id ? { ...item, paused } : item)));
+      setRevision((value) => value + 1);
+      toast(paused ? `${agent.name} paused` : `${agent.name} resumed`);
+    } catch (failure) {
+      if (alive.current) setActionError((failure as Error).message);
+    }
+  };
   const active = agents.filter((agent) => activeSession(agent, now));
   const busy = stopping.length > 0;
   const words = query.trim().toLowerCase();
@@ -276,7 +295,9 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
     ) ||
     (agent.policy?.appAccess || []).some((app) =>
       appName(app).toLowerCase().includes(words),
-    );
+    ) ||
+    (agent.policy?.apps || []).some((app) => appName(app).toLowerCase().includes(words)) ||
+    (agent.preset ? PRESET_WORDS[agent.preset].title.toLowerCase().includes(words) : false);
   const ended = agents.filter((agent) => !activeSession(agent, now));
   const shownActive = active.filter(found);
   const shownEnded = ended.filter(found);
@@ -313,6 +334,10 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
           : "Expired"
       : isStopping
         ? "Stopping"
+        : agent.paused
+          ? "Paused"
+          : agent.holdsMac
+            ? `Using ${agent.using?.app || "the Mac"}`
         : agent.status === "pending"
           ? "Awaiting approval"
           : agent.status === "approved"
@@ -330,9 +355,10 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       ? "is-ended"
       : agent.status === "pending" || pending.length || agent.pendingApprovals
         ? "is-ask"
-        : agent.activity?.state === "running" || agent.status === "accepted"
+        : agent.activity?.state === "running" || agent.status === "accepted" || agent.holdsMac
           ? "is-live"
           : "";
+    const presetWords = agent.preset ? PRESET_WORDS[agent.preset] : null;
     const open = opened[agent.id] ?? (active && (needsYou(agent) || agents.length === 1));
     const policy = agent.policy || {};
     const folders = agent.folders || [];
@@ -426,12 +452,49 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
               </p>
             )}
 
+          {active && agent.using?.app && (
+            <p className="ag-working" aria-label="Using now">
+              <span className="ag-working-dot" aria-hidden="true" />
+              {agent.paused ? "Paused · last in" : agent.holdsMac ? "Using" : "Last used"} <strong>{agent.using.app}</strong>
+            </p>
+          )}
+
           <ul className="ag-facts" aria-label="Access">
+            {presetWords && (
+              <li>
+                <Sparkles size={18} />
+                <div>
+                  <strong>{presetWords.title}</strong>
+                  <small>{presetWords.detail}</small>
+                </div>
+              </li>
+            )}
+            {agent.preset === "apps" && (
+              <li>
+                <AppWindow size={18} />
+                <div>
+                  <strong>Uses</strong>
+                  <span className="ag-fact-apps">
+                    <AppStack peer={peer} apps={policy.apps || []} />
+                    {(policy.apps || []).map(appName).join(", ")}
+                  </span>
+                </div>
+              </li>
+            )}
+            {!!policy.hidden?.length && (
+              <li>
+                <AppWindow size={18} />
+                <div>
+                  <strong>Hidden from it</strong>
+                  <small>{policy.hidden.map(appName).join(", ")}</small>
+                </div>
+              </li>
+            )}
             <li>
               <Folder size={18} />
               <div>
                 <strong>
-                  {folders.length ? "Reads" : "No folders shared"}
+                  {folders.length ? (agent.preset === "full" || (agent.preset === "files" && policy.write) ? "Reads and changes" : "Reads") : agent.preset === "apps" ? "No folders" : "No folders shared"}
                 </strong>
                 {folders.map((folder) => (
                   <span className="ba-path" key={folder}>
@@ -498,6 +561,15 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
                 onClick={() => setEditing(agent)}
               >
                 {appScopedAccess(agent) ? "Manage access" : "Edit access"}
+              </button>
+            )}
+            {active && (agent.preset === "full" || agent.preset === "apps") && (
+              <button
+                className="ag-secondary ag-small"
+                disabled={busy || !!error}
+                onClick={() => void pause(agent, !agent.paused)}
+              >
+                {agent.paused ? "Resume" : "Pause"}
               </button>
             )}
             {active && (
@@ -646,8 +718,8 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
           <AgentAvatar name="+" size={56} />
           <h3>No agents yet</h3>
           <p>
-            Invite Muse or another agent. You choose its folders, apps and
-            commands, and approve it when it connects.
+            Invite Muse or another agent. Pick what it may do, Full control
+            to Read only, and approve it when it connects.
           </p>
           <button className="ag-primary" onClick={invite}>
             <Plus size={17} /> Invite an agent
@@ -686,8 +758,8 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       )}
       {!!agents.length && (
         <p className="ag-quiet ag-footnote">
-          Agents work in your real folders. Approved changes are visible to
-          every agent with access. App windows stay view-only.
+          Agents work in your real folders and apps, within their preset.
+          Passwords, security prompts and Reach stay closed to every agent.
         </p>
       )}
       {editing && (
