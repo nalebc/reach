@@ -54,6 +54,8 @@ await window.reach.callTool("reach_act", { action: { type: "click", x: 0.42, y: 
 | `reach_read_terminal` | Full, Read only | Output of a terminal the owner chose to share |
 | `reach_shell`, `reach_shell_history` | Full | One command as the owner, from inside a shared folder, 60 s and 256 KiB, logged; the deny list refuses and logs the rest |
 
+The shell executes for at most **60 seconds**. Its default request deadline is **70 seconds** for exact `POST /api/browser/shell`, allowing time for termination and logging; other requests retain a 35-second deadline. A transport timeout or disconnect does not prove whether a mutation finished. Observe the result or command history before deciding to submit again; clients do not automatically retry mutations.
+
 The stdio MCP adapter advertises the same tools for a compatible credential. There is no invitation, owner-approval or generic HTTP tool, and no tool reaches another agent's session.
 
 ## How it is enforced
