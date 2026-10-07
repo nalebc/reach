@@ -113,7 +113,7 @@ test("Unzip sends the selected archive and refreshes its parent folder; read-onl
 test("a missing second archive is reported by its own name without claiming extraction success", async () => {
   const c = await show([file("one.zip"), file("two.zip")]);
   extract = ({ path }) => path === "one.zip" ? { name: "one" } : Response.json({ error: "Gone" }, { status: 404 });
-  await click(button(await selectAll(c), "Unzip (2)"));
+  await click(button(await selectAll(c), "Unzip"));
   await dom.waitFor(() => messages.some((m) => m.includes("two.zip” was moved")));
   assert.equal(messages.some((m) => m.includes("one.zip” was moved")), false);
   assert.equal(messages.filter((m) => m.startsWith("Unzipped into")).length, 1);

@@ -65,6 +65,7 @@ import {
   type FileKind,
 } from "./file-kinds";
 import { preparedFile, useFileShare } from "./useFileShare";
+import AgentMarkdown from "./AgentMarkdown";
 import {
   agentLabel,
   projectName,
@@ -84,8 +85,6 @@ import { useFileTypeIcons } from "./app-icons";
 import "./files.css";
 
 const FilePdf = lazy(() => import("./FilePdf"));
-const FileCode = lazy(() => import("./FileCode"));
-const FileMarkdown = lazy(() => import("./FileMarkdown"));
 
 const kindIcons: Record<FileKind, typeof File> = {
   folder: Folder,
@@ -446,51 +445,30 @@ export default function Files({
   const canSendToAgent =
     features.owner && !!rootPath && agents.some((s) => !cannotReply(s));
   const [unzipping, setUnzipping] = useState<string[]>([]);
-  const extracting = useRef(new Set<string>());
   const unzip = async (files: FileEntry[]) => {
-    const list = files.filter(
-      (f) =>
-        f.type !== "directory" &&
-        isArchive(f.name) &&
-        !extracting.current.has(f.path),
-    );
-    if (!canExtract || !list.length) return false;
-    list.forEach((f) => extracting.current.add(f.path));
+    const list = files.filter((f) => f.type !== "directory" && isArchive(f.name));
+    if (!list.length) return;
+    let current = list[0];
     setUnzipping((u) => [...u, ...list.map((f) => f.path)]);
-    let complete = true;
     try {
       for (const file of list) {
-        try {
-          const r = await post<{ name: string }>(peer, "/api/files/extract", {
-            root,
-            path: file.path,
-          });
-          toast(`Unzipped into “${r.name}”`);
-          setPicked((p) => p.filter((path) => path !== file.path));
-        } catch (e) {
-          complete = false;
-          if (isGone(e)) gone(file);
-          else toast(`“${file.name}”: ${(e as Error).message}`);
-        }
+        current = file;
+        const r = await post<{ name: string }>(peer, "/api/files/extract", {
+          root,
+          path: file.path,
+        });
+        toast(`Unzipped into “${r.name}”`);
       }
+    } catch (e) {
+      if (isGone(e)) gone(current);
+      else toast((e as Error).message);
     } finally {
-      list.forEach((f) => extracting.current.delete(f.path));
       setUnzipping((u) => u.filter((p) => !list.some((f) => f.path === p)));
       refresh();
     }
-    return complete;
   };
   const pickedEntries = shownPicked(entries, picked);
   const pickedFiles = pickedEntries.filter((f) => f.type !== "directory");
-  const pickedArchives = pickedFiles.filter((f) => isArchive(f.name));
-  const allShownPicked =
-    shown.length > 0 && shown.every((f) => picked.includes(f.path));
-  useEffect(() => {
-    if (!busyLoading)
-      setPicked((p) =>
-        p.filter((path) => entries.some((f) => f.path === path)),
-      );
-  }, [entries, busyLoading]);
   const parts = dir.split("/").filter(Boolean);
   const title = parts.at(-1) || rootName;
   const parent = parts.slice(0, -1).join("/");
@@ -519,11 +497,6 @@ export default function Files({
   const endSelecting = () => {
     setSelecting(false);
     setPicked([]);
-  };
-  const startSelecting = () => {
-    setExpanded("");
-    setPanel("");
-    setSelecting(true);
   };
   const open = (file: FileEntry) => {
     setExpanded("");
@@ -681,18 +654,15 @@ export default function Files({
                   className="files-text-tool"
                   onClick={() =>
                     setPicked(
-                      allShownPicked
-                        ? picked.filter((p) => !shown.some((f) => f.path === p))
-                        : [
-                            ...new Set([
-                              ...picked,
-                              ...shown.map((f) => f.path),
-                            ]),
-                          ],
+                      picked.length === shown.length
+                        ? []
+                        : shown.map((f) => f.path),
                     )
                   }
                 >
-                  {allShownPicked ? "Deselect All" : "Select All"}
+                  {picked.length && picked.length === shown.length
+                    ? "Deselect All"
+                    : "Select All"}
                 </button>
                 <button
                   className="files-text-tool is-strong"
@@ -704,12 +674,15 @@ export default function Files({
             ) : (
               <>
                 <button
-                  className="files-tool files-select-tool"
+                  className="files-tool"
                   aria-label="Select files"
-                  onClick={startSelecting}
+                  onClick={() => {
+                    setExpanded("");
+                    setPanel("");
+                    setSelecting(true);
+                  }}
                 >
                   <CheckCircle2 size={19} />
-                  <span>Select</span>
                 </button>
                 <button
                   className="files-tool"
@@ -843,9 +816,6 @@ export default function Files({
               />
             </label>
             <div className="files-tiles">
-              <button onClick={startSelecting}>
-                <CheckCircle2 size={18} /> Select files
-              </button>
               <button onClick={refresh}>
                 <RefreshCw size={18} className={busyLoading ? "spin" : ""} />
                 Refresh
@@ -1167,27 +1137,21 @@ export default function Files({
                 <SendHorizontal size={16} /> Send to agent
               </button>
             )}
-            {canExtract && pickedArchives.length > 0 && (
-              <button
-                disabled={pickedArchives.some((f) =>
-                  unzipping.includes(f.path),
-                )}
-                onClick={async () => {
-                  if (await unzip(pickedArchives)) {
-                    if (pickedArchives.length === pickedEntries.length)
-                      endSelecting();
-                  }
-                }}
-              >
-                {pickedArchives.some((f) => unzipping.includes(f.path)) ? (
-                  <Loader2 size={16} className="spin" />
-                ) : (
-                  <FolderInput size={16} />
-                )}{" "}
-                Unzip
-                {pickedArchives.length > 1 ? ` (${pickedArchives.length})` : ""}
-              </button>
-            )}
+            {canExtract &&
+              pickedEntries.length > 0 &&
+              pickedEntries.every((f) => f.type !== "directory" && isArchive(f.name)) && (
+                <button
+                  disabled={pickedEntries.some((f) =>
+                    unzipping.includes(f.path),
+                  )}
+                  onClick={async () => {
+                    await unzip(pickedEntries);
+                    endSelecting();
+                  }}
+                >
+                  <FolderInput size={16} /> Unzip
+                </button>
+              )}
           </div>
         </div>
       )}
@@ -1413,9 +1377,7 @@ function SendToAgent({
           onChange={(e) => setNote(e.target.value)}
         />
         {error && (
-          <p className="files-send-error" role="alert">
-            {error}
-          </p>
+          <p className="files-send-error" role="alert">{error}</p>
         )}
         <button className="button primary" disabled={!target || sending}>
           {sending ? (
@@ -1569,9 +1531,7 @@ function Viewer({
     setLoading(true);
     const maximum = mode === "pdf" ? MAX_PDF_PREVIEW : MAX_IMAGE_PREVIEW;
     const tooLarge = () =>
-      new Error(
-        `This ${nouns[kind] || "file"} is too large to preview. Download it instead.`,
-      );
+      new Error(`This ${nouns[kind] || "file"} is too large to preview. Download it instead.`);
     (async () => {
       try {
         if (mode === "image" || mode === "pdf") {
@@ -1602,9 +1562,7 @@ function Viewer({
           sharer.warm(file, blob);
           if (mode === "pdf") setPdf(blob);
           else {
-            url = URL.createObjectURL(
-              new Blob([blob], { type: imageType(file.name) }),
-            );
+            url = URL.createObjectURL(new Blob([blob], { type: imageType(file.name) }));
             setImage(url);
           }
         } else if (mode === "text" || mode === "document") {
@@ -1620,11 +1578,7 @@ function Viewer({
       } catch (e) {
         if (controller.signal.aborted) return;
         if (isGone(e)) return gone();
-        setError(
-          (e as { status?: number }).status === 413
-            ? tooLarge().message
-            : (e as Error).message,
-        );
+        setError((e as { status?: number }).status === 413 ? tooLarge().message : (e as Error).message);
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -1633,16 +1587,7 @@ function Viewer({
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [
-    peer.url,
-    peer.token,
-    root,
-    file.path,
-    file.name,
-    file.modified,
-    file.size,
-    mode,
-  ]);
+  }, [peer.url, peer.token, root, file.path, file.name, file.modified, file.size, mode]);
   const others = peers.filter((p) => p.id !== peer.id);
   return (
     <dialog
@@ -1670,6 +1615,16 @@ function Viewer({
               {bytes(file.size)} · {friendlyDate(file.modified)}
             </small>
           </div>
+          {!loading && !error && text && isMarkdown(file.name) && (
+            <button
+              className="files-tool"
+              aria-label={source ? "Show formatted" : "Show source"}
+              aria-pressed={source}
+              onClick={() => setSource((s) => !s)}
+            >
+              {source ? <Eye size={19} /> : <Code2 size={19} />}
+            </button>
+          )}
           {!loading && !error && !image && !pdf && text && (
             <button
               className={`files-tool ${copied ? "is-done" : ""}`}
@@ -1713,28 +1668,6 @@ function Viewer({
             <Download size={19} />
           </button>
         </header>
-        {!loading && !error && text && isMarkdown(file.name) && (
-          <div
-            className="file-format-toolbar"
-            role="group"
-            aria-label="Markdown view"
-          >
-            <button
-              aria-label="Show formatted"
-              aria-pressed={!source}
-              onClick={() => setSource(false)}
-            >
-              <Eye size={16} /> Formatted
-            </button>
-            <button
-              aria-label="Show source"
-              aria-pressed={source}
-              onClick={() => setSource(true)}
-            >
-              <Code2 size={16} /> Source
-            </button>
-          </div>
-        )}
         <div
           className={`file-viewer-body ${image ? "is-image" : ""} ${pdf ? "is-pdf" : ""} ${mode === "document" ? "is-document" : ""}`}
         >
@@ -1759,33 +1692,13 @@ function Viewer({
           ) : image ? (
             <img src={image} alt={file.name} />
           ) : pdf ? (
-            <Suspense
-              fallback={
-                <Loader2
-                  className="spin"
-                  size={24}
-                  aria-label="Loading PDF preview"
-                />
-              }
-            >
+            <Suspense fallback={<Loader2 className="spin" size={24} aria-label="Loading PDF preview" />}>
               <FilePdf blob={pdf} name={file.name} />
             </Suspense>
-          ) : text && (isMarkdown(file.name) || kind === "code") ? (
-            <Suspense
-              fallback={
-                <Loader2
-                  className="spin"
-                  size={24}
-                  aria-label="Loading text preview"
-                />
-              }
-            >
-              {isMarkdown(file.name) && !source ? (
-                <FileMarkdown text={text} />
-              ) : (
-                <FileCode text={text} name={file.name} />
-              )}
-            </Suspense>
+          ) : text && isMarkdown(file.name) && !source ? (
+            <div className="file-viewer-markdown">
+              <AgentMarkdown text={text} />
+            </div>
           ) : (
             <pre>{text || "(Empty file)"}</pre>
           )}

@@ -71,9 +71,3 @@ type, resize, and fit the screen after zooming. This does not replace testing
 Safari's native keyboard and gestures on a physical iPhone.
 
 The fixture sends the companion's Content Security Policy. PDF preview uses a two-page synthetic file; page navigation, close, and Markdown formatted/source modes were checked in a real browser. The demo never accesses the computer's real files or terminals.
-
-Open `/scripts/demo/files.html` for the real app with synthetic Markdown, TSX,
-and ZIP files. Check Files in list and grid views at 320, 390, and 430 px wide,
-then landscape and desktop. Wide tables and code blocks must scroll internally
-while prose stays at phone width. This fixture simulates unzip by adding sample
-folders in memory; it never extracts files on the computer.
