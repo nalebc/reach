@@ -154,7 +154,9 @@ export function validateCodexResult(method, result) {
   if (valid && method === "thread/queue/delete") valid = typeof result.deleted === "boolean";
   if (valid && method === "turn/steer") valid = typeof result.turnId === "string" && !!result.turnId;
   if (valid && method === "thread/turns/list")
-    valid = result.data.every(t => object(t) && typeof t.id === "string" && !!t.id && ["inProgress", "completed", "interrupted", "failed"].includes(t.status));
+    // A status Codex adds later is a turn all the same (finished once it has
+    // an end time): never a reason to stop reading turns.
+    valid = result.data.every(t => object(t) && typeof t.id === "string" && !!t.id && typeof t.status === "string" && !!t.status);
   if (valid && method === "account/read")
     valid = result.account === null || object(result.account);
   if (!valid) throw compatibilityError("codex", method, !readOnlyRpc(method));

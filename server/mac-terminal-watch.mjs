@@ -109,10 +109,22 @@ export class MacTerminalWatch {
       if (!this.users) return helper.stop();
       this.helper = helper;
       helper.on("event", (event) => this.event(event));
+      const upAt = Date.now();
       helper.on("exit", () => {
         if (this.helper !== helper) return;
-        // Back to asking, until the next phone connects.
         this.end();
+        // Phones still here: started again, a little later each time it
+        // falls over at once (1 s, 2 s … a minute); back to 1 s after a
+        // minute up. Meanwhile phones ask, as before.
+        if (Date.now() - upAt > 60000) this.restarts = 0;
+        if (!this.users) return;
+        const delay = Math.min(60000, 1000 * 2 ** (this.restarts || 0));
+        this.restarts = (this.restarts || 0) + 1;
+        clearTimeout(this.restartTimer);
+        this.restartTimer = setTimeout(() => {
+          if (this.users && !this.helper && !this.starting) this.starting = this.begin();
+        }, delay);
+        this.restartTimer.unref?.();
       });
       await this.refresh();
       this.timers.safety = setInterval(() => void this.refresh(), this.safety);
