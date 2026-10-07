@@ -586,9 +586,10 @@ export function createCodexLive({
       }
       return r || {};
     },
-    async model(threadId, { model, effort } = {}) {
+    // speed: Codex's service tier, changed mid-chat as in the Codex app.
+    async model(threadId, { model, effort, speed } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
-      const params = { threadId, model, ...(effort ? { effort } : {}) };
+      const params = { threadId, model, ...(effort ? { effort } : {}), ...(speed ? { serviceTier: speed } : {}) };
       // A chat already loaded by the shared engine can be changed without
       // taking it over, even while another client is running its turn.
       try {
@@ -599,7 +600,7 @@ export function createCodexLive({
           await attach(threadId);
         } catch (e) {
           if (WRITER_HELD.test(e.message)) {
-            const result = await desktop.model(threadId, { model, effort });
+            const result = await desktop.model(threadId, { model, effort, ...(speed ? { serviceTier: speed } : {}) });
             state(threadId).items++;
             changed(threadId);
             return result;
@@ -611,7 +612,7 @@ export function createCodexLive({
       }
       state(threadId).items++;
       changed(threadId);
-      return { model, ...(effort ? { effort } : {}), applied: true };
+      return { model, ...(effort ? { effort } : {}), ...(speed ? { speed } : {}), applied: true };
     },
     async mode(threadId, mode) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);

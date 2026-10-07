@@ -11,6 +11,8 @@ export type Subagent = {
   type: string;
   background: boolean;
   status: "running" | "done" | "failed" | "stopped" | "quiet";
+  // It can be stopped from here (Reach runs the chat).
+  stoppable?: boolean;
   activity: string;
   result: string;
   startedAt: number;
@@ -514,6 +516,9 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// One sub-agent stopped, the chat going on.
+export const stopSubagent = (peer: Peer, s: { agent: AgentName; id: string }, task: string) =>
+  post<{ stopped: true }>(peer, `${sessionPath(s)}/subagents/${encodeURIComponent(task)}/stop`);
 // A chat deleted, as in its app.
 export const deleteSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
   request<{ deleted: true }>(peer, sessionPath(s), { method: "DELETE" });
@@ -538,7 +543,7 @@ export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, 
 // app too (applied: false when it goes with the next message instead).
 export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
   post<{ mode: string; applied: boolean }>(peer, `${sessionPath(s)}/mode`, { mode });
-export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string }) =>
+export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string; speed?: string }) =>
   post<{ model: string; effort?: string; applied: boolean }>(peer, `${sessionPath(s)}/model`, choice);
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
   post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(

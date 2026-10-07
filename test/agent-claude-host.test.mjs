@@ -50,7 +50,7 @@ function fakeClaude({ models = [], title = "Proposed title" } = {}) {
           const message = JSON.parse(line);
           proc.lines.push(message);
           const subtype = message.request?.subtype;
-          if (message.type === "control_request" && ["set_model", "interrupt"].includes(subtype))
+          if (message.type === "control_request" && ["set_model", "interrupt", "stop_task"].includes(subtype))
             queueMicrotask(() =>
               proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
             );
@@ -1446,4 +1446,14 @@ test("Auto picked for a chat Reach runs stays Auto on its next messages", async 
   await sessions.send("claude", ID, { text: "third" });
   const args = claude.last().args;
   assert.equal(args[args.indexOf("--permission-mode") + 1], "acceptEdits");
+});
+
+test("one sub-agent stops, the chat going on, while Reach runs it (stop_task); otherwise it's stopped on the Mac", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  await assert.rejects(h.stopTask(ID, "a28230b100dfc3978"), (e) => e.status === 409 && /isn't running this chat/.test(e.message));
+  await h.send(ID, { text: "audit it", cwd: "/work/app" });
+  assert.deepEqual(await h.stopTask(ID, "a28230b100dfc3978"), { stopped: true });
+  assert.deepEqual(claude.last().lines.find((l) => l.request?.subtype === "stop_task").request, { subtype: "stop_task", task_id: "a28230b100dfc3978" });
+  await assert.rejects(h.stopTask(ID, "../x"), (e) => e.status === 404);
 });

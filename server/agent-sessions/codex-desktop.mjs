@@ -266,10 +266,10 @@ export function createCodexDesktop({
         uncertain: editUncertain,
       }).then(() => ({ edited: true }));
     },
-    model(conversationId, { model, effort }) {
+    model(conversationId, { model, effort, serviceTier }) {
       if (typeof model !== "string" || !model.trim())
         return Promise.reject(settingsUnavailable());
-      return update(conversationId, { model, ...(effort ? { effort } : {}) });
+      return update(conversationId, { model, ...(effort ? { effort } : {}), ...(serviceTier ? { serviceTier } : {}) });
     },
     permissions(
       conversationId,

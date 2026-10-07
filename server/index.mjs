@@ -2747,11 +2747,14 @@ export async function createReach(overrides = {}) {
   // owner's call (it changes what Claude may do without asking). Never Bypass.
   app.post("/api/sessions/:agent/:id/model", async (req, res) => {
     macOwner(req);
-    const { model, effort } = req.body || {};
+    const { model, effort, speed } = req.body || {};
     if (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f]/.test(model) ||
         (effort != null && (typeof effort !== "string" || !effort.trim() || effort.length > 80 || /[\x00-\x1f]/.test(effort))))
       throw fail(400, "Choose a model and thinking level.");
-    res.json(await agentSessions.model(req.params.agent, req.params.id, { model, effort }));
+    // Codex's speed (its service tier), changed mid-chat as in the Codex app.
+    if (speed != null && (req.params.agent !== "codex" || typeof speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(speed)))
+      throw fail(400, "Unknown speed.");
+    res.json(await agentSessions.model(req.params.agent, req.params.id, { model, effort, ...(speed ? { speed } : {}) }));
   });
   app.post("/api/sessions/:agent/:id/mode", async (req, res) => {
     macOwner(req);
@@ -2769,6 +2772,12 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // One sub-agent stopped, the chat going on.
+  app.post("/api/sessions/:agent/:id/subagents/:task/stop", async (req, res) => {
+    const result = await agentSessions.stopSubagent(req.params.agent, req.params.id, req.params.task);
+    record("session", `Stopped a ${agentLabel(req.params.agent)} sub-agent`);
+    res.json(result);
+  });
   // A chat deleted, as in its app (Codex's delete; a Claude chat to the Trash).
   app.delete("/api/sessions/:agent/:id", async (req, res) => {
     macOwner(req);

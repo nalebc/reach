@@ -1113,7 +1113,7 @@ export function createAgentSessions({
     // A permission mode picked on the phone for a chat the Claude app holds:
     // picked in the app's own menu, so both show it. Elsewhere (chats Reach
     // runs, Codex) it goes with the next message, as before.
-    async model(agent, id, { model, effort }) {
+    async model(agent, id, { model, effort, speed }) {
       adapter(agent);
       if (agent === "claude" && !claudeHost.drives(id) && claudeCompose && await claudeOpen()) {
         const { session } = await claude.read(id, { limit: 1 });
@@ -1147,7 +1147,7 @@ export function createAgentSessions({
         }
       }
       if (agent !== "codex") return { model, effort, applied: false };
-      return codexLive.model(id, { model, effort });
+      return codexLive.model(id, { model, effort, ...(speed ? { speed } : {}) });
     },
     async mode(agent, id, { mode }) {
       adapter(agent);
@@ -1215,6 +1215,11 @@ export function createAgentSessions({
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
+    },
+    // One sub-agent stopped, as the Claude app's stop on a task (stop_task).
+    async stopSubagent(agent, id, taskId) {
+      if (agent !== "claude") throw Object.assign(new Error("Stop it from Codex."), { status: 409 });
+      return claudeHost.stopTask(id, taskId);
     },
     // A chat deleted, as in its app: Codex's own delete; a Claude chat's
     // transcript and record to the Trash (claude.mjs remove).
@@ -1497,6 +1502,10 @@ export function createAgentSessions({
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
       if (agent === "claude" && result.session && claudeHost.modeOf?.(id) && (!result.session.inApp || claudeHost.drives(id)))
         result.session.mode = claudeHost.modeOf(id);
+      // Its sub-agents can be stopped one by one while Reach's own Claude
+      // Code runs the chat (stop_task).
+      if (agent === "claude" && result.session?.subagents?.length && claudeHost.drives(id))
+        result.session.subagents = result.session.subagents.map((s) => (s.status === "running" ? { ...s, stoppable: true } : s));
       if (origin?.to.hidden) {
         // Its first messages are the history written for it: shown once,
         // as the original chat's (Claude pages count from its start).

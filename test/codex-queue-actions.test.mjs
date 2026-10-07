@@ -185,3 +185,17 @@ test("Plan sends Codex's plan mode with the turn, with the chat's model; a chat 
   const held = createCodexLive({ daemon: fakeDaemon({ "thread/resume": HELD }), desktop: fakeDesktop() });
   await assert.rejects(held.send(T, { text: "x", collaboration: "plan" }), /turn Plan on there/);
 });
+
+test("speed changes mid-chat, as in the Codex app: the thread's own setting, the app's when it holds the chat", async () => {
+  const daemon = fakeDaemon({ "thread/settings/update": {} });
+  const live = createCodexLive({ daemon, desktop: fakeDesktop() });
+  assert.deepEqual(await live.model(T, { model: "gpt-5.5", speed: "fast" }), { model: "gpt-5.5", speed: "fast", applied: true });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/settings/update")[1], { threadId: T, model: "gpt-5.5", serviceTier: "fast" });
+  const settings = [];
+  const held = createCodexLive({
+    daemon: fakeDaemon({ "thread/settings/update": new Error("thread not found"), "thread/resume": HELD }),
+    desktop: { model: async (id, s) => (settings.push(s), { applied: true }) },
+  });
+  await held.model(T, { model: "gpt-5.5", speed: "fast" });
+  assert.deepEqual(JSON.parse(JSON.stringify(settings)), [{ model: "gpt-5.5", serviceTier: "fast" }]);
+});

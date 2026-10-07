@@ -644,6 +644,15 @@ export function createClaudeHost({
       changed(s);
       return { answered: true };
     },
+    // One background task or sub-agent stopped, the rest going on
+    // (Claude Code's stop_task, as the Claude app's per-task stop).
+    async stopTask(id, taskId) {
+      const s = sessions.get(id);
+      if (typeof taskId !== "string" || !/^[\w-]{1,80}$/.test(taskId)) throw bad("Unknown task.", 404);
+      if (!s?.proc) throw bad(`Reach isn't running this chat. Stop it on your ${computerWord(platform)}.`, 409);
+      await control(s, { subtype: "stop_task", task_id: taskId });
+      return { stopped: true };
+    },
     // Ends Reach's process for a session (before the Claude app takes it).
     release(id) {
       const s = sessions.get(id);

@@ -1088,7 +1088,7 @@ test("Codex: the model and effort as words and dots over the composer, the model
   assert.deepEqual(dom.errors, []);
 });
 
-test("Codex: Speed in Configure uses the phone's own menu and goes with the next message", async (t) => {
+test("Codex: Speed in Configure uses the phone's own menu and changes the chat's speed at once, as in the Codex app", async (t) => {
   const astra = CODEX_OFFERS.models[0];
   const before = { ...astra };
   // As Codex really lists them: only the extra tier, no standard one.
@@ -1104,13 +1104,16 @@ test("Codex: Speed in Configure uses the phone's own menu and goes with the next
   assert.deepEqual([...select.options].map((o) => o.textContent), ["Standard", "Fast"]);
   select.value = "priority";
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  await dom.waitFor(() => /Fast/.test($(".ms-select .ms-value").textContent));
-  // Nothing sent yet: the speed rides on the next message.
-  assert.equal(mac.sent.length, 0);
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/model")));
+  // The chat's own speed, changed now (with its model), not on the next message.
+  const change = mac.sent.find((m) => m.route.endsWith("/model"));
+  assert.equal(change.route, `/api/sessions/codex/${CODEX}/model`);
+  assert.equal(change.body.speed, "priority");
+  assert.equal(typeof change.body.model, "string");
   await click($(".ms-done"));
   await typeInto($("textarea"), "go");
   await click(button("Send"));
-  assert.deepEqual(mac.sent.at(-1).body, { text: "go", images: [], speed: "priority" });
+  assert.equal(mac.sent.at(-1).body.speed, undefined);
 });
 
 test("Claude: Select model with what each is for, and Effort as its own row that opens the levels", async (t) => {

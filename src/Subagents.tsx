@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Check, ChevronDown, ChevronRight, Circle, CircleSlash, ListTodo, Loader2, Moon, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Circle, CircleSlash, ListTodo, Loader2, Moon, Square, X } from "lucide-react";
 import type { AgentSession, SessionItem, Subagent } from "./agent-sessions";
 import AgentMarkdown from "./AgentMarkdown";
 import "./subagents.css";
@@ -27,8 +27,9 @@ function StatusMark({ status }: { status: Status }) {
 
 // A sub-agent the chat started, where it started it: what it is, whether it
 // still runs and what it's doing, and what it found once it ends.
-export function SubagentCard({ item, agent }: { item: SessionItem; agent?: Subagent }) {
+export function SubagentCard({ item, agent, onStop }: { item: SessionItem; agent?: Subagent; onStop?: (task: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const status: Status = agent?.status || item.agentStatus || (item.status === "failed" ? "failed" : item.status === "running" ? "running" : "done");
   const activity = agent?.activity || item.activity || "";
   // A background agent's call returns at once ("launched"): its own last words say more.
@@ -50,6 +51,22 @@ export function SubagentCard({ item, agent }: { item: SessionItem; agent?: Subag
         <StatusMark status={status} />
         {result && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
       </button>
+      {onStop && agent?.stoppable && status === "running" && (
+        <button
+          className="sa-stop"
+          disabled={stopping}
+          onClick={async () => {
+            setStopping(true);
+            try {
+              await onStop(agent.id);
+            } finally {
+              setStopping(false);
+            }
+          }}
+        >
+          {stopping ? <Loader2 size={13} className="spin" /> : <Square size={11} fill="currentColor" />} Stop this agent
+        </button>
+      )}
       {open && result && (
         <div className="sa-result">
           <AgentMarkdown text={result} />

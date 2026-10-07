@@ -78,6 +78,7 @@ import {
   editQueued,
   renameSession,
   deleteSession,
+  stopSubagent,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -2213,6 +2214,14 @@ export default function AgentSessionView({
                 key={b.item.id}
                 item={b.item}
                 agent={info.subagents?.find((a) => a.toolUseId === b.item.id || a.id === b.item.agentId)}
+                onStop={async (task) => {
+                  try {
+                    await stopSubagent(peer, initial, task);
+                    void load(false);
+                  } catch (e) {
+                    setProblem((e as Error).message);
+                  }
+                }}
               />
             ) : b.item.role === "user" && editingLast?.id === b.item.id ? (
               <form
@@ -2592,12 +2601,9 @@ export default function AgentSessionView({
             onRetry={() => setModelReload((n) => n + 1)}
             onClose={() => setPicking(false)}
             onPick={async (next, stay) => {
-              // The speed goes with the next message (Codex has no other way
-              // to change a chat's speed).
-              if (next.speed) {
-                setChoice((previous) => ({ ...previous, speed: next.speed }));
-                return;
-              }
+              // The speed changes the chat's own setting at once, as in the
+              // Codex app (thread settings; the app's when it holds the chat).
+              if (next.speed && !next.model) next = { ...next, model: modelId || info.model || undefined };
               if (savingModel.current) return;
               savingModel.current = true;
               setModelSaving(true);
