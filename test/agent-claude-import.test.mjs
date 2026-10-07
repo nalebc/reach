@@ -13,6 +13,7 @@ import {
   idleSeconds,
   inClaudeApp,
   reloadClaudeWindow,
+  writeClaudeRecord,
 } from "../server/agent-sessions/claude-import.mjs";
 
 const A = "1fa82f5d-07e5-459c-a5fd-61368b3423c5";
@@ -43,7 +44,7 @@ test("a session started from Reach joins the Claude app only while nobody is at 
   // In use: it waits, and is written down.
   await imports.add(A);
   assert.deepEqual(opened, []);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), [A]);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, "utf8"))), [A]);
   // Away, but the app is closed: Reach never opens it.
   mac.idle = 600;
   mac.running = false;
@@ -54,7 +55,7 @@ test("a session started from Reach joins the Claude app only while nobody is at 
   await waitUntil(() => opened.length === 1 && imports.pending().length === 0);
   assert.deepEqual(opened, [link(A)]);
   assert.deepEqual(imports.pending(), []);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), {});
   // One the app already lists is dropped without opening anything.
   mac.idle = 5;
   mac.inApp.add(B);
@@ -299,4 +300,163 @@ test("the Claude app's opening time, its sessions on screen, and its Reload are 
   assert.equal(runs[0][0], "/usr/bin/osascript");
   assert.match(runs[0][1][1], /bundle identifier is "com\.anthropic\.claudefordesktop"/);
   assert.match(runs[0][1][1], /click menu item "Reload" of menu 1 of menu bar item "View"/);
+});
+
+// The Claude app's records folder with one record of its own, as it writes them.
+function appRecords(sample = {}) {
+  const records = tmp();
+  const dir = path.join(records, "acct-1", "org-1");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, `local_${B}.json`),
+    JSON.stringify({
+      sessionId: `local_${B}`,
+      cliSessionId: B,
+      cwd: "/Users/me/site",
+      createdAt: 1,
+      lastActivityAt: 2,
+      isArchived: false,
+      permissionMode: "auto",
+      chromePermissionMode: "skip_all_permission_checks",
+      ...sample,
+    }),
+  );
+  return { records, dir };
+}
+
+test("a chat's record is written as the Claude app's own import writes it, never over one it has", () => {
+  const { records, dir } = appRecords();
+  const info = { cwd: "/Users/me/site", title: "Fix the header", model: "claude-opus-5-5", mode: "manual", createdAt: 10, updatedAt: 20 };
+  assert.equal(writeClaudeRecord(A, info, { records, now: () => 99 }), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, `local_${A}.json`), "utf8")), {
+    sessionId: `local_${A}`,
+    cliSessionId: A,
+    cwd: "/Users/me/site",
+    originCwd: "/Users/me/site",
+    createdAt: 10,
+    lastActivityAt: 20,
+    indexedAt: 99,
+    isArchived: false,
+    title: "Fix the header",
+    titleSource: "auto",
+    model: "claude-opus-5-5",
+    // Reach's Manual is the app's default; never a mode the app doesn't have.
+    permissionMode: "default",
+    chromePermissionMode: "skip_all_permission_checks",
+    sessionPermissionUpdates: [],
+    alwaysAllowedReasons: [],
+    adoptedFromOtherSurface: true,
+  });
+  assert.equal(inClaudeApp(A, records), true);
+  // Nothing left behind but the record.
+  assert.deepEqual(fs.readdirSync(dir).sort(), [`local_${A}.json`, `local_${B}.json`].sort());
+  // One the app has is left as it is.
+  const theirs = fs.readFileSync(path.join(dir, `local_${B}.json`), "utf8");
+  assert.equal(writeClaudeRecord(B, info, { records }), true);
+  assert.equal(fs.readFileSync(path.join(dir, `local_${B}.json`), "utf8"), theirs);
+  // Not a folder of a chat, or not an id: nothing written.
+  assert.equal(writeClaudeRecord(C, { cwd: "relative" }, { records }), false);
+  assert.equal(writeClaudeRecord("../x", info, { records }), false);
+});
+
+test("an app whose records changed shape gets none from Reach: its import link instead", async () => {
+  const { records, dir } = appRecords({ createdAt: "2026-10-07" });
+  assert.equal(writeClaudeRecord(A, { cwd: "/Users/me/site" }, { records }), false);
+  assert.equal(fs.existsSync(path.join(dir, `local_${A}.json`)), false);
+  // No app records at all (never used): none either.
+  assert.equal(writeClaudeRecord(A, { cwd: "/Users/me/site" }, { records: tmp() }), false);
+  const opened = [];
+  const imports = createClaudeImports({
+    file: path.join(tmp(), "claude-imports.json"),
+    open: async (...args) => opened.push(args),
+    appRunning: async () => true,
+    frontmost: async () => false,
+    imported: (id) => inClaudeApp(id, records),
+    describe: async () => ({ cwd: "/Users/me/site" }),
+    write: (id, info) => writeClaudeRecord(id, info, { records }),
+    shown: () => [],
+    resume: false,
+  });
+  await imports.add(A);
+  assert.deepEqual(opened, [link(A)]);
+  imports.close();
+});
+
+test("a chat joins the app's list whatever happens: written for its next launch, imported while it's open and out of the way", async () => {
+  const { records } = appRecords();
+  const file = path.join(tmp(), "claude-imports.json");
+  const mac = { running: false, launched: null, front: true, idle: 5, held: true, shown: [{ session: `local_${B}` }] };
+  const opened = [];
+  let clock = 1000;
+  const make = () =>
+    createClaudeImports({
+      file,
+      open: async (...args) => {
+        opened.push(args);
+        // The import link switches the window to the chat it imports.
+        if (args[0].startsWith("claude://resume")) mac.shown = [{ session: `local_${A}` }];
+      },
+      idle: async () => mac.idle,
+      appRunning: async () => mac.running,
+      startedAt: async () => mac.launched,
+      frontmost: async () => mac.front,
+      imported: (id) => inClaudeApp(id, records),
+      held: () => mac.held,
+      describe: async () => ({ cwd: "/Users/me/site", title: "From the phone" }),
+      write: (id, info) => writeClaudeRecord(id, info, { records }),
+      shown: () => mac.shown,
+      now: () => clock,
+      settleMs: 1,
+      resume: false,
+    });
+  let imports = make();
+  // Reach's own Claude Code still runs it: nothing yet, but it's written down.
+  await imports.add(A);
+  assert.equal(inClaudeApp(A, records), false);
+  assert.deepEqual(imports.pending(), [A]);
+  imports.close();
+  // Reach restarts and lets go of it; the app is closed: its record is
+  // written, and it's done (the app reads it when it opens).
+  mac.held = false;
+  imports = make();
+  assert.deepEqual(imports.pending(), [A]);
+  await imports.check();
+  assert.equal(inClaudeApp(A, records), true);
+  assert.deepEqual(imports.pending(), []);
+  assert.deepEqual(opened, []);
+  imports.close();
+
+  // Open since before the record: in front and in use, it waits; once the
+  // app isn't in front, its import link, and the window goes back.
+  const D = "2c9a6f1e-0000-4000-8000-000000000003";
+  mac.running = true;
+  mac.launched = 500;
+  mac.shown = [{ session: `local_${B}` }];
+  imports = make();
+  clock = 2000;
+  await imports.add(D);
+  assert.deepEqual(opened, []);
+  assert.deepEqual(imports.pending(), [D]);
+  mac.front = false;
+  await imports.check();
+  assert.deepEqual(opened, [
+    [`claude://resume?session=${D}`, { background: true }],
+    [`claude://code/continue?session=local_${B}`, { background: true }],
+  ]);
+  assert.deepEqual(imports.pending(), []);
+  imports.close();
+
+  // Opened after the record was written: it has it, nothing to open.
+  const E = "3d0b7f2a-0000-4000-8000-000000000004";
+  opened.length = 0;
+  mac.front = true;
+  imports = make();
+  clock = 3000;
+  await imports.add(E);
+  assert.deepEqual(imports.pending(), [E]);
+  mac.launched = 4000;
+  await imports.check();
+  assert.deepEqual(imports.pending(), []);
+  assert.deepEqual(opened, []);
+  imports.close();
 });

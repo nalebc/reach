@@ -529,7 +529,9 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     open: openLink,
     idle: async () => idle,
     appRunning: async () => true,
-    imported: () => false,
+    // The chat the Claude app holds is in its list; others aren't.
+    imported: (id) => id === ID,
+    write: null,
     resume: false,
   });
   const sessions = createAgentSessions({

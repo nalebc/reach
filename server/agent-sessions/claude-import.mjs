@@ -1,9 +1,17 @@
-// Claude sessions started from Reach join the Claude app's list through the
-// app's own import link, claude://resume?session=<id>. Opening that link also
-// switches the app's window to the session and starts a process for it
-// (verified), and would open the app if it's closed; so an import waits until
-// nobody is using the Mac and the Claude app is running. Waiting imports are
-// kept in Reach's data folder, so a restart doesn't lose them.
+// Claude sessions Reach starts (or replies in) join the Claude app's list,
+// whatever happens in between: Reach restarting, the app closed, someone at
+// the Mac. Two ways in, both the app's own:
+// - its record, local_<id>.json, written the way the app's own import
+//   writes it (adoptCliSession, Claude 1.x): the app reads every record when
+//   it opens, so the chat is there from its next launch. Written only while
+//   the app's newest record still has the shape Reach knows; otherwise not
+//   at all, and the import link below does it.
+// - its import link, claude://resume?session=<id>, for an app already open
+//   (it reads records only when it opens). The link also switches the app's
+//   window to the chat, so it waits until the app isn't in front (or nobody
+//   is at the Mac), then the window goes back to the chat it showed.
+// Never while Reach's own Claude Code runs the chat: two processes on one
+// transcript. Waiting chats are kept in Reach's data folder.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +20,7 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RECORDS = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
 
 // Seconds since the last keyboard, mouse or trackpad input on this Mac.
 export async function idleSeconds(run = exec) {
@@ -230,21 +239,128 @@ export function createClaudeRefresh({
   };
 }
 
+// The account's folder of records the app uses now: the one holding its
+// most recently written record, and that record, to check its shape.
+export function newestRecords(records = RECORDS) {
+  let best = null;
+  const dirs = (dir) => {
+    try {
+      return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory());
+    } catch {
+      return [];
+    }
+  };
+  for (const account of dirs(records))
+    for (const org of dirs(path.join(records, account.name))) {
+      const dir = path.join(records, account.name, org.name);
+      let files = [];
+      try {
+        files = fs.readdirSync(dir).filter((f) => /^local_[0-9a-f-]{36}\.json$/i.test(f));
+      } catch {}
+      for (const f of files) {
+        try {
+          const at = fs.statSync(path.join(dir, f)).mtimeMs;
+          if (!best || at > best.at) best = { dir, file: path.join(dir, f), at };
+        } catch {}
+      }
+    }
+  if (!best) return null;
+  try {
+    return { dir: best.dir, sample: JSON.parse(fs.readFileSync(best.file, "utf8")) };
+  } catch {
+    return null;
+  }
+}
+// The fields Reach writes, as the app's own records have them.
+export const recordShape = (r) =>
+  !!r &&
+  typeof r === "object" &&
+  /^local_[0-9a-f-]{36}$/i.test(r.sessionId) &&
+  UUID.test(r.cliSessionId ?? "") &&
+  typeof r.cwd === "string" &&
+  typeof r.createdAt === "number" &&
+  typeof r.lastActivityAt === "number" &&
+  typeof r.isArchived === "boolean" &&
+  typeof r.permissionMode === "string";
+const APP_MODES = new Set(["default", "acceptEdits", "plan", "auto"]);
+
+// Writes the app's record for a session; true when the app has a record for
+// it now (written here or already there).
+export function writeClaudeRecord(id, info, { records = RECORDS, now = Date.now } = {}) {
+  if (!UUID.test(id) || !info || typeof info.cwd !== "string" || !path.isAbsolute(info.cwd)) return false;
+  if (inClaudeApp(id, records)) return true;
+  const target = newestRecords(records);
+  if (!target || !recordShape(target.sample)) return false;
+  const at = now();
+  const record = {
+    sessionId: `local_${id}`,
+    cliSessionId: id,
+    cwd: info.cwd,
+    originCwd: info.cwd,
+    createdAt: Number(info.createdAt) || at,
+    lastActivityAt: Number(info.updatedAt) || at,
+    indexedAt: at,
+    isArchived: false,
+    ...(typeof info.title === "string" && info.title.trim() ? { title: info.title.trim().slice(0, 200), titleSource: "auto" } : {}),
+    ...(typeof info.model === "string" && info.model ? { model: info.model } : {}),
+    permissionMode: APP_MODES.has(info.mode) ? info.mode : "default",
+    ...(typeof target.sample.chromePermissionMode === "string" ? { chromePermissionMode: target.sample.chromePermissionMode } : {}),
+    sessionPermissionUpdates: [],
+    alwaysAllowedReasons: [],
+    adoptedFromOtherSurface: true,
+  };
+  const file = path.join(target.dir, `local_${id}.json`);
+  const tmp = path.join(target.dir, `.reach-${id}-${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
+    // Never over a record the app wrote meanwhile.
+    fs.linkSync(tmp, file);
+  } catch (e) {
+    if (e?.code !== "EEXIST") return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+  }
+  return true;
+}
+
 export function createClaudeImports({
   file,
   open,
   idle = idleSeconds,
   appRunning = claudeAppRunning,
-  imported = inClaudeApp,
+  // When the open app was launched (ms), or null.
+  startedAt = claudeAppStartedAt,
+  // Whether the Claude app is in front: true, false, or null (unknown).
+  frontmost = async () => null,
+  imported = (id) => inClaudeApp(id),
+  // Reach's own Claude Code still runs this chat: not yet.
+  held = () => false,
+  // { cwd, title, model, mode, createdAt, updatedAt } of a chat, for its record.
+  describe = async () => null,
+  // Writes the app's record (writeClaudeRecord); null: the link only.
+  write = (id, info) => writeClaudeRecord(id, info),
+  // Which chat the app shows, to put its window back after an import.
+  shown = () => claudeAppShown(),
   // Away this long, the switch in the app's window bothers nobody.
   awayMs = 2 * 60 * 1000,
   everyMs = 30 * 1000,
+  settleMs = 4000,
+  wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+  now = Date.now,
   // Pick up imports left from before a restart.
   resume = true,
 }) {
-  let pending = new Set();
+  // id -> { writtenAt }: when Reach wrote the app's record for it.
+  let pending = new Map();
   try {
-    pending = new Set(JSON.parse(fs.readFileSync(file, "utf8")).filter((id) => typeof id === "string" && UUID.test(id)));
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    // Before records were written: a list of ids.
+    const entries = Array.isArray(saved) ? saved.map((id) => [id, {}]) : Object.entries(saved || {});
+    for (const [id, entry] of entries)
+      if (typeof id === "string" && UUID.test(id))
+        pending.set(id, { writtenAt: Number(entry?.writtenAt) || 0 });
   } catch {
     /* nothing waiting */
   }
@@ -254,7 +370,9 @@ export function createClaudeImports({
   const save = () => {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(file, JSON.stringify([...pending]), { mode: 0o600 });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(pending)), { mode: 0o600 });
+      fs.renameSync(tmp, file);
     } catch {
       /* kept in memory until Reach restarts */
     }
@@ -272,25 +390,64 @@ export function createClaudeImports({
     const seconds = await Promise.resolve(idle()).catch(() => null);
     return seconds == null || seconds * 1000 >= awayMs;
   };
+  // The app's window may switch now: it isn't in front, or nobody is there.
+  const clear = async () => (await Promise.resolve(frontmost()).catch(() => null)) === false || (await away());
+  async function one(id, entry) {
+    if (held(id)) return "wait";
+    if (imported(id)) {
+      // The app's own record (its import, or it lists the chat): done.
+      if (!entry.writtenAt) return "done";
+    } else if (write) {
+      const info = await Promise.resolve(describe(id)).catch(() => null);
+      if (info && (await Promise.resolve(write(id, info)).catch(() => false)) && !entry.writtenAt) {
+        entry.writtenAt = now();
+        save();
+      }
+    }
+    if (!(await appRunning())) return entry.writtenAt ? "done" : "wait"; // read when it opens
+    if (entry.writtenAt) {
+      const launched = await Promise.resolve(startedAt()).catch(() => null);
+      if (launched != null && launched > entry.writtenAt) return "done";
+    }
+    // Open since before the record: its own import, when it's out of the way.
+    if (!(await clear())) return "later";
+    const before = (() => {
+      try {
+        return shown()[0]?.session || null;
+      } catch {
+        return null;
+      }
+    })();
+    await open(`claude://resume?session=${id}`, { background: true });
+    if (before && before !== `local_${id}`) {
+      await wait(settleMs);
+      try {
+        if (shown()[0]?.session !== before) await open(`claude://code/continue?session=${before}`, { background: true });
+      } catch {
+        /* the window stays on the imported chat */
+      }
+    }
+    return "done";
+  }
   function check() {
     if (running) return running;
     running = (async () => {
-      const before = pending.size;
-      for (const id of [...pending]) {
+      let changed = false;
+      for (const [id, entry] of [...pending]) {
         if (closed) break;
-        if (imported(id)) {
-          pending.delete(id);
-          continue;
-        }
-        if (!(await appRunning()) || !(await away())) break;
+        let result = "later";
         try {
-          await open(`claude://resume?session=${id}`, { background: true });
-          pending.delete(id);
+          result = await one(id, entry);
         } catch {
           /* try again next round */
         }
+        if (result === "done") {
+          pending.delete(id);
+          changed = true;
+        }
+        if (result === "later") break;
       }
-      if (pending.size !== before) save();
+      if (changed) save();
     })().finally(() => {
       running = null;
       later(everyMs);
@@ -300,12 +457,14 @@ export function createClaudeImports({
   if (resume && pending.size) later(0);
   return {
     add(id) {
-      if (closed || typeof id !== "string" || !UUID.test(id) || pending.has(id)) return Promise.resolve();
-      pending.add(id);
-      save();
+      if (closed || typeof id !== "string" || !UUID.test(id)) return Promise.resolve();
+      if (!pending.has(id)) {
+        pending.set(id, { writtenAt: 0 });
+        save();
+      }
       return check();
     },
-    pending: () => [...pending],
+    pending: () => [...pending.keys()],
     check,
     close() {
       closed = true;

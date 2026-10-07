@@ -182,11 +182,7 @@ export function createAgentSessions({
   // Agents Reach knows of beyond the two it drives today.
   detect = detectAgents,
   // Sessions started here, waiting to join the Claude app's list (claude-import.mjs).
-  claudeImports = createClaudeImports({
-    file: path.join(dataDir, "claude-imports.json"),
-    open,
-    resume: !process.env.NODE_TEST_CONTEXT,
-  }),
+  claudeImports = null,
   // The Claude app's window, reloaded once nobody is at the Mac after Reach
   // replies in a session it has shown (claude-import.mjs); never in tests.
   claudeRefresh = process.env.NODE_TEST_CONTEXT
@@ -265,6 +261,28 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? { codexMethods: async () => new Set() } : { codexMethods: createCodexMethods() }),
   }),
 } = {}) {
+  // Chats joining the Claude app's list (claude-import.mjs): its record
+  // written, or its import link when the app is open and out of the way;
+  // never this Mac's app in tests.
+  claudeImports ??= createClaudeImports({
+    file: path.join(dataDir, "claude-imports.json"),
+    open,
+    resume: !process.env.NODE_TEST_CONTEXT,
+    held: (id) => claudeHost.drives(id),
+    frontmost: () => claudeFrontmost(),
+    describe: async (id) => {
+      const { session } = await claude.read(id, { limit: 1 });
+      return {
+        cwd: session.cwd,
+        title: session.title,
+        model: session.model,
+        mode: claudeHost.modeOf?.(id) || session.mode,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      };
+    },
+    ...(process.env.NODE_TEST_CONTEXT ? { write: null, appRunning: async () => false } : {}),
+  });
   const adapters = { codex, claude, gemini };
   const adapter = (agent) => {
     const a = adapters[agent];
@@ -588,13 +606,14 @@ export function createAgentSessions({
   // Claude sessions started here join the Claude app's list once Reach lets
   // go of them, through the app's own import, when nobody is at the Mac (the
   // import switches the app's window), so they're there when you get to it.
-  const startedHere = new Set();
   // Sessions the app already lists get its window reloaded instead (it
   // doesn't see what Reach added otherwise).
   claudeHost.onRelease?.((id, { wrote } = {}) => {
     letGo.set(id, Date.now());
     if (letGo.size > 200) letGo.delete(letGo.keys().next().value);
-    if (startedHere.delete(id)) void claudeImports.add(id);
+    // One waiting to join the app's list goes now; one the app lists and
+    // Reach wrote to gets its window reloaded.
+    if (claudeImports.pending?.().includes(id)) void claudeImports.check?.();
     else if (wrote) void claudeRefresh.add(id);
   });
   // Who replies in each agent's chats from Reach. Gemini CLI's are read
@@ -1070,6 +1089,9 @@ export function createAgentSessions({
         void deliver(id);
         return { queued: true, delivered: false, messageId: queued.id };
       }
+      // A chat the Claude app doesn't list (Reach's, or one from a
+      // terminal): it joins the app's list once Reach lets go of it.
+      if (!session.inApp) void claudeImports.add(id);
       return claudeHost.send(id, message);
     },
     async start(agent, body) {
@@ -1081,7 +1103,7 @@ export function createAgentSessions({
       }
       await signedIn();
       const started = await claudeHost.start(body);
-      startedHere.add(started.threadId);
+      void claudeImports.add(started.threadId);
       return started;
     },
     // A permission mode picked on the phone for a chat the Claude app holds:
