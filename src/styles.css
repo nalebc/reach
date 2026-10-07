@@ -2502,6 +2502,10 @@ svg {
 .screen-status-dot.active {
   background: var(--lime);
 }
+/* Live, but the computer has had to lower the stream for this link. */
+.screen-status-dot.slow {
+  background: #e0b24a;
+}
 .screen-viewport {
   overflow: auto;
   max-height: 70dvh;

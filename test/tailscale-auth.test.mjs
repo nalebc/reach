@@ -617,6 +617,84 @@ test(
   },
 );
 
+test(
+  "a live screen whose Tailscale check came late reconnects instead of reading as revoked",
+  { skip: process.platform === "win32", timeout: 20000 },
+  async () => {
+    const root = await temp();
+    const socketDir = await fs.mkdtemp("/tmp/reach-auth-socket-");
+    const socketPath = path.join(socketDir, "s");
+    const dataDir = path.join(root, "private");
+    // Each answer is good for a second, then lapses before the next one (a
+    // busy Mac answering Tailscale's lookup late).
+    const reach = await createReach({
+      roots: [root],
+      dataDir,
+      port: 0,
+      screen: true,
+      tailscaleOwner: owner,
+      tailscaleIdentity: {
+        now: () => Date.now() - 6000,
+        lookup: async () => whois(),
+      },
+      remoteScreenFactory: async () => () => ({
+        next: async () => Buffer.from("frame"),
+        stop() {},
+      }),
+    });
+    await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+    await reach.listenPrivate(socketPath);
+    const headers = {
+      Host: "localhost",
+      "X-Forwarded-For": "100.64.0.1",
+      "Tailscale-User-Login": owner.login,
+    };
+    const call = (route, body) =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            socketPath,
+            path: route,
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+          },
+          (res) => {
+            let data = "";
+            res.on("data", (c) => (data += c));
+            res.on("end", () => resolve(JSON.parse(data)));
+          },
+        );
+        req.once("error", reject);
+        req.end(JSON.stringify(body));
+      });
+    try {
+      const request = await call("/api/auth/requests", { name: "Phone" });
+      approvalStore(dataDir).decide(request.id, "approve");
+      const { token } = await call(`/api/auth/requests/${request.id}`, {
+        secret: request.secret,
+      });
+      const ws = new WebSocket(`ws+unix:${socketPath}:/ws/screen`, { headers });
+      ws.on("error", () => {});
+      ws.once("open", () =>
+        ws.send(JSON.stringify({ type: "auth", token, protocol: 2 })),
+      );
+      const error = await new Promise((resolve) =>
+        ws.on("message", (data, binary) => {
+          const message = !binary && JSON.parse(String(data));
+          if (message?.type === "error") resolve(message);
+        }),
+      );
+      assert.equal(error.retryable, true);
+      assert.doesNotMatch(error.error, /revoked/);
+      assert.notEqual((await once(ws, "close"))[0], 4001);
+    } finally {
+      await reach.close();
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(socketDir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("Mac socket selection stays in an existing app group and within Unix path limits", () => {
   const group =
     "/Users/test/Library/Group Containers/W5364U7YZB.group.io.tailscale.ipn.macos";

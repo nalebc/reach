@@ -638,17 +638,21 @@ export default function Screen({
           <div className="screen-toolbar simple-screen-toolbar">
             <span className="screen-state" role="status">
               <span
-                className={`screen-status-dot ${live && stream.ready && !stream.connecting ? "active" : ""}`}
+                className={`screen-status-dot ${live && stream.ready && !stream.connecting ? (stream.slow ? "slow" : "active") : ""}`}
               />
               {!live || paused
                 ? "Paused"
                 : stream.error && !stream.ready
                   ? "Can't show the screen"
                   : stream.connecting
-                  ? "Connecting…"
-                  : stream.ready
-                    ? device.name
-                    : "Connecting…"}
+                    ? stream.ready
+                      ? "Reconnecting…"
+                      : "Connecting…"
+                    : stream.ready
+                      ? stream.slow
+                        ? "Slow connection · lowering quality"
+                        : device.name
+                      : "Connecting…"}
             </span>
           </div>
           {expanded && (
@@ -1131,6 +1135,7 @@ export default function Screen({
                         ? "Video"
                         : "Compatibility video"}{" "}
                       · {stream.fps} fps · {stream.mbps} Mbps
+                      {stream.latency ? ` · ${stream.latency} ms link` : ""}
                       {usable ? ` · ${input.latency} ms input` : ""}. Quality
                       adjusts automatically.
                     </p>

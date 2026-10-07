@@ -84,14 +84,23 @@ export function createBrowserHostGuard({
     } catch { return { active: true, approvers: [], grants: [] }; }
   };
   const isActive = () => state().active;
+  const fresh = () => !!self && until > now();
   const invalidate = () => { generation++; self = null; peers = []; until = 0; flight = null; };
+  // Open connections (a live screen, a terminal) are checked against this
+  // cache every second and refresh it every 2 s (trackIdentity, index.mjs).
+  // Refreshing with that much lead keeps the cache from lapsing between two
+  // refreshes, which read on the phone as its access being revoked (Oct 7).
+  const leadMs = Math.min(2500, Math.floor(maxAgeMs / 2));
   const refresh = async ({ force = false } = {}) => {
-    if (!force && self && until > now()) return self;
+    if (!force && fresh() && until > now() + leadMs) return self;
     if (flight) return flight;
-    // Stale identity cannot be used while the replacement lookup is pending.
-    self = null;
-    peers = [];
-    until = 0;
+    // Stale identity cannot be used while the replacement lookup is pending;
+    // one still within its lifetime serves until the answer arrives.
+    if (!fresh()) {
+      self = null;
+      peers = [];
+      until = 0;
+    }
     const revision = generation, started = now();
     const operation = Promise.resolve().then(lookup).then((status) => {
       const node = browserHostNode(status);
@@ -175,5 +184,5 @@ export function createBrowserHostGuard({
       return release;
     } catch (error) { release(); throw error; }
   };
-  return { isActive, refresh, invalidate, allows, assertRequest, beginInvitation };
+  return { isActive, fresh, refresh, invalidate, allows, assertRequest, beginInvitation };
 }
