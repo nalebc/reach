@@ -1801,7 +1801,7 @@ export async function createReach(overrides = {}) {
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
       throw fail(403, "Stay inside the selected shared folder.");
     const root = client.agentRoots[index];
-    if (validateBrowserRoot(root) !== root)
+    if (validateBrowserRoot(root, { policy: client.policy }) !== root)
       throw fail(403, "The shared folder changed. Create a new invitation.");
     const scope = JSON.stringify([client.id, client.expiresAt, client.policy, client.agentRoots]);
     const check = () => {

