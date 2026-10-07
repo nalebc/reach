@@ -73,6 +73,7 @@ import {
   cancelQueuedMessage,
   editLastMessage,
   editQueued,
+  renameSession,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -1439,6 +1440,8 @@ export default function AgentSessionView({
   const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
+  // The chat's new name, while it's being typed (⋯ → its pencil).
+  const [renaming, setRenaming] = useState<string | null>(null);
   // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
   // phone; once touched, each message says whether it's on.
   const planKey = `reach:codex-plan:${initial.id}`;
@@ -2068,7 +2071,34 @@ export default function AgentSessionView({
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
             <div className="as-details-head">
-              <strong className="as-details-title">{info.title}</strong>
+              {renaming !== null && (agent === "claude" || agent === "codex") ? (
+                <form
+                  className="as-rename"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!renaming.trim()) return;
+                    try {
+                      const r = await renameSession(peer, initial, renaming);
+                      setInfo((old) => ({ ...old, title: r.title }));
+                      setRenaming(null);
+                    } catch (error) {
+                      setProblem((error as Error).message);
+                    }
+                  }}
+                >
+                  <input autoFocus aria-label="Chat name" value={renaming} maxLength={200} onChange={(e) => setRenaming(e.target.value)} />
+                  <button type="submit" disabled={!renaming.trim()}>Save</button>
+                </form>
+              ) : (
+                <strong className="as-details-title">
+                  {info.title}
+                  {(agent === "claude" || agent === "codex") && (
+                    <button className="as-icon" aria-label="Rename chat" onClick={() => setRenaming(info.title || "")}>
+                      <SquarePen size={14} />
+                    </button>
+                  )}
+                </strong>
+              )}
               <small>
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>

@@ -514,6 +514,9 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// A chat renamed, as in its app.
+export const renameSession = (peer: Peer, s: { agent: AgentName; id: string }, title: string) =>
+  post<{ title: string }>(peer, `${sessionPath(s)}/rename`, { title });
 // Your last message edited and sent again (the Codex app's Edit).
 export const editLastMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: { turnId: string; text: string }) =>
   post<{ edited: true }>(peer, `${sessionPath(s)}/edit-last`, body);

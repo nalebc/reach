@@ -70,3 +70,28 @@ test("archiving a Codex chat uses Codex's own archive (and unarchive)", async ()
   ]);
   await assert.rejects(() => codex.archive("nope"), (e) => e.status === 404);
 });
+
+test("renaming a Claude chat writes Claude Code's own title line, and the Claude app's record when it lists the chat", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-rename-"));
+  const projects = path.join(root, "projects", "-work-app");
+  const records = path.join(root, "records", "acct", "org");
+  await fs.mkdir(projects, { recursive: true });
+  await fs.mkdir(records, { recursive: true });
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), said(ID));
+  await fs.writeFile(path.join(projects, `${CLI_ONLY}.jsonl`), said(CLI_ONLY));
+  const record = path.join(records, `local_${ID}.json`);
+  const kept = { sessionId: `local_${ID}`, cliSessionId: ID, title: "From the app", isArchived: false, cwd: "/work/app", permissionMode: "auto" };
+  await fs.writeFile(record, JSON.stringify(kept), { mode: 0o600 });
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+
+  assert.deepEqual(await claude.rename(ID, "  Login\npage  "), { title: "Login page" });
+  const lines = (await fs.readFile(path.join(projects, `${ID}.jsonl`), "utf8")).trim().split("\n");
+  assert.deepEqual(JSON.parse(lines.at(-1)), { type: "custom-title", customTitle: "Login page", sessionId: ID });
+  assert.deepEqual(JSON.parse(await fs.readFile(record, "utf8")), { ...kept, title: "Login page", titleSource: "user" });
+  // One only Claude Code has: its transcript alone.
+  await claude.rename(CLI_ONLY, "CLI chat");
+  assert.equal((await claude.read(CLI_ONLY, { limit: 1 })).session.title, "CLI chat");
+  await assert.rejects(() => claude.rename(ID, "   "), (e) => e.status === 400);
+  await assert.rejects(() => claude.rename("33333333-4444-4555-8666-777777777777", "x"), (e) => e.status === 404);
+  await fs.rm(root, { recursive: true, force: true });
+});

@@ -1214,6 +1214,22 @@ export function createAgentSessions({
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
     },
+    // A chat renamed, as in its app: Codex's thread name, Claude Code's
+    // custom title (and the Claude app's record).
+    async rename(agent, id, title) {
+      adapter(agent);
+      const name = String(title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
+      if (!name) throw Object.assign(new Error("Name the chat."), { status: 400 });
+      if (agent === "codex") {
+        await daemon.rpc("thread/name/set", { threadId: id, name });
+        listChanged();
+        return { title: name };
+      }
+      if (agent !== "claude") throw Object.assign(new Error("This chat can't be renamed here."), { status: 409 });
+      const done = await claude.rename(id, name);
+      listChanged();
+      return done;
+    },
     // Your last message edited and sent again, as the Codex app's Edit.
     async editLast(agent, id, body) {
       if (host(agent) !== codexLive) throw Object.assign(new Error("Edit your last message from the Claude app."), { status: 409 });

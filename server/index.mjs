@@ -2751,6 +2751,13 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // A chat renamed, as in its app.
+  app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
+    if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");
+    const result = await agentSessions.rename(req.params.agent, req.params.id, req.body.title);
+    record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
   // Your last message edited and sent again (the Codex app's Edit).
   app.post("/api/sessions/:agent/:id/edit-last", async (req, res) => {
     const { turnId, text } = req.body || {};

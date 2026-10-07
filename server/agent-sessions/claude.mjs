@@ -382,6 +382,33 @@ export function createClaudeSessions({
       recordCache.delete(file);
       return { archived: !!archived };
     },
+    // Renamed as Claude Code renames a chat: a custom-title line in its
+    // transcript (what rename_session writes; appended whole, as one line);
+    // in the Claude app's list too, its record's title.
+    async rename(id, title) {
+      const name = String(title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
+      if (!name) throw Object.assign(new Error("Name the chat."), { status: 400 });
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await fs.appendFile(found.file, JSON.stringify({ type: "custom-title", customTitle: name, sessionId: id }) + "\n");
+      await records();
+      const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
+      if (file) {
+        const record = JSON.parse(await fs.readFile(file, "utf8"));
+        // Only a record kept the way Reach knows; the transcript has it either way.
+        if (typeof record?.isArchived === "boolean") {
+          record.title = name;
+          record.titleSource = "user";
+          const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
+          const { mode } = await fs.stat(file);
+          await fs.writeFile(temporary, JSON.stringify(record), { mode });
+          await fs.rename(temporary, file);
+          recordCache.delete(file);
+        }
+      }
+      cache.delete(found.file);
+      return { title: name };
+    },
     // Whether Claude Code still has this chat (deleted: no transcript).
     async exists(id) {
       return !!(await locate(id));
