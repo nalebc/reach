@@ -4,11 +4,40 @@ import { startDom } from "./dom/harness.mjs";
 
 // Tables in a chat (Claude's /context, its comparisons) showed as raw "|"
 // pipes; now they're tables, and what only looks like one stays words.
-let dom, React, AgentMarkdown;
+let dom, React, AgentMarkdown, SessionLinkContext;
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
-  ({ default: AgentMarkdown } = await dom.load("/src/AgentMarkdown.tsx"));
+  ({ default: AgentMarkdown, SessionLinkContext } = await dom.load("/src/AgentMarkdown.tsx"));
+});
+
+test("a link to another Claude session opens it here, and says when it isn't here yet", async () => {
+  const id = "local_4ff35923-e6eb-432e-9e43-ba980333dcde";
+  const text = `It's running in its own worktree ([open it](#${id})); more [here](https://example.test).`;
+  const opened = [];
+  const view = await dom.render(
+    React.createElement(
+      SessionLinkContext.Provider,
+      { value: (ref) => { opened.push(ref); return opened.length === 1; } },
+      React.createElement(AgentMarkdown, { text }),
+    ),
+  );
+  const link = view.container.querySelector("button.md-session-link");
+  assert.equal(link.textContent, "open it");
+  assert.equal(view.container.querySelector("a").getAttribute("href"), "https://example.test");
+  link.click();
+  await dom.settle?.(5);
+  assert.deepEqual(opened, [id]);
+  assert.equal(link.textContent, "open it", "found: nothing added to the link");
+  link.click();
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(link.textContent, "open it · not here yet");
+  await view.unmount();
+  // Where no chat can open a session (OpenClaw's space), the link is text.
+  const plain = await dom.render(React.createElement(AgentMarkdown, { text }));
+  assert.equal(plain.container.querySelector("button.md-session-link"), null);
+  assert.equal(plain.container.querySelector("u").textContent, "open it");
+  await plain.unmount();
 });
 after(() => dom?.close());
 const show = async (text) => {
