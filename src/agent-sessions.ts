@@ -3,6 +3,19 @@ import { post, request, type Peer } from "./api";
 
 // Every Codex and Claude Code session on the computer (server/agent-sessions).
 export type AgentName = "codex" | "claude" | "gemini";
+// A sub-agent a chat started (server/agent-sessions/subagents.mjs).
+export type Subagent = {
+  id: string;
+  toolUseId: string | null;
+  name: string;
+  type: string;
+  background: boolean;
+  status: "running" | "done" | "failed" | "stopped" | "quiet";
+  activity: string;
+  result: string;
+  startedAt: number;
+  updatedAt: number;
+};
 export type AgentSession = {
   agent: AgentName;
   id: string;
@@ -20,6 +33,8 @@ export type AgentSession = {
   live?: { where: "claude-app" | "terminal" | "background"; pid: number; tty: string | null };
   // Filled when one session is read.
   model?: string | null;
+  // Its sub-agents, newest first.
+  subagents?: Subagent[];
   effort?: string | null;
   // Codex's speed (service tier) the chat runs at, when it says.
   speed?: string | null;
@@ -65,8 +80,15 @@ export type AgentAsking =
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
-  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output";
+  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output" | "agent";
   text: string;
+  // A sub-agent the chat started (kind "agent"): its kind, whether it runs
+  // in the background, and its status and doing now, from its own files.
+  agentType?: string;
+  background?: boolean;
+  agentId?: string;
+  agentStatus?: Subagent["status"];
+  activity?: string;
   detail?: string;
   status?: string;
   queued?: boolean;

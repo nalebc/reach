@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { claudeSubagents } from "./subagents.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -345,9 +346,16 @@ export function createClaudeSessions({
       // Pages count back from the newest item; `before` is an item index.
       const end = before === null ? parsed.items.length : Math.max(0, Math.min(Number(before) || 0, parsed.items.length));
       const start = Math.max(0, end - Math.min(Math.max(limit, 1), 500));
+      // Its sub-agents, from their own files; each Agent call shows its own.
+      const subagents = await claudeSubagents({ transcript: found.file, sessionId: id, notes: parsed.tasks, items: parsed.items }).catch(() => []);
+      const byCall = new Map(subagents.filter((a) => a.toolUseId).map((a) => [a.toolUseId, a]));
+      const items = parsed.items.slice(start, end).map((item) => {
+        const agent = item.kind === "agent" && byCall.get(item.id);
+        return agent ? { ...item, agentId: agent.id, agentStatus: agent.status, activity: agent.activity } : item;
+      });
       return {
-        session: await summary(found, byCli.get(id)),
-        items: parsed.items.slice(start, end),
+        session: { ...(await summary(found, byCli.get(id))), subagents },
+        items,
         before: start > 0 ? String(start) : null,
       };
     },

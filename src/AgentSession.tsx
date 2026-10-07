@@ -42,6 +42,7 @@ import { createDraftSync } from "./draft-sync";
 import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
+import { SubagentCard, SubagentStrip } from "./Subagents";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
@@ -1540,13 +1541,16 @@ export default function AgentSessionView({
     const out: (
       | { type: "item"; item: SessionItem }
       | { type: "tools"; items: SessionItem[] }
+      | { type: "agent"; item: SessionItem }
     )[] = [];
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.skills?.length) continue;
       const last = out[out.length - 1];
-      if (item.role === "tool") {
+      // A sub-agent stands on its own, not folded into the steps.
+      if (item.kind === "agent") out.push({ type: "agent", item });
+      else if (item.role === "tool") {
         if (last?.type === "tools") last.items.push(item);
         else out.push({ type: "tools", items: [item] });
       } else out.push({ type: "item", item });
@@ -1983,6 +1987,8 @@ export default function AgentSessionView({
           </div>
         </>
       )}
+      {/* Its sub-agents at a glance, above the conversation. */}
+      {!!info.subagents?.length && <SubagentStrip agents={info.subagents} />}
       <div
         className="as-scroll"
         ref={scroller}
@@ -2018,6 +2024,12 @@ export default function AgentSessionView({
           placeMoves(blocks.map((b, i) =>
             b.type === "tools" ? (
               <ToolRun key={`tools-${b.items[0].id}`} items={b.items} />
+            ) : b.type === "agent" ? (
+              <SubagentCard
+                key={b.item.id}
+                item={b.item}
+                agent={info.subagents?.find((a) => a.toolUseId === b.item.id || a.id === b.item.agentId)}
+              />
             ) : b.item.role === "user" ? (
               <Copyable key={b.item.id} text={b.item.text} side="user" bare={!b.item.text.trim()}>
               <div className="as-user">

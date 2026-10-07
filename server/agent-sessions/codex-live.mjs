@@ -171,6 +171,8 @@ export function activityFor(item) {
       return "Thinking";
     case "contextCompaction":
       return "Compacting context";
+    case "collabAgentToolCall":
+      return item.tool === "spawnAgent" ? "Starting an agent" : "Working with agents";
     default:
       return null;
   }

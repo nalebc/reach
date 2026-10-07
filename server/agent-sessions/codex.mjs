@@ -1,6 +1,7 @@
 // Codex sessions through the shared daemon (see codex-daemon.mjs). Reading
 // never loads a thread or touches its file (verified); sub-agent threads are
 // not listed by the daemon and stay hidden here too.
+import { codexSubagents, subagentStatus } from "./subagents.mjs";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -124,6 +125,29 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
         at,
         turnId,
       };
+    // Codex's own sub-agents (its collab tools): a spawn shows as the agent,
+    // with its last known status; waits and messages to them as steps.
+    case "collabAgentToolCall": {
+      const ids = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((t) => typeof t === "string") : [];
+      const state = (ids.length && item.agentsStates?.[ids[0]]) || {};
+      if (item.tool === "spawnAgent")
+        return {
+          id: item.id,
+          role: "tool",
+          kind: "agent",
+          text: String(item.prompt || "Agent").split("\n")[0].slice(0, 200),
+          agentType: String(item.model || "agent").slice(0, 60),
+          background: true,
+          ...(ids[0] ? { agentId: ids[0] } : {}),
+          agentStatus: subagentStatus(state.status) || subagentStatus(item.status) || "running",
+          detail: String(state.message || ""),
+          status: item.status,
+          at,
+          turnId,
+        };
+      const words = { wait: "Waiting for agents", sendInput: "Told an agent", sendMessage: "Told an agent", followupTask: "Gave an agent more to do", resumeAgent: "Resumed an agent", closeAgent: "Closed an agent", interruptAgent: "Stopped an agent", listAgents: "Checked on agents" };
+      return { id: item.id, role: "tool", kind: "tool", text: words[item.tool] || "Worked with agents", status: item.status, at, turnId };
+    }
     case "contextCompaction":
       return { id: item.id, role: "system", kind: "compaction", text: "Context compacted", at, turnId };
     // /review: where it began, then what it found.
@@ -453,6 +477,8 @@ export function createCodexSessions({
         .filter(Boolean)
         .reverse();
       const session = codexSession(thread);
+      // Its sub-agents as Codex last reported them (this page of the chat).
+      session.subagents = codexSubagents((r.data || []).map((entry) => entry?.item).reverse());
       session.model = thread.model || null;
       session.effort = thread.reasoningEffort || null;
       session.speed = thread.serviceTier || null;

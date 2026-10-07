@@ -132,7 +132,16 @@ function toolItem(block, result, cwd) {
     }
     case "Task":
     case "Agent":
-      return { ...base, kind: "tool", text: String(input.description ?? block.name), detail: output };
+      // A sub-agent: its status and what it's doing join from its own files
+      // (subagents.mjs); a background one's call returns at once.
+      return {
+        ...base,
+        kind: "agent",
+        text: String(input.description ?? block.name),
+        agentType: String(input.subagent_type || "general-purpose").slice(0, 60),
+        background: input.run_in_background === true,
+        detail: output,
+      };
     default:
       return {
         ...base,
@@ -157,8 +166,8 @@ const KEEP = {
   WebFetch: ["url"],
   WebSearch: ["query"],
   AskUserQuestion: ["questions"],
-  Task: ["description"],
-  Agent: ["description"],
+  Task: ["description", "subagent_type", "run_in_background"],
+  Agent: ["description", "subagent_type", "run_in_background"],
 };
 function slimToolUse(b) {
   const input = b.input && typeof b.input === "object" ? b.input : {};
@@ -220,9 +229,31 @@ function slimEntry(e, results, maxOutput) {
 // written), view() is the conversation so far. Reading only what was
 // appended keeps a 70 MB transcript of a working session from being parsed
 // again on every change.
+// Claude Code's notes of a background task's end, in the chat:
+// <task-notification><task-id>…</task-id><tool-use-id>…</tool-use-id>
+// <status>completed</status><summary>…</summary>… (verified with 2.1.291).
+export function taskNotes(content) {
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => (typeof b === "string" ? b : b?.text || "")).join("\n") : "";
+  const notes = [];
+  for (const m of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
+    const all = (name) => [...m[1].matchAll(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "g"))].map((t) => t[1].trim());
+    // One note can tell of several (agents stopped together).
+    const ids = all("task-id");
+    const calls = all("tool-use-id");
+    const status = (all("status")[0] || "").toLowerCase();
+    const summary = clip(all("summary")[0] || "", 300);
+    ids.forEach((id, i) => {
+      if (/^[\w-]{1,80}$/.test(id)) notes.push({ id, toolUseId: calls[i] || "", status, summary });
+    });
+  }
+  return notes;
+}
+
 export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   const byId = new Map();
   const results = new Map();
+  // Background sub-agents' ends, by agent id (subagents.mjs taskNotes).
+  const tasks = new Map();
   // mode: the permission mode its latest message was sent in (Claude Code
   // writes it on each of your messages), to resume it in the same one.
   const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "", mode: "" };
@@ -248,6 +279,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           continue; /* A torn final line while the app is writing: skip it. */
         }
         if (!e || typeof e !== "object") continue;
+        if (line.includes("<task-notification>"))
+          for (const note of taskNotes(e.content ?? e.attachment?.prompt ?? e.message?.content))
+            if (!tasks.has(note.id) || e.timestamp >= (tasks.get(note.id).timestamp || "")) tasks.set(note.id, { ...note, timestamp: e.timestamp || "" });
         if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
         if (e.cwd) meta.cwd = e.cwd;
         if (e.gitBranch) meta.gitBranch = e.gitBranch;
@@ -404,6 +438,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         updatedAt: updatedAt ? Date.parse(updatedAt) : 0,
         usage,
         ...(memory ? { memory } : {}),
+        tasks: [...tasks.values()],
         items,
       };
     },
