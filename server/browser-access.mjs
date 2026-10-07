@@ -137,7 +137,9 @@ export function browserAccessRoutes(
       desktopAvailable: !!desktop?.available?.(), presetApps, ...(presetAppsError ? { presetAppsError } : {}),
       // The longest a preset invitation may last over the public link; the
       // form offers a day only when the server allows it.
-      maxFunnelSeconds: 86400});
+      maxFunnelSeconds: 86400,
+      // Always: access until the owner ends it, reconnecting with the same link.
+      standingAllowed: true});
   });
   // The link the agent opens, once the credential exists. Funnel links are
   // prepared after issuing; a failure takes the credential back.
@@ -567,7 +569,7 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:screen");
     needDesktop();
     if (Object.keys(req.query).some((key) => key !== "maxWidth")) throw fail(400, "Choose only the image width.");
-    const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 1440 });
+    const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 2560 });
     res.set("Cache-Control", "no-store");
     res.set("X-Reach-Screen", JSON.stringify({ width: shot.width, height: shot.height, hidden: shot.hidden }));
     res.type("image/jpeg").send(shot.jpeg);

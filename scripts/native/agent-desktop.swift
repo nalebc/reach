@@ -394,7 +394,12 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
     hidden = excluded.count
   }
   let config = SCStreamConfiguration()
-  let scale = min(1, Double(maxWidth) / Double(display.width))
+  // The display's own pixels (Retina is 2x its points), capped by maxWidth:
+  // small controls stay legible to an agent aiming at them.
+  let backing = NSScreen.screens.first { screen in
+    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
+  }?.backingScaleFactor ?? 1
+  let scale = min(Double(backing), Double(maxWidth) / Double(display.width))
   config.width = max(1, Int(Double(display.width) * scale))
   config.height = max(1, Int(Double(display.height) * scale))
   config.showsCursor = true
@@ -505,7 +510,7 @@ func rules(from request: [String: Any]) -> Rules {
         switch op {
         case "shot":
           guard CGPreflightScreenCaptureAccess() else { try refuse("Reach needs Screen Recording to show the Mac to an agent.", "unavailable") }
-          out(try await shot(rules, max(320, min(2560, request["maxWidth"] as? Int ?? 1440))))
+          out(try await shot(rules, max(320, min(3840, request["maxWidth"] as? Int ?? 2560))))
         case "act":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }

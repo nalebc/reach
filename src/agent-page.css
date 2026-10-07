@@ -50,3 +50,14 @@
 .ap-file pre { margin: 0; padding: 10px; border-radius: 10px; background: var(--ag-surface-2, #f3f4f6); font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-height: 420px; overflow: auto; }
 .ap-foot { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
 @media (max-width: 640px) { .ap-row-label { min-width: 0; width: 100%; } }
+
+/* Aiming aids: where the last click landed, the zoomed quarter, full screen. */
+.ap-mark-ring { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 2px solid #ffd21e; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55), 0 0 0 5px rgba(255, 210, 30, 0.35); pointer-events: none; animation: ap-ring 3s ease-out forwards; }
+@keyframes ap-ring { 0% { transform: scale(1.6); opacity: 1; } 30% { transform: scale(1); } 100% { opacity: 0; } }
+.ap-zoom-box { position: absolute; border: 2px solid var(--ag-accent, #2f9e6f); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28); pointer-events: none; }
+.ap-zoom { display: grid; gap: 8px; }
+.ap-zoom-frame { position: relative; border-radius: 12px; overflow: hidden; background: #0b0d10; border: 1px solid var(--ag-accent, #2f9e6f); }
+.ap-zoom-frame canvas { display: block; width: 100%; height: auto; }
+.ap-zoom-frame canvas.can-act { cursor: crosshair; }
+.ap-screen:fullscreen, .ap-screen.is-fullscreen { overflow: auto; background: #0b0d10; color: #e5e7eb; border: 0; border-radius: 0; }
+.ap-screen:fullscreen .ap-frame img { max-height: 82vh; width: auto; max-width: 100%; margin: 0 auto; }

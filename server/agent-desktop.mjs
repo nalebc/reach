@@ -231,15 +231,15 @@ export function createAgentDesktop(config, {
       return structuredClone(apps);
     },
     /** A JPEG of the screen with Reach, protected and hidden windows left out; in Apps, only the chosen apps. */
-    async screenshot(client, authorize, { maxWidth = 1440 } = {}) {
+    async screenshot(client, authorize, { maxWidth = 2560 } = {}) {
       const latest = live(client, authorize, "browser:screen");
       const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
       if (recent.length >= 4) throw fail(429, "Wait a moment between screenshots.");
       recent.push(now()); shots.set(latest.id, recent);
       const state = await session(latest);
-      const result = answer(await state.helper.send({ op: "shot", maxWidth: Math.max(320, Math.min(2560, Number(maxWidth) || 1440)) }));
+      const result = answer(await state.helper.send({ op: "shot", maxWidth: Math.max(320, Math.min(3840, Number(maxWidth) || 2560)) }));
       live(client, authorize, "browser:screen");
-      if (typeof result.jpeg !== "string" || result.jpeg.length > 8 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
+      if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
       return { jpeg, width: result.width, height: result.height, hidden: result.hidden || 0 };

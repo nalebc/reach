@@ -37,7 +37,7 @@ function mock(access, { busy = false } = {}) {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
     if (route === "/api/browser") return reply(access);
-    if (route === "/api/browser/desktop/screen") return jpeg();
+    if (route === "/api/browser/desktop/screen") { assert.equal(parsed.searchParams.get("maxWidth"), "2560", "the page asks for the display's own pixels"); return jpeg(); }
     if (route === "/api/browser/desktop/front") return reply({ app: "Google Chrome", title: "Amazon", terminalLike: false, secure: false, blocked: "", holder: "" });
     if (route === "/api/browser/desktop/input") return busy ? reply({ error: "Grok is using the Mac right now.", kind: "busy", holder: "Grok", retryInMs: 1800 }, 409) : reply({ ok: true, app: "Google Chrome" });
     if (route === "/api/browser/desktop/apps") return reply({ apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome", running: true }, { id: "/System/Applications/Notes.app", name: "Notes", bundleId: "com.apple.Notes", running: false }] });
@@ -114,6 +114,43 @@ test("clicking the picture clicks the Mac and the result is written next to the 
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/desktop/open"));
   assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/browser/desktop/open")[2], { app: "/System/Applications/Notes.app" });
   await dom.waitFor(() => /Done: Notes is in front/.test(c.textContent));
+});
+
+test("aiming: the picture is requested at the display's resolution, a zoomed quarter maps clicks exactly, and the last click is marked", async () => {
+  const { c, calls } = await open(full);
+  const frame = await dom.waitFor(() => c.querySelector('[aria-label="Mac screen. Click to click there."]'));
+  await dom.waitFor(() => frame.querySelector("img"));
+  assert.ok(calls.some(([, route, , ]) => route === "/api/browser/desktop/screen"), "screenshots are fetched");
+  const shotUrl = [...c.ownerDocument.defaultView.document.querySelectorAll("img")].length >= 0 && calls.find(([, route]) => route === "/api/browser/desktop/screen");
+  assert.ok(shotUrl);
+  await dom.waitFor(() => /100×60 px/.test(c.textContent), "the picture's pixel size is written next to the live readout");
+  const zoomIn = button(c, "Zoom in");
+  assert.equal(zoomIn.getAttribute("aria-pressed"), "false");
+  await click(zoomIn);
+  assert.equal(button(c, "Zoom out").getAttribute("aria-pressed"), "true");
+  assert.match(c.textContent, /Zoom mode: click the picture where you want to look closer/);
+  const zoomFrame = c.querySelector('[aria-label="Mac screen. Click where to zoom in."]');
+  zoomFrame.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100 });
+  zoomFrame.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 }));
+  await settle(40);
+  assert.equal(inputs(calls).length, 0, "choosing where to zoom never clicks the Mac");
+  assert.match(c.textContent, /Zoomed view/);
+  assert.match(c.textContent, /X 38%–63%, Y 38%–63% · 4×/);
+  const zoomed = c.querySelector('[aria-label="Zoomed view. Click to click there."]');
+  assert.ok(zoomed);
+  zoomed.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+  zoomed.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 }));
+  await dom.waitFor(() => inputs(calls).length === 1);
+  const sent = inputs(calls)[0];
+  assert.equal(sent.type, "click");
+  assert.equal(sent.x.toFixed(4), "0.4375");
+  assert.equal(sent.y.toFixed(4), "0.4375");
+  assert.ok(c.querySelector(".ap-mark-ring"), "the last click is marked");
+  await click(button(c, "Move zoom right"));
+  assert.match(c.textContent, /X 48%–73%, Y 38%–63%/);
+  await click(button(c, "Zoom out"));
+  assert.equal(c.querySelector('[aria-label="Zoomed view. Click to click there."]'), null);
+  assert.ok(button(c, "Full screen"));
 });
 
 test("another agent holding the Mac reads as waiting, not failure", async () => {

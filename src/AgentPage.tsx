@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AppWindow, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, CornerDownLeft, Download, Eye, FileText, Folder,
-  Keyboard, Lock, Monitor, MousePointerClick, RotateCw, Search, Terminal,
+  AppWindow, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronLeft, ChevronRight, CornerDownLeft, Download, Eye, FileText, Folder,
+  Keyboard, Lock, Maximize2, Monitor, MousePointerClick, RotateCw, Search, Terminal, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { fileBlob, peerFetch, request, type FileEntry, type Peer } from "./api";
 import { saveBlob } from "./native";
@@ -37,6 +37,13 @@ type Front = { app: string; title: string; terminalLike: boolean; secure: boolea
 type Action = Record<string, unknown> & { type: string };
 type Listing = { items: FileEntry[]; truncated?: boolean };
 const SCREEN_MS = 2000;
+// The page asks for the display's own pixels (Retina is 2x), so small controls
+// stay legible; the zoomed view shows a quarter of the picture at four times.
+const SCREEN_WIDTH = 2560;
+const ZOOM = 0.25;
+type Region = { x0: number; y0: number; w: number; h: number };
+const regionAround = (cx: number, cy: number): Region => ({ x0: Math.min(1 - ZOOM, Math.max(0, cx - ZOOM / 2)), y0: Math.min(1 - ZOOM, Math.max(0, cy - ZOOM / 2)), w: ZOOM, h: ZOOM });
+const percent = (value: number) => `${Math.round(value * 100)}%`;
 const KEYS: { label: string; key: string }[] = [
   { label: "Enter", key: "enter" }, { label: "Tab", key: "tab" }, { label: "Esc", key: "escape" }, { label: "Delete", key: "backspace" },
   { label: "←", key: "left" }, { label: "↑", key: "up" }, { label: "↓", key: "down" }, { label: "→", key: "right" },
@@ -112,6 +119,14 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
   const [xPercent, setXPercent] = useState("");
   const [yPercent, setYPercent] = useState("");
   const [front, setFront] = useState<Front | null>(null);
+  const [imageSize, setImageSize] = useState<{ w: number; h: number } | null>(null);
+  const [zooming, setZooming] = useState(false);
+  const [zoom, setZoom] = useState<Region | null>(null);
+  const [lastClick, setLastClick] = useState<{ x: number; y: number; at: number } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const cardRef = useRef<HTMLElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const objectUrl = useRef("");
   const inFlight = useRef<AbortController | null>(null);
   const acting = useRef(false);
@@ -128,7 +143,7 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
     const timeout = setTimeout(() => controller.abort(), 20000);
     setBusy(true);
     try {
-      const response = await peerFetch(peer, "/api/browser/desktop/screen?maxWidth=1440", { cache: "no-store", redirect: "error", signal: controller.signal });
+      const response = await peerFetch(peer, `/api/browser/desktop/screen?maxWidth=${SCREEN_WIDTH}`, { cache: "no-store", redirect: "error", signal: controller.signal });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw Object.assign(Error(body.error || "The screen could not be read."), { status: response.status });
@@ -139,7 +154,11 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
       if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
       objectUrl.current = url;
       setImageUrl(url); setImageAt(new Date()); setScreenError("");
-      try { setHiddenCount(Number(JSON.parse(response.headers.get("X-Reach-Screen") || "{}").hidden) || 0); } catch { setHiddenCount(0); }
+      try {
+        const meta = JSON.parse(response.headers.get("X-Reach-Screen") || "{}");
+        setHiddenCount(Number(meta.hidden) || 0);
+        if (Number(meta.width) > 0 && Number(meta.height) > 0) setImageSize({ w: Number(meta.width), h: Number(meta.height) });
+      } catch { setHiddenCount(0); }
     } catch (e) {
       if (!controller.signal.aborted && mounted.current) { setScreenError((e as Error).message || "The screen could not be read."); ended(e); }
     } finally {
@@ -189,18 +208,57 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
       setTimeout(() => void refresh(), 350);
     }
   };
+  // The zoomed view: a quarter of the picture drawn four times larger, from
+  // the full-resolution image, so an agent can aim at small controls. Clicks
+  // inside it map back to the exact spot on the Mac.
+  useEffect(() => {
+    const canvas = canvasRef.current, image = imageRef.current;
+    if (!canvas || !image || !zoom) return;
+    const context = canvas.getContext?.("2d");
+    if (!context) return;
+    const width = image.naturalWidth || imageSize?.w || 0, height = image.naturalHeight || imageSize?.h || 0;
+    if (!width || !height) return;
+    canvas.width = Math.round(width * zoom.w);
+    canvas.height = Math.round(height * zoom.h);
+    try { context.drawImage(image, zoom.x0 * width, zoom.y0 * height, zoom.w * width, zoom.h * height, 0, 0, canvas.width, canvas.height); } catch { /* not yet decodable */ }
+  }, [zoom, imageUrl, imageSize]);
+  useEffect(() => {
+    const onChange = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen?.();
+    else void cardRef.current?.requestFullscreen?.();
+  };
+  const pan = (dx: number, dy: number) => setZoom((current) => current ? regionAround(current.x0 + current.w / 2 + dx, current.y0 + current.h / 2 + dy) : current);
   const clickFraction = (x: number, y: number) => {
     const place = `${Math.round(x * 100)}%, ${Math.round(y * 100)}%`;
+    setLastClick({ x, y, at: Date.now() });
     void act(
       { type: "click", x, y, button: mode === "right" ? "right" : "left", count: mode === "double" ? 2 : 1 },
       mode === "right" ? `right-clicked at ${place}` : mode === "double" ? `double-clicked at ${place}` : `clicked at ${place}`,
     );
   };
+  const fractionIn = (element: HTMLElement | null, event: React.MouseEvent) => {
+    const rect = element?.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return null;
+    return { x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)) };
+  };
   const clickAt = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!access.control || !imageUrl) return;
-    const rect = frameRef.current?.getBoundingClientRect();
-    if (!rect || !rect.width || !rect.height) return;
-    clickFraction(Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)));
+    if (!imageUrl) return;
+    const spot = fractionIn(frameRef.current, event);
+    if (!spot) return;
+    // In zoom mode a click on the picture chooses where to look closer.
+    if (zooming) { setZoom(regionAround(spot.x, spot.y)); tell(`Zoomed in around ${percent(spot.x)}, ${percent(spot.y)}. Click inside the zoomed view to click there on the Mac.`); return; }
+    if (!access.control) return;
+    clickFraction(spot.x, spot.y);
+  };
+  const clickZoomed = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!access.control || !zoom) return;
+    const spot = fractionIn(canvasRef.current, event);
+    if (!spot) return;
+    clickFraction(zoom.x0 + spot.x * zoom.w, zoom.y0 + spot.y * zoom.h);
   };
   const clickTyped = () => {
     const x = Number(xPercent), y = Number(yPercent);
@@ -226,28 +284,67 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
     catch (e) { ended(e); tell(`Not done: ${(e as Error).message}`, "is-blocked"); }
   };
   const canAct = !!access.control && !!imageUrl;
+  const canAim = canAct || (!!imageUrl && zooming);
+  const marker = lastClick && now - lastClick.at < 3000 ? lastClick : null;
   return (
-    <section className="ap-card ap-screen" aria-labelledby="ap-screen-title">
+    <section ref={cardRef} className={`ap-card ap-screen${fullscreen ? " is-fullscreen" : ""}`} aria-labelledby="ap-screen-title">
       <div className="ap-card-head">
         <h2 id="ap-screen-title"><Eye size={16} /> The Mac's screen</h2>
         <p className="ap-live" aria-live="off">
           <span className={`ap-dot${busy ? " is-busy" : ""}`} aria-hidden="true" />
           {imageAt ? `Live · updated ${ago(imageAt, now)} (${clock(imageAt)})` : busy ? "Reading the screen…" : "Waiting for the first picture…"}
+          {imageSize ? ` · ${imageSize.w}×${imageSize.h} px` : ""}
           {hiddenCount ? ` · ${hiddenCount} protected ${hiddenCount === 1 ? "window" : "windows"} left out` : ""}
         </p>
-        <button type="button" className="ag-secondary ag-small" disabled={busy} onClick={() => void refresh()} title="The picture already updates every two seconds and after each action.">Take a screenshot now</button>
+        <div className="ap-inline">
+          <button type="button" className="ag-secondary ag-small" aria-pressed={zooming} disabled={!imageUrl} onClick={() => { setZooming((value) => !value); if (zooming) setZoom(null); else tell("Zoom mode: click the picture where you want to look closer."); }} title="Look at a quarter of the screen four times larger, and click precisely inside it.">
+            {zooming ? <ZoomOut size={15} /> : <ZoomIn size={15} />} {zooming ? "Zoom out" : "Zoom in"}
+          </button>
+          <button type="button" className="ag-secondary ag-small" onClick={toggleFullscreen} title="Show this screen as large as the browser allows."><Maximize2 size={15} /> {fullscreen ? "Exit full screen" : "Full screen"}</button>
+          <button type="button" className="ag-secondary ag-small" disabled={busy} onClick={() => void refresh()} title="The picture already updates every two seconds and after each action.">Take a screenshot now</button>
+        </div>
       </div>
       <div
         ref={frameRef}
-        className={`ap-frame${canAct ? " can-act" : ""}`}
-        role={canAct ? "button" : undefined}
-        aria-label={canAct ? "Mac screen. Click to click there." : "Mac screen"}
-        tabIndex={canAct ? 0 : -1}
+        className={`ap-frame${canAim ? " can-act" : ""}`}
+        role={canAim ? "button" : undefined}
+        aria-label={zooming ? "Mac screen. Click where to zoom in." : canAct ? "Mac screen. Click to click there." : "Mac screen"}
+        tabIndex={canAim ? 0 : -1}
         onClick={clickAt}
       >
-        {imageUrl ? <img src={imageUrl} alt={`Screen of ${peer.name}`} draggable={false} />
+        {imageUrl ? <img ref={imageRef} src={imageUrl} alt={`Screen of ${peer.name}`} draggable={false} />
           : <div className="ap-placeholder" role="status"><Eye size={32} /><span>{screenError ? `The screen could not be read: ${screenError}` : busy ? "Reading the screen…" : "Waiting for the first picture…"}</span></div>}
+        {marker && <span className="ap-mark-ring" style={{ left: `${marker.x * 100}%`, top: `${marker.y * 100}%` }} aria-hidden="true" />}
+        {zoom && imageUrl && <span className="ap-zoom-box" style={{ left: `${zoom.x0 * 100}%`, top: `${zoom.y0 * 100}%`, width: `${zoom.w * 100}%`, height: `${zoom.h * 100}%` }} aria-hidden="true" />}
       </div>
+      {zooming && !zoom && imageUrl && <p className="ap-quiet">Zoom mode: click the picture where you want to look closer.</p>}
+      {zoom && imageUrl && (
+        <div className="ap-zoom" aria-label="Zoomed view">
+          <div className="ap-row">
+            <span className="ap-row-label"><ZoomIn size={15} /> Zoomed view</span>
+            <span className="ap-quiet">X {percent(zoom.x0)}–{percent(zoom.x0 + zoom.w)}, Y {percent(zoom.y0)}–{percent(zoom.y0 + zoom.h)} · 4×{access.control ? " · click inside it to click there on the Mac" : ""}</span>
+            <span className="ap-inline" role="group" aria-label="Move the zoomed view">
+              <button type="button" className="ag-secondary ag-small" aria-label="Move zoom left" onClick={() => pan(-0.1, 0)}><ArrowLeft size={14} /></button>
+              <button type="button" className="ag-secondary ag-small" aria-label="Move zoom up" onClick={() => pan(0, -0.1)}><ArrowUp size={14} /></button>
+              <button type="button" className="ag-secondary ag-small" aria-label="Move zoom down" onClick={() => pan(0, 0.1)}><ArrowDown size={14} /></button>
+              <button type="button" className="ag-secondary ag-small" aria-label="Move zoom right" onClick={() => pan(0.1, 0)}><ArrowRight size={14} /></button>
+            </span>
+          </div>
+          <div className="ap-zoom-frame">
+            <canvas
+              ref={canvasRef}
+              className={access.control ? "can-act" : ""}
+              role={access.control ? "button" : undefined}
+              aria-label={access.control ? "Zoomed view. Click to click there." : "Zoomed view"}
+              tabIndex={access.control ? 0 : -1}
+              onClick={clickZoomed}
+            />
+            {marker && marker.x >= zoom.x0 && marker.x <= zoom.x0 + zoom.w && marker.y >= zoom.y0 && marker.y <= zoom.y0 + zoom.h && (
+              <span className="ap-mark-ring" style={{ left: `${((marker.x - zoom.x0) / zoom.w) * 100}%`, top: `${((marker.y - zoom.y0) / zoom.h) * 100}%` }} aria-hidden="true" />
+            )}
+          </div>
+        </div>
+      )}
       {imageUrl && screenError && <p className="ap-status is-blocked" role="alert">The last screenshot failed: {screenError}</p>}
       {access.control ? (
         <div className="ap-controls">
