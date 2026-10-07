@@ -411,8 +411,12 @@ export function useRemoteScreen(
               (targetCap > 0 && target > 0 && target < targetCap * 0.6);
             struggling = struggles ? struggling + 1 : 0;
             fine = struggles ? 0 : fine + 1;
+            // React may batch several reports before rendering. Each queued
+            // update must use the counters from its own report.
+            const strugglingReports = struggling,
+              fineReports = fine;
             setState((s) => {
-              const slow = s.slow ? fine < 3 : struggling >= 2;
+              const slow = s.slow ? fineReports < 3 : strugglingReports >= 2;
               return s.slow === slow && s.latency === latency
                 ? s
                 : { ...s, slow, latency };
