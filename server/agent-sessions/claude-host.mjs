@@ -233,6 +233,8 @@ export function createClaudeHost({
   const rest = (s) => {
     clearTimeout(s.idle);
     if (!s.proc || s.turns) return;
+    // Still naming the session: its name goes in first.
+    if (s.naming) return void s.naming.then(() => rest(s));
     s.idle = setTimeout(() => !s.turns && end(s), s.waiters.size ? idleMs : graceMs);
     s.idle.unref?.();
   };
@@ -473,6 +475,31 @@ export function createClaudeHost({
     catch (e) { end(s); throw Object.assign(e, { retryable: false }); }
   }
 
+  // A new session is named from its first message as the Claude app names
+  // its own: Claude Code proposes a title (generate_session_title), then
+  // rename_session writes it to the transcript as a custom-title line, which
+  // is what the app reads when it imports the session (without one it lists
+  // it as "General coding session"). Verified with claude 2.1.291: both
+  // answer in about a second, mid-turn. If no title comes, the message's
+  // first line is used.
+  async function name(s, text) {
+    const message = String(text || "").trim();
+    if (!message) return;
+    const oneLine = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    let title = "";
+    try {
+      const proposed = await control(s, { subtype: "generate_session_title", description: message.slice(0, 2000), persist: false });
+      title = oneLine(proposed?.title).slice(0, 200);
+    } catch {
+      /* the first line instead */
+    }
+    if (!title) {
+      const first = oneLine(message.split("\n").find((line) => line.trim()));
+      title = first.length > 60 ? `${first.slice(0, 59).trimEnd()}…` : first;
+    }
+    await control(s, { subtype: "rename_session", title, source: "host", session_id: s.id }).catch(() => {});
+  }
+
   async function turn(s, input) {
     s.turns++;
     s.unread = (s.unread || 0) + 1;
@@ -556,6 +583,7 @@ export function createClaudeHost({
       s.settings = { model: model || null, effort: effort || null, mode: mode || null };
       await launch(s, { resume: false });
       await turn(s, input);
+      s.naming = name(s, text).finally(() => (s.naming = null));
       return { threadId: id, turnId: null };
     },
     async stop(id) {

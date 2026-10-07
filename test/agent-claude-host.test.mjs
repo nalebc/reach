@@ -22,7 +22,9 @@ const settle = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 // `claude -p` in stream-json mode, played by a fake: it records what Reach
 // writes on stdin and lets the test print messages on stdout. Control requests
 // Reach sends (set_model, interrupt) are answered like the CLI does.
-function fakeClaude({ models = [] } = {}) {
+// A new session's title is proposed as `title` (an Error: refused; a promise:
+// answered when it settles).
+function fakeClaude({ models = [], title = "Proposed title" } = {}) {
   const runs = [];
   const spawn = (file, args, options) => {
     const proc = new EventEmitter();
@@ -51,6 +53,19 @@ function fakeClaude({ models = [] } = {}) {
           if (message.type === "control_request" && ["set_model", "interrupt"].includes(subtype))
             queueMicrotask(() =>
               proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
+            );
+          if (message.type === "control_request" && subtype === "rename_session")
+            queueMicrotask(() =>
+              proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
+            );
+          if (message.type === "control_request" && subtype === "generate_session_title")
+            Promise.resolve(title).then((value) =>
+              proc.print({
+                type: "control_response",
+                response: value instanceof Error
+                  ? { subtype: "error", request_id: message.request_id, error: value.message }
+                  : { subtype: "success", request_id: message.request_id, response: { title: value } },
+              }),
             );
           if (message.type === "control_request" && subtype === "initialize")
             queueMicrotask(() =>
@@ -313,6 +328,62 @@ test("a new Claude session gets its own id and the chosen settings", async () =>
   assert.equal(claudeMode("plan"), "plan");
   assert.equal(claudeMode("everything"), null);
   await assert.rejects(h.start({ cwd: "relative", text: "x" }), /Choose a folder/);
+});
+
+const requests = (proc, subtype) => proc.lines.filter((m) => m.type === "control_request" && m.request.subtype === subtype).map((m) => m.request);
+
+test("a new Claude session is named from its first message, so the Claude app doesn't list it as General coding session", async () => {
+  const claude = fakeClaude({ title: "Settings page dark mode toggle" });
+  const h = host(claude);
+  const text = "Add a dark mode toggle to the settings page";
+  const { threadId } = await h.start({ cwd: "/work/app", text });
+  await settle();
+  const proc = claude.last();
+  // The message goes first; the title doesn't hold it up.
+  assert.equal(proc.lines.findIndex((m) => m.type === "user") < proc.lines.findIndex((m) => m.request?.subtype === "generate_session_title"), true);
+  assert.deepEqual(requests(proc, "generate_session_title"), [{ subtype: "generate_session_title", description: text, persist: false }]);
+  // rename_session writes the custom-title line the app reads on import.
+  assert.deepEqual(requests(proc, "rename_session"), [
+    { subtype: "rename_session", title: "Settings page dark mode toggle", source: "host", session_id: threadId },
+  ]);
+  // A reply in a session that already has its name doesn't rename it.
+  proc.print({ type: "result", is_error: false });
+  await h.send(threadId, { text: "and the profile page too" });
+  await settle();
+  assert.equal(requests(proc, "generate_session_title").length, 1);
+  h.close();
+});
+
+test("a Claude session whose title can't be proposed is named after its first line", async () => {
+  const claude = fakeClaude({ title: new Error("unsupported control request") });
+  const h = host(claude);
+  const { threadId } = await h.start({ cwd: "/w", text: "\n  Fix the   login bug\nIt fails on Safari" });
+  await settle();
+  assert.deepEqual(requests(claude.last(), "rename_session"), [
+    { subtype: "rename_session", title: "Fix the login bug", source: "host", session_id: threadId },
+  ]);
+  const long = fakeClaude({ title: "" });
+  const h2 = host(long);
+  await h2.start({ cwd: "/w", text: "x".repeat(80) });
+  await settle();
+  assert.equal(requests(long.last(), "rename_session")[0].title, `${"x".repeat(59)}…`);
+  h.close();
+  h2.close();
+});
+
+test("Reach keeps a new Claude session until its name is written, then lets go", async () => {
+  let answer;
+  const claude = fakeClaude({ title: new Promise((resolve) => (answer = resolve)) });
+  const h = host(claude, { graceMs: 20, idleMs: 120 });
+  const { threadId } = await h.start({ cwd: "/w", text: "go" });
+  claude.last().print({ type: "result", is_error: false });
+  await settle(40);
+  assert.equal(h.drives(threadId), true, "held while naming");
+  answer("Go");
+  await settle(40);
+  assert.equal(requests(claude.last(), "rename_session")[0].title, "Go");
+  assert.equal(claude.last().ended, true);
+  h.close();
 });
 
 test("the model changes in place; a new thinking level relaunches between turns", async () => {
