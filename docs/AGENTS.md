@@ -80,6 +80,8 @@ Chat → the plug button opens **Connectors**: one list of services, with a chip
 | Codex | its app-server: `config/batchWrite` on `mcp_servers.<name>` (`~/.codex/config.toml`); ChatGPT's apps from `app/list`, connected on chatgpt.com | `mcpServer/oauth/login` |
 | Gemini CLI | `gemini mcp add -s user -t http` (`~/.gemini/settings.json`) | on the computer: run `gemini`, then `/mcp auth <name>` (a Reach terminal works) |
 
+On Windows, Reach rejects Claude Code/Gemini CLI connector management and Claude CLI sign-in with HTTP 409. Codex connector/app operations use its app-server separately; they require an available Codex daemon.
+
 Signing in from the phone: open the sign-in page, approve, and paste the address the browser lands on (a `localhost` page that can't load on the phone). Reach accepts only the address that sign-in waits for (same localhost port and path as its link, same `state`) and finishes it on the computer.
 
 GitHub's MCP server can't be signed in to by these CLIs (it has no dynamic client registration), so it takes a token: paste a fine-grained personal access token, or use the token of the GitHub CLI signed in on the computer (`gh auth token`; it's read there and never sent to the phone, but it has the GitHub CLI's broad scopes). The token is saved as the server's `Authorization` header in each agent's settings; it is never returned to the phone or written to Reach's activity. Codex keeps using ChatGPT's GitHub app when you have it.
