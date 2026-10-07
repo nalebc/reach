@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, processTable, reachHosts, startTimes, statusText, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, reachHosts, startTimes, statusText, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,17 @@ function othersRunning() {
     return reachHosts(processTable());
   } catch {
     return [];
+  }
+}
+// The Mac app this command runs inside, when it isn't Terminal: Reach started
+// here would have a terminal but no Screen Recording or Accessibility.
+function foreignApp() {
+  if (process.platform !== "darwin") return "";
+  try {
+    const app = hostApp(processTable(), process.pid);
+    return outsideTerminal(app) ? app : "";
+  } catch {
+    return "";
   }
 }
 function lock() {
@@ -230,6 +241,24 @@ async function startInBackground(options) {
 // False means: start right here, below.
 async function restart(options) {
   const { stopReach, startInTerminal, startService } = await import("./stop.mjs");
+  // A checkout's agents restart Reach often (each interface edit used to
+  // need it): run from an agent, the restart waits for your OK on the phone.
+  // Yours, in Terminal, never asks; an installed Reach has no agents editing it.
+  const asker = !packaged && (foreignApp() || (!process.stdin.isTTY && "an agent"));
+  if (asker && othersRunning().length) {
+    let dataDir = "";
+    try {
+      dataDir = JSON.parse(fs.readFileSync(path.join(state, "host-status.json"), "utf8")).dataDir || "";
+    } catch {}
+    if (dataDir) {
+      const { askRestart } = await import("../server/restart-requests.mjs");
+      const { again } = askRestart(dataDir, { app: asker });
+      console.log(
+        `${again ? "Already asked" : "Asked"} on the phone (Needs you): Reach restarts when the user taps Restart. Nothing restarted yet; don't run this again.\nInterface changes (src/, public/) reach phones without a restart. Only server changes need one.`,
+      );
+      return true;
+    }
+  }
   const done = await stopReach(root, { yes: options.yes, restarting: true });
   if (done.cancelled) return true;
   if (done.service) {
@@ -241,7 +270,9 @@ async function restart(options) {
     console.log("Reach's background service started.");
     return true;
   }
-  if (process.platform === "darwin" && !process.stdin.isTTY) {
+  // An agent's shell has a terminal too (Codex's does): only Terminal itself
+  // holds the permissions.
+  if (process.platform === "darwin" && (!process.stdin.isTTY || foreignApp())) {
     startInTerminal(root, { state });
     console.log("Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.");
     return true;
@@ -368,8 +399,21 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     }
     const { backgroundService } = await import("./background-service.mjs");
     await backgroundService(options, root);
+  } else if (!options.service && foreignApp()) {
+    // Started from another app's shell: Reach opens in Terminal instead.
+    const others = withoutHandover(othersRunning(), state);
+    if (others.length)
+      throw Error(alreadyRunning(others, { command, started: startTimes(others.map((h) => h.pid)) }));
+    const { startInTerminal } = await import("./stop.mjs");
+    startInTerminal(root, { state });
+    console.log(
+      `Reach is starting in a new Terminal window: inside ${foreignApp()} it would have no Screen Recording or Accessibility (no live screen, no control).`,
+    );
   } else {
     if (options.service) {
+      // A start that keeps failing waits longer each time (service-backoff.mjs).
+      const { serviceBackoff } = await import("./service-backoff.mjs");
+      await serviceBackoff(state);
       const saved = JSON.parse(
         fs.readFileSync(path.join(state, "service.json"), "utf8"),
       );
@@ -455,6 +499,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     }
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
+    // Logs keep their latest part; old builds of the Mac helpers go.
+    try {
+      const { housekeeping } = await import("./housekeeping.mjs");
+      housekeeping(state, { logDirs: [path.join(state, "logs")] });
+    } catch {}
     let firstRun = null;
     const detached = detachedWarning({ service: !!options.service });
     if (detached) console.warn(detached);

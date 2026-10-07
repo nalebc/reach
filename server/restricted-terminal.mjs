@@ -1,5 +1,4 @@
-import fs from "node:fs/promises";
-import { constants } from "node:fs";
+import { browserFileOperation } from "./browser-file-boundary.mjs";
 import path from "node:path";
 import { fail } from "./core.mjs";
 
@@ -73,7 +72,7 @@ export function terminalLocation(action) {
 
 // `resolve` applies Reach's shared-folder and private-data rules on every use.
 // Bounds avoid unbounded files, directory output, device nodes and named pipes.
-export async function runTerminalCommand(action, authorize, resolve) {
+export async function runTerminalCommand(action, authorize, resolve, options = {}) {
   const { spec, cwd, relative } = terminalLocation(action);
   const check = () => {
     const client = authorize();
@@ -88,53 +87,34 @@ export async function runTerminalCommand(action, authorize, resolve) {
     return resolve(action.root, relative, client);
   };
   const full = target();
+  const operation = async (op, extra = {}) => {
+    const client = check();
+    target();
+    return browserFileOperation({ op, root: client.agentRoots[action.root], path: relative === "." ? "" : relative,
+      privatePaths: options.privatePaths || [], ...extra }, () => { const client = check(); target(); return client; }, options);
+  };
   let output = "";
   if (spec.name === "pwd" || spec.name === "cd") {
-    if (!(await fs.stat(full)).isDirectory()) throw fail(400, "Choose a folder, not a file.");
+    if ((await operation("stat")).stat.type !== "directory") throw fail(400, "Choose a folder, not a file.");
     output = full;
-  }
-  else if (spec.name === "ls") {
-    const directory = await fs.opendir(full);
-    const names = [];
-    try {
-      for await (const entry of directory) {
-        target();
-        if (names.length >= 1000) { names.push("[Listing limited to 1,000 entries]"); break; }
-        names.push(entry.name + (entry.isDirectory() ? "/" : entry.isSymbolicLink() ? " [link]" : ""));
-      }
-    } finally { await directory.close().catch(() => {}); }
+  } else if (spec.name === "ls") {
+    const result = await operation("list", { maxEntries: 1000 });
+    const names = result.items.map(entry => entry.name + (entry.type === "directory" ? "/" : ""));
+    if (result.truncated) names.push("[Listing limited to 1,000 entries]");
     output = names.sort().join("\n");
   } else {
-    const expected = await fs.stat(full);
-    if (!expected.isFile() || expected.nlink !== 1 || expected.size > MAX_FILE)
-      throw fail(400, "Read a regular file no larger than 1 MiB without extra hard links.");
-    target();
-    const file = await fs.open(full, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const actual = await file.stat();
-      if (!actual.isFile() || actual.nlink !== 1 || actual.size > MAX_FILE || actual.ino !== expected.ino || actual.dev !== expected.dev)
-        throw fail(409, "The file changed. Request it again.");
-      target();
-      const buffer = Buffer.alloc(MAX_FILE + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        check();
-        const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
-        if (!bytesRead) break;
-        length += bytesRead;
-      }
-      if (length > MAX_FILE) throw fail(400, "Read a regular file no larger than 1 MiB without extra hard links.");
-      const text = buffer.subarray(0, length).toString("utf8");
-      const lines = text.split("\n");
-      if (lines.at(-1) === "") lines.pop();
-      if (spec.name === "head") output = lines.slice(0, spec.count).join("\n");
-      else if (spec.name === "tail") output = lines.slice(-spec.count).join("\n");
-      else if (spec.name === "grep") output = lines.flatMap((line, i) => line.includes(spec.pattern) ? [`${i + 1}:${line}`] : []).join("\n");
-      else if (spec.name === "wc") {
-        const counts = { "-l": (text.match(/\n/g) || []).length, "-w": text.trim() ? text.trim().split(/\s+/).length : 0, "-c": length };
-        output = `${spec.mode ? counts[spec.mode] : Object.values(counts).join(" ")} ${spec.target}`;
-      } else output = text;
-    } finally { await file.close(); }
+    const { data: buffer } = await operation("read", { maxBytes: MAX_FILE });
+    const length = buffer.length;
+    const text = buffer.toString("utf8");
+    const lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    if (spec.name === "head") output = lines.slice(0, spec.count).join("\n");
+    else if (spec.name === "tail") output = lines.slice(-spec.count).join("\n");
+    else if (spec.name === "grep") output = lines.flatMap((line, i) => line.includes(spec.pattern) ? [`${i + 1}:${line}`] : []).join("\n");
+    else if (spec.name === "wc") {
+      const counts = { "-l": (text.match(/\n/g) || []).length, "-w": text.trim() ? text.trim().split(/\s+/).length : 0, "-c": length };
+      output = `${spec.mode ? counts[spec.mode] : Object.values(counts).join(" ")} ${spec.target}`;
+    } else output = text;
   }
   target();
   // Never emit terminal escape sequences or visual text-reordering controls.

@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Folder, Sparkles, UserRound } from "lucide-react";
+import { usePageVisible } from "./page-visible";
+import { ChevronDown, Folder, Monitor, ShieldCheck, Sparkles, SquareTerminal, Terminal, UserRound } from "lucide-react";
 import { post, request, type Device, type Peer } from "./api";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { ErrorLine, Modal } from "./ui";
 import "./access-editor.css";
+import AppLogo from "./AppLogo";
+import { AccessRow, AgentAvatar, Choices, SwitchLine } from "./agent-ui";
 import { scopeLabel } from "./scope-words";
 import { BrowserApprovalReview, browserActionWords, type BrowserRequest } from "./browser-approvals";
 
@@ -107,6 +110,7 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const visible = usePageVisible();
   useEffect(() => {
     const controller = new AbortController();
     let reading = false;
@@ -129,9 +133,10 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
         if (!controller.signal.aborted) { setItems([]); setGrants(null); setSelected(null); setError((e as Error).message); }
       } finally { reading = false; }
     };
+    if (!visible) return () => controller.abort();
     void refresh(); const timer = setInterval(() => void refresh(), 3000);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [peer.url, peer.token, client.id, revision]);
+  }, [peer.url, peer.token, client.id, revision, visible]);
   const end = async () => {
     if (busy || !confirm(`End ${client.name}’s session now?`)) return;
     setBusy(true); setError("");
@@ -149,27 +154,41 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
+  const ends = new Date(client.expiresAt || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return <>
     <Modal title="Manage app requests" onClose={() => !busy && onClose()}>
-      <section className="access-editor">
-        <div className="ae-person"><Sparkles size={22} /><div><strong>{client.name}</strong><small>{accessSummary(client)}</small></div></div>
-        <p className="browser-policy">Allow additional apps when the agent asks. App permissions end with this invitation. Create a new invitation to change folder or terminal permissions.</p>
-        <h3>Current app access</h3>
-        {grants === null ? <p className="browser-policy">Loading app access…</p> : !grants.length ? <p className="browser-policy">No apps currently shared.</p> :
-          <div className="browser-invite-apps">{grants.map((app) => <label className="browser-invite-app" key={app.id}>
-            <span>{app.name}</span>
-            <select className="ivt-field" aria-label={`${app.name} session access`} disabled={busy} value={app.mode} onChange={(event) => void limitApp(app.id, event.target.value as "hidden" | "view")}>
-              {app.mode === "control" && <option value="control">View &amp; control</option>}
-              <option value="view">View only</option><option value="hidden">Hidden</option>
-            </select>
-          </label>)}</div>}
-        {!!client.policy?.roots?.length && <p className="browser-policy">Shared folders: {client.policy.roots.join(", ")}</p>}
-        <h3>App requests</h3>
-        {!items.length && <p className="browser-policy">No pending app requests. New requests appear here and in Needs you.</p>}
-        <ul className="browser-request-history">{items.map((item) => <li key={item.id}><span>{browserActionWords(item.action)}</span><button className="button secondary small" onClick={() => setSelected(item)}>Review request</button></li>)}</ul>
-        <p className="browser-policy">Session ends {new Date(client.expiresAt || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
+      <section className="access-editor ag-manage">
+        <div className="ag-manage-who">
+          <AgentAvatar name={client.name} size={48} />
+          <div><strong>{client.name}</strong><small>{accessSummary(client)}</small></div>
+        </div>
+        <div>
+          <p className="ag-label">Apps it can see</p>
+          {grants === null ? <p className="ag-quiet">Loading app access…</p> : !grants.length ? <p className="ag-quiet">No apps yet. When it asks for one, you’ll see it here and in Needs you.</p> :
+            <ul className="ag-app-list ag-manage-apps">{grants.map((app) => <li className="ag-app" key={app.id}>
+              <span className="ag-app-logo"><AppLogo peer={peer} appId={app.id} name={app.name} /></span>
+              <span className="ag-app-text"><strong>{app.name}</strong><small className="is-on">{app.mode === "control" ? "View & control" : "Can see its windows"}</small></span>
+              <select className="ag-mode" aria-label={`${app.name} session access`} disabled={busy} value={app.mode} onChange={(event) => void limitApp(app.id, event.target.value as "hidden" | "view")}>
+                {app.mode === "control" && <option value="control">View &amp; control</option>}
+                <option value="view">View only</option><option value="hidden">Remove</option>
+              </select>
+            </li>)}</ul>}
+        </div>
+        {!!items.length && <div className="ag-ask">
+          <p><strong>{items.length} {items.length === 1 ? "app request" : "app requests"}</strong> waiting for you</p>
+          <ul>{items.map((item) => <li key={item.id}>
+            {item.action.type === "app-access" && <span className="ag-chip-logo"><AppLogo peer={peer} appId={item.action.appId} name={item.action.appName} /></span>}
+            <code>{browserActionWords(item.action)}</code>
+            <button className="ag-primary ag-small" onClick={() => setSelected(item)}>Review request</button>
+          </li>)}</ul>
+        </div>}
+        {!!client.policy?.roots?.length && <p className="ag-note"><Folder size={14} /> Shared folders: {client.policy.roots.join(", ")}</p>}
+        <p className="ag-note">App permissions end with this invitation. Create a new invitation to change folder or terminal permissions.</p>
         <ErrorLine error={error} />
-        <button className="button secondary" disabled={busy} onClick={() => void end()}>{busy ? "Ending…" : "End session"}</button>
+        <div className="ag-manage-end">
+          <span>Session ends {ends}.</span>
+          <button className="ag-danger ag-small" disabled={busy} onClick={() => void end()}>{busy ? "Ending…" : "End session"}</button>
+        </div>
       </section>
     </Modal>
     {selected && <BrowserApprovalReview peer={peer} item={selected} onClose={() => setSelected(null)} onResolved={() => { setSelected(null); setRevision((value) => value + 1); }} />}
@@ -225,6 +244,7 @@ function GeneralAccessEditor({
   const [expiryChanged, setExpiryChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [openRow, setOpenRow] = useState<string | null>(null);
   useEffect(() => {
     if (!browser) return;
     let active = true;
@@ -302,6 +322,157 @@ function GeneralAccessEditor({
       />
     </label>
   );
+  if (browser) {
+    const commandMode = !restricted ? "off" : terminalApproval ? "approve" : "read";
+    const terminals = [
+      ...(options?.terminals || []),
+      ...terminalIds
+        .filter((id) => !options?.terminals.some((item) => item.id === id))
+        .map((id) => ({ id, name: "Unavailable terminal" })),
+    ];
+    const toggleRow = (row: string) => setOpenRow((current) => (current === row ? null : row));
+    return (
+      <Modal title="Edit access" onClose={() => !busy && onClose()}>
+        <form
+          className="access-editor ag-manage"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <div className="ag-manage-who">
+            <AgentAvatar name={client.name} size={48} />
+            <div>
+              <strong>{client.name}</strong>
+              <small>{device.name}</small>
+            </div>
+          </div>
+          <fieldset disabled={busy} className="ag-fieldset">
+            <div className="ag-rows">
+              <AccessRow
+                icon={<Folder />}
+                label="Files"
+                value={folders.length ? (folders.length === 1 ? folders[0].label : `${folders.length} folders`) : "Off"}
+                open={openRow === "files"}
+                onToggle={() => toggleRow("files")}
+              >
+                <FolderBrowser peer={peer} device={device} picked={folders} onChange={setFolders} />
+              </AccessRow>
+              <div className="ag-row">
+                <label className="ag-row-head ag-row-static">
+                  <span className="ag-row-icon"><Monitor /></span>
+                  <span className="ag-row-label">Screen</span>
+                  <select
+                    className="ag-mode"
+                    aria-label="Screen permission"
+                    value={screen}
+                    onChange={(e) => setScreen(e.target.value)}
+                  >
+                    <option value="off">No access</option>
+                    <option value="view">View only</option>
+                    <option value="scroll">View and scroll</option>
+                    <option value="ask">Ask before actions</option>
+                  </select>
+                </label>
+              </div>
+              <AccessRow
+                icon={<SquareTerminal />}
+                label="Terminal output"
+                value={terminalIds.length ? `${terminalIds.length} watched` : "Off"}
+                open={openRow === "output"}
+                onToggle={() => toggleRow("output")}
+              >
+                {!options && <p className="ag-quiet">Loading terminals…</p>}
+                {options && !terminals.length && <p className="ag-quiet">No open terminals.</p>}
+                <div className="ag-lines">
+                  {terminals.map((item) => (
+                    <SwitchLine
+                      key={item.id}
+                      label={`Watch ${item.name}`}
+                      icon={<Terminal size={18} />}
+                      title={item.name}
+                      checked={terminalIds.includes(item.id)}
+                      onChange={(on) =>
+                        setTerminalIds(on ? [...terminalIds, item.id] : terminalIds.filter((id) => id !== item.id))
+                      }
+                    />
+                  ))}
+                </div>
+              </AccessRow>
+              <AccessRow
+                icon={<ShieldCheck />}
+                label="Commands"
+                value={commandMode === "approve" ? "You approve" : commandMode === "read" ? "Read-only" : commands ? "Suggestions" : "Off"}
+                open={openRow === "commands"}
+                onToggle={() => toggleRow("commands")}
+              >
+                <Choices
+                  name={`commands-${client.id}`}
+                  label="Commands"
+                  value={commandMode}
+                  onChange={(value) => {
+                    setRestricted(value !== "off");
+                    setTerminalApproval(value === "approve");
+                    if (value !== "off") setCommands(false);
+                  }}
+                  options={[
+                    { value: "off", title: "No commands", detail: "It can’t run anything." },
+                    { value: "read", title: "Read-only commands", detail: "Read commands run inside shared folders. Every command is logged." },
+                    { value: "approve", title: "Ask me first", detail: "Approve each command or script once, inside shared folders. No network, sudo or helper processes." },
+                  ]}
+                />
+                {commands && (
+                  <SwitchLine
+                    label="Command suggestions"
+                    title="Command suggestions"
+                    detail="Suggestions only; no execution."
+                    checked={commands}
+                    onChange={setCommands}
+                  />
+                )}
+              </AccessRow>
+            </div>
+            <div className="ag-ends">
+              <label htmlFor="access-until" className="ag-label">Access ends</label>
+              <input
+                id="access-until"
+                type="datetime-local"
+                required
+                value={until}
+                onChange={(e) => {
+                  setUntil(e.target.value);
+                  setExpiryChanged(true);
+                }}
+              />
+              <div className="ag-quick">
+                {[15, 30, 60, ...(client.browserTransport === "funnel" ? [] : [240, 1440])].map((minutes) => (
+                  <button
+                    key={minutes}
+                    type="button"
+                    onClick={() => {
+                      setUntil(localTime(Date.now() + minutes * 60000));
+                      setExpiryChanged(true);
+                    }}
+                  >
+                    {minutes < 60 ? `${minutes} min` : minutes === 1440 ? "1 day" : `${minutes / 60} hr`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </fieldset>
+          <ErrorLine error={error} />
+          <div className="ag-manage-end">
+            <button type="button" className="ag-danger ag-small" disabled={busy} onClick={() => void remove()}>
+              Remove access
+            </button>
+            <button type="submit" className="ag-primary ag-small" disabled={busy}>
+              {busy ? "Saving…" : "Save changes"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    );
+  }
   return (
     <Modal title="Edit access" onClose={() => !busy && onClose()}>
       <form

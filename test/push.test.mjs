@@ -316,6 +316,7 @@ test("your phone subscribes; a handoff includes safe context, identity and its d
   assert.match(destination.searchParams.get("threadId"), /^[\w-]+$/);
   assert.ok(destination.searchParams.get("computer"));
   assert.equal(message.title, "Claude needs you in Notes");
+  assert.equal(message.body, "Open Notes to continue where Claude left off.");
   assert.match(message.tag, /^handoff-[0-9a-f]{8}$/);
 });
 
@@ -584,7 +585,9 @@ test("a live agent wait notifies with every browser closed, once, without hooks"
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(sent.length, 1);
   const message = JSON.parse(sub.open(sent[0].body));
-  assert.equal(message.title, "Claude · Approval needed");
+  // The chat's name says which chat; the agent and its request follow.
+  assert.equal(message.title, "PRIVATE CHAT");
+  assert.equal(message.body, "Claude Code · Your answer is needed");
   assert.equal(
     new URL(message.url, "https://reach.test").searchParams.get("page"),
     "sessions",
@@ -600,7 +603,7 @@ test("a live agent wait notifies with every browser closed, once, without hooks"
   assert.match(message.tag, /^need-[a-f0-9]{24}$/);
   assert.doesNotMatch(
     JSON.stringify({ title: message.title, body: message.body }),
-    /PRIVATE CHAT|session1|p1/,
+    /session1|p1/,
   );
 });
 

@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fail } from "./core.mjs";
+import { browserFileOperation } from "./browser-file-boundary.mjs";
+import { browserOperationCoordinator } from "./browser-operation-coordinator.mjs";
 
 const MAX_FILE = 1024 * 1024;
 const invalid = () => fail(400, "Supported file changes are mkdir, touch, cp and rm, without flags. Shells, scripts, sudo, links, recursive operations and paths outside shared folders are blocked.");
@@ -25,10 +27,9 @@ export function parseBrowserMutation(command) {
 }
 const regular = (stat) => stat.isFile() && stat.nlink === 1 && stat.size <= MAX_FILE;
 
-// Synchronous checks and operations keep concurrent agent requests from
-// changing path components between validation and mutation in this process.
-// Commands cannot create links or rename/delete directories. No command is
-// passed to a shell, subprocess, interpreter or project executable.
+// Validation provides the owner review and private-data exclusions. Execution
+// uses descriptor-relative native I/O: repeated pathname checks alone cannot
+// prevent another process from swapping parent directories for symbolic links.
 export function validateBrowserMutation(action, authorize, { resolve } = {}) {
   if (process.platform === "win32") throw fail(403, "Approved file changes are not supported on Windows.");
   if (action?.type !== "terminal-change" || !Number.isSafeInteger(action.root) || action.root < 0 || !safeRelative(action.cwd ?? "", true) || typeof authorize !== "function" || typeof resolve !== "function") throw invalid();
@@ -77,44 +78,19 @@ export function validateBrowserMutation(action, authorize, { resolve } = {}) {
   return { spec, targets, client, base };
 }
 
-export async function runBrowserMutation(action, authorize, { resolve } = {}) {
-  const plan = validateBrowserMutation(action, authorize, { resolve });
-  const recheck = () => {
-    const next = validateBrowserMutation(action, authorize, { resolve });
-    if (next.base !== plan.base || next.targets.some((target, i) => target.full !== plan.targets[i].full || target.stat?.ino !== plan.targets[i].stat?.ino || target.stat?.dev !== plan.targets[i].stat?.dev)) throw fail(409, "A command path changed. Request approval again.");
-    return next;
-  };
-  const target = plan.targets[0];
-  if (plan.spec.name === "mkdir") {
-    recheck(); fs.mkdirSync(target.full, { mode: 0o700 });
-    return `Created folder ${target.relative}`;
-  }
-  if (plan.spec.name === "touch") {
-    recheck();
-    const fd = fs.openSync(target.full, fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | (target.stat ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL), 0o600);
-    try {
-      const stat = fs.fstatSync(fd);
-      if (!regular(stat) || (target.stat && (stat.ino !== target.stat.ino || stat.dev !== target.stat.dev))) throw fail(409, "The file changed. Request approval again.");
-      authorize(); const at = new Date(); fs.futimesSync(fd, at, at); fs.fsyncSync(fd);
-    } finally { fs.closeSync(fd); }
-    return `Touched file ${target.relative}`;
-  }
-  if (plan.spec.name === "rm") {
-    recheck(); fs.unlinkSync(target.full);
-    return `Removed file ${target.relative}`;
-  }
-  const source = fs.openSync(target.full, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-  try {
-    const stat = fs.fstatSync(source);
-    if (!regular(stat) || stat.ino !== target.stat.ino || stat.dev !== target.stat.dev) throw fail(409, "The source changed. Request approval again.");
-    const content = Buffer.alloc(MAX_FILE + 1);
-    let size = 0;
-    while (size < content.length) { authorize(); const read = fs.readSync(source, content, size, content.length - size, size); if (!read) break; size += read; }
-    if (size > MAX_FILE) throw fail(400, "Copy a regular file no larger than 1 MiB.");
-    recheck();
-    const destination = fs.openSync(plan.targets[1].full, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-    try { fs.writeFileSync(destination, content.subarray(0, size)); fs.fsyncSync(destination); }
-    finally { fs.closeSync(destination); }
-    return `Copied ${target.relative} to ${plan.targets[1].relative}`;
-  } finally { fs.closeSync(source); }
+export async function runBrowserMutation(action, authorize, { resolve, coordinator = browserOperationCoordinator, ...options } = {}) {
+  const queued = validateBrowserMutation(action, authorize, { resolve });
+  return await coordinator.run({ clientId: queued.client.id, root: queued.base, kind: 'file-change', authorize }, async ({ authorize: current }) => {
+    // Another writer may have changed the target while this request waited.
+    const plan = validateBrowserMutation(action, current, { resolve });
+    if (plan.base !== queued.base) throw fail(409, "The shared folder changed. Request approval again.");
+    await browserFileOperation({ op: plan.spec.name, root: plan.base, path: plan.targets[0].relative,
+      ...(plan.targets[1] ? { to: plan.targets[1].relative } : {}), maxBytes: MAX_FILE,
+      privatePaths: options.privatePaths || [] }, current, options);
+    const target = plan.targets[0];
+    return plan.spec.name === "mkdir" ? `Created folder ${target.relative}`
+      : plan.spec.name === "touch" ? `Touched file ${target.relative}`
+      : plan.spec.name === "rm" ? `Removed file ${target.relative}`
+      : `Copied ${target.relative} to ${plan.targets[1].relative}`;
+  });
 }

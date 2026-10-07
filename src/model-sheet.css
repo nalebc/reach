@@ -1,0 +1,296 @@
+/* The model and effort pickers (ModelSheet.tsx), as the Claude and ChatGPT
+   phone apps draw them, in each chat's own colors (agent-session.css). */
+.ms-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.ms-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.42);
+  animation: ms-fade 0.2s ease-out;
+}
+.ms-sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  padding: 10px 16px calc(16px + env(safe-area-inset-bottom));
+  border-radius: 28px 28px 0 0;
+  background: var(--as-bg, #181818);
+  color: var(--as-text, #ececec);
+  box-shadow: 0 -8px 40px rgb(0 0 0 / 0.35);
+  animation: ms-rise 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Shown, so the sheet can be pulled down to close (sheet-drag.ts). */
+.ms-sheet .sheet-handle {
+  display: block;
+  flex: none;
+  align-self: center;
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--as-faint, #5c5c5c);
+}
+.ms-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
+.ms-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.ms-round {
+  position: absolute;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--as-float, #303030);
+  color: inherit;
+  cursor: pointer;
+}
+/* One rounded card of rows, hairlines between them. */
+.ms-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px;
+  border-radius: 20px;
+  background: var(--as-card, #212121);
+}
+.ms-card > button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--as-line, #2a2a2a);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ms-card > button:last-child {
+  border-bottom: 0;
+}
+.ms-card > button:disabled {
+  opacity: 0.6;
+}
+.ms-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 16.5px;
+}
+.ms-text small {
+  color: var(--as-muted, #8e8e8e);
+  font-size: 14px;
+  line-height: 1.35;
+}
+.ms-check {
+  flex: none;
+  color: var(--as-text);
+}
+.claude .ms-check {
+  color: #4a8fe2;
+}
+/* Claude's "Effort  Medium ›": a card of its own. */
+.ms-card.ms-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-height: 60px;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 16.5px;
+  cursor: pointer;
+}
+.ms-row > span:first-child {
+  flex: 1;
+  text-align: left;
+}
+.ms-value,
+.ms-chevron {
+  color: var(--as-muted, #8e8e8e);
+}
+.ms-note {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--as-muted, #8e8e8e);
+  font-size: 13px;
+}
+.ms-error {
+  color: #f0a0a0;
+}
+.ms-retry {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--as-float, #303030);
+  color: inherit;
+  font: inherit;
+}
+/* Codex's black Done (light on a dark sheet). */
+.ms-done {
+  min-height: 52px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--as-text, #ececec);
+  color: var(--as-bg, #181818);
+  font: inherit;
+  font-size: 16.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* Codex over the composer: "GPT-5.5 Light ›" and the effort dots. */
+.ms-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 10px;
+}
+.ms-strip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  color: var(--as-text, #ececec);
+  font: inherit;
+  font-size: 19px;
+  cursor: pointer;
+}
+.ms-strip-label strong {
+  font-weight: 600;
+}
+.ms-strip-label span,
+.ms-strip-label svg {
+  color: var(--as-muted, #8e8e8e);
+}
+.ms-dots {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  border-radius: 999px;
+  background: var(--as-float, #303030);
+}
+/* One filled bar from the start to the level in use. */
+.ms-dots::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: calc(var(--fill, 0) * 44px);
+  border-radius: 999px;
+  background: var(--as-text, #ececec);
+  transition: width 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ms-dots button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.ms-dots button span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--as-faint, #5c5c5c);
+  transition: width 0.2s, height 0.2s;
+}
+.ms-dots button[aria-checked="true"] span {
+  width: 30px;
+  height: 30px;
+  background: var(--as-bg, #181818);
+}
+@keyframes ms-rise {
+  from {
+    translate: 0 40px;
+    opacity: 0.6;
+  }
+}
+@keyframes ms-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ms-sheet,
+  .ms-scrim {
+    animation: none;
+  }
+}
+/* The strip sits centered over the composer, not in a menu box. */
+.as-mode-menu.as-model-strip {
+  right: 8px;
+  left: 8px !important;
+  width: auto;
+  align-items: stretch;
+  background: none;
+  box-shadow: none;
+}
+/* Not the menu's own button look (its checked rows get a background). */
+.as-mode-menu .ms-dots button[role="radio"] {
+  display: grid;
+  place-items: center;
+}
+.as-mode-menu .ms-dots button[role="radio"],
+.as-mode-menu .ms-strip-label {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+/* Speed: the row is the button; the phone's own select menu opens on tap. */
+.ms-select {
+  position: relative;
+}
+.ms-select select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+/* A tap shows at once (rows had no pressed look). */
+.ms-card > button:not(:disabled):active,
+.ms-card.ms-row:not(:disabled):active {
+  background: color-mix(in srgb, var(--as-text, #ececec) 8%, transparent);
+}
+.ms-card > button {
+  margin: 0 -16px;
+  padding-inline: 16px;
+  -webkit-tap-highlight-color: transparent;
+}
+.ms-card > button[aria-busy="true"] {
+  opacity: 1;
+}

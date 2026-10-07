@@ -11,10 +11,12 @@ import {
   ChevronRight,
   X,
   SquarePen,
+  Archive,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, projectName, type AgentHealth, type AgentSession } from "./agent-sessions";
+import { agentLabel, archiveSession, projectName, type AgentHealth, type AgentSession } from "./agent-sessions";
 import { moveChoices, MoveItems, MoveSection } from "./MoveChat";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import { computerWord } from "./pause";
@@ -49,7 +51,7 @@ export const needsYou = (s: AgentSession) =>
 export type ChatAppChoice = { agent: string; name: string; supported: boolean };
 const supportedApps: ChatAppChoice[] = [
   { agent: "codex", name: "Codex", supported: true },
-  { agent: "claude", name: "Claude", supported: true },
+  { agent: "claude", name: "Claude Code", supported: true },
 ];
 
 export function ChatAppPicker({
@@ -185,6 +187,7 @@ export default function ChatList({
   onRefresh,
   health = [],
   onSectionMoved,
+  onArchived,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -208,6 +211,8 @@ export default function ChatList({
   // The apps found on the Mac: a folder's chats can move to another one.
   health?: AgentHealth[];
   onSectionMoved?: (to: string) => void;
+  // A chat archived or brought back from here: the list to read again.
+  onArchived?: () => void;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -215,12 +220,13 @@ export default function ChatList({
   const filter = agent || localAgent;
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(12);
+  const [gone, setGone] = useState<Set<string>>(() => new Set());
   const all = useMemo(
     () =>
       (sessions || [])
-        .filter((s) => !s.archived)
+        .filter((s) => !s.archived && !gone.has(`${s.agent}:${s.id}`))
         .sort((a, b) => b.updatedAt - a.updatedAt),
-    [sessions],
+    [sessions, gone],
   );
   const picked = apps.find((a) => a.agent === filter);
   const upcoming = picked?.supported === false;
@@ -246,6 +252,36 @@ export default function ChatList({
     const key = s.cwd || "";
     projects.set(key, [...(projects.get(key) || []), s]);
   }
+  // Archived from here: gone at once (the Mac's list follows), with a
+  // moment to undo it.
+  const [undo, setUndo] = useState<{ s: AgentSession; problem?: string } | null>(null);
+  useEffect(() => {
+    if (!undo || undo.problem) return;
+    const timer = setTimeout(() => setUndo(null), 6000);
+    return () => clearTimeout(timer);
+  }, [undo]);
+  const keyOf = (s: AgentSession) => `${s.agent}:${s.id}`;
+  const archive = async (s: AgentSession, archived: boolean) => {
+    setGone((g) => {
+      const next = new Set(g);
+      if (archived) next.add(keyOf(s));
+      else next.delete(keyOf(s));
+      return next;
+    });
+    setUndo(archived ? { s } : null);
+    try {
+      await archiveSession(peer, s, archived);
+      onArchived?.();
+    } catch (e) {
+      setGone((g) => {
+        const next = new Set(g);
+        if (archived) next.delete(keyOf(s));
+        else next.add(keyOf(s));
+        return next;
+      });
+      setUndo({ s, problem: (e as Error).message });
+    }
+  };
   // Touch and hold a chat (or right-click it): its menu, by it.
   const [menu, setMenu] = useState<{ s: AgentSession; at: Anchor } | null>(null);
   const held = useRef<{ timer?: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean }>({ x: 0, y: 0, fired: false });
@@ -561,7 +597,23 @@ export default function ChatList({
             setMenu(null);
             onNew(cwd);
           }}
+          onArchive={(s) => {
+            setMenu(null);
+            void archive(s, true);
+          }}
         />
+      )}
+      {/* On the page: the list contains its layout, which would pin it. */}
+      {undo && createPortal(
+        <div className="chat-undo" role="status">
+          <span>{undo.problem || `Archived “${plainLine(undo.s.title || "") || "New chat"}” in ${agentLabel(undo.s.agent)}`}</span>
+          {undo.problem ? (
+            <button onClick={() => setUndo(null)}>OK</button>
+          ) : (
+            <button onClick={() => void archive(undo.s, false)}>Undo</button>
+          )}
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -580,6 +632,7 @@ function ChatMenu({
   onClose,
   onOpen,
   onNew,
+  onArchive,
 }: {
   peer: Peer;
   session: AgentSession;
@@ -590,8 +643,12 @@ function ChatMenu({
   onClose: () => void;
   onOpen: (s: AgentSession) => void;
   onNew: (cwd: string) => void;
+  onArchive: (s: AgentSession) => void;
 }) {
   const where = projectName(session.cwd) || "Workspace";
+  // Archived in its own app, or why it can't be.
+  const noArchive =
+    session.agent === "codex" ? "" : session.agent === "claude" ? (session.inApp ? "" : "Open it in the Claude app to archive it.") : `${agentLabel(session.agent)} has no archive.`;
   return (
     <ChatPopover anchor={at} align="start" label={`${session.title || "New chat"} options`} onClose={onClose}>
       <div className="chat-popover-head">
@@ -623,6 +680,19 @@ function ChatMenu({
         word={computerWord(peer.platform)}
         onMoved={onOpen}
       />
+      <div className="chat-popover-line" />
+      <button
+        role="menuitem"
+        className={`move-item ${noArchive ? "blocked" : ""}`}
+        disabled={!!noArchive}
+        onClick={() => onArchive(session)}
+      >
+        <Archive size={18} />
+        <span className="move-item-text">
+          <span>Archive</span>
+          <small>{noArchive || `In ${agentLabel(session.agent)} too`}</small>
+        </span>
+      </button>
     </ChatPopover>
   );
 }

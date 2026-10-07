@@ -34,7 +34,7 @@ const said = [
   { id: "u2", role: "user", kind: "text", text: "Now tests", at: Date.now() - 7000 },
   { id: "a2", role: "assistant", kind: "text", text: "Added them.", at: Date.now() - 6000 },
 ];
-const mac = { pages: {}, moves: [] };
+const mac = { pages: {}, moves: [], archives: [] };
 // A folder's chats on the Chats list (MoveSection).
 const FOLDER = ["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002", "aaaaaaaa-0000-4000-8000-000000000003", "aaaaaaaa-0000-4000-8000-000000000004"];
 const live = { version: 1, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 };
@@ -55,6 +55,10 @@ before(async () => {
   for (const [agent, id] of [["claude", CLAUDE], ["codex", CODEX], ["codex", NEW], ...FOLDER.map((id) => ["claude", id])]) {
     routes[`/api/sessions/${agent}/${id}`] = () => mac.pages[`${agent}:${id}`];
     routes[`/api/sessions/${agent}/${id}/live`] = async () => (await settle(60), live);
+    routes[`/api/sessions/${agent}/${id}/archive`] = (init) => {
+      mac.archives.push([`${agent}:${id}`, JSON.parse(init.body).archived]);
+      return { archived: JSON.parse(init.body).archived };
+    };
     routes[`/api/sessions/${agent}/${id}/move`] = (init) => {
       mac.moves.push({ from: `${agent}:${id}`, body: JSON.parse(init.body) });
       return { agent: JSON.parse(init.body).to, id: NEW };
@@ -69,6 +73,7 @@ after(() => dom?.close());
 beforeEach(() => {
   dom.errors.length = 0;
   mac.moves = [];
+  mac.archives = [];
   // The hint has been seen enough unless a test says otherwise.
   dom.window.localStorage.setItem("reach.moveHint", "99");
 });
@@ -369,7 +374,7 @@ test("holding a chat shows its menu (Open, New chat in its folder, Continue in�
   const menu = $(".chat-popover");
   assert.ok(menu, "menu shows");
   assert.match(menu.querySelector(".chat-popover-head").textContent, /Sign up/);
-  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue in Codex"]);
+  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue in Codex", "Archive"]);
   await click($$(".chat-popover .move-item").find((b) => b.textContent.includes("New chat in app")));
   assert.deepEqual(news, ["/work/app"]);
   assert.equal($(".chat-popover"), null);
@@ -386,4 +391,41 @@ test("right-clicking a chat shows the same menu; Open opens it", async () => {
   await settle();
   await click($$(".chat-popover .move-item").find((b) => b.textContent.trim() === "Open"));
   assert.equal(opened[0]?.id, FOLDER[0]);
+});
+
+// Archive from a chat's menu: in its own app too (the Mac's list follows),
+// gone from here at once, with a moment to undo it.
+const holdOpen = async (title) => {
+  const card = $$(".chat-card").find((c) => c.textContent.includes(title));
+  card.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  await settle();
+  return card;
+};
+test("Archive in a chat's menu archives it in its app, hides it here, and Undo brings it back", async () => {
+  let reloads = 0;
+  await list({ onArchived: () => reloads++ });
+  await holdOpen("Login page");
+  const row = $$(".chat-popover .move-item").find((b) => b.textContent.includes("Archive"));
+  assert.match(row.textContent, /In Claude Code too/);
+  await click(row);
+  await dom.waitFor(() => mac.archives.length === 1);
+  assert.deepEqual(mac.archives, [[`claude:${FOLDER[0]}`, true]]);
+  assert.ok(!$$(".chat-card").some((c) => c.textContent.includes("Login page")), "gone from the list at once");
+  const bar = $(".chat-undo");
+  assert.equal(bar.parentElement, dom.document.body);
+  assert.match(bar.textContent, /Archived “Login page” in Claude Code/);
+  await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "Undo"));
+  await dom.waitFor(() => mac.archives.length === 2);
+  assert.deepEqual(mac.archives[1], [`claude:${FOLDER[0]}`, false]);
+  assert.ok($$(".chat-card").some((c) => c.textContent.includes("Login page")), "back in the list");
+  assert.equal(reloads, 2);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a Claude chat the app doesn't have can't be archived, and says why", async () => {
+  await list({ sessions: [claudeChat({ id: FOLDER[0], title: "Terminal only", inApp: false, origin: "cli" })] });
+  await holdOpen("Terminal only");
+  const row = $$(".chat-popover .move-item").find((b) => b.textContent.includes("Archive"));
+  assert.ok(row.disabled);
+  assert.match(row.textContent, /Open it in the Claude app to archive it/);
 });

@@ -35,5 +35,6 @@ export const setPaused = (peer: Peer, paused: boolean) =>
 export const isPausedMessage = (message?: string) =>
   /^Reach is paused on this /.test(message || "");
 
+// "Mac", "Windows PC" or "computer": the server says the same (server/computer-word.mjs).
 export const computerWord = (platform?: string) =>
-  platform === "darwin" ? "Mac" : "computer";
+  platform === "darwin" ? "Mac" : platform === "win32" ? "Windows PC" : "computer";

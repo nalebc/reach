@@ -132,6 +132,7 @@ export function NewChat({
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
+  const [speed, setSpeed] = useState<string | null>(null);
   const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
   const [settings, setSettings] = useState(false);
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
@@ -237,6 +238,7 @@ export function NewChat({
           ? { model }
           : {}),
         ...(effort ? { effort } : {}),
+        ...(speed ? { speed } : {}),
         ...(mode !== "default" ? { mode } : {}),
       });
       for (const i of images) URL.revokeObjectURL(i.url);
@@ -346,11 +348,14 @@ export function NewChat({
           models={models}
           model={model}
           effort={effort}
+          speed={speed}
           onPick={(next, done) => {
+            if (next.speed) return setSpeed(next.speed);
             if (next.model) setModel(next.model);
             setEffort(next.effort || null);
             if (done) setPanel("");
           }}
+          onClose={() => setPanel("")}
         />
       )}
       <div className="as-box">
@@ -841,6 +846,7 @@ export default function EverythingChat({
             onRefresh={() => { recheck(); void reload(); }}
             health={health}
             onSectionMoved={() => void reload()}
+            onArchived={() => void reload()}
             // Gemini CLI chats are read here (it no longer answers personal accounts): no new ones.
             canStart={!needsSetup && picked.agent !== "gemini"}
             setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}

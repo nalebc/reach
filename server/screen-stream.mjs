@@ -5,10 +5,27 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
+import { buildNative } from "./native-build.mjs";
+import { hostApp, outsideTerminal, processTable } from "../scripts/instances.mjs";
 const exec = promisify(execFile);
 const native = fileURLToPath(new URL("../scripts/native/", import.meta.url));
 const MAX_FRAME = 8 * 1024 * 1024;
-const builds = new Map();
+const PERMISSION = /Screen Recording/i;
+// Why the screen helper has no Screen Recording, when Reach can tell: it runs
+// inside an app that isn't Terminal (an agent restarted it from its shell).
+export function permissionHint(app = appOf()) {
+  return outsideTerminal(app)
+    ? `Reach is running inside ${app}, which has no Screen Recording permission. On your Mac, run ./reach restart in Terminal.`
+    : "";
+}
+function appOf() {
+  if (process.platform !== "darwin") return "";
+  try {
+    return hostApp(processTable(), process.pid);
+  } catch {
+    return "";
+  }
+}
 
 // Length-prefixed frames over a pipe; the helper never opens a network port.
 export class NativeScreenSource {
@@ -30,14 +47,18 @@ export class NativeScreenSource {
     this.child.on("error", () =>
       this.stop(Error("Could not start live screen capture.")),
     );
-    this.child.on("exit", () =>
-      this.stop(
-        Error(
-          diagnostic.trim() ||
-            "Screen capture stopped. Reconnect to try again.",
-        ),
-      ),
-    );
+    this.child.on("exit", () => {
+      const said = diagnostic.trim();
+      // No permission: retrying can't help, so the phone stops and says why
+      // instead of "Connecting…" forever.
+      const error = Error(
+        (PERMISSION.test(said) && permissionHint()) ||
+          said ||
+          "Screen capture stopped. Reconnect to try again.",
+      );
+      if (PERMISSION.test(said)) error.permanent = true;
+      this.stop(error);
+    });
     this.child.stdout.on("data", (chunk) => {
       if (this.failure) return;
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -110,44 +131,14 @@ export async function createScreenSource(config) {
       config.dataDir,
       `reach-screen-stream-${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`,
     );
-    if (!builds.has(binary)) {
-      const build = (async () => {
-        try {
-          await fs.access(binary);
-        } catch {
-          const temporary = `${binary}-${process.pid}.tmp`;
-          try {
-            await exec(
-              "/usr/bin/xcrun",
-              [
-                "swiftc",
-                "-parse-as-library",
-                "-O",
-                path.join(native, "screen-stream.swift"),
-                "-o",
-                temporary,
-              ],
-              { timeout: 120000, maxBuffer: 1024 * 1024 },
-            );
-            await fs.chmod(temporary, 0o700);
-            await fs.rename(temporary, binary);
-          } catch {
-            await fs.rm(temporary, { force: true });
-            throw fail(
-              503,
-              "Live screen needs Apple Command Line Tools. Run xcode-select --install on your Mac, then reconnect. macOS 12.3 or newer is required.",
-            );
-          }
-        }
-      })();
-      builds.set(binary, build);
-      void build
-        .finally(() => {
-          if (builds.get(binary) === build) builds.delete(binary);
-        })
-        .catch(() => {});
+    try {
+      await buildNative(binary, ["swiftc", "-parse-as-library", "-O", path.join(native, "screen-stream.swift")]);
+    } catch {
+      throw fail(
+        503,
+        "Live screen needs Apple Command Line Tools. Run xcode-select --install on your Mac, then reconnect. macOS 12.3 or newer is required.",
+      );
     }
-    await builds.get(binary);
     // Construction is delayed until the broadcaster rechecks active viewers.
     return () => new NativeScreenSource(binary);
   }

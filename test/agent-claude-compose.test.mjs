@@ -160,3 +160,29 @@ test("the helper is told the mode by the name the Claude app's menu uses, with n
   );
   assert.deepEqual(calls, [["--title", "Fix the chart", "--mode", "Plan"]]);
 });
+
+// Oct 6: the phone couldn't change a Claude app chat's effort ("Reach can't
+// change the model or thinking level in Claude desktop yet"). It's picked in
+// the app's own menu, as the permission mode is.
+test("an effort level picked on the phone is picked in the Claude app's menu, by its name there", async () => {
+  const m = mac({ onScreen: A });
+  const c = compose(m, { type: async (v) => (m.typed.push(v), v.effort ? { effort: v.effort } : {}) });
+  assert.deepEqual(await c.effort(A, { title: message.title, effort: "xhigh" }), { effort: "xhigh", unconfirmed: false });
+  assert.deepEqual(m.typed.map((v) => v.effort), ["Extra high"]);
+  await assert.rejects(c.effort(A, { title: message.title, effort: "ultra" }), (e) => e.status === 400);
+  // Another chat on screen: never switched for an effort level.
+  const away = mac({ onScreen: B });
+  await assert.rejects(compose(away).effort(A, { title: message.title, effort: "high" }), /Open this chat in the Claude app/);
+  assert.deepEqual(away.opened, []);
+});
+
+test("the helper is told the effort by the menu's name, and a level the menu lacks changes nothing", async () => {
+  const calls = [];
+  const run = (stdout) => (file, args) => (calls.push(args), Promise.resolve({ stdout }));
+  await typeIntoClaude({ title: "Fix the chart", effort: "Extra high", images: ["/x.png"] }, { binary: async () => "/bin/helper", run: run('{"effort":"Extra high"}\n') });
+  assert.deepEqual(calls, [["--title", "Fix the chart", "--effort", "Extra high"]]);
+  await assert.rejects(
+    typeIntoClaude({ title: "Fix the chart", effort: "Max" }, { binary: async () => "/bin/helper", run: run('{"error":"Couldn\'t find that effort level in the Claude app."}\n') }),
+    /Couldn't find that effort level/,
+  );
+});

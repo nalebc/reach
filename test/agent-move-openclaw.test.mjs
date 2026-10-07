@@ -104,7 +104,7 @@ const fakeDaemon = () => {
     calls,
     async rpc(method, params) {
       calls.push([method, params]);
-      return { "model/list": { data: [{ id: "gpt-6-astra", isDefault: true }] }, "thread/start": { thread: { id: NEW_CODEX } } }[method] ?? {};
+      return { "model/list": { data: [{ id: "gpt-6-astra", isDefault: true }] }, "thread/fork": { thread: { id: NEW_CODEX } } }[method] ?? {};
     },
     onNotification() {},
     onRequest() {},
@@ -160,17 +160,15 @@ test("an OpenClaw chat moves to Codex, shown as a fork of it", async () => {
     }),
   });
   assert.deepEqual(await sessions.move("openclaw", key, { to: "codex" }), { agent: "codex", id: NEW_CODEX });
-  const injected = daemon.calls.find(([m]) => m === "thread/inject_items")[1].items;
+  const file = daemon.calls.find(([m]) => m === "thread/fork")[1].path;
+  const injected = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse).filter(e => e.type === "response_item").map(e => e.payload);
   assert.deepEqual(
     injected.map((i) => i.content[0].text),
-    ["Plan Saturday", "• Used weather: sunny\n\nA hike, then lunch."],
+    ["Plan Saturday", "[Historical tool]\nweather: sunny", "A hike, then lunch.", "Continued with Codex · earlier messages are from OpenClaw"],
   );
-  assert.match(daemon.calls.find(([m]) => m === "thread/start")[1].developerInstructions, /moved here from OpenClaw \(“Weekend plans”/);
+  assert.ok(!daemon.calls.some(([m]) => m === "thread/inject_items"));
   const page = await sessions.read("codex", NEW_CODEX, {});
-  assert.deepEqual(
-    page.items.map((i) => `${i.role}:${i.text}`),
-    ["user:Plan Saturday", "tool:weather: sunny", "assistant:A hike, then lunch.", "system:Continued with Codex · earlier messages are from OpenClaw"],
-  );
+  assert.equal(page.session.movedFrom.agent, "openclaw");
   // Only between the apps Reach chats with.
   await assert.rejects(sessions.move("openclaw", key, { to: "gemini" }), (e) => e.status === 400);
   fs.rmSync(root, { recursive: true, force: true });

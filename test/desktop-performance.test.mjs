@@ -172,3 +172,16 @@ test("a move or scroll that waited too long is let go; a late click still ends c
   queue.close();
   await click;
 });
+
+test("an action the computer turned down fails alone; the queue and control go on", async () => {
+  const failures = [];
+  const queue = new DesktopInputQueue(() => {}, (m) => failures.push(m), 8, () => 0);
+  const typed = queue.enqueue({ type: "text", text: "hi" });
+  const next = queue.enqueue({ type: "key", key: "enter" });
+  queue.acknowledge(1, { ok: false, error: "The typing target changed. Tap the text field again." });
+  await assert.rejects(typed, /typing target changed/);
+  queue.acknowledge(2, { ok: true });
+  assert.deepEqual(await next, { ok: true });
+  assert.deepEqual(failures, []);
+  queue.close();
+});

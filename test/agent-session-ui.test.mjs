@@ -105,6 +105,41 @@ const mac = {
 const SIGN_IN_URL =
   "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback";
 
+test("Codex async questions show during work and send choices and free text without consuming the draft", async () => {
+  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", role: "assistant", kind: "text", text: "", questions: [
+    { title: "Which target?", options: ["Mac", "Phone"] }, { title: "Anything else?", options: [] },
+  ] }];
+  mac.live = { ...idleLive(), status: "running" };
+  await open(codexSession({ status: "running" }));
+  await dom.waitFor(() => $(".as-async-questions .as-choices button"));
+  assert.ok(!$(".as-review-dock"), "an optional question does not become a blocking approval");
+  assert.equal(mac.sent.length, 0, "no answer is submitted automatically");
+  assert.equal($$(".as-async-questions .as-choices button")[0].getAttribute("aria-pressed"), "true");
+  await typeInto($(".as-composer textarea"), "Keep this draft");
+  await click($$(".as-async-questions .as-choices button")[1]);
+  await typeInto($(".as-async-questions input"), "Include offline mode");
+  await click($(".as-async-questions .as-prompt-actions .primary"));
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/messages")));
+  const message = mac.sent.find((m) => m.route.endsWith("/messages"));
+  assert.equal(message.body.text, "Which target?\nPhone\n\nAnything else?\nInclude offline mode");
+  assert.equal($(".as-composer textarea").value, "Keep this draft");
+  await dom.waitFor(() => $(".as-async-questions").textContent.includes("Answer sent"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("account usage displays actual windows, reset times and native warnings separately from approvals", async () => {
+  await open(codexSession(), [{ ...signedIn[0], usage: { available: true, updatedAt: Date.now(), windows: [
+    { id: "weekly", label: "Weekly", usedPercent: 78, resetsAt: Date.now() + 60000, severity: "normal" },
+    { id: "session", label: "5 hours", usedPercent: 95, resetsAt: Date.now() + 120000, severity: "warning" },
+  ] } }]);
+  await dom.waitFor(() => $(".as-account-usage"));
+  assert.match($(".as-usage-summary").textContent, /95% used/);
+  assert.equal($$(".as-usage-window progress").length, 2);
+  assert.match($(".as-usage-windows").textContent, /5% remaining/);
+  assert.match($(".as-usage-windows").textContent, /Resets/);
+  assert.ok(!$(".as-review-dock"));
+});
+
 test("approval cards keep app images icon-sized instead of filling the sheet", async () => {
   await home([claudeSession({ status: "waiting", prompts: [{ id: "approval", kind: "tool", title: "Run tests?", decisions: ["allow", "deny"] }] })]);
   const icon = $(".need-icon img");
@@ -161,7 +196,7 @@ test("typing prepares the Claude draft without submitting; Send doesn't write th
 });
 test("a Claude app chat shows its permission mode in sight, as the app does, and picking one picks it in the app", async (t) => {
   const route = `/api/sessions/claude/${CLAUDE}/mode`;
-  t.after(() => { delete routes[route]; });
+  t.after(() => { routes[route] = () => ({ applied: false }); });
   routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { mode: JSON.parse(init.body).mode, applied: true });
   await open(claudeSession({ inApp: true, mode: "auto" }));
   await dom.waitFor(() => $(".as-mode"));
@@ -192,6 +227,12 @@ test("a Claude chat in Claude Code's default mode reads Manual, the Claude app's
 });
 const record = (route) => (init) => {
   mac.sent.push({ route, body: init?.body ? JSON.parse(init.body) : null });
+  if (route.endsWith("/model")) {
+    const [, , , agent, id] = route.split("/");
+    const choice = JSON.parse(init.body);
+    Object.assign(mac.pages[`${agent}:${id}`].session, choice);
+    return { ...choice, applied: true };
+  }
   return route.endsWith("/messages")
     ? { turnId: "turn-1" }
     : route === "/api/sessions"
@@ -306,6 +347,7 @@ for (const agent of ["codex", "claude"])
     );
     for (const action of [
       "messages",
+      "model",
       "stop",
       "prompts/7",
       "prompts/8",
@@ -317,6 +359,8 @@ for (const agent of ["codex", "claude"])
         `/api/sessions/${agent}/${id}/${action}`,
       );
   }
+  for (const [agent, id] of [["claude", CLAUDE], ["codex", CODEX]])
+    routes[`/api/sessions/${agent}/${id}/mode`] ||= () => ({ applied: false });
 
 let dom, React, AgentSessionView, EverythingChat;
 before(async () => {
@@ -604,6 +648,27 @@ test("a sent message shows until the transcript has it, even when it repeats an 
   assert.deepEqual(dom.errors, []);
 });
 
+test("the Computer Use confirmation shows Yes and submits nothing before its tap", async () => {
+  const { describePrompt } = await import("../server/agent-sessions/codex-live.mjs");
+  const prompt = describePrompt("mcpServer/elicitation/request", {
+    threadId: CODEX, serverName: "cua_repl", mode: "form",
+    message: 'Allow Computer Use to use "Google Chrome"?',
+    requestedSchema: { type: "object", properties: {} },
+    _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use" },
+  });
+  mac.live = { ...idleLive(), version: 5, status: "waiting", prompts: [{ ...prompt, id: "7" }] };
+  await open(codexSession());
+  await dom.waitFor(() => $(".as-prompt.elicitation"));
+  const card = $(".as-prompt.elicitation");
+  const choices = [...card.querySelectorAll(".as-prompt-actions button")];
+  assert.deepEqual(choices.map(b => b.textContent.trim()), ["Yes", "No", "No, and stop"]);
+  assert.match(card.textContent, /Allow Computer Use to use "Google Chrome"/);
+  assert.doesNotMatch(card.textContent, /Complete this request in Codex/);
+  assert.deepEqual(mac.sent, []);
+  await click(choices[0]);
+  assert.deepEqual(mac.sent, [{ route: `/api/sessions/codex/${CODEX}/prompts/7`, body: { decision: "accept" } }]);
+});
+
 test("Codex prompts are answered with one tap, with only the offered choices", async () => {
   mac.live = {
     ...idleLive(),
@@ -678,7 +743,7 @@ test("Codex prompts are answered with one tap, with only the offered choices", a
   assert.deepEqual(dom.errors, []);
 });
 
-test("Claude Code's prompts say what they'd allow; dialogs it can't show go back to the Mac", async () => {
+test("Claude Code's prompts say what they'd allow; a dialog cancellation is labelled Cancel request", async () => {
   mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
   mac.live = {
     ...idleLive(),
@@ -715,7 +780,7 @@ test("Claude Code's prompts say what they'd allow; dialogs it can't show go back
     [...dialog.querySelectorAll(".as-prompt-actions button")].map(
       (b) => b.textContent,
     ),
-    ["Answer on my Mac"],
+    ["Cancel request"],
   );
   await click(
     [...tool.querySelectorAll("button")].find(
@@ -724,7 +789,7 @@ test("Claude Code's prompts say what they'd allow; dialogs it can't show go back
   );
   await click(
     [...dialog.querySelectorAll("button")].find(
-      (b) => b.textContent === "Answer on my Mac",
+      (b) => b.textContent === "Cancel request",
     ),
   );
   assert.deepEqual(mac.sent, [
@@ -941,16 +1006,16 @@ test("a chat open in the Codex app says so and keeps the app's settings", async 
   await dom.waitFor(() => $(".as-model")?.textContent.includes("GPT-6 Astra"));
   assert.equal($$(".as-hint").length, 0);
   assert.equal($(".as-title small").textContent, "app · Open in Codex app");
-  // The Codex app runs it with its own model and permissions. A tap on either
-  // did nothing (disabled, the reason only in a hover title the phone never
-  // shows); now it says so, and nothing changes.
+  // A holder hint must not disable the selector. The actual native update
+  // decides whether this connection can apply the choice.
   await click($(".as-model"));
-  assert.match($(".as-hint").textContent, /open in the Codex app, which runs it with its own model/);
+  assert.ok($(".ms-strip"));
+  assert.equal($$(".as-hint").length, 0);
   assert.equal($$(".as-composer .as-picker").length, 0);
   await click($(".as-mode"));
   const menu = await dom.waitFor(() => $(".as-mode-menu"));
-  assert.match(menu.querySelector(".as-mode-menu-locked").textContent, /open in the Codex app, which runs it with its own permissions/);
-  assert.ok($$(".as-mode-menu button").every((b) => b.disabled));
+  assert.equal(menu.querySelector(".as-mode-menu-locked"), null);
+  assert.ok($$(".as-mode-menu button").every((b) => !b.disabled));
   assert.equal($$(".as-mode-menu button[aria-checked=true]").length, 1);
   await click($(".as-mode-scrim"));
   await typeInto($("textarea"), "hi");
@@ -963,37 +1028,252 @@ test("a chat open in the Codex app says so and keeps the app's settings", async 
   ]);
 });
 
-// The model was a row of chips inside the composer; the apps open a small
-// menu over the model button (as the permission mode's), each model with its
-// own words, the one in use checked, its thinking levels under them.
-test("the model opens as a small menu like the apps', its thinking levels in it", async () => {
-  await open(codexSession());
+// The model and effort, as the ChatGPT and Claude phone apps have you pick
+// them (Oct 6). Before, every model and then every effort sat in one list.
+const modelRow = (name) => $$(".ms-card[aria-label=Models] > button").find((b) => b.querySelector(".ms-text > span").textContent === name);
+const checkedModel = () => $(".ms-card[aria-label=Models] [aria-checked=true] .ms-text > span")?.textContent;
+test("Codex: the model and effort as words and dots over the composer, the models in Configure", async () => {
+  const view = await open(codexSession());
   await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
   await click($(".as-model"));
   assert.equal($(".as-model").getAttribute("aria-expanded"), "true");
-  const menu = $(".as-model-menu");
-  assert.ok(menu.parentElement.classList.contains("as-page"), "on the page, not clipped inside the composer");
-  assert.equal($$(".as-composer .as-picker").length, 0);
-  const row = (name) => $$(".as-model-menu > button").find((b) => b.querySelector(".as-mode-menu-text > span").textContent === name);
-  assert.equal(row("GPT-6 Astra").getAttribute("aria-checked"), "true");
-  // A model picked: the menu closes, as in the apps.
-  await click(row("GPT-6 Sol"));
-  assert.equal($$(".as-model-menu").length, 0);
-  // Its thinking levels, in the same menu.
+  const strip = $(".ms-strip");
+  assert.ok(strip.closest(".as-page"), "on the page, not clipped inside the composer");
+  assert.equal($(".ms-strip-label").textContent.trim(), "GPT-6 Astra Medium");
+  assert.deepEqual($$(".ms-dots button").map((b) => b.getAttribute("aria-label")), ["Low", "Medium", "High", "Extra High"]);
+  // The track fills up to the level in use.
+  assert.deepEqual($$(".ms-dots button").map((b) => b.classList.contains("filled")), [true, true, false, false]);
+  // The words open Configure: the models, the one in use checked, and Done.
+  await click($(".ms-strip-label"));
+  assert.equal($(".ms-sheet").getAttribute("aria-label"), "Configure");
+  assert.equal(checkedModel(), "GPT-6 Astra");
+  await click(modelRow("GPT-6 Sol"));
+  // A pick stays in the sheet, as the app's; Done closes it.
+  await dom.waitFor(() => checkedModel() === "GPT-6 Sol");
+  await click($$(".ms-done")[0]);
+  assert.equal($$(".ms-sheet").length, 0);
+  assert.equal($(".as-model").textContent.trim(), "GPT-6 Sol Medium");
+  // A dot picks the effort at once; the dots stay for another.
   await click($(".as-model"));
-  assert.deepEqual($$(".as-menu-efforts button").map((b) => b.textContent), ["Low", "Medium", "High"]);
-  await click($$(".as-menu-efforts button").find((b) => b.textContent === "High"));
-  assert.equal($$(".as-model-menu").length, 0);
-  assert.equal($(".as-model").textContent.trim(), "GPT-6 Sol High");
+  await click($$(".ms-dots button").find((b) => b.getAttribute("aria-label") === "High"));
+  await dom.waitFor(() => $(".as-model").textContent.trim() === "GPT-6 Sol High");
+  assert.ok($(".ms-strip"));
+  assert.equal($(".ms-dots button[aria-checked=true]").getAttribute("aria-label"), "High");
+  await click($(".as-mode-scrim"));
   await typeInto($("textarea"), "go");
   await click(button("Send"));
   assert.deepEqual(mac.sent, [
+    { route: `/api/sessions/codex/${CODEX}/model`, body: { model: "gpt-6-sol", effort: "medium" } },
+    { route: `/api/sessions/codex/${CODEX}/model`, body: { model: "gpt-6-sol", effort: "high" } },
     {
       route: `/api/sessions/codex/${CODEX}/messages`,
       body: { text: "go", images: [], model: "gpt-6-sol", effort: "high" },
     },
   ]);
+  // Sending drops local picks: the native read still returns the saved one.
+  await dom.waitFor(() => $(".as-model").textContent.includes("GPT-6 Sol"));
+  await view.unmount();
+  await open(codexSession());
+  await dom.waitFor(() => $(".as-model").textContent.includes("GPT-6 Sol"));
+  assert.match($(".as-model").textContent, /High/);
   assert.deepEqual(dom.errors, []);
+});
+
+test("Codex: Speed in Configure uses the phone's own menu and goes with the next message", async (t) => {
+  const astra = CODEX_OFFERS.models[0];
+  const before = { ...astra };
+  // As Codex really lists them: only the extra tier, no standard one.
+  Object.assign(astra, { speeds: [{ id: "priority", name: "Fast", note: "2x speed, increased usage" }], defaultSpeed: null });
+  t.after(() => { for (const k of Object.keys(astra)) delete astra[k]; Object.assign(astra, before); });
+  await open(codexSession(), signedIn, { ...peer, url: "https://codex-speed.test" });
+  await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
+  await click($(".as-model"));
+  await click($(".ms-strip-label"));
+  const row = await dom.waitFor(() => $(".ms-select"));
+  assert.match(row.textContent, /^Speed\s*Standard/);
+  const select = row.querySelector("select");
+  assert.deepEqual([...select.options].map((o) => o.textContent), ["Standard", "Fast"]);
+  select.value = "priority";
+  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await dom.waitFor(() => /Fast/.test($(".ms-select .ms-value").textContent));
+  // Nothing sent yet: the speed rides on the next message.
+  assert.equal(mac.sent.length, 0);
+  await click($(".ms-done"));
+  await typeInto($("textarea"), "go");
+  await click(button("Send"));
+  assert.deepEqual(mac.sent.at(-1).body, { text: "go", images: [], speed: "priority" });
+});
+
+test("Claude: Select model with what each is for, and Effort as its own row that opens the levels", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "claude-fable-5-1", name: "Fable 5.1", description: "For your toughest challenges", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null },
+    { id: "claude-opus-5-5", name: "Opus 5.5", description: "For complex work and everyday tasks", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null, isDefault: true },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", description: "Fastest for quick answers", efforts: [], defaultEffort: null },
+  ];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  await open(claudeSession(), signedIn, { ...peer, url: "https://claude-sheet.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  const sheet = await dom.waitFor(() => $(".ms-sheet.ms-claude"));
+  assert.equal(sheet.querySelector("h2").textContent, "Select model");
+  assert.ok(sheet.querySelector("button[aria-label=Close]"));
+  assert.equal(checkedModel(), "Opus 5.5");
+  assert.match(modelRow("Fable 5.1").textContent, /For your toughest challenges/);
+  // Effort: a row of its own, its levels one tap further.
+  const row = $(".ms-row");
+  assert.match(row.textContent, /^Effort/);
+  await click(row);
+  assert.equal($(".ms-sheet h2").textContent, "Effort");
+  assert.deepEqual($$(".ms-card[aria-label=Effort] .ms-text > span").map((s) => s.textContent), ["Low", "Medium", "High", "Extra high", "Max"]);
+  await click($$(".ms-card[aria-label=Effort] button").find((b) => b.textContent.includes("Extra high")));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  assert.match($(".as-model").textContent, /Opus 5\.5\s*Extra/);
+  // The level alone: a Claude app chat changes only its effort.
+  assert.deepEqual(mac.sent.at(-1), { route: `/api/sessions/claude/${CLAUDE}/model`, body: { effort: "xhigh" } });
+  // A model without effort levels has no Effort row.
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => modelRow("Haiku 4.5")));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  await click($(".as-model"));
+  await dom.waitFor(() => $(".ms-sheet"));
+  assert.equal($(".ms-row"), null);
+  await click($(".ms-sheet button[aria-label=Close]"));
+  assert.equal($(".ms-sheet"), null);
+});
+
+test("a model change on a working app-labelled chat waits for native confirmation", async () => {
+  mac.pages[`codex:${CODEX}`].session = codexSession({ held: "codex-app", status: "running" });
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/codex/${CODEX}/model`;
+  const previous = routes[route];
+  let finish;
+  routes[route] = (init) => {
+    mac.sent.push({ route, body: JSON.parse(init.body) });
+    return new Promise(resolve => { finish = resolve; });
+  };
+  try {
+    await open(codexSession({ held: "codex-app", status: "running" }));
+    await dom.waitFor(() => $(".as-model")?.textContent.includes("Astra"));
+    await click($(".as-model"));
+    await click($(".ms-strip-label"));
+    await click(modelRow("GPT-6 Sol"));
+    assert.match($(".ms-sheet").textContent, /Applies to the next turn/);
+    assert.match($(".ms-sheet").textContent, /Changing model/);
+    assert.match($(".as-model").textContent, /Astra/);
+    assert.ok($$(".ms-card button").every(b => b.disabled));
+    finish({ applied: true, model: "gpt-6-sol", effort: "medium" });
+    await dom.waitFor(() => /Sol/.test($(".as-model").textContent));
+    assert.equal(mac.sent.length, 1);
+  } finally { routes[route] = previous; }
+});
+
+test("a rejected native model change stays visible beside the choices and keeps the actual model", async () => {
+  const route = `/api/sessions/codex/${CODEX}/model`;
+  const previous = routes[route];
+  routes[route] = () => Response.json({ error: "Codex didn't confirm the model change. Check its model before trying again." }, { status: 409 });
+  try {
+    await open(codexSession());
+    await dom.waitFor(() => $(".as-model")?.textContent.includes("Astra"));
+    await click($(".as-model"));
+    await click($(".ms-strip-label"));
+    await click(modelRow("GPT-6 Sol"));
+    await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+    assert.match($(".ms-sheet [role=alert]").textContent, /didn't confirm the model change/);
+    assert.match($(".as-model").textContent, /Astra/);
+    assert.equal(checkedModel(), "GPT-6 Astra");
+  } finally { routes[route] = previous; }
+});
+
+// Oct 6: a tapped effort level seemed to do nothing (the sheet went back to
+// the models at once, and a refusal was easy to miss).
+test("a tapped effort level turns until Claude confirms, and a refusal stays on that page", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: null, isDefault: true }];
+  let finish;
+  routes[route] = () => new Promise((resolve) => { finish = resolve; });
+  t.after(() => { routes[route] = previous; CLAUDE_OFFERS.models = offers; });
+  await open(claudeSession(), signedIn, { ...peer, url: "https://claude-effort-wait.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  const row = () => $$(".ms-card[aria-label=Effort] button").find((b) => b.textContent.startsWith("Extra high"));
+  await click(row());
+  // Still on the levels, the tapped one turning.
+  assert.equal($(".ms-sheet h2").textContent, "Effort");
+  assert.equal(row().getAttribute("aria-busy"), "true");
+  assert.ok(row().querySelector(".spin"));
+  finish(Response.json({ error: "Open this chat in the Claude app on your Mac to change its effort from here." }, { status: 409 }));
+  await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+  assert.equal($(".ms-sheet h2").textContent, "Effort");
+  assert.match($(".ms-sheet [role=alert]").textContent, /Open this chat in the Claude app/);
+  assert.equal(row().querySelector(".spin"), null);
+});
+
+test("a Claude desktop model refusal keeps the current model and the error in its sheet", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "claude-opus-5-5", name: "Opus", efforts: ["max"], defaultEffort: "max" },
+    { id: "claude-haiku-4-5", name: "Haiku", efforts: [], defaultEffort: null },
+  ];
+  routes[route] = () => Response.json({ error: "Reach can't change the model or thinking level in Claude desktop yet. Your current selection is unchanged." }, { status: 409 });
+  t.after(() => { routes[route] = previous; CLAUDE_OFFERS.models = offers; });
+  await open(claudeSession(), signedIn, { ...peer, url: "https://claude-model.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => modelRow("Haiku")));
+  await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+  assert.match($(".ms-sheet [role=alert]").textContent, /current selection is unchanged/);
+  assert.match($(".as-model").textContent, /Opus/);
+  assert.equal(checkedModel(), "Opus");
+});
+
+test("retrying an empty model list fetches new offers instead of reusing the empty cache", async (t) => {
+  const route = "/api/sessions/models", previous = routes[route];
+  let reads = 0;
+  routes[route] = () => (++reads === 1 ? { models: [], mode: null } : CODEX_OFFERS);
+  t.after(() => { routes[route] = previous; });
+  await open(codexSession(), signedIn, { ...peer, url: "https://model-retry.test" });
+  await dom.waitFor(() => $(".as-model"));
+  await click($(".as-model"));
+  const retry = await dom.waitFor(() => $(".ms-retry"));
+  assert.equal(retry.textContent, "Try loading models again");
+  await click(retry);
+  await dom.waitFor(() => $(".ms-strip") || modelRow("GPT-6 Sol"));
+  assert.equal(reads, 2);
+  assert.equal($(".ms-sheet [role=alert]"), null);
+});
+
+test("a desktop-owned permission pick waits for confirmation and a failure keeps the old mode", async () => {
+  const route = `/api/sessions/codex/${CODEX}/mode`, previous = routes[route];
+  let finish;
+  routes[route] = () => new Promise(resolve => { finish = resolve; });
+  try {
+    await open(codexSession({ held: "codex-app" }));
+    await dom.waitFor(() => $(".as-mode"));
+    await click($(".as-mode"));
+    await click($$(".as-mode-menu button").find(b => b.textContent.includes("Ask for approval")));
+    assert.equal($(".as-mode").textContent, "Approve for me");
+    assert.ok($$(".as-mode-menu button").every(b => b.disabled));
+    finish(Response.json({ error: "Codex did not confirm permissions." }, { status: 409 }));
+    await dom.waitFor(() => $(".as-mode-menu [role=alert]"));
+    assert.equal($(".as-mode").textContent, "Approve for me");
+    assert.ok($$(".as-mode-menu button").every(b => !b.disabled));
+  } finally { routes[route] = previous; }
+});
+
+test("an unconfirmed approval is read-only in both the conversation and Needs you", async () => {
+  const prompt = { id: "7", kind: "command", title: "Allow command?", decisions: ["accept", "decline"], attempted: true };
+  mac.live = { ...idleLive(), status: "waiting", prompts: [prompt] };
+  await open(codexSession());
+  await dom.waitFor(() => $(".as-prompt.command"));
+  assert.ok($$(".as-prompt-actions button").every(b => b.disabled));
+  assert.match($(".as-prompt").textContent, /previous answer could not be confirmed/);
+  await home([codexSession({ status: "waiting", prompts: [prompt] })]);
+  assert.deepEqual($$(".need-actions button").map(b => b.textContent), ["Open"]);
+  assert.deepEqual(mac.sent, []);
 });
 
 test("a Claude Code chat reads like Claude Code; one open in the Claude app still takes a reply", async () => {
@@ -1488,22 +1768,31 @@ test("a Claude Code session nobody else holds takes replies from here once signe
   assert.deepEqual(dom.errors, []);
 });
 
-test("agent text is shown as text: no markup, no links that navigate", async () => {
+// Web links open in a new tab, as in both apps (Oct 6); anything else a link
+// could be (a script, a path, an address inside Reach) stays text.
+test("agent text is shown as text: no markup; only web links open, in a new tab", async () => {
   mac.pages[`codex:${CODEX}`].items = [
     {
       id: "a1",
       role: "assistant",
       kind: "text",
-      text: 'Try <img src=x onerror="alert(1)"> and **this** or [the docs](https://example.com)\n```\n<script>alert(2)</script>\n```',
+      text: 'Try <img src=x onerror="alert(1)"> and **this** or [the docs](https://example.com) [bad](javascript:alert(3)) [file](src/App.tsx) [inside](/api/clients)\n# Big\n## Medium\n#### Small\n```\n<script>alert(2)</script>\n```',
     },
   ];
   await open(codexSession());
   await dom.waitFor(() => $(".as-assistant"));
   const message = $(".as-assistant");
-  assert.equal(message.querySelector("img, script, a"), null);
+  assert.equal(message.querySelector("img, script"), null);
   assert.match(message.textContent, /<img src=x onerror="alert\(1\)">/);
   assert.equal(message.querySelector("strong").textContent, "this");
-  assert.equal(message.querySelector("u").textContent, "the docs");
+  const links = [...message.querySelectorAll("a")];
+  assert.equal(links.length, 1);
+  assert.equal(links[0].textContent, "the docs");
+  assert.equal(links[0].getAttribute("href"), "https://example.com");
+  assert.equal(links[0].getAttribute("target"), "_blank");
+  assert.equal(links[0].getAttribute("rel"), "noopener noreferrer");
+  assert.deepEqual([...message.querySelectorAll("u")].map((u) => u.textContent), ["bad", "file", "inside"]);
+  assert.deepEqual([...message.querySelectorAll("h4")].map((h) => h.className), ["md-h1", "md-h2", "md-h3"]);
   assert.equal(
     message.querySelector("pre code").textContent,
     "<script>alert(2)</script>",
@@ -1760,12 +2049,12 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
     $$(".as-picker-row button").find((b) => b.textContent === "Plan"),
   );
   await click($(".chat-model"));
+  await click(await dom.waitFor(() => modelRow("Fable 5.1")));
+  await click($(".chat-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
   await click(
-    $$(".as-picker-row button").find((b) => b.textContent === "Fable 5.1"),
-  );
-  await click(
-    $$(".as-picker-row[aria-label=Thinking] button").find(
-      (b) => b.textContent === "Max",
+    $$(".ms-card[aria-label=Effort] button").find((b) =>
+      b.textContent.startsWith("Max"),
     ),
   );
   // A model that doesn't take Auto mode isn't offered it.
@@ -2568,7 +2857,7 @@ const saidMac = () =>
     ...$$("[aria-label]").map((el) => el.getAttribute("aria-label")),
   ].filter((t) => /\bMac\b/.test(t));
 
-test("on a Windows computer, a Claude Code session says computer, never Mac", async () => {
+test("on a Windows computer, a Claude Code session says Windows PC, never Mac", async () => {
   // Waiting for an answer in a terminal there.
   const inTerminal = claudeSession({
     status: "waiting",
@@ -2580,11 +2869,11 @@ test("on a Windows computer, a Claude Code session says computer, never Mac", as
   await dom.waitFor(() => $(".as-prompt.elsewhere"));
   assert.equal(
     $(".as-prompt.elsewhere header strong").textContent,
-    "Waiting for your answer in the terminal on your computer",
+    "Waiting for your answer in the terminal on your Windows PC",
   );
   assert.equal(
     $(".as-hint").textContent,
-    "Running in a terminal on your computer. Reply there or from the Terminal tab.",
+    "Running in a terminal on your Windows PC. Reply there or from the Terminal tab.",
   );
   assert.deepEqual(saidMac(), []);
   for (const view of views.splice(0)) await view.unmount();
@@ -2597,7 +2886,7 @@ test("on a Windows computer, a Claude Code session says computer, never Mac", as
   await dom.waitFor(() => $(".as-hint"));
   assert.equal(
     $(".as-hint").textContent,
-    "Open in another Claude Code process on your computer.",
+    "Open in another Claude Code process on your Windows PC.",
   );
   assert.deepEqual(saidMac(), []);
   for (const view of views.splice(0)) await view.unmount();
@@ -2618,7 +2907,7 @@ test("on a Windows computer, a Claude Code session says computer, never Mac", as
   await dom.waitFor(() => $(".as-consent"));
   assert.equal(
     $(".as-consent small").textContent,
-    "Claude will work in these apps in the background while you keep using your computer.",
+    "Claude will work in these apps in the background while you keep using your Windows PC.",
   );
   assert.deepEqual(saidMac(), []);
   for (const view of views.splice(0)) await view.unmount();
@@ -2641,13 +2930,13 @@ test("on a Windows computer, a Claude Code session says computer, never Mac", as
   await dom.waitFor(() => $(".as-prompt.dialog"));
   assert.deepEqual(
     $$(".as-prompt.dialog .as-prompt-actions button").map((b) => b.textContent),
-    ["Answer on my computer"],
+    ["Cancel request"],
   );
   assert.deepEqual(saidMac(), []);
   assert.deepEqual(dom.errors, []);
 });
 
-test("on a Windows computer, a Codex session says computer: signed out, sent to the app, opened in the app", async () => {
+test("on a Windows computer, a Codex session says Windows PC: signed out, sent to the app, opened in the app", async () => {
   await open(
     codexSession(),
     [{ agent: "codex", installed: true, signedIn: false }],
@@ -2656,11 +2945,11 @@ test("on a Windows computer, a Codex session says computer: signed out, sent to 
   await dom.waitFor(() => $(".access"));
   assert.equal(
     $(".as-hint").textContent,
-    "Codex is signed out on your computer.",
+    "Codex is signed out on your Windows PC.",
   );
   assert.equal(
     $(".access").getAttribute("aria-label"),
-    "Sign-ins on your computer",
+    "Sign-ins on your Windows PC",
   );
   assert.deepEqual(saidMac(), []);
   for (const view of views.splice(0)) await view.unmount();
@@ -2696,7 +2985,7 @@ test("new-chat availability uses the connected computer's platform", async () =>
     {},
     { ...peer, name: "PC", platform: "win32" },
   );
-  assert.match($(".chat-setup").textContent, /computer/);
+  assert.match($(".chat-setup").textContent, /Windows PC/);
   assert.doesNotMatch($(".chat-setup").textContent, /Mac/);
   assert.equal($("textarea"), null);
   assert.deepEqual(dom.errors, []);
@@ -3396,6 +3685,23 @@ test("a Claude app permission card shows as the app draws it and is answered wit
   assert.deepEqual(dom.errors, []);
 });
 
+test("an unconfirmed app-card answer removes its approval buttons and explains the failure", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}/card`;
+  const answerRoute = `/api/sessions/claude/${CLAUDE}/prompts/app-permission%3Ap1`;
+  t.after(() => { delete routes[route]; delete routes[answerRoute]; });
+  routes[route] = () => ({ id: "app-permission:p1", texts: ["Run example?"], buttons: ["Allow once", "Deny"] });
+  let attempts = 0;
+  routes[answerRoute] = () => { attempts++; return Response.json({ error: "Answer delivery unknown. Check Claude." }, { status: 409 }); };
+  const session = claudeSession({ status: "waiting", asking: { kind: "permission", text: "example", id: "app-permission:p1" } });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session);
+  const approve = await dom.waitFor(() => $(".as-app-card-actions button"));
+  await click(approve);
+  await dom.waitFor(() => !$(".as-app-card-actions"));
+  assert.match($(".as-prompt.elsewhere").textContent, /Answer delivery unknown/);
+  assert.equal(attempts, 1);
+});
+
 test("a Codex app approval shows as the Codex app draws it; a card that can't be read offers the live screen", async (t) => {
   const route = `/api/sessions/codex/${CODEX}/card`;
   let answer = {
@@ -3457,4 +3763,38 @@ test("an open chat's read that fails for a moment is tried again by itself, with
   } finally {
     routes[route] = real;
   }
+});
+
+// Oct 6: Claude's questions in the Claude app said "Answer it on your Mac
+// through live screen". Their options are tapped here now, one question per
+// page, and answered in the app.
+test("Claude's question in the Claude app is answered here: options tapped, then Submit", async (t) => {
+  const answerRoute = `/api/sessions/claude/${CLAUDE}/prompts/${encodeURIComponent("app-question:toolu_q")}`;
+  const sent = [];
+  t.after(() => { delete routes[answerRoute]; });
+  routes[answerRoute] = (init) => (sent.push(JSON.parse(init.body)), { answered: true });
+  const asking = {
+    kind: "question",
+    id: "app-question:toolu_q",
+    questions: [
+      { question: "How should an agent get your folders?", options: [{ label: "Real folder, read-only (Recommended)" }, { label: "Keep private copy only" }] },
+      { question: "Which layout for the new invite screen?", multiSelect: true, options: [{ label: "One page, 3 switches (Recommended)" }, { label: "Step by step" }] },
+    ],
+  };
+  const session = claudeSession({ status: "waiting", asking, live: { where: "claude-app", busy: false, waiting: "input needed" } });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session);
+  const card = await dom.waitFor(() => $(".as-prompt.question"));
+  assert.equal($(".as-prompt.elsewhere"), null, "no live-screen card");
+  assert.doesNotMatch(card.textContent, /live screen/);
+  const choice = (label) => $$(".as-choices button").find((b) => b.textContent.includes(label));
+  await click(choice("Real folder, read-only (Recommended)"));
+  // Next page: several may be picked.
+  await click(await dom.waitFor(() => choice("Step by step")));
+  await click(choice("One page, 3 switches (Recommended)"));
+  await click($$(".as-prompt-actions button").find((b) => b.textContent === "Submit"));
+  await dom.waitFor(() => sent.length === 1);
+  assert.deepEqual(sent[0], {
+    answers: { q0: ["Real folder, read-only (Recommended)"], q1: ["Step by step", "One page, 3 switches (Recommended)"] },
+  });
 });

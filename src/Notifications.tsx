@@ -115,9 +115,10 @@ export function NotificationCard({
   const sender =
     item.sender ||
     {
+      // The same names as everywhere else in Reach.
       codex: "Codex",
-      claude: "Claude",
-      gemini: "Gemini",
+      claude: "Claude Code",
+      gemini: "Gemini CLI",
       openclaw: "OpenClaw",
     }[icon] ||
     "Agent";

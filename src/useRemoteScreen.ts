@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
 import { ReconnectTimer, screenCanRetry } from "./reconnect";
 import { latestFramePainter } from "./frame-painter";
+import { holdReload } from "./build-reload";
 // Video decoders open on this page, for the log when one fails: a phone runs
 // only so many hardware decoders at once.
 const decoders = new Set<VideoDecoder>();
@@ -39,7 +40,32 @@ export function useRemoteScreen(
   const [selectedDisplay, setSelectedDisplay] = useState("");
   const [fallback, setFallback] = useState(false);
   const [fallbackReason, setFallbackReason] = useState("");
-  const retry = useRef(new ReconnectTimer());
+  // Blips come back within a few seconds: retry soon, never 30 s later.
+  const retry = useRef(new ReconnectTimer(Math.random, 4000));
+  // The source whose picture is on the canvas. Reconnecting to the same one
+  // keeps that picture (the toolbar says "Connecting…") instead of the
+  // loading scene; only 5 s without a fresh frame brings the scene back.
+  const shown = useRef("");
+  const blank = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const holdFrame = () => {
+    blank.current ??= setTimeout(() => {
+      blank.current = undefined;
+      setState((s) => ({ ...s, ready: false }));
+    }, 5000);
+  };
+  const clearHold = () => {
+    clearTimeout(blank.current);
+    blank.current = undefined;
+  };
+  useEffect(() => clearHold, []);
+  // Why the last connection ended, told to the computer by the next one.
+  const lost = useRef<{
+    reason: string;
+    at: number;
+    frameAt: number;
+    code?: number;
+    times: number;
+  } | null>(null);
   const [attempt, setAttempt] = useState(0);
   // Decoders that failed before showing a single frame, in the last minute:
   // the third means this phone can't decode the stream, so still images.
@@ -61,9 +87,23 @@ export function useRemoteScreen(
   useEffect(() => {
     if (!enabled || !live) {
       retry.current.cancel();
+      clearHold();
+      lost.current = null;
       setState((s) => ({ ...s, ready: false, connecting: false, fps: 0 }));
       return;
     }
+    const source = JSON.stringify([
+      peer.url,
+      peer.token,
+      display,
+      quality,
+      revision,
+      compatibility,
+      thread ?? "",
+    ]);
+    // The Screen tab or an app's window (not Home's small preview): a new
+    // phone interface waits until it's closed instead of reloading mid-use.
+    const release = quality === "preview" ? () => {} : holdReload();
     const format =
       !compatibility && !fallback && "VideoDecoder" in window ? "h264" : "jpeg";
     const url = new URL("/ws/screen", peer.url);
@@ -95,17 +135,25 @@ export function useRemoteScreen(
       drawnHeight = 0,
       watchdog: ReturnType<typeof setTimeout>;
 
-    setState({
-      ready: false,
-      connecting: true,
-      error: "",
-      format: "",
-      fps: 0,
-      mbps: 0,
-      updated: 0,
-      width: 0,
-      height: 0,
-    });
+    if (shown.current === source) {
+      holdFrame();
+      setState((s) => ({ ...s, connecting: true, error: "", fps: 0, mbps: 0 }));
+    } else {
+      clearHold();
+      shown.current = "";
+      lost.current = null;
+      setState({
+        ready: false,
+        connecting: true,
+        error: "",
+        format: "",
+        fps: 0,
+        mbps: 0,
+        updated: 0,
+        width: 0,
+        height: 0,
+      });
+    }
     const ack = (id: number, keyframe = false) => {
       if (id > lastAck && socket.readyState === WebSocket.OPEN) {
         lastAck = id;
@@ -121,6 +169,12 @@ export function useRemoteScreen(
     const fail = (error: string, retryable = true, stillImages = false) => {
       if (stopped || failed) return;
       failed = true;
+      lost.current = {
+        reason: error,
+        at: Date.now(),
+        frameAt: last || lost.current?.frameAt || 0,
+        times: (lost.current?.times ?? 0) + 1,
+      };
       clearTimeout(watchdog);
       clearInterval(metrics);
       painter.stop();
@@ -130,9 +184,12 @@ export function useRemoteScreen(
         setFallback(true);
         return;
       }
+      const keep = retryable && shown.current === source;
+      if (keep) holdFrame();
+      else clearHold();
       setState((s) => ({
         ...s,
-        ready: false,
+        ready: keep && s.ready,
         connecting: retryable,
         error: retryable ? "" : error,
         fps: 0,
@@ -162,6 +219,9 @@ export function useRemoteScreen(
       count++;
       last = Date.now();
       retry.current.reset();
+      shown.current = source;
+      lost.current = null;
+      clearHold();
       deadline(20000);
       if (drawnWidth !== width || drawnHeight !== height) {
         drawnWidth = width;
@@ -273,6 +333,14 @@ export function useRemoteScreen(
           ...(thread && { thread }),
         }),
       );
+      const was = lost.current;
+      if (was) {
+        const where = thread ? "app" : quality === "preview" ? "home" : "screen";
+        const ago = (at: number) => `${((Date.now() - at) / 1000).toFixed(1)} s`;
+        report(
+          `${where} reconnecting (${was.times}× since the last frame) after: ${was.reason}${was.code ? ` · closed ${was.code}` : ""} · ${ago(was.at)} ago · last frame ${was.frameAt ? `${ago(was.frameAt)} ago` : "never"} · page ${document.hidden ? "hidden" : "visible"}${navigator.onLine === false ? " · offline" : ""}`,
+        );
+      }
     };
     const decodeLatestImage = async () => {
       if (decodingImage) return;
@@ -429,11 +497,15 @@ export function useRemoteScreen(
       }
     };
     socket.onerror = () => fail("Could not connect to the screen stream.");
-    socket.onclose = (event) =>
+    socket.onclose = (event) => {
       fail(
         "Screen connection ended. Reconnecting…",
         event.code !== 4003 && !/revoked|expired/i.test(event.reason),
       );
+      // The close code, also after an error event already ended it.
+      if (!stopped && lost.current && !lost.current.code)
+        lost.current.code = event.code;
+    };
     const wake = () => {
       if (!document.hidden) retry.current.wake();
     };
@@ -441,6 +513,7 @@ export function useRemoteScreen(
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
+      release();
       retry.current.cancel();
       window.removeEventListener("online", wake);
       document.removeEventListener("visibilitychange", wake);

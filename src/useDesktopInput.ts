@@ -6,6 +6,9 @@ import {
   type InputResult,
 } from "./desktop-input-queue";
 export type { DesktopAction } from "./desktop-input-queue";
+type Field = { x: number; y: number; w: number; h: number; secure: boolean };
+// Inputs that can move or open text fields: a map from before one is stale.
+const changes = new Set(["click", "down", "up", "key", "text", "type-edit", "scroll", "menu"]);
 export function useDesktopInput(
   peer: Peer,
   enabled: boolean,
@@ -26,11 +29,17 @@ export function useDesktopInput(
   );
   const end = useRef(onEnd);
   end.current = onEnd;
+  // Where the computer's text fields are, pushed ahead of any tap, and the
+  // last input sent that could have moved them.
+  const fieldMap = useRef<{ after: number; fields: Field[] } | null>(null);
+  const lastChange = useRef(0);
   useEffect(() => {
     setReady(false);
     setTyping(false);
     setProbe(false);
     setInitialCursor(null);
+    fieldMap.current = null;
+    lastChange.current = 0;
     if (!enabled) return;
     const url = new URL("/ws/screen-input", peer.url);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -80,8 +89,10 @@ export function useDesktopInput(
         if (m.type === "ready" && !queue) {
           clearTimeout(deadline);
           queue = new DesktopInputQueue(
-            (id, action) =>
-              socket.send(JSON.stringify({ type: "input", id, action })),
+            (id, action) => {
+              if (changes.has(action.type)) lastChange.current = id;
+              socket.send(JSON.stringify({ type: "input", id, action }));
+            },
             fail,
             Number.isInteger(m.window) ? Math.max(1, Math.min(8, m.window)) : 1,
           );
@@ -97,6 +108,18 @@ export function useDesktopInput(
           setTyping(m.typing === true);
           setProbe(m.probe === true);
           setReady(true);
+          return;
+        }
+        if (m.type === "fields" && queue) {
+          const ok = (v: unknown) => typeof v === "number" && v >= 0 && v <= 1;
+          if (Number.isSafeInteger(m.after) && Array.isArray(m.fields))
+            fieldMap.current = {
+              after: m.after,
+              fields: m.fields
+                .slice(0, 64)
+                .filter((f: Field) => ok(f?.x) && ok(f?.y) && ok(f?.w) && ok(f?.h))
+                .map((f: Field) => ({ x: f.x, y: f.y, w: f.w, h: f.h, secure: f.secure === true })),
+            };
           return;
         }
         if (m.type !== "ack" || !queue)
@@ -131,6 +154,21 @@ export function useDesktopInput(
     ready,
     typing,
     probe,
+    // A text field under this point, known before the tap: only from a map
+    // made after the last input that could have moved things.
+    fieldAt: (point: { x: number; y: number }) => {
+      const map = fieldMap.current;
+      if (!map || map.after < lastChange.current) return null;
+      return (
+        map.fields.find(
+          (f) => point.x >= f.x && point.x <= f.x + f.w && point.y >= f.y && point.y <= f.y + f.h,
+        ) ?? null
+      );
+    },
+    // The Mac said no field where the map had one: stop trusting it until the next.
+    forgetFields: () => {
+      fieldMap.current = null;
+    },
     initialCursor,
     latency,
     send: (action: DesktopAction) => dispatcher.current(action),

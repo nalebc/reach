@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process";
+import { buildNative } from "./native-build.mjs";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -30,7 +31,6 @@ export const APP_STREAM = {
   bitrate: 16000000,
 };
 
-let building = null;
 // Built from source on first use and cached under its hash, like the other
 // native helpers; any edit to the source recompiles it. Quitting Reach
 // (`signal`) stops a build still running, so Ctrl+C never waits for it.
@@ -40,40 +40,22 @@ export async function appDisplaysBinary(config, { signal } = {}) {
     config.dataDir,
     `reach-app-displays-${crypto.createHash("sha256").update(code).digest("hex").slice(0, 12)}`,
   );
-  if (fs.existsSync(file)) return file;
-  building ??= (async () => {
-    const tmp = `${file}-${process.pid}.tmp`;
-    try {
-      await exec(
-        "/usr/bin/xcrun",
-        [
-          "clang",
-          "-fobjc-arc",
-          "-O2",
-          ...["AppKit", "ApplicationServices", "CoreGraphics", "IOKit"].flatMap(
-            (f) => ["-framework", f],
-          ),
-          helperSource,
-          "-o",
-          tmp,
-        ],
-        { timeout: 120000, maxBuffer: 1024 * 1024, signal },
-      );
-      await fsp.chmod(tmp, 0o700);
-      await fsp.rename(tmp, file);
-    } catch (e) {
-      await fsp.rm(tmp, { force: true });
-      if (signal?.aborted) throw e;
-      throw fail(
-        503,
-        "Could not prepare the app display helper. Install Apple Command Line Tools.",
-      );
-    }
-  })().finally(() => {
-    building = null;
-  });
-  await building;
-  return file;
+  try {
+    return await buildNative(
+      file,
+      [
+        "clang",
+        "-fobjc-arc",
+        "-O2",
+        ...["AppKit", "ApplicationServices", "CoreGraphics", "IOKit"].flatMap((f) => ["-framework", f]),
+        helperSource,
+      ],
+      { signal },
+    );
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw fail(503, "Could not prepare the app display helper. Install Apple Command Line Tools.");
+  }
 }
 
 // JSON lines with the helper: numbered requests and replies, plus events.

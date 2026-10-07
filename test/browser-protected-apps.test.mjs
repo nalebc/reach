@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { protectBrowserApp, protectedBrowserAppReason } from '../server/browser-protected-apps.mjs';
+import { protectBrowserApp, protectedBrowserAppReason, isolatedBrowserReason } from '../server/browser-protected-apps.mjs';
 import { createBrowserAppAccess } from '../server/browser-app-access.mjs';
 
 const identity = 'a'.repeat(64);
@@ -39,7 +39,7 @@ test('Reach and Tailscale remain protected when renamed or the catalog flag is f
     assert.match(result.reason, /always protected/);
     assert.equal(input.protected, false);
   }
-  const safari = { id: '/Applications/Safari.app', name: 'Safari', bundleId: 'com.apple.Safari', protected: false };
+  const safari = { id: '/System/Applications/Notes.app', name: 'Notes', bundleId: 'com.apple.Notes', protected: false };
   assert.equal(protectedBrowserAppReason(safari), null);
   assert.deepEqual(protectBrowserApp(safari), safari);
   assert.equal(protectBrowserApp({ ...safari, protected: true }).protected, true);
@@ -55,7 +55,7 @@ test('stored grants cannot share protected apps or produce window targets', asyn
     assert.equal(list.apps[0].protected, true);
     await assert.rejects(f.manager.windows(f.client, app.id, f.authorize), { status: 403 });
     await assert.rejects(f.manager.capture(f.client, 'forged-window', f.authorize), { status: 409 });
-    await assert.rejects(f.manager.input(f.client, 'forged-window', { type: 'click', x: .5, y: .5 }, f.authorize), { status: 409 });
+    await assert.rejects(f.manager.input(f.client, 'forged-window', { type: 'click', x: .5, y: .5 }, f.authorize), { status: 403 });
     assert.deepEqual(f.calls, []);
   }
 });
@@ -74,7 +74,7 @@ test('owner initial choices and agent access requests cannot override protected 
 
 test('owner approval rechecks protected identity even for an already pending request', async () => {
   const f = fixture({ id: '/Applications/Innocent.app', name: 'Innocent', bundleId: 'com.example.App' }, false);
-  const request = await f.manager.request(f.client, { appId: f.row.id, mode: 'control' }, f.authorize);
+  const request = await f.manager.request(f.client, { appId: f.row.id, mode: 'view' }, f.authorize);
   // Even a catalog with an incorrectly unchanged signing fingerprint cannot
   // turn a Reach/Tailscale app into an owner-approvable app.
   f.row.bundleId = 'io.tailscale.ipn.macos';
@@ -83,4 +83,24 @@ test('owner approval rechecks protected identity even for an already pending req
   assert.equal(list.apps[0].protected, true);
   assert.equal(list.apps[0].mode, 'hidden');
   assert.deepEqual(f.calls, []);
+});
+
+test('unmanaged browsers cannot use renamed identity, stored grants, or owner approval to bypass isolation',async()=>{
+ const browsers=[
+  {id:'/Applications/Renamed.app',name:'Renamed',bundleId:'com.apple.Safari'},
+  {id:'/Applications/Renamed.app',name:'Renamed',bundleId:'com.google.Chrome.canary'},
+  {id:'/Applications/Renamed.app',name:'Renamed',bundleId:'org.mozilla.firefox'},
+  {id:'/Applications/Google Chrome.app',name:'Renamed',bundleId:'com.example.Other'},
+  {id:'/Applications/Renamed.app',name:'Ｓａｆａｒｉ',bundleId:'com.example.Other'},
+ ];
+ for(const app of browsers){
+  const f=fixture(app);
+  assert.equal(protectedBrowserAppReason(app),isolatedBrowserReason);
+  const row=(await f.manager.list(f.client,f.authorize)).apps[0];
+  assert.equal(row.protected,true);assert.equal(row.mode,'hidden');assert.equal(row.reason,isolatedBrowserReason);
+  await assert.rejects(f.manager.validateChoices([{id:app.id,mode:'control'}],f.authorize),{status:403});
+  await assert.rejects(f.manager.request(f.client,{appId:app.id,mode:'control'},f.authorize),{status:403});
+  await assert.rejects(f.manager.windows(f.client,app.id,f.authorize),{status:403});
+  assert.deepEqual(f.calls,[]);
+ }
 });

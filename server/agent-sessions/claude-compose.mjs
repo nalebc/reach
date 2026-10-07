@@ -32,17 +32,19 @@ export async function claudeFrontmost(run = exec) {
 // Claude Code's permission modes as the Claude app's menu names them; the ones
 // Reach may pick there (never Bypass permissions, turned on at the Mac).
 export const APP_MODES = { manual: "Manual", default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto" };
+// Claude Code's effort levels as the Claude app's menu names them.
+export const APP_EFFORTS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 // session: the chat by the app's own id (local_…), which the window must
 // show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
-  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode },
+  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode, effort },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
 ) {
   const file = await binary();
   const json = draft || expected !== undefined;
   let call;
-  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode ? [] : images.flatMap((image) => ["--image", image]))], {
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode || effort ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
   }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
@@ -57,6 +59,12 @@ export async function typeIntoClaude(
   if (!object(result)) throw uncertainDelivery("claude");
   if (mode) {
     if (result.mode !== mode || result.error) throw uncertainDelivery("claude");
+    return result;
+  }
+  // An effort the app's menu didn't offer says so; nothing was changed.
+  if (effort) {
+    if (typeof result.error === "string") throw waiting(result.error);
+    if (result.effort !== effort) throw uncertainDelivery("claude");
     return result;
   }
   const action = stop ? "stopped" : draft ? "drafted" : "sent";
@@ -177,6 +185,18 @@ export function createClaudeCompose({
         const result = await type({ title, session: sessionOf(id), waitMs: 0, mode: label });
         if (result?.mode !== label) throw waiting("The Claude app didn't switch modes.");
         return { mode };
+      });
+    },
+    // An effort level picked on the phone, picked in the app's own menu (so
+    // both show the same one) while the chat is on screen there.
+    effort(id, { title, effort }) {
+      return serial(async () => {
+        const label = APP_EFFORTS[effort];
+        if (!label) throw Object.assign(new Error("Reach can't pick that effort level in the Claude app."), { status: 400 });
+        if (!(await appRunning()) || shown()[0]?.id !== id)
+          throw waiting("Open this chat in the Claude app on your Mac to change its effort from here.");
+        const result = await type({ title, session: sessionOf(id), waitMs: 0, effort: label });
+        return { effort, unconfirmed: !!result.unconfirmed };
       });
     },
     // `now`: sent with Send now from the phone, so it goes in even while

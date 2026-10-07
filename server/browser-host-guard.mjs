@@ -79,8 +79,8 @@ export function createBrowserHostGuard({
         .filter((value) => binding(value) && all.some((owner) => owner.id === value.clientId &&
           owner.kind === "device" && owner.scopes?.includes("admin") && expires(owner) > now() &&
           owner.tailscale?.nodeId === value.nodeId && owner.tailscale?.userId === value.userId));
-      return { active: grants.length > 0 || reservations.length > 0, approvers };
-    } catch { return { active: true, approvers: [] }; }
+      return { active: grants.length > 0 || reservations.length > 0, approvers, grants };
+    } catch { return { active: true, approvers: [], grants: [] }; }
   };
   const isActive = () => state().active;
   const invalidate = () => { generation++; self = null; peers = []; until = 0; flight = null; };
@@ -124,16 +124,27 @@ export function createBrowserHostGuard({
   };
   const pinnedRemote = (req, current) => nativeRemote(req) && current.approvers.some((approver) =>
     approver.nodeId === req.reachIdentity.nodeId && approver.userId === req.reachIdentity.userId);
-  const signedAgentRoute = (req, client) => {
+  const signedAgentRoute = (req, client, current) => {
     if (client?.kind !== "agent" || client.policy?.browser !== true ||
         !Number.isFinite(client.expiresAt) || client.expiresAt <= now() ||
         !Array.isArray(client.scopes) || req.headers?.upgrade !== undefined) return false;
+    if (client.policy.screen === "apps") {
+      // Losing the device that can supervise this invitation must stop the
+      // agent too. Otherwise revoking an owner leaves app control running
+      // while the guard prevents every remaining owner from stopping it.
+      const grant = current.grants.find((entry) => entry.id === client.id);
+      const creator = grant?.browserAppApprover;
+      if (!binding(creator) || !binding(client.browserAppApprover) ||
+          !["nodeId", "userId", "clientId"].every((key) => creator[key] === client.browserAppApprover[key]) ||
+          !current.approvers.some((owner) => ["nodeId", "userId", "clientId"].every((key) => owner[key] === creator[key])))
+        return false;
+    }
     const route = apiPath(req);
     return route !== null && browserRouteAllowed(client, req.method, route);
   };
   const allows = (req, verifiedClient = null) => {
     const current = state();
-    return !current.active || signedAgentRoute(req, verifiedClient) || pinnedRemote(req, current);
+    return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current);
   };
   const assertRequest = (req, verifiedClient = null) => {
     if (!allows(req, verifiedClient)) throw fail(403, browserHostGuardMessage);

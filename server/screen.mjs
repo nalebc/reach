@@ -1,9 +1,10 @@
 import { fail } from "./core.mjs";
+import { computerWord } from "./computer-word.mjs";
 
 // Paused (the person at the computer has it back): its screen and input
 // aren't lent to any phone until Resume.
 export const pausedMessage = (platform = process.platform) =>
-  `Reach is paused on this ${platform === "darwin" ? "Mac" : "computer"}.`;
+  `Reach is paused on this ${computerWord(platform)}.`;
 // The Mac's own dialogs (a privacy prompt, its password) are its owner's to
 // answer: while one is up, only the owner's own devices click or type.
 export const dialogMessage =

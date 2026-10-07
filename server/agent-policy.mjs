@@ -132,6 +132,9 @@ export function applyAgentPolicy(client, config) {
       (policy.scriptApproval === true && (policy.terminalApproval !== true || policy.restrictedTerminal !== true)) ||
       !Array.isArray(client.scopes)
     ) return null;
+    // Invitations from the removed private-copy feature pointed at copies
+    // outside the shared folders; they no longer grant anything.
+    if (client.browserWorkspaceId !== undefined) return null;
     const roots = policy.roots.filter((root) =>
       config.roots.some((shared) => within(shared, root)),
     );

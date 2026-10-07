@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { computerWord } from "../computer-word.mjs";
 
 const exec = promisify(execFile);
 
@@ -17,6 +18,8 @@ export function createCodexDaemon({
   requestTimeout = 30000,
   Socket = WebSocket,
   check = run === exec ? (file) => probeAgent("codex", file) : async () => ({ status: "available", version: null }),
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 } = {}) {
   let socket = null;
   let ready = null;
@@ -48,7 +51,7 @@ export function createCodexDaemon({
   };
   async function socketPath() {
     const codex = await locate();
-    if (!codex) throw Object.assign(new Error("Codex is not installed on this computer."), { status: 503, code: "AGENT_NOT_INSTALLED" });
+    if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503, code: "AGENT_NOT_INSTALLED" });
     const report = await compatibility();
     if (!["available", "degraded"].includes(report.status)) throw compatibilityError("codex", "CLI");
     const { stdout } = await run(codex, ["app-server", "daemon", "start"], {

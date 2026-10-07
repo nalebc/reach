@@ -1,0 +1,259 @@
+/* Inviting an agent (BrowserInvite.tsx): who, what it can use, for how long,
+   then one clear "send this" card. Pieces come from agent-ui.css. */
+.ag-invite {
+  display: grid;
+  gap: 18px;
+  color: var(--ag-text);
+}
+.ag-invite-form {
+  display: grid;
+  gap: 20px;
+}
+.ag-invite-form[hidden] {
+  display: none;
+}
+.ag-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid var(--ag-line);
+  border-radius: 18px;
+  background: var(--ag-surface);
+}
+.ag-identity-name {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  outline: none;
+}
+.ag-identity-name::placeholder {
+  color: var(--ag-faint);
+}
+/* Roll another silly name. */
+.ag-roll {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: #ffffff0d;
+  color: var(--ag-muted);
+  cursor: pointer;
+  transition: transform 0.25s ease;
+}
+.ag-roll:active {
+  transform: rotate(-30deg) scale(0.92);
+}
+/* A grant: the row opens its choices; the switch turns it on or off. */
+.ag-grant-head {
+  display: flex;
+  align-items: center;
+  padding-right: 14px;
+}
+.ag-grant-head .ag-row-head {
+  flex: 1;
+  min-width: 0;
+}
+.ag-grant-head .ag-row-head:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ag-grant:not(.is-on) .ag-row-icon {
+  color: var(--ag-faint);
+}
+.ivt .ag-invite button.ag-note-button,
+.ag-note-button {
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ag-amber) 10%, transparent);
+  color: var(--ag-amber);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ag-note-button u {
+  text-underline-offset: 3px;
+}
+.ag-lines {
+  display: grid;
+}
+/* The folder browser and choices sit flush inside an open row. */
+.ag-row-body .fb {
+  margin: 0;
+}
+.ag-send {
+  display: grid;
+  gap: 10px;
+}
+.ag-summary {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: #cfdad2;
+}
+.ag-summary.is-missing {
+  color: var(--ag-muted);
+}
+.ag-wide {
+  width: 100%;
+}
+.ag-reassure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ag-faint);
+  font-size: 12.5px;
+}
+.ag-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ag-danger) 10%, transparent);
+  color: var(--ag-danger);
+  font-size: 13.5px;
+}
+
+/* ---- The link is ready ------------------------------------------------- */
+.ag-done {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 26px 18px 18px;
+  border: 1px solid color-mix(in srgb, var(--lime) 20%, transparent);
+  border-radius: 24px;
+  background:
+    radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--lime) 9%, transparent), transparent 70%),
+    var(--ag-surface);
+  text-align: center;
+  animation: ag-in 0.25s ease-out;
+}
+.ag-done h3 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  letter-spacing: -0.3px;
+}
+.ag-done-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}
+.ag-message {
+  width: 100%;
+  text-align: left;
+}
+.ag-message summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--ag-muted);
+  font-size: 13.5px;
+  list-style: none;
+  cursor: pointer;
+}
+.ag-message summary::-webkit-details-marker {
+  display: none;
+}
+.ag-message[open] summary svg {
+  transform: rotate(180deg);
+}
+.ag-message textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--ag-line);
+  border-radius: 12px;
+  background: var(--ag-field);
+  color: #cfdad2;
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+.ag-steps {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--ag-line);
+  counter-reset: step;
+  list-style: none;
+  text-align: left;
+}
+.ag-steps li {
+  display: flex;
+  gap: 10px;
+  color: #cfdad2;
+  font-size: 13.5px;
+  line-height: 1.45;
+  counter-increment: step;
+}
+.ag-steps li::before {
+  content: counter(step);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff10;
+  color: var(--ag-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.ag-done .ag-link {
+  justify-self: center;
+}
+/* How the agent connects, above the form in the share sheet. */
+.ag-connect {
+  display: grid;
+  gap: 8px;
+}
+.ag-connect .ag-quiet {
+  padding: 0 4px;
+}
+/* The share sheet colours every button with its text colour (.ivt button);
+   agent buttons keep their own. */
+.ivt .ag-invite button.ag-primary {
+  color: #0c1510;
+}
+.ivt .ag-invite button.ag-primary:disabled {
+  color: var(--ag-faint);
+}
+.ivt .ag-invite button.ag-danger {
+  color: var(--ag-danger);
+}
+.ivt .ag-invite button.ag-link {
+  color: var(--lime);
+}
+.ag-invite,
+.ag-invite-form {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ag-done {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.ag-done-actions {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+}
+.ag-done-actions button {
+  min-width: 0;
+  padding: 0 12px;
+}

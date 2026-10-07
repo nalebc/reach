@@ -3,12 +3,17 @@ export class ReconnectTimer {
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: (() => void) | undefined;
-  constructor(private random = Math.random) {}
+  // A live screen waits at most `max`: a phone held for 30 s on the loading
+  // scene after a few blips felt like Reach had died.
+  constructor(
+    private random = Math.random,
+    private max = 30000,
+  ) {}
   schedule(run: () => void) {
     this.cancel();
     this.pending = run;
     const delay =
-      Math.min(30000, 1000 * 2 ** Math.min(this.attempt++, 5)) *
+      Math.min(this.max, 1000 * 2 ** Math.min(this.attempt++, 5)) *
       (0.8 + this.random() * 0.2);
     this.timer = setTimeout(() => this.wake(), delay);
     return delay;

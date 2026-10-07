@@ -6,7 +6,7 @@ import { startDom, settle } from "./dom/harness.mjs";
 // instead of multiple buttons spread across the screen" (2026-10-06): the
 // Screen had a top bar (Type, fullscreen, options, close), a bottom dock
 // (Paste, Shortcuts, Control) and a fullscreen pill. Now one icon bar holds
-// every control, and fullscreen is in options.
+// every control, including fullscreen without an extra menu.
 const peer = { id: "mac", name: "Mac", url: "https://reach.test", token: "t", platform: "darwin" };
 const device = {
   id: "mac", name: "Mac", platform: "darwin", arch: "arm64", release: "25.0", roots: [],
@@ -42,19 +42,25 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
     React.createElement(Screen, { peer, device, changes: '{"control":"a"}', toast: () => {}, onChanged: () => {}, onClose: () => {} }),
   );
   const bar = await dom.waitFor(() => $('[role="toolbar"][aria-label="Screen controls"]'));
-  assert.deepEqual(names(bar), ["Control", "Shortcuts", "Screen options", "Close screen session"]);
+  assert.deepEqual(names(bar), ["Control", "Shortcuts", "Enter fullscreen", "Screen options"]);
   // Icons, no words; no buttons at the top or in a second bar.
   for (const b of bar.querySelectorAll("button")) assert.equal(b.textContent.trim(), "", `${b.getAttribute("aria-label")} is an icon`);
   assert.equal($(".simple-screen-toolbar button"), null);
   assert.equal($(".screen-immersive-pill"), null);
+  assert.equal($('[aria-label="Close screen session"]'), null);
   // Controlling: the same bar, with the keyboard and paste.
   bar.querySelector('[aria-label="Control"]').click();
   await dom.waitFor(() => bar.querySelector('[aria-label="Stop"]'));
-  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Shortcuts", "Screen options", "Close screen session"]);
+  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Shortcuts", "Enter fullscreen", "Screen options"]);
   assert.equal(bar.querySelector('[aria-label="Stop"]').getAttribute("aria-pressed"), "true");
-  // Fullscreen is in options.
-  bar.querySelector('[aria-label="Screen options"]').click();
-  await dom.waitFor(() => [...dom.document.querySelectorAll("button")].some((b) => /^(Enter|Exit) fullscreen$/.test(b.getAttribute("aria-label") || "")));
+  // Fullscreen is directly reachable and keeps the same screen/control mount.
+  bar.querySelector('[aria-label="Enter fullscreen"]').click();
+  await dom.waitFor(() => $(".screen-expanded.screen-immersive"));
+  assert.ok(bar.querySelector('[aria-label="Exit fullscreen"]'));
+  assert.ok(bar.querySelector('[aria-label="Stop"]'));
+  bar.querySelector('[aria-label="Exit fullscreen"]').click();
+  await dom.waitFor(() => !$(".screen-expanded"));
+  assert.ok(bar.querySelector('[aria-label="Enter fullscreen"]'));
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });

@@ -237,6 +237,16 @@ test("real OpenClaw approval failures remain actionable, successful replies carr
   await dom.waitFor(() => !button("Allow once"));
 });
 
+test("OpenClaw offers its native Always allow choice and sends it only when tapped", async () => {
+  await mount();
+  approvals = [{ id: "persistent-approval", command: "npm test", canRespond: true }];
+  await click("Weekend plans");
+  await dom.waitFor(() => button("Always allow"));
+  assert.deepEqual(decisions, []);
+  await click("Always allow");
+  assert.deepEqual(decisions, [{ id: "persistent-approval", decision: "allow-always" }]);
+});
+
 test("OpenClaw without a response channel offers live screen and no pretend approval buttons", async () => {
   await mount();
   approvals = [{ id: "screen-only", command: "npm test", canRespond: false }];

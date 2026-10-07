@@ -17,10 +17,13 @@ import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
 import { claudeAppShown } from "./claude-import.mjs";
 import { markCodexAnswered } from "./codex-asks.mjs";
+import { computerWord } from "../computer-word.mjs";
 
 const exec = promisify(execFile);
 const bad = (message, status) => Object.assign(new Error(message), { status });
 export const cardId = (toolId) => `app-permission:${toolId}`;
+// Claude's multiple-choice question in the Claude app, answered from the phone.
+export const questionId = (toolId) => `app-question:${toolId}`;
 const APP = { claude: "Claude", codex: "Codex" };
 // Buttons on a card that aren't answers (copying the command, folding it).
 const NOT_ANSWERS = /^(copy|expand|collapse|show (more|less)|close)\b/i;
@@ -88,6 +91,12 @@ export const probeApp = (agent, options) => helper(agent, ["--probe"], options);
 
 // The card as the app draws it: { found, texts, buttons: [{ label, menu }] }.
 export const readAppCard = (agent, expect, options) => helper(agent, ["--read", ...expecting(expect)], options);
+// Claude's questions in the Claude app: each by its words, with its picks.
+export async function answerAppQuestion(agent, answers, options) {
+  const result = await helper(agent, ["--answer", ...answers.flatMap((a) => ["--q", a.question, ...a.picks.flatMap((p) => ["--pick", p])])], options);
+  if (result.error) throw bad(`${result.error} Answer it on your Mac.`, 409);
+  return result;
+}
 export async function pressAppCard(agent, label, expect, options) {
   const result = await helper(agent, ["--press", label, ...expecting(expect)], options);
   if (result.error) throw bad(`${result.error} Answer it on your Mac.`, 409);
@@ -97,6 +106,12 @@ export async function pressAppCard(agent, label, expect, options) {
 export function createAppCards({
   read,
   press,
+  // Answers a question card in the app (answerAppQuestion).
+  answerQuestion = async () => {
+    throw bad(`Answer it on your ${computerWord(platform)}.`, 409);
+  },
+  // The question a chat waits on in the app ({ id, questions, appSessionId }), or null.
+  pendingQuestion = async () => null,
   // How much an app shows Reach ({ elements }), asked before bringing it up.
   probe = async () => ({ elements: Infinity }),
   open,
@@ -112,10 +127,17 @@ export function createAppCards({
   // The helper confirms the card closed; Claude Code's registry follows.
   confirmMs = 10000,
   markAnswered = markCodexAnswered,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 }) {
   let busy = false;
   // Each request's buttons as last read: only one of those can be pressed.
   const read_ = new Map(); // promptId -> labels
+  const attempted = new Map(); // agent:chat -> last prompt pressed
+  const checkAttempt = (agent, id, promptId) => {
+    if (attempted.get(`${agent}:${id}`) === promptId)
+      throw bad(`This answer was already attempted. Check the app or terminal on your ${computerWord(platform)} before answering again.`, 409);
+  };
   const one = async (work) => {
     if (busy) throw bad("Reach is already answering a request in the app.", 409);
     busy = true;
@@ -130,19 +152,19 @@ export function createAppCards({
     if (!APP[agent]) throw bad("That chat's app can't be answered from here.", 400);
     const asked = await pending(agent, id);
     if (!asked || (promptId && asked.id !== promptId)) throw bad("This request was already answered.", 409);
-    if (!asked.expect?.length) throw bad("Reach can't tell this request's card apart. Answer it on your Mac.", 409);
+    if (!asked.expect?.length) throw bad(`Reach can't tell this request's card apart. Answer it on your ${computerWord(platform)}.`, 409);
     // Only the Codex app hides its window from Reach; the Claude app always
     // shows its cards, so it isn't asked (one helper run saved per card).
     if (agent === "codex" && !asked.tty && ((await probe(agent).catch(() => null))?.elements ?? Infinity) < 50)
       // Nothing to read there: said at once, the app left where it is.
-      throw bad(`The ${APP[agent]} app doesn't let Reach see its cards. Answer it on your Mac.`, 409);
+      throw bad(`The ${APP[agent]} app doesn't let Reach see its cards. Answer it on your ${computerWord(platform)}.`, 409);
     if (asked.tty) {
-      if (!terminal) throw bad("Answer it in the terminal on your Mac.", 409);
+      if (!terminal) throw bad(`Answer it in the terminal on your ${computerWord(platform)}.`, 409);
     } else if (agent === "codex") {
       await open(`codex://threads/${encodeURIComponent(id)}`);
       await wait(switchMs);
     } else if (shown()[0]?.id !== id) {
-      if (!asked.appSessionId) throw bad("The Claude app doesn't list this chat. Answer it on your Mac.", 409);
+      if (!asked.appSessionId) throw bad(`The Claude app doesn't list this chat. Answer it on your ${computerWord(platform)}.`, 409);
       await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`);
       await wait(switchMs);
     }
@@ -150,10 +172,11 @@ export function createAppCards({
   };
   const load = async (agent, id, promptId) => {
     const asked = await show(agent, id, promptId);
+    checkAttempt(agent, id, asked.id);
     const card = asked.tty ? await terminal.read(asked.tty, asked.expect) : await read(agent, asked.expect);
-    if (card?.error) throw bad(`${card.error} Answer it on your Mac.`, 409);
+    if (card?.error) throw bad(`${card.error} Answer it on your ${computerWord(platform)}.`, 409);
     if (!card?.found)
-      throw bad(asked.tty ? "The terminal isn't showing this request. Answer it there." : `The ${APP[agent]} app isn't showing this request. Answer it on your Mac.`, 409);
+      throw bad(asked.tty ? "The terminal isn't showing this request. Answer it there." : `The ${APP[agent]} app isn't showing this request. Answer it on your ${computerWord(platform)}.`, 409);
     const buttons = (card.buttons || [])
       .filter((b) => b.label && !b.menu && !NOT_ANSWERS.test(b.label))
       .map((b) => b.label);
@@ -174,17 +197,51 @@ export function createAppCards({
       },
     };
   };
+  // A question picked on the phone: every pick one of its options, each
+  // question answered (one pick, or several where it takes several).
+  const picksFor = (questions, answers) => {
+    if (!answers || typeof answers !== "object") throw bad("Answer each question.", 400);
+    return questions.map((q, i) => {
+      const picks = answers[`q${i}`];
+      const labels = (q.options || []).map((o) => o.label);
+      if (!Array.isArray(picks) || !picks.length || picks.some((p) => !labels.includes(p)) || (!q.multiSelect && picks.length !== 1))
+        throw bad(`Choose ${q.multiSelect ? "one or more" : "one"} of the options for "${q.question}".`, 400);
+      return { question: q.question, picks: [...new Set(picks)] };
+    });
+  };
+  const answerQuestionNow = (agent, id, promptId, answers) =>
+    one(async () => {
+      if (agent !== "claude") throw bad("That chat's app can't be answered from here.", 400);
+      const asked = await pendingQuestion(agent, id);
+      if (!asked || asked.id !== promptId) throw bad("This question was already answered.", 409);
+      const picks = picksFor(asked.questions || [], answers);
+      checkAttempt(agent, id, promptId);
+      if (shown()[0]?.id !== id) {
+        if (!asked.appSessionId) throw bad(`The Claude app doesn't list this chat. Answer it on your ${computerWord(platform)}.`, 409);
+        await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`);
+        await wait(switchMs);
+      }
+      attempted.set(`${agent}:${id}`, promptId);
+      await answerQuestion(agent, picks);
+      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
+        if ((await pendingQuestion(agent, id))?.id !== promptId) return { answered: true };
+      throw bad(`The Claude app didn't take the answer. Answer it on your ${computerWord(platform)}.`, 409);
+    });
   return {
-    owns: (promptId) => typeof promptId === "string" && promptId.startsWith("app-permission:"),
+    owns: (promptId) => typeof promptId === "string" && (promptId.startsWith("app-permission:") || promptId.startsWith("app-question:")),
     // The card as the app shows it, for the phone to draw.
     card: (agent, id) => one(async () => (await load(agent, id)).card),
-    async answer(agent, id, promptId, { label } = {}) {
+    async answer(agent, id, promptId, { label, answers } = {}) {
+      if (promptId.startsWith("app-question:")) return answerQuestionNow(agent, id, promptId, answers);
       if (typeof label !== "string" || !label) throw bad("Choose one of the card's buttons.", 400);
       return one(async () => {
         if (!read_.has(promptId)) await load(agent, id, promptId);
         const known = read_.get(promptId) || [];
         if (!known.includes(label)) throw bad(`The card doesn't offer "${label}".`, 400);
         const asked = await show(agent, id, promptId);
+        checkAttempt(agent, id, promptId);
+        attempted.set(`${agent}:${id}`, promptId);
+        if (attempted.size > 2000) attempted.delete(attempted.keys().next().value);
         if (asked.tty) await terminal.press(asked.tty, label, asked.expect);
         else await press(agent, label, asked.expect);
         read_.delete(promptId);
@@ -195,7 +252,7 @@ export function createAppCards({
         }
         for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
           if ((await pending(agent, id))?.id !== promptId) return { answered: true };
-        throw bad("The Claude app didn't take the answer. Answer it on your Mac.", 409);
+        throw bad(`The Claude app didn't take the answer. Answer it on your ${computerWord(platform)}.`, 409);
       });
     },
   };

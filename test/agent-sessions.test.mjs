@@ -357,6 +357,16 @@ test("Codex threads and items normalize; approvals read as waiting", () => {
   assert.equal(codexItem({ item: { type: "fileChange", id: "f", changes: [{ path: "a.ts", diff: "+1" }], status: "completed" } }).text, "a.ts");
 });
 
+test("Codex async questions survive history reads, including question-only messages", () => {
+  const questions = [{ title: "Which target?", options: ["Mac", "Phone"] }, { title: "Anything else?", options: null }];
+  const item = codexItem({ item: { type: "agentMessage", id: "async-question", text: "", questions, delivery: "async" }, turnId: "t1" });
+  assert.equal(item.role, "assistant");
+  assert.equal(item.text, "");
+  assert.deepEqual(item.questions, [{ title: "Which target?", options: ["Mac", "Phone"] }, { title: "Anything else?", options: [] }]);
+  assert.equal(item.turnId, "t1");
+  assert.equal(codexItem({ item: { type: "agentMessage", id: "empty", text: "", questions: [] } }), null);
+});
+
 test("native links open the right app, only for valid ids", () => {
   assert.equal(nativeLink({ agent: "codex", id: ID }), `codex://threads/${ID}`);
   assert.equal(nativeLink({ agent: "claude", id: ID, appSessionId: `local_${ID}` }), `claude://code/continue?session=local_${ID}`);
@@ -511,6 +521,41 @@ test("Claude Code's own registry says which process holds a session and whether 
       "term-allow": { where: "terminal", pid: 17, tty: null, exact: true, busy: false, waiting: "permission prompt" },
     });
     assert.deepEqual([...readSessionRegistry({ dir: path.join(dir, "missing") })], []);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// "It says working even though it's not": a session's record outlived its
+// process, and the system gave that pid to another app (Voice Memos), so the
+// record read as a busy chat. A record counts only while its start time is
+// still that process's.
+test("a registry record whose pid now belongs to another process is ignored", async () => {
+  const { readSessionRegistry, processStarts } = await import("../server/agent-sessions/processes.mjs");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-registry-"));
+  const write = (pid, record) => fs.writeFile(path.join(dir, `${pid}.json`), JSON.stringify({ pid, ...record }));
+  try {
+    const app = { entrypoint: "claude-desktop", kind: "interactive" };
+    // Read after the live one (file order), as on the Mac where it showed.
+    await write(2402, { ...app, sessionId: "redesign", status: "busy", updatedAt: 2, procStart: "Tue Oct  6 14:20:34 2026" });
+    await write(1451, { ...app, sessionId: "redesign", status: "idle", updatedAt: 1, procStart: "Tue Oct  6 16:41:40 2026" });
+    await write(1509, { ...app, sessionId: "other", status: "busy", procStart: "Tue Oct  6 16:41:56 2026" });
+    await write(1600, { ...app, sessionId: "undated", status: "busy" });
+    const starts = new Map([
+      [2402, "Tue Oct 6 09:41:26 2026"], // Voice Memos now
+      [1451, "Tue Oct 6 16:41:40 2026"],
+      [1509, "Tue Oct 6 16:41:56 2026"],
+    ]);
+    const found = readSessionRegistry({ dir, alive: () => true, started: () => starts });
+    assert.equal(found.get("redesign").pid, 1451);
+    assert.equal(found.get("redesign").busy, false);
+    assert.equal(found.get("other").busy, true);
+    assert.equal(found.get("undated").busy, true, "an older Claude Code without start times");
+    // ps unavailable: nothing is hidden.
+    assert.equal(readSessionRegistry({ dir, alive: () => true, started: () => null }).get("redesign").pid, 2402);
+    // The real ps agrees with Claude Code's format for this process.
+    const mine = processStarts([process.pid], { now: 1 }).get(process.pid);
+    assert.match(mine, /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

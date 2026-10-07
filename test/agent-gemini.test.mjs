@@ -170,7 +170,7 @@ test("a Gemini CLI chat continues in Codex with its conversation, shown there as
   const daemon = {
     async rpc(method, params) {
       calls.push([method, params]);
-      return { "model/list": { data: [{ id: "gpt-6-astra", isDefault: true }] }, "thread/start": { thread: { id: NEW } } }[method] ?? {};
+      return { "model/list": { data: [{ id: "gpt-6-astra", isDefault: true }] }, "thread/fork": { thread: { id: NEW } } }[method] ?? {};
     },
     onNotification() {},
     onRequest() {},
@@ -188,12 +188,10 @@ test("a Gemini CLI chat continues in Codex with its conversation, shown there as
     dataDir: dir,
   });
   assert.deepEqual(await sessions.move("gemini", ID, { to: "codex" }), { agent: "codex", id: NEW });
-  assert.deepEqual(
-    calls.find(([m]) => m === "thread/inject_items")[1].items.map((i) => i.content[0].text),
-    ["Fix the build\nIt fails on CI", "Fixed it."],
-  );
-  assert.match(calls.find(([m]) => m === "thread/start")[1].developerInstructions, /moved here from Gemini CLI \(“Fix the build”, in \/work\/app\)/);
+  const archive = fs.readFileSync(calls.find(([m]) => m === "thread/fork")[1].path, "utf8");
+  const messages = archive.trim().split("\n").map(JSON.parse).filter(e => e.type === "response_item").map(e => e.payload.content[0].text);
+  assert.deepEqual(messages, ["Fix the build\nIt fails on CI", "Fixed it.", "Continued with Codex · earlier messages are from Gemini CLI"]);
   const page = await sessions.read("codex", NEW, {});
-  assert.deepEqual(page.items.map((i) => i.text).slice(-1), ["Continued with Codex · earlier messages are from Gemini CLI"]);
+  assert.equal(page.session.movedFrom.agent, "gemini");
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { request, type Peer } from "./api";
 import type { BrowserRequest } from "./browser-approvals";
+import { OptionButtons } from "./agent-ui";
 import "./BrowserTerminal.css";
 
 type TerminalAction = { type: "terminal" | "terminal-change" | "terminal-script"; command: string; root: number; cwd?: string };
@@ -120,9 +121,8 @@ function BrowserTerminalSession({ peer, roots, terminalApproval = false, scriptA
   return <section className="browser-command-terminal" aria-label="Session terminal">
     <header className="browser-command-header">
       <div>
-        {roots.length > 1 && <select aria-label="Terminal shared folder" value={root?.index} disabled={busy} onChange={(event) => setRoot(Number(event.target.value))}>
-          {roots.map((item) => <option key={item.index} value={item.index}>{item.name}</option>)}
-        </select>}
+        {roots.length > 1 && <OptionButtons label="Terminal shared folder" value={root?.index ?? 0} disabled={busy} onChange={setRoot}
+          options={roots.map((item) => ({ value: item.index, label: item.name, title: item.path }))} />}
         <span className="browser-command-cwd" aria-label="Terminal working folder">{plain(folder)}</span>
       </div>
       <button type="button" className="icon-button" aria-label="Refresh terminal history" onClick={() => setRevision((value) => value + 1)}><RefreshCw size={15} /></button>
@@ -156,7 +156,12 @@ function BrowserTerminalSession({ peer, roots, terminalApproval = false, scriptA
           }
         }} />
     </form>
-    <p className="browser-command-policy">{scriptApproval ? "Reads run immediately. Other commands ask for approval once. Scripts stay inside this folder." : terminalApproval ? "Read-only commands run immediately. Supported file changes need owner approval. Commands stay inside shared folders." : "Read-only commands run in your shared folders. Other commands are blocked."} All commands are logged.</p>
+    <div className="ag-ws-quick" role="group" aria-label="Example commands">
+      <span>Try</span>
+      {["pwd", "ls", "cd ..", "cat README.md", "head -n 20 README.md", "grep \"TODO\" README.md"].map((example) => <button key={example} type="button" disabled={busy || !root}
+        aria-label={`Put ${example} in the prompt`} onClick={() => { setCommand(example); setHistoryIndex(-1); }}><code>{example}</code></button>)}
+    </div>
+    <p className="browser-command-policy">Read commands: pwd, cd, ls, cat, head, tail, wc, grep. Paths are relative to the working folder; no flags except head/tail -n and wc -l/-w/-c. {scriptApproval ? "Reads run immediately. Other commands ask for approval once. Scripts stay inside this folder." : terminalApproval ? "Read-only commands run immediately. Supported file changes need owner approval. Commands stay inside shared folders." : "Read-only commands run in your shared folders. Other commands are blocked."} All commands are logged.</p>
     {error && <p role="alert" className="error">{error}</p>}
   </section>;
 }

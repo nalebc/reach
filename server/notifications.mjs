@@ -4,11 +4,14 @@ import {
   chatNotifications,
   browserNotification,
   admissionNotification,
+  restartNotification,
   sealNotification,
   publicNotification,
   notificationPush,
 } from "./notification-items.mjs";
 
+const HIDDEN =
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
 const digest = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
 
@@ -21,6 +24,8 @@ export async function readAttention({
   browserRequests,
   admissions,
   accessRequests,
+  restartRequests = () => [],
+  terminalCount = () => 0,
 }) {
   const [agents, claw] = await Promise.allSettled([
     Promise.resolve().then(() => agentSessions.list()),
@@ -46,6 +51,8 @@ export async function readAttention({
         signature: String(p.id),
         title: "Your computer needs your attention",
         detail: "Review the request on the live screen",
+        // Its own words, for the phone's notification (mac-prompts.mjs).
+        ...(p.title && { title: String(p.title), summary: String(p.detail || "") }),
         target: { page: "screen" },
       });
   } else
@@ -61,6 +68,14 @@ export async function readAttention({
         kind: "permission",
         signature: String(p.id),
         title: "OpenClaw needs your approval",
+        chatTitle:
+          claw.value.sessions?.find((s) => s.key === p.sessionKey)?.title || "",
+        // Shown only when nothing in it hides what it does (as for chats).
+        ...(typeof p.command === "string" &&
+          p.command.length <= 8000 &&
+          !HIDDEN.test(p.command) && {
+            prompt: { command: p.command, cwd: String(p.cwd || "") },
+          }),
         detail:
           claw.value.sessions?.find((s) => s.key === p.sessionKey)?.title ||
           "Open OpenClaw to review",
@@ -113,6 +128,8 @@ export async function readAttention({
         { type: "access", id: r.id, evidence: r.scopes },
       ),
     );
+  for (const r of restartRequests())
+    items.push(restartNotification(r, terminalCount()));
   return { items, unavailable: [...unavailable] };
 }
 
@@ -177,7 +194,7 @@ export function createNotifications({
         try {
           const result = await notify({
             ...notificationPush(item),
-            category: item.source === "mac" ? "computer" : "chat",
+            category: ["mac", "restart"].includes(item.source) ? "computer" : "chat",
             tag: `need-${key.slice(0, 24)}`,
           });
           if (result?.sent > 0 || result?.suppressed > 0) {

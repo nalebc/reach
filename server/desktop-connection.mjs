@@ -8,6 +8,11 @@ export function desktopConnection(
     auth,
     control,
     create = DesktopInput.create,
+    // A second helper that only looks where the text fields are, so a scan
+    // never waits behind (or delays) a click. macOS only.
+    scanner = create === DesktopInput.create && process.platform === "darwin"
+      ? DesktopInput.create
+      : null,
     register = () => {},
     unregister = () => {},
   },
@@ -18,13 +23,60 @@ export function desktopConnection(
     busy = false,
     closed = false,
     lastId = 0,
+    // The last input the Mac has done: a field map reflects the screen after it.
+    doneId = 0,
     lastSeen = Date.now(),
     count = 0,
     windowAt = Date.now();
   const queue = [];
+  // Text fields on screen, pushed to the phone after anything that can move
+  // them (a click, a key, a scroll), and when windows change on the Mac.
+  let fields = null,
+    scanning = false,
+    // A look asked for while one runs: "full" wins over "cheap".
+    again = "",
+    scanTimer,
+    scannedAt = 0,
+    sent = "";
+  const scan = async (cheap = false) => {
+    if (!fields || closed) return;
+    if (scanning) {
+      again = again === "full" || !cheap ? "full" : "cheap";
+      return;
+    }
+    scanning = true;
+    const after = doneId;
+    try {
+      const result = await fields.send({ type: "fields", cheap });
+      scannedAt = Date.now();
+      if (closed || ws.readyState !== 1 || result.same || !Array.isArray(result.fields)) return;
+      authorize();
+      const message = JSON.stringify({ type: "fields", after, fields: result.fields });
+      if (message === sent) return;
+      sent = message;
+      ws.send(message);
+    } catch {
+      // A scan that fails costs only the shortcut: the tap's own probe stays.
+    } finally {
+      scanning = false;
+      if (again && !closed) {
+        const cheapAgain = again === "cheap";
+        again = "";
+        void scan(cheapAgain);
+      }
+    }
+  };
+  // Let the app react first (a page opening, a sheet sliding in).
+  const rescan = () => {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => void scan(), 200);
+  };
+  const changes = new Set(["click", "down", "up", "key", "text", "type-edit", "scroll", "menu"]);
   const close = (message = "Desktop control ended.") => {
     if (closed) return;
     closed = true;
+    clearTimeout(scanTimer);
+    fields?.stop();
     for (const item of queue) item.reject?.(fail(403, message));
     queue.length = 0;
     helper?.stop();
@@ -73,11 +125,19 @@ export function desktopConnection(
           authorize();
         } catch (e) {
           item.reject?.(e);
+          // The helper turned down this one action: it fails, control stays.
+          if (e?.refused && !closed) {
+            if (item.id !== undefined && ws.readyState === 1)
+              ws.send(JSON.stringify({ type: "ack", id: item.id, ok: false, error: e.message }));
+            continue;
+          }
           throw e;
         }
         const client = authorize();
         control.acquire(client, true);
         item.resolve?.(result);
+        if (item.id !== undefined) doneId = item.id;
+        if (changes.has(item.action.type)) rescan();
         if (item.id !== undefined && !closed && ws.readyState === 1)
           ws.send(JSON.stringify({ type: "ack", id: item.id, ...result }));
       }
@@ -94,6 +154,10 @@ export function desktopConnection(
         authorize();
         if (!starting && !busy && Date.now() - lastSeen > 3000)
           close("Desktop control disconnected.");
+        // Changes on the Mac itself (a window opening, an app switch): a
+        // cheap look, a full one only when windows moved.
+        else if (fields && !scanning && Date.now() - scannedAt > 1000)
+          void scan(true);
       } catch (e) {
         close(e.message);
       }
@@ -148,8 +212,19 @@ export function desktopConnection(
             typing: true,
             // Asks "is there a text field here?" on touch-down (probe).
             probe: true,
+            // Pushes where the text fields are, ahead of the tap.
+            fields: !!scanner,
           }),
         );
+        if (scanner)
+          void scanner(config, options.display).then(
+            (helper) => {
+              if (closed) return helper.stop();
+              fields = helper;
+              void scan();
+            },
+            () => {},
+          );
         return;
       }
       authorize();
@@ -194,8 +269,10 @@ export function desktopConnection(
       item.reject?.(fail(403, "Desktop control ended."));
     queue.length = 0;
     clearTimeout(deadline);
+    clearTimeout(scanTimer);
     clearInterval(check);
     helper?.stop();
+    fields?.stop();
     if (ws.clientId) {
       if (unregister(ws.clientId, ws) !== false) control.revoke(ws.clientId);
     }

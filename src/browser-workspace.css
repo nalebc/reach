@@ -51,6 +51,41 @@
 .browser-invite select {
   max-width: 100%;
 }
+.browser-workspace-choice {
+  border: 0;
+  border-top: 1px solid var(--ivt-line, #ffffff12);
+  padding: 14px 0 0;
+  margin: 15px 0 0;
+  min-width: 0;
+}
+.browser-workspace-choice legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 0 9px;
+}
+.browser-workspace-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+.browser-workspace-choice input {
+  accent-color: var(--lime, #b9efd4);
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.browser-workspace-choice label > span {
+  display: grid;
+  gap: 4px;
+}
+.browser-workspace-choice small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ivt-muted, #93a096);
+  line-height: 1.5;
+}
 /* The browser workspace shares Reach's compact green app chrome. */
 .browser-workspace {
   width: min(100%, 1440px);

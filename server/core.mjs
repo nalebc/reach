@@ -13,13 +13,15 @@ export const isPlainRecord = (value) => value !== null && typeof value === "obje
 // Names and review explanations must not hide or reorder the action being approved.
 export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
 export function validateBrowserInvitation(input) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport", "appAccess"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport", "appAccess", "workspaceMode"];
   if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw fail(400, "This invitation contains unsupported fields.");
   const {
     name, ttlSeconds, joinSeconds = 900, folders = [], terminalIds = [],
-    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet", appAccess = [],
+    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet", appAccess = [], workspaceMode = "shared",
   } = input;
+  // Agents always work in the real folders; Reach limits what they can do
+  // there. "shared" is still accepted from older apps; copies no longer exist.
   if (
     typeof name !== "string" || !name.trim() || name.length > 80 || hasReviewControls(name) || /[\n\t]/.test(name) ||
     !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400 ||
@@ -32,7 +34,7 @@ export function validateBrowserInvitation(input) {
     (restrictedTerminal && commandRequests) ||
     typeof terminalApproval !== "boolean" || (terminalApproval && !restrictedTerminal) ||
     typeof scriptApproval !== "boolean" || (scriptApproval && (!terminalApproval || !restrictedTerminal)) ||
-    !["tailnet", "funnel"].includes(transport) ||
+    !["tailnet", "funnel"].includes(transport) || workspaceMode !== "shared" ||
     (transport === "funnel" && (ttlSeconds > 3600 || joinSeconds > 900))
   ) throw fail(400, "Name the browser agent, choose its access, and a duration from 1 minute to 24 hours.");
   if (!Array.isArray(folders) || folders.length > 20 || folders.some((folder) =>
@@ -216,6 +218,22 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
   const file = path.join(config.dataDir, "clients.json");
   let clients = loadJson(file, []);
+  let credentialStoreCreated = fs.existsSync(file);
+  const listStoredClients = () => {
+    try {
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (!Array.isArray(stored) || stored.some((client) => !isPlainRecord(client)))
+        throw Error("Invalid credential store");
+      credentialStoreCreated = true;
+      return stored;
+    } catch (error) {
+      // An absent file is normal only before this installation has issued its
+      // first credential. Losing/corrupting an existing store must not tell the
+      // app host guard that all agent sessions disappeared and reopen admission.
+      if (error.code === "ENOENT" && !credentialStoreCreated) return [];
+      throw fail(503, "Reach cannot read its access records. Access stays locked until they are restored.");
+    }
+  };
   const changeClients = (change) => {
     const lock = `${file}.lock`;
     let fd;
@@ -227,6 +245,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     try {
       clients = change(loadJson(file, []));
       atomicJson(file, clients);
+      credentialStoreCreated = true;
     } finally {
       fs.closeSync(fd);
       fs.unlinkSync(lock);
@@ -253,7 +272,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         c.hash === digest &&
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
-        (!c.admission || c.admission.status === "collected") &&
+        (!c.admission || (c.admission.status === "collected" &&
+          (c.policy?.browser !== true || c.policy.screen !== "apps" || c.admission.grant === admissionGrant(c)))) &&
         Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
     );
     if (
@@ -748,12 +768,17 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     tailscale: client.tailscale,
     browserTransport: client.browserTransport,
     browserBinding: client.browserBinding,
+    browserAppApprover: client.browserAppApprover,
+    // Only on invitations from the removed private-copy feature; the agent
+    // policy refuses them.
+    ...(client.browserWorkspaceId ? { browserWorkspaceId: client.browserWorkspaceId } : {}),
   }));
   const admissionStatus = (client, now = Date.now()) => {
     const request = client.admission;
     if (!request) return null;
     if (client.expiresAt <= now) return "expired";
-    if (client.browserTransport === "funnel" && request.grant !== admissionGrant(client)) return "expired";
+    if ((client.browserTransport === "funnel" || (client.policy?.browser === true && client.policy.screen === "apps")) &&
+        request.grant !== admissionGrant(client)) return "expired";
     if (request.status === "collected")
       return client.browserTransport === "funnel" && !(client.browserIdleExpiresAt > now)
         ? "expired" : "accepted";
@@ -1113,7 +1138,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     pair,
     issue,
     list: () =>
-      loadJson(file, []).map(({ hash, inviteHash, admission, ...rest }) => ({
+      listStoredClients().map(({ hash, inviteHash, admission, ...rest }) => ({
         ...rest,
         ...(rest.kind === "guest" || rest.policy?.invite
           ? {

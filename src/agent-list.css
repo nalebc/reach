@@ -1,0 +1,451 @@
+/* Settings → Agents (BrowserAgents.tsx): one row per agent that opens in
+   place. What needs you shows first and in amber; everything else is calm. */
+.ag-agents {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  margin-top: 18px;
+  color: var(--ag-text);
+}
+.ag-agents-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ag-agents-head h2 {
+  margin: 0 0 3px;
+  font-size: 22px;
+  letter-spacing: -0.3px;
+}
+.ag-agents-head p {
+  margin: 0;
+  color: var(--ag-muted);
+  font-size: 13.5px;
+}
+.ag-toolbar {
+  display: flex;
+  gap: 8px;
+}
+.ag-toolbar .ag-search {
+  flex: 1;
+}
+.ag-icon-button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff0d;
+  color: var(--ag-muted);
+  cursor: pointer;
+}
+.ag-icon-button:disabled {
+  opacity: 0.4;
+}
+.ag-group {
+  display: grid;
+  gap: 8px;
+}
+.ag-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
+  cursor: default;
+}
+.ag-group-head .ag-label {
+  margin: 0 2px;
+}
+.ag-ended > summary {
+  cursor: pointer;
+}
+.ag-ended > summary::-webkit-details-marker {
+  display: none;
+}
+.ag-ended > summary svg {
+  color: var(--ag-faint);
+  transition: transform 0.2s ease;
+}
+.ag-ended[open] > summary svg {
+  transform: rotate(180deg);
+}
+.ag-link.is-danger {
+  color: var(--ag-danger);
+  font-size: 13px;
+}
+.ag-link:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.ag-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+/* ---- One agent ---------------------------------------------------------- */
+.ba-session.ag-agent {
+  padding: 0;
+}
+.ag-agent {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ag-line);
+  border-radius: 20px;
+  background: var(--ag-surface);
+  transition: background 0.2s ease;
+}
+.ag-agent.is-open {
+  background: #ffffff09;
+}
+.ag-agent.is-ended .ag-avatar {
+  filter: grayscale(0.8);
+  opacity: 0.6;
+}
+.ag-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 66px;
+  padding: 10px 14px 10px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ag-agent-head:active {
+  background: #ffffff06;
+}
+.ag-agent-title {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.ag-agent-title strong {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+}
+.ag-agent-title small {
+  overflow: hidden;
+  color: var(--ag-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ag-count {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 99px;
+  background: var(--ag-amber);
+  color: #241a05;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.ag-agent-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 0 14px 14px;
+  animation: ag-in 0.2s ease-out;
+}
+.ag-agent-body[hidden] {
+  display: none;
+}
+
+/* Something waiting for you. */
+.ag-ask {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ag-amber) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ag-amber) 22%, transparent);
+}
+.ag-ask p {
+  margin: 0;
+  color: #f1dfb8;
+  font-size: 13.5px;
+}
+.ag-ask strong {
+  color: var(--ag-amber);
+}
+.ag-ask ul {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-ask li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ag-ask code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #e9eee9;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ag-ask .ag-primary {
+  flex: none;
+}
+.ag-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #cfdad2;
+  font-size: 13px;
+}
+.ag-working-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--lime) 60%, transparent);
+  animation: ag-pulse 1.8s ease-out infinite;
+}
+@keyframes ag-pulse {
+  to {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+/* What it can use, read at a glance. */
+.ag-facts {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-facts li {
+  display: flex;
+  gap: 12px;
+  padding: 10px 2px;
+}
+.ag-facts li + li {
+  border-top: 1px solid var(--ag-line);
+}
+.ag-facts li > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--ag-muted);
+  stroke-width: 1.7;
+}
+.ag-facts li > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.ag-facts strong {
+  font-size: 14px;
+  font-weight: 550;
+}
+.ag-facts small {
+  color: var(--ag-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.ag-facts .ba-path {
+  color: #cfdad2;
+  font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+.ag-fact-apps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #cfdad2;
+  font-size: 13px;
+}
+.ag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ag-actions > * {
+  flex: 1 1 auto;
+}
+
+/* Folded extras: applied changes, the activity log. */
+.ag-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  color: var(--ag-muted);
+  font-size: 13.5px;
+  list-style: none;
+  cursor: pointer;
+}
+.ag-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.ag-fold > summary svg {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+.ag-fold[open] > summary svg {
+  transform: rotate(180deg);
+}
+.ag-fold-count {
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: #ffffff10;
+  font-size: 11.5px;
+}
+.ag-fold ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: #cfdad2;
+  font-size: 12.5px;
+}
+.ag-log {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.ag-log > li {
+  display: grid;
+  gap: 4px;
+  padding: 9px 0 9px 14px;
+  border-left: 2px solid #ffffff14;
+}
+.ag-log > li.is-pending {
+  border-left-color: var(--ag-amber);
+}
+.ag-log > li.is-executed {
+  border-left-color: color-mix(in srgb, var(--lime) 50%, transparent);
+}
+.ag-log > li.is-denied,
+.ag-log > li.is-failed {
+  border-left-color: color-mix(in srgb, var(--ag-danger) 55%, transparent);
+}
+.ag-log > li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.ag-log time {
+  color: var(--ag-faint);
+}
+.ag-log code {
+  color: #e9eee9;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ag-log small {
+  color: var(--ag-faint);
+  font-size: 11.5px;
+}
+.ag-log pre {
+  max-height: 200px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--ag-field);
+  font-size: 12px;
+}
+.ag-log details summary {
+  color: var(--ag-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Confirmations sit in the flow, above the list. */
+.ag-confirm {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--ag-raised);
+  box-shadow: inset 0 0 0 1px var(--ag-line);
+}
+.ag-confirm strong {
+  font-size: 15.5px;
+}
+.ag-confirm p {
+  margin: 0;
+  color: var(--ag-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.ag-confirm ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-confirm li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.ag-confirm li small {
+  color: var(--ag-faint);
+}
+.ag-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.ag-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px 20px;
+  border: 1px dashed var(--ag-line);
+  border-radius: 22px;
+  text-align: center;
+}
+.ag-empty h3 {
+  margin: 6px 0 0;
+  font-size: 18px;
+}
+.ag-empty p {
+  max-width: 300px;
+  margin: 0 0 6px;
+  color: var(--ag-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.ag-footnote {
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-agent-body,
+  .ag-working-dot {
+    animation: none;
+  }
+}

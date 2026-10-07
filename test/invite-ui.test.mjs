@@ -512,9 +512,8 @@ test("set up after inviting: the waiting link gets its key, so they just open it
 const kindButton = (c, text) => [...c.querySelectorAll('.ivt-kind button')].find((b) => b.textContent.trim() === text);
 const chooseAgent = async (c) => {
   await click(kindButton(c, "Agent"));
-  const select = c.querySelector('[aria-label="Assistant connection"]');
-  select.value = "agent";
-  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  // How it connects is a two-way pill: Browser link | Command line.
+  await click([...c.querySelectorAll('[aria-label="Assistant connection"] button')].find((b) => b.textContent.trim() === "Command line"));
   await settle(40);
 };
 const commandLink = (command) => command.match(/ join '([^']+)'$/)[1];

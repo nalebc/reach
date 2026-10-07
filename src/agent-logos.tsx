@@ -14,6 +14,10 @@ import { request, type Peer } from "./api";
 import { agentLabel } from "./agent-sessions";
 // OpenClaw's official lobster mark (MIT, openclaw/openclaw).
 import openClawLogo from "./assets/openclaw.svg";
+// Gemini CLI ships no icon: its ✦ in its own default gradient (#4796E4,
+// #847ACE, #C3677F, read from the installed CLI's theme), as its replies show.
+import geminiLogo from "./assets/gemini.svg";
+const BUNDLED: Record<string, string> = { openclaw: openClawLogo, gemini: geminiLogo };
 
 // The agents' real logos, read from the apps on the Mac (server/agent-sessions/
 // logos.mjs). Fetched once per version and kept in this browser, so they show
@@ -112,7 +116,7 @@ export function AgentLogo({
   fill?: boolean;
   className?: string;
 }) {
-  const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent] || (agent === "openclaw" ? openClawLogo : undefined);
+  const src = agent === "codex" ? (light && logos["codex-light"]) || logos.codex : logos[agent] || BUNDLED[agent];
   const style: CSSProperties = { width: size, height: size };
   const Glyph = GLYPHS[agent] || Bot;
   return src ? (

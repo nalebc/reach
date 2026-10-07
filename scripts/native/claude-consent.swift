@@ -86,10 +86,10 @@ struct ClaudeConsent {
     let find = args.contains("--find")
     let press = args.firstIndex(of: "--press").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
     let expect = args.indices.filter { args[$0] == "--expect" && $0 + 1 < args.count }.map { args[$0 + 1] }
-    guard find || press.map(choices.contains) == true else { out(["error": "Choose Deny or Allow for this session."]) }
-    guard AXIsProcessTrusted() else { out(["error": "Reach needs Accessibility to answer the Claude app."]) }
+    guard find || press.map(choices.contains) == true else { out(["error": "Choose Deny or Allow for this session.", "untouched": true]) }
+    guard AXIsProcessTrusted() else { out(["error": "Reach needs Accessibility to answer the Claude app.", "untouched": true]) }
     guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop").first
-    else { out(["error": "The Claude app isn't open."]) }
+    else { out(["error": "The Claude app isn't open.", "untouched": true]) }
     let app = AXUIElementCreateApplication(running.processIdentifier)
     // Electron builds its page's accessibility tree only once asked.
     AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -115,10 +115,11 @@ struct ClaudeConsent {
       }
       if !ready { usleep(250_000) }
     }
-    guard ready, let choice = press else { out(find ? ["found": false, "ms": ms()] : ["error": "The Claude app isn't showing that request."]) }
+    // untouched: nothing was pressed, so the phone may try again.
+    guard ready, let choice = press else { out(find ? ["found": false, "ms": ms()] : ["error": "The Claude app isn't showing that request.", "untouched": true]) }
     // Exactly one press: a delayed UI acknowledgement must never approve a new card.
     guard let card = look(), let button = card[choice] else {
-      out(["error": "This request was already answered."])
+      out(["error": "This request was already answered.", "untouched": true])
     }
     guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
     else { out(["error": "Couldn't press it in the Claude app."]) }

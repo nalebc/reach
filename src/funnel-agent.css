@@ -93,3 +93,66 @@
     padding: 26px 22px;
   }
 }
+/* Same calm green-black as the rest of the agent screens. */
+.funnel-agent-page .funnel-agent-connect {
+  border-color: #d2eedb17;
+  background:
+    radial-gradient(130% 50% at 50% 0%, color-mix(in srgb, var(--lime, #b9efd4) 7%, transparent), transparent 65%),
+    #121915;
+}
+.funnel-agent-connect .agent-verification-code {
+  white-space: nowrap;
+  font-size: clamp(26px, 9vw, 34px);
+}
+.funnel-agent-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.funnel-agent-waiting > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lime, #b9efd4);
+  animation: funnel-agent-pulse 1.6s ease-in-out infinite;
+}
+@keyframes funnel-agent-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .funnel-agent-waiting > span {
+    animation: none;
+  }
+}
+.funnel-agent-steps {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 18px;
+  padding: 16px 0 0;
+  border-top: 1px solid #d2eedb17;
+  counter-reset: step;
+  list-style: none;
+  text-align: left;
+}
+.funnel-agent-steps li {
+  display: flex;
+  gap: 10px;
+  color: #cfdad2;
+  font-size: 14px;
+  line-height: 1.45;
+  counter-increment: step;
+}
+.funnel-agent-steps li::before {
+  content: counter(step);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff10;
+  font-size: 12px;
+  font-weight: 650;
+}

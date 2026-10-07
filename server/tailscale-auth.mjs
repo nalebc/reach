@@ -95,6 +95,11 @@ export function whoisIdentity(value) {
 export function createIdentityResolver({
   lookup = (ip) => tailscaleJson(["whois", "--json", ip]),
   now = Date.now,
+  // A device's identity is asked of Tailscale again after this long. Each ask
+  // starts the Tailscale CLI (~0.1 s), but an address that now belongs to
+  // another device must lose its open connections within seconds
+  // (tailscale-auth.test.mjs), so it stays short.
+  ttlMs = 2000,
 } = {}) {
   const cache = new Map();
   return async (req) => {
@@ -107,7 +112,7 @@ export function createIdentityResolver({
     if (!entry || entry.until <= now()) {
       if (cache.size >= 256) cache.clear();
       entry = {
-        until: now() + 2000,
+        until: now() + ttlMs,
         value: Promise.resolve()
           .then(() => lookup(ip))
           .then(whoisIdentity)

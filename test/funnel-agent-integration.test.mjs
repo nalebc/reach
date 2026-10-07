@@ -227,7 +227,7 @@ async function setup(t) {
         transport: "funnel",
         ttlSeconds: 600,
         folders: [{ root: 0, path: "granted" }],
-        screen: "ask",
+        screen: "off",
         commandRequests: true,
         ...extra,
       },
@@ -289,7 +289,7 @@ test("Funnel HTTP dispatch reaches scoped JSON and binary APIs without creating 
   const browser = await session.call("/api/browser");
   assert.equal(browser.status, 200, JSON.stringify(browser.body));
   assert.equal(browser.body.roots.length, 1);
-  assert.equal(browser.body.screen, "ask");
+  assert.equal(browser.body.screen, "off");
   const file = await session.call("/api/files/text?root=0&path=brief.txt");
   assert.equal(file.status, 200, JSON.stringify(file.body));
   assert.equal(file.body.text, "Only the shared brief");
@@ -299,8 +299,8 @@ test("Funnel HTTP dispatch reaches scoped JSON and binary APIs without creating 
   assert.equal(binary.status, 200, JSON.stringify(binary.body));
   assert.deepEqual([...binary.bytes], [0, 1, 254, 255, 64]);
   const screen = await session.call("/api/browser/screen");
-  assert.equal(screen.status, 200);
-  assert.deepEqual(screen.bytes, f.frame);
+  assert.equal(screen.status, 403, "retired whole-desktop capture remains inaccessible through Funnel");
+  assert.equal(screen.bytes.equals(f.frame), false);
   assert.equal(f.identityLookups(), lookups);
   assert.ok(
     f.publicIdentities.length > 0 &&
@@ -325,6 +325,21 @@ test("Funnel file scope denies traversal, symlink escape and ungranted roots", a
       `${route}: ${result.status}`,
     );
     assert.equal(result.bytes.toString().includes("Outside the grant"), false);
+  }
+});
+
+test("replacing the granted root with a symlink never retargets agent file access", async (t) => {
+  const f = await setup(t), session = await f.join();
+  const base = path.dirname(f.state), granted = path.join(base, "shared/granted"), outside = path.join(base, "unshared");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "outside-secret.txt"), "Never inside the granted folder");
+  fs.renameSync(granted, `${granted}-original`);
+  fs.symlinkSync(outside, granted, "dir");
+  for (const route of ["/api/files/text?root=0&path=outside-secret.txt", "/api/files?root=0&path=",
+    "/api/browser/files/search?root=0&q=outside-secret"]) {
+    const result = await session.call(route);
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+    assert.equal(result.bytes.toString().includes("Never inside the granted folder"), false);
   }
 });
 
@@ -454,7 +469,7 @@ test("only the Tailscale Unix proxy's forwarded host can identify the public gat
   assert.ok(f.publicIdentities.every((value) => value === undefined));
 });
 
-test("screen actions await owner approval and dangerous command handoffs never execute", async (t) => {
+test("retired screen actions stay blocked and dangerous command handoffs never execute", async (t) => {
   const f = await setup(t),
     session = await f.join();
   const click = {
@@ -469,28 +484,10 @@ test("screen actions await owner approval and dangerous command handoffs never e
     method: "POST",
     body: click,
   });
-  assert.equal(submitted.status, 201, JSON.stringify(submitted.body));
-  assert.equal(submitted.body.status, "pending");
+  assert.equal(submitted.status, 403, JSON.stringify(submitted.body));
   assert.deepEqual(f.inputs, []);
-  const route = `/api/agents/browser-requests/${submitted.body.id}`;
-  assert.equal(
-    (
-      await session.call(route, {
-        method: "POST",
-        body: { decision: "approve" },
-      })
-    ).status,
-    403,
-  );
-  const approved = await f.ownerCall(route, {
-    method: "POST",
-    body: { decision: "approve" },
-  });
-  assert.equal(approved.status, 200, JSON.stringify(approved.body));
-  assert.equal(approved.body.status, "executed");
-  assert.deepEqual(f.inputs, [
-    { type: "click", x: 0.25, y: 0.5, button: "left", count: 1 },
-  ]);
+  assert.equal((await f.ownerCall("/api/agents/browser-requests")).body.length, 0,
+    "a retired screen action cannot create anything for an owner to approve");
   const command = await session.call("/api/browser/requests", {
     method: "POST",
     body: {
@@ -520,7 +517,7 @@ test("screen actions await owner approval and dangerous command handoffs never e
     "handled",
   );
   assert.deepEqual(f.reach.jobs.list(), []);
-  assert.equal(f.inputs.length, 1);
+  assert.equal(f.inputs.length, 0);
 });
 
 test("revocation, expiry, and pause close signed access and its ephemeral window", async (t) => {
@@ -561,14 +558,15 @@ test("browser invite waits for temporary Funnel readiness and revokes a failed s
     settled = true;
     return result;
   });
-  await ready;
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(
-    settled,
-    false,
-    "the invitation must not escape before Funnel is ready",
-  );
-  release();
+  try {
+    // If validation rejects before the controller is entered, fail with that
+    // result instead of hanging forever on a readiness signal that cannot fire.
+    await Promise.race([ready, pending.then((result) => {
+      throw Error(`Invitation settled before Funnel readiness: ${result.status} ${JSON.stringify(result.body)}`);
+    })]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "the invitation must not escape before Funnel is ready");
+  } finally { release?.(); }
   const successful = await pending;
   assert.equal(successful.status, 201);
   assert.equal(successful.body.transport, "funnel");

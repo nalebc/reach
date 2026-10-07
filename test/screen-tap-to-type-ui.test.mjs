@@ -138,11 +138,59 @@ test("if the Mac says it wasn't a field after all, the keyboard closes", async (
   computer.surface.onField(point, false);
   assert.ok(sink());
   computer.surface.onTextTarget(point);
-  await settle(400);
+  await dom.waitFor(() => !sink());
   assert.equal(
     dom.document.querySelectorAll(".remote-keyboard-sink").length,
     0,
   );
+  await view.unmount();
+});
+
+test("late Chrome focus keeps the tap's keyboard and flushes buffered text only after confirmation", async () => {
+  let attempts = 0;
+  computer.replies.focus = () => (++attempts < 4
+    ? { target: { editable: false } }
+    : { target: { editable: true, focus: "late-chrome-field", secure: false } });
+  const view = await controlled();
+  const point = { x: 0.3, y: 0.6 };
+  computer.surface.onField(point, false);
+  const field = sink();
+  computer.surface.onTextTarget(point);
+  await typeInto(field, "hello");
+  assert.deepEqual(computer.actions.filter(a => a.type === "type-edit"), []);
+  await dom.waitFor(() => computer.actions.some(a => a.type === "type-edit"));
+  assert.equal(attempts, 4);
+  assert.equal(sink(), field);
+  assert.deepEqual(computer.actions.filter(a => a.type === "type-edit"), [
+    { type: "type-edit", delete: 0, text: "hello", focus: "late-chrome-field" },
+  ]);
+  await view.unmount();
+});
+
+test("focus detection retries even when the first probe didn't open the keyboard", async () => {
+  let attempts = 0;
+  computer.replies.focus = () => (++attempts < 3
+    ? { target: { editable: false } }
+    : { target: { editable: true, focus: "late-field", secure: false } });
+  const view = await controlled();
+  computer.surface.onTextTarget({ x: 0.3, y: 0.6 });
+  await dom.waitFor(() => sink());
+  assert.equal(attempts, 3);
+  await view.unmount();
+});
+
+test("a later interaction cancels a pending field check without typing elsewhere", async () => {
+  let attempts = 0;
+  computer.replies.focus = () => { attempts++; return { target: { editable: false } }; };
+  const view = await controlled();
+  const point = { x: 0.3, y: 0.6 };
+  computer.surface.onField(point, false);
+  computer.surface.onTextTarget(point);
+  await dom.waitFor(() => attempts === 1);
+  computer.surface.onInteraction();
+  await settle(700);
+  assert.equal(attempts, 1);
+  assert.equal(sink(), null);
   await view.unmount();
 });
 

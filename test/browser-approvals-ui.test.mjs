@@ -88,6 +88,7 @@ const click = async (element) => {
 };
 const value = async (element, text) => {
   assert.ok(element);
+  if (element.getAttribute("role") === "radiogroup") return click([...element.querySelectorAll('[role="radio"]')].find(option => option.dataset.value === text));
   const prototype =
     element.tagName === "SELECT"
       ? dom.window.HTMLSelectElement.prototype
@@ -158,16 +159,13 @@ test("restricted terminal requires folders and preserves independently granted s
   );
   const c = view.container;
   assert.equal(button(c, "Create invite link").disabled, true);
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
-  assert.match(c.textContent, /Share only the apps you choose/);
-  await click(
-    [...c.querySelectorAll("label")]
-      .find((l) => l.textContent.includes("Run read-only commands"))
-      .querySelector("input"),
-  );
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
+  await click(c.querySelector('[aria-label="Share apps"]'));
+  assert.match(c.textContent, /View only\. It can ask you for more apps later/);
+  await click(c.querySelector('[aria-label="Read-only commands"]'));
   assert.equal(button(c, "Create invite link").disabled, true, "a shared folder is required");
-  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "apps");
-  assert.ok([...c.querySelector('[aria-label="Screen permission"]').options].some((option) => option.value === "apps"));
+  assert.match(c.textContent, /Commands need a folder/, "the disabled button says why");
+  assert.equal(c.querySelector('[aria-label="Share apps"]').checked, true);
   await click(c.querySelector('[aria-label="Share Projects"]'));
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -177,7 +175,7 @@ test("restricted terminal requires folders and preserves independently granted s
   assert.deepEqual(
     calls.find(([route]) => route.endsWith("browser-invitations"))[1],
     {
-      name: "Assistant",
+      name: c.querySelector('[aria-label="AI browser name"]').value,
       transport: "funnel",
       ttlSeconds: 900,
       folders: [{ root: 0, path: "" }],
@@ -187,7 +185,7 @@ test("restricted terminal requires folders and preserves independently granted s
       restrictedTerminal: true,
     },
   );
-  assert.match(c.textContent, /No sudo, deletion or file changes/);
+  assert.match(c.textContent, /ls, cat, grep and the like, inside its folders/);
   assert.doesNotMatch(c.textContent, /Screen control is off/);
   await view.unmount();
 });
@@ -731,18 +729,10 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
-  await dom.waitFor(() =>
-    [
-      ...(c.querySelector('[aria-label="Screen permission"]')?.options || []),
-    ].some((option) => option.value === "apps"),
-  );
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
   assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
-  assert.ok(
-    [...c.querySelector('[aria-label="Screen permission"]').options].some(
-      (option) => option.value === "apps",
-    ),
-  );
+  assert.equal(c.querySelector('[aria-label="Share apps"]').disabled, false);
   await view.unmount();
 });
 

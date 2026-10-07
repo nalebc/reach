@@ -15,15 +15,16 @@ import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
-import { cardExpect, cardId, createAppCards, pressAppCard, probeApp, readAppCard } from "./app-cards.mjs";
+import { answerAppQuestion, cardExpect, cardId, createAppCards, pressAppCard, probeApp, questionId, readAppCard } from "./app-cards.mjs";
 import { createTerminalCards } from "./terminal-cards.mjs";
 import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
 import { CLAUDE_BUNDLE, claudeFrontmost, claudeOnScreen, createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
+import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
-import { agentName, batches, codexHistoryItems, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
+import { agentName, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
 import { createAgentWatch } from "./agent-watch.mjs";
 import { createCodexMethods, createSlashCommands } from "./commands.mjs";
@@ -126,6 +127,8 @@ export function createAgentSessions({
   claudeHost = createClaudeHost({ locate: () => locateClaude() }),
   // How long one look at the running claude processes is shared.
   liveMs = 2500,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
   // The agents' real logos, from the apps installed here (logos.mjs).
   logos = createLogos({ dataDir }),
   // Ending another process's hold on a session (the Claude app's).
@@ -194,6 +197,12 @@ export function createAgentSessions({
         throw Object.assign(new Error("Not in tests."), { status: 409 });
       }
     : (agent, label, expect) => pressAppCard(agent, label, expect, { dataDir }),
+  // Claude's questions in the Claude app, answered on the person's taps.
+  answerQuestion = process.env.NODE_TEST_CONTEXT
+    ? async () => {
+        throw Object.assign(new Error("Not in tests."), { status: 409 });
+      }
+    : (agent, answers) => answerAppQuestion(agent, answers, { dataDir }),
   claudeShown,
   // Reach's Mac terminals (desktop-terminals.mjs): a terminal's menu is read
   // and answered there.
@@ -262,6 +271,7 @@ export function createAgentSessions({
   // holds the session and its transcript still waits on the card.
   const claudeConsent = createClaudeConsent({
     press: pressConsent,
+    platform,
     open,
     ...(claudeShown ? { shown: claudeShown } : {}),
     pending: async (id) => {
@@ -275,7 +285,19 @@ export function createAgentSessions({
   // chats, answered from the phone on the person's tap (app-cards.mjs).
   const appCards = createAppCards({
     read: readCard,
+    platform,
     press: pressCard,
+    answerQuestion,
+    // The question a Claude app chat waits on (Claude's AskUserQuestion).
+    pendingQuestion: async (agent, id) => {
+      if (agent !== "claude") return null;
+      const live = (await liveNow().catch(() => new Map())).get(id);
+      if (live?.where !== "claude-app" || !live.waiting) return null;
+      const { items } = await claude.read(id, { limit: 20 });
+      const tool = [...(items || [])].reverse().find((i) => i.role === "tool");
+      if (tool?.status !== "running" || !tool.questions?.length) return null;
+      return { id: questionId(tool.id), questions: tool.questions, appSessionId: live.appSessionId || null };
+    },
     ...(process.env.NODE_TEST_CONTEXT ? {} : { probe: (agent) => probeApp(agent, { dataDir }) }),
     terminal: terminals ? createTerminalCards({ terminals }) : null,
     open,
@@ -373,7 +395,7 @@ export function createAgentSessions({
     // to give (busy Mac, 10 s limit) isn't one: new chats failed with
     // "signed out" while Claude Code was signed in.
     if (health && health.signedIn === false && !health.error)
-      throw blocked("Claude Code is signed out on your Mac. Sign in to reply from here.");
+      throw blocked(`Claude Code is signed out on your ${computerWord(platform)}. Sign in to reply from here.`);
   };
   // Working, or stopped on a question or permission in the app: either way
   // the app's process is mid-turn and must not be ended.
@@ -401,9 +423,9 @@ export function createAgentSessions({
     const holder = (await liveNow().catch(() => new Map())).get(id);
     if (!holder || claudeHost.drives(id)) return null;
     if (holder.where === "terminal")
-      throw blocked("This session is open in a terminal on your Mac. Reply there or from the Terminal tab.");
+      throw blocked(`This session is open in a terminal on your ${computerWord(platform)}. Reply there or from the Terminal tab.`);
     if (holder.where !== "claude-app" || !holder.exact)
-      throw blocked("This session is open in another Claude Code process on your Mac. Reply there.");
+      throw blocked(`This session is open in another Claude Code process on your ${computerWord(platform)}. Reply there.`);
     return holder;
   };
   // The next piece of news from the agents' files that matches, or ms on
@@ -604,6 +626,9 @@ export function createAgentSessions({
   // What each open Claude chat last saw of its own registry entry.
   const seenStatus = new Map(); // id -> "where busy waiting"
   const statusNews = async () => {
+    // No Claude chat open on a phone: nothing to wake (the list itself is
+    // rebuilt by listChanged, which every change calls).
+    if (![...touchWaiters.keys(), ...polled.keys()].some((key) => key.startsWith("claude:"))) return;
     const running = await liveNow().catch(() => null);
     if (!running) return touchOpen("claude");
     for (const key of new Set([...touchWaiters.keys(), ...polled.keys()])) {
@@ -769,7 +794,11 @@ export function createAgentSessions({
   // Chats Reach drives say their status and questions over the live
   // protocol, not in a file (a Codex approval is a request, not a notice):
   // the list hears of them at once too.
-  codexLive.onChange?.(() => listChanged());
+  codexLive.onChange?.((id) => {
+    const mode = codexLive.currentMode?.(id);
+    if (mode) chatModes.set(id, mode);
+    listChanged();
+  });
   claudeHost.onChange?.(() => listChanged());
   // A whole Codex chat, oldest first, kept a minute (a moved chat pages
   // through the one it continues).
@@ -780,11 +809,14 @@ export function createAgentSessions({
     const pages = [];
     let cursor = null;
     let session = null;
-    for (let n = 0; n < 200; n++) {
-      const page = await codex.read(id, { cursor, limit: 500 });
+    const seen = new Set();
+    for (;;) {
+      const page = await codex.read(id, { cursor, limit: 500, maxOutput: Infinity });
       session ??= page.session;
       pages.unshift(page.items);
       if (!page.before) break;
+      if (seen.has(page.before)) throw new Error("Codex returned a repeated history page. The conversation was not moved.");
+      seen.add(page.before);
       cursor = page.before;
     }
     const value = { session, items: pages.flat(), memory: null };
@@ -808,14 +840,16 @@ export function createAgentSessions({
       memory: null,
     };
   };
-  const history = (agent, id) =>
-    agent === "claude"
+  const history = async (agent, id) => {
+    const result = await (agent === "claude"
       ? claude.history(id)
       : agent === "openclaw"
         ? clawHistory(id)
         : agent === "gemini"
           ? gemini.history(id)
-          : codexHistory(id);
+          : codexHistory(id));
+    return { ...result, items: result.items.map(item => item.images ? { ...item, imageOrigin: item.imageOrigin || { agent, id, item: item.id } } : item) };
+  };
   // The apps a chat can move between.
   const movable = () => ["codex", "claude", ...(openClaw && openClaw.canMove?.() !== false ? ["openclaw"] : [])];
   // Where a chat was when it moved: up to its last item then (or as many
@@ -824,7 +858,7 @@ export function createAgentSessions({
     const at = from.upTo ? items.findIndex((i) => i.id === from.upTo) + 1 : 0;
     return at > 0 ? at : Math.min(Number(from.count) || items.length, items.length);
   };
-  const word = process.platform === "darwin" ? "Mac" : "computer";
+  const word = computerWord(platform);
   // The quiet line where a chat switched agents.
   const joinLine = (origin, agent, found) => ({
     id: `moved:${origin.from.agent}:${origin.from.id}`,
@@ -837,23 +871,28 @@ export function createAgentSessions({
   });
   // A chat as shown: the one it continues (and that one's, a few deep), the
   // line where it switched agents, then its own items; up to `from` if given.
-  const shown = async (agent, id, from = null, depth = 0) => {
+  const shown = async (agent, id, from = null, seen = new Set(), strict = false) => {
+    const key = `${agent}:${id}`;
+    if (seen.has(key)) throw new Error("The conversation's transfer history contains a loop.");
+    seen = new Set([...seen, key]);
+    if (strict && agent === "codex") codexWhole.delete(id);
     let { items } = await history(agent, id);
     if (from) items = items.slice(0, cutAt(items, from));
     const origin = moves.into(agent, id);
-    if (!origin || depth >= 4) return items;
+    if (!origin || origin.to.nativeHistory) return items;
     // A Claude Code chat begins with the history written for it: shown as
     // the original chat's own messages instead.
     if (origin.to.hidden) items = items.slice(origin.to.hidden);
-    const before = await earlier(origin, depth + 1);
+    const before = await earlier(origin, seen, strict);
     return [...(before || []), joinLine(origin, agent, !!before), ...items];
   };
   // The chat a moved one continues, up to the move; null when it is no
   // longer on this Mac (Claude Code deletes old transcripts).
-  const earlier = async (origin, depth = 1) => {
+  const earlier = async (origin, seen = new Set(), strict = false) => {
     try {
-      return await shown(origin.from.agent, origin.from.id, origin.from, depth);
-    } catch {
+      return await shown(origin.from.agent, origin.from.id, origin.from, seen, strict);
+    } catch (error) {
+      if (strict) throw error;
       return null;
     }
   };
@@ -914,6 +953,7 @@ export function createAgentSessions({
       if (moving.has(key)) throw Object.assign(new Error("This chat is already moving."), { status: 409 });
       moving.add(key);
       try {
+        if (agent === "codex") codexWhole.delete(id);
         const source = await history(agent, id);
         const { session, items, memory } = source;
         const from = agentName(agent);
@@ -925,18 +965,33 @@ export function createAgentSessions({
         const turns = moveTurns(carried, { summary: memory?.summary || "", from });
         const note = handoff({ from, title, cwd: session.cwd });
         let target;
-        let written = 0;
+        let nativeHistory = false;
+        // Export the entire visible history, including pre-compaction messages.
+        // Resolve attachments before creating a target, so a missing image cannot
+        // silently turn into a placeholder in an otherwise successful transfer.
+        const complete = to === "codex" || to === "claude" ? (await shown(agent, id, null, new Set(), true)).map(item => ({ ...item })) : null;
+        if (complete) for (const item of complete) {
+          if (!item.images) continue;
+          const source = item.imageOrigin || { agent, id, item: item.id };
+          item.imageData = [];
+          for (let n = 0; n < item.images; n++) {
+            const image = await adapter(source.agent).image(source.id, source.item, n);
+            item.imageData.push(`data:${image.type};base64,${image.data.toString("base64")}`);
+          }
+        }
         if (to === "codex") {
-          ({ threadId: target } = await codexLive.fork({
+          ({ threadId: target } = await codexLive.forkHistory({
             cwd: session.cwd,
             name: title,
-            batches: batches(codexHistoryItems(turns)),
-            developerInstructions: note,
+            items: complete,
+            from,
           }));
+          nativeHistory = true;
         } else if (to === "openclaw") {
           ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }));
         } else {
-          ({ id: target, entries: written } = await claude.write({ cwd: session.cwd, title, turns, note, model: session.model || "", gitBranch: session.branch || "" }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "" }));
+          nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
           void claudeImports.add(target);
         }
@@ -944,7 +999,7 @@ export function createAgentSessions({
         // Reach shows as the original chat's own messages instead.
         moves.add({
           from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
-          to: { agent: to, id: target, ...(written ? { hidden: written } : {}) },
+          to: { agent: to, id: target, ...(nativeHistory ? { nativeHistory: true } : {}) },
         });
         return { agent: to, id: target };
       } finally {
@@ -962,17 +1017,27 @@ export function createAgentSessions({
       if (host(agent) === codexLive) {
         // A skill picked from "/": found in Codex's own list for the chat.
         const skill = typeof body.skill === "string" && body.skill ? await slash.skill(id, body.skill) : undefined;
+        const sent = await codexLive.send(id, { ...body, skill, mode: body.mode || chatModes.get(id) || codex.appMode?.() || undefined });
         if (body.mode) chatModes.set(id, body.mode);
-        return codexLive.send(id, { ...body, skill, mode: body.mode || chatModes.get(id) || codex.appMode?.() || undefined });
+        return sent;
       }
       // Claude Code keeps sessions per folder: resume it where it began.
       const { session } = await claude.read(id, { limit: 1 });
-      const message = { ...body, cwd: session.cwd };
+      // Without a pick: the chat's own mode (its app's, else the one its
+      // latest message ran in). Resumed without it, Claude Code fell back to
+      // Manual and asked about everything in a chat set to Auto.
+      // The mode Reach gave it comes first: the transcript keeps the mode of
+      // the last message, so a pick of Auto went back to Manual on the next.
+      const ours = !session.inApp || claudeHost.drives(id) ? claudeHost.modeOf?.(id) : null;
+      const kept = body.mode || ours || session.mode;
+      const message = { ...body, cwd: session.cwd, ...(kept ? { mode: kept } : {}) };
       const holder = await holderOf(id);
       // A chat the Claude app lists, with the app open: typed into the app
       // itself, so its window shows it at once (Reach's own Claude Code
       // process never showed there). The app signs in on its own.
       if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+        if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
+          throw Object.assign(new Error("Reach can't change the model or thinking level in Claude desktop yet. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
         // A loop already waiting tries again now, with this one in line.
         wakers.get(id)?.();
@@ -1003,8 +1068,38 @@ export function createAgentSessions({
     // A permission mode picked on the phone for a chat the Claude app holds:
     // picked in the app's own menu, so both show it. Elsewhere (chats Reach
     // runs, Codex) it goes with the next message, as before.
+    async model(agent, id, { model, effort }) {
+      adapter(agent);
+      if (agent === "claude" && !claudeHost.drives(id) && claudeCompose && await claudeOpen()) {
+        const { session } = await claude.read(id, { limit: 1 });
+        if (session.inApp) {
+          // Effort: picked in the Claude app's own menu (claude-compose).
+          // A model change there isn't supported yet.
+          if (model && model !== session.model)
+            throw Object.assign(new Error("Reach can't change the model in Claude desktop yet. Your current selection is unchanged."), { status: 409 });
+          if (!effort || effort === session.effort) return { model, effort, applied: true };
+          if (!claudeCompose.effort)
+            throw Object.assign(new Error("Reach can't change the thinking level in Claude desktop yet. Your current selection is unchanged."), { status: 409 });
+          await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
+          listChanged();
+          return { model, effort, applied: true };
+        }
+      }
+      if (agent !== "codex") return { model, effort, applied: false };
+      return codexLive.model(id, { model, effort });
+    },
     async mode(agent, id, { mode }) {
       adapter(agent);
+      // Codex: kept for the chat at once (its next message from Reach goes
+      // in it, whoever sends it), not only when this phone sends next.
+      if (agent === "codex") {
+        const applied = await codexLive.mode(id, mode);
+        chatModes.set(id, mode);
+        listChanged();
+        return applied;
+      }
+      // A chat Reach runs: changed in its Claude Code right away.
+      if (agent === "claude" && (await claudeHost.mode?.(id, mode))) return { mode, applied: true };
       if (agent !== "claude" || !claudeCompose?.mode) return { mode, applied: false };
       const { session } = await claude.read(id, { limit: 1 });
       if (!session.inApp || claudeHost.drives(id)) return { mode, applied: false };
@@ -1017,6 +1112,15 @@ export function createAgentSessions({
       const { session } = await claude.read(id, { limit: 1 });
       if (!session.inApp || claudeHost.drives(id)) return { synced: false, supported: false };
       return claudeCompose.draft(id, { title: session.appTitle || "Untitled", text, owner });
+    },
+    // Archived in the agent's own app (Codex's archive, the Claude app's
+    // record), so the app and Reach show the same: it leaves both lists.
+    async archive(agent, id, { archived = true } = {}) {
+      const store = adapter(agent);
+      if (!store.archive) throw Object.assign(new Error(`${agentName(agent)} chats can't be archived.`), { status: 400 });
+      const done = await store.archive(id, archived !== false);
+      listChanged();
+      return done;
     },
     async stop(agent, id) {
       const current = host(agent);
@@ -1262,7 +1366,7 @@ export function createAgentSessions({
       // if forked in the same app: older pages go on into that chat.
       const origin = moves.into(agent, id);
       const limit = Math.min(Math.max(Number(options?.limit) || 200, 1), 500);
-      if (origin && typeof options?.before === "string" && options.before.startsWith("moved:")) {
+      if (origin && !origin.to.nativeHistory && typeof options?.before === "string" && options.before.startsWith("moved:")) {
         const items = (await earlier(origin)) || [];
         const end = Math.min(Math.max(Number(options.before.slice(6)) || 0, 0), items.length);
         const start = Math.max(0, end - limit);
@@ -1271,6 +1375,8 @@ export function createAgentSessions({
       const result = await adapter(agent).read(id, options);
       // What its next message will use, shown as its mode.
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
+      if (agent === "claude" && result.session && claudeHost.modeOf?.(id) && (!result.session.inApp || claudeHost.drives(id)))
+        result.session.mode = claudeHost.modeOf(id);
       if (origin?.to.hidden) {
         // Its first messages are the history written for it: shown once,
         // as the original chat's (Claude pages count from its start).
@@ -1282,7 +1388,7 @@ export function createAgentSessions({
       }
       if (origin) {
         result.session.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
-        if (!result.before) {
+        if (!origin.to.nativeHistory && !result.before) {
           const items = await earlier(origin);
           const join = joinLine(origin, agent, !!items);
           const room = Math.max(0, limit - result.items.length);
@@ -1337,7 +1443,13 @@ export function createAgentSessions({
           result.session.asking = { kind: "dialog", text: "Claude Code has something open for you to answer." };
         else if (tool?.status === "running")
           result.session.asking = tool.questions
-            ? { kind: "question", questions: tool.questions }
+            ? {
+                kind: "question",
+                questions: tool.questions,
+                // In the Claude app: answered from the phone, its options
+                // pressed there (app-cards.mjs).
+                ...(result.session.live.where === "claude-app" ? { id: questionId(tool.id) } : {}),
+              }
             : {
                 kind: "permission",
                 text: tool.text,

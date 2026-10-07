@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { codexUsage, claudeUsage, createClaudeAccountUsage } from '../server/agent-sessions/account-usage.mjs';
+test('Codex reports each native limit window, credits and reset times', () => {
+  const usage = codexUsage({ rateLimits: { planType: 'pro', credits: { balance: '2', unlimited: false } }, rateLimitsByLimitId: { codex: { primary: { usedPercent: 78, windowDurationMins: 10080, resetsAt: 1900000000 }, secondary: { usedPercent: 95, windowDurationMins: 300 } } } }, 10);
+  assert.deepEqual(usage.windows.map(w => [w.label,w.usedPercent,w.severity]), [['Weekly',78,'normal'],['5 hours',95,'warning']]);
+  assert.equal(usage.windows[0].resetsAt,1900000000000);
+  assert.equal(usage.credits.balance,'2');
+  assert.equal(codexUsage(null).available,false);
+});
+test('Claude uses native warning severity and model labels instead of inferred token counts', () => {
+  const usage=claudeUsage({limits:[{kind:'session',percent:75,severity:'warning',resets_at:'2030-01-01T00:00:00Z'},{kind:'weekly_scoped',percent:23,severity:'normal',scope:{model:{display_name:'Fable'}}}]});
+  assert.equal(usage.windows[0].severity,'warning');assert.equal(usage.windows[1].label,'Fable · weekly');assert.equal(usage.windows[0].usedPercent,75);
+});
+test('Claude usage reads only its own sign-in, caches requests, and never returns credentials', async()=>{
+  let calls=0,time=100000;
+  const read=createClaudeAccountUsage({platform:'linux',home:'/home/test',env:{},now:()=>time,read:async file=>{assert.equal(file,'/home/test/.claude/.credentials.json');return JSON.stringify({claudeAiOauth:{accessToken:'private-test-token'}})},fetcher:async(url,opts)=>{calls++;assert.equal(url,'https://api.anthropic.com/api/oauth/usage');assert.equal(opts.redirect,'error');assert.equal(opts.headers.Authorization,'Bearer private-test-token');return {ok:true,json:async()=>({five_hour:{utilization:34,resets_at:'2030-01-01T00:00:00Z'}})}}});
+  const first=await read();await read();assert.equal(calls,1);assert.equal(first.windows[0].usedPercent,34);assert.ok(!JSON.stringify(first).includes('private-test-token'));time+=61000;await read();assert.equal(calls,2);
+});
+test('usage failures are explicit and cached, with no raw credential error text exposed',async()=>{
+  let calls=0;const read=createClaudeAccountUsage({platform:'darwin',env:{USER:'tester'},run:async()=>{calls++;throw new Error('private-token')}});
+  const result=await read();await read();assert.equal(calls,1);assert.equal(result.available,false);assert.ok(!JSON.stringify(result).includes('private-token'));
+});

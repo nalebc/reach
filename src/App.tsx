@@ -1,5 +1,7 @@
 import AccessEditor, { appScopedAccess, accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
+import { usePageVisible } from "./page-visible";
 import DeviceAccessBadge from "./DeviceAccessBadge";
+import BrowserAgents from "./BrowserAgents";
 import { useFleetConnections } from "./useFleetConnections";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
@@ -446,7 +448,10 @@ function ReachWorkspace() {
             generation !== connectionGeneration.current
           )
             return;
-          setDevice(null);
+          // A status refresh can fail while the independent screen/input
+          // sockets are healthy. Keep the current workspace mounted during
+          // that retry; only revoked access discards its device immediately.
+          if ([401, 403].includes(e.status)) setDevice(null);
           setError(e.message);
           if (![401, 403].includes(e.status))
             deviceRetry.current.schedule(() => refreshDeviceRef.current(true));
@@ -519,7 +524,9 @@ function ReachWorkspace() {
       clearInterval(capabilitiesTimer);
     };
   }, [peer?.id, peer?.url, peer?.token]);
+  const [inviteKind, setInviteKind] = useState<"person" | "browser">("person");
   const navigate = (id: string) => {
+    if (id === "invite") setInviteKind("person");
     if (!pageAccessible(id, features)) return;
     if (id === "terminal")
       setTerminalSource(features.desktopTerminals ? "mac" : "reach");
@@ -742,8 +749,8 @@ function ReachWorkspace() {
             )}
             {/* Animation is on/off in Settings and follows Reduce Motion. */}
             <span className="topbar-status">
-              <i className={`status-dot ${device ? "" : "off"}`} />
-              {device ? "Computer connected" : "Disconnected"}
+              <i className={`status-dot ${device && !error ? "" : "off"}`} />
+              {device ? (error ? "Reconnecting…" : "Computer connected") : "Disconnected"}
             </span>
             <button
               className="icon-button"
@@ -777,7 +784,7 @@ function ReachWorkspace() {
           >
             {loading && !device ? (
               <Spinner />
-            ) : error ? (
+            ) : error && !device ? (
               <>
                 {page === "overview" && (
                   <FleetMesh
@@ -958,7 +965,7 @@ function ReachWorkspace() {
                     (device.access.scopes.includes("admin") &&
                       device.access.kind !== "guest")) && (
                     <>
-                      <InviteSheet peer={peer} device={device} peers={peers} />
+                      <InviteSheet peer={peer} device={device} peers={peers} initialKind={inviteKind} />
                       <button
                         className="ivt-manage"
                         onClick={() => navigate("settings")}
@@ -970,12 +977,14 @@ function ReachWorkspace() {
                   )}
                 {page === "settings" && (
                   <SettingsPage
+                    key={`${peer.id}:${peer.url}:${peer.token}`}
                     features={features}
                     peer={peer}
                     device={device}
                     toast={toast}
                     onChanged={refreshDevice}
                     invite={() => navigate("invite")}
+                    inviteAgent={() => { navigate("invite"); setInviteKind("browser"); }}
                     forget={() => {
                       const next = peers.filter((p) => p.id !== peer.id);
                       savePeers(next);
@@ -1542,6 +1551,7 @@ function SessionModal({
 export function SettingsPage({
   features,
   invite,
+  inviteAgent,
   peer,
   device,
   toast,
@@ -1553,6 +1563,7 @@ export function SettingsPage({
   toast: (s: string) => void;
   forget: () => void;
   invite: () => void;
+  inviteAgent?: () => void;
   features: WorkspaceCapabilities;
   onChanged: () => void;
 }) {
@@ -1602,15 +1613,20 @@ export function SettingsPage({
         if (generation === clientsGeneration.current) setClientsLoading(false);
       });
   };
+  const pageVisible = usePageVisible();
   useEffect(() => {
     clientsGeneration.current++;
+    // In the background, not asked; back on screen, at once.
+    if (!pageVisible) return;
     load();
     const timer = setInterval(load, 5000);
     return () => {
       clientsGeneration.current++;
       clearInterval(timer);
     };
-  }, [peer.id, peer.url, peer.token]);
+  }, [peer.id, peer.url, peer.token, pageVisible]);
+  const peopleAndDevices = clients.filter((client) => !(client.kind === "agent" && client.policy?.browser));
+  const browserAgentCount = clients.filter((client) => client.kind === "agent" && client.policy?.browser && (client.expiresAt || 0) > Date.now()).length;
   return (
     <div className="settings-workspace">
       <PageTitle
@@ -1633,8 +1649,9 @@ export function SettingsPage({
           aria-pressed={settingsView === "access"}
           onClick={() => setSettingsView("access")}
         >
-          Access <span>{groupDevices(clients).length}</span>
+          Access <span>{groupDevices(peopleAndDevices).length}</span>
         </button>
+        <button aria-pressed={settingsView === "agents"} onClick={() => setSettingsView("agents")}>Agents <span>{browserAgentCount}</span></button>
       </div>
       <div className="settings-general" hidden={settingsView !== "general"}>
         <section className="panel settings-panel computer-settings-card">
@@ -1710,18 +1727,18 @@ export function SettingsPage({
           <ChevronRight size={18} />
         </button>
         <section className="panel settings-panel">
-          <h2>People, agents & devices</h2>
+          <h2>People &amp; devices</h2>
           <ErrorLine error={clientsError} />
           {clientsLoading ? (
             <Spinner />
           ) : (
             !clientsError &&
-            !clients.length && <p>No devices or guests to show.</p>
+            !peopleAndDevices.length && <p>No devices or guests to show.</p>
           )}
           <p className="muted">
             Change permissions, adjust time, or remove access.
           </p>
-          {groupDevices(clients)
+          {groupDevices(peopleAndDevices)
             .sort((a, b) => {
               const rank = (kind?: string) =>
                 kind === "guest" ? 1 : kind === "agent" ? 2 : 0;
@@ -1734,7 +1751,7 @@ export function SettingsPage({
                     {c.kind === "guest"
                       ? "Invited people"
                       : c.kind === "agent"
-                        ? "Agents"
+                        ? "Advanced agent connections"
                         : "Paired devices"}
                   </h3>
                 )}
@@ -1819,6 +1836,7 @@ export function SettingsPage({
         <FaceIdSettings peer={peer} />
         {/* Notifications live in the bell's panel only: nothing about them here. */}
       </div>
+      {settingsView === "agents" && <BrowserAgents peer={peer} device={device} invite={inviteAgent || invite} toast={toast} />}
       {editing && <AccessEditor key={`${peer.id}:${editing.id}`} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); void load(); toast(removed ? "Access removed" : "Access updated"); }} />}
       <button className="forget-computer" onClick={forget}>
         <LogOut size={17} />

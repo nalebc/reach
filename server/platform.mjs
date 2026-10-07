@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { buildNative } from "./native-build.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -197,11 +198,8 @@ export async function screenInput(config, payload, authorize = () => {}) {
       await fs.access(executable);
     } catch {
       try {
-        await exec(
-          "/usr/bin/xcrun",
-          ["swiftc", path.join(native, "input.swift"), "-o", executable],
-          { ...options, timeout: 90000 },
-        );
+        // Built whole or not at all (a build stopped halfway was reused forever).
+        await buildNative(executable, ["swiftc", path.join(native, "input.swift")], { timeout: 90000, prune: false });
       } catch {
         throw fail(
           503,

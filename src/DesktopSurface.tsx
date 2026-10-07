@@ -36,6 +36,8 @@ export default function DesktopSurface({
   onTextTarget,
   probe,
   onField,
+  knownField,
+  onStaleFields,
   onBlind,
   resetKey,
   initialCursor,
@@ -65,6 +67,11 @@ export default function DesktopSurface({
   // that same tap (Safari opens it only during a tap).
   probe?: (point: Point) => Promise<unknown>;
   onField?: (point: Point, secure: boolean) => void;
+  // A text field the computer already said is here (its pushed map): the
+  // keyboard opens on the tap without waiting for the probe.
+  knownField?: (point: Point) => { secure: boolean } | null;
+  // The probe found no field where the map had one: the map is out of date.
+  onStaleFields?: () => void;
   // The Mac can't see what's under the finger (a game, a canvas, a remote
   // desktop): its text fields can't be found, so offer the keyboard button.
   onBlind?: (blind: boolean) => void;
@@ -117,7 +124,8 @@ export default function DesktopSurface({
   } | null>(null);
   const tappedField = useRef<{
     point: Point;
-    secure: boolean;
+    probe: number;
+    known: { secure: boolean } | null;
     at: number;
     acknowledged: boolean;
   } | null>(null);
@@ -282,7 +290,7 @@ export default function DesktopSurface({
       onFeedback("View only · enable control to interact");
       return;
     }
-    onFeedback("Sending click…");
+    onFeedback("");
     void send({
       type: "click",
       ...point,
@@ -293,7 +301,6 @@ export default function DesktopSurface({
         setRipples((r) =>
           r.map((x) => (x.id === id ? { ...x, status: "sent" } : x)),
         );
-        onFeedback("Click sent");
         if (id === serial.current && !right && clickMode !== "right") {
           // The host can acknowledge before Safari delivers the tap's click.
           // Wait for that click to open the keyboard before confirming focus.
@@ -380,6 +387,7 @@ export default function DesktopSurface({
                 field: a.field === true,
                 secure: a.secure === true,
               };
+              if (a.field !== true && knownField?.(point)) onStaleFields?.();
               onBlind?.(a.blind === true);
             }
           },
@@ -547,19 +555,25 @@ export default function DesktopSurface({
       if (point) {
         onInteraction();
         const answer = probeAnswer.current;
-        // Reserve Safari's keyboard activation during the user's tap even if
-        // the network reply is late. Screen buffers edits until focus confirms.
+        const known = knownField?.(point) ?? null;
+        // The keyboard opens only on a field the computer confirmed: this
+        // touch's probe answer, or else its pushed map (a guess opened it and
+        // shut it again on anything else). Keep the tap for its click while
+        // the answer may still come; a field confirmed after the click gets
+        // "tap to type" from the focus check instead.
         if (
           canControl &&
           clickMode !== "right" &&
           onField &&
           g.probe &&
-          ((answer?.id === g.probe && answer.field) ||
-            (answer?.id !== g.probe && event.pointerType === "touch"))
+          (answer?.id === g.probe
+            ? answer.field
+            : event.pointerType === "touch" || !!known)
         )
           tappedField.current = {
             point,
-            secure: answer?.id === g.probe ? answer.secure : false,
+            probe: g.probe,
+            known,
             at: performance.now(),
             acknowledged: false,
           };
@@ -573,7 +587,11 @@ export default function DesktopSurface({
     const field = tappedField.current;
     tappedField.current = null;
     if (field && canControl && ready && performance.now() - field.at < 1000) {
-      onField?.(field.point, field.secure);
+      // The probe's own answer is the freshest; the map stands in until it comes.
+      const answer = probeAnswer.current;
+      if (answer?.id === field.probe) {
+        if (answer.field) onField?.(field.point, answer.secure);
+      } else if (field.known) onField?.(field.point, field.known.secure);
       if (field.acknowledged) onTextTarget(field.point);
     }
   };

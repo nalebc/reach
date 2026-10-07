@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, ShieldCheck } from "lucide-react";
+import { Bot, Eye, ShieldCheck } from "lucide-react";
+import AppLogo from "./AppLogo";
+import "./agent-ui.css";
+import "./agent-sheets.css";
 import { post, request, type Peer } from "./api";
 import type { NeedItem } from "./NeedsYou";
 import ScreenPopup from "./ScreenPopup";
@@ -183,7 +186,9 @@ export function useBrowserApprovals(
       }
     };
     void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
+    // The Mac tells of a change on the live connection (the fingerprint
+    // above): read at once then, and only as a safety net otherwise.
+    const timer = setInterval(() => void refresh(), fingerprint ? 60000 : 3000);
     return () => {
       live = false;
       controller.abort();
@@ -194,7 +199,9 @@ export function useBrowserApprovals(
   const items: NeedItem[] = enabled
     ? requests.map((r) => ({
         key: `browser:${r.id}`,
-        icon: <Bot size={22} />,
+        icon: r.action.type === "app-access"
+          ? <AppLogo peer={peer} appId={r.action.appId} name={r.action.appName} size={30} />
+          : <Bot size={22} />,
         title: `${r.name} ${r.status === "executing" ? "is running approved actions" : r.action.type === "command" ? "needs a command handled" : "needs your approval"}`,
         detail: browserActionWords(r.action),
         actions: [
@@ -245,7 +252,7 @@ function BrowserAppApprovalReview({ peer, item, onClose, onResolved }: ApprovalR
   const action = item.action;
   const expired = item.status !== "pending" || item.expiresAt <= now;
   const decide = async (decision: "approve" | "deny") => {
-    if (sending.current || expired) return;
+    if (sending.current || expired || (decision === "approve" && action.mode === "control")) return;
     sending.current = true;
     setBusy(true);
     setError("");
@@ -258,20 +265,32 @@ function BrowserAppApprovalReview({ peer, item, onClose, onResolved }: ApprovalR
     finally { sending.current = false; setBusy(false); }
   };
   return (
-    <ScreenPopup title={`Allow ${item.name} to use ${action.appName}?`} onClose={onClose} className="browser-approval browser-app-approval">
-      <p>{action.mode === "control" ? "View and control" : "View only"} · <strong>{action.appName}</strong></p>
-      <p className="browser-approval-note">{action.mode === "control"
-        ? "The agent can click and type in this app without asking for each action. This includes its content and signed-in accounts."
-        : "The agent can see this app’s windows and content. It cannot click or type in them."}</p>
-      {item.reason && <p className="browser-request-reason">{item.reason}</p>}
-      <p className="browser-approval-note">{item.sessionExpiresAt
-        ? `Access ends at ${new Date(item.sessionExpiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
-        : "Access ends with this invitation."} A new invitation starts fresh.</p>
-      {expired && <p role="status">This request has ended.</p>}
-      {error && <p className="error" role="alert">{error}</p>}
-      <div className="browser-approval-actions">
-        <button className="button secondary" disabled={busy || expired} onClick={() => void decide("deny")}>Deny</button>
-        <button className="button" disabled={busy || expired} onClick={() => void decide("approve")}>
+    <ScreenPopup title={`Allow ${item.name} to use ${action.appName}?`} onClose={onClose} className="browser-approval browser-app-approval ag-sheet">
+      <div className="ag-app-ask">
+        <span className="ag-app-ask-logo">
+          <AppLogo peer={peer} appId={action.appId} name={action.appName} />
+        </span>
+        <p className="ag-app-ask-mode">
+          <Eye size={14} /> {action.mode === "control" ? "View and control" : "View only"} · <strong>{action.appName}</strong>
+        </p>
+        {item.reason && (
+          <blockquote className="ag-said">
+            <small>{item.name} says</small>
+            <span className="browser-request-reason">{item.reason}</span>
+          </blockquote>
+        )}
+        <p className="browser-approval-note">{action.mode === "control"
+          ? "App control requires an isolated environment. This older control request cannot be approved."
+          : "The agent can see this app’s windows and content. It cannot click or type in them."}</p>
+        <p className="browser-approval-note">{item.sessionExpiresAt
+          ? `Access ends at ${new Date(item.sessionExpiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+          : "Access ends with this invitation."} A new invitation starts fresh.</p>
+        {expired && <p role="status" className="ag-note is-warn">This request has ended.</p>}
+        {error && <p className="error" role="alert">{error}</p>}
+      </div>
+      <div className="ag-sheet-actions">
+        <button className="ag-secondary" disabled={busy || expired} onClick={() => void decide("deny")}>Deny</button>
+        <button className="ag-primary" disabled={busy || expired || action.mode === "control"} onClick={() => void decide("approve")}>
           <ShieldCheck size={16} /> {busy ? "Responding…" : "Allow for this session"}
         </button>
       </div>
@@ -413,7 +432,7 @@ function BrowserInputApprovalReview({
     <ScreenPopup
       title={`${item.name}: ${batch ? `review ${batch.actions.length} actions` : restrictedTerminal || terminalChange ? "review terminal command" : command ? "handle on computer" : "review screen action"}`}
       onClose={onClose}
-      className="browser-approval"
+      className="browser-approval ag-sheet ag-review"
     >
       <p>
         {batch

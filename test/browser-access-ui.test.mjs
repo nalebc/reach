@@ -66,6 +66,15 @@ const tab = (container, label) =>
   [...container.querySelectorAll('[role="tab"]')].find(
     (item) => item.textContent.trim() === label,
   );
+// The invite's app sharing is a switch; commands are three choices.
+const setApps = async (c, mode) => {
+  const share = c.querySelector('[aria-label="Share apps"]');
+  assert.ok(share, "app sharing switch exists");
+  if (share.checked !== (mode === "apps")) {
+    share.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    await settle(40);
+  }
+};
 const snapshot = () =>
   new Response(new Uint8Array([255, 216, 255, 217]), {
     headers: { "Content-Type": "image/jpeg" },
@@ -124,20 +133,19 @@ test("Muse invitation copies and shares its actual granted permissions with its 
     }),
   );
   const c = view.container;
-  assert.equal(c.querySelector('[aria-label="AI browser name"]').value, "Assistant");
+  const agentName = c.querySelector('[aria-label="AI browser name"]').value;
+  assert.match(agentName, /^[A-Z][a-z]+ [A-Z][a-z]+$/, "every invite gets a fresh funny name");
   assert.equal(button(c, "Create invite link").disabled, true);
   await click(c.querySelector('[aria-label="Share Project"]'));
   await click(
-    [...c.querySelectorAll(".ivt-toggle")]
-      .find((item) => item.textContent.startsWith("Build logs"))
-      .querySelector("input"),
+    c.querySelector('[aria-label="Watch Build logs"]'),
   );
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
+  await setApps(c, "apps");
   await click(button(c, "Create invite link"));
   assert.deepEqual(
     calls.find(([, route]) => route === "/api/agents/browser-invitations")[2],
     {
-      name: "Assistant",
+      name: agentName,
       transport: "funnel",
       ttlSeconds: 900,
       folders: [{ root: 0, path: "" }],
@@ -174,15 +182,15 @@ test("Muse invitation copies and shares its actual granted permissions with its 
   );
   assert.match(
     c.textContent,
-    /Match the connection code in Home → Needs you to approve/,
+    /match the connection code in Home → Needs you, then approve/,
   );
   assert.equal(made[1], invite);
   assert.doesNotMatch(invite, /curl|agent\.mjs|\/agent#/);
-  assert.match(c.textContent, /Share only the apps you choose/);
+  assert.match(c.textContent, /View only\. It can ask you for more apps later/);
   // Unsubmitted edits must not misdescribe the already-issued credential.
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
+  await setApps(c, "apps");
   await click(c.querySelector('[aria-label="Share Project"]'));
-  await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Build logs")).querySelector("input"));
+  await click(c.querySelector('[aria-label="Watch Build logs"]'));
   assert.equal(preview.value, message, "prompt is frozen to the invitation's actual permissions");
   const nav = dom.window.navigator;
   const priorClipboard = nav.clipboard;
@@ -207,7 +215,7 @@ test("Muse invitation copies and shares its actual granted permissions with its 
     "creating a link does not copy it automatically",
   );
   assert.equal(shared, undefined, "sharing requires a button press");
-  await click(button(c, "Copy prompt + link"));
+  await click(button(c, "Copy invite"));
   assert.equal(copied, message);
   assert.ok(button(c, "Copied"));
   await click(button(c, "Share…"));
@@ -276,9 +284,9 @@ for (const choice of [
   };
   const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]'));
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
   if (choice.folder) await click(c.querySelector('[aria-label="Share Project"]'));
-  await value(c.querySelector('[aria-label="Screen permission"]'), choice.screen);
+  await setApps(c, choice.screen);
   await click(button(c, "Create invite link"));
   const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
   assert.equal(issued.screen, choice.screen);
@@ -306,11 +314,11 @@ test("invitation prompt includes the restricted command grant separately from sh
   };
   const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]'));
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
   await click(c.querySelector('[aria-label="Share Project"]'));
-  await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Build logs")).querySelector("input"));
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
-  await click([...c.querySelectorAll(".ivt-disclosure")].at(-1).querySelector('input[type="checkbox"]'));
+  await click(c.querySelector('[aria-label="Watch Build logs"]'));
+  await setApps(c, "apps");
+  await click(c.querySelector('[aria-label="Read-only commands"]'));
   await click(button(c, "Create invite link"));
   const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
   assert.equal(issued.restrictedTerminal, true);
@@ -338,26 +346,70 @@ test("invitation combines screen approval and approved file changes without wide
   };
   const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]'));
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]'));
   await click(c.querySelector('[aria-label="Share Project"]'));
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
-  await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Commands with approval")).querySelector("input"));
-  assert.equal(c.querySelector('[aria-label="Screen permission"]').value, "apps", "terminal access must not downgrade screen control");
+  await setApps(c, "apps");
+  await click(c.querySelector('[aria-label="Ask me first"]'));
+  assert.equal(c.querySelector('[aria-label="Share apps"]').checked, true, "terminal access must not downgrade screen control");
   await click(button(c, "Create invite link"));
   assert.equal(issued.restrictedTerminal, true);
   assert.equal(issued.terminalApproval, true);
   assert.equal(issued.scriptApproval, true);
   assert.equal(issued.screen, "apps");
   const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
-  assert.match(message, /Other apps are hidden; ask for access/);
+  assert.match(message, /Other eligible apps are hidden; ask to view/);
   assert.match(message, /file changes and scripts ask for approval once/);
   assert.match(message, /Terminal commands cannot access outside these folders, even with approval/);
   assert.match(message, /Files: read\/search\/download only in "\/Users\/me\/Project"/);
   assert.doesNotMatch(message, /full control|unrestricted|other commands require owner approval/i);
   assert.ok(message.split("\n\n")[0].split(/\s+/).length <= 190);
-  await click([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Run read-only commands")).querySelector("input"));
-  assert.equal([...c.querySelectorAll(".ivt-toggle")].find((item) => item.textContent.startsWith("Commands with approval")).querySelector("input").checked, false, "turning command access off clears file-change approval scope");
+  await click(c.querySelector('[aria-label="Allow terminal"]'));
+  assert.equal(c.querySelector('[aria-label="Ask me first"]').checked, false, "turning command access off clears file-change approval scope");
   assert.equal(c.querySelector('[aria-label="AI browser invitation message"]').value, message);
+  await view.unmount();
+});
+
+test("invite: a fresh funny name each time, three switches, real folders with nothing copied", async () => {
+  let issued;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: [] });
+    if (route === "/api/agents/browser-invitations") {
+      issued = JSON.parse(init.body);
+      return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000 });
+    }
+    return reply({ error: "Unexpected request" }, 404);
+  };
+  const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated() {} }));
+  const c = view.container;
+  const name = () => c.querySelector('[aria-label="AI browser name"]').value;
+  const first = name();
+  await click(button(c, "New name"));
+  assert.notEqual(name(), first, "the dice roll a different name");
+  assert.match(name(), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  // Commands without a folder: the page says so and one tap opens Folders.
+  await click(c.querySelector('[aria-label="Allow terminal"]'));
+  await click(c.querySelector('[aria-label="Read-only commands"]'));
+  assert.equal(button(c, "Create invite link").disabled, true);
+  assert.match(c.textContent, /Commands need a folder/);
+  await click([...c.querySelectorAll("button")].find((b) => /Choose a folder/.test(b.textContent)));
+  assert.equal(c.querySelector('[aria-label="Share folders"]').checked, true);
+  assert.equal(c.querySelector(".ag-grant.is-open .ag-row-label").textContent, "Folders");
+  await click(c.querySelector('[aria-label="Share Project"]'));
+  await click(button(c, "Create invite link"));
+  assert.equal(issued.name, name());
+  assert.equal(issued.restrictedTerminal, true);
+  assert.equal("workspaceMode" in issued, false, "no private copy is ever asked for");
+  const message = c.querySelector('[aria-label="AI browser invitation message"]').value;
+  assert.match(message, /shared original folders/);
+  assert.doesNotMatch(message, /private working copies/);
+  // Switching a grant off clears what it held.
+  await click(button(c, "Invite another agent"));
+  await click(c.querySelector('[aria-label="Allow terminal"]'));
+  await click(c.querySelector('[aria-label="Share folders"]'));
+  assert.equal(c.querySelector('[aria-label="Share Project"]').getAttribute("aria-checked"), "false");
+  assert.equal(button(c, "Create invite link").disabled, true);
+  assert.match(c.textContent, /Turn on at least one thing it can use/);
   await view.unmount();
 });
 
@@ -527,7 +579,7 @@ test("browser workspace searches confined files and renders file and terminal ou
     untrusted,
   );
   assert.equal(
-    c.querySelector('[aria-label="Shared terminal"]').value,
+    c.querySelector('[aria-label="Shared terminal"] [aria-checked="true"]').dataset.value,
     "reach:one",
   );
   await click(tab(c, "Files"));

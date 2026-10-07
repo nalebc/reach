@@ -10,6 +10,11 @@
 // (each --expect text: the command, the file, the address the request is
 // about); a press only once the card has been on screen a moment (a card that
 // has just appeared ignores presses), reported pressed only once it's gone.
+// - `--answer --q <question> --pick <label> [--pick …] [--q …]`: a question
+//   card in the Claude app (Claude's multiple choice), answered as tapped
+//   there: each question found by its exact words, its option(s) pressed by
+//   their exact label (never a guess between two), then Submit; reported
+//   answered only once the question is gone.
 // Prints one JSON line and exits.
 import AppKit
 import ApplicationServices
@@ -122,6 +127,81 @@ func findCard(_ app: AXUIElement, expect: [String]) -> Card? {
   return nil
 }
 
+// What an option says: its own label, else the words inside it.
+func optionText(_ e: AXUIElement) -> String {
+  let own = label(e)
+  if !own.isEmpty { return own }
+  var text: [String] = []
+  var stack = children(e)
+  while let next = stack.popLast(), text.count < 20 {
+    if str(next, kAXRoleAttribute) == (kAXStaticTextRole as String) {
+      let v = str(next, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !v.isEmpty { text.append(v) }
+    }
+    stack.append(contentsOf: children(next).reversed())
+  }
+  return text.joined(separator: " ")
+}
+let optionRoles: Set<String> = [kAXButtonRole as String, kAXRadioButtonRole as String, kAXCheckBoxRole as String, "AXMenuItemRadio", "AXMenuItemCheckBox"]
+// The one control for a label: exactly that label, else one starting with it
+// and then its description ("Plan Create a plan first"); two candidates: none.
+func control(_ buttons: [(String, AXUIElement)], _ pick: String) -> AXUIElement? {
+  let exact = buttons.filter { $0.0 == pick }
+  if exact.count == 1 { return exact[0].1 }
+  if exact.count > 1 { return nil }
+  let prefixed = buttons.filter { $0.0.hasPrefix(pick + " ") || $0.0.hasPrefix(pick + "\n") }
+  return prefixed.count == 1 ? prefixed[0].1 : nil
+}
+// Where the question shows: the nearest element around its words that holds
+// a control for every pick.
+func findQuestion(_ app: AXUIElement, _ question: String, _ picks: [String]) -> (box: AXUIElement, buttons: [(String, AXUIElement)])? {
+  let want = squeezed(question)
+  guard !want.isEmpty else { return nil }
+  var queue = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+  var texts: [AXUIElement] = []
+  var i = 0
+  while i < queue.count, i < 60000 {
+    let e = queue[i]
+    i += 1
+    if str(e, kAXRoleAttribute) == (kAXStaticTextRole as String), squeezed(str(e, kAXValueAttribute)).contains(want) { texts.append(e) }
+    queue.append(contentsOf: children(e))
+  }
+  for text in texts {
+    var up: AXUIElement? = text
+    for _ in 0..<10 {
+      guard let parent = up.flatMap({ attr($0, kAXParentAttribute) }) else { break }
+      let box = parent as! AXUIElement
+      var buttons: [(String, AXUIElement)] = []
+      var stack = [box]
+      var seen = 0
+      while let next = stack.popLast(), seen < 1500 {
+        seen += 1
+        if optionRoles.contains(str(next, kAXRoleAttribute)) {
+          buttons.append((optionText(next), next))
+          continue
+        }
+        stack.append(contentsOf: children(next).reversed())
+      }
+      if !picks.isEmpty, picks.allSatisfy({ control(buttons, $0) != nil }) { return (box, buttons) }
+      up = box
+    }
+  }
+  return nil
+}
+func shows(_ app: AXUIElement, _ question: String) -> Bool {
+  let want = squeezed(question)
+  var queue = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+  var i = 0
+  while i < queue.count, i < 60000 {
+    let e = queue[i]
+    i += 1
+    if str(e, kAXRoleAttribute) == (kAXStaticTextRole as String), squeezed(str(e, kAXValueAttribute)).contains(want) { return true }
+    queue.append(contentsOf: children(e))
+  }
+  return false
+}
+func press(_ e: AXUIElement) -> Bool { AXUIElementPerformAction(e, kAXPressAction as CFString) == .success }
+
 @main
 struct PermissionCard {
   static func main() {
@@ -147,6 +227,70 @@ struct PermissionCard {
         usleep(300_000)
       }
       out(["elements": count])
+    }
+    if args.contains("--answer") {
+      // The questions in order, each with its picks.
+      var asked: [(question: String, picks: [String])] = []
+      var i = 0
+      while i < args.count {
+        if args[i] == "--q", i + 1 < args.count { asked.append((args[i + 1], [])) }
+        if args[i] == "--pick", i + 1 < args.count, !asked.isEmpty { asked[asked.count - 1].picks.append(args[i + 1]) }
+        i += 1
+      }
+      guard !asked.isEmpty, asked.allSatisfy({ !squeezed($0.question).isEmpty && !$0.picks.isEmpty }) else { out(["error": "Choose an answer for each question."]) }
+      guard AXIsProcessTrusted() else { out(["error": "Reach needs Accessibility to answer it."]) }
+      guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop").first
+      else { out(["error": "The Claude app isn't open."]) }
+      let app = AXUIElementCreateApplication(running.processIdentifier)
+      AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+      var last: AXUIElement?
+      for (n, q) in asked.enumerated() {
+        // Found, then on screen a moment (a card that has just appeared ignores presses).
+        var found: (box: AXUIElement, buttons: [(String, AXUIElement)])?
+        let start = Date()
+        var since: Date?
+        while Date().timeIntervalSince(start) < 7 {
+          if let f = findQuestion(app, q.question, q.picks) {
+            found = f
+            if n > 0 { break }
+            if since == nil { since = Date() } else if Date().timeIntervalSince(since!) >= 1 { break }
+          } else { since = nil; found = nil }
+          usleep(250_000)
+        }
+        guard let card = found else {
+          out(["error": n == 0 ? "The Claude app isn't showing this question." : "The Claude app didn't go on to the next question."])
+        }
+        for pick in q.picks {
+          guard let option = control(card.buttons, pick), press(option) else { out(["error": "The card no longer offers \"\(pick)\"."]) }
+          usleep(250_000)
+        }
+        last = card.box
+        // More to answer, not on screen yet: the card's Next.
+        if n + 1 < asked.count {
+          usleep(300_000)
+          if !shows(app, asked[n + 1].question),
+            let next = card.buttons.first(where: { $0.0 == "Next" || $0.0.hasPrefix("Next ") }) {
+            _ = press(next.1)
+          }
+        }
+      }
+      // Submit, when the card has one (a single question may go on its own).
+      usleep(300_000)
+      if shows(app, asked[0].question), let box = last {
+        var buttons: [(String, AXUIElement)] = []
+        var stack = [box]
+        while let next = stack.popLast(), buttons.count < 200 {
+          if optionRoles.contains(str(next, kAXRoleAttribute)) { buttons.append((optionText(next), next)); continue }
+          stack.append(contentsOf: children(next))
+        }
+        let submits = buttons.filter { b in ["Submit", "Submit answers", "Send", "Done"].contains { b.0 == $0 || b.0.hasPrefix($0 + " ") } }
+        if submits.count == 1 { _ = press(submits[0].1) }
+      }
+      for _ in 0..<15 {
+        usleep(200_000)
+        if !shows(app, asked[0].question) { out(["answered": true]) }
+      }
+      out(["error": "The Claude app didn't take the answer."])
     }
     let press = value("--press")
     let expect = args.indices.filter { args[$0] == "--expect" && $0 + 1 < args.count }.map { args[$0 + 1] }

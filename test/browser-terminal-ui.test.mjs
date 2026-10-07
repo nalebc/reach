@@ -14,7 +14,9 @@ const render = async (props = {}) => { const view = await dom.render(React.creat
 const button = (c, label) => [...c.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
 const click = async (element) => { assert.ok(element); element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); await settle(40); };
 const value = async (element, text) => {
-  assert.ok(element); const prototype = element.tagName === "SELECT" ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype;
+  assert.ok(element);
+  if (element.getAttribute("role") === "radiogroup") return click([...element.querySelectorAll('[role="radio"]')].find(option => option.dataset.value === text));
+  const prototype = element.tagName === "SELECT" ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, text); element.dispatchEvent(new dom.window.Event(element.tagName === "SELECT" ? "change" : "input", { bubbles: true })); await settle();
 };
 const submit = async (c, command) => { await value(c.querySelector('[aria-label="Terminal command"]'), command); c.querySelector("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); await settle(50); };

@@ -361,6 +361,7 @@ test("owner edits preserve an accepted browser binding while expanding, restrict
   assert.equal(withScreen.policy.screen, "ask");
   assert.equal(withScreen.policy.restrictedTerminal, true);
   for (const changes of [
+    { folders: "keep", restrictedTerminal: true, screen: "control" },
     { folders: "keep", exec: true },
     { folders: "keep", terminalIds: ["; rm -rf /"] },
     { folders: [{ root: 0, path: "../private" }], screen: "off" },
@@ -386,4 +387,21 @@ test("editing cannot bypass a pending admission or revive a disconnected browser
   const accepted = f.collect();
   f.alter((clients) => { clients.find((c) => c.id === accepted.grant.clientId).browserIdleExpiresAt = Date.now() - 1; });
   assert.throws(() => f.auth.changeAccess(accepted.grant.clientId, { folders: "keep", screen: "view" }), { status: 404 });
+});
+
+test("app credentials bind the supervising device through approval, collection and restart", (t) => {
+  const f = fixture(t);
+  const approver = { nodeId: "owner-phone", userId: "real-owner", clientId: "owner-client" };
+  for (const transport of ["tailnet", "funnel"]) {
+    const grant = f.auth.inviteBrowser({ name: "Muse", ttlSeconds: 600, transport, screen: "apps", appAccess: [] }, approver);
+    const receipt = transport === "funnel" ? f.claim(grant) : f.auth.redeemGuest(grant.invitation, f.identity);
+    f.auth.decideAgentAdmission(receipt.requestId, "approve");
+    const access = transport === "funnel" ? f.poll(receipt) : f.auth.pollAgentAdmission(receipt.requestId, receipt.requestSecret, f.identity);
+    const verified = (auth = f.auth) => transport === "funnel" ? auth.verifyFunnel(access.token, f.key) : auth.verify(access.token, f.identity);
+    assert.equal(verified().id, grant.clientId);
+    assert.equal(verified(createAuth(f.config, { rotatePairing: false })).id, grant.clientId);
+    f.alter((clients) => { clients.find((client) => client.id === grant.clientId).browserAppApprover.clientId = "replacement-owner"; });
+    assert.equal(verified(), null, "a collected credential cannot change the device that supervises it");
+    assert.equal(verified(createAuth(f.config, { rotatePairing: false })), null);
+  }
 });

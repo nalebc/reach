@@ -7,6 +7,8 @@
 // set_permission_mode. Permission requests (can_use_tool) and their answers
 // follow the shapes in the CLI's own code; they need a signed-in turn to see.
 import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent } from "./compatibility.mjs";
+import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
+import { computerWord } from "../computer-word.mjs";
 import { execFile, spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -97,7 +99,7 @@ export function describeClaudePrompt(id, request = {}) {
     };
   }
   const name = request.display_name || request.tool_name || "a tool";
-  const suggestions = Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
+  const suggestions = !request.suppress_always_allow_rule && Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
   const shown = input.command ?? input.file_path ?? input.notebook_path ?? input.url ?? input.pattern ?? input.host;
   return {
     id,
@@ -113,16 +115,18 @@ export function describeClaudePrompt(id, request = {}) {
 }
 
 // The phone's answer as Claude Code expects it; only what was offered.
-export function claudeAnswer(prompt, answer) {
+export function claudeAnswer(prompt, answer, platform = process.platform) {
+  if (prompt.kind === "elicitation") return elicitationAnswer(prompt, answer);
   if (prompt.kind === "dialog") {
-    if (answer?.decision !== "cancel") throw bad("Answer this one on your Mac.", 409);
+    if (answer?.decision !== "cancel") throw bad(`Answer this one on your ${computerWord(platform)}.`, 409);
     return { behavior: "cancelled" };
   }
   if (prompt.kind === "question") {
     const answers = {};
     for (const q of prompt.questions) {
       const given = answer?.answers?.[q.id];
-      if (!Array.isArray(given) || !given.length || given.some((g) => typeof g !== "string" || g.length > 2000))
+      if (!Array.isArray(given) || !given.length || (!q.multiSelect && given.length > 1) ||
+          given.some((g) => typeof g !== "string" || !g.trim() || g.length > 2000))
         throw bad("Answer every question.");
       answers[q.question] = given.join(", ");
     }
@@ -150,6 +154,8 @@ export function createClaudeHost({
   graceMs = 5000,
   readFile = fs.readFileSync,
   requestTimeout = 15000,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 }) {
   const sessions = new Map();
   let closed = false;
@@ -241,6 +247,7 @@ export function createClaudeHost({
     s.pending.clear();
     s.prompts.clear();
     s.turns = 0;
+    s.unread = 0;
     s.status = "idle";
     s.streaming = "";
     s.activity = null;
@@ -275,11 +282,25 @@ export function createClaudeHost({
             return;
           }
           s.status = "waiting";
+        } else if (request.subtype === "elicitation") {
+          s.prompts.set(m.request_id, {
+            id: m.request_id,
+            ...elicitationPrompt({
+              serverName: request.mcp_server_name,
+              mode: request.mode || "form",
+              requestedSchema: request.requested_schema,
+              message: request.message,
+              description: request.description,
+              title: request.title,
+            }, "Claude", platform),
+          });
+          s.status = "waiting";
         } else if (request.subtype === "request_user_dialog") {
           s.prompts.set(m.request_id, {
             id: m.request_id,
             kind: "dialog",
-            title: "Claude Code needs your answer on your Mac",
+            title: `Claude Code needs your answer on your ${computerWord(platform)}`,
+            reason: `This dialog needs Claude on your ${computerWord(platform)}. Cancel request dismisses it; it does not open Claude.`,
             decisions: ["cancel"],
           });
           s.status = "waiting";
@@ -339,10 +360,19 @@ export function createClaudeHost({
       case "user":
         if (m.parent_tool_use_id) return;
         s.items++;
+        // Claude Code echoes each message as it picks it up, even one sent
+        // mid-turn that it folds into the turn already running.
+        if (m.isReplay) {
+          s.replays = true;
+          s.unread = Math.max(0, (s.unread || 0) - 1);
+        }
         if ((m.message?.content || []).some?.((b) => b?.type === "tool_result")) s.activity = null;
         break;
       case "result":
-        s.turns = Math.max(0, s.turns - 1);
+        // A result ends all it has picked up: a message sent mid-turn often
+        // gets no result of its own (the chat read Working for good). Only
+        // one it hasn't picked up yet starts another turn.
+        s.turns = s.replays ? Math.min(s.turns, s.unread || 0) : Math.max(0, s.turns - 1);
         s.streaming = "";
         s.activity = null;
         s.items++;
@@ -366,7 +396,7 @@ export function createClaudeHost({
   async function launch(s, { resume }) {
     const claude = await locate();
     if (closed) throw bad("Claude session service is closed.", 503);
-    if (!claude) throw bad("Claude Code isn't installed on this Mac.", 404);
+    if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     const compatible = await check(claude);
     if (compatible.status !== "available") throw compatibilityError("claude", "CLI");
     if (closed) throw bad("Claude session service is closed.", 503);
@@ -430,6 +460,7 @@ export function createClaudeHost({
       s.pending.clear();
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
       s.turns = 0;
+      s.unread = 0;
       s.status = "idle";
       s.prompts.clear();
       s.streaming = "";
@@ -444,6 +475,7 @@ export function createClaudeHost({
 
   async function turn(s, input) {
     s.turns++;
+    s.unread = (s.unread || 0) + 1;
     s.wrote = true;
     s.status = s.status === "waiting" ? "waiting" : "running";
     s.error = null;
@@ -465,6 +497,8 @@ export function createClaudeHost({
       released.add(listener);
     },
     running: (id) => !!sessions.get(id)?.turns,
+    // The mode Reach last gave this chat's Claude Code (or it reported).
+    modeOf: (id) => sessions.get(id)?.settings?.mode || null,
     // A phone has the session open right now (its live view is waiting).
     watched: (id) => {
       const s = sessions.get(id);
@@ -477,21 +511,41 @@ export function createClaudeHost({
       const previous = s.sending || Promise.resolve();
       const operation = previous.catch(() => {}).then(async () => {
       if (cwd) s.cwd = cwd;
-      if (model) s.settings.model = model;
       if (effort) s.settings.effort = effort;
-      if (mode) s.settings.mode = mode;
       // A thinking level is a launch setting: change it between turns.
       if (s.proc && !s.turns && effort && effort !== s.launchedEffort) end(s);
-      if (!s.proc) await launch(s, { resume: true });
+      if (!s.proc) {
+        if (model) s.settings.model = model;
+        if (mode) s.settings.mode = mode;
+        await launch(s, { resume: true });
+      }
       else {
-        if (model) await control(s, { subtype: "set_model", model });
-        if (mode && claudeMode(mode)) await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
+        if (model) {
+          await control(s, { subtype: "set_model", model });
+          s.settings.model = model;
+        }
+        if (mode && claudeMode(mode)) {
+          await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
+          s.settings.mode = mode;
+        }
       }
       await turn(s, input);
       return { turnId: null };
       });
       s.sending = operation;
       return operation;
+    },
+    // A mode picked on the phone while Reach runs the chat: at once, even
+    // mid-turn (its next tool use follows it), as the app's menu does.
+    async mode(id, mode) {
+      const s = sessions.get(id);
+      if (!claudeMode(mode)) return false;
+      // Between turns: kept for its next launch.
+      if (s && !s.proc) s.settings.mode = mode;
+      if (!s?.proc) return false;
+      await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
+      s.settings.mode = mode;
+      return true;
     },
     async start({ cwd, text, images, model, effort, mode }) {
       if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
@@ -506,7 +560,7 @@ export function createClaudeHost({
     },
     async stop(id) {
       const s = sessions.get(id);
-      if (!s?.proc || !s.turns) throw bad("Reach isn't running anything here. Stop it on your Mac.", 409);
+      if (!s?.proc || !s.turns) throw bad(`Reach isn't running anything here. Stop it on your ${computerWord(platform)}.`, 409);
       s.stopping = true;
       // Not stopped after all: a later error in this turn is a real one.
       await control(s, { subtype: "interrupt" }).catch((error) => {
@@ -519,8 +573,8 @@ export function createClaudeHost({
       const s = sessions.get(id);
       const prompt = s?.prompts.get(String(promptId));
       if (!prompt) throw bad("This prompt was already answered.", 409);
-      if (prompt.attempted) throw bad("This answer was already attempted. Check Claude on your Mac.", 409);
-      const response = claudeAnswer(prompt, answer);
+      if (prompt.attempted) throw bad(`This answer was already attempted. Check Claude on your ${computerWord(platform)}.`, 409);
+      const response = claudeAnswer(prompt, answer, platform);
       prompt.attempted = true;
       try { await write(s, { type: "control_response", response: { subtype: "success", request_id: prompt.id, response } }); }
       catch (error) { s.error = error.message; changed(s); throw error; }
@@ -544,7 +598,7 @@ export function createClaudeHost({
         version: s.version,
         status: s.status,
         error: s.error,
-        prompts: [...s.prompts.values()].map(({ input, suggestions, attempted, ...p }) => p),
+        prompts: [...s.prompts.values()].map(({ input, suggestions, ...p }) => p),
         streaming: s.streaming,
         activity: s.activity,
         items: s.items,

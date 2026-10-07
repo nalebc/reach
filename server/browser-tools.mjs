@@ -39,11 +39,10 @@ export function browserToolsFor(access = {}) {
     definition("reach_terminal_history", "Command history", "Read this session’s command history and outcomes.", object(), {}),
   );
   if (access.screen === "apps") tools.push(
-    definition("reach_apps", "Shared apps", "List apps and this invitation's hidden/view/control access. Protected apps cannot be granted.", object(), {}),
-    definition("reach_app_windows", "App windows", "List standard windows of an allowed app. Target IDs belong only to this invitation.", object({ appId: string(1024) }, ["appId"]), { appId: "/Applications/Safari.app" }),
+    definition("reach_apps", "Shared apps", "List apps and this invitation's hidden/view access; host app control requires isolation. Protected apps cannot be granted.", object(), {}),
+    definition("reach_app_windows", "App windows", "List standard windows of an allowed app. Target IDs belong only to this invitation.", object({ appId: string(1024) }, ["appId"]), { appId: "/System/Applications/TextEdit.app" }),
     definition("reach_app_screen", "View app window", "Read only the selected window as {image: base64,mimeType}. Other apps and the desktop are excluded.", object({ target: string(128) }, ["target"]), { target: "target-from-reach_app_windows" }),
-    definition("reach_app_input", "Use app window", "Interact with a control-enabled window. Unsupported controls stop; no desktop fallback. Observe results before continuing.", object({ target:string(128), action:{oneOf:[object({type:kinds("click"),x:point,y:point},["type","x","y"]), ...screenActions.slice(1)]} }, ["target","action"]), { target: "target-from-reach_app_windows", action:{type:"click",x:0.5,y:0.5} }),
-    definition("reach_request_app", "Request app access", "Ask the owner to share an app for this invitation only. The agent cannot approve requests. Poll reach_list_requests.", object({appId:string(1024),mode:kinds(["view","control"]),reason},["appId","mode"]), {appId:"/Applications/Safari.app",mode:"control",reason:"Use this app for the requested task."}, {approvalRequired:true}),
+    definition("reach_request_app", "Request app access", "Ask the owner to share an app for this invitation only. The agent cannot approve requests. Poll reach_list_requests.", object({appId:string(1024),mode:kinds(["view"]),reason},["appId","mode"]), {appId:"/System/Applications/TextEdit.app",mode:"view",reason:"View this app for the requested task."}, {approvalRequired:true}),
   );
   const actions = actionKinds(access);
   if (actions.length) {

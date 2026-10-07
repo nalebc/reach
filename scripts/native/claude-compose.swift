@@ -41,6 +41,14 @@ struct Window {
     var stop: AXUIElement?
     var mode: AXUIElement?  // the composer's permission mode menu, named for the mode it's in
     var modeName = ""
+    var popups: [(AXUIElement, String)] = []  // every pop-up button and what it reads ("Opus 5.5 Medium")
+}
+// Claude Code's effort levels as the Claude app names them (its phone app's
+// sheet: Low, Medium, High, Extra high, Max).
+let effortNames = ["Low", "Medium", "High", "Extra high", "Max"]
+// The model chip reads "<model> <effort>"; it's the one ending in a level.
+func effortOf(_ text: String) -> String? {
+  effortNames.sorted { $0.count > $1.count }.first { text == $0 || text.hasSuffix(" " + $0) }
 }
 // The permission modes the Claude app's menu lists that Reach may pick, as it
 // names them. Never "Bypass permissions": that one is turned on at the Mac.
@@ -80,6 +88,7 @@ func look(_ app: AXUIElement) -> Window {
       let title = (v[2] as? String) ?? ""
       let text = (title.isEmpty ? description : title).trimmingCharacters(in: .whitespacesAndNewlines)
       if modeNames.contains(text) || text == "Bypass permissions" { found.mode = e; found.modeName = text }
+      found.popups.append((e, text))
     case kAXButtonRole as String:
       let title = (v[2] as? String) ?? ""
       let text = (title.isEmpty ? description : title).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,7 +130,7 @@ struct ClaudeCompose {
       payload = decoded
     }
     replyAction =
-      args.contains("--check") || args.contains("--mode") ? ""
+      args.contains("--check") || args.contains("--mode") || args.contains("--effort") ? ""
       : args.contains("--stop") ? "stopped" : payload["draft"] as? Bool == true ? "drafted" : "sent"
     guard AXIsProcessTrusted() else { out(["error": "Reach needs Accessibility to type in the Claude app."]) }
     guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop").first
@@ -134,7 +143,7 @@ struct ClaudeCompose {
       window = look(app)
     }
     if args.contains("--check") {
-      out(["titles": window.titles, "sessions": window.sessions, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false])
+      out(["titles": window.titles, "sessions": window.sessions, "boxes": window.boxes.count, "draft": window.boxes.first.map { !value($0).isEmpty } ?? false, "popups": window.popups.map { $0.1 }])
     }
     guard let title = option("--title") else { out(["error": "Say which chat to use."]) }
     let text = (payload["text"] as? String) ?? option("--text") ?? ""
@@ -183,6 +192,64 @@ struct ClaudeCompose {
         if look(app).modeName == wanted { out(["mode": wanted]) }
       }
       out(["error": "The Claude app didn't switch to that mode."])
+    }
+    // An effort level picked on the phone: chosen in the app's own menu, as
+    // a person would (its model chip, or ⌘⇧E, the app's "Open effort menu"),
+    // so the app and the phone show the same one.
+    if let wanted = option("--effort") {
+      guard effortNames.contains(wanted) else { out(["error": "Reach can't pick that effort level."]) }
+      let chip = window.popups.first { effortOf($0.1) != nil }
+      if let chip = chip, effortOf(chip.1) == wanted { out(["effort": wanted]) }
+      // A menu item reading the level, alone or before what it does
+      // ("High Deeper reasoning…"); or the menu's own "Effort" row.
+      let itemRoles: Set<String> = [kAXMenuItemRole as String, "AXMenuItemRadio", "AXMenuItemCheckbox"]
+      func find(_ match: (String) -> Bool) -> AXUIElement? {
+        for _ in 0..<20 {
+          usleep(50_000)
+          var queue = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+          var i = 0
+          while i < queue.count, i < 60000 {
+            let e = queue[i]
+            i += 1
+            if itemRoles.contains(str(e, kAXRoleAttribute)) && match(label(e)) { return e }
+            queue.append(contentsOf: children(e))
+          }
+        }
+        return nil
+      }
+      let isWanted = { (t: String) in t == wanted || t.hasPrefix(wanted + " ") || t.hasPrefix(wanted + "\n") }
+      var item: AXUIElement?
+      if let chip = chip, AXUIElementPerformAction(chip.0, kAXPressAction as CFString) == .success {
+        item = find(isWanted)
+        if item == nil, let row = find({ $0 == "Effort" || $0.hasPrefix("Effort ") }) {
+          AXUIElementPerformAction(row, kAXPressAction as CFString)
+          item = find(isWanted)
+        }
+        if item == nil { AXUIElementPerformAction(chip.0, kAXPressAction as CFString) }  // closed again
+      }
+      if item == nil {
+        // The app's own shortcut for its effort menu (⌘⇧E), to its window.
+        let pid = running.processIdentifier
+        for down in [true, false] {
+          let key = CGEvent(keyboardEventSource: nil, virtualKey: 14, keyDown: down)  // E
+          key?.flags = [.maskCommand, .maskShift]
+          key?.postToPid(pid)
+        }
+        item = find(isWanted)
+      }
+      guard let pick = item, AXUIElementPerformAction(pick, kAXPressAction as CFString) == .success else {
+        for down in [true, false] {  // Escape: no menu left open
+          let key = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)
+          key?.postToPid(running.processIdentifier)
+        }
+        out(["error": "Couldn't find that effort level in the Claude app.", "popups": window.popups.map { $0.1 }])
+      }
+      for _ in 0..<20 {
+        usleep(50_000)
+        if look(app).popups.contains(where: { effortOf($0.1) == wanted }) { out(["effort": wanted]) }
+      }
+      // Pressed, but the chip didn't say so (yet): Reach checks the app's record.
+      out(["effort": wanted, "unconfirmed": true])
     }
     if args.contains("--stop") {
       guard let stop = window.stop, enabled(stop), AXUIElementPerformAction(stop, kAXPressAction as CFString) == .success

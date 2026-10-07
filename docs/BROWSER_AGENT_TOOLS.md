@@ -1,8 +1,8 @@
 # Scoped tools for browser agents
 
-Create an AI browser invitation in Reach, choose the shared resources, and share **Copy prompt + link** with Muse or another browser bot. Admission still requires the owner to match the connection code. Keep the invited tab open. The message states the issued invitation’s screen permission, actual shared folder paths, shared terminal outputs, and exact command permission. It explicitly says terminal commands cannot leave those folders, even with approval. Long folder lists name the first three and direct the agent to Files for the rest. Screen input and terminal access may be enabled together. Supported read commands run directly inside shared folders; the separate **Commands with approval** grant permits file changes and isolated scripts after exact owner approval. Later unsaved changes in the invite form do not change that message or the issued grant.
+Create an AI browser invitation in Reach, choose the shared resources, and share **Copy prompt + link** with Muse or another browser bot. Admission still requires the owner to match the connection code. Keep the invited tab open. The message states the issued invitation’s screen permission, actual shared folder paths, shared terminal outputs, and exact command permission. It explicitly says terminal commands cannot leave those folders, even with approval. Long folder lists name the first three and direct the agent to Files for the rest. Selected app viewing and terminal access may be enabled together. Supported read commands run directly inside shared folders; the separate **Commands with approval** grant permits file changes and isolated scripts after exact owner approval. Later unsaved changes in the invite form do not change that message or the issued grant.
 
-Use the **Screen**, **Files**, and **Terminal** tabs. Screen shows only a window from an explicitly allowed app. Click the shared window or type into its supported controls directly. Extra app access appears in Reach as **Allow for this session** / **Deny**. Reach and Tailscale are permanently protected and cannot be requested or approved.
+Use the **Screen**, **Files**, and **Terminal** tabs. Screen shows only a window from an explicitly allowed app. Host app sharing is view-only; host input is disabled until an isolated execution environment exists. Extra app access appears in Reach as **Allow for this session** / **Deny**. Reach and Tailscale are permanently protected and cannot be requested or approved.
 
 Bots with browser automation can use the same session-bound interface through `window.reach`:
 
@@ -12,7 +12,7 @@ const access = await window.reach.callTool("reach_access", {});
 const apps = await window.reach.callTool("reach_apps", {});
 ```
 
-`listTools()` provides the schemas for selecting an allowed app window, reading its image, sending supported inputs and requesting another app. Wait for the owner's decision when a request is pending. Never retry partially completed actions automatically.
+`listTools()` provides the schemas for selecting an allowed app window, reading its image and requesting another eligible app. Wait for the owner's decision when a request is pending. Never retry partially completed actions automatically.
 
 Available tools depend on the current invitation:
 
@@ -23,7 +23,7 @@ Available tools depend on the current invitation:
 | `reach_read_terminal` | Output from explicitly shared terminals |
 | `reach_terminal_command` | Supported reads run directly inside shared folders; file changes and isolated scripts require the separate grant and owner approval |
 | `reach_terminal_history` | This session's command attempts and outcomes |
-| `reach_apps`, `reach_app_windows`, `reach_app_screen`, `reach_app_input` | Selected apps and their approved window controls |
+| `reach_apps`, `reach_app_windows`, `reach_app_screen` | Selected apps and their approved window images |
 | `reach_request_app` | Ask the owner for session access to another eligible app |
 | `reach_request_action`, `reach_request_batch` | Propose restricted terminal reads; file changes and scripts use single requests only |
 | `reach_list_requests`, `reach_cancel_request` | Inspect or stop this session's requests |
@@ -42,7 +42,7 @@ The tools reuse the existing signed, expiring Funnel session or private tailnet 
 
 Reads (`pwd`, `cd`, `ls`, `cat`, `head`, `tail`, `wc`, `grep`) use Reach’s bounded implementations and run immediately. Supported file changes (`mkdir`, `touch`, `cp`, `rm`) need one-time owner approval. With **Commands with approval** enabled, other single commands and scripts also appear in Reach with their exact command and working folder and just **Approve once** / **Deny**. No reason form or lasting approval is required. Old read-only and file-change-only invitations do not automatically gain script permission.
 
-Scripts use macOS Seatbelt, enforced before the program starts. A command can read/write the selected shared root; system executables and the trusted runtime libraries are read-only exceptions required to run it. Other personal folders and Reach’s private state are denied, including symlink escapes. Existing extra hard links and special files cause the script to be rejected. Node, system tools, and scripts in the shared folder are supported. No host environment or credentials are inherited. Network access, administrator commands, interprocess control, and launching helper processes are blocked. Reach and Tailscale management commands are rejected before approval as well as at execution; approval never removes the sandbox. Consequently, scripts requiring subprocesses, package installation, or additional runtimes may fail; they never fall back to an unrestricted host shell. Other operating systems fail closed.
+Scripts use macOS Seatbelt, enforced before the program starts. A command can read/write the selected shared root; system executables and the trusted runtime libraries are read-only exceptions required to run it. Other personal folders and Reach’s private state are denied, including symlink escapes. Existing extra hard links and special files are inaccessible to scripts; their paths are checked before each run and their containing folders cannot be renamed during execution. A path argument outside the shared folder, including `~`, is refused before approval. Node, system tools, and scripts in the shared folder are supported. No host environment or credentials are inherited. Network access, administrator commands, interprocess control, and launching helper processes are blocked. Reach and Tailscale management commands are rejected before approval as well as at execution; approval never removes the sandbox. Consequently, scripts requiring subprocesses, package installation, or additional runtimes may fail; they never fall back to an unrestricted host shell. Other operating systems fail closed.
 
 Requests expire within five minutes or when the invitation ends. Execution is limited to one process, 30 seconds, and 64 KiB of output. Cancellation, pause, expiry and revocation terminate that process. The command cannot be edited during approval or executed twice. File changes already made cannot be undone by cancellation. This is a filesystem/access sandbox, not a disk or memory quota; approve the actual script’s behavior before running it.
 
@@ -56,47 +56,35 @@ Remembered approvals live only in host memory. Expiry, revocation, permission ch
 
 ## App access on macOS
 
-New browser invitations can share **Selected apps** with **Hidden**, **View only**,
-or **View & control** access. The agent chooses one app window in Screen. Reach
-captures that window directly using ScreenCaptureKit; it never sends the desktop
-and obscures it in the guest browser. Every native operation verifies the signed
-app, process launch identity, exact window, and current geometry. Input uses
-Accessibility operations inside that window; there is no global keyboard/mouse
-fallback. Secure fields, file dialogs, developer tools and protected apps are
-unavailable. macOS 14+, Screen Recording and Accessibility are required.
+Selected apps are **Hidden** or **View only**. Native input is disabled at the route, manager, JavaScript helper wrapper and Swift helper. Old control grants expose at most viewing; new control grants and approval requests fail. Reach, Tailscale, host browsers, embedded webviews, secure fields and protected system apps cannot be shared. Owners can approve viewing of another eligible app for the current invitation only.
 
-The agent may request another app or control permission. Reach shows **Allow for
-this session** and **Deny**. The grant belongs to the invitation UUID, expires
-with it, and is never inherited by another invitation. Additional grants are
-memory-only and are forgotten after a Reach restart. Reductions to initial app
-permissions are saved, so a restart cannot restore an app the owner hid. Owners can hide an app or
-reduce it to view-only in Manage app requests; ending the invitation revokes all
-its permissions. Native helper operations are cancelled when access changes.
+The helper requires macOS 14.2+, Screen Recording and Accessibility. It captures one verified signed app window with child windows excluded; it never captures the desktop and hides it later with CSS. Window targets bind the app signature, process launch identity and geometry. Revocation, pause, expiry and permission changes abort helper operations and invalidate targets. Capture checks cannot guarantee atomic semantic redaction of changing pixels; owners should share windows whose entire content is appropriate for the agent.
 
-Create and approve these invitations from the same separately trusted phone or
-computer using its native Tailscale connection. While such an invitation exists,
-ordinary Reach APIs on this Mac are restricted to the pinned approving Tailscale
-node. This includes same-node automatic owner admission and existing owner
-sessions. Browser/WASM Tailscale nodes are not approval devices. Agent credentials
-continue to reach only explicitly allowed browser endpoints. This relies on the
-owner's trusted Tailscale enrollment, not hardware attestation.
+Create and approve app invitations from a separately trusted phone/computer with native Tailscale. Ordinary Reach APIs, owner admission and download links remain restricted to the pinned approving device while the invitation exists. Revoking or expiring that device ends the agent's app access. Corrupt credential storage fails closed. App credentials bind the exact approving device and policy; older app invitations need replacement after this security update.
 
-This boundary controls which native window pixels and controls Reach exposes.
-It does not sandbox the allowed app's effects. An allowed browser includes its
-accounts, extensions and websites. Some custom/canvas controls are unsupported;
-Reach stops instead of sending an unrestricted click. Read-only metadata and
-mocked tests do not substitute for testing capture/input in the actual macOS
-permission context.
+App tools: `reach_apps`, `reach_app_windows`, `reach_app_screen`, and `reach_request_app` (view only). Window targets and additional grants are invitation-specific. A new invitation never inherits them. The public guest workspace remains available through the signed, expiring Funnel capability; it grants no owner API access or new invitations.
 
-App tools: `reach_apps`, `reach_app_windows`, `reach_app_screen`, `reach_app_input`,
-and `reach_request_app`. The opaque window target comes from `reach_app_windows`;
-never supply a PID or native window ID. Use `reach_list_requests` for approval
-results. File and terminal tools retain their independent folder limits.
+## Filesystem enforcement
 
-## Protected owner controls
+Browser-agent Files, searches, restricted reads and approved mutations use a macOS native helper with descriptor-relative `openat` traversal and `O_NOFOLLOW` at every component. The helper installs a kernel sandbox before operating on shared data. Symlinks, extra hard links, special files and directory swaps cannot broaden access. Requests recheck the live session before releasing output. Platforms without this boundary fail closed.
 
-Reach and Tailscale native apps are permanently unavailable to invited browser agents. The catalog, initial selections, stored grants, access requests, approvals, window targets and native helper enforce this independently. Renaming the installed app does not change its signed bundle identity. These protections cannot be overridden by a session approval.
+Choose a project/data folder, such as Desktop or a project beneath it. Home itself, filesystem roots, system/install locations and runtime directories cannot be agent roots. Reach source/state, credentials, browser profiles, shell startup files and Git configuration/hooks are excluded even beneath broader shares. Scripts cannot rename protected ancestors, create hard links, modify trusted runtime libraries or start helper processes. Shared project source remains untrusted code: approval does not make files safe to execute later outside the sandbox.
 
-Allowed browser windows must expose a verifiable actual page/document URL. Reach rejects its configured owner origins, Tailscale domains, tailnet/local hosts, literal IP addresses and non-HTTP(S) browser pages. Checks run before and after capture/input, on clicked link ancestors, and against the complete address produced by editing an address field. Unknown page identity fails closed. Unrelated allowed apps still use window-bound capture and Accessibility input.
+File downloads are bounded to 25 MiB and text reads to 1 MiB. Native document conversion is unavailable to agents; download the bounded bytes and parse them in the agent's own environment. Explicitly shared terminal output is content access and may contain secrets already printed there.
 
-These browser URL checks are defense in depth, not network isolation or an atomic navigation/capture guarantee. Redirects, background JavaScript, DNS aliases/rebinding and web proxies can issue requests independently of Reach's input checks. A managed isolated browser with enforced network policy is needed for a categorical network guarantee. The owner API's separate device/session authorization remains the hard boundary for Reach management. Reach cannot control the agent's own VM browser. The agent's signed guest workspace intentionally remains reachable through Funnel without granting tailnet membership or owner permissions.
+## Isolation boundary
+
+An app allowlist and Accessibility checks cannot confine the effects of an owner's existing apps. A normal button can launch another app, use IPC, perform network requests or execute code. Browser URL checks additionally race with redirects, background requests and changing pixels. Host app control and host browsers therefore remain unavailable until a separate OS/VM environment or narrow application adapter enforces the intended capabilities. A separate browser profile alone is insufficient for a categorical host/network guarantee.
+
+These restrictions cover browser invitations, including Muse and other bots using that flow. Legacy CLI credentials with `exec`, `terminal` or `apps:drive` are separate high-trust capabilities and must not be represented as equivalent folder sandboxes. This review did not certify those capabilities or privileged local software against compromise.
+
+
+## Multiple browser agents
+
+Use **Settings → Agents** to invite and manage independent browser sessions. Each card identifies the invitation, its exact folders, permissions, expiry, current folder work, pending connection/action approvals and recent command records. Identical display names never join sessions or share approvals. **Stop** revokes one invitation; **Stop all** confirms the exact displayed session IDs and leaves newer invitations alone. These controls are owner-only and do not manage high-trust legacy CLI credentials.
+
+Approved scripts and file mutations share a server-side writer coordinator. It holds an exclusive lease for the entire granted root, including overlapping parent/child roots and filesystem aliases. Scripts count as writers regardless of their command text. Unrelated folders may progress concurrently; readers remain concurrent and do not receive a consistent filesystem snapshot. Conflicting writers wait in order for at most 30 seconds, with at most 20 waiting globally and three per session. Two scripts may run globally, one per session. Authorization and folder identity are checked while waiting and before execution. Cancelling running work retains its lease until the child process or native helper has actually stopped.
+
+Before and after a writer runs, Reach clears other agents' remembered mutating-command approvals for overlapping folders and cancels their pending or queued mutation/script approvals. They must request fresh approval. This also covers approvals created during another writer's operation and commands still flushing their completion records. The writer's own exact-command approvals remain scoped to its invitation.
+
+Agents always work in the real folders you share; Reach never copies them. Reach controls what an agent can do there: it reads files directly, commands are read-only, and any change waits for your approval, one at a time. Shared folders are intentionally shared data: an approved change is visible to every agent with access to that folder. Reach does not coordinate unsandboxed owner/CLI writes or make script contents immutable. The existing protected-app and view-only restrictions remain enforced. Funnel stays open only while at least one valid invitation or session needs it; a new invitation never extends another session's credential.

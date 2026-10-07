@@ -17,6 +17,99 @@ const settled = async () => {
   for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
 };
 
+test("a working shared Codex chat changes its native model without taking ownership", async () => {
+  const daemon = fakeDaemon();
+  const live = createCodexLive({ daemon });
+  assert.deepEqual(await live.model(T, { model: "gpt-6-luna", effort: "high" }), { model: "gpt-6-luna", effort: "high", applied: true });
+  assert.deepEqual(daemon.calls, [["thread/settings/update", { threadId: T, model: "gpt-6-luna", effort: "high" }]]);
+  assert.equal(live.drives(T), false);
+});
+
+test("a shared Codex chat confirms native permissions instead of only saving a local label", async () => {
+  const daemon = fakeDaemon();
+  const live = createCodexLive({ daemon });
+  assert.deepEqual(await live.mode(T, "auto"), { mode: "auto", applied: true });
+  assert.deepEqual(daemon.calls, [["thread/settings/update", {
+    threadId: T, approvalPolicy: "on-request", approvalsReviewer: "user", permissions: ":workspace",
+  }]]);
+  assert.equal(live.drives(T), false);
+});
+
+test("desktop-owned permission changes use its owner and cannot silently succeed on failure", async () => {
+  const daemon = fakeDaemon({
+    "thread/settings/update": new Error(`thread not found: ${T}`),
+    "thread/resume": new Error("thread already has an active writer"),
+  });
+  let fail = false;
+  const calls = [];
+  const live = createCodexLive({ daemon, desktop: { async permissions(id, settings) {
+    calls.push([id, settings]);
+    if (fail) throw Error("not confirmed");
+    return { applied: true };
+  } } });
+  await live.mode(T, "read-only");
+  assert.deepEqual(calls, [[T, { approvalPolicy: "on-request", approvalsReviewer: "user", permissions: ":read-only" }]]);
+  fail = true;
+  await assert.rejects(live.mode(T, "auto"), /not confirmed/);
+  assert.equal(live.drives(T), false);
+  assert.ok(daemon.methods().every(m => ["thread/settings/update", "thread/resume"].includes(m)));
+});
+
+test("Codex questions accept nullable options and reject malformed or unoffered answers", async () => {
+  const { describePrompt, answerFor } = await import("../server/agent-sessions/codex-live.mjs");
+  const params = { threadId: T, questions: [{ id: "q", header: "", question: "Name?", options: null }] };
+  const prompt = describePrompt("item/tool/requestUserInput", params);
+  assert.deepEqual(answerFor(prompt, { answers: { q: ["example"] } }), { answers: { q: { answers: ["example"] } } });
+  const choice = describePrompt("item/tool/requestUserInput", { ...params, questions: [{ ...params.questions[0], options: [{ label: "A" }] }] });
+  assert.throws(() => answerFor(choice, { answers: { q: ["B"] } }));
+  const daemon = fakeDaemon(), live = createCodexLive({ daemon });
+  const rejected = await daemon.ask(2, "item/tool/requestUserInput", { ...params, questions: [] });
+  assert.equal(rejected.error.code, -32602);
+  assert.equal(live.view(T).prompts.length, 0);
+  assert.match(live.view(T).error, /questions interface/);
+});
+
+test("an unloaded chat is resumed only when needed to save the model, then released", async () => {
+  let loaded = false;
+  const daemon = fakeDaemon({
+    "thread/settings/update": () => loaded ? {} : new Error(`thread not found: ${T}`),
+    "thread/resume": () => { loaded = true; return {}; },
+  });
+  const live = createCodexLive({ daemon });
+  await live.model(T, { model: "gpt-6-luna" });
+  assert.deepEqual(daemon.methods(), ["thread/settings/update", "thread/resume", "thread/settings/update", "thread/unsubscribe"]);
+  assert.equal(live.drives(T), false);
+});
+
+test("a desktop writer routes model changes to its owner without interrupting or sending", async () => {
+  const daemon = fakeDaemon({
+    "thread/settings/update": new Error(`thread not found: ${T}`),
+    "thread/resume": new Error("thread already has an active writer"),
+  });
+  const changes = [];
+  const live = createCodexLive({ daemon, desktop: { async model(id, settings) {
+    changes.push([id, settings]);
+    return { ...settings, applied: true };
+  } } });
+  assert.deepEqual(await live.model(T, { model: "gpt-6-luna", effort: "high" }), { model: "gpt-6-luna", effort: "high", applied: true });
+  assert.deepEqual(changes, [[T, { model: "gpt-6-luna", effort: "high" }]]);
+  assert.deepEqual(daemon.methods(), ["thread/settings/update", "thread/resume"]);
+  assert.equal(live.drives(T), false);
+});
+
+test("an unconfirmed desktop model change stays failed and never takes ownership", async () => {
+  const daemon = fakeDaemon({
+    "thread/settings/update": new Error(`thread not found: ${T}`),
+    "thread/resume": new Error("thread already has an active writer"),
+  });
+  const live = createCodexLive({ daemon, desktop: { async model() {
+    throw Object.assign(new Error("Codex didn't confirm the model change."), { status: 409 });
+  } } });
+  await assert.rejects(live.model(T, { model: "gpt-6-luna" }), (e) => e.status === 409);
+  assert.deepEqual(daemon.methods(), ["thread/settings/update", "thread/resume"]);
+  assert.equal(live.drives(T), false);
+});
+
 test("Stop can address the exact running app turn without taking over the thread", async () => {
   const daemon = fakeDaemon({ "thread/turns/list": { data: [{ id: "app-turn", status: "inProgress" }] } });
   const live = createCodexLive({ daemon });
@@ -407,6 +500,7 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       start: async (agent, body) => (seen.push(["start", agent, body]), { threadId: T }),
       respond: async (agent, id, prompt, answer) => (seen.push(["respond", prompt, answer]), { answered: true }),
       stop: async () => ({ stopped: true }),
+      model: async (agent, id, choice) => (seen.push(["model", agent, id, choice]), { ...choice, applied: true }),
       mode: async (agent, id, { mode }) => (seen.push(["mode", agent, mode]), { mode, applied: true }),
       models: async (agent) => ({ models: [{ id: `${agent}-model` }], mode: "guardian-approvals" }),
       commands: async (agent) => (agent === "claude" ? [{ name: "compact", description: "Summarize", hint: "" }] : []),
@@ -431,6 +525,11 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     const uploaded = await call("/api/sessions/images", owner.token, form);
     assert.equal(uploaded.status, 200);
     const { id } = await uploaded.json();
+
+    assert.equal((await call(`/api/sessions/codex/${T}/model`, agent.token, { model: "gpt-6-luna" })).status, 403);
+    assert.deepEqual(await (await call(`/api/sessions/codex/${T}/model`, owner.token, { model: "gpt-6-luna", effort: "high" })).json(), { model: "gpt-6-luna", effort: "high", applied: true });
+    assert.equal((await call(`/api/sessions/codex/${T}/model`, owner.token, { model: "" })).status, 400);
+    assert.deepEqual(seen.filter(([kind]) => kind === "model"), [["model", "codex", T, { model: "gpt-6-luna", effort: "high" }]]);
 
     // A permission mode picked on the phone, picked in the Claude app too: the
     // owner's call only, and never Bypass permissions.
@@ -650,7 +749,7 @@ test("resolved or closed requests cannot leave decorative approval buttons", asy
   await assert.rejects(live.respond(T, "18", { answers: { q: ["first"] } }), (e) => e.status === 409);
 });
 
-test("approval is successful only after its real response is delivered; failed delivery stays retryable", async () => {
+test("approval stays pending until delivery is known, and uncertain delivery cannot be replayed", async () => {
   const daemon = fakeDaemon();
   let request;
   daemon.onRequest = (handler) => request = handler;
@@ -668,10 +767,10 @@ test("approval is successful only after its real response is delivered; failed d
   fail(new Error("Connection lost"));
   await assert.rejects(first, /Connection lost/);
   assert.equal(live.view(T).prompts.length, 1);
-  const retry = live.respond(T, "19", { decision: "accept" });
-  deliver();
-  assert.deepEqual(await retry, { answered: true });
-  assert.equal(attempts, 2);
+  await assert.rejects(live.respond(T, "19", { decision: "accept" }), /already attempted/);
+  assert.equal(attempts, 1);
+  assert.equal(live.view(T).prompts[0].attempted, true);
+  daemon.emit("serverRequest/resolved", { requestId: 19 });
   assert.deepEqual(live.view(T).prompts, []);
 });
 
@@ -709,4 +808,75 @@ test("permission scope is visible and native-only elicitation cannot accept an e
     assert.deepEqual(p.decisions, ["decline", "cancel"]);
     assert.throws(() => answerFor(p, { decision: "accept" }));
   }
+});
+
+test("Computer Use's empty MCP form offers Yes and answers only an explicit phone response", async () => {
+  const daemon = fakeDaemon();
+  const live = createCodexLive({ daemon });
+  let answered = false;
+  const result = daemon.ask(71, "mcpServer/elicitation/request", {
+    threadId: T, serverName: "cua_repl", mode: "form",
+    message: 'Allow Computer Use to use "Google Chrome"?',
+    requestedSchema: { type: "object", properties: {} },
+    _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", persist: ["session", "always"] },
+  }).then(value => { answered = true; return value; });
+  const prompt = live.view(T).prompts[0];
+  assert.deepEqual(prompt.decisions, ["accept", "decline", "cancel"]);
+  assert.equal(prompt.reason, undefined);
+  await settled();
+  assert.equal(answered, false);
+  await live.respond(T, "71", { decision: "accept", content: { injected: true }, _meta: { persist: "always" } });
+  assert.deepEqual(await result, { action: "accept", content: {} });
+  assert.equal(live.view(T).prompts.length, 0);
+  await assert.rejects(live.respond(T, "71", { decision: "accept" }), /already answered/);
+});
+
+test("an uncertain Codex approval cannot be resubmitted from an apparently actionable card", async () => {
+  let receive, writes = 0;
+  const daemon = fakeDaemon();
+  daemon.onRequest = handler => { receive = handler; };
+  const live = createCodexLive({ daemon });
+  receive({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: T, command: "example" } },
+    async () => { writes++; throw Error("delivery unknown"); });
+  await assert.rejects(live.respond(T, "7", { decision: "accept" }), /delivery unknown/);
+  assert.equal(live.view(T).prompts[0].attempted, true);
+  await assert.rejects(live.respond(T, "7", { decision: "accept" }), /already attempted/);
+  assert.equal(writes, 1);
+});
+
+test("required fields, device proofs and specialized native confirmations never become empty approvals", async () => {
+  const { describePrompt, answerFor } = await import("../server/agent-sessions/codex-live.mjs");
+  const base = { serverName: "cua_repl", mode: "form", requestedSchema: { type: "object", properties: {} } };
+  for (const extra of [
+    { requestedSchema: {} },
+    { requestedSchema: { type: "object", properties: { approved: { type: "boolean" } }, required: ["approved"] } },
+    { requestedSchema: { type: "object", properties: {}, required: ["hidden"] } },
+    { requestedSchema: { type: "object", properties: {}, allOf: [] } },
+    { mode: "openai/userVerification" },
+    { mode: "url" },
+    { _meta: { "openai/elicitation": {} } },
+    { _meta: { "openai/confirmation": {} } },
+    { _meta: { codex_approval_kind: "browser_auth" } },
+    { serverName: "codex_apps", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "another-connector" } },
+  ]) {
+    const prompt = describePrompt("mcpServer/elicitation/request", { ...base, ...extra });
+    assert.deepEqual(prompt.decisions, ["decline", "cancel"]);
+    assert.throws(() => answerFor(prompt, { decision: "accept" }));
+  }
+});
+
+// Speed (Oct 6): the phone's Configure › Speed goes to Codex as its service
+// tier, on the next message and on a new chat, as the app's own menu does.
+test("a Codex speed picked on the phone reaches Codex as its service tier", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "turn-1" } }, "thread/start": { thread: { id: T } } });
+  const live = createCodexLive({ daemon });
+  await live.send(T, { text: "hi", speed: "priority" });
+  assert.equal(daemon.calls.find(([m]) => m === "turn/start")[1].serviceTier, "priority");
+  const other = fakeDaemon({ "turn/start": { turn: { id: "turn-2" } }, "thread/start": { thread: { id: T } } });
+  await createCodexLive({ daemon: other }).start({ cwd: "/tmp", text: "go", speed: "priority" });
+  assert.equal(other.calls.find(([m]) => m === "thread/start")[1].serviceTier, "priority");
+  // No pick, no override: the chat keeps its own speed.
+  const plain = fakeDaemon({ "turn/start": { turn: { id: "turn-3" } } });
+  await createCodexLive({ daemon: plain }).send(T, { text: "hi" });
+  assert.equal("serviceTier" in plain.calls.find(([m]) => m === "turn/start")[1], false);
 });

@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as pty from "node-pty";
+import { computerWord } from "../computer-word.mjs";
 
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
 export const plainText = (text) => String(text).replace(ANSI, "").replace(/\r/g, "");
@@ -45,6 +46,8 @@ export function createSignIn({
   now = Date.now,
   timeoutMs = 15 * 60 * 1000,
   linkMs = 10000,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 }) {
   const flows = new Map();
   const view = (flow) =>
@@ -91,7 +94,7 @@ export function createSignIn({
 
   async function startClaude(flow) {
     const command = await claudeCommand();
-    if (!command) throw bad("Claude Code isn't installed on this Mac.", 404);
+    if (!command) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     const { dir, open } = shim();
     // Reach's own environment, never a host app's; the shim goes first even
     // after the login shell rebuilds PATH.
@@ -125,7 +128,7 @@ export function createSignIn({
   }
 
   async function startCodex(flow) {
-    if (!daemon) throw bad("Codex isn't available on this Mac.", 404);
+    if (!daemon) throw bad(`Codex isn't available on this ${computerWord(platform)}.`, 404);
     const r = await daemon.rpc("account/login/start", { type: "chatgptDeviceCode" });
     flow.loginId = r.loginId;
     flow.url = r.verificationUrl;

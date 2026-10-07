@@ -150,6 +150,13 @@
   cursor: pointer;
 }
 .claw-composer {
+  /* Its send and stop buttons are the chats' own (.as-send), but this space
+     sits outside a chat page: without the chat colors the button had no
+     color at all (transparent). Reach's colors, as every chat page uses. */
+  --as-text: var(--text-strong, #eef4ef);
+  --as-bg: var(--bg);
+  --as-send-ready: var(--lime);
+  --as-send-ready-ink: var(--lime-ink);
   flex: none;
   border: 1px solid var(--border);
   border-radius: 14px;

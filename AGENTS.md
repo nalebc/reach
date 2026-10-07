@@ -12,4 +12,6 @@ Never start Reach any other way: no `nohup`, no `&`, no background shell, no `no
 
 If `./reach` says Reach is already running, don't start another copy. Tell the user where it runs and offer `./reach restart`.
 
+Interface changes (`src/`, `public/`, `index.html`) need no restart: Reach rebuilds them and open phones reload on their own. Only server changes need one. When you run `./reach restart`, it asks the user on their phone (Needs you) and returns; Reach restarts when they tap Restart. Don't run it again while it's waiting.
+
 Restarting ends Reach's terminals and live streams. Run `./reach status` first, and ask the user before restarting while they use it. Never pass `--yes` to `stop` or `restart` (it closes Reach's terminals without asking) unless the user said so.

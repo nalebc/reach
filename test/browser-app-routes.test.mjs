@@ -10,7 +10,7 @@ import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES, atomicJson } from "../server/core.mjs";
 import { admitAgent } from "./helpers/agent-admission.mjs";
 
-const safari = "/Applications/Safari.app", notes = "/Applications/Notes.app", terminal = "/Applications/Terminal.app";
+const textEdit = "/Applications/TextEdit.app", notes = "/Applications/Notes.app", terminal = "/Applications/Terminal.app";
 const apple = "a".repeat(64), noteSignature = "b".repeat(64), processInstance = "c".repeat(64);
 const ownerAccount = { userId: "42", login: "owner@example.test" };
 const ORIGIN = "https://computer.example.ts.net";
@@ -26,7 +26,7 @@ async function fixture(t, hooks = {}) {
   const socketPath = path.join(socketDir, "s"), dataDir = path.join(dir, "private");
   const inputs = [], captures = [], windowCalls = [];
   const applications = [
-    { id: safari, name: "Safari", bundleId: "com.apple.Safari", protected: false, identity: apple },
+    { id: textEdit, name: "TextEdit", bundleId: "com.apple.TextEdit", protected: false, identity: apple },
     { id: notes, name: "Notes", bundleId: "com.apple.Notes", protected: false, identity: noteSignature },
     { id: terminal, name: "Terminal", bundleId: "com.apple.Terminal", protected: true, reason: "Protected app" },
   ];
@@ -35,7 +35,7 @@ async function fixture(t, hooks = {}) {
     windows: async (appId, authorize, expected) => {
       authorize(); const app = applications.find((item) => item.id === appId);
       assert.equal(expected, app.identity); windowCalls.push(appId);
-      return { windows: [{ id: appId === safari ? 11 : 12, pid: appId === safari ? 101 : 102,
+      return { windows: [{ id: appId === textEdit ? 11 : 12, pid: appId === textEdit ? 101 : 102,
         title: "Allowed window", instance: processInstance, identity: expected, width: 800, height: 600 }] };
     },
     capture: async (target, authorize) => {
@@ -88,7 +88,7 @@ async function fixture(t, hooks = {}) {
     req.setTimeout(10000, () => req.destroy(Error("Fixture request timed out")));
     req.once("error", reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
-  const invite = (appAccess = [{ id: safari, mode: "control" }], options = {}) => call("/api/agents/browser-invitations", {
+  const invite = (appAccess = [{ id: textEdit, mode: "view" }], options = {}) => call("/api/agents/browser-invitations", {
     method: "POST", body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess }, ...options,
   });
   const join = async (choices) => {
@@ -99,7 +99,7 @@ async function fixture(t, hooks = {}) {
     return { ...joined, invitation: created.body,
       as: (route, options = {}) => call(route, { node: "nAgent", token: joined.token, ...options }) };
   };
-  const window = async (agent, appId = safari) => {
+  const window = async (agent, appId = textEdit) => {
     const result = await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(appId)}`);
     assert.equal(result.status, 200, JSON.stringify(result.body)); assert.equal(result.body.windows.length, 1);
     return result.body.windows[0];
@@ -108,7 +108,7 @@ async function fixture(t, hooks = {}) {
     const file = path.join(dataDir, "clients.json"), clients = JSON.parse(fs.readFileSync(file));
     change(clients.find((client) => client.id === clientId)); atomicJson(file, clients);
   };
-  return { reach, owners, call, invite, join, window, alter, inputs, captures, applications, windowCalls, socketPath };
+  return { reach, owners, call, invite, join, window, alter, inputs, captures, applications, windowCalls, socketPath, dir };
 }
 
 const platform = { skip: process.platform === "win32" };
@@ -118,9 +118,9 @@ test("real app HTTP routes bind capture/input to exact allowed windows and rejec
   const image = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
   assert.equal(image.status, 200); assert.equal(image.body, "only-this-app-jpeg");
   const action = { type: "click", x: 0.4, y: 0.5 };
-  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action } })).status, 200);
-  assert.equal(f.inputs[0].target.windowId, 11); assert.equal(f.inputs[0].target.pid, 101);
-  assert.equal(f.captures[0].appId, safari);
+  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action } })).status, 403);
+  assert.deepEqual(f.inputs, []);
+  assert.equal(f.captures[0].appId, textEdit);
   for (const [route, method, body] of [
     ["/api/browser/screen", "GET"], ["/api/screen", "GET"],
     ["/api/browser/scroll", "POST", { direction: "down" }],
@@ -128,13 +128,13 @@ test("real app HTTP routes bind capture/input to exact allowed windows and rejec
     ["/api/browser/requests", "POST", { ...action, reason: "Use global screen" }],
     ["/api/browser/apps/windows?appId=" + encodeURIComponent(notes), "GET"],
   ]) assert.equal((await agent.as(route, { method, body })).status, 403, route);
-  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: "11", action } })).status, 409);
-  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, pid: 999, action } })).status, 400);
-  assert.equal(f.inputs.length, 1);
+  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: "11", action } })).status, 403);
+  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, pid: 999, action } })).status, 403);
+  assert.equal(f.inputs.length, 0);
 });
 
 test("view-only app grants reject input and do not implicitly share other apps", platform, async (t) => {
-  const f = await fixture(t), agent = await f.join([{ id: safari, mode: "view" }]), target = await f.window(agent);
+  const f = await fixture(t), agent = await f.join([{ id: textEdit, mode: "view" }]), target = await f.window(agent);
   assert.equal((await agent.as(`/api/browser/apps/screen?target=${target.id}`)).status, 200);
   for (const action of [{ type: "click", x: .1, y: .1 }, { type: "text", text: "hello" },
     { type: "key", key: "enter" }, { type: "scroll", direction: "down", amount: 2 }])
@@ -146,19 +146,20 @@ test("view-only app grants reject input and do not implicitly share other apps",
 
 test("owner grants one requested app for one invitation and same-name new invite starts fresh", platform, async (t) => {
   const f = await fixture(t), agent = await f.join();
-  const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: notes, mode: "control", reason: "Write the requested note" } });
+  const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: notes, mode: "view", reason: "Write the requested note" } });
   assert.equal(pending.status, 201); assert.equal(pending.body.status, "pending");
   const route = `/api/agents/browser-requests/${pending.body.id}`;
   assert.equal((await agent.as(route, { method: "POST", body: { decision: "approve" } })).status, 403);
-  assert.equal((await f.call(route, { method: "POST", body: { decision: "approve", appId: safari } })).status, 400);
+  assert.equal((await f.call(route, { method: "POST", body: { decision: "approve", appId: textEdit } })).status, 400);
   assert.equal((await f.call(route, { method: "POST", body: { decision: "approve" } })).body.status, "executed");
   const note = await f.window(agent, notes);
-  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: note.id, action: { type: "text", text: "hello" } } })).status, 200);
+  assert.equal((await agent.as(`/api/browser/apps/screen?target=${note.id}`)).status, 200);
+  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: note.id, action: { type: "text", text: "hello" } } })).status, 403);
   const next = await f.join(); assert.notEqual(next.clientId, agent.clientId);
   assert.equal((await next.as(`/api/browser/apps/screen?target=${note.id}`)).status, 409);
   assert.equal((await next.as(`/api/browser/apps/windows?appId=${encodeURIComponent(notes)}`)).status, 403);
   assert.equal((await next.as("/api/browser/apps")).body.apps.find((app) => app.id === notes).mode, "hidden");
-  assert.equal((await next.as("/api/browser/apps/requests", { method: "POST", body: { appId: terminal, mode: "control" } })).status, 403);
+  assert.equal((await next.as("/api/browser/apps/requests", { method: "POST", body: { appId: terminal, mode: "view" } })).status, 403);
 });
 
 test("private HTTP guard blocks host owner reads/admission and unpinned or browser-node owners", platform, async (t) => {
@@ -175,6 +176,30 @@ test("private HTTP guard blocks host owner reads/admission and unpinned or brows
   assert.deepEqual(stored.browserAppApprover, { nodeId: "nPhone", userId: "42", clientId: f.owners.nPhone.clientId });
 });
 
+test("an existing owner download capability cannot bypass app-session protection", platform, async (t) => {
+  const f = await fixture(t);
+  fs.writeFileSync(path.join(f.dir, "owner-only.txt"), "private owner file");
+  const hostLink = await f.call("/api/files/download-link?root=0&path=owner-only.txt", { node: "nHost" });
+  const phoneLink = await f.call("/api/files/download-link?root=0&path=owner-only.txt");
+  assert.equal(hostLink.status, 200); assert.equal(phoneLink.status, 200);
+  assert.equal((await f.call(hostLink.body.url, { node: "nHost", token: "" })).body, "private owner file");
+  assert.equal((await f.invite()).status, 201);
+  const blocked = await f.call(hostLink.body.url, { node: "nHost", token: "" });
+  assert.equal(blocked.status, 403, JSON.stringify(blocked));
+  assert.equal((await f.call(phoneLink.body.url, { token: "" })).body, "private owner file", "the pinned owner retains download access");
+});
+
+test("revoking the supervising owner terminates app access before native effects", platform, async (t) => {
+  let revoke;
+  const f = await fixture(t, { capture: async () => revoke?.() });
+  const agent = await f.join(), target = await f.window(agent);
+  revoke = () => f.reach.auth.revoke(f.owners.nPhone.clientId);
+  const acted = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
+  assert.ok([401, 403].includes(acted.status), JSON.stringify(acted));
+  assert.deepEqual(f.inputs, []); assert.deepEqual(f.captures, []);
+  assert.equal((await agent.as(`/api/browser/apps/screen?target=${target.id}`)).status, 403);
+});
+
 test("owner access editing cannot downgrade an app session to unrestricted desktop capture", platform, async (t) => {
   const f = await fixture(t), agent = await f.join();
   for (const screen of ["ask", "view", "scroll", "off"])
@@ -183,25 +208,25 @@ test("owner access editing cannot downgrade an app session to unrestricted deskt
   assert.equal((await agent.as("/api/browser/screen")).status, 403);
 });
 
-test("revocation and expiry invalidate app targets before capture/input reaches native effects", platform, async (t) => {
+test("revocation and expiry invalidate app targets before capture releases native data", platform, async (t) => {
   let revoke;
-  const f = await fixture(t, { input: async () => revoke?.() });
+  const f = await fixture(t, { capture: async () => revoke?.() });
   const agent = await f.join(), target = await f.window(agent);
   revoke = () => f.reach.auth.revoke(agent.clientId);
-  const result = await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action: { type: "key", key: "enter" } } });
+  const result = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
   assert.ok([401, 403].includes(result.status), JSON.stringify(result)); assert.deepEqual(f.inputs, []);
   const expiring = await f.join(), old = await f.window(expiring);
   f.alter(expiring.clientId, (client) => { client.expiresAt = Date.now() - 1; });
   assert.ok([401, 403].includes((await expiring.as(`/api/browser/apps/screen?target=${old.id}`)).status));
 });
 
-test("permission and target changes during awaited app input fail closed", platform, async (t) => {
+test("permission changes during awaited app capture fail closed", platform, async (t) => {
   let change;
-  const f = await fixture(t, { input: async () => change?.() });
+  const f = await fixture(t, { capture: async () => change?.() });
   const agent = await f.join(), target = await f.window(agent);
-  change = () => f.alter(agent.clientId, (client) => { client.policy.appAccess[0].mode = "view"; });
-  const result = await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action: { type: "click", x: .5, y: .5 } } });
-  assert.equal(result.status, 403, JSON.stringify(result)); assert.deepEqual(f.inputs, []);
+  change = () => f.alter(agent.clientId, (client) => { client.policy.appAccess = []; });
+  const result = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
+  assert.equal(result.status, 401, JSON.stringify(result)); assert.deepEqual(f.inputs, []);
 });
 
 test("real tailnet app admission permits only the current invite or receipt capability", platform, async (t) => {
@@ -223,28 +248,21 @@ test("real tailnet app admission permits only the current invite or receipt capa
   assert.equal((await asAgent("/api/auth/requests", { name: "Agent owner" })).status, 403);
 });
 
-test("approving a view-only replacement during pending input invalidates earlier control targets", platform, async (t) => {
-  let downgrade;
-  const f = await fixture(t, { input: async () => downgrade?.() });
-  const agent = await f.join(), target = await f.window(agent);
-  const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: safari, mode: "view" } });
-  assert.equal(pending.status, 201);
-  downgrade = async () => {
-    const result = await f.call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } });
-    assert.equal(result.status, 200, JSON.stringify(result));
-  };
-  const acted = await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action: { type: "text", text: "do not type" } } });
-  assert.equal(acted.status, 403, JSON.stringify(acted)); assert.deepEqual(f.inputs, []);
-  const fresh = await f.window(agent);
-  assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: fresh.id, action: { type: "text", text: "still denied" } } })).status, 403);
-  assert.equal(f.reach.auth.list().find((client) => client.id === agent.clientId).policy.appAccess.find((app) => app.id === safari).mode, "view");
-  f.reach.setPaused(true); f.reach.setPaused(false);
-  assert.equal((await agent.as("/api/browser/apps")).body.apps.find((app) => app.id === safari).mode, "view", "A view-only approval cannot become control after Resume");
+test("app control cannot be granted through invitations, requests or input", platform, async (t) => {
+  const f = await fixture(t), agent = await f.join(), target = await f.window(agent);
+  assert.equal((await f.invite([{ id: textEdit, mode: "control" }])).status, 403);
+  const request = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: textEdit, mode: "control" } });
+  assert.equal(request.status, 403);
+  for (const action of [{ type: "click", x: .2, y: .2 }, { type: "key", key: "enter" }, { type: "text", text: "blocked" }])
+    assert.equal((await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action } })).status, 403);
+  const list = await agent.as("/api/browser/apps");
+  assert.equal(list.body.controlAvailable, false);
+  assert.deepEqual(f.inputs, []);
 });
 
 test("changed app signature prevents an already displayed owner request from granting access", platform, async (t) => {
   const f = await fixture(t), agent = await f.join();
-  const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: notes, mode: "control" } });
+  const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: notes, mode: "view" } });
   assert.equal(pending.status, 201);
   f.applications.find((app) => app.id === notes).identity = "d".repeat(64);
   assert.equal((await f.call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 409);
@@ -253,7 +271,7 @@ test("changed app signature prevents an already displayed owner request from gra
 
 test("signed Funnel app requests retain the validated inner API route through dispatch", platform, async (t) => {
   const f = await fixture(t, { funnel: true });
-  const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: safari, mode: "control" }], transport: "funnel" } });
+  const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: textEdit, mode: "view" }], transport: "funnel" } });
   assert.equal(created.status, 201, JSON.stringify(created));
   const pair = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   const publicKey = { ...pair.publicKey.export({ format: "jwk" }), ext: true, key_ops: ["verify"] };
@@ -268,40 +286,40 @@ test("signed Funnel app requests retain the validated inner API route through di
   const joined = await gateway({ operation: "status", requestId: claimed.body.requestId, secret: claimed.body.requestSecret });
   assert.equal(joined.status, 200, JSON.stringify(joined)); assert.equal(joined.body.status, "approved");
   const listed = await gateway({ operation: "request", token: joined.body.token, method: "GET", path: "/api/browser/apps", body: null });
-  assert.equal(listed.status, 200, JSON.stringify(listed)); assert.equal(listed.body.apps.find((app) => app.id === safari).mode, "control");
+  assert.equal(listed.status, 200, JSON.stringify(listed)); assert.equal(listed.body.apps.find((app) => app.id === textEdit).mode, "view");
   assert.equal((await gateway({ operation: "request", token: joined.body.token, method: "GET", path: "/api/clients", body: null })).status, 403);
 });
 
-test("owner app restriction invalidates queued input and pending escalation requests", platform, async (t) => {
+test("owner app restriction invalidates queued capture and pending access requests", platform, async (t) => {
   let restrict;
-  const f = await fixture(t, { input: async () => restrict?.() });
+  const f = await fixture(t, { capture: async () => restrict?.() });
   const agent = await f.join(), target = await f.window(agent);
-  const requested = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: safari, mode: "control" } });
+  const requested = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId: textEdit, mode: "view" } });
   const route = `/api/agents/browser-app-access/${agent.clientId}`;
-  assert.equal((await agent.as(route, { method: "POST", body: { appId: safari, mode: "hidden" } })).status, 403);
+  assert.equal((await agent.as(route, { method: "POST", body: { appId: textEdit, mode: "hidden" } })).status, 403);
   assert.equal((await f.call(route, { method: "POST", body: { appId: notes, mode: "view" } })).status, 403);
   restrict = async () => {
-    const response = await f.call(route, { method: "POST", body: { appId: safari, mode: "hidden" } });
+    const response = await f.call(route, { method: "POST", body: { appId: textEdit, mode: "hidden" } });
     assert.equal(response.status, 200, JSON.stringify(response));
   };
-  const acted = await agent.as("/api/browser/apps/input", { method: "POST", body: { target: target.id, action: { type: "click", x: .5, y: .5 } } });
-  assert.equal(acted.status, 403, JSON.stringify(acted)); assert.deepEqual(f.inputs, []);
+  const acted = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
+  assert.ok([403, 409].includes(acted.status), JSON.stringify(acted)); assert.deepEqual(f.inputs, []);
   assert.equal((await agent.as(`/api/browser/apps/screen?target=${target.id}`)).status, 409);
   assert.equal((await f.call(`/api/agents/browser-requests/${requested.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 409);
 });
 
 test("hiding a base app grant remains effective after pause and resume", platform, async (t) => {
   const f = await fixture(t), agent = await f.join();
-  const response = await f.call(`/api/agents/browser-app-access/${agent.clientId}`, { method: "POST", body: { appId: safari, mode: "hidden" } });
+  const response = await f.call(`/api/agents/browser-app-access/${agent.clientId}`, { method: "POST", body: { appId: textEdit, mode: "hidden" } });
   assert.equal(response.status, 200, JSON.stringify(response));
   const persisted = f.reach.auth.list().find((client) => client.id === agent.clientId);
-  assert.equal(persisted.policy.appAccess.some((app) => app.id === safari), false, "host restart must not restore the removed base grant");
-  assert.equal((await agent.as("/api/browser/apps")).body.apps.find((app) => app.id === safari).mode, "hidden");
+  assert.equal(persisted.policy.appAccess.some((app) => app.id === textEdit), false, "host restart must not restore the removed base grant");
+  assert.equal((await agent.as("/api/browser/apps")).body.apps.find((app) => app.id === textEdit).mode, "hidden");
   f.reach.setPaused(true); f.reach.setPaused(false);
   const after = await agent.as("/api/browser/apps");
   assert.equal(after.status, 200, JSON.stringify(after));
-  assert.equal(after.body.apps.find((app) => app.id === safari).mode, "hidden", "Resume must not restore access the owner removed");
-  assert.equal((await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(safari)}`)).status, 403);
+  assert.equal(after.body.apps.find((app) => app.id === textEdit).mode, "hidden", "Resume must not restore access the owner removed");
+  assert.equal((await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(textEdit)}`)).status, 403);
 });
 
 test("long app captures keep the signed agent route exception during identity reauthorization", platform, async (t) => {
@@ -310,6 +328,37 @@ test("long app captures keep the signed agent route exception during identity re
   const captured = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
   assert.equal(captured.status, 200, JSON.stringify(captured));
   assert.equal(captured.body, "only-this-app-jpeg");
+});
+
+test("HTTP image responses retain per-agent slots until completion and release them afterward", { ...platform, timeout: 15000 }, async (t) => {
+  let entered = 0, announceReady, release;
+  const ready = new Promise((resolve) => { announceReady = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const f = await fixture(t, { capture: async () => {
+    entered++;
+    if (entered <= 2) {
+      if (entered === 2) announceReady();
+      await gate;
+    }
+  } });
+  const agent = await f.join(), target = await f.window(agent);
+  const route = `/api/browser/apps/screen?target=${target.id}`;
+  const first = agent.as(route), second = agent.as(route);
+  try {
+    await Promise.race([ready, Promise.all([first, second]).then((results) => {
+      throw Error(`Image requests completed before both capture hooks entered: ${JSON.stringify(results)}`);
+    })]);
+    const third = await agent.as(route);
+    assert.equal(third.status, 429, JSON.stringify(third));
+    assert.equal(entered, 2, "a throttled response must not start native capture");
+    assert.deepEqual(f.captures, [], "both authorized captures remain pending");
+  } finally { release(); }
+  for (const response of await Promise.all([first, second])) {
+    assert.equal(response.status, 200, JSON.stringify(response));
+    assert.equal(response.body, "only-this-app-jpeg");
+  }
+  assert.equal((await agent.as(route)).status, 200, "completed responses release their slots");
+  assert.equal(entered, 3);
 });
 
 test("existing host owner sockets terminate when an app invitation activates the guard", platform, async (t) => {
@@ -335,10 +384,10 @@ test("existing host owner sockets terminate when an app invitation activates the
 
 test("overlapping owner grant changes cannot restore a concurrently hidden app", platform, async (t) => {
   const f = await fixture(t), agent = await f.join();
-  // Both apps have remembered positive grants; Safari also has a base grant.
-  // Hiding Safari changes the policy fingerprint while hiding Notes does not.
-  for (const appId of [safari, notes]) {
-    const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId, mode: "control" } });
+  // Both apps have remembered positive grants; TextEdit also has a base grant.
+  // Hiding TextEdit changes the policy fingerprint while hiding Notes does not.
+  for (const appId of [textEdit, notes]) {
+    const pending = await agent.as("/api/browser/apps/requests", { method: "POST", body: { appId, mode: "view" } });
     assert.equal(pending.status, 201);
     assert.equal((await f.call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 200);
   }
@@ -354,12 +403,12 @@ test("overlapping owner grant changes cannot restore a concurrently hidden app",
   try {
     const first = f.call(route, { method: "POST", body: { appId: notes, mode: "hidden" } });
     await entered;
-    const overlap = await f.call(route, { method: "POST", body: { appId: safari, mode: "hidden" } });
+    const overlap = await f.call(route, { method: "POST", body: { appId: textEdit, mode: "hidden" } });
     assert.equal(overlap.status, 409, JSON.stringify(overlap));
     release(); assert.equal((await first).status, 200);
     f.reach.auth.restrictBrowserApp = original;
-    assert.equal((await f.call(route, { method: "POST", body: { appId: safari, mode: "hidden" } })).status, 200);
+    assert.equal((await f.call(route, { method: "POST", body: { appId: textEdit, mode: "hidden" } })).status, 200);
     const listed = await agent.as("/api/browser/apps");
-    for (const appId of [safari, notes]) assert.equal(listed.body.apps.find((app) => app.id === appId).mode, "hidden");
+    for (const appId of [textEdit, notes]) assert.equal(listed.body.apps.find((app) => app.id === appId).mode, "hidden");
   } finally { release(); f.reach.auth.restrictBrowserApp = original; }
 });

@@ -14,6 +14,13 @@ final class Input: @unchecked Sendable {
   init(_ display: CGDirectDisplayID) { self.display = display }
   var typingElement: AXUIElement?
   var typingToken = ""
+  var probedField: AXUIElement?
+  var probedPoint = CGPoint.zero
+  var probedAt = Date.distantPast
+  // The field typed into, as it was when tapped: its app, place and kind.
+  var typingPid: pid_t = 0
+  var typingFrame: CGRect?
+  var typingSecure = false
   func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     AXUIElementSetMessagingTimeout(element, 0.15)
@@ -28,39 +35,41 @@ final class Input: @unchecked Sendable {
     else { return nil }
     return (value as! AXUIElement)
   }
+  // Web editors can focus a descendant of the editable element. Resolve it
+  // the same way when identifying the field and before every guarded edit.
+  func editableElement(_ element: AXUIElement) -> AXUIElement? {
+    let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+    if ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
+      return element
+    }
+    if let ancestor = attribute(element, "AXEditableAncestor"),
+      CFGetTypeID(ancestor) == AXUIElementGetTypeID()
+    { return (ancestor as! AXUIElement) }
+    var settable: DarwinBoolean = false
+    AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+    return role == "AXUnknown" && settable.boolValue ? element : nil
+  }
   func textTarget(_ p: [String: Any]) -> [String: Any] {
-    guard let element = focused() else {
+    guard let focus = focused(), let element = editableElement(focus) else {
       typingElement = nil
       typingToken = ""
       return ["editable": false]
     }
-    let role = attribute(element, kAXRoleAttribute) as? String ?? ""
     let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
-    var settable: DarwinBoolean = false
-    AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
     let enabled = attribute(element, kAXEnabledAttribute) as? Bool ?? true
-    var editable =
-      enabled
-      && (["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role)
-        || settable.boolValue && role == "AXUnknown")
+    var editable = enabled
     if let x = p["x"] as? Double, let y = p["y"] as? Double {
       let bounds = CGDisplayBounds(display)
       let click = CGPoint(
         x: bounds.minX + x * max(0, bounds.width - 1),
         y: bounds.minY + y * max(0, bounds.height - 1))
-      var origin = CGPoint.zero
-      var size = CGSize.zero
-      if let position = attribute(element, kAXPositionAttribute),
-        let dimensions = attribute(element, kAXSizeAttribute),
-        CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(dimensions) == AXValueGetTypeID(),
-        AXValueGetValue(position as! AXValue, .cgPoint, &origin),
-        AXValueGetValue(dimensions as! AXValue, .cgSize, &size)
-      {
-        editable =
-          editable && CGRect(origin: origin, size: size).insetBy(dx: -2, dy: -2).contains(click)
-      } else {
-        editable = false
-      }
+      // Opening suggestions can move a web field after the click. Its exact
+      // probed identity still proves which field was tapped; another focused
+      // field elsewhere never qualifies through this exception.
+      let sameProbedField = probedField.map { CFEqual($0, element) } == true
+        && Date().timeIntervalSince(probedAt) < 2
+        && hypot(click.x - probedPoint.x, click.y - probedPoint.y) <= 2
+      editable = editable && (sameProbedField || frameOf(element)?.insetBy(dx: -2, dy: -2).contains(click) == true)
     }
     guard editable else {
       typingElement = nil
@@ -70,6 +79,10 @@ final class Input: @unchecked Sendable {
     if typingElement == nil || !CFEqual(typingElement!, element) {
       typingElement = element
       typingToken = UUID().uuidString
+      var pid: pid_t = 0
+      typingPid = AXUIElementGetPid(element, &pid) == .success ? pid : 0
+      typingFrame = frameOf(element)
+      typingSecure = subrole == "AXSecureTextField"
     }
     // Never read the value, label, selected text or surrounding document.
     return ["editable": true, "focus": typingToken, "secure": subrole == "AXSecureTextField"]
@@ -77,10 +90,34 @@ final class Input: @unchecked Sendable {
   // Apps whose web content (Chrome, Electron apps such as Claude) was asked
   // to describe itself: they only list their text fields once asked.
   var describing = Set<pid_t>()
+  // Electron listens to AXManualAccessibility; browsers don't (Chrome says
+  // it's unsupported and kept its pages' fields hidden, so a tap on one never
+  // opened the phone's keyboard). They listen to what VoiceOver sets.
+  static let browsers: Set<String> = [
+    "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev",
+    "com.google.Chrome.canary", "org.chromium.Chromium", "com.microsoft.edgemac",
+    "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev", "com.brave.Browser",
+    "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+    "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+    "company.thebrowser.dia", "ai.perplexity.comet", "com.openai.atlas",
+  ]
+  func describe(_ pid: pid_t) {
+    guard !describing.contains(pid) else { return }
+    describing.insert(pid)
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 0.1)
+    _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    if let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+      Input.browsers.contains(id)
+    {
+      _ = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+  }
   // Is there a text field at this point? Asked when a finger touches down,
   // so the phone can open its keyboard on the same tap. Nothing is clicked,
   // focused or read: only the kind of element under the finger.
   func probe(_ p: [String: Any]) -> [String: Any] {
+    probedField = nil
     guard let x = p["x"] as? Double, let y = p["y"] as? Double else { return ["field": false] }
     let bounds = CGDisplayBounds(display)
     let at = CGPoint(
@@ -101,10 +138,7 @@ final class Input: @unchecked Sendable {
     guard found == .success, var element = hit else { return ["field": false, "blind": true] }
     var pid: pid_t = 0
     if AXUIElementGetPid(element, &pid) == .success, pid > 0, !describing.contains(pid) {
-      describing.insert(pid)
-      let app = AXUIElementCreateApplication(pid)
-      AXUIElementSetMessagingTimeout(app, 0.1)
-      AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+      describe(pid)
       if AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
         let again = hit
       {
@@ -113,14 +147,9 @@ final class Input: @unchecked Sendable {
     }
     // The field itself, or what's drawn inside it (its text, a placeholder).
     for _ in 0..<4 {
-      let role = attribute(element, kAXRoleAttribute) as? String ?? ""
-      if ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
-        let enabled = attribute(element, kAXEnabledAttribute) as? Bool ?? true
-        let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
-        return ["field": enabled, "secure": subrole == "AXSecureTextField"]
+      if let field = editableElement(element) {
+        return rememberField(field, at)
       }
-      // Inside an editable web area (a rich editor such as a chat box).
-      if attribute(element, "AXEditableAncestor") != nil { return ["field": true, "secure": false] }
       guard let parent = attribute(element, kAXParentAttribute),
         CFGetTypeID(parent) == AXUIElementGetTypeID()
       else { break }
@@ -134,11 +163,128 @@ final class Input: @unchecked Sendable {
     if let window = windowOf(hit ?? element),
       let field = fieldAt(window, at, until: Date().addingTimeInterval(0.25))
     {
-      let enabled = attribute(field, kAXEnabledAttribute) as? Bool ?? true
-      let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""
-      return ["field": enabled, "secure": subrole == "AXSecureTextField"]
+      return rememberField(field, at)
     }
     return ["field": false, "blind": opaque(hit ?? element)]
+  }
+  func rememberField(_ field: AXUIElement, _ at: CGPoint) -> [String: Any] {
+    let enabled = attribute(field, kAXEnabledAttribute) as? Bool ?? true
+    if enabled { probedField = field; probedPoint = at; probedAt = Date() }
+    let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""
+    return ["field": enabled, "secure": subrole == "AXSecureTextField"]
+  }
+  // Where the text fields of the front window are, so the phone opens its
+  // keyboard on the tap itself instead of waiting for a probe's answer. Run by
+  // a second helper, so a scan never delays a click. Only places and kinds:
+  // never a value, label or title.
+  var scanned = (signature: "", at: Date.distantPast)
+  // The front app and the windows on screen, cheap to read: when it's the
+  // same as last scan, nothing moved.
+  func screenSignature() -> String {
+    let list =
+      CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+      as? [[String: Any]] ?? []
+    var parts = ["\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)"]
+    for window in list where window[kCGWindowLayer as String] as? Int == 0 {
+      guard let rect = window[kCGWindowBounds as String] as? NSDictionary,
+        let bounds = CGRect(dictionaryRepresentation: rect)
+      else { continue }
+      parts.append("\(window[kCGWindowNumber as String] ?? 0):\(bounds)")
+    }
+    return parts.joined(separator: ";")
+  }
+  func fields(_ p: [String: Any]) -> [String: Any] {
+    let signature = screenSignature()
+    // The idle check: nothing moved, and the last full look is recent.
+    if p["cheap"] as? Bool == true, signature == scanned.signature,
+      Date().timeIntervalSince(scanned.at) < 4
+    { return ["same": true] }
+    scanned = (signature, Date())
+    let bounds = CGDisplayBounds(display)
+    guard let front = NSWorkspace.shared.frontmostApplication else { return ["fields": []] }
+    let pid = front.processIdentifier
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 0.1)
+    describe(pid)
+    guard let value = attribute(app, kAXFocusedWindowAttribute),
+      CFGetTypeID(value) == AXUIElementGetTypeID(),
+      let windowFrame = frameOf(value as! AXUIElement), windowFrame.intersects(bounds)
+    else { return ["fields": []] }
+    let visible = windowFrame.intersection(bounds)
+    // Walk the window, skipping branches outside what's on screen.
+    let names = [kAXRoleAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute]
+      as CFArray
+    var found: [(AXUIElement, CGRect)] = []
+    var queue: [(AXUIElement, Int)] = [(value as! AXUIElement, 0)]
+    var head = 0
+    let walkUntil = Date().addingTimeInterval(0.12)
+    while head < queue.count, found.count < 64, Date() < walkUntil {
+      let (element, depth) = queue[head]
+      head += 1
+      AXUIElementSetMessagingTimeout(element, 0.05)
+      var values: CFArray?
+      guard
+        AXUIElementCopyMultipleAttributeValues(element, names, AXCopyMultipleAttributeOptions(), &values)
+          == .success, let v = values as? [AnyObject], v.count == 4
+      else { continue }
+      let role = v[0] as? String ?? ""
+      var frame: CGRect?
+      if CFGetTypeID(v[1]) == AXValueGetTypeID(), CFGetTypeID(v[2]) == AXValueGetTypeID(),
+        AXValueGetType(v[1] as! AXValue) == .cgPoint, AXValueGetType(v[2] as! AXValue) == .cgSize
+      {
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        AXValueGetValue(v[1] as! AXValue, .cgPoint, &origin)
+        AXValueGetValue(v[2] as! AXValue, .cgSize, &size)
+        frame = CGRect(origin: origin, size: size)
+      }
+      if let frame, frame.width > 0, frame.height > 0, !frame.intersects(visible) { continue }
+      if ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
+        if let frame { found.append((element, frame)) }
+        continue
+      }
+      if depth < 48, let children = v[3] as? [AXUIElement] {
+        queue.append(contentsOf: children.map { ($0, depth + 1) })
+      }
+    }
+    // Keep a field only if it's what's really there: a popover, a sheet or a
+    // scrolled-away row hides fields the tree still lists.
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.05)
+    let checkUntil = Date().addingTimeInterval(0.08)
+    var out: [[String: Any]] = []
+    for (field, frame) in found where Date() < checkUntil {
+      let shown = frame.intersection(visible)
+      guard !shown.isNull, shown.width >= 8, shown.height >= 8 else { continue }
+      var hit: AXUIElement?
+      guard
+        AXUIElementCopyElementAtPosition(system, Float(shown.midX), Float(shown.midY), &hit)
+          == .success, var element = hit
+      else { continue }
+      var same = false
+      for _ in 0..<5 {
+        if CFEqual(element, field) || editableElement(element).map({ CFEqual($0, field) }) == true {
+          same = true
+          break
+        }
+        guard let parent = attribute(element, kAXParentAttribute),
+          CFGetTypeID(parent) == AXUIElementGetTypeID()
+        else { break }
+        element = parent as! AXUIElement
+      }
+      guard same, attribute(field, kAXEnabledAttribute) as? Bool ?? true else { continue }
+      // A little inside its edges: a tap on the border may land outside.
+      let r = shown.insetBy(dx: min(3, shown.width / 4), dy: min(3, shown.height / 4))
+      func n(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
+      out.append([
+        "x": n((r.minX - bounds.minX) / bounds.width),
+        "y": n((r.minY - bounds.minY) / bounds.height),
+        "w": n(r.width / bounds.width),
+        "h": n(r.height / bounds.height),
+        "secure": attribute(field, kAXSubroleAttribute) as? String == "AXSecureTextField",
+      ])
+    }
+    return ["fields": out]
   }
   // Can't see inside: macOS gives only the window (games), nothing it knows
   // (unknown), or a big layer with nothing in it (a canvas, a remote desktop, a
@@ -209,12 +355,31 @@ final class Input: @unchecked Sendable {
   }
   func checkTyping(_ token: String) throws {
     guard !token.isEmpty, token == typingToken, let expected = typingElement,
-      let current = focused(), CFEqual(expected, current)
+      let focus = focused(), let current = editableElement(focus),
+      CFEqual(expected, current) || sameField(current)
     else {
       typingElement = nil
       typingToken = ""
       throw NSError(domain: "The typing target changed. Tap the text field again.", code: 1)
     }
+  }
+  // Web editors rebuild the focused field as text goes in (a new element
+  // each time): it's still the field tapped when it's in the same app, the
+  // same kind (never a password field for a plain one) and mostly where the
+  // tapped one was. From then on it's the one typed into.
+  func sameField(_ current: AXUIElement) -> Bool {
+    var pid: pid_t = 0
+    guard typingPid > 0, AXUIElementGetPid(current, &pid) == .success, pid == typingPid,
+      let was = typingFrame, was.width > 0, was.height > 0,
+      let now = frameOf(current), now.width > 0, now.height > 0,
+      ((attribute(current, kAXSubroleAttribute) as? String ?? "") == "AXSecureTextField") == typingSecure
+    else { return false }
+    let overlap = was.intersection(now)
+    guard !overlap.isNull, overlap.width * overlap.height >= 0.5 * min(was.width * was.height, now.width * now.height)
+    else { return false }
+    typingElement = current
+    typingFrame = now
+    return true
   }
   func keyPress(_ code: CGKeyCode) {
     for down in [true, false] {
@@ -380,15 +545,16 @@ final class Input: @unchecked Sendable {
     guard AXIsProcessTrusted() else {
       release()
       throw NSError(
-        domain: "Allow Accessibility for Reach’s desktop input helper in System Settings.", code: 1)
+        domain: "Allow Accessibility for Reach’s desktop input helper in System Settings.", code: 2)
     }
     guard CGDisplayIsActive(display) != 0 else {
       release()
-      throw NSError(domain: "This display disconnected. Select a display again.", code: 1)
+      throw NSError(domain: "This display disconnected. Select a display again.", code: 2)
     }
     let type = p["type"] as? String ?? ""
     if type == "focus" { return ["target": textTarget(p)] }
     if type == "probe" { return probe(p) }
+    if type == "fields" { return fields(p) }
     if type == "context" { return context(since: p["since"] as? String) }
     if type == "menu", let path = p["path"] as? [String] {
       try pressMenu(path)
@@ -545,6 +711,14 @@ final class Input: @unchecked Sendable {
     let value = CommandLine.arguments.dropFirst().first ?? "primary"
     let display = value == "primary" ? CGMainDisplayID() : UInt32(value) ?? 0
     let input = Input(display)
+    // Browsers take a few seconds to list their pages' fields once asked:
+    // asked now, they're ready by the first tap.
+    if AXIsProcessTrusted() {
+      for app in NSWorkspace.shared.runningApplications
+      where Input.browsers.contains(app.bundleIdentifier ?? "") {
+        input.describe(app.processIdentifier)
+      }
+    }
     // Independent native failsafe: even a wedged server cannot leave a drag held.
     let timer = DispatchSource.makeTimerSource(queue: .global())
     timer.schedule(deadline: .now() + 1, repeating: 0.5)
@@ -571,7 +745,13 @@ final class Input: @unchecked Sendable {
           else { throw NSError(domain: "Invalid input", code: 1) }
           result = try input.action(action)
           result["ok"] = true
-        } catch { result = ["error": (error as NSError).domain] }
+        } catch {
+          // code 2: control can't go on (no Accessibility, display gone);
+          // anything else refuses only this one action.
+          let e = error as NSError
+          result = ["error": e.domain]
+          if e.code == 2 { result["fatal"] = true }
+        }
         if let data = try? JSONSerialization.data(withJSONObject: result) {
           FileHandle.standardOutput.write(data)
           FileHandle.standardOutput.write(Data([10]))

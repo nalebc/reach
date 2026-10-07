@@ -223,7 +223,9 @@ function slimEntry(e, results, maxOutput) {
 export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   const byId = new Map();
   const results = new Map();
-  const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "" };
+  // mode: the permission mode its latest message was sent in (Claude Code
+  // writes it on each of your messages), to resume it in the same one.
+  const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "", mode: "" };
   let last = null;
   let firstAt = null;
   let updatedAt = null;
@@ -249,6 +251,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
         if (e.cwd) meta.cwd = e.cwd;
         if (e.gitBranch) meta.gitBranch = e.gitBranch;
+        if (e.type === "user" && typeof e.permissionMode === "string" && e.permissionMode) meta.mode = e.permissionMode;
         if (e.sessionId && !meta.sessionId) meta.sessionId = e.sessionId;
         if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
         const slim = slimEntry(e, results, maxOutput);

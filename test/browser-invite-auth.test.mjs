@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createAuth, ALL_SCOPES } from "../server/core.mjs";
+import { createBrowserHostGuard } from "../server/browser-host-guard.mjs";
 
 function fixture(t) {
   const dir = fs.realpathSync.native(
@@ -283,4 +284,24 @@ test("restricted terminal admission exposes its limits and invalid or removed gr
   assert.equal(applyAgentPolicy(client, { ...config, roots: [] }), null);
   for (const bad of [{ restrictedTerminal: "yes" }, { terminalApproval: "yes" }, { commandRequests: true }])
     assert.equal(applyAgentPolicy({ ...client, policy: { ...client.policy, ...bad } }, config), null);
+});
+
+test("unreadable or malformed credential records never disable app-session protection", (t) => {
+  const { auth, invite, config } = fixture(t);
+  assert.deepEqual(auth.list(), [], "a fresh installation has no credential file yet");
+  invite();
+  const file = path.join(config.dataDir, "clients.json");
+  const guard = createBrowserHostGuard({ clients: () => auth.list() });
+  const saved = fs.readFileSync(file);
+  for (const contents of ["{broken", "null", "{}", "[null]"]) {
+    fs.writeFileSync(file, contents);
+    assert.throws(() => auth.list(), { status: 503 });
+    assert.equal(guard.isActive(), true);
+    assert.equal(guard.allows({ method: "POST", originalUrl: "/api/auth/requests" }), false);
+  }
+  fs.unlinkSync(file);
+  assert.throws(() => auth.list(), { status: 503 }, "deleting an existing store cannot reopen owner admission");
+  assert.equal(guard.isActive(), true);
+  fs.writeFileSync(file, saved);
+  assert.equal(auth.list().length, 1);
 });

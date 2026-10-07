@@ -274,7 +274,8 @@ export class RemoteBroadcast {
               Math.max(1, 1000 / this.pacing - (Date.now() - start)),
             );
         } catch (e) {
-          for (const ws of this.viewers.keys()) this.fail(ws, e.message);
+          for (const ws of this.viewers.keys())
+            this.fail(ws, e.message, !e.permanent);
         }
       };
       void tick();

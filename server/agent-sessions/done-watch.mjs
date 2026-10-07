@@ -2,6 +2,8 @@
 // finished sends one notification, unless a phone has that chat open right
 // then. It looks again when an agent's files change (pushed by agent-watch)
 // and, as a fallback, every so often; the first look only learns the states.
+import { agentName, chatName, pushLine } from "../notification-items.mjs";
+
 const BUSY = new Set(["running", "waiting"]);
 
 export function createDoneWatch({
@@ -9,6 +11,8 @@ export function createDoneWatch({
   notify,
   // (agent, id): a phone has this chat open now; it sees the reply itself.
   watching = () => false,
+  // (agent, id): the agent's last reply, for the notification's text.
+  reply = async () => "",
   everyMs = 20000,
   setTimer = setInterval,
   clearTimer = clearInterval,
@@ -38,12 +42,15 @@ export function createDoneWatch({
           last.set(key, s.status || "idle");
           if (!seeded || !BUSY.has(before) || BUSY.has(s.status)) continue;
           if (s.status !== "idle" || watching(s.agent, s.id)) continue;
-          // Who, never the chat's words: a notification is read on a lock screen.
-          const app = { claude: "Claude Code", codex: "Codex", openclaw: "OpenClaw" }[s.agent] || "Your agent";
+          // The chat's name, then the agent's own last words: on an iPhone
+          // the icon is always Reach's, so the text tells chats apart.
+          const app = agentName(s.agent);
+          const said = pushLine(await Promise.resolve().then(() => reply(s.agent, s.id)).catch(() => ""), 200);
+          const name = chatName(s.title);
           await notify({
             category: "done",
-            title: `${app} · Ready for you`,
-            body: "The response is ready. Open the conversation to continue.",
+            title: name || app,
+            body: said ? (name ? `${app}: ${said}` : said) : `${app} finished.`,
             icon: s.agent,
             actions: [{ action: "open", title: "Open conversation" }],
             tag: `done-${s.agent}-${String(s.id).slice(0, 12)}`,

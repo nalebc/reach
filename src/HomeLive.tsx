@@ -9,7 +9,6 @@ import {
   MessageSquare,
   Pencil,
   Plus,
-  Sparkle,
   Sparkles,
   Terminal,
   Upload,
@@ -46,6 +45,8 @@ import "./home-live.css";
 const agentName: Record<string, string> = {
   codex: "Codex",
   claude: "Claude Code",
+  gemini: "Gemini CLI",
+  openclaw: "OpenClaw",
 };
 // Output within this window makes a story ring spin.
 const ACTIVE_MS = 4000;
@@ -73,6 +74,8 @@ const Glyph = ({
   logos?: AgentLogos;
 }) => {
   const icon = kind === "shell" ? "terminal" : kind;
+  // Gemini's mark ships with Reach (no app to read it from).
+  if (kind === "gemini") return <AgentLogo agent="gemini" logos={logos} size={30} />;
   return logos[icon] && icon !== "chat" ? (
     <AgentLogo
       agent={icon}
@@ -84,8 +87,6 @@ const Glyph = ({
     <Sparkles size={22} />
   ) : kind === "claude" ? (
     <Asterisk size={24} />
-  ) : kind === "gemini" ? (
-    <Sparkle size={22} />
   ) : kind === "chat" ? (
     <MessageSquare size={21} />
   ) : (
@@ -111,6 +112,28 @@ function usePageVisible() {
     return () => document.removeEventListener("visibilitychange", change);
   }, []);
   return visible;
+}
+
+// Whether an element is in view. Off screen for graceMs (scrolled past), it
+// counts as gone; back in view, at once. A quick scroll keeps it.
+export function useOnScreen(ref: { current: Element | null }, graceMs = 5000) {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof IntersectionObserver === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      clearTimeout(timer);
+      if (entry?.isIntersecting) setOn(true);
+      else timer = setTimeout(() => setOn(false), graceMs);
+    });
+    observer.observe(element);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [ref, graceMs]);
+  return on;
 }
 
 // Tabs already open in Terminal on the Mac, with their last line. Terminal.app
@@ -283,11 +306,15 @@ export default function HomeLive({
   const online = connections[active]?.state === "connected";
   // Paused on the computer: its screen isn't watched, not even here.
   const paused = pausedIn(connections[active]?.changes, device);
-  // Live screen inside the laptop: the same stream as Screen, at preview size.
+  // Live screen inside the laptop: the same stream as Screen, at preview size,
+  // while the laptop is in view (scrolled past for a few seconds, the Mac
+  // stops capturing and encoding it).
+  const hero = useRef<HTMLElement>(null);
+  const heroOnScreen = useOnScreen(hero);
   const stream = useRemoteScreen(
     peer,
     features.screen,
-    features.screen && visible && !paused,
+    features.screen && visible && !paused && heroOnScreen,
     "primary",
     "preview",
     0,
@@ -500,7 +527,7 @@ export default function HomeLive({
   const live = features.screen && stream.ready;
   return (
     <div className="home-live">
-      <section className="home-hero">
+      <section className="home-hero" ref={hero}>
         <button
           className="home-hero-scene"
           aria-label={
@@ -636,7 +663,7 @@ export default function HomeLive({
                   <button key={agent} onClick={() => void start(agent)}>
                     <span className="home-plus-icon">
                       <Glyph
-                        kind={agent === "claude" ? "claude" : "codex"}
+                        kind={kindOf(agent)}
                         logos={logos}
                       />
                     </span>

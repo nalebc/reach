@@ -1,4 +1,5 @@
 import { useWantedPrompt } from "./notification-focus";
+import { AccountUsage } from "./AccountUsage";
 import {
   useCallback,
   useEffect,
@@ -42,6 +43,7 @@ import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import QueuedMessages from "./QueuedMessages";
+import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
@@ -71,6 +73,7 @@ import {
   sendQueuedNow,
   syncAgentDraft,
   setAgentMode,
+  setAgentModel,
   stopSession,
   uploadImage,
   usageLink,
@@ -444,7 +447,8 @@ function ErrorNote({
   detail?: string;
 }) {
   const link = usageLink(agent, { text, detail });
-  if (agent === "codex")
+  // Claude's card is Claude's; Codex and Gemini CLI say it in one quiet line.
+  if (agent !== "claude")
     return (
       <div className="as-error codex">
         <p>
@@ -492,6 +496,8 @@ function ModeMenu({
   current,
   anchor,
   locked,
+  busy = false,
+  error,
   onPick,
   onClose,
 }: {
@@ -503,6 +509,8 @@ function ModeMenu({
   // Set by another app (the Codex app runs this chat's messages with its own
   // mode): shown, not changeable here, and said why.
   locked?: string;
+  busy?: boolean;
+  error?: string;
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
@@ -515,7 +523,7 @@ function ModeMenu({
     <ComposerMenu anchor={anchor} label="Permissions" className={agent} onClose={onClose}>
       {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
       {list.map((m) => (
-        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked} onClick={() => onPick(m.id)}>
+        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked || busy} onClick={() => onPick(m.id)}>
           <span className="as-mode-menu-text">
             <span>{m.label}</span>
             {m.note && <small>{m.note}</small>}
@@ -524,6 +532,8 @@ function ModeMenu({
         </button>
       ))}
       {locked && <p className="as-mode-menu-locked">{locked}</p>}
+      {busy && <p role="status">Changing permissions…</p>}
+      {error && <p role="alert" className="as-mode-menu-locked">{error}</p>}
     </ComposerMenu>
   );
 }
@@ -574,15 +584,20 @@ function ComposerMenu({
   return page ? createPortal(menu, page) : menu;
 }
 
-// The model, picked as the apps have you pick it: a small menu over the
-// model button, each model with the agent's own words for it and the one in
-// use checked, its thinking levels under them.
+// The model and effort, picked as each app has you pick them (ModelSheet.tsx):
+// Claude's "Select model" sheet; Codex's words and effort dots over the
+// composer, its models in "Configure".
 function ModelMenu({
   agent,
   models,
   model,
   effort,
+  speed,
   anchor,
+  busy,
+  error,
+  working,
+  onRetry,
   onPick,
   onClose,
 }: {
@@ -590,42 +605,25 @@ function ModelMenu({
   models: AgentModel[];
   model: string | null;
   effort: string | null;
+  speed?: string | null;
   anchor: HTMLElement | null;
-  onPick: (choice: { model?: string; effort?: string }) => void;
+  busy?: boolean;
+  error?: string;
+  working?: boolean;
+  onRetry: () => void;
+  // `stay`: the dots keep the strip open, as the app's slider stays.
+  onPick: (choice: { model?: string; effort?: string; speed?: string }, stay?: boolean) => void;
   onClose: () => void;
 }) {
-  const current = models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
-  const level = effort || current?.defaultEffort;
+  const [configuring, setConfiguring] = useState(false);
+  const shared = { agent, models, model, effort, speed, busy, error, working, onRetry, onClose };
+  if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next)} />;
+  if (configuring || !models.length || error)
+    return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, true)} />;
   return (
-    <ComposerMenu anchor={anchor} label="Model" className={`${agent} as-model-menu`} onClose={onClose}>
-      {models.map((m) => (
-        <button
-          key={m.id}
-          role="menuitemradio"
-          aria-checked={m.id === current?.id}
-          onClick={() => onPick({ model: m.id, effort: effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined })}
-        >
-          <span className="as-mode-menu-text">
-            <span>{m.name}</span>
-            {m.description && <small>{m.description}</small>}
-          </span>
-          {m.id === current?.id && <Check size={16} />}
-        </button>
-      ))}
-      {!!current?.efforts.length && (
-        <div className="as-menu-efforts" role="group" aria-label="Thinking">
-          {current.efforts.map((e) => (
-            <button
-              key={e}
-              aria-pressed={e === level}
-              title={current.effortNotes?.[e]}
-              onClick={() => onPick({ model: current.id, effort: e })}
-            >
-              {effortLabel(e, agent)}
-            </button>
-          ))}
-        </div>
-      )}
+    <ComposerMenu anchor={null} label="Model and effort" className="codex as-model-strip" onClose={onClose}>
+      {working && <p className="as-mode-menu-locked">Applies to the next turn.</p>}
+      <CodexEffortStrip {...shared} onPick={(next) => onPick(next, true)} onConfigure={() => setConfiguring(true)} />
     </ComposerMenu>
   );
 }
@@ -744,7 +742,7 @@ function CommandPreview({ text }: { text: string }) {
 // app draws them (its words, its buttons, in order: read from the app, with
 // that chat brought up there) and answered with the same buttons, pressed on
 // that card in the app. Anything else is answered there.
-// word: "Mac" or "computer" (pause.ts computerWord).
+// word: "Mac", "Windows PC" or "computer" (pause.ts computerWord).
 function AskingCard({
   agent,
   asking,
@@ -770,6 +768,7 @@ function AskingCard({
   const [failed, setFailed] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const answering = useRef(false);
   useEffect(() => {
     if (!answerable) return;
     let active = true;
@@ -784,11 +783,17 @@ function AskingCard({
     };
   }, [id, answerable]);
   const press = async (label: string) => {
+    if (answering.current) return;
+    answering.current = true;
     setBusy(label);
     try {
       await onAnswer?.(label);
+    } catch (error) {
+      setCard(null);
+      setFailed((error as Error).message);
     } finally {
       setBusy(null);
+      answering.current = false;
     }
   };
   // Its main choice, as the apps make it: the one-time Allow.
@@ -969,25 +974,66 @@ function ConsentApp({
   );
 }
 
+function AsyncQuestions({ item, logos, word, onAnswer }: {
+  item: SessionItem;
+  logos: AgentLogos;
+  word: string;
+  onAnswer: (text: string) => Promise<void>;
+}) {
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+  const sending = useRef(false);
+  const questions = item.questions || [];
+  if (sent) return <p className="as-note">Answer sent</p>;
+  return <>
+    <PromptCard
+      agent="codex" logos={logos} word={word}
+      initialAnswers={Object.fromEntries(questions.map((q, i) => [String(i), q.options.length ? [q.options[0]] : []]))}
+      prompt={{ id: item.id, kind: "question", title: "Codex has a question", questions: questions.map((q, i) => ({
+        id: String(i), header: "", question: q.title,
+        options: q.options.map((label) => ({ label, description: "" })), other: true, secret: false,
+      })) }}
+      onAnswer={async ({ answers }) => {
+        if (sending.current) return;
+        sending.current = true;
+        setError("");
+        try {
+          const text = questions.map((q, i) => `${q.title}\n${(answers?.[String(i)] || []).join(", ")}`).join("\n\n");
+          await onAnswer(text);
+          setSent(true);
+        } catch (e) {
+          setError((e as Error).message);
+        } finally {
+          sending.current = false;
+        }
+      }}
+    />
+    {error && <p role="alert" className="as-note">{error}</p>}
+  </>;
+}
+
 function PromptCard({
   prompt,
   agent,
   logos,
   word,
   onAnswer,
+  initialAnswers = {},
 }: {
   prompt: SessionPrompt;
   agent: AgentName;
   logos: AgentLogos;
   word: string;
+  initialAnswers?: Record<string, string[]>;
   onAnswer: (answer: {
     decision?: string;
     answers?: Record<string, string[]>;
   }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
+  const answering = useRef(false);
   // Picked choices per question, and what was typed instead ("Something else").
-  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [picked, setPicked] = useState<Record<string, string[]>>(initialAnswers);
   const [typed, setTyped] = useState<Record<string, string>>({});
   const answerOf = (id: string) => [
     ...(picked[id] || []),
@@ -1019,10 +1065,13 @@ function PromptCard({
     key: string,
     answer: { decision?: string; answers?: Record<string, string[]> },
   ) => {
+    if (answering.current || prompt.attempted) return;
+    answering.current = true;
     setBusy(key);
     try {
       await onAnswer(answer);
     } finally {
+      answering.current = false;
       setBusy("");
     }
   };
@@ -1047,6 +1096,7 @@ function PromptCard({
       ) : null}
       {prompt.message && <p>{prompt.message}</p>}
       {prompt.reason && <p className="as-prompt-reason">{prompt.reason}</p>}
+      {prompt.attempted && <p className="as-prompt-reason" role="status">The previous answer could not be confirmed. Check {agentLabel(agent)} on your {word} before answering again.</p>}
       {prompt.kind === "question" ? (
         <>
           {questions.length > 1 && (
@@ -1112,7 +1162,7 @@ function PromptCard({
               <button
                 className="primary"
                 disabled={
-                  !!busy || questions.some((q) => !answerOf(q.id).length)
+                  !!busy || prompt.attempted || questions.some((q) => !answerOf(q.id).length)
                 }
                 onClick={() =>
                   void act("answer", {
@@ -1145,13 +1195,13 @@ function PromptCard({
                   ? "primary"
                   : ""
               }
-              disabled={!!busy}
+              disabled={!!busy || prompt.attempted}
               onClick={() => void act(key, { decision: key })}
             >
               {busy === key ? (
                 <Loader2 size={14} className="spin" />
               ) : prompt.kind === "dialog" ? (
-                `Answer on my ${word}`
+                "Cancel request"
               ) : (
                 (prompt.kind === "tool"
                   ? CLAUDE_DECISIONS[key]
@@ -1168,69 +1218,29 @@ function PromptCard({
 type Attachment = { key: number; url: string; id?: string; error?: string };
 let attachmentSeq = 0;
 
-// Model and thinking as two small chip rows that open above the composer,
-// in place of the apps' menus; no popup. A thinking level finishes the pick.
+// A new chat's model and effort: the same pickers as in a chat (ModelSheet.tsx).
 export function ModelPicker({
   agent,
   models,
   model,
   effort,
+  speed,
   onPick,
+  onClose,
 }: {
   agent: AgentName;
   models: AgentModel[];
   model: string | null;
   effort: string | null;
-  onPick: (choice: { model?: string; effort?: string }, done: boolean) => void;
+  speed?: string | null;
+  onPick: (choice: { model?: string; effort?: string; speed?: string }, done: boolean) => void;
+  onClose: () => void;
 }) {
-  const current =
-    models.find((m) => m.id === model) ||
-    models.find((m) => m.isDefault) ||
-    models[0];
-  return (
-    <div
-      className={`as-picker ${agent}`}
-      role="group"
-      aria-label="Model and thinking"
-    >
-      <div className="as-picker-row" aria-label="Model">
-        {models.map((m) => (
-          <button
-            key={m.id}
-            aria-pressed={m.id === current?.id}
-            onClick={() =>
-              onPick(
-                {
-                  model: m.id,
-                  effort:
-                    effort && m.efforts.includes(effort)
-                      ? effort
-                      : m.defaultEffort || undefined,
-                },
-                false,
-              )
-            }
-          >
-            {m.name}
-          </button>
-        ))}
-      </div>
-      {current?.efforts.length ? (
-        <div className="as-picker-row" aria-label="Thinking">
-          {current.efforts.map((e) => (
-            <button
-              key={e}
-              aria-pressed={e === (effort || current.defaultEffort)}
-              title={current.effortNotes?.[e]}
-              onClick={() => onPick({ model: current.id, effort: e }, true)}
-            >
-              {effortLabel(e, agent)}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
+  const [configuring, setConfiguring] = useState(false);
+  const shared = { agent, models, model, effort, speed, onClose };
+  if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next, true)} />;
+  if (configuring) return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, false)} onClose={() => setConfiguring(false)} />;
+  return <CodexEffortStrip {...shared} onPick={(next) => onPick(next, false)} onConfigure={() => setConfiguring(true)} />;
 }
 
 export default function AgentSessionView({
@@ -1322,14 +1332,23 @@ export default function AgentSessionView({
   const sendingNow = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelError, setModelError] = useState("");
+  const [modelSaving, setModelSaving] = useState(false);
+  const savingModel = useRef(false);
+  const [modelReload, setModelReload] = useState(0);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [choice, setChoice] = useState<{
     model?: string;
     effort?: string;
+    speed?: string;
     mode?: string;
   }>({});
   const [picking, setPicking] = useState(false);
   const [choosingMode, setChoosingMode] = useState(false);
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeError, setModeError] = useState("");
+  const savingMode = useRef(false);
   const modeButton = useRef<HTMLButtonElement>(null);
   const modelButton = useRef<HTMLButtonElement>(null);
   const { view: live } = useSessionLive(peer, initial);
@@ -1451,14 +1470,20 @@ export default function AgentSessionView({
     if (live.items) void load(false);
   }, [live.items, load]);
   useEffect(() => {
-    listModels(peer, agent).then(
+    let cancelled = false;
+    setModelsLoading(true);
+    setModelError("");
+    listModels(peer, agent, { refresh: modelReload > 0 }).then(
       (r) => {
+        if (cancelled) return;
         setModels(r.models);
         if (r.modes?.length) setModes(r.modes);
+        if (!r.models.length) setModelError("No models were returned. Try loading them again.");
       },
-      () => {},
-    );
-  }, [peer.url, peer.token, agent]);
+      (e) => { if (!cancelled) setModelError((e as Error).message); },
+    ).finally(() => { if (!cancelled) setModelsLoading(false); });
+    return () => { cancelled = true; };
+  }, [peer.url, peer.token, agent, modelReload]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -1749,6 +1774,7 @@ export default function AgentSessionView({
         images: ready.map((a) => a.id!),
         ...(!heldByApp && choice.model ? { model: choice.model } : {}),
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
+        ...(!heldByApp && choice.speed ? { speed: choice.speed } : {}),
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
         ...(skill ? { skill: skill.name } : {}),
       });
@@ -1782,6 +1808,23 @@ export default function AgentSessionView({
       setProblem((e as Error).message);
     } finally {
       setStopping(false);
+    }
+  };
+  const answerAsyncQuestion = async (text: string) => {
+    if (sendingNow.current) throw new Error("A message is being sent. Try again in a moment.");
+    sendingNow.current = true;
+    setSending(true);
+    try {
+      const r = await sendMessage(peer, initial, { text, images: [] });
+      setPending((list) => [...list, {
+        id: `pending-${Date.now()}`, text, images: 0, urls: [], at: Date.now(),
+        seen: (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length,
+        ...(r.messageId ? { messageId: r.messageId } : {}),
+      }]);
+      void load(false);
+    } finally {
+      sendingNow.current = false;
+      setSending(false);
     }
   };
   const grow = () => {
@@ -1913,6 +1956,7 @@ export default function AgentSessionView({
       {items && items.length > 2 && (
         <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
       )}
+      <AccountUsage health={health.find((h) => h.agent === agent)} />
       {details && (
         <>
           {/* A tap anywhere else closes the menu. */}
@@ -2004,6 +2048,11 @@ export default function AgentSessionView({
                 )}
               </div>
               </Copyable>
+            ) : b.item.questions?.length ? (
+              <div key={b.item.id} className="as-async-questions">
+                {b.item.text && b.item.text !== b.item.questions.map((q) => [q.title, ...q.options.map((o) => `- ${o}`)].join("\n")).join("\n\n") && <AgentMarkdown text={b.item.text} />}
+                <AsyncQuestions item={b.item} logos={logos} word={word} onAnswer={answerAsyncQuestion} />
+              </div>
             ) : b.item.kind === "output" ? (
               <div key={b.item.id} className="as-output">
                 <AgentMarkdown text={b.item.text} />
@@ -2128,7 +2177,39 @@ export default function AgentSessionView({
             )}
             {info.asking &&
               !live.prompts.length &&
-              (info.asking.kind === "consent" && info.asking.id ? (
+              (info.asking.kind === "question" && info.asking.id ? (
+                // Claude's question in the Claude app: its options tapped
+                // here, pressed there (no live screen needed).
+                <PromptCard
+                  prompt={{
+                    id: info.asking.id,
+                    kind: "question",
+                    title: `${agentLabel(agent)} has a question`,
+                    questions: info.asking.questions.map((q, i) => ({
+                      id: `q${i}`,
+                      header: q.header || "",
+                      question: q.question,
+                      options: q.options.map((o) => ({ label: o.label, description: o.description || "" })),
+                      other: false,
+                      secret: false,
+                      multiSelect: !!q.multiSelect,
+                    })),
+                  }}
+                  agent={agent}
+                  logos={logos}
+                  word={word}
+                  onAnswer={async ({ answers }) => {
+                    const asked = info.asking;
+                    if (asked?.kind !== "question" || !asked.id) return;
+                    try {
+                      await answerPrompt(peer, initial, asked.id, { answers });
+                      setInfo((old) => ({ ...old, asking: undefined }));
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    }
+                  }}
+                />
+              ) : info.asking.kind === "consent" && info.asking.id ? (
                 <ConsentCard
                   asking={info.asking}
                   peer={peer}
@@ -2151,7 +2232,9 @@ export default function AgentSessionView({
                   where={
                     agent === "codex"
                       ? info.held === "terminal" ? "terminal" : "Codex app"
-                      : info.live?.where === "terminal" ? "terminal" : "Claude app"
+                      : agent === "claude" && info.live?.where !== "terminal"
+                        ? "Claude app"
+                        : "terminal" // Gemini CLI runs only in a terminal
                   }
                   word={word}
                   onScreen={onScreen}
@@ -2164,6 +2247,7 @@ export default function AgentSessionView({
                       setInfo((old) => ({ ...old, asking: undefined }));
                     } catch (e) {
                       setProblem((e as Error).message);
+                      throw e;
                     }
                   }}
                 />
@@ -2241,25 +2325,27 @@ export default function AgentSessionView({
             choices={modeChoices}
             current={modeShown === "default" ? "manual" : modeShown}
             anchor={modeButton.current}
-            locked={
-              heldByApp
-                ? `This chat is open in the Codex app, which runs it with its own permissions. Change them there, or close the chat there to set them here.`
-                : undefined
-            }
+            busy={modeSaving}
+            error={modeError}
             onClose={() => setChoosingMode(false)}
-            onPick={(id) => {
-              setChoice({ ...choice, mode: id });
-              setChoosingMode(false);
-              // A Claude app chat: picked in the app's own menu too, so
-              // both show it (else it goes with the next message).
-              if (agent === "claude" && info.inApp)
-                setAgentMode(peer, initial, id)
-                  .then((r) => {
-                    if (!r.applied) return;
-                    setInfo((old) => ({ ...old, mode: id }));
-                    setChoice((c) => (c.mode === id ? { ...c, mode: undefined } : c));
-                  })
-                  .catch((e) => setNote((e as Error).message));
+            onPick={async (id) => {
+              if (savingMode.current) return;
+              savingMode.current = true;
+              setModeSaving(true);
+              setModeError("");
+              try {
+                const result = await setAgentMode(peer, initial, id);
+                if (result.applied) {
+                  setInfo((old) => ({ ...old, mode: id }));
+                  setChoice((old) => ({ ...old, mode: undefined }));
+                } else setChoice((old) => ({ ...old, mode: id }));
+                setChoosingMode(false);
+              } catch (error) {
+                setModeError((error as Error).message);
+              } finally {
+                savingMode.current = false;
+                setModeSaving(false);
+              }
             }}
           />
         )}
@@ -2270,11 +2356,35 @@ export default function AgentSessionView({
             models={models}
             model={modelId}
             effort={effort}
+            speed={choice.speed || info.speed || null}
             anchor={modelButton.current}
+            busy={modelsLoading || modelSaving}
+            error={modelError}
+            working={working}
+            onRetry={() => setModelReload((n) => n + 1)}
             onClose={() => setPicking(false)}
-            onPick={(next) => {
-              setChoice(next);
-              setPicking(false);
+            onPick={async (next, stay) => {
+              // The speed goes with the next message (Codex has no other way
+              // to change a chat's speed).
+              if (next.speed) {
+                setChoice((previous) => ({ ...previous, speed: next.speed }));
+                return;
+              }
+              if (savingModel.current) return;
+              savingModel.current = true;
+              setModelSaving(true);
+              setModelError("");
+              try {
+                const result = await setAgentModel(peer, initial, next);
+                setChoice((previous) => ({ ...previous, ...next }));
+                if (result.applied) setInfo((previous) => ({ ...previous, ...next }));
+                if (!stay) setPicking(false);
+              } catch (e) {
+                setModelError((e as Error).message);
+              } finally {
+                savingModel.current = false;
+                setModelSaving(false);
+              }
             }}
           />
         )}
@@ -2401,7 +2511,6 @@ export default function AgentSessionView({
               <button
                 ref={modeButton}
                 className={`as-mode ${agent}`}
-                title={heldByApp ? "Set in the Codex app" : undefined}
                 aria-expanded={choosingMode}
                 onClick={() => {
                   setChoosingMode(!choosingMode);
@@ -2413,22 +2522,19 @@ export default function AgentSessionView({
               </button>
             )}
             <span className="as-spacer" />
-            {settings && modelLabel && (
+            {settings && (agent === "codex" || agent === "claude") && (
               <button
                 ref={modelButton}
                 className="as-model"
-                disabled={!heldByApp && !models.length}
                 aria-expanded={picking}
                 onClick={() => {
                   setChoosingMode(false);
-                  // The Codex app picks the model for a chat it has open.
-                  if (heldByApp)
-                    return setNote("This chat is open in the Codex app, which runs it with its own model. Change it there, or close the chat there to pick it here.");
                   setPicking(!picking);
                 }}
               >
-                {modelLabel} <span>{effortLabel(effort, agent)}</span>
-                {!heldByApp && models.length > 0 && <ChevronDown size={14} />}
+                {modelLabel || "Model"}{" "}
+                <span>{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
+                <ChevronDown size={14} />
               </button>
             )}
             <button

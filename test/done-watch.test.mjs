@@ -5,13 +5,14 @@ import { createDoneWatch } from "../server/agent-sessions/done-watch.mjs";
 // "I'm not getting notified when sessions are done." A chat that was working
 // (or waiting on you) and is now finished sends one notification that opens
 // that chat, unless a phone has it open right then.
-const watch = (lists, { watching = () => false } = {}) => {
+const watch = (lists, { watching = () => false, reply } = {}) => {
   const sent = [];
   let i = 0;
   const w = createDoneWatch({
     list: async () => ({ sessions: lists[Math.min(i++, lists.length - 1)] }),
     notify: async (m) => sent.push(m),
     watching,
+    reply,
     setTimer: () => null,
     clearTimer: () => {},
   });
@@ -28,9 +29,9 @@ test("a chat that finishes sends one notification that opens it", async () => {
   assert.deepEqual(sent, [
     {
       category: "done",
-      // Who, never the chat's words (lock screens).
-      title: "Claude Code · Ready for you",
-      body: "The response is ready. Open the conversation to continue.",
+      // On an iPhone the icon is always Reach's: the chat's name says which.
+      title: "Fix login",
+      body: "Claude Code finished.",
       icon: "claude",
       actions: [{ action: "open", title: "Open conversation" }],
       tag: "done-claude-11111111-222",
@@ -70,4 +71,35 @@ test("a list that fails is skipped without losing what it knew", async () => {
   await w.look();
   await w.look();
   assert.equal(sent.length, 1);
+});
+
+test("the notification shows the agent's last reply, not your prompt", async () => {
+  // A Codex chat's list preview is the first thing you asked; the
+  // notification reads the chat for what the agent said last.
+  const codex = { ...chat("running"), agent: "codex", preview: "Please fix the login redirect" };
+  const asked = [];
+  const { w, sent } = watch([[codex], [{ ...codex, status: "idle" }]], {
+    reply: async (agent, id) => {
+      asked.push([agent, id]);
+      return "## Done\n\n**Fixed** the redirect in `auth.ts`; all 42 tests pass.";
+    },
+  });
+  await w.look();
+  await w.look();
+  assert.deepEqual(asked, [["codex", codex.id]]);
+  assert.equal(sent[0].title, "Fix login");
+  assert.equal(sent[0].body, "Codex: Done Fixed the redirect in auth.ts; all 42 tests pass.");
+});
+
+test("a chat without a name, or a reply that can't be read, still says who", async () => {
+  let { w, sent } = watch([[chat("running", { title: "Untitled Claude session" })], [chat("idle", { title: "Untitled Claude session" })]], {
+    reply: async () => "Looks good.",
+  });
+  await w.look();
+  await w.look();
+  assert.deepEqual([sent[0].title, sent[0].body], ["Claude Code", "Looks good."]);
+  ({ w, sent } = watch([[chat("running")], [chat("idle")]], { reply: async () => { throw new Error("gone"); } }));
+  await w.look();
+  await w.look();
+  assert.deepEqual([sent[0].title, sent[0].body], ["Fix login", "Claude Code finished."]);
 });

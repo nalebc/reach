@@ -9,6 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { visibleUserText } from "./message-text.mjs";
 import { codexWaitingApproval } from "./codex-asks.mjs";
+import { codexUsage } from "./account-usage.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -78,10 +79,16 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
         ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(skills.length ? { skills } : {}), at, turnId }
         : null;
     }
-    case "agentMessage":
-      return item.text?.trim()
-        ? { id: item.id, role: "assistant", kind: "text", text: item.text, at, turnId }
+    case "agentMessage": {
+      // Async questions are message content, not a blocking server request.
+      // Keep them even when Codex sends no accompanying prose.
+      const questions = Array.isArray(item.questions) ? item.questions
+        .filter((q) => typeof q?.title === "string" && q.title.trim())
+        .map((q) => ({ title: q.title, options: (Array.isArray(q.options) ? q.options : []).filter((o) => typeof o === "string") })) : [];
+      return item.text?.trim() || questions.length
+        ? { id: item.id, role: "assistant", kind: "text", text: item.text || "", ...(questions.length ? { questions } : {}), at, turnId }
         : null;
+    }
     case "commandExecution":
       return {
         id: item.id,
@@ -112,6 +119,7 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
         role: "tool",
         kind: "tool",
         text: `${item.server}: ${item.tool}`,
+        ...(maxOutput === Infinity ? { detail: JSON.stringify({ arguments: item.arguments, result: item.result, error: item.error }) } : {}),
         status: item.status,
         at,
         turnId,
@@ -340,6 +348,7 @@ export function createCodexSessions({
   };
   const sentImages = new Map(); // "thread:item" → its pictures, as read last
   const imageSources = (item) => (item.content || []).filter((c) => c?.type === "image" || c?.type === "localImage");
+  const legacyEntries = (thread) => (thread.turns || []).flatMap(turn => (turn.items || []).map(item => ({ item, turnId: turn.id, startedAtMs: (turn.startedAt || thread.createdAt || 0) * 1000 })));
   return {
     // A thread to look at again in ms (a request still settling).
     onLater(listener) {
@@ -372,13 +381,31 @@ export function createCodexSessions({
         { onLater: tellLater },
       );
     },
+    // Archived (or back) in Codex itself, as its app's Archive does: the
+    // thread leaves thread/list, here and in the Codex app alike.
+    async archive(id, archived = true) {
+      if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await daemon.rpc(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
+      return { archived };
+    },
     // A picture sent in a chat, by its message and place in it (n).
     async image(id, itemId, n) {
       const missing = () => Object.assign(new Error("That picture isn't in this session."), { status: 404 });
       if (!UUID.test(id) || typeof itemId !== "string" || !itemId || itemId.length > 200 || !Number.isInteger(n) || n < 0) throw missing();
       let sources = sentImages.get(`${id}:${itemId}`);
-      // Not read here lately: look for it, newest first, a few pages back.
-      for (let page = 0, cursor = null; !sources && page < 10; page++) {
+      if (!sources) {
+        const { thread } = await daemon.rpc("thread/read", { threadId: id, includeTurns: false });
+        if (thread?.historyMode === "legacy") {
+          const full = await daemon.rpc("thread/read", { threadId: id, includeTurns: true });
+          const found = legacyEntries(full.thread).find(e => e.item.type === "userMessage" && e.item.id === itemId);
+          sources = found ? imageSources(found.item) : [];
+        }
+      }
+      // Old attachments matter too when exporting a complete conversation.
+      const visited = new Set();
+      for (let cursor = null; !sources;) {
+        if (visited.has(cursor)) throw new Error("Codex repeated an image history page.");
+        visited.add(cursor);
         const r = await daemon.rpc("thread/items/list", { threadId: id, limit: 200, sortDirection: "desc", cursor });
         const found = (r.data || []).find((e) => e?.item?.type === "userMessage" && e.item.id === itemId);
         if (found) sources = imageSources(found.item);
@@ -388,11 +415,16 @@ export function createCodexSessions({
       if (!image) throw missing();
       return image;
     },
-    async read(id, { cursor = null, limit = 200 } = {}) {
+    async read(id, { cursor = null, before = null, limit = 200, maxOutput = 4000 } = {}) {
       if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
-      const [{ thread }, r, turns, held] = await Promise.all([
-        daemon.rpc("thread/read", { threadId: id, includeTurns: false }),
-        daemon.rpc("thread/items/list", {
+      cursor ??= before;
+      const { thread } = await daemon.rpc("thread/read", { threadId: id, includeTurns: false });
+      const legacy = thread?.historyMode === "legacy" ? (await daemon.rpc("thread/read", { threadId: id, includeTurns: true })).thread : null;
+      const all = legacy ? legacyEntries(legacy) : null;
+      const end = all ? (cursor == null ? all.length : Math.max(0, Math.min(Number(cursor) || 0, all.length))) : 0;
+      const start = Math.max(0, end - Math.min(Math.max(limit, 1), 500));
+      const [r, turns, held] = await Promise.all([
+        all ? { data: all.slice(start, end).reverse(), nextCursor: start ? String(start) : null } : daemon.rpc("thread/items/list", {
           threadId: id,
           limit: Math.min(Math.max(limit, 1), 500),
           sortDirection: "desc",
@@ -400,7 +432,7 @@ export function createCodexSessions({
         }),
         // Turn status and errors come from the thread's file, so they are
         // known even while another engine runs it.
-        daemon
+        legacy ? { data: [...(legacy.turns || [])].reverse() } : daemon
           .rpc("thread/turns/list", { threadId: id, limit: 40, sortDirection: "desc", itemsView: "notLoaded" })
           .catch(() => null),
         cursor ? null : holder(id),
@@ -412,12 +444,13 @@ export function createCodexSessions({
           if (sentImages.size > 500) sentImages.delete(sentImages.keys().next().value);
         }
       const items = (r.data || [])
-        .map((entry) => codexItem(entry))
+        .map((entry) => codexItem(entry, { maxOutput }))
         .filter(Boolean)
         .reverse();
       const session = codexSession(thread);
       session.model = thread.model || null;
       session.effort = thread.reasoningEffort || null;
+      session.speed = thread.serviceTier || null;
       session.held = held;
       // The Codex app's composer shows (and its next message uses) the app's
       // current mode, not a thread's own; scheduled runs keep theirs apart.
@@ -483,6 +516,7 @@ export function createCodexSessions({
             images: (m.inputModalities || ["text", "image"]).includes("image"),
             isDefault: !!m.isDefault,
             speeds: (m.serviceTiers || []).map((t) => ({ id: t.id, name: t.name || t.id, note: t.description || "" })),
+            defaultSpeed: m.defaultServiceTier || null,
           })),
         modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml" }],
         mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
@@ -500,6 +534,7 @@ export function createCodexSessions({
         usable: limits ? limits.ordinaryUsageAllowed !== false : true,
         resetsAt: primary?.resetsAt ? primary.resetsAt * 1000 : null,
         usedPercent: primary?.usedPercent ?? null,
+        usage: codexUsage(limits),
         // Free rate-limit resets the account holds (the app's "Reset usage").
         resetCredits: limits?.rateLimitResetCredits?.availableCount || 0,
       };

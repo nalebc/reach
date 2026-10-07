@@ -1,7 +1,11 @@
+import { browserAgentRoutes } from "./browser-agents.mjs";
+import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
 import { createBrowserHostGuard } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
 import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
+import { browserPrivatePaths, isBrowserPrivatePath, validateBrowserRoot } from "./browser-private-paths.mjs";
+import { browserFileOperation } from "./browser-file-boundary.mjs";
 import { DevicePresence, presenceConnection } from "./presence.mjs";
 import {
   createIdentityResolver,
@@ -76,11 +80,14 @@ import { AgentApps } from "./agent-apps.mjs";
 import { AgentInputHelper } from "./agent-input.mjs";
 import { createPush } from "./push.mjs";
 import { createNotifications, readAttention } from "./notifications.mjs";
-import { createNotificationActions, notificationPush, admissionNotification } from "./notification-items.mjs";
+import { createNotificationActions, notificationPush, admissionNotification, pushLine } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
+import { watchInterface } from "./live-interface.mjs";
+import { restartRequests } from "./restart-requests.mjs";
+import { startInTerminal } from "../scripts/stop.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
@@ -114,6 +121,8 @@ export async function createReach(overrides = {}) {
   const instance = crypto.randomUUID();
   let transportAvailable = true;
   const funnelRequests = new WeakMap();
+  const browserResponses = new Map();
+  let browserResponseCount = 0;
   let prepareFunnel;
   let publicAgent = () => false;
   const config = getConfig(overrides);
@@ -425,6 +434,12 @@ export async function createReach(overrides = {}) {
     list: () => agentSessions.list(),
     notify,
     watching: (agent, id) => Date.now() - (chatOpenAt.get(`${agent}:${id}`) || 0) < 15000,
+    // The last thing the agent said (the list's preview can be your prompt).
+    reply: async (agent, id) => {
+      const read = agentSessions.read(agent, id, { limit: 30 });
+      const { items = [] } = await Promise.race([read, new Promise((_, no) => setTimeout(no, 3000).unref?.())]);
+      return items.findLast((item) => item.role === "assistant" && item.text?.trim())?.text || "";
+    },
   });
   // On every change of the chat list (its timer is only the slow fallback).
   agentSessions.onListChange?.(() => void doneWatch.look());
@@ -456,7 +471,8 @@ export async function createReach(overrides = {}) {
         notify({
           title: `${handoff.agent} needs you in ${handoff.app}`,
           category: "handoffs",
-          body: "Open the app and continue where the agent left off.",
+          // Reach's words, never the agent's: an invited agent could write anything.
+          body: `Open ${handoff.app} to continue where ${handoff.agent} left off.`,
           icon: /claude/i.test(handoff.agent) ? "claude" : /codex/i.test(handoff.agent) ? "codex" : "agent",
           actions: [{ action: "open", title: "Open app" }],
           tag: `handoff-${handoff.id.slice(0, 8)}`,
@@ -615,6 +631,12 @@ export async function createReach(overrides = {}) {
     throw fail(403, "Whole-desktop agent control is no longer available. Ask the owner for a new Selected apps invitation.");
   };
   const browserCommandLog = await createBrowserCommandLog({ dir: path.join(config.dataDir, "browser-commands") });
+  const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
+  const browserOperations = createBrowserOperationCoordinator({
+    onWrite: invalidateSharedWrites,
+    onWriteFinished: invalidateSharedWrites,
+  });
+  const browserPaths = () => browserPrivatePaths(config);
   const browserApprovals = createBrowserApprovals({
     verifyOwner: (id) => {
       const client = auth.list().find((entry) => entry.id === id);
@@ -631,7 +653,7 @@ export async function createReach(overrides = {}) {
     notify,
     record,
     execute: async (action, authorize, request, progress) => {
-      if (action.type === "terminal-script") return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, privatePaths: privateRoots() });
+      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations }); }
       const actions = browserRequestActions(action);
       const batch = action.type === "batch";
       if (actions.every((step) => ["terminal", "terminal-change"].includes(step.type))) {
@@ -641,8 +663,8 @@ export async function createReach(overrides = {}) {
           check();
           if (batch) await progress(index, "executing");
           output = step.type === "terminal-change"
-            ? await runBrowserMutation(step, check, { resolve })
-            : await runTerminalCommand(step, check, resolve);
+            ? await runBrowserMutation(step, check, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations })
+            : await runTerminalCommand(step, check, resolve, { config, privatePaths: browserPaths() });
           if (batch) await progress(index, "executed", output);
         }
         return output;
@@ -1102,7 +1124,7 @@ export async function createReach(overrides = {}) {
     };
     accessRequests.set(request.id, request);
     record("agent", `${name} asked for access`);
-    notify({ category: "access", title: "Agent · Access request", body: "Review the requested permissions before allowing access.", icon: "agent", tag: `agent-request-${request.id}`, url: `/?page=overview&needs=${encodeURIComponent(`device:${request.id}`)}`, actions: [{ action: "open", title: "Review access" }] });
+    notify({ category: "access", title: `✦ ${pushLine(name, 48)} asks for access`, body: "Review what it wants to use before you allow it.", icon: "agent", tag: `agent-request-${request.id}`, url: `/?page=overview&needs=${encodeURIComponent(`device:${request.id}`)}`, actions: [{ action: "open", title: "Review access" }] });
     res.status(202).json({
       id: request.id,
       secret,
@@ -1196,7 +1218,7 @@ export async function createReach(overrides = {}) {
           "Access expired or was revoked. Ask the laptop owner for a new invitation, or pair your own device again.",
       });
     const route = req.path.split("/")[1].toLowerCase();
-    const scope = {
+    const scope = ["/browser/agents", "/browser/agents/stop"].includes(req.path) ? "admin" : {
       files: "files",
       terminals: "terminal",
       apps: "apps",
@@ -1267,6 +1289,23 @@ export async function createReach(overrides = {}) {
       req.client = current;
       return current;
     };
+    if (client.policy?.browser && (req.path.startsWith("/files") ||
+        req.path.startsWith("/browser/files/") || req.path === "/browser/apps/screen")) {
+      const active = browserResponses.get(client.id) || 0;
+      if (browserResponseCount >= 8 || active >= 2)
+        return res.status(429).json({ error: "Finish the current file or image requests before starting another." });
+      browserResponses.set(client.id, active + 1); browserResponseCount++;
+      let released = false;
+      const limit = setTimeout(() => { res.destroy(); req.destroy(); }, 30000);
+      limit.unref();
+      const release = () => {
+        if (released) return;
+        released = true; clearTimeout(limit); browserResponseCount--;
+        const remaining = (browserResponses.get(client.id) || 1) - 1;
+        if (remaining) browserResponses.set(client.id, remaining); else browserResponses.delete(client.id);
+      };
+      res.once("finish", release); res.once("close", release);
+    }
     // Abort in-flight HTTP bodies and downloads, not only subsequent requests.
     const disconnect = () => {
       res.destroy();
@@ -1342,6 +1381,8 @@ export async function createReach(overrides = {}) {
   app.delete("/api/device/access", (req, res) => {
     auth.revoke(req.client.id);
     browserApprovals.cancelClient(req.client.id);
+    browserAppAccess.cancelClient(req.client.id);
+    browserOperations.cancelClient(req.client.id);
     browserScreenSnapshots.stop();
     res.type("json").send(JSON.stringify({ ok: true }));
   });
@@ -1579,6 +1620,8 @@ export async function createReach(overrides = {}) {
       throw fail(409, "Use app requests to grant additional apps. End this invitation and create a new one to change its base access.");
     const { client, before, after } = auth.changeAccess(id, req.body || {});
     browserApprovals.cancelClient(id);
+    browserAppAccess.cancelClient(id);
+    browserOperations.cancelClient(id);
     const lost = before.scopes.filter((s) => !after.scopes.includes(s));
     const narrower =
       lost.length > 0 ||
@@ -1616,6 +1659,8 @@ export async function createReach(overrides = {}) {
   const endClient = (id) => {
     auth.revoke(id);
     browserApprovals.cancelClient(id);
+    browserAppAccess.cancelClient(id);
+    browserOperations.cancelClient(id);
     browserScreenSnapshots.stop();
     presence.removeClient(id);
     screenControl.revoke(id);
@@ -1627,6 +1672,13 @@ export async function createReach(overrides = {}) {
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  browserAgentRoutes(app, {
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient,
+    onStopped: (id) => {
+      void guestKeys?.revokeClient(id).catch((e) => console.log(`Reach: ${e.message}`));
+      record("agent", "Stopped a browser agent session");
+    },
+  });
   app.delete("/api/clients/:id", (req, res) => {
     const client = auth.list().find((c) => c.id === req.params.id);
     endClient(req.params.id);
@@ -1661,24 +1713,54 @@ export async function createReach(overrides = {}) {
     return target;
   };
   const resolve = (root, p, client, { allowMissing = false } = {}) => {
-    if (!allowMissing) return notPrivate(safePath(client?.agentRoots || config.roots, root, p));
+    const check = target => {
+      notPrivate(target);
+      if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
+        throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
+      return target;
+    };
+    if (!allowMissing) return check(safePath(client?.agentRoots || config.roots, root, p));
     // Mutation destinations need the same root/private-data rules before the
     // final leaf exists. Resolve the parent, then authorize the complete path.
     if (typeof p !== "string" || !p || path.isAbsolute(p) || p.split(/[\\/]/).includes("..") || /[\0\\:]/.test(p))
       throw fail(403, "Stay inside the selected shared folder.");
     const parent = safePath(client?.agentRoots || config.roots, root, path.dirname(p));
-    const target = notPrivate(path.join(parent, path.basename(p)));
-    if (fs.existsSync(target)) return notPrivate(safePath(client?.agentRoots || config.roots, root, p));
+    const target = check(path.join(parent, path.basename(p)));
+    if (fs.existsSync(target)) return check(safePath(client?.agentRoots || config.roots, root, p));
     return target;
   };
   // Listings check thousands of entries: same rules, without blocking.
-  const resolveAsync = async (root, p, client, privates) =>
-    notPrivate(
-      await safePathAsync(client?.agentRoots || config.roots, root, p),
-      privates,
-    );
+  const resolveAsync = async (root, p, client, privates) => {
+    const target = notPrivate(await safePathAsync(client?.agentRoots || config.roots, root, p), privates);
+    if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
+      throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
+    return target;
+  };
+  const browserFiles = async (operation, rootIndex, relative, authorize, limits = {}) => {
+    const client = authorize(), index = Number(rootIndex);
+    if (!client?.policy?.browser || !Number.isSafeInteger(index) || index < 0 ||
+        !client.agentRoots?.[index] || typeof relative !== "string")
+      throw fail(400, "Choose a shared folder.");
+    if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
+      throw fail(403, "Stay inside the selected shared folder.");
+    const root = client.agentRoots[index];
+    if (validateBrowserRoot(root) !== root)
+      throw fail(403, "The shared folder changed. Create a new invitation.");
+    const scope = JSON.stringify([client.id, client.expiresAt, client.policy, client.agentRoots]);
+    const check = () => {
+      notPaused();
+      const current = authorize();
+      if (scope !== JSON.stringify([current.id, current.expiresAt, current.policy, current.agentRoots]))
+        throw fail(403, "File access changed. Refresh the shared folder.");
+      return current;
+    };
+    // Keep the original root and relative path; resolving a symbolic link here
+    // would conceal it from the helper's descriptor-relative traversal.
+    return browserFileOperation({ op: operation, root, path: relative,
+      ...limits, privatePaths: browserPaths() }, check, { config });
+  };
   browserAccessRoutes(app, {
-    auth, config, terminals, desktopTerminals, resolve, resolveAsync, record,
+    auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
@@ -1700,6 +1782,13 @@ export async function createReach(overrides = {}) {
     },
   });
   app.get("/api/files", async (req, res) => {
+    if (req.client.policy?.browser) {
+      const result = await browserFiles("list", req.query.root, req.query.path || "", req.reauthorize);
+      const items = result.items.filter(e => req.query.hidden === "1" || !e.name.startsWith("."))
+        .sort((a, b) => (a.type === b.type ? 0 : a.type === "directory" ? -1 : 1) || names.compare(a.name, b.name));
+      req.reauthorize();
+      return res.json({ items, path: req.query.path || "", truncated: result.truncated });
+    }
     const dir = resolve(req.query.root, req.query.path || "", req.client);
     const info = await fsp.stat(dir);
     if (!info.isDirectory()) throw fail(400, "Choose a folder.");
@@ -1749,6 +1838,12 @@ export async function createReach(overrides = {}) {
     });
   });
   app.get("/api/files/content", async (req, res) => {
+    if (req.client.policy?.browser) {
+      const result = await browserFiles("read", req.query.root, req.query.path || "", req.reauthorize, { maxBytes: 25 * 1024 * 1024 });
+      req.reauthorize();
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+      return res.attachment(path.basename(String(req.query.path))).type("application/octet-stream").send(result.data);
+    }
     const file = resolve(req.query.root, req.query.path || "", req.client);
     const s = await fsp.stat(file);
     if (!s.isFile()) throw fail(400, "Choose a file.");
@@ -1775,6 +1870,12 @@ export async function createReach(overrides = {}) {
     res.json({ url: `/download/${token}`, expiresIn: 600 });
   });
   app.get("/api/files/text", async (req, res) => {
+    if (req.client.policy?.browser) {
+      const { data } = await browserFiles("read", req.query.root, req.query.path || "", req.reauthorize);
+      if (data.includes(0)) throw fail(415, "Download this file to open it in a compatible app.");
+      req.reauthorize();
+      return res.json({ text: data.toString("utf8"), sha256: hash(data) });
+    }
     const file = resolve(req.query.root, req.query.path || "", req.client);
     const stat = await fsp.stat(file);
     if (!stat.isFile()) throw fail(400, "Choose a file.");
@@ -1791,6 +1892,9 @@ export async function createReach(overrides = {}) {
   // A Word/RTF/OpenDocument file's text. No sha256: it can't be written back.
   const documentText = overrides.documentText || readDocumentText;
   app.get("/api/files/document-text", async (req, res) => {
+    // Native document converters receive rich untrusted files and may open
+    // referenced resources. Agents can download bounded bytes to their own VM.
+    if (req.client.policy?.browser) throw fail(415, "Download this document to read it in your own agent environment.");
     const file = resolve(req.query.root, req.query.path || "", req.client);
     if (!DOCUMENT_TEXT.test(file))
       throw fail(415, "Download this file to open it.");
@@ -2269,11 +2373,15 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Unknown thinking level.");
     if (agent && body.mode !== undefined && body.mode !== null && !REPLY_MODES[agent]?.includes(body.mode))
       throw fail(400, "Unknown permission mode.");
+    // Codex's speed (a service tier id from its model list, e.g. "default").
+    if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
+      throw fail(400, "Unknown speed.");
     return {
       text: typeof body.text === "string" ? body.text : "",
       images: agentImages.paths(body.images),
       model: body.model || undefined,
       effort: body.effort || undefined,
+      ...(body.speed ? { speed: body.speed } : {}),
       ...(agent && body.mode ? { mode: body.mode } : {}),
     };
   };
@@ -2439,6 +2547,15 @@ export async function createReach(overrides = {}) {
     record("session", `Answered ${agentLabel(req.params.agent)} on the phone`);
     res.json(result);
   });
+  // Archive (or bring back) a chat in its own app, as its app's Archive
+  // does: it changes the owner's app, so it's the owner's call.
+  app.post("/api/sessions/:agent/:id/archive", async (req, res) => {
+    macOwner(req);
+    const archived = req.body?.archived !== false;
+    const done = await agentSessions.archive(req.params.agent, req.params.id, { archived });
+    record("session", `${archived ? "Archived" : "Unarchived"} a ${agentLabel(req.params.agent)} chat`);
+    res.json(done);
+  });
   app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
     res.json(await agentSessions.stop(req.params.agent, req.params.id)),
   );
@@ -2458,10 +2575,20 @@ export async function createReach(overrides = {}) {
   });
   // A permission mode picked on the phone, picked in the Claude app too: the
   // owner's call (it changes what Claude may do without asking). Never Bypass.
+  app.post("/api/sessions/:agent/:id/model", async (req, res) => {
+    macOwner(req);
+    const { model, effort } = req.body || {};
+    if (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f]/.test(model) ||
+        (effort != null && (typeof effort !== "string" || !effort.trim() || effort.length > 80 || /[\x00-\x1f]/.test(effort))))
+      throw fail(400, "Choose a model and thinking level.");
+    res.json(await agentSessions.model(req.params.agent, req.params.id, { model, effort }));
+  });
   app.post("/api/sessions/:agent/:id/mode", async (req, res) => {
     macOwner(req);
     const mode = req.body?.mode;
-    if (!["manual", "default", "acceptEdits", "plan", "auto"].includes(mode)) throw fail(400, "Reach can't pick that mode.");
+    // Claude: never Bypass. Codex: its own menu's choices, as when sending.
+    const allowed = req.params.agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only", "custom"] : ["manual", "default", "acceptEdits", "plan", "auto"];
+    if (!allowed.includes(mode)) throw fail(400, "Reach can't pick that mode.");
     res.json(await agentSessions.mode(req.params.agent, req.params.id, { mode }));
   });
   // Send now can switch the Claude app's window on the Mac: the owner's call.
@@ -2766,6 +2893,8 @@ export async function createReach(overrides = {}) {
     browserRequests: () => browserApprovals.listOwner(),
     admissions: () => auth.listAgentAdmissions(),
     accessRequests: pendingRequests,
+    restartRequests: () => restarts.list(),
+    terminalCount: () => terminals.list().length,
   });
   const answerNotification = createNotificationActions({
     read: readNotificationState,
@@ -2773,6 +2902,7 @@ export async function createReach(overrides = {}) {
       const owner = authorize();
       if (binding.type === "chat")
         return agentSessions.respond(binding.agent, binding.session, binding.prompt, binding.choices[action]);
+      if (binding.type === "restart") return restarts.decide(binding.id, action);
       if (action !== "deny") throw fail(400, "Open this request to review it.");
       if (binding.type === "browser") return browserApprovals.decide(owner, binding.id, "deny", authorize);
       if (binding.type === "admission") return auth.decideAgentAdmission(binding.id, "deny");
@@ -2791,6 +2921,22 @@ export async function createReach(overrides = {}) {
     enabled: () => ownDevices().some((id) => push.subscribed(id)),
     file: path.join(config.dataDir, "notification-seen.json"),
     ...(overrides.notifications || {}),
+  });
+  // An agent's `reach restart` in a checkout waits for you (Needs you).
+  const restarts = restartRequests({
+    dataDir: config.dataDir,
+    restart:
+      overrides.restartReach ||
+      (() =>
+        startInTerminal(fileURLToPath(new URL("../", import.meta.url)), {
+          state: config.dataDir,
+          args: "restart --yes",
+        })),
+    // Asked or answered: the list re-reads and phones hear of it at once.
+    onChange: () => {
+      void notifications.refresh({ fresh: true }).catch(() => {});
+      for (const nudge of presenceNudges) nudge();
+    },
   });
   server.once("listening", () => notifications.start());
   // What notifications read changed (an agent's chats, or anything a device
@@ -2963,27 +3109,53 @@ export async function createReach(overrides = {}) {
   const dist = fileURLToPath(new URL("../dist/", import.meta.url));
   // Which phone interface this Reach serves: an open page on an older one
   // reloads itself when it's idle (src/build-reload.ts).
-  let build = "";
-  try {
-    build = crypto
-      .createHash("sha256")
-      .update(fs.readFileSync(path.join(dist, "index.html")))
-      .digest("base64url")
-      .slice(0, 12);
-  } catch {
-    /* no build (development): nothing to compare */
-  }
+  const builtNow = () => {
+    try {
+      return crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(path.join(dist, "index.html")))
+        .digest("base64url")
+        .slice(0, 12);
+    } catch {
+      return ""; /* no build (development): nothing to compare */
+    }
+  };
+  let build = builtNow();
+  // A checkout rebuilds its interface as it's edited; phones follow without
+  // a restart (server/live-interface.mjs).
+  const stopInterfaceWatch = overrides.liveInterface
+    ? watchInterface({
+        root: fileURLToPath(new URL("../", import.meta.url)),
+        onBuilt: () => {
+          build = builtNow() || build;
+        },
+      })
+    : () => {};
   app.get("/download/:token", async (req, res) => {
     const link = links.find(req.params.token);
     if (!link)
       throw fail(410, "This download link expired. Start the download again.");
     // Every check the credential would get on /api, including its device.
-    const client = auth.verifyDigest(link.digest, req.reachIdentity);
-    if (!client) throw fail(403, "This download link is no longer valid.");
+    if (browserHostGuard.isActive()) await browserHostGuard.refresh();
+    const check = () => {
+      const current = auth.verifyDigest(link.digest, req.reachIdentity);
+      if (!current || current.policy?.browser || paused || !transportAvailable)
+        throw fail(403, "This download link is no longer valid.");
+      browserHostGuard.assertRequest(req, current);
+      return current;
+    };
+    const client = check();
     const file = resolve(link.root, link.path, client);
     const stat = await fsp.stat(file);
     if (!stat.isFile() || stat.mtimeMs !== link.mtimeMs)
       throw fail(410, "This file changed. Start the download again.");
+    check();
+    const stop = () => { res.destroy(); req.destroy(); };
+    const identityCleanup = trackIdentity(req, stop);
+    const timer = setInterval(() => { try { check(); } catch { stop(); } }, 100);
+    timer.unref();
+    const cleanup = () => { clearInterval(timer); identityCleanup(); };
+    res.once("close", cleanup); res.once("finish", cleanup);
     res.setHeader("Cache-Control", "no-store");
     res.download(file, path.basename(file));
   });
@@ -3088,6 +3260,8 @@ export async function createReach(overrides = {}) {
           return {
             ...(build && { build }),
             ...(paused && { paused: true }),
+            ...(scopes.includes("admin") &&
+              restarts.list()[0] && { restart: restarts.list()[0].id }),
             ...(scopes.includes("terminal") && {
               terminals: digest(
                 terminals.list().filter((s) => mayAccess(client, s)),
@@ -3587,8 +3761,11 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      stopInterfaceWatch();
+      restarts.close();
       notifications.close();
       clearInterval(snapshotSweep);
+      browserOperations.close();
       browserApprovals.close();
       browserAppAccess.close();
       await browserApprovals.flushChanges();

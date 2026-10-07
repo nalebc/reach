@@ -13,6 +13,8 @@ import { scopeLabel } from "./scope-words";
 import type { NeedItem } from "./NeedsYou";
 import ScreenPopup from "./ScreenPopup";
 import "./agent-admissions.css";
+import AppLogo from "./AppLogo";
+import { AgentAvatar } from "./agent-ui";
 
 export type AgentAdmission = {
   requestId: string;
@@ -96,7 +98,9 @@ export function useAgentAdmissions(
       }
     };
     void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
+    // The Mac tells of a change on the live connection (the fingerprint
+    // above): read at once then, and only as a safety net otherwise.
+    const timer = setInterval(() => void refresh(), fingerprint ? 60000 : 3000);
     return () => {
       controller.abort();
       clearInterval(timer);
@@ -226,9 +230,7 @@ export function AgentAdmissionReview({
     >
       <div className="admission-scroll">
         <section className="admission-identity">
-          <span className="admission-avatar" aria-hidden="true">
-            <Bot size={25} strokeWidth={1.5} />
-          </span>
+          <AgentAvatar name={readable(admission.name)} size={56} />
           <h3>
             Let <bdi>{readable(admission.name)}</bdi> connect?
           </h3>
@@ -318,9 +320,10 @@ export function AgentAdmissionReview({
                       <small>{screen[admission.screen]}</small>
                       {admission.screen === "apps" && <>
                         {!!admission.appAccess?.length ? <ul className="agent-admission-resources" aria-label="Shared apps">
-                          {admission.appAccess.map((app) => <li key={app.id}><bdi>{readable(app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id)}</bdi> · {app.mode === "control" ? "View & control" : "View only"}</li>)}
+                          {admission.appAccess.map((app) => <li key={app.id} className="admission-app"><span className="admission-app-logo"><AppLogo peer={peer} appId={app.id} name={app.name || app.id} /></span><bdi>{readable(app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id)}</bdi> · {app.mode === "control" ? "View & control" : "View only"}</li>)}
                         </ul> : <small>No apps shared yet. The agent can ask for access.</small>}
-                        <small>Control allows actions inside that app, including its signed-in accounts. Approve more apps on your phone or another verified device; Reach on this Mac is locked during this invitation.</small>
+                        {admission.appAccess?.some((app) => app.mode === "control") && <small>Control allows actions inside that app, including its signed-in accounts.</small>}
+        <small>Approve more apps on your phone or another verified device; Reach on this Mac is locked during this invitation.</small>
                       </>}
                     </div>
                   </li>

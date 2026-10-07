@@ -132,14 +132,31 @@ test("a tap on anything else opens no keyboard", async () => {
   await view.unmount();
 });
 
-test("a quick tap reserves the keyboard while a slow field probe is still pending", async () => {
+test("an unsure answer opens no keyboard (no flash open and shut on a non-field)", async () => {
+  const { view, calls, stage } = await surface({ answer: { field: false, uncertain: true } });
+  await tap(stage, 400, 100);
+  assert.deepEqual(calls.fields, []);
+  await view.unmount();
+});
+
+test("a quick tap on a non-field opens no keyboard while the probe is still pending", async () => {
   const { view, calls, stage } = await surface({
-    answer: { field: true },
+    answer: { field: false },
     delay: 80,
   });
   await tap(stage, 400, 100, 10);
   await settle(120);
-  assert.deepEqual(calls.fields, [{ point: { x: 0.4, y: 0.2 }, secure: false }]);
+  assert.deepEqual(calls.fields, []);
+  await view.unmount();
+});
+
+test("a field confirmed between the finger lifting and the click still opens on that tap", async () => {
+  const { view, calls, stage } = await surface({ answer: { field: true, secure: true }, delay: 5 });
+  finger("pointerdown", stage, 400, 100);
+  finger("pointerup", stage, 400, 100);
+  await settle(20);
+  stage.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, clientX: 400, clientY: 100 }));
+  assert.deepEqual(calls.fields, [{ point: { x: 0.4, y: 0.2 }, secure: true }]);
   await view.unmount();
 });
 
@@ -196,7 +213,8 @@ test("an answer meant for an earlier touch never opens the keyboard on a later o
   finger("pointerup", area, 900, 400);
   area.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle(250);
-  assert.deepEqual(fields, [{ point: { x: 0.9, y: 0.8 }, secure: false }]);
+  // Its own answer came too late for the tap, so no keyboard at all.
+  assert.deepEqual(fields, []);
   await second.unmount();
 });
 
@@ -303,4 +321,51 @@ test("on the Mac, a move or scroll that waited too long is let go; a late click 
   assert.equal(ws.sent.find((m) => m.id === 2)?.skipped, true, "the late scroll let go");
   assert.equal(ws.sent.some((m) => m.type === "error"), false, "control stays on");
   ws.emit("close");
+});
+
+// "I start typing and it goes back to view only" (2026-10-06): any action the
+// Mac's helper turned down (a typing target a web editor rebuilt) ended
+// control. Now only that action fails.
+test("on the Mac, an action the helper turns down fails alone; control stays on", async () => {
+  const ws = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    sent: [],
+    send(m) { this.sent.push(JSON.parse(m)); },
+    close() { this.closed = true; },
+  });
+  desktopConnection(ws, {
+    config: { screen: true },
+    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    control: { check() {}, acquire() {}, revoke() {} },
+    create: async () => ({
+      send: async (a) => {
+        if (a.type === "text") throw Object.assign(new Error("The typing target changed. Tap the text field again."), { status: 403, refused: true });
+        return {};
+      },
+      stop() {},
+    }),
+  });
+  const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
+  send({ type: "auth", token: "T", display: "1" });
+  for (const end = Date.now() + 1000; !ws.sent.some((m) => m.type === "ready") && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
+  send({ type: "input", id: 1, action: { type: "text", text: "hi" } });
+  send({ type: "input", id: 2, action: { type: "key", key: "enter" } });
+  for (const end = Date.now() + 1000; !ws.sent.some((m) => m.id === 2) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(ws.sent.find((m) => m.id === 1), { type: "ack", id: 1, ok: false, error: "The typing target changed. Tap the text field again." });
+  assert.ok(ws.sent.find((m) => m.id === 2)?.type === "ack", "the next action still runs");
+  assert.equal(ws.sent.some((m) => m.type === "error"), false, "control stays on");
+  assert.notEqual(ws.closed, true);
+  ws.emit("close");
+});
+
+test("the helper's word that an action was turned down, or that control can't go on, reaches the server as such", async () => {
+  const { readFileSync } = await import("node:fs");
+  const swift = readFileSync(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
+  // Only no Accessibility and a lost display end control (code 2, "fatal").
+  assert.match(swift, /if e\.code == 2 \{ result\["fatal"\] = true \}/);
+  assert.equal((swift.match(/code: 2\)/g) || []).length, 2);
+  // A rebuilt web field still counts: same app, same kind, mostly the same place.
+  assert.match(swift, /CFEqual\(expected, current\) \|\| sameField\(current\)/);
+  const native = readFileSync(new URL("../server/desktop-native.mjs", import.meta.url), "utf8");
+  assert.match(native, /value\.fatal \? \{\} : \{ refused: true \}/);
 });

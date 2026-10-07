@@ -32,7 +32,7 @@ import {
   ownsServeRoute,
   checkUnused,
 } from "./tailscale.mjs";
-import { stateDir } from "./home.mjs";
+import { packaged, stateDir } from "./home.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
@@ -84,6 +84,8 @@ export async function launch(options, root) {
   const reach = await createReach({
     dataDir,
     port: options.port,
+    // A source checkout: interface edits reach phones without a restart.
+    liveInterface: !packaged,
     publicOrigin: privateOrigin,
     ...(publicStart
       ? {

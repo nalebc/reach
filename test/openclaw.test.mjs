@@ -371,8 +371,8 @@ test("streaming, completed-before-response race, approval expiry and explicit re
   assert.equal((await c.history(rows[1].key)).approvals.length, 0);
   assert.equal((await c.history(rows[0].key)).approvals.length, 1);
   await assert.rejects(
-    c.approve("approval", "allow-always"),
-    /Allow once or Deny/,
+    c.approve("approval", "allow-everything"),
+    /Allow once, Always allow or Deny/,
   );
   assert.equal(
     calls.some((c) => c.method === "exec.approval.resolve"),
@@ -383,6 +383,9 @@ test("streaming, completed-before-response race, approval expiry and explicit re
     id: "approval",
     decision: "allow-once",
   });
+  ws.event("exec.approval.requested", { ...prompt, id: "persistent-approval" });
+  await c.approve("persistent-approval", "allow-always");
+  assert.deepEqual(calls.at(-1).params, { id: "persistent-approval", decision: "allow-always" });
   ws.event("exec.approval.requested", {
     ...prompt,
     expiresAtMs: Date.now() - 1,

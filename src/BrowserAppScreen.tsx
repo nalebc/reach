@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Lock, Monitor, RefreshCw } from "lucide-react";
 import { peerFetch, request, type Peer } from "./api";
 import type { BrowserRequest } from "./browser-approvals";
+import AppLogo from "./AppLogo";
+import { OptionButtons } from "./agent-ui";
 
 type SharedApp = { id: string; name: string; mode: "hidden" | "view" | "control"; protected: boolean; reason?: string };
 type AppWindow = { id: string; title: string; width: number; height: number };
@@ -41,7 +43,7 @@ export default function BrowserAppScreen({ peer, expiresAt, onError }: {
       reading = true;
       try {
         const value = await request<{ apps: SharedApp[]; requests: BrowserRequest[] }>(peer, "/api/browser/apps", { signal: controller.signal });
-        if (!controller.signal.aborted) { setCatalog(value); setError(""); }
+        if (!controller.signal.aborted) { setCatalog({ ...value, apps: value.apps.map(app => app.mode === "control" ? { ...app, mode: "view" } : app) }); setError(""); }
       } catch (e) {
         if (!controller.signal.aborted) {
           setCatalog(null); setError((e as Error).message); failure.current(e);
@@ -79,15 +81,19 @@ export default function BrowserAppScreen({ peer, expiresAt, onError }: {
   };
   return <section className="browser-app-screen" aria-label="Shared apps">
     <div className="browser-section-heading">
-      <div><h2>Screen</h2><p className="browser-policy">Only shared app windows appear here.</p></div>
-      <button className="button secondary small" disabled={expired} onClick={() => setRevision((n) => n + 1)}><RefreshCw size={15} /> Refresh apps</button>
+      <div><h2>Screen</h2><p className="browser-policy">Choose an app, then a window. View only: you can’t click or type in these windows.</p></div>
+      <button className="ag-secondary ag-small" disabled={expired} onClick={() => setRevision((n) => n + 1)}><RefreshCw size={15} /> Refresh apps</button>
     </div>
     {expired ? <p className="browser-empty" role="status">This invitation has expired.</p> : <>
-      {catalog && !!catalog.apps.length && <div className="browser-app-picker">
-        <label>App <select aria-label="Shared app" value={app?.id || ""} onChange={(e) => { setSelected(e.target.value); setNote(""); }}>
-          {catalog.apps.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · {entry.protected ? "Protected" : words[entry.mode]}</option>)}
-        </select></label>
-        {app && <span className="browser-app-mode">{app.protected ? "Protected" : words[app.mode]}</span>}
+      {catalog && !!catalog.apps.length && <div className="browser-app-picker ag-ws-apps">
+        <p className="ag-label">Apps on this computer</p>
+        <OptionButtons label="Shared app" value={app?.id || ""} onChange={(id) => { setSelected(id); setNote(""); }}
+          options={catalog.apps.map((entry) => ({
+            value: entry.id,
+            label: entry.name,
+            detail: entry.protected ? "Private" : entry.mode === "hidden" ? "Ask to view" : words[entry.mode],
+            icon: entry.protected ? <Lock size={16} /> : <AppLogo peer={peer} name={entry.name} />,
+          }))} />
       </div>}
       {app && !app.protected && app.mode !== "hidden" ? <BrowserAppWindows
         key={JSON.stringify([app.id, app.mode, peer.url, peer.token])} app={app} peer={peer} onError={onError} />
@@ -97,8 +103,7 @@ export default function BrowserAppScreen({ peer, expiresAt, onError }: {
         </div>}
       {app && !app.protected && app.mode !== "control" && <div className="browser-app-request">
         {pending ? <p role="status">Waiting for the owner to allow {pending.action.type === "app-access" && pending.action.mode === "control" ? "control" : "viewing"} of {app.name}.</p> : <>
-          {app.mode === "hidden" && <button className="button secondary small" disabled={busy} onClick={() => void ask("view")}>Ask to view</button>}
-          <button className="button secondary small" disabled={busy} onClick={() => void ask("control")}>{busy ? "Requesting…" : "Ask to control"}</button>
+          {app.mode === "hidden" && <button className="ag-primary ag-small" disabled={busy} onClick={() => void ask("view")}>Ask to view</button>}
         </>}
       </div>}
       {latestRequest && !pending && app?.mode !== "control" && ["denied", "expired", "cancelled", "revoked"].includes(latestRequest.status)
@@ -133,12 +138,12 @@ function BrowserAppWindows({ app, peer, onError }: { app: SharedApp; peer: Peer;
   }, [peer.url, peer.token, app.id, app.mode]);
   const current = windows?.find((entry) => entry.id === selected) || windows?.[0];
   return <>
-    {!!windows?.length && <label className="browser-app-window-picker">Window
-      <select aria-label="Shared app window" value={current?.id || ""} onChange={(e) => setSelected(e.target.value)}>
-        {windows.map((entry) => <option key={entry.id} value={entry.id}>{entry.title || app.name}</option>)}
-      </select>
-    </label>}
-    {current ? <BrowserWindowSurface key={JSON.stringify([current.id, current.width, current.height])} target={current} peer={peer} control={app.mode === "control"} appName={app.name} onError={onError} />
+    {!!windows?.length && <div className="browser-app-window-picker ag-ws-windows">
+      <p className="ag-label">{app.name} windows</p>
+      <OptionButtons label="Shared app window" value={current?.id || ""} onChange={setSelected}
+        options={windows.map((entry) => ({ value: entry.id, label: entry.title || app.name }))} />
+    </div>}
+    {current ? <BrowserWindowSurface key={JSON.stringify([current.id, current.width, current.height])} target={current} peer={peer} control={false} appName={app.name} onError={onError} />
       : <div className="browser-app-placeholder" role="status"><Monitor size={28} /><span>{windows ? "No shareable windows are open. Open a window on the computer to continue." : error || "Loading shared windows…"}</span></div>}
   </>;
 }
@@ -267,11 +272,11 @@ function BrowserWindowSurface({ target, peer, control, appName, onError }: {
         }} /> : <div className="browser-app-placeholder" role="status"><Monitor size={28} /><span>{error || "Opening shared window…"}</span></div>}
     </div>
     <div className="browser-screen-footer">
-      <p className="browser-policy">{control ? busy ? "Sending input…" : "Click the window, then type. Only this app receives input." : "View only. Ask the owner to enable control."}</p>
+      <p className="browser-policy">{control ? busy ? "Sending input…" : "Click the window, then type. Only this app receives input." : "View only. App control requires an isolated environment."}</p>
       <div className="browser-screen-actions">
         {control && <><button className="button secondary small" disabled={!loaded} onClick={() => send({ type: "scroll", direction: "up", amount: 3 })}><ArrowUp size={15} /> Scroll up</button>
           <button className="button secondary small" disabled={!loaded} onClick={() => send({ type: "scroll", direction: "down", amount: 3 })}><ArrowDown size={15} /> Scroll down</button></>}
-        <button className="button secondary small" onClick={() => void refresh()}><RefreshCw size={15} /> Refresh</button>
+        <button className="ag-secondary ag-small" onClick={() => void refresh()}><RefreshCw size={15} /> Refresh</button>
       </div>
     </div>
     {error && image && <p className="error" role="alert">{error}</p>}

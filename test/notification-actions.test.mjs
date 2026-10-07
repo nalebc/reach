@@ -37,8 +37,10 @@ test("rich notifications identify the exact request and offer only one-time acti
   assert.equal(item.prompt.command, "npm test");
   assert.equal(publicNotification(item)._binding, undefined);
   const push = notificationPush(item);
-  assert.equal(push.title, "Codex · Command approval");
-  assert.equal(push.body, "Tap to review the command and allow or deny it.");
+  // On an iPhone every notification has Reach's icon: the text tells them
+  // apart. The chat's name on top, then the agent and the command itself.
+  assert.equal(push.title, "Private project");
+  assert.equal(push.body, "Codex wants to run npm test in project");
   assert.equal(
     new URL(push.url, "https://reach.test").searchParams.get("prompt"),
     "prompt-1",
@@ -47,10 +49,34 @@ test("rich notifications identify the exact request and offer only one-time acti
     push.actions.map((a) => a.action),
     ["open", "deny"],
   );
-  assert.doesNotMatch(
-    JSON.stringify(push),
-    /npm test|workspace|Private project/,
-  );
+});
+test("each kind of request reads differently on the phone", () => {
+  const push = (prompt, title) =>
+    notificationPush(chatNotifications({ ...session(prompt), ...(title !== undefined && { title }) })[0]);
+  const ask = push({
+    kind: "question",
+    command: undefined,
+    decisions: [],
+    questions: [{ id: "q", question: "Which **branch** should I use?", options: [{ label: "main" }] }],
+  });
+  assert.equal(ask.body, "Codex asks: Which branch should I use?");
+  assert.equal(ask.actions[0].title, "Reply");
+  const secret = push({
+    kind: "question",
+    command: undefined,
+    reason: "Enter the token",
+    questions: [{ id: "q", question: "Paste the token", secret: true, options: [] }],
+  });
+  assert.doesNotMatch(JSON.stringify(secret), /Paste the token/);
+  const files = push({ kind: "file-change", command: undefined, files: ["/w/src/a.ts", "/w/src/b.ts", "/w/c.ts"] });
+  assert.equal(files.body, "Codex wants to change 3 files: a.ts, b.ts +1");
+  // A chat with no name of its own: the agent's name on top.
+  assert.equal(push({}, "Untitled Codex session").title, "Codex");
+  const claude = notificationPush(chatNotifications({ ...session(), agent: "claude" })[0]);
+  assert.equal(claude.body, "Claude Code wants to run npm test in project");
+  // Hidden characters in a command: nothing of it reaches the phone.
+  const hidden = push({ command: "echo safe\u202erm" });
+  assert.doesNotMatch(hidden.body, /echo/);
 });
 test("file changes, oversized commands, hidden controls, and policy approvals require full review", () => {
   for (const prompt of [
@@ -165,8 +191,8 @@ test("simultaneous clicks dispatch one decision and admission approval always ke
     ["deny"],
   );
   assert.equal(admission.target.needs, "agent-admission:connection");
-  assert.equal(notificationPush(admission).title, "✦ Muse · Connection request");
-  assert.match(notificationPush(admission).body, /Tap to compare/);
+  assert.equal(notificationPush(admission).title, "✦ Muse wants to connect");
+  assert.match(notificationPush(admission).body, /Compare the code/);
   assert.doesNotMatch(JSON.stringify(notificationPush(admission)), /123456/);
 });
 test("resolved browser requests disappear and legacy access never targets the removed Agents page", async () => {
@@ -190,4 +216,50 @@ test("resolved browser requests disappear and legacy access never targets the re
     page: "overview",
     needs: "device:access1",
   });
+});
+test("a chat waiting in its own app or terminal says on what", () => {
+  const push = (asking) =>
+    notificationPush(
+      chatNotifications({ agent: "claude", id: "c1", status: "waiting", title: "Fix login", asking })[0],
+    );
+  assert.equal(push({ kind: "permission", text: "npm run build", command: true }).body, "Claude Code wants to run npm run build");
+  assert.equal(push({ kind: "permission", text: "Edit src/app.ts" }).body, "Claude Code needs permission: Edit src/app.ts");
+  assert.equal(push({ kind: "question", questions: [{ question: "Ship it?", options: [] }] }).body, "Claude Code asks: Ship it?");
+  assert.equal(
+    push({ kind: "dialog", text: "Claude Code has something open for you to answer." }).body,
+    "Claude Code has something open for you to answer.",
+  );
+  // Nothing known: never a stock sentence passed off as its question.
+  assert.equal(push(undefined).body, "Claude Code is waiting for you");
+  assert.equal(push({ kind: "permission", text: "echo safe‮rm", command: true }).body, "Claude Code needs your permission");
+});
+test("Mac prompts and OpenClaw approvals read as themselves", async () => {
+  const { items } = await readAttention({
+    agentSessions: {
+      list: async () => ({
+        sessions: [],
+        macPrompts: [{ id: "m1", title: "“Terminal” would like to access files in your Documents folder.", detail: "Keeping access off may stop it." }],
+      }),
+    },
+    openClaw: {
+      overview: async () => ({
+        connected: true,
+        sessions: [{ key: "s1", title: "Trip planning" }],
+        approvals: [
+          { id: "o1", sessionKey: "s1", command: "ls ~/Trips", cwd: "/Users/me" },
+          { id: "o2", sessionKey: "s1", command: "echo safe‮rm" },
+        ],
+      }),
+    },
+    handoffs: () => [],
+    browserRequests: () => [],
+    admissions: () => [],
+    accessRequests: () => [],
+  });
+  const [mac, claw, hidden] = items.map(notificationPush);
+  assert.equal(mac.title, "“Terminal” would like to access files in your Documents folder.");
+  assert.equal(mac.body, "Keeping access off may stop it.");
+  assert.equal(claw.title, "Trip planning");
+  assert.equal(claw.body, "OpenClaw wants to run ls ~/Trips in me");
+  assert.doesNotMatch(hidden.body, /echo/);
 });

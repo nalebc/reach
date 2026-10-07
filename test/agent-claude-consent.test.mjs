@@ -29,6 +29,8 @@ test("a phone's answer presses the same button on the Claude app's card, showing
   assert.deepEqual(mac.presses, ["Allow for this session"]);
   // Only a card that says this request: its question and its apps.
   assert.deepEqual(mac.expected, [["Allow Claude to use", "Calculator"]]);
+  // Answered and confirmed: a second tap says so, not "couldn't confirm".
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /^Error: This request was already answered\.$/);
 
   // Already on screen: pressed in place.
   const shownHere = app();
@@ -49,6 +51,8 @@ test("nothing is pressed for an unknown choice, a card already answered, or a se
 
   // Pressed, but the transcript never gets the answer.
   const stuck = createClaudeConsent({
+    // On a Mac: these say "your Mac" (other computers: computer-word.test.mjs).
+    platform: "darwin",
     press: async () => {},
     open: async () => {},
     pending: async () => ({ id: "consent:toolu_1" }),
@@ -75,6 +79,28 @@ test("the press goes through Reach's helper with only the chosen button, and its
     /isn't showing that request\. Answer it on your Mac\./,
   );
   await assert.rejects(pressClaudeConsent("Deny", helper("garbage")), (e) => e.status === 502);
+});
+
+test("a tap the helper never pressed can be tried again; a press it can't confirm is never repeated", async () => {
+  let reply = '{"error":"The Claude app isn\'t showing that request.","untouched":true}\n';
+  const presses = [];
+  const consent = createClaudeConsent({
+    press: (choice) => (presses.push(choice), pressClaudeConsent(choice, { binary: async () => "/h", run: async () => ({ stdout: reply }) })),
+    open: async () => {},
+    pending: async () => ({ id: "consent:toolu_1" }),
+    shown: shownAs(A),
+    wait: async () => {},
+    confirmMs: 0,
+    platform: "darwin",
+  });
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /isn't showing that request/);
+  // Nothing was pressed: the second tap reaches the helper again.
+  reply = '{"error":"The Claude app did not confirm the answer. Check it on your Mac."}\n';
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /did not confirm/);
+  assert.equal(presses.length, 2);
+  // Maybe pressed: never pressed twice, and the phone is told why.
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /couldn't confirm it\. Check the card on your Mac/);
+  assert.equal(presses.length, 2);
 });
 
 test("Claude native consent rejects concurrent taps and rechecks the request after switching chats", async () => {

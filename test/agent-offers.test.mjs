@@ -73,6 +73,8 @@ test("Codex's models, efforts with its own descriptions, speeds and modes come f
       images: false,
       isDefault: true,
       speeds: [{ id: "priority", name: "Fast", note: "2x speed, increased usage" }],
+      // The speed Codex uses unless one is picked (Configure › Speed).
+      defaultSpeed: null,
     },
   ]);
   assert.deepEqual(offered.modes.map((m) => m.label), ["Ask for approval", "Full access", "Custom (config.toml)"]);

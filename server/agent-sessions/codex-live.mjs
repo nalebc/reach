@@ -15,8 +15,15 @@
 // minute later so the app can take them back (verified).
 import { object, validateQuestions, uncertainDelivery, compatibilityError } from "./compatibility.mjs";
 import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
+import { codexArchive } from "./portable-history.mjs";
+import { createCodexDesktop } from "./codex-desktop.mjs";
+import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
+import { codexMode } from "./codex.mjs";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
+import { computerWord } from "../computer-word.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Both messages the Codex app itself checks for.
@@ -84,6 +91,7 @@ export function describePrompt(method, params = {}) {
         decisions: ["allow", "deny"],
       };
     case "item/tool/requestUserInput":
+      validateQuestions(params.questions, "codex");
       return {
         ...base,
         kind: "question",
@@ -98,15 +106,7 @@ export function describePrompt(method, params = {}) {
         })),
       };
     case "mcpServer/elicitation/request":
-      return {
-        ...base,
-        kind: "elicitation",
-        title: `${params.serverName || "A tool"} needs your input`,
-        message: params.message || params.description || params.title || "",
-        // Forms, URLs and device proofs need their native UI; never submit an empty acceptance.
-        decisions: params.mode || params.requestedSchema ? ["decline", "cancel"] : ["accept", "decline", "cancel"],
-        ...(params.mode || params.requestedSchema ? { reason: "Complete this request in Codex on your computer. Reach cannot safely submit this form or verification." } : {}),
-      };
+      return { ...base, ...elicitationPrompt(params) };
     default:
       return { ...base, kind: "unknown", title: method };
   }
@@ -131,15 +131,15 @@ export function answerFor(prompt, answer) {
       const answers = {};
       for (const q of prompt.questions) {
         const given = answer?.answers?.[q.id];
-        if (!Array.isArray(given) || !given.length || given.some((g) => typeof g !== "string" || g.length > 2000))
+        if (!Array.isArray(given) || given.length !== 1 || given.some((g) => typeof g !== "string" || !g.trim() || g.length > 2000) ||
+            (!q.other && q.options.length && !q.options.some(o => o.label === given[0])))
           throw bad("Answer every question.");
         answers[q.id] = { answers: given };
       }
       return { answers };
     }
     case "elicitation":
-      if (!prompt.decisions.includes(answer?.decision)) throw bad("Choose accept, decline or cancel.");
-      return { action: answer.decision, content: answer.decision === "accept" ? answer.content ?? null : null };
+      return elicitationAnswer(prompt, answer);
     default:
       throw bad("Reach cannot answer this prompt.", 409);
   }
@@ -201,12 +201,15 @@ const finished = (turn) => !!turn?.completedAt || ["completed", "failed"].includ
 
 export function createCodexLive({
   daemon,
+  desktop = createCodexDesktop(),
   now = Date.now,
   wait = sleep,
   deliverMs = 10000,
   // Messages waiting in Codex's own queue, shown on the phone (off in tests
   // that count the calls made to Codex).
   queues = !process.env.NODE_TEST_CONTEXT,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 }) {
   const threads = new Map();
   const subscribed = new Set();
@@ -334,6 +337,10 @@ export function createCodexLive({
     }
     const t = state(id);
     switch (m.method) {
+      case "thread/settings/updated":
+        if (object(p.threadSettings)) t.mode = codexMode(p.threadSettings);
+        t.items++; // Re-read the native model and effort in the composer.
+        break;
       case "turn/started":
         // A queued message may have just become this turn.
         if (queues && t.queue?.length) void readQueue(id);
@@ -401,7 +408,16 @@ export function createCodexLive({
   });
   daemon.onRequest((message, resolve, reject) => {
     if (!PROMPTS.has(message.method)) return reject({ code: -32601, message: "Not supported by Reach." });
-    const prompt = describePrompt(message.method, message.params);
+    let prompt;
+    try { prompt = describePrompt(message.method, message.params); }
+    catch (error) {
+      const id = message.params?.threadId || message.params?.conversationId;
+      if (typeof id === "string" && UUID.test(id)) {
+        state(id).error = error.message;
+        changed(id);
+      }
+      return reject({ code: -32602, message: error.message });
+    }
     if (!prompt.threadId) return reject({ code: -32602, message: "Missing thread." });
     const t = state(prompt.threadId);
     const key = String(message.id);
@@ -461,7 +477,7 @@ export function createCodexLive({
           id: String(queued),
           text: visibleUserText(input.filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
           images: input.filter((i) => i?.type === "image" || i?.type === "localImage").length,
-          error: "Another Codex window has this chat open and didn't take it. Open the chat in the Codex app on your Mac, then send it again.",
+          error: `Another Codex window has this chat open and didn't take it. Open the chat in the Codex app on your ${computerWord(platform)}, then send it again.`,
         },
       ];
       if (queues) await readQueue(threadId);
@@ -481,6 +497,7 @@ export function createCodexLive({
   };
   return {
     drives: (threadId) => subscribed.has(threadId),
+    currentMode: (threadId) => threads.get(threadId)?.mode || null,
     onChange(listener) {
       changeListeners.add(listener);
       return () => changeListeners.delete(listener);
@@ -539,7 +556,59 @@ export function createCodexLive({
       }
       return r || {};
     },
-    async send(threadId, { text, images, model, effort, mode, skill } = {}) {
+    async model(threadId, { model, effort } = {}) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      const params = { threadId, model, ...(effort ? { effort } : {}) };
+      // A chat already loaded by the shared engine can be changed without
+      // taking it over, even while another client is running its turn.
+      try {
+        await daemon.rpc("thread/settings/update", params);
+      } catch (error) {
+        if (!/thread not found/i.test(error.message)) throw error;
+        try {
+          await attach(threadId);
+        } catch (e) {
+          if (WRITER_HELD.test(e.message)) {
+            const result = await desktop.model(threadId, { model, effort });
+            state(threadId).items++;
+            changed(threadId);
+            return result;
+          }
+          throw e;
+        }
+        try { await daemon.rpc("thread/settings/update", params); }
+        finally { release(threadId); }
+      }
+      state(threadId).items++;
+      changed(threadId);
+      return { model, ...(effort ? { effort } : {}), applied: true };
+    },
+    async mode(threadId, mode) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      const settings = codexTurnMode(mode);
+      if (!settings.permissions) throw bad("Choose one of Codex's available permission modes.");
+      const params = { threadId, ...settings };
+      try { await daemon.rpc("thread/settings/update", params); }
+      catch (error) {
+        if (!/thread not found/i.test(error.message)) throw error;
+        try { await attach(threadId); }
+        catch (e) {
+          if (!WRITER_HELD.test(e.message)) throw e;
+          await desktop.permissions(threadId, settings);
+          state(threadId).mode = mode;
+          state(threadId).items++;
+          changed(threadId);
+          return { mode, applied: true };
+        }
+        try { await daemon.rpc("thread/settings/update", params); }
+        finally { release(threadId); }
+      }
+      state(threadId).mode = mode;
+      state(threadId).items++;
+      changed(threadId);
+      return { mode, applied: true };
+    },
+    async send(threadId, { text, images, model, effort, speed, mode, skill } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const input = codexInput({ text, images, skill });
       const t = state(threadId);
@@ -563,6 +632,8 @@ export function createCodexLive({
           clientUserMessageId: randomUUID(),
           ...(model ? { model } : {}),
           ...(effort ? { effort } : {}),
+          // The speed too, for this turn and the ones after, as in the app.
+          ...(speed ? { serviceTier: speed } : {}),
           // Applies to this turn and the ones after, like the app's menu.
           ...codexTurnMode(mode),
         });
@@ -573,7 +644,7 @@ export function createCodexLive({
       begin(threadId, r.turn);
       return { turnId: r.turn?.id || null };
     },
-    async start({ cwd, text, images, model: picked, effort, approvalPolicy, sandbox, approvalsReviewer, name }) {
+    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
       const model = await withModel(picked);
@@ -581,6 +652,7 @@ export function createCodexLive({
         cwd,
         serviceName: "reach",
         ...(model ? { model } : {}),
+        ...(speed ? { serviceTier: speed } : {}),
         ...(approvalPolicy ? { approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
         ...(approvalsReviewer ? { approvalsReviewer } : {}),
@@ -607,6 +679,23 @@ export function createCodexLive({
     // its history goes in as what the model has seen, a batch per call; no
     // turn runs until a message is sent. Let go of at once, so the Codex app
     // can open it; one left empty by a failure is archived.
+    async forkHistory({ cwd, name, items, from, model: picked }) {
+      if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-history-"));
+      const file = path.join(dir, "history.jsonl");
+      const archive = codexArchive({ cwd, items, from, name });
+      await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
+      // Keep the source archive: it is a recovery copy, and never overwrite a live thread.
+      const model = await withModel(picked);
+      const result = await daemon.rpc("thread/fork", { threadId: archive.id, path: file, cwd, excludeTurns: true, ...(model ? { model } : {}) });
+      const threadId = result?.thread?.id;
+      if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
+      subscribed.add(threadId);
+      try {
+        if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
+      } finally { release(threadId); }
+      return { threadId };
+    },
     async fork({ cwd, name, batches = [], developerInstructions, model: picked }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const model = await withModel(picked);
@@ -663,14 +752,21 @@ export function createCodexLive({
       const prompt = t.prompts.get(String(promptId));
       if (!prompt) throw bad("This prompt was already answered.", 409);
       if (prompt.replying) throw bad("This answer is already being sent.", 409);
+      if (prompt.attempted) throw bad("This answer was already attempted. Check Codex before answering again.", 409);
       const response = answerFor(prompt, answer);
       prompt.replying = true;
+      prompt.attempted = true;
       try {
         await prompt.resolve(response);
         t.prompts.delete(String(promptId));
         if (!t.prompts.size && t.status === "waiting") t.status = "running";
         changed(threadId);
         return { answered: true };
+      } catch (error) {
+        prompt.replying = false;
+        t.error = error.message;
+        changed(threadId);
+        throw error;
       } finally {
         prompt.replying = false;
       }
@@ -692,7 +788,7 @@ export function createCodexLive({
         status: t.status,
         error: t.error,
         turnId: t.turnId,
-        prompts: [...t.prompts.values()].map(({ resolve, requestId, replying, ...p }) => p),
+        prompts: [...t.prompts.values()].map(({ resolve, requestId, replying, attempted, ...p }) => ({ ...p, ...(attempted && !replying ? { attempted: true } : {}) })),
         streaming: t.streaming?.text || "",
         activity: t.activity,
         items: t.items,

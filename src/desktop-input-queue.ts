@@ -8,6 +8,8 @@ export type TextTarget = {
 };
 export type InputResult = {
   ok?: boolean;
+  // The computer turned down this one action (control goes on).
+  error?: string;
   text?: string;
   skipped?: boolean;
   target?: TextTarget;
@@ -116,7 +118,9 @@ export class DesktopInputQueue {
     const item = this.pending.get(id);
     if (!item) throw Error("Invalid input acknowledgment.");
     this.pending.delete(id);
-    item.resolve(result);
+    // Turned down: that action fails; control and the queue go on.
+    if (result?.ok === false && typeof result.error === "string") item.reject(Error(result.error));
+    else item.resolve(result);
     this.flush();
     return this.now() - item.sent;
   }

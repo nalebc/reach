@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
+  AppWindow,
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
+  Lock,
+  ShieldCheck,
   Download,
   FileText,
   Folder,
@@ -18,7 +23,9 @@ import { installBrowserTools } from "./browser-tools";
 import BrowserScreenControls from "./BrowserScreenControls";
 import BrowserTerminal from "./BrowserTerminal";
 import BrowserAppScreen from "./BrowserAppScreen";
+import { OptionButtons } from "./agent-ui";
 import "./browser-workspace.css";
+import "./agent-workspace.css";
 
 type Access = {
   name: string;
@@ -342,26 +349,90 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
 
   if (!access)
     return (
-      <main className="browser-workspace browser-workspace-loading">
-        <p role="status">Opening your shared workspace…</p>
+      <main className="browser-workspace ag-ws browser-workspace-loading">
+        <p role="status" className="ag-ws-loading">Opening your shared workspace…</p>
         {error && <p className="error" role="alert">{error}</p>}
       </main>
     );
 
+  const endsAt = new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const minutesLeft = Math.max(0, Math.round((access.expiresAt - Date.now()) / 60000));
+  const crumbs = dir ? dir.split("/").filter(Boolean) : [];
+  const rootName = access.roots.find((item) => item.index === currentRoot)?.name || "Shared folder";
+  // Plain sentences an agent can read before acting: what it may do, and where.
+  const abilities = [
+    hasScreen && {
+      tab: "screen" as const,
+      icon: <AppWindow size={18} />,
+      title: "Apps",
+      text: access.screen === "apps"
+        ? "View the app windows the owner shared. To see another app, choose it in Screen and ask."
+        : access.screen === "scroll" ? "View and scroll the shared screen."
+          : access.screen === "ask" ? "View the screen; every click or key needs the owner’s approval." : "View the shared screen.",
+    },
+    hasFiles && {
+      tab: "files" as const,
+      icon: <Folder size={18} />,
+      title: "Files",
+      text: `Read, search and download in ${access.roots.map((item) => item.name).join(", ")}.`,
+    },
+    !!access.terminals.length && {
+      tab: "terminal" as const,
+      icon: <Terminal size={18} />,
+      title: "Terminal output",
+      text: `Read ${access.terminals.map((item) => item.name).join(", ")}. Output only.`,
+    },
+    (access.restrictedTerminal || access.commandRequests) && {
+      tab: "terminal" as const,
+      icon: <ShieldCheck size={18} />,
+      title: "Commands",
+      text: access.restrictedTerminal
+        ? access.scriptApproval || access.terminalApproval
+          ? "Read commands run at once inside the shared folders. File changes and scripts wait for the owner’s approval."
+          : "Read-only commands (pwd, ls, cat, grep…) run inside the shared folders."
+        : "Ask the owner to run a command for you. Nothing runs from this page.",
+    },
+  ].filter(Boolean) as { tab: WorkspaceTab; icon: ReactNode; title: string; text: string }[];
+
   return (
-    <main className="browser-workspace">
-      <header className="browser-header">
-        <div className="browser-computer-icon"><Monitor size={21} /></div>
-        <div className="browser-computer-name">
-          <span className="browser-wordmark">REACH <span>Shared workspace</span></span>
+    <main className="browser-workspace ag-ws">
+      <header className="ag-ws-head">
+        <span className="ag-ws-mark"><Monitor size={20} /></span>
+        <div className="ag-ws-title">
+          <p>Reach · shared workspace</p>
           <h1>{peer.name}</h1>
         </div>
-        <div className="browser-session-status">
-          <span className="browser-connected">Connected</span>
-          <span>Until {new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+        <div className="ag-ws-status" aria-label="Session status">
+          <span className="ag-pill is-live">Connected</span>
+          <span>Ends {endsAt} · {minutesLeft} min left</span>
         </div>
       </header>
-      <div className="browser-tabs" role="tablist" aria-label="Shared workspace">
+
+      <details className="ag-ws-access" open>
+        <summary>
+          <strong>What you can do here</strong>
+          <ChevronDown size={16} />
+        </summary>
+        <ul>
+          {abilities.map((item) => (
+            <li key={item.title}>
+              <span className="ag-ws-access-icon">{item.icon}</span>
+              <span className="ag-ws-access-text"><strong>{item.title}</strong><span>{item.text}</span></span>
+              {activeTab === item.tab
+                ? <span className="ag-ws-here">Open below</span>
+                : <button type="button" className="ag-secondary ag-small" onClick={() => selectTab(item.tab)}>
+                  Go to {WORKSPACE_TABS.find((tab) => tab.id === item.tab)!.label}
+                </button>}
+            </li>
+          ))}
+          {!abilities.length && <li><span className="ag-ws-access-text"><span>Nothing is shared with this session yet.</span></span></li>}
+        </ul>
+        <p className="ag-ws-rules">
+          <Lock size={13} /> Only what is listed here is available. You can’t invite anyone, share this link, or reach other folders or apps. Access ends at {endsAt}.
+        </p>
+      </details>
+
+      <div className="browser-tabs ag-ws-tabs" role="tablist" aria-label="Shared workspace">
         {WORKSPACE_TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -389,7 +460,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
       {error && <p className="browser-workspace-error error" role="alert">{error}</p>}
       {access.screenNotice && <p className="browser-workspace-error" role="status">{access.screenNotice}</p>}
       <div
-        className={`browser-tab-panel browser-tab-panel-${activeTab}`}
+        className={`browser-tab-panel ag-ws-panel browser-tab-panel-${activeTab}`}
         role="tabpanel"
         id="browser-workspace-panel"
         aria-labelledby={`browser-tab-${activeTab}`}
@@ -400,7 +471,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         )}
         {hasScreen && access.screen !== "apps" && (
           <section className="browser-screen" aria-labelledby="browser-screen-title" hidden={activeTab !== "screen"}>
-            <div className="browser-section-heading">
+            <div className="browser-section-heading ag-ws-section-head">
               <div>
                 <h2 id="browser-screen-title">Screen</h2>
                 <p className="browser-policy">
@@ -413,7 +484,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
                   {screenAt ? `Updated ${screenAt.toLocaleTimeString()}` : screenBusy ? "Connecting to screen…" : "Waiting for screen"}
                 </span>
                 <button
-                  className="button secondary small"
+                  className="ag-secondary ag-small"
                   disabled={screenBusy || !visible || screenDraft}
                   aria-label="Refresh screen"
                   onClick={() => void updateScreen()}
@@ -440,10 +511,10 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
               <p className="browser-policy">{screenDraft ? "Screen held while your actions await approval." : "Updates automatically while this tab is open."}</p>
               {access.screen === "scroll" && (
                 <div className="browser-screen-actions">
-                  <button className="button secondary small" disabled={screenBusy || !screenUrl || !visible} onClick={() => void updateScreen("up")}>
+                  <button className="ag-secondary ag-small" disabled={screenBusy || !screenUrl || !visible} onClick={() => void updateScreen("up")}>
                     <ArrowUp size={16} /> Scroll up
                   </button>
-                  <button className="button secondary small" disabled={screenBusy || !screenUrl || !visible} onClick={() => void updateScreen("down")}>
+                  <button className="ag-secondary ag-small" disabled={screenBusy || !screenUrl || !visible} onClick={() => void updateScreen("down")}>
                     <ArrowDown size={16} /> Scroll down
                   </button>
                 </div>
@@ -452,36 +523,62 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
           </section>
         )}
         {activeTab === "files" && hasFiles && (
-          <section className="browser-files" aria-labelledby="browser-files-title">
-            <div className="browser-section-heading">
+          <section className="browser-files ag-ws-files" aria-labelledby="browser-files-title">
+            <div className="browser-section-heading ag-ws-section-head">
               <div>
                 <h2 id="browser-files-title">Files</h2>
-                <p className="browser-policy">Read or download files from shared folders</p>
+                <p className="browser-policy">Read or download files from shared folders. Nothing can be changed from here.</p>
               </div>
-              <button className="button secondary small" aria-label="Refresh files" disabled={filesBusy} onClick={() => setFilesRevision((r) => r + 1)}>
+              <button className="ag-secondary ag-small" aria-label="Refresh files" disabled={filesBusy} onClick={() => setFilesRevision((r) => r + 1)}>
                 <RefreshCw size={15} /> Refresh
               </button>
             </div>
-            <form className="browser-search" onSubmit={(event) => {
+            {access.roots.length > 1 && (
+              <OptionButtons
+                label="Shared folder"
+                value={currentRoot}
+                onChange={(index) => {
+                  setRoot(index);
+                  setDir("");
+                  setQuery("");
+                  setSearch("");
+                }}
+                options={access.roots.map((folder) => ({ value: folder.index, label: folder.name, icon: <Folder size={17} />, title: folder.path }))}
+              />
+            )}
+            <form className="browser-search ag-ws-search" onSubmit={(event) => {
               event.preventDefault();
               setSearch(query.trim());
               setFilesRevision((r) => r + 1);
             }}>
-              <select aria-label="Shared folder" value={currentRoot} onChange={(event) => {
-                setRoot(Number(event.target.value));
-                setDir("");
-                setQuery("");
-                setSearch("");
-              }}>
-                {access.roots.map((folder) => <option key={folder.index} value={folder.index}>{folder.name}</option>)}
-              </select>
-              <input aria-label="Find a file" placeholder="Find a file by name…" value={query} onChange={(event) => setQuery(event.target.value)} />
-              <button className="button primary" type="submit"><Search size={16} /> Find</button>
+              <label className="ag-search">
+                <Search size={16} aria-hidden="true" />
+                <input aria-label="Find a file" placeholder={`Find a file in ${rootName}…`} value={query} onChange={(event) => setQuery(event.target.value)} />
+              </label>
+              <button className="ag-primary ag-small" type="submit">Find</button>
             </form>
-            <div className="browser-file-location">
-              <span>{search ? `Results for “${search}” in the shared folder` : dir || "Shared folder"}</span>
+            <nav className="ag-ws-crumbs" aria-label="Folder path">
+              {search ? (
+                <span>Results for “{search}” in {rootName}</span>
+              ) : (
+                <>
+                  <button type="button" onClick={() => setDir("")} aria-current={!dir ? "location" : undefined}>{rootName}</button>
+                  {crumbs.map((part, index) => (
+                    <span key={index} className="ag-ws-crumb">
+                      <ChevronRight size={14} aria-hidden="true" />
+                      <button
+                        type="button"
+                        aria-current={index === crumbs.length - 1 ? "location" : undefined}
+                        onClick={() => setDir(crumbs.slice(0, index + 1).join("/"))}
+                      >
+                        {part}
+                      </button>
+                    </span>
+                  ))}
+                </>
+              )}
               {(dir || search) && (
-                <button className="button secondary small" onClick={() => {
+                <button className="ag-secondary ag-small ag-ws-up" onClick={() => {
                   setSearch("");
                   setQuery("");
                   setDir(search ? "" : dir.split("/").slice(0, -1).join("/"));
@@ -489,16 +586,17 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
                   <ChevronLeft size={15} /> {search ? "Browse folder" : "Up one folder"}
                 </button>
               )}
-            </div>
-            <div className={`browser-file-layout${file || fileBusy ? " has-preview" : ""}`}>
+            </nav>
+            <div className={`browser-file-layout ag-ws-file-layout${file || fileBusy ? " has-preview" : ""}`}>
               <div className="browser-file-directory">
                 {filesBusy ? <p className="browser-empty" role="status">Loading files…</p> : listing.items.length ? (
-                  <ul className="browser-file-list">
+                  <ul className="browser-file-list ag-ws-file-list">
                     {listing.items.map((entry) => (
                       <li key={entry.path}>
                         <button onClick={() => void read(entry)} aria-label={`${entry.type === "directory" ? "Open folder" : "Read file"} ${entry.path}`} aria-current={file?.path === entry.path ? true : undefined}>
-                          {entry.type === "directory" ? <Folder size={17} /> : <FileText size={17} />}
+                          {entry.type === "directory" ? <Folder size={18} /> : <FileText size={18} />}
                           <span><strong>{entry.name}</strong>{search && <small>{entry.path}</small>}</span>
+                          <em className="ag-ws-verb" aria-hidden="true">{entry.type === "directory" ? "Open" : "Read"}</em>
                         </button>
                         {entry.type === "file" && (
                           <button className="browser-file-download" aria-label={`Download file ${entry.path}`} disabled={!!downloading} onClick={() => void download(entry)}>
@@ -508,7 +606,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
                       </li>
                     ))}
                   </ul>
-                ) : <p className="browser-empty">No files found.</p>}
+                ) : <p className="browser-empty">{search ? "No files match that name." : "This folder is empty."}</p>}
                 {listing.truncated && <p className="browser-policy">More files are available. Narrow your search or open a folder.</p>}
               </div>
               {fileBusy && <p className="browser-empty" role="status">Reading file…</p>}
@@ -523,27 +621,29 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         )}
         {activeTab === "terminal" && hasTerminal && (
           <section className="browser-terminal" aria-labelledby="browser-terminals-title">
-            <div className="browser-section-heading">
+            <div className="browser-section-heading ag-ws-section-head">
               <div>
                 <h2 id="browser-terminals-title">Terminal</h2>
-                <p className="browser-policy">{access.restrictedTerminal ? "Commands and results for this session" : access.terminals.length ? "Read shared terminal output" : "Request a command from the owner"}</p>
+                <p className="browser-policy">{access.restrictedTerminal ? "Run commands inside the shared folders. Every command is logged." : access.terminals.length ? "Read shared terminal output" : "Request a command from the owner"}</p>
               </div>
               {!!access.terminals.length && (
-                <button className="button secondary small" aria-label="Refresh terminal output" disabled={!currentTerminal || terminalBusy} onClick={() => setTerminalRevision((r) => r + 1)}>
+                <button className="ag-secondary ag-small" aria-label="Refresh terminal output" disabled={!currentTerminal || terminalBusy} onClick={() => setTerminalRevision((r) => r + 1)}>
                   <RefreshCw size={15} /> Refresh
                 </button>
               )}
             </div>
             {!!access.terminals.length && (
-              <>
-                <label className="browser-terminal-select">Terminal
-                  <select aria-label="Shared terminal" value={currentTerminal} onChange={(event) => setTerminal(event.target.value)}>
-                    {access.terminals.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
-                </label>
+              <div className="ag-ws-output">
+                <p className="ag-label">Shared terminal output</p>
+                <OptionButtons
+                  label="Shared terminal"
+                  value={currentTerminal}
+                  onChange={setTerminal}
+                  options={access.terminals.map((item) => ({ value: item.id, label: item.name, icon: <Terminal size={16} /> }))}
+                />
                 <pre className="browser-output" aria-label="Terminal transcript">{terminalBusy && !output ? "Reading terminal…" : output || "No output yet."}</pre>
                 <p className="browser-policy">These existing sessions are output only.</p>
-              </>
+              </div>
             )}
           </section>
         )}
@@ -552,6 +652,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         )}
         {access.restrictedTerminal && (
           <div className="browser-tab-requests" hidden={activeTab !== "terminal"}>
+            <p className="ag-label">Run a command</p>
             <BrowserTerminal peer={peer} roots={access.roots} terminalApproval={access.terminalApproval} scriptApproval={access.scriptApproval} onError={fail} />
           </div>
         )}

@@ -8,6 +8,8 @@ import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 const sessionsWith = (health) => {
   const started = [];
   const sessions = createAgentSessions({
+    // On a Mac: "your Mac" (other computers: computer-word.test.mjs).
+    platform: "darwin",
     daemon: { rpc: async () => ({}), onNotification() {} },
     codex: {},
     codexLive: { drives: () => false },

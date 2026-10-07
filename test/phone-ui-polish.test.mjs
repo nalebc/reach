@@ -73,3 +73,19 @@ test("the chat composer's tools stay on one row; the model's name gives way firs
 test("Files' title ends a long folder name with an ellipsis", () => {
   assert.match(css("files.css"), /h1\.files-title \{\s*display: block;\s*\}/);
 });
+
+// The Mac's "asking for permission" card in the Needs you sheet: its live-screen
+// block sat beside the title and squeezed it to one word per line (Oct 6).
+test("Needs you sheet puts the live-screen block under the title", () => {
+  const sheet = css("chat-workspace.css");
+  assert.match(sheet, /\.reach-chat-sheet \.need-screen \{\s*flex-basis: 100%;/);
+  assert.match(sheet, /\.reach-chat-sheet \.need-text \{\s*flex: 1 1 0;\s*min-width: 0;/);
+});
+
+// The model sheets showed no handle (it's hidden unless a sheet shows it), so
+// they couldn't be pulled down like the apps' sheets (Oct 6).
+test("the model sheets show their handle and can be pulled down", () => {
+  assert.match(css("model-sheet.css"), /\.ms-sheet \.sheet-handle \{[^}]*display: block;/);
+  // The dots aren't drawn as the menu's checked rows (a box behind the knob).
+  assert.match(css("model-sheet.css"), /\.as-mode-menu \.ms-dots button\[role="radio"\],\s*\.as-mode-menu \.ms-strip-label \{\s*padding: 0;\s*border-radius: 0;\s*background: none;/);
+});

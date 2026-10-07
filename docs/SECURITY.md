@@ -257,7 +257,7 @@ Coverage (`test/agent-apps.test.mjs`, `test/handoffs-ui.test.mjs`, `test/handoff
 
 - **Who gets them:** only your own devices (paired owners, not guests or agents, including agent credentials with broad scopes) can subscribe (`/api/push` and `/api/notifications` require an owner device), and each notification goes only to devices still valid. Revoking a device deletes its subscriptions; a push service answering 404/410 drops that one.
 - **Where requests go:** the computer only ever posts to the browsers' push services (Apple, Google, Mozilla, Microsoft hosts over HTTPS on 443, no user info), never to an address a phone chooses.
-- **What they say:** the provider or invited agent, request type, and brief action guidance, without commands, files, verification codes, or conversation text. Each message is encrypted for its phone (RFC 8291) and signed with this computer’s VAPID key (`push-vapid.json`, 0600). Titles, bodies, URLs, icons, and action identifiers are bounded or allowlisted.
+- **What they say:** iPhone Home Screen apps always show Reach's icon, so the text tells requests apart. Your own agents' chats show the chat's name, then the agent and the request itself: the start of its last reply when done, the command and folder name for a command approval (only commands that pass the hidden-character check), the question (never a secret one), or up to two file names. Mac prompts show macOS's own prompt text. Invited agents get Reach's fixed wording with their name and the action type, never their own reason, typed text, or handoff reason. Notifications never include verification codes. iOS hides the body on a locked phone unless previews are set to Always. Each message is encrypted for its phone (RFC 8291) and signed with this computer’s VAPID key (`push-vapid.json`, 0600). Titles, bodies, URLs, icons, and action identifiers are bounded or allowlisted.
 - **The worker:** `/sw.js` opens the exact request, conversation, or handed-off app on Reach’s own origin. It never caches workspace or API responses. It caches fixed brand icons and short-lived, one-use notification action intents without credentials. Every push displays a notification. A browser-supported Deny button opens Reach and submits the saved intent using the paired owner’s authorization; a query parameter alone cannot authorize a decision.
 - **Background delivery:** while owner subscriptions exist, Reach reads real pending requests on source changes, with a 30-second fallback. Resolved requests leave the bell. Hashed request identities and signatures avoid repeat notifications across polls and restarts without storing conversation text. Handoffs and access requests also notify directly from their events.
 - **Setup and testing:** the main bell and chat headers expose setup instructions, permission status, and a test button. iPhone requires a Home Screen installation on iOS 16.4 or later and an explicit permission tap. `/api/push/test` targets only the requesting device's specified subscription and is limited to one test per fifteen seconds. Success means the push service accepted it, not proof the phone displayed it.
@@ -265,3 +265,39 @@ Coverage (`test/agent-apps.test.mjs`, `test/handoffs-ui.test.mjs`, `test/handoff
 - **Limits:** notification rendering belongs to the phone. iPhone Home Screen apps retain Reach’s app icon and do not expose web notification action buttons; tapping opens the exact review. Supporting Android browsers can show provider icons and buttons, bounded by `Notification.maxActions`. Reach must run on an awake, online computer. Delivery and rendering on physical phones still need an on-device check.
 
 Coverage (`test/push.test.mjs`, `test/notifications.test.mjs`, `test/notifications-ui.test.mjs`, `test/notify-settings-ui.test.mjs`, `test/public-start.test.mjs`): encryption vectors and decrypt, VAPID signatures, push-service allowlist, owner-only routes, revocation and expired subscription cleanup, background waits without an open browser, deduplication across failures and restarts, per-browser test delivery and failure reporting, notification click routing, the bell and Home Screen setup, permission denial and settings changes, and public worker serving without API exposure.
+
+
+## Browser-agent security review — 2026-10-06
+
+Scope: invited browser agents, their private/Funnel transports, supervisor approvals, selected-app exposure, file routes, terminal implementations and sandboxed scripts. The attacker may submit arbitrary requests with their own credential and execute an approved script inside the shared folder. A compromised kernel, malicious unsandboxed local owner process and historical full-trust CLI credentials are outside this boundary.
+
+Confirmed findings and fixes:
+
+| Severity | Finding | Enforced fix |
+| --- | --- | --- |
+| High | Owner download links bypassed the app-session owner-device guard. | Check the pinned device on `/download`, recheck credentials during streaming, terminate on revocation. |
+| High | Revoking the supervising device left the agent's app access usable. | Require the exact live approver binding and include it in admission/credential verification. |
+| High | Unreadable credential storage could appear to contain no guarded sessions. | Strict storage reads keep the host guard closed on corruption or deletion. |
+| High | Parent-directory swaps could redirect unsandboxed file operations. | Descriptor traversal without symlinks plus a kernel sandbox for all browser file operations. |
+| High | Broad shares allowed tampering with Reach code, runtimes and shell startup files. | Deny protected files/ancestors/runtime writes and reject home/system/install execution roots. |
+| High | Existing signed-in browsers and arbitrary native input were not capability isolation. | Remove host input and host browser/webview sharing. Restoring control requires actual isolation. |
+| Medium | Revocation/permission changes could leave native window targets or captures in flight. | Invalidate targets and abort pending captures on changes; reauthorize final results. |
+| Medium | Rich document conversion ran native parsers on agent-selected files outside the file sandbox. | Disable that converter for agents; allow bounded authenticated downloads to their environment. |
+
+Regression coverage includes malicious route aliases and forged capabilities; stale/pending/collected/restarted sessions; immutable invocation and session-only approval behavior; supervisor revocation; corrupted storage; symlink/hardlink attacks; active parent replacement; deterministic directory movement after opening; runtime/startup tampering; protected app grants; native compilation and view-only UI. Tests use temporary fixtures and mocked desktop I/O, not the owner's private screen. Passing tests do not certify absence of unknown vulnerabilities. Current app limitations and the remaining isolation work are documented in [Browser agent tools](BROWSER_AGENT_TOOLS.md).
+
+
+Resource limits: protected file helpers are limited to four globally and two per session; approved scripts to two globally and one per session. File/image HTTP responses retain slots until completion/disconnect (eight globally, two per session), with a 30-second response deadline. These bounds do not impose a per-script disk or physical-memory quota. Production dependency audit (`npm audit --omit=dev`, with user approval) reported zero known vulnerabilities on 2026-10-06; development dependencies and the separate Go/Tailscale dependency graph are not covered by that npm result.
+
+
+## Multiple browser agents — 2026-10-06
+
+Owner-only session overview and stop APIs use invitation IDs rather than agent names. Stop-all requests carry an explicit snapshot, validate every ID before any revocation, exclude owner/guest/CLI credentials, and safely tolerate already-removed IDs. Stopping a browser session cancels its approvals, native app targets/captures and queued/running folder work without resetting another session.
+
+Scripts and mutations use one per-Reach writer coordinator, with canonical root and device/inode ancestry checks, FIFO for overlapping roots, bounded waits, live authorization, and leases retained until native completion. Writer start and completion invalidate other agents' shared-folder mutation/script consent, including delayed creation of remembered approvals during log flushing. No sandbox or protected-app permission is broadened.
+
+Regression coverage includes denied nonowner routes, no partial stop for invalid mixed IDs, newer invitations surviving snapshot stop, credential redaction, same-name session separation, per-session cancellation/history, parent/child and case-alias coordination, unrelated-folder concurrency, queue/time limits, revocation while waiting/running, and native script/mutation sequencing. Shared data, mutable script contents and external/owner writes remain explicit limits.
+
+## Private browser-agent copies removed — 2026-10-06
+
+The private working-copy feature (copy, review, apply and discard) has been removed. Copying large folders such as the Desktop could never work reliably. Browser agents invited with folders always use the real shared folders; Reach limits what they can do there (direct reads, read-only commands, and changes approved one at a time). The owner-only reviewed write/check/delete operations were removed from the native file helper, and invitations that ask for `workspaceMode: "private"` are rejected. Clients created by the old feature no longer pass the agent policy.

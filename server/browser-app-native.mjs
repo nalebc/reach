@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { desktopBinary } from "./desktop-native.mjs";
 import { fail, isPlainRecord } from "./core.mjs";
+import { protectBrowserApp, protectedBrowserAppReason, isolatedControlReason } from "./browser-protected-apps.mjs";
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
 const MAX_INPUT = 64 * 1024;
@@ -49,7 +50,7 @@ function check(authorize, signal) {
 
 async function runNative(config, request, authorize, signal) {
   check(authorize, signal);
-  if (process.platform !== "darwin") throw fail(501, "Protected app sharing requires macOS 14 or later.");
+  if (process.platform !== "darwin") throw fail(501, "Protected app sharing requires macOS 14.2 or later.");
   const binary = await desktopBinary(config, "browser-app");
   check(authorize, signal);
   const body = JSON.stringify(request);
@@ -123,6 +124,11 @@ export class BrowserAppNative {
   }
   async call(request, authorize = () => {}, signal) {
     check(authorize, signal);
+    if (request.op === "input") throw fail(403, isolatedControlReason);
+    if (request.appId) {
+      const reason = protectedBrowserAppReason({id:request.appId});
+      if (reason) throw fail(403, reason);
+    }
     const value = await this.run({ ...request, protectedHosts: [...this.#protectedHosts] }, authorize, signal);
     check(authorize, signal);
     return value;
@@ -142,8 +148,9 @@ export class BrowserAppNative {
       throw fail(503, "The app list is unavailable.");
     // Discovery metadata only. Grants and each native operation check live
     // signed identity independently; no capture/input authorization is cached.
-    this.catalogCache = { value: structuredClone(value), expires: Date.now() + 60000 };
-    return structuredClone(value);
+    const protectedValue = { ...value, apps: value.apps.map(protectBrowserApp) };
+    this.catalogCache = { value: structuredClone(protectedValue), expires: Date.now() + 60000 };
+    return structuredClone(protectedValue);
   }
   async windows(id, authorize = () => {}, identity, signal) {
     if (typeof identity !== "string" || !/^[a-f0-9]{64}$/.test(identity)) throw fail(400, "Choose an approved signed app.");

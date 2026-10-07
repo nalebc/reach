@@ -157,7 +157,7 @@ test("the swipe hand shows once, only with another terminal to go to", async () 
   assert.deepEqual(dom.errors, []);
 });
 
-test("on a Windows computer the note says computer, not Mac", async () => {
+test("on a Windows computer the note says Windows PC, not Mac", async () => {
   tabs = [];
   const view = await dom.render(
     page("reach", { ...peer, id: "pc", platform: "win32" }),
@@ -165,6 +165,6 @@ test("on a Windows computer the note says computer, not Mac", async () => {
   const hint = await dom.waitFor(() =>
     view.container.querySelector(".terminal-hint"),
   );
-  assert.match(hint.textContent, /open a terminal on your computer\./);
+  assert.match(hint.textContent, /open a terminal on your Windows PC\./);
   await view.unmount();
 });

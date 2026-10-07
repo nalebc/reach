@@ -1,17 +1,24 @@
 import { Fragment, memo, type ReactNode } from "react";
 
 // The little markdown agents write: code blocks, inline code, bold, lists,
-// headings and tables. Rendered as React elements only; nothing becomes HTML, and links
-// show their text without navigating anywhere.
+// headings and tables. Rendered as React elements only; nothing becomes HTML.
+// Web links open in a new tab, as in both apps; any other link (a file path,
+// a relative address that would land inside Reach) shows only its text.
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\([^)\s]+\)/g;
+  const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
   let last = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index! > last) out.push(text.slice(last, match.index));
     const k = `${key}-${match.index}`;
     if (match[1] !== undefined) out.push(<code key={k}>{match[1]}</code>);
     else if (match[2] !== undefined) out.push(<strong key={k}>{match[2]}</strong>);
+    else if (/^https?:\/\/[^\s"<>]+$/i.test(match[4]))
+      out.push(
+        <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
+          {match[3]}
+        </a>,
+      );
     else out.push(<u key={k}>{match[3]}</u>);
     last = match.index! + match[0].length;
   }
@@ -94,7 +101,13 @@ function blocks(text: string, key: string): ReactNode[] {
         </div>,
       );
     } else if (/^#{1,6}\s/.test(line)) {
-      out.push(<h4 key={`${key}-${i}`}>{inline(line.replace(/^#+\s*/, ""), `${key}-${i}`)}</h4>);
+      // "#", "##" and "###" and deeper at three sizes, as the apps draw them.
+      const level = Math.min(3, line.match(/^#+/)![0].length);
+      out.push(
+        <h4 key={`${key}-${i}`} className={`md-h${level}`}>
+          {inline(line.replace(/^#+\s*/, ""), `${key}-${i}`)}
+        </h4>,
+      );
       i++;
     } else if (/^\s*[-*•]\s+/.test(line)) list(false);
     else if (/^\s*\d+[.)]\s+/.test(line)) list(true);

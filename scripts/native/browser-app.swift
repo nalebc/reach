@@ -41,11 +41,18 @@ func settable(_ element: AXUIElement, _ name: String) -> Bool {
 }
 // BEGIN PURE CONTROL POLICY — compiled directly by policy tests without macOS UI.
 let ownerControlsReason = "Reach and Tailscale controls are owner-only and cannot be shared with an agent."
+let isolatedBrowserReason = "Host browsers require an isolated agent browser. Existing signed-in browsers and embedded webviews cannot be shared with agents."
+let isolatedControlReason = "Controlling host apps requires an isolated workspace. Only viewing is available."
 func appReason(_ bundleId: String, _ name: String, _ path: String) -> String? {
   let id = bundleId.lowercased()
   let value = "\(id) \(name) \(path)".lowercased()
   if ["io.tailscale", "com.tailscale"].contains(where: { id == $0 || id.hasPrefix($0+".") }) ||
     ["tailscale", "tailnet", "reach"].contains(where: value.contains) { return ownerControlsReason }
+  let browserNames = ["safari", "safari technology preview", "google chrome", "google chrome beta", "google chrome dev", "google chrome canary",
+    "chromium", "firefox", "firefox developer edition", "firefox nightly", "microsoft edge", "microsoft edge beta", "microsoft edge dev",
+    "microsoft edge canary", "brave browser", "brave browser beta", "brave browser nightly", "arc", "opera", "opera gx", "vivaldi", "duckduckgo", "orion"]
+  if browserApp(id) || browserNames.contains(name.precomposedStringWithCompatibilityMapping.lowercased()) ||
+    browserNames.contains(URL(fileURLWithPath:path).deletingPathExtension().lastPathComponent.precomposedStringWithCompatibilityMapping.lowercased()) { return isolatedBrowserReason }
   let protected = ["terminal", "iterm", "warp", "ghostty", "alacritty", "kitty", "wezterm", "hyper.app",
     "visualstudio", "visual studio", "vscode", "vscodium", "cursor", "windsurf", "xcode", "jetbrains", "zed.app",
     "codex", "claude", "password", "1password", "bitwarden", "lastpass", "dashlane", "keychain",
@@ -63,6 +70,9 @@ func browserApp(_ id: String) -> Bool {
   return ["com.apple.safari", "com.apple.safaritechnologypreview", "com.google.chrome", "org.chromium.chromium", "org.mozilla.firefox", "com.microsoft.edgemac",
     "com.brave.browser", "company.thebrowser.browser", "com.operasoftware.opera", "com.vivaldi.vivaldi",
     "com.duckduckgo.macos.browser", "com.kagi.kagimac"].contains { id == $0 || id.hasPrefix($0+".") }
+}
+func protectedControl(_ role: String, _ subrole: String, _ protectedContent: Bool) -> Bool {
+  protectedContent || role == "AXSecureTextField" || subrole == "AXSecureTextField"
 }
 func normalizedHost(_ source: String) -> String? {
   guard let decoded = source.removingPercentEncoding, !decoded.contains("%"),
@@ -232,6 +242,13 @@ func nodes(_ root: AXUIElement, _ pid: pid_t) throws -> [AXUIElement] {
     guard own(value, pid) else { try reject("This window contains controls owned by another process.") }
     let role = attr(value, kAXRoleAttribute) as? String ?? ""
     let subrole = attr(value, kAXSubroleAttribute) as? String ?? ""
+    // AX observation cannot atomically intercept web navigation, scripts,
+    // redirects, embedded terminals or credential use. Existing host webviews
+    // fail closed until a separately isolated browser exists.
+    if role == "AXWebArea" { try reject(isolatedBrowserReason) }
+    if protectedControl(role,subrole,attr(value,"AXProtectedContent") as? Bool == true) {
+      try reject("This window contains protected or secure content and cannot be shared with an agent.")
+    }
     if ["AXSheet", "AXDialog"].contains(role) || ["AXDialog", "AXSystemDialog"].contains(subrole) ||
       attr(value, kAXModalAttribute) as? Bool == true { try reject("A protected dialog is open in this app.") }
     if ["AXWindow", "AXToolbar", "AXSplitGroup", "AXTextArea", "AXGroup"].contains(role) {
@@ -241,7 +258,16 @@ func nodes(_ root: AXUIElement, _ pid: pid_t) throws -> [AXUIElement] {
       }
     }
     result.append(value)
-    let children = attr(value, kAXChildrenAttribute) as? [AXUIElement] ?? []
+    var rawChildren: CFTypeRef?
+    let childResult = AXUIElementCopyAttributeValue(value,kAXChildrenAttribute as CFString,&rawChildren)
+    guard childResult == .success || childResult == .attributeUnsupported || childResult == .noValue else {
+      try reject("This app's controls could not be verified completely. The window remains protected.")
+    }
+    let children: [AXUIElement]
+    if childResult == .success {
+      guard let verified = rawChildren as? [AXUIElement] else { try reject("The app returned unverifiable controls.") }
+      children = verified
+    } else { children = [] }
     if children.count > 6000 { try reject("This app exposes too many controls to check safely.") }
     stack.append(contentsOf: children.reversed())
   }
@@ -270,32 +296,7 @@ func hasBrowserContent(_ bundleId: String, _ controls: [AXUIElement]) -> Bool {
   browserApp(bundleId) || controls.contains { attr($0,kAXRoleAttribute) as? String == "AXWebArea" }
 }
 func validateBrowserPage(_ bundleId: String, _ window: AXUIElement, _ controls: [AXUIElement], _ hosts: [String]) throws {
-  guard hasBrowserContent(bundleId,controls) else { return }
-  var addresses = [String]()
-  if let document = urlAttribute(window,kAXDocumentAttribute) { addresses.append(document) }
-  for node in controls {
-    if attr(node,kAXHiddenAttribute) as? Bool == true { continue }
-    if attr(node,kAXRoleAttribute) as? String == "AXWebArea" {
-      let address = urlAttribute(node,"AXURL")
-      var intersects: Bool? = nil
-      if let bounds = frame(node), let windowBounds = frame(window), bounds.width > 0, bounds.height > 0,
-        windowBounds.width > 0, windowBounds.height > 0 { intersects = bounds.intersects(windowBounds) }
-      // Only definitely hidden/offscreen web areas may be ignored. An allowed
-      // document URL cannot vouch for an opaque embedded page's URL or geometry.
-      guard webAreaAllowed(hidden:false,intersects:intersects,address:address,hosts:hosts) else {
-        try reject(address == nil || intersects == nil ? "An embedded browser page cannot be verified. This window is protected." : ownerControlsReason)
-      }
-      if intersects == true, let address = address,
-        let parent = elementAttr(node,kAXParentAttribute), !insideWebArea(parent,window) { addresses.append(address) }
-    }
-    if browserAddressField(node,window), let address = attr(node,kAXValueAttribute) as? String,
-      protectedURL(address,hosts,requireAddress:false) { try reject(ownerControlsReason) }
-  }
-  // A toolbar alone is insufficient: its text may be an uncommitted edit. At
-  // least one actual top-level page/document URL must be independently visible.
-  guard browserPageAllowed(addresses,hosts) else {
-    try reject(addresses.isEmpty ? "This browser's active page address cannot be verified. Open an ordinary website before sharing it." : ownerControlsReason)
-  }
+  if hasBrowserContent(bundleId,controls) { try reject(isolatedBrowserReason) }
 }
 func protectedHosts(_ request: [String:Any]) throws -> [String] {
   guard let hosts = request["protectedHosts"] as? [String], hosts.count <= 64,
@@ -345,12 +346,13 @@ func fresh(_ value: Target) throws {
 }
 @available(macOS 14.0, *)
 func navigationTarget(_ element: AXUIElement, _ value: Target) throws {
-  guard value.webContent else { return }
   var current = element
   for _ in 0..<80 {
     guard inWindow(current,value.ax,value.running.app.processIdentifier) else { try reject("This browser control is outside the shared window.") }
     let address = urlAttribute(current,"AXURL")
-    if let address = address, protectedURL(address,value.protectedHosts) { try reject(ownerControlsReason) }
+    // A native app link can open a different app, browser, or URL handler.
+    // Reject the handoff even when its destination currently looks public.
+    if address != nil { try reject("Opening links or other apps is unavailable in shared app control.") }
     let role = attr(current,kAXRoleAttribute) as? String ?? ""
     if role == "AXWebArea" && address == nil { try reject("This browser page cannot be verified. This control is protected.") }
     if ["AXTab", "AXRadioButton"].contains(role) {
@@ -539,6 +541,8 @@ func catalog() -> [String: Any] {
 @available(macOS 14.0, *)
 func handle(_ request: [String: Any]) async throws -> [String: Any] {
   guard let operation = request["op"] as? String else { try reject("Missing app operation.") }
+  // Direct invocation of the helper cannot restore retired host input.
+  if operation == "input" { try reject(isolatedControlReason) }
   if operation == "list" { return catalog() }
   if operation == "windows" {
     guard let path = request["appId"] as? String, let expected = request["identity"] as? String else { try reject("Choose an approved signed app.") }
@@ -583,7 +587,7 @@ func handle(_ request: [String: Any]) async throws -> [String: Any] {
     do {
       let data = FileHandle.standardInput.readDataToEndOfFile()
       guard data.count <= 65536, let request = try JSONSerialization.jsonObject(with:data) as? [String: Any] else { try reject("Invalid app request.") }
-      guard #available(macOS 14.0, *) else { try reject("Protected app sharing requires macOS 14 or later.") }
+      guard #available(macOS 14.2, *) else { try reject("Protected app sharing requires macOS 14.2 or later.") }
       let result = try await handle(request)
       let encoded = try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys])
       FileHandle.standardOutput.write(encoded+Data([10]))

@@ -3,10 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createClaudeTranscript } from "./claude-transcript.mjs";
+import { createClaudeTranscript, parseClaudeTranscript } from "./claude-transcript.mjs";
+import { claudeArchive } from "./portable-history.mjs";
 import { claudeLines } from "./move.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
+import { createClaudeAccountUsage } from "./account-usage.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,22 +35,48 @@ export function createClaudeSessions({
   locateCli = null,
   // Reads a transcript as it grows (claude-transcript.mjs).
   reader = createClaudeTranscript,
+  accountUsage = process.env.NODE_TEST_CONTEXT ? null : createClaudeAccountUsage(),
+  // How much of a transcript is read at once, and how much of the Mac's
+  // Claude history (its transcripts' size) stays whole in memory: past it,
+  // the chats least recently written or opened keep only their summary.
+  chunkBytes = 8 * 1024 * 1024,
+  budgetBytes = 512 * 1024 * 1024,
+  now = Date.now,
 } = {}) {
   // Per transcript: the conversation, and while it is being written to, where
   // reading stopped. A working session's transcript only grows (one line per
   // event), so a change means reading what was appended, not the whole file
   // again (verified: a 70 MB one took half a second each time).
   const cache = new Map(); // file -> { ino, size, mtimeMs, head, offset, transcript, parsed, at }
-  let swept = 0;
   const bytes = async (handle, position, length) => {
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, position);
     return buffer.subarray(0, bytesRead);
   };
-  async function parse(file) {
+  // What the list needs of a chat nobody has opened for a while: its
+  // first item, its last words and its last item stand in for all of them
+  // (the whole conversation, kept for every chat ever listed, grew with the
+  // Mac's entire Claude history). Opening it reads it again.
+  const brief = (parsed) => {
+    const items = parsed.items || [];
+    const said = [...items].reverse().find((i) => i.role !== "tool" && i.text);
+    const kept = [...new Set([items[0], said, items.at(-1)].filter(Boolean))].map((i) => ({
+      role: i.role,
+      at: i.at,
+      ...(i.text ? { text: String(i.text).split("\n")[0].slice(0, 400) } : {}),
+      ...(i.slash ? { slash: true } : {}),
+      ...(i.consent ? { consent: i.consent } : {}),
+    }));
+    return { ...parsed, items: kept, memory: undefined, brief: true };
+  };
+  async function parse(file, { full = false } = {}) {
     const stat = await fs.stat(file);
     const hit = cache.get(file);
-    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.parsed;
+    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size && !(full && hit.parsed?.brief)) {
+      // A chat being read stays whole while someone has it open.
+      if (full) hit.at = now();
+      return hit.parsed;
+    }
     const handle = await fs.open(file, "r");
     try {
       // Its first bytes tell a file that grew from one written anew.
@@ -61,15 +89,39 @@ export function createClaudeSessions({
       // A last line without its newline yet is read now if it's whole, and
       // again next time (reading a line twice changes nothing); reading
       // resumes after the last newline.
-      const added = await bytes(handle, entry.offset, stat.size - entry.offset);
-      entry.transcript.add(added.toString("utf8"), { offset: entry.offset });
-      entry.offset += added.lastIndexOf(10) + 1;
-      Object.assign(entry, { head, size: stat.size, mtimeMs: stat.mtimeMs, parsed: entry.transcript.view(), at: Date.now() });
-      // Transcripts no longer written to keep only their conversation.
-      if (Date.now() - swept > 60 * 1000) {
-        swept = Date.now();
-        for (const other of cache.values()) if (other !== entry && Date.now() - other.at > 10 * 60 * 1000) other.transcript = null;
+      // In pieces: a first read of a 100 MB transcript held the whole file
+      // three times over (bytes, text, lines), 800 MB for a few chats.
+      let at = entry.offset;
+      while (at < stat.size) {
+        let length = Math.min(chunkBytes, stat.size - at);
+        let added = await bytes(handle, at, length);
+        let cut = added.lastIndexOf(10) + 1;
+        // One line longer than a piece (a picture): read until it ends.
+        while (!cut && at + added.length < stat.size && added.length === length) {
+          length = Math.min(length * 2, stat.size - at);
+          added = await bytes(handle, at, length);
+          cut = added.lastIndexOf(10) + 1;
+        }
+        const end = at + added.length >= stat.size || added.length < length;
+        entry.transcript.add((end ? added : added.subarray(0, cut)).toString("utf8"), { offset: at });
+        // The last line without its newline yet is read again next time.
+        at += cut;
+        if (end || !cut) break;
       }
+      entry.offset = at;
+      Object.assign(entry, { head, size: stat.size, mtimeMs: stat.mtimeMs, parsed: entry.transcript.view(), at: now() });
+      // Past the budget, the chats least recently written to or opened keep
+      // only their summary (never the one just read).
+      let whole = 0;
+      for (const other of cache.values()) if (other.parsed && !other.parsed.brief) whole += other.size || 0;
+      if (whole > budgetBytes)
+        for (const other of [...cache.values()].sort((a, b) => a.at - b.at)) {
+          if (whole <= budgetBytes) break;
+          if (other === entry || !other.parsed || other.parsed.brief) continue;
+          other.transcript = null;
+          other.parsed = brief(other.parsed);
+          whole -= other.size || 0;
+        }
       return entry.parsed;
     } finally {
       await handle.close();
@@ -149,7 +201,8 @@ export function createClaudeSessions({
       // What the Claude app shows under its composer, from its own record.
       model: appRecord?.model || parsed.model || null,
       effort: appRecord?.effort || null,
-      mode: appRecord?.permissionMode || null,
+      // The app's pick for its chats; else the mode its latest message ran in.
+      mode: appRecord?.permissionMode || parsed.mode || null,
       // The transcript ends mid-turn (a prompt or a tool call, no answer
       // yet); a slash command like /clear has no answer to wait for.
       pending: ["user", "tool"].includes(parsed.items.at(-1)?.role) && !parsed.items.at(-1)?.slash,
@@ -205,8 +258,8 @@ export function createClaudeSessions({
   // Signed in, but out of usage until that limit resets.
   async function withUsage(health) {
     if (!health.signedIn) return health;
-    const limit = await usage().catch(() => null);
-    return limit ? { ...health, usable: false, resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : health;
+    const [limit, meters] = await Promise.all([usage().catch(() => null), accountUsage?.().catch(() => null)]);
+    return { ...health, ...(meters ? { usage: meters } : {}), ...(limit ? { usable: false, resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : {}) };
   }
   return {
     usage,
@@ -215,13 +268,29 @@ export function createClaudeSessions({
     async history(id) {
       const found = await locate(id);
       if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
-      const parsed = await parse(found.file);
+      const source = await fs.readFile(found.file, "utf8");
+      const parsed = parseClaudeTranscript(source, { maxOutput: Infinity });
+      // The ordinary reader keeps tool inputs small for the phone. An export
+      // retains their complete input and result, including opaque tool data.
+      const tools = new Map(), results = new Map();
+      for (const line of source.split("\n")) {
+        let entry; try { entry = JSON.parse(line); } catch { continue; }
+        if (!Array.isArray(entry.message?.content)) continue;
+        for (const block of entry.message.content) {
+          if (block.type === "tool_use") tools.set(block.id, block.input);
+          if (block.type === "tool_result") results.set(block.tool_use_id, block.content);
+        }
+      }
+      for (const item of parsed.items) if (item.role === "tool") {
+        const result = results.get(item.id);
+        item.detail = [tools.has(item.id) ? `Input:\n${JSON.stringify(tools.get(item.id), null, 2)}` : "", result !== undefined ? `Output:\n${typeof result === "string" ? result : JSON.stringify(result, null, 2)}` : item.detail || ""].filter(Boolean).join("\n\n");
+      }
       return { session: await summary(found, (await records()).get(id)), items: parsed.items, memory: parsed.memory || null };
     },
     // A new chat that continues one moved here from another agent: a
     // transcript of its own (never over an existing one), in its folder's
     // real path (the nearest that still exists), as Claude Code writes them.
-    async write({ cwd, title, turns, note, model, gitBranch = "" }) {
+    async write({ cwd, title, turns, note, model, gitBranch = "", items, from }) {
       let dir = path.resolve(String(cwd || os.homedir()));
       for (;;) {
         try {
@@ -242,7 +311,7 @@ export function createClaudeSessions({
       const ver = await version();
       for (let tries = 0; ; tries++) {
         const id = randomUUID();
-        const lines = claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
+        const lines = items ? claudeArchive({ id, cwd: dir, title, items, from, model, gitBranch, version: ver }) : claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
         try {
           await fs.writeFile(path.join(folder, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", { flag: "wx", mode: 0o600 });
           // The messages written: one item each when read back.
@@ -254,6 +323,9 @@ export function createClaudeSessions({
     },
     async list() {
       const [files, byCli] = await Promise.all([transcripts(), records()]);
+      // A transcript deleted since leaves the cache with it.
+      const present = new Set(files.map((t) => t.file));
+      for (const file of cache.keys()) if (!present.has(file)) cache.delete(file);
       const out = [];
       for (const t of files) {
         try {
@@ -269,7 +341,7 @@ export function createClaudeSessions({
       const found = await locate(id);
       if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
       const byCli = await records();
-      const parsed = await parse(found.file);
+      const parsed = await parse(found.file, { full: true });
       // Pages count back from the newest item; `before` is an item index.
       const end = before === null ? parsed.items.length : Math.max(0, Math.min(Number(before) || 0, parsed.items.length));
       const start = Math.max(0, end - Math.min(Math.max(limit, 1), 500));
@@ -278,6 +350,24 @@ export function createClaudeSessions({
         items: parsed.items.slice(start, end),
         before: start > 0 ? String(start) : null,
       };
+    },
+    // Archived (or back) in the Claude app: its own record of the chat says
+    // so (isArchived, what its sidebar's Archive sets), written whole and
+    // swapped in, so the app never reads half of it. A chat only Claude Code
+    // has (never opened in the app) has no archive to set.
+    async archive(id, archived = true) {
+      if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await records();
+      const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
+      if (!file) throw Object.assign(new Error("Only chats in the Claude app can be archived."), { status: 409 });
+      const record = JSON.parse(await fs.readFile(file, "utf8"));
+      record.isArchived = !!archived;
+      const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
+      const { mode } = await fs.stat(file);
+      await fs.writeFile(temporary, JSON.stringify(record), { mode });
+      await fs.rename(temporary, file);
+      recordCache.delete(file);
+      return { archived: !!archived };
     },
     // Whether Claude Code still has this chat (deleted: no transcript).
     async exists(id) {
@@ -330,7 +420,7 @@ export function createClaudeSessions({
       const found = await locate(id);
       const missing = () => Object.assign(new Error("That picture isn't in this session."), { status: 404 });
       if (!found || typeof uuid !== "string" || uuid.length > 100 || !Number.isInteger(n) || n < 0) throw missing();
-      await parse(found.file);
+      await parse(found.file, { full: true });
       if (!cache.get(found.file)?.transcript) {
         // Let go of while idle: read it again, this once.
         cache.delete(found.file);

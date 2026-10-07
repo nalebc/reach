@@ -4,8 +4,8 @@ import { fail, isPlainRecord } from "./core.mjs";
 export const sourceName = (source) =>
   ({
     codex: "Codex",
-    claude: "Claude",
-    gemini: "Gemini",
+    claude: "Claude Code",
+    gemini: "Gemini CLI",
     openclaw: "OpenClaw",
     mac: "Your computer",
     browser: "Agent",
@@ -55,11 +55,29 @@ export function chatNotifications(session) {
     sender: sourceName(source),
     icon: sourceIcon(source),
     detail: clean(session.title || "Conversation"),
+    chatTitle: clean(session.title, 200),
     target: { page: "sessions", agent: source, id: session.id },
     createdAt: session.updatedAt || session.createdAt,
   };
   if (!session.prompts?.length) {
     const consent = session.consent;
+    // What it waits on in its own app or terminal, for the phone's text;
+    // only text with nothing hidden in it.
+    const asking = session.asking;
+    const plain = (text) =>
+      typeof text === "string" && text.length <= 4000 && clean(text, 4001) === text
+        ? text
+        : "";
+    const waiting = consent
+      ? undefined
+      : {
+          kind: asking?.kind || "",
+          text:
+            asking?.kind === "question"
+              ? plain(asking.questions?.find((q) => !q?.secret)?.question)
+              : plain(asking?.text),
+          command: !!asking?.command,
+        };
     return [
       sealNotification(
         {
@@ -75,6 +93,7 @@ export function chatNotifications(session) {
           summary: consent
             ? clean(consent.reason)
             : "Open the conversation to respond.",
+          ...(waiting && { waiting }),
           actions: consent?.id
             ? [{ id: "deny", label: "Deny", tone: "deny" }]
             : [],
@@ -192,6 +211,12 @@ export function chatNotifications(session) {
               message: prompt.message,
             }
           : undefined,
+        ...(prompt.kind === "file-change" && Array.isArray(prompt.files)
+          ? {
+              files: prompt.files.slice(0, 2).map((file) => clean(file, 300)),
+              fileCount: prompt.files.length,
+            }
+          : {}),
         target: { ...base.target, prompt: String(prompt.id) },
         actions,
       },
@@ -265,44 +290,139 @@ export function admissionNotification(request) {
     { type: "admission", id: request.requestId, evidence: request },
   );
 }
-export function notificationPush(item) {
-  const invited = ["browser", "admission", "access"].includes(item.source);
-  const sender = invited
-    ? `✦ ${clean(item.sender || "Agent", 48)
-        .replace(/\s+/g, " ")
-        .trim()}`
-    : sourceName(item.source);
-  const topic =
-    item.source === "admission"
-      ? "Connection request"
-      : item.source === "browser"
-        ? item.title
-        : item.source === "mac"
-          ? "A prompt needs you"
-          : {
-              command: "Command approval",
-              tool: "Permission needed",
-              "file-change": "File changes to review",
-              permissions: "Access to review",
-              question: "Question for you",
-            }[item.kind] || "Approval needed";
-  const body =
-    item.source === "admission"
-      ? "Tap to compare the connection code and review access."
-      : item.source === "browser"
-        ? "Tap to review this agent action and choose whether to allow it."
-        : item.source === "mac"
-          ? "Tap to view the prompt on your computer."
-          : {
-              command: "Tap to review the command and allow or deny it.",
-              tool: "Tap to review the requested action.",
-              "file-change": "Tap to review the proposed file changes.",
-              permissions: "Tap to review the requested permissions.",
-              question: "Tap to open the question and send your answer.",
-            }[item.kind] || "Tap to open this request and respond.";
+// An agent asked to restart Reach (server/restart-requests.mjs): you decide,
+// knowing what it ends.
+export function restartNotification(request, terminals = 0) {
+  const asker = clean(request.app || "An agent", 80);
+  return sealNotification(
+    {
+      id: `restart:${request.id}`,
+      source: "restart",
+      sender: asker,
+      icon: "agent",
+      title: "Restart Reach?",
+      kind: "permission",
+      detail: `Asked from ${asker}`,
+      summary: `Reach starts again in Terminal on your computer. ${terminals ? `Its ${terminals === 1 ? "terminal" : `${terminals} terminals`} and live screens end.` : "Live screens end."}`,
+      signature: request.id,
+      createdAt: request.requestedAt,
+      expiresAt: request.expiresAt,
+      target: { page: "overview" },
+      actions: [
+        { id: "restart", label: "Restart", tone: "primary" },
+        { id: "deny", label: "Not now", tone: "deny" },
+      ],
+    },
+    { type: "restart", id: request.id, evidence: [request.requestedAt, terminals] },
+  );
+}
+// What a phone shows. On an iPhone Home Screen app the icon is always
+// Reach's and iOS adds "from Reach", so the text alone has to say which chat
+// and what it wants: the chat's name on top, then the agent and the request
+// itself (the command, the question, the files). Never a verification code,
+// a secret answer or text an agent would type; iOS hides the body on a
+// locked phone unless previews are set to Always.
+export const agentName = (source) =>
+  ({ claude: "Claude Code" })[source] || sourceName(source);
+// One line for a notification: no markdown or breaks, cut on a word.
+export const pushLine = (value, limit = 180) => {
+  const text = clean(value, 8000)
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]{0,3}(#{1,6}|>|[-*+]|\d+[.)])[ \t]+/gm, "")
+    .replace(/\*+|`+|~~/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > limit
+    ? `${text.slice(0, limit - 1).replace(/\s+\S*$/, "")}…`
+    : text;
+};
+// A chat's own name, unless it never got one.
+export const chatName = (title) =>
+  /^(untitled\b|conversation$)/i.test(String(title || "").trim())
+    ? ""
+    : pushLine(title, 80);
+const folder = (cwd) =>
+  pushLine(String(cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop(), 40);
+const fileList = (files = [], count = files.length) => {
+  const names = files.slice(0, 2).map((file) => folder(file)).filter(Boolean);
+  const more = count - names.length;
+  return `${count} file${count === 1 ? "" : "s"}${names.length ? `: ${names.join(", ")}${more > 0 ? ` +${more}` : ""}` : ""}`;
+};
+function chatPush(item) {
+  const who = agentName(item.source);
+  const command = item.prompt?.command
+    ? pushLine(item.prompt.command.split("\n")[0], 120)
+    : "";
+  const where = folder(item.prompt?.cwd);
+  const summary = pushLine(item.summary);
+  const waiting = item.waiting;
+  const asked = pushLine(waiting?.text, 200);
+  const said = waiting
+    ? asked
+      ? waiting.kind === "question"
+        ? `${who} asks: ${asked}`
+        : waiting.command
+          ? `${who} wants to run ${pushLine(waiting.text.split("\n")[0], 120)}`
+          : waiting.kind === "permission"
+            ? `${who} needs permission: ${asked}`
+            : asked.startsWith(who)
+              ? asked
+              : `${who}: ${asked}`
+      : waiting.kind === "permission"
+        ? `${who} needs your permission`
+        : `${who} is waiting for you`
+    : item.kind === "question" && summary
+      ? `${who} asks: ${summary}`
+      : command
+        ? `${who} wants to run ${command}${where ? ` in ${where}` : ""}`
+        : item.kind === "file-change"
+          ? `${who} wants to change ${item.fileCount ? fileList(item.files, item.fileCount) : "files"}`
+          : item.kind === "permissions"
+            ? `${who} asks for more access${summary ? `: ${summary}` : ""}`
+            : item.kind === "question"
+              ? `${who} is waiting for your answer`
+              : `${who} · ${pushLine(item.title, 80)}${summary ? `: ${summary}` : ""}`;
   return {
-    title: `${sender} · ${topic}`,
-    body,
+    title: chatName(item.chatTitle) || who,
+    body: pushLine(said, 220),
+  };
+}
+function otherPush(item) {
+  const invited = `✦ ${pushLine(item.sender || "Agent", 48)}`;
+  if (item.source === "admission")
+    return {
+      title: `${invited} wants to connect`,
+      body: "Compare the code on your computer before you allow it.",
+    };
+  if (item.source === "access")
+    return {
+      title: `${invited} asks for access`,
+      body: "Review what it wants to use before you allow it.",
+    };
+  if (item.source === "restart")
+    return {
+      title: `${invited} wants to restart Reach`,
+      body: "Allow it in Reach. Its terminals and live screens end.",
+    };
+  if (item.source === "browser")
+    return {
+      // The agent's own reason stays in Reach (browser-approvals.mjs).
+      title: invited,
+      body: `${pushLine(item.title, 60)} Allow or deny it in Reach.`,
+    };
+  // A macOS prompt: its own words ("Terminal" would like to access…).
+  return {
+    title: pushLine(item.title, 100) || "Your computer is asking",
+    body:
+      pushLine(item.summary, 200) || "Answer it on your computer's screen.",
+  };
+}
+export function notificationPush(item) {
+  return {
+    ...(["mac", "browser", "admission", "access", "restart"].includes(item.source)
+      ? otherPush(item)
+      : chatPush(item)),
     icon: sourceIcon(item.source),
     url: targetUrl(item.target),
     actions: [

@@ -5,7 +5,7 @@ import { startDom, settle } from "./dom/harness.mjs";
 let dom, React, BrowserInvite, BrowserWorkspace, BrowserApprovalReview;
 const peer = { id: "mac", name: "My Mac", url: "https://mac.tail.ts.net:8443", token: "owner", platform: "darwin" };
 const apps = [
-  { id: "safari", name: "Safari", mode: "control", protected: false },
+  { id: "textedit", name: "TextEdit", mode: "control", protected: false },
   { id: "notes", name: "Notes", mode: "hidden", protected: false },
   { id: "terminal", name: "Terminal", mode: "hidden", protected: true, reason: "Command apps are protected" },
 ];
@@ -28,6 +28,9 @@ const button = (container, label) => [...container.querySelectorAll("button")].f
 const click = async (element) => { assert.ok(element); element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); await settle(40); };
 const value = async (element, text) => {
   assert.ok(element);
+  if (element.getAttribute("role") === "radiogroup") {
+    return click([...element.querySelectorAll('[role="radio"]')].find(option => option.dataset.value === text));
+  }
   Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(element, text);
   element.dispatchEvent(new dom.window.Event("change", { bubbles: true })); await settle(30);
 };
@@ -52,27 +55,75 @@ test("invitation grants chosen apps only and describes exact per-app permissions
   };
   const view = await render(React.createElement(BrowserInvite, { peer, device: { name: "My Mac", roots: [] }, keyPeer: peer, onSetup() {}, onCreated() {} }));
   const c = view.container;
-  await dom.waitFor(() => c.querySelector('[aria-label="Screen permission"]')?.disabled === false);
-  assert.deepEqual([...c.querySelector('[aria-label="Screen permission"]').options].map((option) => option.value), ["off", "apps"]);
-  await value(c.querySelector('[aria-label="Screen permission"]'), "apps");
-  assert.equal(c.querySelector('[aria-label="Safari access"]').value, "hidden", "catalog modes never carry over into a new invite");
-  assert.equal(c.querySelector('[aria-label="Terminal access"]').disabled, true);
-  await value(c.querySelector('[aria-label="Safari access"]'), "control");
-  await value(c.querySelector('[aria-label="Notes access"]'), "view");
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]')?.disabled === false);
+  assert.equal(c.querySelector('[aria-label="Share apps"]').checked, false, "apps start private");
+  await click(c.querySelector('[aria-label="Share apps"]'));
+  assert.equal(c.querySelector('[aria-label="Allow TextEdit"]').checked, false, "catalog modes never carry over into a new invite");
+  assert.equal(c.querySelector('[aria-label="Allow Terminal"]'), null, "protected apps have no switch");
+  assert.match(c.querySelector(".ag-locked").textContent, /Terminal.*Command apps are protected/);
+  await click(c.querySelector('[aria-label="Allow TextEdit"]'));
+  await click(c.querySelector('[aria-label="Allow Notes"]'));
   await click(button(c, "Create invite link"));
   assert.equal(issued.screen, "apps");
-  assert.deepEqual(issued.appAccess, [{ id: "safari", mode: "control" }, { id: "notes", mode: "view" }]);
+  assert.deepEqual(issued.appAccess, [{ id: "textedit", mode: "view" }, { id: "notes", mode: "view" }]);
   const prompt = c.querySelector('[aria-label="AI browser invitation message"]').value;
-  assert.match(prompt, /"Safari" \(view and control directly\)/);
+  assert.match(prompt, /"TextEdit" \(view only\)/);
   assert.match(prompt, /"Notes" \(view only\)/);
-  assert.match(prompt, /Other apps are hidden; ask for access/);
+  assert.match(prompt, /Other eligible apps are hidden; ask to view/);
   assert.match(prompt, /Never invite anyone/);
   assert.match(c.textContent, /Reach on this Mac is locked/);
 });
 
+test("app list: search finds apps by name, private apps explain why, chips remove an app", async () => {
+  let issued;
+  const many = [
+    ...["Safari", "Notes", "Xcode", "Keynote", "Pages", "Numbers", "Music"].map((name) => ({ id: `/Applications/${name}.app`, name, protected: false })),
+    { id: "/Applications/Google Chrome.app", name: "Google Chrome", protected: true, reason: "Browsers stay private." },
+  ];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], screenAvailable: true, appAccessAvailable: true, apps: many });
+    if (route === "/api/agents/browser-invitations") {
+      issued = JSON.parse(init.body);
+      return reply({ invitation: "b".repeat(43), url: `https://mac.tail.ts.net/agent-browser#invite=${"b".repeat(43)}`, clientId: "fresh", expiresAt: Date.now() + 900000, joinBy: Date.now() + 60000 });
+    }
+    return reply({}, 404);
+  };
+  const view = await render(React.createElement(BrowserInvite, { peer, device: { name: "My Mac", roots: [] }, keyPeer: peer, onSetup() {}, onCreated() {} }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector('[aria-label="Share apps"]')?.disabled === false);
+  await click(c.querySelector('[aria-label="Share apps"]'));
+  const names = () => [...c.querySelectorAll('.ag-app-list[aria-label="Apps"] .ag-app strong')].map((e) => e.textContent);
+  assert.deepEqual(names(), ["Keynote", "Music", "Notes", "Numbers", "Pages", "Safari", "Xcode"], "A to Z, private apps folded away");
+  const search = c.querySelector('[aria-label="Search apps"]');
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(search, "nu");
+  search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await settle(30);
+  assert.deepEqual(names(), ["Numbers"]);
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(search, "chrome");
+  search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await settle(30);
+  assert.deepEqual(names(), ["Google Chrome"], "search shows a private app with its reason");
+  assert.match(c.querySelector(".ag-app.is-locked").textContent, /Browsers stay private/);
+  assert.equal(c.querySelector('[aria-label="Allow Google Chrome"]'), null);
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(search, "zzz");
+  search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await settle(30);
+  assert.match(c.textContent, /No app called “zzz”/);
+  await click(c.querySelector('[aria-label="Clear search"]'));
+  await click(c.querySelector('[aria-label="Allow Xcode"]'));
+  await click(c.querySelector('[aria-label="Allow Safari"]'));
+  await click(c.querySelector('[aria-label="Allow Music"]'));
+  assert.deepEqual([...c.querySelectorAll('[aria-label="Allowed apps"] li > span:not(.ag-chip-logo)')].map((e) => e.textContent), ["Xcode", "Safari", "Music"]);
+  await click(c.querySelector('[aria-label="Remove Safari"]'));
+  assert.equal(c.querySelector('[aria-label="Allow Safari"]').checked, false);
+  await click(button(c, "Create invite link"));
+  assert.deepEqual(issued.appAccess, [{ id: "/Applications/Xcode.app", mode: "view" }, { id: "/Applications/Music.app", mode: "view" }]);
+});
+
 test("owner app approval is a simple session decision with no desktop capture or action batch", async () => {
   const calls = []; let resolved = 0;
-  const item = pending({ type: "app-access", appId: "notes", appName: "Notes", mode: "control" });
+  const item = pending({ type: "app-access", appId: "notes", appName: "Notes", mode: "view" });
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     calls.push([new URL(url).pathname, init.method, init.body && JSON.parse(init.body)]);
     return reply({ ...item, status: "executed" });
@@ -80,16 +131,16 @@ test("owner app approval is a simple session decision with no desktop capture or
   const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() { resolved++; } }));
   const c = view.container;
   assert.match(c.textContent, /Allow Muse to use Notes/);
-  assert.match(c.textContent, /signed-in accounts/);
+  assert.match(c.textContent, /cannot click or type/);
   assert.match(c.textContent, /Access ends at/);
-  assert.equal(c.querySelector("img"), null);
+  assert.equal(c.querySelector(".browser-approval-snapshot"), null, "no desktop capture");
   assert.equal(calls.length, 0);
   await click(button(c, "Allow for this session"));
   assert.equal(resolved, 1);
   assert.deepEqual(calls, [["/api/agents/browser-requests/app-request", "POST", { decision: "approve" }]]);
 });
 
-test("guest clicks and types directly into an allowed window; hidden apps require owner access", async () => {
+test("guest windows remain view-only even with a stale control grant; hidden apps require owner access", async () => {
   const calls = []; let catalog = apps.map((app) => ({ ...app })); let records = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const parsed = new URL(url), route = parsed.pathname, method = init.method || "GET";
@@ -109,17 +160,15 @@ test("guest clicks and types directly into an allowed window; hidden apps requir
   await settle(30);
   c.querySelector(".browser-app-surface").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
   await settle(50);
-  assert.deepEqual(calls.filter(([method, route]) => method === "POST" && route.endsWith("/input")).map(([, , body]) => body), [
-    { target: "safari-target", action: { type: "click", x: 0.25, y: 0.75 } },
-    { target: "safari-target", action: { type: "text", text: "a" } },
-  ]);
+  assert.equal(calls.filter(([method, route]) => method === "POST" && route.endsWith("/input")).length, 0);
+  assert.equal(button(c, "Ask to control"), undefined);
   assert.equal(calls.some(([, route]) => route === "/api/browser/screen" || route === "/api/browser/requests"), false, "app access never requests full desktop capture or batches");
   await value(c.querySelector('[aria-label="Shared app"]'), "notes");
   assert.equal(c.querySelector(".browser-app-surface img"), null);
   assert.equal(calls.some(([, route, , query]) => route.endsWith("/windows") && query.includes("notes")), false, "hidden app titles are not queried");
-  await click(button(c, "Ask to control"));
-  assert.deepEqual(calls.find(([method, route]) => method === "POST" && route.endsWith("/requests"))[2], { appId: "notes", mode: "control" });
-  assert.match(c.textContent, /Waiting for the owner to allow control of Notes/);
+  await click(button(c, "Ask to view"));
+  assert.deepEqual(calls.find(([method, route]) => method === "POST" && route.endsWith("/requests"))[2], { appId: "notes", mode: "view" });
+  assert.match(c.textContent, /Waiting for the owner to allow viewing of Notes/);
   catalog = catalog.map((app) => app.id === "notes" ? { ...app, mode: "view" } : app); records = [];
   await click(button(c, "Refresh apps"));
   const notesImage = await loadImage(c);
@@ -154,3 +203,13 @@ test("selection change cancels pending image fetch and cannot display the old ap
 });
 
 test("app UI does not emit React warnings", () => assert.deepEqual(dom.errors, []));
+
+test("old control approvals cannot be submitted from the owner UI", async () => {
+  let called = false;
+  globalThis.fetch = dom.window.fetch = async () => { called = true; return reply({}); };
+  const item = pending({ type: "app-access", appId: "notes", appName: "Notes", mode: "control" });
+  const view = await render(React.createElement(BrowserApprovalReview, { peer, item, onClose() {}, onResolved() {} }));
+  assert.equal(button(view.container, "Allow for this session").disabled, true);
+  assert.match(view.container.textContent, /requires an isolated environment/);
+  assert.equal(called, false);
+});

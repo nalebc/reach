@@ -148,8 +148,9 @@ function approvalItems(
     note: prompt.canRespond === false ? "Answer this request in OpenClaw on your computer." : undefined,
     screen: onScreen,
     actions: prompt.canRespond === false ? [] : [
-      { label: "Deny", decision: "deny" },
       { label: "Allow once", decision: "allow-once" },
+      { label: "Always allow", decision: "allow-always" },
+      { label: "Deny", decision: "deny" },
     ].map((action) => ({
       label: action.label,
       primary: action.decision === "allow-once",
@@ -476,7 +477,7 @@ function Conversation({
             </button>
           ) : (
             <button
-              className="as-send"
+              className={`as-send ${text.trim() ? "ready" : ""}`}
               aria-label="Send to OpenClaw"
               disabled={!text.trim() || busy || unsettled || !!error || !data}
             >

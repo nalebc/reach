@@ -267,7 +267,7 @@ export function agentNeeds({
       const no = keys.find(negative);
       const yes = keys.find(positive);
       const words = p.kind === "tool" ? CLAUDE_DECISIONS : DECISIONS;
-      if (p.kind !== "question" && p.kind !== "dialog" && no && yes)
+      if (!p.attempted && p.kind !== "question" && p.kind !== "dialog" && no && yes)
         answerable.push({
           key: `${s.agent}:${s.id}:${p.id}`,
           icon: icon(s),

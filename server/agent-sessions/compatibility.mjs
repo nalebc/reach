@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { computerWord } from "../computer-word.mjs";
 const exec = promisify(execFile);
 export const object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 export const compatibilityError = (agent, feature, uncertain = false) =>
@@ -18,10 +19,10 @@ export const compatibilityError = (agent, feature, uncertain = false) =>
       retryable: false,
     },
   );
-export const uncertainDelivery = (agent) =>
+export const uncertainDelivery = (agent, platform = process.platform) =>
   Object.assign(
     new Error(
-      `${agent === "codex" ? "Codex" : "Claude"} did not confirm the action. It may already have happened. Automatic retry is paused; check the conversation on your computer before sending again.`,
+      `${agent === "codex" ? "Codex" : "Claude"} did not confirm the action. It may already have happened. Automatic retry is paused; check the conversation on your ${computerWord(platform)} before sending again.`,
     ),
     {
       status: 409,
@@ -48,7 +49,7 @@ export function validateQuestions(questions, agent) {
       ["multiSelect", "isOther", "isSecret"].some(
         (k) => q[k] !== undefined && typeof q[k] !== "boolean",
       ) ||
-      (q.options !== undefined &&
+      (q.options != null &&
         (!Array.isArray(q.options) ||
           q.options.some(
             (o) =>

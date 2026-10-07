@@ -1,4 +1,5 @@
 import { parseBrowserScript } from "./browser-scripts.mjs";
+import { pathsOverlap } from "./browser-operation-coordinator.mjs";
 import crypto from "node:crypto";
 import { browserNotification, notificationPush } from "./notification-items.mjs";
 import path from "node:path";
@@ -503,7 +504,7 @@ export function createBrowserApprovals({
       }
       changed(request);
       if (onChange) await flushChanges();
-      if (remember && request.status === "executed") {
+      if (remember && request.status === "executed" && !request.sharedWriteInvalidated) {
         checkOwner();
         const latest = current(request);
         if (latest && !closed) {
@@ -522,6 +523,27 @@ export function createBrowserApprovals({
         }
       }
       return visible(request);
+    },
+    invalidateSharedWrites(writerId, folder) {
+      const affected = (clientId, action) => {
+        if (clientId === writerId || !["terminal-change", "terminal-script"].includes(action.type)) return false;
+        const client = verifyClient(clientId);
+        const root = (client?.agentRoots || client?.policy?.roots)?.[action.root];
+        return !root || pathsOverlap(folder, root);
+      };
+      for (const [key, entry] of sessionApprovals)
+        if (affected(entry.clientId, entry.action)) sessionApprovals.delete(key);
+      for (const request of requests.values()) {
+        if (!affected(request.clientId, request.action)) continue;
+        // A completed action may still be flushing its log before the decision
+        // stores a session approval. Retire that approval too, even though the
+        // completed action itself keeps its accurate result.
+        request.sharedWriteInvalidated = true;
+        if (!active(request)) continue;
+        request.status = "cancelled";
+        request.error = "Another agent changed this shared folder. Request a new approval before making changes.";
+        skipRemaining(request); changed(request);
+      }
     },
     cancelClient(clientId) {
       for (const [key, entry] of sessionApprovals) if (entry.clientId === clientId) sessionApprovals.delete(key);

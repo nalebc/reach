@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { usePageVisible } from "./page-visible";
 import {
   ArrowUpRight,
   Sparkles,
@@ -24,6 +25,7 @@ import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
 import BrowserInvite from "./BrowserInvite";
+import { Segments } from "./agent-ui";
 import AccessEditor, { appScopedAccess, canEditAccess, type EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
@@ -315,12 +317,14 @@ export function InviteSheet({
   peer,
   device,
   peers = [peer],
+  initialKind = "person",
 }: {
   peer: Peer;
   device: Device;
   peers?: Peer[];
+  initialKind?: "person" | "browser";
 }) {
-  const [kind, setKind] = useState<"person" | "agent" | "browser">("person");
+  const [kind, setKind] = useState<"person" | "agent" | "browser">(initialKind);
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("watch");
   const [agentRole, setAgentRole] = useState<AgentRole>("edit");
@@ -424,7 +428,10 @@ export function InviteSheet({
       live = false;
     };
   }, [peer.url, peer.token, peers.map((p) => p.id).join(",")]);
+  const visible = usePageVisible();
   useEffect(() => {
+    // In the background, nothing ticks or is asked; back on screen, at once.
+    if (!visible) return;
     void loadGuests();
     const clock = setInterval(() => setNow(Date.now()), 1000);
     const refresh = setInterval(loadGuests, 10000);
@@ -432,7 +439,7 @@ export function InviteSheet({
       clearInterval(clock);
       clearInterval(refresh);
     };
-  }, [peer.url, peer.token]);
+  }, [peer.url, peer.token, visible]);
   useEffect(() => {
     for (const p of peers)
       if (
@@ -865,23 +872,27 @@ export function InviteSheet({
           {kind === "person" && <p>A name, a little access, and a link to share.</p>}
         </div>
         {kind !== "person" && (
-          <label className="ivt-connection">
-            Connect using
-            <select
-              aria-label="Assistant connection"
+          <div className="ag-connect">
+            <Segments
+              label="Assistant connection"
               value={kind}
               disabled={busy}
-              onChange={(e) => {
-                const next = e.target.value as "browser" | "agent";
+              options={[
+                { value: "browser", label: "Browser link" },
+                { value: "agent", label: "Command line" },
+              ]}
+              onChange={(next) => {
                 setKind(next);
                 setError("");
                 if (next === "agent") setComputers([agentPeer.id]);
               }}
-            >
-              <option value="browser">Browser link</option>
-              <option value="agent">MCP agent (advanced)</option>
-            </select>
-          </label>
+            />
+            <p className="ag-quiet">
+              {kind === "browser"
+                ? "For agents with a browser, like Muse or ChatGPT agent. Nothing to install."
+                : "For agents on a computer you control (Claude Code, Codex). Advanced."}
+            </p>
+          </div>
         )}
         {openPolicy && (
           <p className="ivt-warn" role="status">

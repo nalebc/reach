@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   MoreHorizontal,
   Command,
-  X,
   ClipboardPaste,
 } from "lucide-react";
 import { pasteFromPhone } from "./phone-paste";
@@ -82,7 +81,6 @@ export default function Screen({
   device,
   toast,
   onChanged,
-  onClose,
   changes,
   ask = null,
   onAskDone,
@@ -217,8 +215,8 @@ export default function Screen({
       let result = await send({ type: "focus", ...point });
       // Electron/web editors can publish their focused accessibility field
       // just after the click. Retry briefly, without ever sending unguarded text.
-      for (const delay of [80, 160]) {
-        if (result.target?.editable || !typingRef.current?.pending) break;
+      for (const delay of [80, 160, 320]) {
+        if (result.target?.editable) break;
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (epoch !== typingEpoch.current || !mounted.current) return;
         result = await send({ type: "focus", ...point });
@@ -314,7 +312,13 @@ export default function Screen({
   const chromeShown = useImmersiveChrome(
     viewer,
     fullscreen,
-    !!panel || typing || !live || !!(error || stream.error) || !stream.ready,
+    !!panel ||
+      typing ||
+      !live ||
+      !!(error || stream.error) ||
+      !stream.ready ||
+      // Reconnecting behind the last picture: the bar says so.
+      stream.connecting,
   );
   // Commands for whichever app is in front on the computer.
   const appContext = useAppContext(
@@ -634,11 +638,13 @@ export default function Screen({
           <div className="screen-toolbar simple-screen-toolbar">
             <span className="screen-state" role="status">
               <span
-                className={`screen-status-dot ${live && stream.ready ? "active" : ""}`}
+                className={`screen-status-dot ${live && stream.ready && !stream.connecting ? "active" : ""}`}
               />
               {!live || paused
                 ? "Paused"
-                : stream.connecting
+                : stream.error && !stream.ready
+                  ? "Can't show the screen"
+                  : stream.connecting
                   ? "Connecting…"
                   : stream.ready
                     ? device.name
@@ -730,6 +736,8 @@ export default function Screen({
               probe: (point: { x: number; y: number }) =>
                 send({ type: "probe", ...point }),
               onField: typeInField,
+              knownField: input.fieldAt,
+              onStaleFields: input.forgetFields,
               onBlind: setBlindSpot,
             })}
             resetKey={`${display}:${revision}`}
@@ -856,6 +864,13 @@ export default function Screen({
                   </button>
                 )}
               <button
+                aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                aria-pressed={fullscreen}
+                onClick={() => void toggleFullscreen()}
+              >
+                {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+              </button>
+              <button
                 aria-label="Screen options"
                 aria-haspopup="dialog"
                 onClick={() => {
@@ -865,17 +880,6 @@ export default function Screen({
               >
                 <MoreHorizontal size={20} />
               </button>
-              {onClose && (
-                <button
-                  aria-label="Close screen session"
-                  onClick={() => {
-                    release();
-                    onClose();
-                  }}
-                >
-                  <X size={19} />
-                </button>
-              )}
               {!live && !paused && (
                 <button className="screen-bar-text" onClick={reconnect}>
                   Resume
@@ -1001,19 +1005,6 @@ export default function Screen({
                     tap Copy selected text. Keys and app commands are in
                     Shortcuts.
                   </p>
-                  <div className="screen-key-row">
-                    <button
-                      className="button secondary small"
-                      aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                      onClick={() => {
-                        setPanel(null);
-                        void toggleFullscreen();
-                      }}
-                    >
-                      {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
-                      {fullscreen ? "Exit full screen" : "Full screen"}
-                    </button>
-                  </div>
                   {control && (
                     <div className="screen-key-row">
                       <button

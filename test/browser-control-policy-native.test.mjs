@@ -68,7 +68,13 @@ for name in ["Reach", "Tailscale", "Tailnet client"] {
   check(appReason("org.example.renamed", name, "/Applications/Example.app") == ownerControlsReason, "protected app name " + name)
   check(protectedWindow(name), "protected window " + name)
 }
-check(appReason("com.apple.Safari", "Safari", "/Applications/Safari.app") == nil, "ordinary signed browser")
+check(appReason("com.apple.Safari", "Safari", "/Applications/Safari.app") == isolatedBrowserReason, "host browser requires isolation")
+check(appReason("com.google.Chrome", "Renamed", "/Applications/Renamed.app") == isolatedBrowserReason, "renamed signed browser requires isolation")
+check(appReason("com.apple.Notes", "Notes", "/System/Applications/Notes.app") == nil, "ordinary native app")
+check(protectedControl("AXTextField", "AXSecureTextField", false), "secure field is never captured")
+check(protectedControl("AXSecureTextField", "", false), "secure field role is never captured")
+check(protectedControl("AXGroup", "", true), "protected content is never captured")
+check(!protectedControl("AXTextField", "", false), "ordinary text field")
 let assembled = insertedValue("https://tailscale.co", 20, 0, "m")!
 check(assembled == "https://tailscale.com" && protectedURL(assembled, hosts, requireAddress:false), "partial address insertion")
 let replaced = insertedValue("https://example.com", 8, 7, "tailscale")!

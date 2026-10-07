@@ -1089,8 +1089,8 @@ export function createOpenClaw({
           404,
           "This OpenClaw approval expired or was already answered.",
         );
-      if (!["allow-once", "deny"].includes(decision))
-        throw fail(400, "Choose Allow once or Deny.");
+      if (!["allow-once", "allow-always", "deny"].includes(decision))
+        throw fail(400, "Choose Allow once, Always allow or Deny.");
       if (prompt.replying) throw fail(409, "This answer is already being sent.");
       if (prompt.attempted) throw fail(409, "This answer was already attempted. Check OpenClaw before answering again.");
       if (!ready || socket !== prompt.socket || socket?.readyState !== WebSocket.OPEN)

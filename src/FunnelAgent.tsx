@@ -161,7 +161,9 @@ export default function FunnelAgent({
               {receipt.verificationCode.slice(0, 3)}{" "}
               {receipt.verificationCode.slice(3)}
             </output>
-            <strong>Waiting for approval</strong>
+            <strong className="funnel-agent-waiting">
+              <span aria-hidden="true" /> Waiting for approval
+            </strong>
             <small>
               Request expires{" "}
               {new Date(receipt.expiresAt).toLocaleTimeString([], {
@@ -171,6 +173,13 @@ export default function FunnelAgent({
               . Keep this tab open.
             </small>
           </div>
+        )}
+        {receipt && (
+          <ol className="funnel-agent-steps" aria-label="What happens next">
+            <li>The owner compares this code in Reach.</li>
+            <li>When they approve, this page opens your workspace by itself.</li>
+            <li>Keep this tab open. You don’t need to click anything.</li>
+          </ol>
         )}
         {error && (
           <p className="error" role="alert">

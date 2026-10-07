@@ -232,3 +232,22 @@ test("missing or fabricated approver records lock owner APIs instead of selectin
     assert.equal(f.guard.allows(f.request(), f.owner()), false);
   }
 });
+
+test("revoking, expiring or changing an app invitation's creator also stops its agent", async () => {
+  const f = fixture();
+  const client = { ...f.grant(), scopes: ["browser:read", "browser:request"] };
+  const request = () => f.request("nHost", { url: "/api/browser/apps", method: "GET", trust: false });
+  f.setClients([f.owner(), client]);
+  assert.equal(f.guard.allows(request(), client), true);
+  for (const owner of [null, { ...f.owner(), expiresAt: 1000 },
+    { ...f.owner(), scopes: [] }, { ...f.owner(), kind: "agent" },
+    { ...f.owner(), tailscale: { nodeId: "nOther", userId: "42" } }]) {
+    f.setClients([...(owner ? [owner] : []), client]);
+    assert.equal(f.guard.allows(request(), client), false);
+  }
+  // A separate app invitation's valid approver cannot rescue an orphaned one.
+  f.setClients([f.owner("nOther"), client, { ...f.grant("nOther"), id: "another-agent" }]);
+  assert.equal(f.guard.allows(request(), client), false);
+  f.setClients([f.owner(), client]);
+  assert.equal(f.guard.allows(request(), { ...client, browserAppApprover: { ...client.browserAppApprover, clientId: "new-owner" } }), false);
+});

@@ -5,8 +5,20 @@
 // this page's.
 let first: string | null = null;
 let waiting = false;
+// Live screens and app windows open on this page: a reload mid-stream threw
+// the phone back to the loading scene each time an agent edited the interface.
+let streams = 0;
+export function holdReload() {
+  let held = true;
+  streams++;
+  return () => {
+    if (held) streams--;
+    held = false;
+  };
+}
 
 export function busyHere(doc: Document = document) {
+  if (streams > 0) return true;
   const active = doc.activeElement as HTMLElement | null;
   if (active && /^(TEXTAREA|INPUT|SELECT)$/.test(active.tagName)) return true;
   for (const el of doc.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input"))

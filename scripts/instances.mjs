@@ -42,6 +42,23 @@ function entryOf(command, exists = fs.existsSync) {
   return null;
 }
 
+// The Mac app a process runs inside: the outermost .app among its ancestors.
+// macOS gives Screen Recording and Accessibility to that app, so a Reach
+// started from an agent's shell (Codex in ChatGPT, Claude, an editor) has a
+// terminal but neither permission: the live screen never loads (Oct 6).
+export function hostApp(table, pid) {
+  const byPid = new Map(table.map((p) => [p.pid, p]));
+  let app = "";
+  for (let p = byPid.get(pid), hops = 0; p && hops < 64; p = byPid.get(p.ppid), hops++) {
+    const found = p.command.match(/\/([^/]+)\.app\/Contents\/MacOS\//);
+    if (found) app = found[1];
+    if (p.ppid <= 1) break;
+  }
+  return app;
+}
+// Run from a Mac app other than Terminal (which holds Reach's permissions).
+export const outsideTerminal = (app) => !!app && app !== "Terminal";
+
 // The pid holding a folder's launcher lock (the Reach running from it).
 const lockHolder = (root) => {
   try {
@@ -83,6 +100,7 @@ export function reachHosts(table, { self = process.pid, root = null, exists, loc
         tty: host.tty,
         root: entry.root,
         service: /\s--service(\s|$)/.test(host.command),
+        app: hostApp(table, host.pid),
         descendants,
         terminals,
       };
@@ -131,6 +149,7 @@ const clock = (ms, now = Date.now()) => {
 export function whereItRuns(host) {
   if (host.service) return "as the background service";
   if (!host.tty || host.tty === "??" || host.tty === "?") return "in the background, with no window";
+  if (outsideTerminal(host.app)) return `inside ${host.app} (${host.tty}), not a Terminal window`;
   return `in a Terminal window (${host.tty})`;
 }
 
@@ -166,7 +185,9 @@ export function alreadyRunning(hosts, { command = "reach", started = new Map(), 
     `already running ${lines[0]}.`,
     hidden
       ? "With no window it can't show or control your screen, and it can't take device approvals."
-      : host.service
+      : outsideTerminal(host.app)
+        ? `${host.app} has no Screen Recording or Accessibility for Reach, so it can't show or control your screen.`
+        : host.service
         ? "It runs on its own; nothing more to start."
         : "Use that window, or:",
     `  ${command} restart   stop it and start Reach here`,
@@ -192,5 +213,7 @@ export function statusText(hosts, { command = "reach", started = new Map(), now,
     blocks.push(`${hosts.length} copies are running; only one should. Run ${command} stop to stop them all, or ${command} restart.`);
   else if (whereItRuns(hosts[0]).startsWith("in the background, with no"))
     blocks.push(`It has no window: it can't show or control your screen, or take device approvals. Run ${command} restart to run it in Terminal.`);
+  else if (!hosts[0].service && outsideTerminal(hosts[0].app))
+    blocks.push(`${hosts[0].app} has no Screen Recording or Accessibility for Reach: the live screen won't load and it can't be controlled. Run ${command} restart to move it to a Terminal window.`);
   return blocks.join("\n");
 }

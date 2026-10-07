@@ -153,10 +153,11 @@ export function startService(root, { launchctl = (args) => execFileSync("/bin/la
 // Reach started where it keeps its permissions: Terminal holds Reach's Screen
 // Recording and Accessibility, and gives device approvals a place. Asked for
 // without a terminal (an agent's restart), it opens one, as at sign-in.
-export function startInTerminal(root, { state, nodeDir = path.dirname(process.execPath), open = (file) => execFileSync("/usr/bin/open", ["-a", "Terminal", file]) } = {}) {
+// `args`: what it runs (`restart --yes` once you allowed an agent's restart).
+export function startInTerminal(root, { state, args = "", nodeDir = path.dirname(process.execPath), open = (file) => execFileSync("/usr/bin/open", ["-a", "Terminal", file]) } = {}) {
   const file = path.join(state, "start-in-terminal.command");
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, loginScript(root, nodeDir).replace("# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:", "# Reach: opened in Terminal by ./reach restart.").replace(/^#   node .*\n/m, ""), { mode: 0o700 });
+  fs.writeFileSync(file, loginScript(root, nodeDir).replace("# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:", "# Reach: opened in Terminal by ./reach restart.").replace(/^#   node .*\n/m, "").replace(/^\.\/reach$/m, args ? `./reach ${args}` : "./reach"), { mode: 0o700 });
   fs.chmodSync(file, 0o700);
   open(file);
   return file;

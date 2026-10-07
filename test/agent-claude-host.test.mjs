@@ -76,6 +76,66 @@ const host = (claude, extra = {}) =>
     ...extra,
   });
 
+test("Claude keeps its confirmed mode and model after a rejected settings change", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  await h.send(ID, { text: "hello", cwd: "/work/app", mode: "manual", model: "original" });
+  const proc = claude.last();
+  proc.stdin.write = (text, callback) => {
+    const message = JSON.parse(text);
+    proc.lines.push(message);
+    queueMicrotask(() => proc.print({ type: "control_response", response: {
+      subtype: "error", request_id: message.request_id, error: "Setting rejected",
+    } }));
+    callback?.();
+  };
+  await assert.rejects(h.mode(ID, "auto"), /Setting rejected/);
+  await assert.rejects(h.send(ID, { text: "not sent", model: "rejected" }), /Setting rejected/);
+  await assert.rejects(h.send(ID, { text: "not sent", mode: "auto" }), /Setting rejected/);
+  assert.equal(proc.lines.filter(m => m.type === "user").length, 1);
+  proc.exit();
+  await h.send(ID, { text: "resume" });
+  const args = claude.last().args;
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
+  assert.equal(args[args.indexOf("--model") + 1], "original");
+});
+
+test("Claude MCP confirmations wait for the phone instead of being silently rejected", async () => {
+  const claude = fakeClaude(), h = host(claude);
+  await h.send(ID, { text: "hello", cwd: "/work/app" });
+  const proc = claude.last();
+  proc.print({ type: "control_request", request_id: "consent", request: {
+    subtype: "elicitation", mcp_server_name: "calendar", mode: "form",
+    message: "Continue?", requested_schema: { type: "object", properties: {} },
+  } });
+  assert.deepEqual(h.view(ID).prompts[0].decisions, ["accept", "decline", "cancel"]);
+  assert.equal(proc.lines.some(m => m.response?.request_id === "consent"), false);
+  await h.respond(ID, "consent", { decision: "accept" });
+  assert.deepEqual(proc.lines.at(-1).response, { subtype: "success", request_id: "consent", response: { action: "accept", content: {} } });
+  h.close();
+});
+
+test("Claude's suppressed permanent permission choice never appears or accepts an answer", () => {
+  const prompt = describeClaudePrompt("p", { tool_name: "Bash", input: { command: "example" },
+    permission_suggestions: [{ type: "addRules", rules: [] }], suppress_always_allow_rule: true });
+  assert.deepEqual(prompt.decisions, ["allow", "deny"]);
+  assert.throws(() => claudeAnswer(prompt, { decision: "allowAlways" }), /not available/);
+});
+
+test("a Claude approval with unknown delivery remains visible without offering to send it twice", async () => {
+  const claude = fakeClaude(), h = host(claude);
+  await h.send(ID, { text: "hello", cwd: "/work/app" });
+  const proc = claude.last();
+  proc.print({ type: "control_request", request_id: "p", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "example" } } });
+  let writes = 0;
+  proc.stdin.write = (_, callback) => { writes++; callback(Error("disconnected")); };
+  await assert.rejects(h.respond(ID, "p", { decision: "allow" }));
+  assert.equal(h.view(ID).prompts[0].attempted, true);
+  await assert.rejects(h.respond(ID, "p", { decision: "allow" }), /already attempted/);
+  assert.equal(writes, 1);
+  h.close();
+});
+
 test("a reply resumes the same Claude session in its own folder, prompts going to the host", async () => {
   const claude = fakeClaude();
   const h = host(claude);
@@ -595,6 +655,10 @@ test("a message to a chat the Claude app lists goes into the app itself (its win
   await settle(5200);
   assert.deepEqual(delivered, [[ID, { title: "Fix the chart", text: "Run the tests", images: ["/data/agent-images/p.png"] }]]);
   assert.deepEqual(sessions.view("claude", ID).outbox, []);
+  await assert.rejects(sessions.model("claude", ID, { model: "different" }), /current selection is unchanged/);
+  await assert.rejects(sessions.send("claude", ID, { text: "Use my chosen model", model: "different" }), /hasn't been sent/);
+  assert.equal(delivered.length, 1);
+  assert.deepEqual(sessions.view("claude", ID).outbox, []);
   // Never Reach's own process, never ending the app's.
   assert.equal(claude.runs.length, 0);
   assert.deepEqual(app.signals, []);
@@ -640,7 +704,8 @@ test("a Claude app session waiting on you shows what it asks, and a message from
   });
   const { session } = await sessions.read("claude", ID);
   assert.equal(session.status, "waiting");
-  assert.deepEqual(session.asking, { kind: "question", questions: [question] });
+  // Answerable from the phone: its options pressed in the Claude app (Oct 6).
+  assert.deepEqual(session.asking, { kind: "question", questions: [question], id: "app-question:q1" });
   assert.equal((await sessions.list()).sessions[0].status, "waiting");
   // An older page ends wherever it ends, not on what Claude asks now.
   assert.equal((await sessions.read("claude", ID, { before: "1" })).session.asking, undefined);
@@ -1166,6 +1231,24 @@ test("an app that shows Reach nothing isn't brought up to read a card", async ()
   assert.deepEqual(touched, [["read", "claude"]]);
 });
 
+test("an uncertain app or terminal approval cannot be replayed from another phone", async () => {
+  const { createAppCards } = await import("../server/agent-sessions/app-cards.mjs");
+  for (const tty of [null, "ttys001"]) {
+    let presses = 0;
+    const read = async () => ({ found: true, texts: ["Run example?"], buttons: [{ label: "Allow once" }, { label: "Deny" }] });
+    const press = async () => { presses++; throw Error("Answer delivery unknown"); };
+    const cards = createAppCards({
+      pending: async () => ({ id: "app-permission:p1", expect: ["example"], tty }),
+      shown: () => [{ id: "chat" }], read, press, terminal: { read, press },
+    });
+    await cards.card("claude", "chat");
+    await assert.rejects(cards.answer("claude", "chat", "app-permission:p1", { label: "Allow once" }), /delivery unknown/);
+    await assert.rejects(cards.answer("claude", "chat", "app-permission:p1", { label: "Deny" }), /already attempted/);
+    await assert.rejects(cards.card("claude", "chat"), /already attempted/);
+    assert.equal(presses, 1);
+  }
+});
+
 // The card as the Claude app reads it out (seen on the phone, 2026-10-06): the
 // sentence in pieces, the description twice, then the command. It showed as
 // six loose lines; now as the card shows it.
@@ -1216,4 +1299,78 @@ test("a process Reach just let go of doesn't read as working while it exits", as
   release(ID, { wrote: true });
   assert.equal((await sessions.read("claude", ID)).session.status, "idle");
   sessions.close();
+});
+
+// "It says Working even though it's not." A message sent while Claude runs
+// tools is folded into that turn: Claude Code echoes it, then sends one
+// result for both (seen with a real `claude -p`). The chat must go idle.
+test("a message sent mid-turn ends with that turn's result, not Working for good", async () => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  const replay = (text) => ({ type: "user", isReplay: true, parent_tool_use_id: null, message: { content: [{ type: "text", text }] } });
+  await h.send(ID, { text: "run the tests", cwd: "/work/app" });
+  const proc = claude.last();
+  proc.print(replay("run the tests"));
+  await h.send(ID, { text: "and the docs?" });
+  proc.print({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", content: "ok" }] } });
+  proc.print(replay("and the docs?"));
+  assert.equal(h.running(ID), true);
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "Done, docs too." });
+  assert.equal(h.running(ID), false);
+  assert.equal(h.view(ID).status, "idle");
+
+  // Sent just as a turn ends: not picked up yet, so its own turn follows.
+  await h.send(ID, { text: "one more" });
+  proc.print(replay("one more"));
+  await h.send(ID, { text: "and another" });
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "One more done." });
+  assert.equal(h.view(ID).status, "running", "the last message hasn't been picked up yet");
+  proc.print(replay("and another"));
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "Another done." });
+  assert.equal(h.view(ID).status, "idle");
+});
+
+// "I keep changing permissions to Auto but it reverts to Manual." The
+// transcript keeps the mode of the chat's last message (Manual); filled in
+// on the next message, it switched Reach's Claude Code straight back.
+test("Auto picked for a chat Reach runs stays Auto on its next messages", async () => {
+  const claude = fakeClaude();
+  const claudeHost = host(claude);
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle", mode: "default" }, items: [], before: null }),
+    },
+    live: async () => new Map(),
+    claudeHost,
+    signIn: {},
+    liveMs: -1,
+  });
+  await sessions.send("claude", ID, { text: "first" });
+  const proc = claude.last();
+  proc.print({ type: "result", is_error: false });
+  // Claude Code confirms each mode change.
+  const write = proc.stdin.write;
+  proc.stdin.write = (text, callback) => {
+    write(text, callback);
+    for (const l of text.split("\n").filter(Boolean).map((t) => JSON.parse(t)))
+      if (l.request?.subtype === "set_permission_mode")
+        queueMicrotask(() => proc.print({ type: "control_response", response: { subtype: "success", request_id: l.request_id } }));
+  };
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: true });
+  await sessions.send("claude", ID, { text: "second" });
+  const modes = proc.lines.filter((l) => l.request?.subtype === "set_permission_mode").map((l) => l.request.mode);
+  assert.ok(modes.length && modes.every((m) => m === "auto"), `never set back to Manual: ${modes}`);
+  assert.equal((await sessions.read("claude", ID)).session.mode, "auto");
+  // Picked between turns, after its process went: it relaunches in Auto.
+  proc.print({ type: "result", is_error: false });
+  claudeHost.release(ID);
+  await sessions.mode("claude", ID, { mode: "acceptEdits" });
+  await sessions.send("claude", ID, { text: "third" });
+  const args = claude.last().args;
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "acceptEdits");
 });

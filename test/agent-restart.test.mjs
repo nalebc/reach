@@ -1,0 +1,140 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createReach } from "../server/index.mjs";
+import { ALL_SCOPES } from "../server/core.mjs";
+import { askRestart, restartRequestFile } from "../server/restart-requests.mjs";
+import { watchInterface } from "../server/live-interface.mjs";
+import { startInTerminal } from "../scripts/stop.mjs";
+
+// Oct 6: agents restarted Reach again and again, each time ending its
+// terminals and live screens (and once landing inside ChatGPT with no screen
+// permission). In a checkout an agent's restart now waits for the owner's OK
+// on the phone, and interface edits reach phones without any restart.
+
+test("an agent's restart is a Needs you request; only the owner's Restart restarts Reach", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-restart-"));
+  const dataDir = path.join(dir, "private");
+  let restarted = 0;
+  const reach = await createReach({
+    dataDir,
+    roots: [dir],
+    restartReach: () => restarted++,
+    agentSessions: { list: async () => ({ sessions: [] }), close() {} },
+    openClaw: { overview: async () => ({ connected: false }), close() {} },
+  });
+  t.after(async () => {
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("Owner", ALL_SCOPES).token;
+  const guest = reach.auth.redeemGuest(reach.auth.inviteGuest({ name: "Guest", ttlSeconds: 3600, full: true }).invitation).token;
+  const call = async (route, token = owner, body) => {
+    const r = await fetch(url + route, {
+      method: body ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: r.status, body: await r.json() };
+  };
+  assert.equal(askRestart(dataDir, { app: "ChatGPT" }).again, false);
+  // Asking again (an impatient agent) keeps the one request.
+  assert.equal(askRestart(dataDir, { app: "ChatGPT" }).again, true);
+  const items = (await call("/api/notifications")).body.items.filter((i) => i.source === "restart");
+  assert.equal(items.length, 1);
+  const [item] = items;
+  assert.equal(item.title, "Restart Reach?");
+  assert.equal(item.detail, "Asked from ChatGPT");
+  assert.deepEqual(item.actions.map((a) => a.id), ["restart", "deny"]);
+  const route = `/api/notifications/${encodeURIComponent(item.id)}/actions`;
+  assert.equal((await call(route, guest, { revision: item.revision, action: "restart" })).status, 403);
+  assert.equal(restarted, 0);
+  assert.equal((await call(route, owner, { revision: item.revision, action: "restart" })).status, 200);
+  assert.equal(restarted, 1);
+  assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
+  await new Promise((r) => setTimeout(r, 400)); // answered: the list refreshes
+  assert.equal((await call("/api/notifications")).body.items.some((i) => i.source === "restart"), false);
+  // Not now: dropped, nothing restarts.
+  askRestart(dataDir, { app: "Claude" });
+  await new Promise((r) => setTimeout(r, 400)); // the new request wakes the list
+  const next = (await call("/api/notifications")).body.items.find((i) => i.source === "restart");
+  assert.equal((await call(`/api/notifications/${encodeURIComponent(next.id)}/actions`, owner, { revision: next.revision, action: "deny" })).status, 200);
+  assert.equal(restarted, 1);
+  assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
+});
+
+test("an allowed restart opens Terminal running ./reach restart --yes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-restart-term-"));
+  let opened = "";
+  const file = startInTerminal("/Users/me/reach", { state: dir, args: "restart --yes", nodeDir: "/n", open: (f) => (opened = f) });
+  assert.equal(opened, file);
+  assert.match(fs.readFileSync(file, "utf8"), /\n\.\/reach restart --yes\n/);
+  startInTerminal("/Users/me/reach", { state: dir, nodeDir: "/n", open: () => {} });
+  assert.match(fs.readFileSync(file, "utf8"), /\n\.\/reach\n/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("restart run by an agent in a checkout asks instead of stopping Reach", () => {
+  const source = fs.readFileSync(new URL("../scripts/bootstrap.mjs", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("async function restart("));
+  const ask = body.indexOf("askRestart(");
+  assert.ok(ask > 0 && ask < body.indexOf("stopReach(root"), "asks before stopping anything");
+  assert.match(body, /const asker = !packaged && \(foreignApp\(\) \|\|/);
+});
+
+test("interface edits rebuild once per burst of saves and refresh what phones load", async () => {
+  const listeners = [];
+  const watch = (target, options, listener) => {
+    listeners.push(listener);
+    return { close() {} };
+  };
+  let builds = 0,
+    built = 0;
+  const stop = watchInterface({
+    root: "/r",
+    watch,
+    delay: 10,
+    build: async () => {
+      builds++;
+    },
+    onBuilt: () => built++,
+    log: { warn() {} },
+  });
+  assert.equal(listeners.length, 3);
+  for (let i = 0; i < 5; i++) listeners[0]();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(builds, 1);
+  assert.equal(built, 1);
+  // A broken edit keeps the last good interface.
+  const warnings = [];
+  const stop2 = watchInterface({ root: "/r", watch, delay: 5, build: async () => { throw Error("Syntax error\nmore"); }, onBuilt: () => built++, log: { warn: (w) => warnings.push(w) } });
+  listeners.at(-1)();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(built, 1);
+  assert.match(warnings[0], /didn't rebuild \(Syntax error\)/);
+  stop();
+  stop2();
+});
+
+test("only a checkout watches its interface", () => {
+  const launch = fs.readFileSync(new URL("../scripts/launch.mjs", import.meta.url), "utf8");
+  assert.match(launch, /liveInterface: !packaged,/);
+});
+
+test("a fresh Reach drops the restart that was asked for, and its watch never holds the process open", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-restart-fresh-"));
+  askRestart(dir, { app: "Claude" });
+  let unrefd = false;
+  const watch = () => ({ unref: () => (unrefd = true), close() {} });
+  return import("../server/restart-requests.mjs").then(({ restartRequests }) => {
+    const r = restartRequests({ dataDir: dir, restart() {}, watch });
+    assert.deepEqual(r.list(), []);
+    assert.equal(unrefd, true);
+    r.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

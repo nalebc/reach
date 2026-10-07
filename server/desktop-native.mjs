@@ -5,9 +5,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
+import { buildNative } from "./native-build.mjs";
 const exec = promisify(execFile),
   native =fileURLToPath(new URL("../scripts/native/", import.meta.url));
-const builds = new Map();
 export async function desktopBinary(config, kind) {
   // Name the cached build after its source, so any helper edit recompiles.
   const source = await fs.readFile(path.join(native, `${kind}.swift`));
@@ -15,40 +15,14 @@ export async function desktopBinary(config, kind) {
     config.dataDir,
     `reach-${kind}-${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`,
   );
-  if (!builds.has(file)) {
-    const build = (async () => {
-      try {
-        await fs.access(file);
-      } catch {
-        const tmp = `${file}-${process.pid}.tmp`;
-        try {
-          await exec(
-            "/usr/bin/xcrun",
-            [
-              "swiftc",
-              "-parse-as-library",
-              "-O",
-              path.join(native, `${kind}.swift`),
-              "-o",
-              tmp,
-            ],
-            { timeout: 120000, maxBuffer: 1024 * 1024 },
-          );
-          await fs.chmod(tmp, 0o700);
-          await fs.rename(tmp, file);
-        } catch (e) {
-          await fs.rm(tmp, { force: true });
-          throw fail(
-            503,
-            `Could not prepare the ${kind} helper. Install Apple Command Line Tools and check macOS permissions.`,
-          );
-        }
-      }
-    })();
-    builds.set(file, build);
-    build.catch(() => builds.delete(file));
+  try {
+    await buildNative(file, ["swiftc", "-parse-as-library", "-O", path.join(native, `${kind}.swift`)]);
+  } catch {
+    throw fail(
+      503,
+      `Could not prepare the ${kind} helper. Install Apple Command Line Tools and check macOS permissions.`,
+    );
   }
-  await builds.get(file);
   return file;
 }
 export async function desktopDisplays(config) {
@@ -102,7 +76,11 @@ export class DesktopInput {
           if (!p) return this.stop();
           this.pending = null;
           clearTimeout(p.timer);
-          value.error ? p.reject(fail(403, value.error)) : p.resolve(value);
+          // refused: the helper turned down this one action (a typing target
+          // that moved, a key it doesn't know); control goes on.
+          value.error
+            ? p.reject(Object.assign(fail(403, value.error), value.fatal ? {} : { refused: true }))
+            : p.resolve(value);
         } catch {
           this.stop();
         }

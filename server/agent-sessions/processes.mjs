@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -95,6 +95,35 @@ export function parseLsofCwd(text) {
   return out;
 }
 
+// When each process started, as Claude Code writes it in its registry
+// ("procStart": ps's lstart in UTC). A record whose process ended can name a
+// pid the system has since given to another app (it read as a busy chat for
+// hours): it's that session's only while the start times match. Kept a few
+// seconds; ps that can't run never hides a session.
+let startsSeen = { at: 0, key: "", starts: null };
+export function processStarts(pids, { now = Date.now() } = {}) {
+  const key = pids.join(",");
+  if (startsSeen.key === key && now - startsSeen.at < 5000) return startsSeen.starts;
+  let starts = null;
+  try {
+    const out = execFileSync("ps", ["-o", "pid=,lstart=", "-p", key], {
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    starts = new Map();
+    for (const line of out.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (m) starts.set(Number(m[1]), m[2].replace(/\s+/g, " ").trim());
+    }
+  } catch (e) {
+    // ps exits 1 when none of them runs: all ended.
+    if (e?.status === 1) starts = new Map();
+  }
+  startsSeen = { at: now, key, starts };
+  return starts;
+}
+
 // Claude Code's own registry of running sessions: ~/.claude/sessions/<pid>.json
 // names the session, its host (the Claude app's sessions say
 // entrypoint "claude-desktop"), and whether it's busy or idle right now
@@ -109,6 +138,7 @@ export function readSessionRegistry({
       return false;
     }
   },
+  started = processStarts,
 } = {}) {
   const found = new Map();
   let files = [];
@@ -117,25 +147,33 @@ export function readSessionRegistry({
   } catch {
     return found;
   }
+  const records = [];
   for (const file of files) {
     try {
       const r = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
-      if (!r.sessionId || !Number.isInteger(r.pid) || !alive(r.pid)) continue;
-      const where =
-        r.entrypoint === "claude-desktop" ? "claude-app" : r.kind && r.kind !== "interactive" ? "background" : "terminal";
-      found.set(r.sessionId, {
-        where,
-        pid: r.pid,
-        tty: null,
-        exact: true,
-        busy: r.status === "busy",
-        // Stopped on you: "input needed" (a question) or "permission prompt".
-        waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
-        ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),
-      });
+      if (r.sessionId && Number.isInteger(r.pid) && alive(r.pid)) records.push(r);
     } catch {
       /* a record being rewritten */
     }
+  }
+  const dated = records.filter((r) => typeof r.procStart === "string").map((r) => r.pid);
+  const starts = dated.length ? started(dated) : null;
+  // Newest last: of two records for one session, the live one wins.
+  records.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+  for (const r of records) {
+    if (starts && typeof r.procStart === "string" && starts.get(r.pid) !== r.procStart.replace(/\s+/g, " ").trim()) continue;
+    const where =
+      r.entrypoint === "claude-desktop" ? "claude-app" : r.kind && r.kind !== "interactive" ? "background" : "terminal";
+    found.set(r.sessionId, {
+      where,
+      pid: r.pid,
+      tty: null,
+      exact: true,
+      busy: r.status === "busy",
+      // Stopped on you: "input needed" (a question) or "permission prompt".
+      waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
+      ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),
+    });
   }
   return found;
 }

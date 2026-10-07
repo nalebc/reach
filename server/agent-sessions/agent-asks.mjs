@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { claudeAnswer, describeClaudePrompt } from "./claude-host.mjs";
 import { idleSeconds } from "./claude-import.mjs";
+import { computerWord } from "../computer-word.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Old hook processes may still contact this socket. Codex's pre-review hook
@@ -41,6 +42,8 @@ export function createAgentAsks({
   // (agent, session): the phone can show this session (an app's or a
   // terminal's, not a headless run). Anything else is never held.
   shows = async () => true,
+  // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
+  platform = process.platform,
 }) {
   const asks = new Map(); // id -> ask
   const ended = new Map(); // id -> why, for a late answer from the phone
@@ -171,13 +174,13 @@ export function createAgentAsks({
       const ask = asks.get(String(promptId));
       if (!ask || ask.agent !== agent || ask.sessionId !== sessionId)
         throw bad(
-          ended.get(String(promptId)) === "mac" ? "Answered on your Mac." : "This prompt was already answered.",
+          ended.get(String(promptId)) === "mac" ? `Answered on your ${computerWord(platform)}.` : "This prompt was already answered.",
           409,
         );
       if (answer?.decision === "answerOnMac" || answer?.answerOnMac === true) {
         ask.finish(null, "mac"); return { handedOff: true };
       }
-      ask.finish(claudeAnswer(ask.prompt, answer), "phone"); // 400 for anything not offered
+      ask.finish(claudeAnswer(ask.prompt, answer, platform), "phone"); // 400 for anything not offered
       return { answered: true };
     },
     version: (agent, sessionId) => versions.get(key(agent, sessionId)) || 0,

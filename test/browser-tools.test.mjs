@@ -155,6 +155,8 @@ test("legacy desktop modes never advertise or execute unrestricted screen tools"
     }
   }
   const apps = access({screen:"apps", restrictedTerminal:false});
-  for (const name of ["reach_apps", "reach_app_windows", "reach_app_screen", "reach_app_input", "reach_request_app"])
+  for (const name of ["reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app"])
     assert.equal(names(apps).includes(name), true, name);
+  assert.throws(() => browserToolRequest("reach_app_input", { target: "old", action: {type:"click",x:0.5,y:0.5} }, apps), /not available/);
+  assert.throws(() => browserToolRequest("reach_request_app", {appId:"/System/Applications/TextEdit.app",mode:"control"}, apps));
 });

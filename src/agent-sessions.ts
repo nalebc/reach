@@ -21,6 +21,8 @@ export type AgentSession = {
   // Filled when one session is read.
   model?: string | null;
   effort?: string | null;
+  // Codex's speed (service tier) the chat runs at, when it says.
+  speed?: string | null;
   // Which engine holds a Codex thread right now.
   held?: "reach" | "codex-app" | "daemon" | "terminal" | "other" | null;
   // Permission mode as the agent's app names it (Codex: auto, guardian-approvals…; Claude: auto, plan…).
@@ -43,7 +45,9 @@ export type AgentQuestion = {
   options: { label: string; description?: string }[];
 };
 export type AgentAsking =
-  | { kind: "question"; questions: AgentQuestion[] }
+  // id: Claude's question in the Claude app, answered from here (its options
+  // pressed there).
+  | { kind: "question"; questions: AgentQuestion[]; id?: string }
   // id: the Claude app's card, answerable from here (Allow once or Deny).
   | { kind: "permission"; text: string; command?: boolean; id?: string }
   // Something else Claude Code shows and waits on (a notice to acknowledge).
@@ -70,12 +74,22 @@ export type SessionItem = {
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
+  // Codex can ask these while continuing to work; answers are chat replies.
+  questions?: { title: string; options: string[] }[];
   at?: number;
   turnId?: string;
 };
 // One agent on the Mac: the ones Reach drives (supported) and others it found
 // installed (Gemini, Antigravity, Cursor…), which get their place now.
 export type AgentHealth = {
+  usage?: {
+    available: boolean;
+    error?: string;
+    updatedAt?: number;
+    windows: { id: string; label: string; usedPercent: number; resetsAt: number | null; severity: string }[];
+    credits?: { unlimited: boolean; balance?: string | null } | null;
+    spend?: { enabled: boolean; used?: { amount_minor: number; currency: string; exponent: number } | null; limit?: { amount_minor: number; currency: string; exponent: number } | null };
+  };
   agent: string;
   name?: string;
   supported?: boolean;
@@ -102,6 +116,7 @@ export const resetTime = (at: number, year = true) =>
 export type Decision = string | Record<string, unknown>;
 export type SessionPrompt = {
   id: string;
+  attempted?: boolean;
   // Codex: command, file-change, permissions, question, elicitation.
   // Claude Code: tool (a permission request), question, dialog (answered on the Mac).
   kind: "command" | "file-change" | "permissions" | "question" | "elicitation" | "tool" | "dialog" | "unknown";
@@ -158,6 +173,9 @@ export type AgentModel = {
   isDefault: boolean;
   // Claude Code: whether this model takes Auto mode.
   autoMode?: boolean;
+  // Codex: its speeds (service tiers), as the app's Speed menu lists them.
+  speeds?: { id: string; name: string; note?: string }[];
+  defaultSpeed?: string | null;
 };
 // A dialog macOS itself shows (server/mac-prompts.mjs), answered at the Mac.
 export type MacPrompt = {
@@ -460,7 +478,7 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; mode?: string; skill?: string };
+export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
 // Messages from the phone whose chat was deleted (server outbox.mjs): sent to
@@ -482,6 +500,8 @@ export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, 
 // app too (applied: false when it goes with the next message instead).
 export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
   post<{ mode: string; applied: boolean }>(peer, `${sessionPath(s)}/mode`, { mode });
+export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string }) =>
+  post<{ model: string; effort?: string; applied: boolean }>(peer, `${sessionPath(s)}/model`, choice);
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
   post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
     peer,
@@ -498,11 +518,24 @@ export const sendMacPassword = (peer: Peer, id: string, password: string) =>
 export const openMacSetting = (peer: Peer, id: string) =>
   post<{ opened: string; app: string | null }>(peer, `/api/sessions/mac-prompts/${encodeURIComponent(id)}/setting`);
 // A picture sent in a session, fetched once per page (it never changes).
+// The 80 most recently shown are kept; older ones are let go (fetched again
+// if shown again), so a long day of chats doesn't fill the phone's memory.
 const pictures = new Map<string, Promise<string>>();
+const KEPT_PICTURES = 80;
 export function sessionImage(peer: Peer, s: { agent: AgentName; id: string }, item: string, n: number) {
   const key = `${peer.url}|${s.agent}|${s.id}|${item}|${n}`;
   let found = pictures.get(key);
-  if (!found) {
+  if (found) {
+    // Most recently shown last.
+    pictures.delete(key);
+    pictures.set(key, found);
+  } else {
+    while (pictures.size >= KEPT_PICTURES) {
+      const [oldest, url] = pictures.entries().next().value!;
+      pictures.delete(oldest);
+      // A moment later: an image still on screen has long been decoded.
+      void url.then((u) => setTimeout(() => URL.revokeObjectURL(u), 30000)).catch(() => {});
+    }
     found = fetch(`${peer.url}${sessionPath(s)}/images/${encodeURIComponent(item)}/${n}`, {
       headers: { Authorization: `Bearer ${peer.token}` },
       redirect: "error",
@@ -544,6 +577,10 @@ export const appCard = (peer: Peer, s: { agent: AgentName; id: string }) =>
 // new chat's address comes back.
 export const moveSession = (peer: Peer, s: { agent: string; id: string }, to: string) =>
   post<{ agent: string; id: string }>(peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to });
+// Archived (or back) in the chat's own app: it leaves Reach's list and the
+// app's alike (Codex's archive; the Claude app's own record).
+export const archiveSession = (peer: Peer, s: { agent: string; id: string }, archived = true) =>
+  post<{ archived: boolean }>(peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/archive`, { archived });
 export const stopSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/stop`);
 export const startSession = (
@@ -553,16 +590,17 @@ export const startSession = (
 // Models, and the mode the agent's app starts new chats in. They change
 // rarely, so each Mac's list is fetched once per ten minutes.
 const modelCache = new Map<string, { at: number; value: Promise<{ models: AgentModel[]; mode: string | null; modes?: AgentMode[] }> }>();
-export function listModels(peer: Peer, agent: AgentName) {
-  const key = `${peer.url} ${agent}`;
+export function listModels(peer: Peer, agent: AgentName, { refresh = false } = {}) {
+  const key = `${peer.url} ${peer.token} ${agent}`;
   const hit = modelCache.get(key);
-  if (hit && Date.now() - hit.at < 600000) return hit.value;
+  if (!refresh && hit && Date.now() - hit.at < 600000) return hit.value;
   const value = request<{ models: AgentModel[]; mode: string | null; modes?: AgentMode[] }>(
     peer,
     `/api/sessions/models?agent=${agent}`,
   );
   modelCache.set(key, { at: Date.now(), value });
-  value.catch(() => modelCache.delete(key));
+  const forget = () => { if (modelCache.get(key)?.value === value) modelCache.delete(key); };
+  value.then((result) => { if (!result.models.length) forget(); }, forget);
   return value;
 }
 

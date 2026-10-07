@@ -541,3 +541,26 @@ test("only the owner can create browser grants and invalid grants fail closed", 
     200,
   );
 });
+
+test("agent file routes reject credentials, links and native document conversion while owners retain their access", async (t) => {
+  const f = await start(t);
+  fs.mkdirSync(path.join(f.shared, '.aws'));
+  fs.writeFileSync(path.join(f.shared, '.aws', 'credentials'), 'never-return-this-secret');
+  fs.writeFileSync(path.join(f.shared, 'document.rtf'), '{\\rtf1 plain fixture}');
+  fs.linkSync(path.join(f.dir, 'files', 'Other', 'brief-secret.txt'), path.join(f.shared, 'hardlink.txt'));
+  const agent = await f.join({ terminalIds: [] });
+  for (const name of ['.aws/credentials', 'hardlink.txt', 'outside-link/brief-secret.txt', 'private-link/brief-private.txt']) {
+    for (const route of ['text', 'content']) {
+      const result = await agent.as(`/api/files/${route}?root=0&path=${encodeURIComponent(name)}`);
+      assert.ok(result.status >= 400, `${route} exposed ${name}`);
+      assert.doesNotMatch(JSON.stringify(result.body), /never-return-this-secret|A project brief/);
+    }
+  }
+  const listing = await agent.as('/api/files?root=0&hidden=1');
+  assert.equal(listing.status, 200, JSON.stringify(listing.body));
+  assert.equal(listing.body.items.some(item => ['.aws', 'hardlink.txt', 'outside-link', 'private-link'].includes(item.name)), false);
+  assert.equal((await agent.as('/api/files/document-text?root=0&path=document.rtf')).status, 415);
+  const owner = await f.call('/api/files/text?root=0&path=Project/.aws/credentials');
+  assert.equal(owner.status, 200);
+  assert.equal(owner.body.text, 'never-return-this-secret');
+});

@@ -322,10 +322,10 @@ test("the pause button switches at once and asks the computer; a refusal puts it
       toast: (m) => toasts.push(m),
     }),
   );
-  button("Pause Reach on your computer").click();
+  button("Pause Reach on your Windows PC").click();
   await dom.waitFor(() => toasts.length === 1);
   await settle(30);
-  assert.ok(button("Pause Reach on your computer"));
+  assert.ok(button("Pause Reach on your Windows PC"));
   assert.deepEqual(toasts, ["Only the owner can pause Reach."]);
   assert.deepEqual(dom.errors, []);
   await shown.unmount();

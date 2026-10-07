@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {codexArchive,claudeArchive} from '../server/agent-sessions/portable-history.mjs';
+import {parseClaudeTranscript} from '../server/agent-sessions/claude-transcript.mjs';
+import {createCodexSessions} from '../server/agent-sessions/codex.mjs';
+const id='0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee';
+const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4WQAAAAASUVORK5CYII=';
+test('portable history never clips large messages, tool output or images',()=>{
+ const huge='start-'+ 'x'.repeat(600000)+'-end';
+ const items=[{role:'user',kind:'text',text:'See this',at:1000,imageData:[png]},{role:'assistant',kind:'text',text:huge,at:2000},{role:'tool',kind:'command',text:'echo output',detail:huge,status:'completed',at:3000}];
+ const codex=codexArchive({id,cwd:'/work',items,from:'Claude Code',now:4000});
+ const responses=codex.lines.filter(l=>l.type==='response_item');
+ assert.equal(responses[0].payload.content[1].image_url,png);
+ assert.equal(responses[1].payload.content[0].text,huge);
+ assert.ok(responses[2].payload.content[0].text.endsWith(huge));
+ assert.equal(codex.lines[1].timestamp,new Date(1000).toISOString());
+ const claude=claudeArchive({id,cwd:'/work',title:'Same conversation',items,from:'Codex',version:'2.1.289',now:4000});
+ const parsed=parseClaudeTranscript(claude.map(JSON.stringify).join('\n'));
+ assert.equal(parsed.items[0].images,1);
+ assert.equal(parsed.items[1].text,huge);
+ assert.ok(parsed.items[2].text.endsWith(huge));
+ assert.equal(claude[1].message.content[1].source.data,png.split(',')[1]);
+});
+test('Codex native legacy imports page and load images without the paginated-history API',async()=>{
+ const calls=[];
+ const thread={id,cwd:'/work',historyMode:'legacy',createdAt:1,status:{type:'idle'},turns:[{id:'turn1',status:'completed',startedAt:1,items:[{id:'u1',type:'userMessage',content:[{type:'text',text:'Original message'},{type:'image',url:png}]},{id:'a1',type:'agentMessage',text:'Original answer'}]}]};
+ const daemon={rpc:async(method)=>{calls.push(method);assert.equal(method,'thread/read');return {thread}}};
+ const codex=createCodexSessions({daemon,holder:async()=>null,appState:()=>({threads:{}})});
+ const latest=await codex.read(id,{limit:1});assert.equal(latest.items[0].text,'Original answer');assert.equal(latest.before,'1');
+ const first=await codex.read(id,{limit:1,before:latest.before});assert.equal(first.items[0].images,1);assert.equal(first.items[0].text,'Original message');assert.equal(first.before,null);
+ assert.equal((await codex.image(id,'u1',0)).type,'image/png');assert.ok(!calls.includes('thread/items/list'));
+});

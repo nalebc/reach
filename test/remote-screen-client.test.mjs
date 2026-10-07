@@ -289,3 +289,67 @@ test("a third mid-stream decoder failure in a minute steps the video down a size
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });
+
+// A blip used to blank the screen into the loading scene, wait up to 30 s,
+// and leave nothing in Reach's log. Now the last picture stays (the toolbar
+// says "Connecting…"), the retry comes within seconds, and the new connection
+// tells the computer why the old one ended.
+test("a dropped stream keeps the last picture, retries soon and says why", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  socket.close();
+  await settle(20);
+  assert.equal(state().ready, true, "the picture stays");
+  assert.equal(state().connecting, true);
+  assert.equal(state().width, 1320);
+  await dom.waitFor(() => FakeSocket.all[1]?.sent.length >= 2, 1500);
+  const told = FakeSocket.all[1].sent.find((m) => m.type === "diagnostic");
+  assert.match(told.text, /^screen reconnecting \(1× since the last frame\) after: Screen connection ended\. Reconnecting… · closed 1000 · /);
+  assert.match(told.text, /last frame \d+\.\d s ago/);
+  // Back: the next frame takes over with no loading scene in between.
+  FakeSocket.all[1].says({ type: "ready", format: "h264", display: "1" });
+  FakeSocket.all[1].frame(1, keyframe);
+  FakeDecoder.all.at(-1).shows();
+  await dom.waitFor(() => !state().connecting);
+  assert.equal(state().ready, true);
+  await view.unmount();
+});
+
+test("no fresh picture for 5 s brings the loading scene back", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  globalThis.WebSocket = class extends FakeSocket {
+    constructor(url) {
+      super(url);
+      setTimeout(() => this.close(), 5);
+    }
+  };
+  try {
+    socket.close();
+    await settle(3000);
+    assert.equal(state().ready, true, "still the last picture at 3 s");
+    await dom.waitFor(() => !state().ready, 3500);
+    assert.equal(state().connecting, true);
+  } finally {
+    globalThis.WebSocket = FakeSocket;
+  }
+  await view.unmount();
+});
+
+// Each interface edit (agents edit it all day) reloaded an open phone, mid-
+// stream, back to the loading scene.
+test("a live screen holds off the new-interface reload until it closes", async () => {
+  const { busyHere } = await dom.load("/src/build-reload.ts");
+  const { view } = await watch();
+  assert.equal(busyHere(dom.document), true, "busy while the screen is open");
+  await view.unmount();
+  assert.equal(busyHere(dom.document), false, "free once it's closed");
+});

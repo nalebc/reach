@@ -69,7 +69,11 @@ const setup = (replies = {}, extra = {}, codexItems = {}) => {
   claudeChat(path.join(projects, "-work-app"));
   const daemon = fakeDaemon({
     "model/list": { data: [{ id: "gpt-6-sol" }, { id: "gpt-6-astra", isDefault: true }] },
-    "thread/start": { thread: { id: NEW_CODEX } },
+    "thread/fork": ({ path: file }) => {
+      const imported = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse).filter(e => e.type === "response_item" && e.payload.type === "message").map((e, n) => ({ id: `imported-${n}`, role: e.payload.role, kind: "text", text: e.payload.content.filter(c => c.text).map(c => c.text).join("\n"), at: Date.parse(e.timestamp) }));
+      codexItems[NEW_CODEX] = [...imported, ...(codexItems[NEW_CODEX] || [])];
+      return { thread: { id: NEW_CODEX } };
+    },
     ...replies,
   });
   const imported = [];
@@ -83,7 +87,10 @@ const setup = (replies = {}, extra = {}, codexItems = {}) => {
     codexLive: createCodexLive({ daemon }),
     claude,
     codex: {
-      read: async (id) => ({ session: { agent: "codex", id, title: "New thread", cwd: "/work/app", status: "idle" }, items: codexItems[id] || [], before: null }),
+      read: async (id, { before, cursor, limit = 200 } = {}) => {
+        const all = codexItems[id] || []; const end = Number(before ?? cursor ?? all.length); const start = Math.max(0, end - limit);
+        return { session: { agent: "codex", id, title: "New thread", cwd: "/work/app", status: "idle" }, items: all.slice(start, end), before: start ? String(start) : null };
+      },
       list: async () => [{ agent: "codex", id: NEW_CODEX, title: "Login page", updatedAt: 9, status: "idle" }],
       health: async () => ({ agent: "codex", signedIn: true }),
     },
@@ -97,109 +104,52 @@ const setup = (replies = {}, extra = {}, codexItems = {}) => {
 };
 const text = (items) => items.map((i) => `${i.role}:${i.kind}:${i.text}`);
 
-test("Claude Code to Codex: a new Codex thread with what Claude remembers, in Codex's default model, let go at once", async () => {
+test("Claude to Codex preserves visible pre-compaction messages and full tool output using a native fork", async () => {
   const { root, daemon, sessions } = setup();
   assert.deepEqual(await sessions.move("claude", CLAUDE, { to: "codex" }), { agent: "codex", id: NEW_CODEX });
-  // Never the service's own default model (a ChatGPT account may not have it);
-  // the Codex app can open it straight away.
-  assert.deepEqual(daemon.methods(), ["model/list", "thread/start", "thread/name/set", "thread/inject_items", "thread/unsubscribe"]);
-  const [, start] = daemon.calls[1];
-  assert.equal(start.cwd, "/work/app");
-  assert.equal(start.model, "gpt-6-astra");
-  assert.match(start.developerInstructions, /^This conversation was moved here from Claude Code \(“Login page”, in \/work\/app\)\./);
-  assert.ok(!("approvalPolicy" in start) && !("sandbox" in start), "the Codex app's own mode, never more permission");
-  assert.deepEqual(daemon.calls[2][1], { threadId: NEW_CODEX, name: "Login page" });
-  // What Claude remembers: its summary, then everything since; tool use in one line.
-  assert.deepEqual(daemon.calls[3][1].items, [
-    {
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: "Summary of the conversation before the messages below, written by Claude Code when it compacted:\n\nWe built the login page together.\n\nNow add tests" }],
-    },
-    { type: "message", role: "assistant", content: [{ type: "output_text", text: "Adding tests.\n\n• Ran `npm test`\n\nTests pass." }] },
-  ]);
+  assert.deepEqual(daemon.methods(), ["model/list", "thread/fork", "thread/name/set", "thread/unsubscribe"]);
+  const params = daemon.calls[1][1];
+  assert.equal(params.model, "gpt-6-astra");
+  assert.ok(!("approvalPolicy" in params) && !("sandbox" in params));
+  const archive = fs.readFileSync(params.path, "utf8");
+  for (const content of ["Build the login page", "Done: the login page is built.", "Now add tests", "all 12 passed", "Tests pass."]) assert.ok(archive.includes(content), content);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("the moved chat shows the old messages above its own, once, as if forked; the old chat says where it went", async () => {
-  const { root, sessions } = setup();
+test("a moved chat remains readable without the source and pages its own complete history exactly once", async () => {
+  const { root, projects, sessions } = setup();
   await sessions.move("claude", CLAUDE, { to: "codex" });
-  const page = await sessions.read("codex", NEW_CODEX, {});
-  assert.deepEqual(text(page.items), [
-    "user:text:Build the login page",
-    "assistant:text:Done: the login page is built.",
-    "system:compaction:Context compacted",
-    "user:text:Now add tests",
-    "assistant:text:Adding tests.",
-    "tool:command:npm test",
-    "assistant:text:Tests pass.",
-    "system:notice:Continued with Codex · earlier messages are from Claude Code",
-  ]);
-  assert.equal(page.before, null);
-  assert.deepEqual(page.session.movedFrom, { agent: "claude", id: CLAUDE, title: "Login page" });
-  // Older pages go on into the old chat, crossing into it exactly once.
-  const pages = [];
-  let before;
-  do {
-    const p = await sessions.read("codex", NEW_CODEX, { limit: 3, ...(before ? { before } : {}) });
-    pages.unshift(p.items);
-    before = p.before;
-  } while (before);
-  assert.deepEqual(text(pages.flat()), text(page.items));
-  // The old chat: where it continued.
   const old = await sessions.read("claude", CLAUDE, {});
-  assert.deepEqual(old.session.movedTo.map((m) => [m.agent, m.id]), [["codex", NEW_CODEX]]);
-  // The list says where the new one came from.
-  const listed = (await sessions.list()).sessions.find((s) => s.id === NEW_CODEX);
-  assert.deepEqual(listed.movedFrom, { agent: "claude", id: CLAUDE, title: "Login page" });
+  assert.deepEqual(old.session.movedTo.map(m => [m.agent, m.id]), [["codex", NEW_CODEX]]);
+  const before = await sessions.read("codex", NEW_CODEX, {});
+  fs.renameSync(path.join(projects, "-work-app"), path.join(root, "source-retired"));
+  const pages = []; let cursor;
+  do { const p = await sessions.read("codex", NEW_CODEX, { limit: 3, before: cursor }); pages.unshift(p.items); cursor = p.before; } while (cursor);
+  assert.deepEqual(text(pages.flat()), text(before.items));
+  assert.equal(pages.flat().filter(i => i.text === "Build the login page").length, 1);
+  assert.deepEqual(before.session.movedFrom, { agent: "claude", id: CLAUDE, title: "Login page" });
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("there and back: Claude Code → Codex → Claude Code keeps the whole conversation, for the agent and on screen", async () => {
+test("there and back preserves the full original conversation plus the new agent's replies", async () => {
   const codexItems = {};
-  const { root, projects, sessions } = setup({}, {}, codexItems);
+  const { root, sessions } = setup({}, {}, codexItems);
   await sessions.move("claude", CLAUDE, { to: "codex" });
-  // The first chat keeps going after the move: not part of the fork.
-  fs.appendFileSync(
-    path.join(projects, "-work-app", `${CLAUDE}.jsonl`),
-    line({ sessionId: CLAUDE, cwd: "/work/app", type: "user", uuid: "late", parentUuid: "a3", timestamp: at(30), message: { role: "user", content: "A later question in Claude" } }) + "\n",
-  );
-  // Codex carried on (it lists only its own messages, not what it was given).
-  codexItems[NEW_CODEX] = [
-    { id: "x1", role: "user", kind: "text", text: "Ship it" },
-    { id: "x2", role: "assistant", kind: "text", text: "Shipped." },
-  ];
+  codexItems[NEW_CODEX].push({ id: "new-user", role: "user", kind: "text", text: "Ship it" }, { id: "new-answer", role: "assistant", kind: "text", text: "Shipped." });
   const back = await sessions.move("codex", NEW_CODEX, { to: "claude" });
-  // Claude Code's new transcript holds the first chat (as Claude remembered
-  // it) and what happened in Codex; not what came after the first move.
-  const folder = path.join(projects, os.homedir().replace(/[^a-zA-Z0-9]/g, "-"));
-  const found = [folder, path.join(projects, "-work-app")].map((d) => path.join(d, `${back.id}.jsonl`)).find((f) => fs.existsSync(f));
-  const written = fs.readFileSync(found, "utf8");
-  for (const said of ["Now add tests", "Tests pass.", "Ship it", "Shipped."]) assert.ok(written.includes(said), said);
-  assert.ok(!written.includes("A later question in Claude"));
-  // On screen: the first chat, the line, Codex's part, the line, then Claude's.
   const page = await sessions.read("claude", back.id, {});
-  assert.deepEqual(text(page.items).slice(-5), [
-    "assistant:text:Tests pass.",
-    "system:notice:Continued with Codex · earlier messages are from Claude Code",
-    "user:text:Ship it",
-    "assistant:text:Shipped.",
-    "system:notice:Continued with Claude Code · earlier messages are from Codex",
-  ]);
-  assert.ok(!text(page.items).some((t) => t.includes("A later question in Claude")));
-  assert.equal(text(page.items)[0], "user:text:Build the login page");
+  const all = page.items.map(i => i.text).join("\n");
+  for (const content of ["Build the login page", "all 12 passed", "Ship it", "Shipped."]) assert.ok(all.includes(content), content);
+  assert.equal(page.items.filter(i => i.text === "Build the login page").length, 1);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("a move that fails half-way leaves nothing behind: the empty Codex thread is archived, no move is recorded", async () => {
-  const { root, daemon, sessions } = setup({ "thread/inject_items": new Error("Request too large") });
-  await assert.rejects(sessions.move("claude", CLAUDE, { to: "codex" }), /Request too large/);
-  assert.ok(daemon.methods().includes("thread/archive"));
-  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/archive")[1], { threadId: NEW_CODEX });
+test("a failed native fork does not mark a conversation moved or retry by silently dropping history", async () => {
+  const { root, daemon, sessions } = setup({ "thread/fork": new Error("Import failed") });
+  await assert.rejects(sessions.move("claude", CLAUDE, { to: "codex" }), /Import failed/);
+  assert.ok(!daemon.methods().includes("thread/inject_items"));
   assert.equal((await sessions.read("codex", NEW_CODEX, {})).session.movedFrom, undefined);
-  // Only to the other app, and one move at a time per chat.
-  await assert.rejects(sessions.move("claude", CLAUDE, { to: "claude" }), (e) => e.status === 400);
-  await assert.rejects(sessions.move("claude", CLAUDE, { to: "gemini" }), (e) => e.status === 400);
+  await assert.rejects(sessions.move("claude", CLAUDE, { to: "claude" }), e => e.status === 400);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -247,21 +197,10 @@ test("Codex to Claude Code: a transcript of its own (the move noted first), in t
   const written = parseClaudeTranscript(fs.readFileSync(path.join(folder, `${moved.id}.jsonl`), "utf8"));
   assert.equal(written.title, "Fix CI");
   assert.deepEqual(text(written.items), [
-    `user:text:This conversation was moved here from Codex (“Fix CI”, in ${root}). Everything before the next message happened there: what Codex said and did, with each tool use in one line (its output isn't included; look at files again when you need the details). Continue it from where it left off, as if it had happened here.\n\nFix CI`,
-    "assistant:text:• Ran `npm test` (failed)\n\nFixed the flaky test.",
-    "user:text:Ship it",
-    "assistant:text:Shipped.",
+    "user:text:Fix CI", "assistant:text:[Historical command · failed]\nnpm test", "assistant:text:Fixed the flaky test.", "user:text:Ship it", "assistant:text:Shipped.", "assistant:text:Continued with Claude Code · earlier messages are from Codex",
   ]);
-  // In Reach: the Codex messages once (not the copy written for Claude Code).
   const page = await sessions.read("claude", moved.id, {});
-  assert.deepEqual(text(page.items), [
-    "user:text:Fix CI",
-    "tool:command:npm test",
-    "assistant:text:Fixed the flaky test.",
-    "user:text:Ship it",
-    "assistant:text:Shipped.",
-    "system:notice:Continued with Claude Code · earlier messages are from Codex",
-  ]);
+  assert.deepEqual(text(page.items), text(written.items));
   // Claude Code carries on in it: its own messages follow.
   const file = path.join(folder, `${moved.id}.jsonl`);
   const lastUuid = JSON.parse(fs.readFileSync(file, "utf8").trim().split("\n").at(-1)).uuid;
@@ -273,7 +212,7 @@ test("Codex to Claude Code: a transcript of its own (the move noted first), in t
     ].join("\n") + "\n",
   );
   assert.deepEqual(text((await sessions.read("claude", moved.id, {})).items).slice(-3), [
-    "system:notice:Continued with Claude Code · earlier messages are from Codex",
+    "assistant:text:Continued with Claude Code · earlier messages are from Codex",
     "user:text:And the docs?",
     "assistant:text:Updated.",
   ]);

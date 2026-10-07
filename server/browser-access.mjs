@@ -1,4 +1,5 @@
 import { validateBrowserScript } from "./browser-scripts.mjs";
+import { validateBrowserRoot } from "./browser-private-paths.mjs";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -18,7 +19,7 @@ export function browserRouteAllowed(client, method, route) {
   if (method === "DELETE" && route === "/device/access") return true;
   if (client.policy.screen === "apps" && client.scopes.includes("browser:read")) {
     if (["GET", "HEAD"].includes(method) && ["/browser/apps", "/browser/apps/windows", "/browser/apps/screen"].includes(route)) return true;
-    if (method === "POST" && client.scopes.includes("browser:request") && ["/browser/apps/input", "/browser/apps/requests"].includes(route)) return true;
+    if (method === "POST" && client.scopes.includes("browser:request") && route === "/browser/apps/requests") return true;
   }
   // Retired desktop routes must not bypass selected-app capture/input guards,
   // including for credentials issued before app access was introduced.
@@ -58,6 +59,7 @@ export function browserAccessRoutes(
     desktopTerminals,
     resolve,
     resolveAsync,
+    browserFiles,
     screenAvailable,
     record,
     approvals,
@@ -71,6 +73,7 @@ export function browserAccessRoutes(
     const client = req.reauthorize();
     if (client.kind !== "device" || !client.scopes.includes("admin"))
       throw fail(403, "Only the computer's owner can invite a browser agent.");
+    return client;
   };
   const browser = (req) => {
     const client = req.reauthorize();
@@ -108,11 +111,14 @@ export function browserAccessRoutes(
       catch (error) { appAccessError = error.status ? error.message : "Protected app sharing is unavailable. Check macOS permissions."; }
     }
     owner(req);
-    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,apps,...(appAccessError ? {appAccessError}: {})});
+    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {})});
   });
   app.post("/api/agents/browser-invitations", async (req, res) => {
     owner(req);
     const input = validateBrowserInvitation(req.body);
+    if (Array.isArray(input.folders)) {
+      for (const folder of input.folders) validateBrowserRoot(resolve(folder.root, folder.path || "", { policy: { browser: true } }));
+    }
     if (input.screen && !["off", "apps"].includes(input.screen))
       throw fail(400, "Desktop sharing for agents has been retired. Choose Selected apps or turn screen access off.");
     if (input.screen && input.screen !== "off" && !screenAvailable())
@@ -147,6 +153,9 @@ export function browserAccessRoutes(
       if (input.screen === "apps") input.appAccess = await appAccess.validateChoices(input.appAccess, () => owner(req));
       owner(req);
       grant = auth.inviteBrowser(input, reservation?.approver);
+    } catch (error) {
+      if (grant) auth.revoke(grant.clientId);
+      throw error;
     } finally { reservation?.(); }
     let url;
     if (input.transport === "funnel") {
@@ -267,7 +276,7 @@ export function browserAccessRoutes(
       await saveCommand(item);
       return res.json(item);
     }
-    try { if (input.type === "terminal-script") validateBrowserScript(input, () => browser(req), { resolve }); else validateBrowserMutation(input, () => browser(req), { resolve }); }
+    try { if (input.type === "terminal-script") validateBrowserScript(input, () => browser(req), { resolve, config }); else validateBrowserMutation(input, () => browser(req), { resolve }); }
     catch (error) { return failedAttempt(error, input.type); }
     const remembered = await approvals.runRemembered(browser(req), input, () => browser(req));
     if (remembered) { await saveCommand(remembered); return res.json(remembered); }
@@ -303,7 +312,7 @@ export function browserAccessRoutes(
     const { action } = validateBrowserRequest(client, input);
     const actions = browserRequestActions(action);
     for (const step of actions.filter((step) => ["terminal", "terminal-change", "terminal-script"].includes(step.type))) {
-      if (step.type === "terminal-script") validateBrowserScript(step, () => browser(req), { resolve });
+      if (step.type === "terminal-script") validateBrowserScript(step, () => browser(req), { resolve, config });
       if (step.type === "terminal-change") validateBrowserMutation(step, () => browser(req), { resolve });
       // Validate the folder before prompting the owner. Execution rechecks it.
       const location = terminalLocation(["terminal-change", "terminal-script"].includes(step.type) ? { ...step, command: "pwd" } : step);
@@ -427,44 +436,24 @@ export function browserAccessRoutes(
       search: while (pending.length) {
         const relative = pending.pop();
         const current = browser(req);
-        let dir;
-        try {
-          dir = await resolveAsync(root, relative, current);
-        } catch {
-          continue;
-        }
         let entries;
         try {
-          entries = await fs.opendir(dir);
-        } catch {
+          if (!browserFiles) throw fail(503, "Protected file access is unavailable.");
+          entries = await browserFiles("list", root, relative, () => browser(req), { maxEntries: 2000 });
+        } catch (error) {
+          if (error.status === 401 || error.status === 503 || !relative) throw error;
           continue;
         }
-        for await (const entry of entries) {
+        truncated ||= entries.truncated;
+        for (const entry of entries.items) {
           if (++seen > 5000 || Date.now() > deadline || items.length >= 100) {
             truncated = true;
             break search;
           }
-          // Do not follow directory links, hidden locations or special files.
-          if (
-            entry.name.startsWith(".") ||
-            entry.isSymbolicLink() ||
-            (!entry.isDirectory() && !entry.isFile())
-          )
-            continue;
-          const relativePath = path.join(relative, entry.name);
-          try {
-            await resolveAsync(root, relativePath, browser(req));
-          } catch (e) {
-            if (e.status === 401) throw e;
-            continue;
-          }
-          if (entry.isDirectory()) pending.push(relativePath);
+          if (entry.name.startsWith(".")) continue;
+          if (entry.type === "directory") pending.push(entry.path);
           if (entry.name.toLocaleLowerCase().includes(needle)) {
-            items.push({
-              name: entry.name,
-              path: relativePath.split(path.sep).join("/"),
-              type: entry.isDirectory() ? "directory" : "file",
-            });
+            items.push({ name: entry.name, path: entry.path, type: entry.type });
           }
         }
       }

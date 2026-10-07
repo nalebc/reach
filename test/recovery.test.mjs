@@ -29,6 +29,17 @@ const loadTS = async (name) => {
 const { ReconnectTimer, screenCanRetry } = await loadTS("reconnect");
 const { DesktopInputQueue } = await loadTS("desktop-input-queue");
 
+test("a live screen's retry waits at most its own cap", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const retry = new ReconnectTimer(() => 1, 4000);
+  const delays = [];
+  for (let i = 0; i < 6; i++) {
+    delays.push(retry.schedule(() => {}));
+    t.mock.timers.tick(delays.at(-1));
+  }
+  assert.deepEqual(delays, [1000, 2000, 4000, 4000, 4000, 4000]);
+});
+
 test("recovery backs off to 30s, wakes once, and cancels stale retries", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const retry = new ReconnectTimer(() => 1);

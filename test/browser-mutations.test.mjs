@@ -12,7 +12,7 @@ async function fixture(t) {
   await fs.mkdir(path.join(temp, "Desktop"));
   await fs.writeFile(path.join(temp, "outside.txt"), "private outside");
   const root = await fs.realpath(path.join(temp, "Desktop"));
-  const client = { kind: "agent", agentRoots: [root], policy: { browser: true, terminalApproval: true } };
+  const client = { id: path.basename(temp), kind: "agent", agentRoots: [root], policy: { browser: true, terminalApproval: true } };
   const authorize = () => client;
   const resolve = (index, relative, current, options = {}) => {
     let result;

@@ -221,15 +221,26 @@ window.fetch = async (input, init = {}) => {
   else if (path.endsWith("/logos")) data = { version: permissionPreview || "sample", logos: sampleLogos };
   else if (path.endsWith("/models"))
     data = {
-      models: [
-        {
-          id: "sample",
-          name: "Default model",
-          efforts: ["medium", "high"],
-          defaultEffort: "medium",
-          isDefault: true,
-        },
-      ],
+      // Each agent's own sample models, for the model pickers.
+      models:
+        url.searchParams.get("agent") === "claude"
+          ? [
+              ["claude-fable-5-1", "Fable 5.1", "For your toughest challenges"],
+              ["claude-opus-5-5", "Opus 5.5", "For complex work and everyday tasks"],
+              ["claude-sonnet-5-5", "Sonnet 5.5", "Most efficient for simpler tasks"],
+              ["claude-haiku-4-5", "Haiku 4.5", "Fastest for quick answers"],
+            ].map(([id, name, description], i) => ({
+              id,
+              name,
+              description,
+              efforts: i < 3 ? ["low", "medium", "high", "xhigh", "max"] : [],
+              defaultEffort: null,
+              isDefault: i === 1,
+            }))
+          : [
+              { id: "sample", name: "GPT-5.5", description: "Frontier model for complex coding", efforts: ["minimal", "low", "medium", "high", "xhigh"], defaultEffort: "medium", isDefault: true },
+              { id: "sample-mini", name: "GPT-5.5 Mini", description: "Faster and cheaper", efforts: ["low", "medium", "high"], defaultEffort: "medium" },
+            ],
       modes: [
         { id: "auto", label: "Ask for approval" },
         { id: "read-only", label: "Read only" },
