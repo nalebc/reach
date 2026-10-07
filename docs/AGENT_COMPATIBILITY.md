@@ -42,4 +42,4 @@ Release records must separate command-probe success, simulated protocol tests an
 
 ## Verification records
 
-The earlier local verification described a previous snapshot and is not a release certificate for the current checkout. See [the agent integration audit](AGENT_INTEGRATION_AUDIT.md) for current evidence, remaining blockers, and untested real-device behavior.
+The earlier local verification described a previous snapshot and is not a release certificate for the current checkout. [The agent integration audit](AGENT_INTEGRATION_AUDIT.md) is a historical record of that snapshot, not current evidence: its release blocker ("browser-invitation APIs are absent") is obsolete, since browser agents are now invited with presets (`POST /api/agents/browser-invitations`; see [BROWSER_AGENT_TOOLS.md](BROWSER_AGENT_TOOLS.md)). Current status, including what real-device behavior remains untested, is in [OPEN_SOURCE_READINESS.md](OPEN_SOURCE_READINESS.md).

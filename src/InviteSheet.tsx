@@ -97,7 +97,7 @@ const AGENT_ROLES: { value: AgentRole; label: string; description: string }[] =
       value: "run",
       label: "Can run commands",
       description:
-        "Unrestricted command access. Commands run as you, so they can reach beyond those folders. Use Browser link for restricted, approved commands.",
+        "Unrestricted command access. Commands run as you, so they can reach beyond those folders. Use Browser link to give a browser agent a preset instead.",
     },
   ];
 const AGENT_DAYS = [
