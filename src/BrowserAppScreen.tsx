@@ -31,7 +31,8 @@ export default function BrowserAppScreen({ peer, expiresAt, onError }: {
   const failure = useRef(onError);
   failure.current = onError;
   useEffect(() => {
-    const timer = setTimeout(() => setExpired(true), Math.max(0, expiresAt - Date.now()));
+    // Clamped: a longer delay overflows and fires at once (Always access ends years out).
+    const timer = setTimeout(() => setExpired(true), Math.min(2147483647, Math.max(0, expiresAt - Date.now())));
     return () => { clearTimeout(timer); requesting.current?.abort(); };
   }, [expiresAt]);
   useEffect(() => {

@@ -34,9 +34,13 @@ export const forgetGuestSession = () => sessionStorage.removeItem(storageKey);
 export function GuestBar({
   session,
   onEnd,
+  always = false,
 }: {
   session: GuestSession;
   onEnd: () => void;
+  // An agent with Always access: no countdown, and no Leave, which would end
+  // its access for good (closing the tab is enough).
+  always?: boolean;
 }) {
   const [now, setNow] = useState(Date.now());
   const [expiresAt, setExpiresAt] = useState(session.expiresAt);
@@ -88,24 +92,26 @@ export function GuestBar({
     <div className="guest-bar" role="status">
       <span>
         <Clock size={13} /> Guest ·{" "}
-        {remaining >= 3600
+        {always ? "Until the owner ends it" : remaining >= 3600
           ? `${Math.floor(remaining / 3600)} h ${Math.floor((remaining % 3600) / 60)} min left`
           : remaining >= 60
             ? `${Math.ceil(remaining / 60)} min left`
             : remaining > 0 ? `${remaining} s left` : "Checking access…"}
       </span>
-      <button
-        onClick={async () => {
-          await Promise.allSettled(
-            session.peers.map((peer) =>
-              request(peer, "/api/device/access", { method: "DELETE" }),
-            ),
-          );
-          onEnd();
-        }}
-      >
-        <LogOut size={13} /> Leave
-      </button>
+      {!always && (
+        <button
+          onClick={async () => {
+            await Promise.allSettled(
+              session.peers.map((peer) =>
+                request(peer, "/api/device/access", { method: "DELETE" }),
+              ),
+            );
+            onEnd();
+          }}
+        >
+          <LogOut size={13} /> Leave
+        </button>
+      )}
     </div>
   );
 }

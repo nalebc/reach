@@ -18,6 +18,14 @@ real-device checks that are still open.
   only, instead of seven switches and per-action approvals. Scopes, routes,
   tools and the rules sent to the native checker all derive from the preset on
   every request (`server/agent-presets.mjs`); a stored credential cannot grow.
+- Always access for a browser agent, next to the 15-minute to 24-hour
+  durations: the agent keeps its access until the owner stops it and comes back
+  from the same browser with no new invitation. The link still works once, so
+  sharing it gives nobody else access. The public link stays up while an agent
+  has Always access.
+- Reopen link, in Settings → Agents: an agent that changed browsers opens its
+  same link again (for 15 minutes, with the owner's code approval) instead of
+  getting a new invitation; the browser it used is disconnected.
 - One always-protected list that no preset changes: Reach and Tailscale,
   password stores and password fields, security prompts and `sudo`, privacy
   settings, Activity Monitor and Force Quit, developer tools, and a shell deny

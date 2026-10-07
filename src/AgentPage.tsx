@@ -100,7 +100,7 @@ export default function AgentPage({ peer, access, onEnd, reload = () => window.l
       )}
       {access.terminals.length > 0 && <TerminalsCard peer={peer} access={access} ended={ended} />}
       <footer className="ap-foot">
-        <Lock size={13} /> Only what is listed above is available. You can't invite anyone, share this link, or reach other folders or apps. {access.standing ? "Access lasts until the owner ends it; if you lose this page, open the same link again." : `Access ends at ${new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
+        <Lock size={13} /> Only what is listed above is available. You can't invite anyone, share this link, or reach other folders or apps. {access.standing ? "Access lasts until the owner ends it, in this browser: if you close this page, open it again here." : `Access ends at ${new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
       </footer>
     </main>
   );

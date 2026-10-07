@@ -5,7 +5,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
-import { hostGuardedPreset, presetPolicy, presetScopes, validatePresetInvitation } from "./agent-presets.mjs";
+import { STANDING_SECONDS, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -52,6 +52,10 @@ export function validateBrowserInvitation(input, options = {}) {
   return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess };
 }
 export const id = () => crypto.randomUUID();
+// A public-link browser session ends after two silent minutes, unless the owner
+// gave the agent Always access: then only the owner ends it.
+export const browserIdleEnded = (client, now = Date.now()) =>
+  client?.browserTransport === "funnel" && !standingPolicy(client.policy) && !(client.browserIdleExpiresAt > now);
 export const hash = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
 export function atomicJson(file, value) {
@@ -634,9 +638,13 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       ...(checked.transport === "funnel" ? { browserTransport: "funnel" } : {}),
       policy,
       inviteHash: hash(token),
-      inviteExpiresAt: now + Math.min(checked.joinSeconds, checked.ttlSeconds) * 1000,
+      // Kept after joining, so the owner can reopen the same link for a new
+      // browser (reopenBrowserInvitation); it works only while reopened.
+      ...(checked.transport === "funnel" ? { linkHash: hash(token) } : {}),
+      // Always joins like any link: once, within the join window.
+      inviteExpiresAt: now + (checked.standing ? checked.joinSeconds : Math.min(checked.joinSeconds, checked.ttlSeconds)) * 1000,
       createdAt: new Date(now).toISOString(),
-      expiresAt: now + checked.ttlSeconds * 1000,
+      expiresAt: now + (checked.standing ? STANDING_SECONDS : checked.ttlSeconds) * 1000,
     };
     changeClients((latest) => {
       if (latest.filter((entry) => entry.policy?.browser === true &&
@@ -755,6 +763,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           ...(permissions.hidden === undefined && ["full", "readonly"].includes(preset) && client.policy.hidden ? { hidden: client.policy.hidden } : {}),
         }, { folderCount: folders.length });
         const policy = presetPolicy(checked, presetRoots(checked, folders));
+        // A changed preset keeps Always access; only Stop ends it.
+        if (standingPolicy(client.policy)) policy.standing = true;
         // Taking the Mac needs the phone that creates the invitation (the host
         // guard binds it); an invitation that didn't have it can't grow into it.
         if (hostGuardedPreset(policy) && !hostGuardedPreset(client.policy))
@@ -840,8 +850,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if ((client.browserTransport === "funnel" || (client.policy?.browser === true && (client.policy.screen === "apps" || hostGuardedPreset(client.policy)))) &&
         request.grant !== admissionGrant(client)) return "expired";
     if (request.status === "collected")
-      return client.browserTransport === "funnel" && !(client.browserIdleExpiresAt > now)
-        ? "expired" : "accepted";
+      return browserIdleEnded(client, now) ? "expired" : "accepted";
     if (request.status === "denied") return "denied";
     if (request.expiresAt <= now || request.grant !== admissionGrant(client)) return "expired";
     return ["pending", "approved"].includes(request.status) ? request.status : "expired";
@@ -982,6 +991,24 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return result;
   }
+  // The owner's "Reopen link": the agent's same link works once more, for 15
+  // minutes, and joins with the owner's code approval like the first time. The
+  // browser it used until now is disconnected (the route ends its work).
+  function reopenBrowserInvitation(clientId) {
+    let result;
+    changeClients((latest) => {
+      const now = Date.now();
+      const client = latest.find((c) => c.id === clientId);
+      if (!isFunnelBrowser(client) || client.policy?.preset === undefined || !client.linkHash || !(client.expiresAt > now))
+        throw fail(404, "This agent's link can't be reopened. Make a new invite.");
+      for (const key of ["hash", "browserBinding", "admission", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
+      client.inviteHash = client.linkHash;
+      client.inviteExpiresAt = Math.min(client.expiresAt, now + 900000);
+      result = { clientId: client.id, joinBy: client.inviteExpiresAt };
+      return latest;
+    });
+    return result;
+  }
   function listAgentAdmissions() {
     return loadJson(file, []).filter((client) =>
       client.kind === "agent" && admissionStatus(client) === "pending",
@@ -1063,6 +1090,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       result = {
         status: "approved", token, clientId: client.id, kind: "agent",
         scopes: permitted.scopes, expiresAt: client.expiresAt,
+        // Always: the page keeps this session in the browser's lasting storage.
+        ...(standingPolicy(client.policy) ? { standing: true } : {}),
       };
       return latest;
     });
@@ -1072,7 +1101,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if (!isFunnelBrowser(client) || !validBrowserBinding(keyThumbprint) ||
         client.browserBinding !== keyThumbprint || !client.hash ||
         client.admission?.status !== "collected" || !(client.expiresAt > now) ||
-        !(client.browserIdleExpiresAt > now) ||
+        browserIdleEnded(client, now) ||
         client.admission.grant !== admissionGrant(client)) return null;
     return applyAgentPolicy(client, config);
   }
@@ -1089,7 +1118,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const permitted = verifyFunnel(token, keyThumbprint);
     if (!permitted) throw fail(401, "This browser connection has ended.");
     const now = Date.now();
-    if (permitted.browserIdleExpiresAt >= Math.min(permitted.expiresAt, now + 110000))
+    if (standingPolicy(permitted.policy) ||
+        permitted.browserIdleExpiresAt >= Math.min(permitted.expiresAt, now + 110000))
       return;
     const digest = hash(token);
     changeClients((latest) => {
@@ -1117,6 +1147,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       }
       if (!isFunnelBrowser(client) || !(client.expiresAt > now) ||
           !applyAgentPolicy(client, config)) continue;
+      // Once joined, Always access keeps the public link up while the agent is
+      // away, or its browser would have nothing to come back to.
+      if (standingPolicy(client.policy) && client.admission?.status === "collected") {
+        if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "standing" };
+        continue;
+      }
       let until = 0, reason = "invitation";
       if (client.inviteHash && !client.admission && !client.hash && !client.browserBinding)
         until = Math.min(client.inviteExpiresAt || 0, client.expiresAt);
@@ -1201,6 +1237,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     changeAccess,
     redeemGuest,
     redeemFunnelBrowser,
+    reopenBrowserInvitation,
     listAgentAdmissions,
     decideAgentAdmission,
     pollAgentAdmission,
@@ -1208,8 +1245,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     pair,
     issue,
     list: () =>
-      listStoredClients().map(({ hash, inviteHash, admission, ...rest }) => ({
+      listStoredClients().map(({ hash, inviteHash, admission, linkHash, ...rest }) => ({
         ...rest,
+        // The owner may reopen this agent's link (Settings → Agents).
+        ...(linkHash && rest.expiresAt > Date.now() ? { relink: true } : {}),
         ...(rest.kind === "guest" || rest.policy?.invite
           ? {
               // An agent that never joined in time can't anymore.

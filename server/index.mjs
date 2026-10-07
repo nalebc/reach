@@ -1234,7 +1234,7 @@ export async function createReach(overrides = {}) {
           "Access expired or was revoked. Ask the laptop owner for a new invitation, or pair your own device again.",
       });
     const route = req.path.split("/")[1].toLowerCase();
-    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause"].includes(req.path) ? "admin" : {
+    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause", "/browser/agents/reopen"].includes(req.path) ? "admin" : {
       files: "files",
       terminals: "terminal",
       apps: "apps",
@@ -1688,8 +1688,8 @@ export async function createReach(overrides = {}) {
     res.json({ current: req.client.id, clients: auth.list() }),
   );
   // Ends a credential now: requests, sockets, screen control.
-  const endClient = (id) => {
-    auth.revoke(id);
+  // A session's work ends; its credential stays (Reopen link) or goes (revoke).
+  const endSession = (id) => {
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1705,8 +1705,12 @@ export async function createReach(overrides = {}) {
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  const endClient = (id) => {
+    auth.revoke(id);
+    endSession(id);
+  };
   browserAgentRoutes(app, {
-    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, desktop: agentDesktop,
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop,
     onStopped: (id) => {
       void guestKeys?.revokeClient(id).catch((e) => console.log(`Reach: ${e.message}`));
       record("agent", "Stopped a browser agent session");

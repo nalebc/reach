@@ -38,11 +38,14 @@ type Options = {
   terminals: { id: string; name: string }[];
   desktopAvailable?: boolean;
   maxFunnelSeconds?: number;
+  standingAllowed?: boolean;
   presetApps?: PresetApp[];
   presetAppsError?: string;
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
-type Issued = { preset: Preset; apps: string[]; folders: string[]; write: boolean; hidden: string[]; everything: boolean };
+type Issued = { preset: Preset; apps: string[]; folders: string[]; write: boolean; hidden: string[]; everything: boolean; always?: boolean };
+// The "Always" duration: access until the owner ends it.
+const ALWAYS = 0;
 
 const quote = (value: string) =>
   JSON.stringify(value.length > 160 ? value.slice(0, 157) + "\u2026" : value).replace(
@@ -70,7 +73,10 @@ export const museMessage = (link: string, issued: Issued) => {
   const sharing = ["full", "apps"].includes(issued.preset)
     ? " One agent acts on the Mac at a time: a busy or paused reply means wait and retry. The owner's own hands come first. Take a screenshot before and after you act."
     : "";
-  return `Open this temporary Reach link in your browser and keep it open; the owner will match your connection code. ${grant}${protectedWords}${sharing} Use the Screen, Files and Terminal tabs or the window.reach tools (listTools). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
+  const opening = issued.always
+    ? "Open this Reach link in your browser; the owner will match your connection code. Your access lasts until the owner ends it, in this browser: if you close the page, open it again in the same browser and you are back. The link works once; for a different browser, ask the owner to reopen it."
+    : "Open this temporary Reach link in your browser and keep it open; the owner will match your connection code.";
+  return `${opening} ${grant}${protectedWords}${sharing} Use the Screen, Files and Terminal tabs or the window.reach tools (listTools). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
 // Every invite gets a fresh, silly name; the dice roll another.
@@ -110,7 +116,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareNote, setShareNote] = useState("");
-  const [made, setMade] = useState<{ link: string; name: string; expiresAt: number; joinBy: number; message: string } | null>(null);
+  const [made, setMade] = useState<{ link: string; name: string; expiresAt: number; joinBy: number; message: string; always: boolean } | null>(null);
   const alive = useRef(true);
   const creation = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -168,7 +174,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         method: "POST",
         signal: controller.signal,
         body: JSON.stringify({
-          name: name.trim(), transport: "funnel", ttlSeconds: minutes * 60, preset,
+          name: name.trim(), transport: "funnel", preset,
+          ...(minutes === ALWAYS ? { standing: true } : { ttlSeconds: minutes * 60 }),
           ...(preset !== "apps" && folders.length ? { folders: folders.map(({ root, path }) => ({ root, path })) } : {}),
           ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
           ...(preset === "files" && write ? { write: true } : {}),
@@ -183,10 +190,10 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         throw Error("The temporary connection link could not be prepared.");
       const link = url.href;
       setMade({
-        link, name: name.trim(), expiresAt: result.expiresAt, joinBy: result.joinBy,
+        link, name: name.trim(), expiresAt: result.expiresAt, joinBy: result.joinBy, always: minutes === ALWAYS,
         message: museMessage(link, {
           preset, apps: chosenApps.map((app) => app.name), folders: folders.map((folder) => folder.full || folder.label),
-          write: preset === "files" && write, hidden: hiddenApps.map((app) => app.name), everything,
+          write: preset === "files" && write, hidden: hiddenApps.map((app) => app.name), everything, always: minutes === ALWAYS,
         }),
       });
       onCreated(created, link);
@@ -217,14 +224,15 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
     }
   };
   const toggleRow = (row: string) => setOpenRow((current) => (current === row ? null : row));
-  const minutesLabel = minutes === 1440 ? "24 hours" : minutes === 60 ? "1 hour" : `${minutes} minutes`;
+  const minutesLabel = minutes === ALWAYS ? "" : minutes === 1440 ? "24 hours" : minutes === 60 ? "1 hour" : `${minutes} minutes`;
   const dayAllowed = (options?.maxFunnelSeconds ?? 3600) >= 86400;
+  const alwaysAllowed = options?.standingAllowed === true;
   const summary = !preset ? "" : `${name.trim()} gets ${{
     full: `full control of this Mac${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}`,
     apps: chosenApps.length ? `${listWords(chosenApps.slice(0, 3).map((app) => app.name))}${chosenApps.length > 3 ? ` and ${chosenApps.length - 3} more` : ""}, nothing else` : "the apps you pick",
     files: folders.length ? `${folders.length === 1 ? folders[0].label : `${folders.length} folders`}, ${write ? "read and edit" : "read only"}` : "the folders you pick",
     readonly: `a look at the screen and files${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}, no touching`,
-  }[preset]} for ${minutesLabel}.`;
+  }[preset]} ${minutes === ALWAYS ? "until you end it" : `for ${minutesLabel}`}.`;
   const at = (value: number) => new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
@@ -342,8 +350,9 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           </p>
         )}
 
-        <Segments label="Access duration" value={minutes} onChange={setMinutes} options={[{ value: 15, label: "15 min" }, { value: 30, label: "30 min" }, { value: 60, label: "1 hour" }, ...(dayAllowed ? [{ value: 1440, label: "24 hours" }] : [])]} />
+        <Segments label="Access duration" value={minutes} onChange={setMinutes} options={[{ value: 15, label: "15 min" }, { value: 30, label: "30 min" }, { value: 60, label: "1 hour" }, ...(dayAllowed ? [{ value: 1440, label: "24 hours" }] : []), ...(alwaysAllowed ? [{ value: ALWAYS, label: "Always" }] : [])]} />
         {minutes === 1440 && <p className="ag-quiet">A day is long for an agent on your Mac. You can end or pause it any time from Settings → Agents.</p>}
+        {minutes === ALWAYS && <p className="ag-quiet">Until you end it in Settings → Agents. {name.trim() || "The agent"} comes back from the same browser with no new invite. The link works once; for a new browser, tap Reopen link in Settings → Agents. The public link stays up while it has access.</p>}
 
         <div className="ag-send">
           <button className="ag-primary ag-wide" disabled={busy || !!missing || !options} onClick={() => void create()}>
@@ -361,7 +370,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         <section className="ag-done" aria-label="AI browser invite link" aria-live="polite">
           <AgentAvatar name={made.name} size={56} done />
           <h3>Link ready for {made.name}</h3>
-          <p className="ag-quiet">Join by {at(made.joinBy)} · ends {at(made.expiresAt)}</p>
+          <p className="ag-quiet">{made.always ? "Until you end it in Settings → Agents" : `Join by ${at(made.joinBy)} · ends ${at(made.expiresAt)}`}</p>
           <div className="ag-done-actions">
             <button className="ag-primary" onClick={() => void copyMessage()}>
               {copied ? <Check size={17} /> : <Copy size={17} />}

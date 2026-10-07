@@ -221,6 +221,47 @@ test("reload and the same invite retain the key and receipt; a new invitation cr
   assert.equal(next.receipt, undefined);
 });
 
+test("Always access is kept in the browser's lasting storage and resumes in a new tab without a new claim", async () => {
+  const keep = storage();
+  const f = fixture((payload) =>
+    payload.operation === "claim" ? reply(receipt(), 202) : reply({ ...approved(), standing: true }),
+  );
+  const client = createFunnelAgent({ ...f.options, keep });
+  let state = await client.prepare(invitation);
+  state = await client.status(await client.claim(state));
+  assert.equal(state.standing, true);
+  assert.equal(f.state.getItem(funnelStorageKey), null, "not tied to the tab it joined in");
+  assert.equal(JSON.parse(keep.getItem(funnelStorageKey)).session.peer.token, "agent-session-token");
+  const newTab = createFunnelAgent({ ...f.options, storage: storage(), keep });
+  assert.deepEqual(await newTab.prepare(), state, "a new tab carries on without the link");
+  assert.deepEqual(await newTab.prepare(invitation), state, "reopening the same link carries on too");
+  assert.equal(f.calls.filter(({ payload }) => payload.operation === "claim").length, 1);
+  await newTab.prepare("b".repeat(43));
+  assert.ok(keep.getItem(funnelStorageKey), "another invitation in a tab never drops Always access");
+  await client.forget(state);
+  assert.equal(keep.getItem(funnelStorageKey), null);
+});
+
+test("a one-time session stays in its tab even when lasting storage exists", async () => {
+  const keep = storage();
+  const f = fixture((payload) => payload.operation === "claim" ? reply(receipt(), 202) : reply(approved()));
+  const client = createFunnelAgent({ ...f.options, keep });
+  const state = await client.status(await client.claim(await client.prepare(invitation)));
+  assert.equal(state.standing, undefined);
+  assert.equal(keep.getItem(funnelStorageKey), null);
+  assert.ok(JSON.parse(f.state.getItem(funnelStorageKey)).session);
+});
+
+test("the bar of an Always session shows no countdown and no Leave, which would end it for good", async () => {
+  const { GuestBar } = await dom.load("/src/guest-session.tsx");
+  globalThis.fetch = dom.window.fetch = async () => reply({ access: { expiresAt: Date.now() + 10 * 365 * 86400000 } });
+  const peer = { ...device, url: origin, token: "t" };
+  const view = await dom.render(React.createElement(GuestBar, { session: { peers: [peer], expiresAt: Date.now() + 10 * 365 * 86400000 }, always: true, onEnd() {} }));
+  assert.match(view.container.textContent, /Until the owner ends it/);
+  assert.doesNotMatch(view.container.textContent, /left|Leave/);
+  await view.unmount();
+});
+
 test("tab or key storage failures fail closed before claiming, and a missing persisted key cannot be replaced", async () => {
   const f = fixture(() => {
     assert.fail("No invitation should be consumed");

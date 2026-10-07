@@ -39,6 +39,7 @@ function mock(agents) {
     if (route === "/api/agents/browser-requests" || route === "/api/agents/browser-terminal-history" || route === "/api/agents/admissions") return reply([]);
     if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable: true, presetApps: [{ ...chrome, running: true, protected: false }, { id: "/System/Applications/Messages.app", name: "Messages", bundleId: "com.apple.MobileSMS", running: true, protected: false }] });
     if (route === "/api/browser/agents/pause") return reply({ clientId: body.clientId, paused: body.paused });
+    if (route === "/api/browser/agents/reopen") return reply({ clientId: body.clientId, joinBy: Date.now() + 900000 });
     if (route.startsWith("/api/guests/") && route.endsWith("/access")) return reply({ id: "muse-1", scopes: [], policy: { preset: body.preset } });
     if (route === "/api/files") return reply({ items: [] });
     return reply({ error: `Unexpected ${route}` }, 404);
@@ -69,6 +70,26 @@ test("the card names the preset, what the agent is using, and pauses it", async 
   await dom.waitFor(() => /Paused/.test(c.querySelector('[data-agent-id="muse-1"] .ag-pill').textContent));
   assert.ok(button(c.querySelector('[data-agent-id="muse-1"]'), "Resume"));
   assert.ok(!button(grok, "Pause") || grok.textContent.includes("Pause"), "Apps agents can be paused too");
+});
+
+test("an Always agent says Always, and Reopen link lets it come back in a new browser with the same link", async () => {
+  const toasts = [];
+  const calls = mock(() => [
+    session("muse-1", { standing: true, relink: true, expiresAt: Date.now() + 10 * 365 * 86400000 }),
+    session("grok-2", { name: "Grok", holdsMac: false, using: undefined }),
+  ]);
+  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast: (message) => toasts.push(message) }));
+  views.add(view);
+  const c = view.container;
+  const muse = await dom.waitFor(() => c.querySelector('[data-agent-id="muse-1"]'));
+  assert.match(muse.querySelector(".ag-agent-title small").textContent, /^Always/);
+  assert.match(muse.textContent, /When you end it/);
+  assert.equal(button(c.querySelector('[data-agent-id="grok-2"]'), "Reopen link"), undefined, "only agents whose link can be reopened");
+  await click(button(muse, "Reopen link"));
+  await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/agents/reopen"));
+  assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/browser/agents/reopen")[2], { clientId: "muse-1" });
+  await dom.waitFor(() => toasts.length);
+  assert.match(toasts[0], /Muse can open the same link again for 15 minutes/);
 });
 
 test("Edit access offers the presets and saves the chosen one", async () => {

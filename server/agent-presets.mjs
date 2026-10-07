@@ -20,6 +20,12 @@ export const validAppPath = (value) =>
 // created the invitation (browser-host-guard.mjs), as app sessions did.
 export const hostGuardedPreset = (policy) => policy?.browser === true && ["full", "apps"].includes(policy.preset);
 
+// "Always": the agent keeps its access until the owner ends it and comes back
+// from the same browser; the link still works once (Reopen link lets a new
+// browser use it once more). Only over the public link.
+export const STANDING_SECONDS = 10 * 365 * 86400;
+export const standingPolicy = (policy) => policy?.browser === true && policy.standing === true;
+
 export function presetScopes(policy) {
   const base = ["device", "browser:read"];
   switch (policy?.preset) {
@@ -46,13 +52,15 @@ const appList = (value, label) => {
 
 /** The owner's choice, checked: a preset plus what that preset needs, nothing more. */
 export function validatePresetInvitation(input, { folderCount } = {}) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds", "standing"];
   if (!plain(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw invalid("This invitation contains unsupported fields.");
-  const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [] } = input;
+  const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [], standing } = input;
   if (!PRESETS.includes(preset)) throw invalid("Choose Full control, Apps, Files or Read only.");
+  if (standing !== undefined && (standing !== true || ttlSeconds !== undefined || transport !== "funnel"))
+    throw invalid("Always access is a link with no end time.");
   if (typeof name !== "string" || !name.trim() || name.length > 80 || controls(name) || /[\n\t]/.test(name) ||
-      !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400 ||
+      (!standing && (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400)) ||
       !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||
       !["tailnet", "funnel"].includes(transport) || (transport === "funnel" && joinSeconds > 900) ||
       typeof write !== "boolean" || !Array.isArray(terminalIds) || terminalIds.length > 20 || terminalIds.some((id) => !validBrowserTerminalId(id)))
@@ -70,14 +78,15 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
   if (hiddenApps.length && !["full", "readonly"].includes(preset)) throw invalid("Hidden apps apply to Full control and Read only.");
   if (terminalIds.length && !["full", "readonly"].includes(preset)) throw invalid("Watching terminals applies to Full control and Read only.");
   for (const app of chosenApps) { const reason = protectedAppReason(app); if (reason) throw invalid(reason, 403); }
-  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)] };
+  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)], ...(standing ? { standing } : {}) };
 }
 
 /** The stored policy. `roots` are already chosen and checked against what Reach shares. */
 export function presetPolicy(checked, roots) {
-  const { preset, apps, write, hidden, terminalIds } = checked;
+  const { preset, apps, write, hidden, terminalIds, standing } = checked;
   return {
     invite: true, browser: true, preset,
+    ...(standing ? { standing: true } : {}),
     roots: [...new Set(roots)],
     ...(preset === "apps" ? { apps } : {}),
     ...(preset === "files" && write ? { write: true } : {}),
@@ -96,6 +105,7 @@ export function validPresetPolicy(policy) {
     (policy.write === undefined || (policy.write === true && policy.preset === "files")) &&
     (policy.hidden === undefined || (Array.isArray(policy.hidden) && policy.hidden.length <= 30 && policy.hidden.every((app) => plain(app) && validAppPath(app.id)))) &&
     (policy.terminalIds === undefined || (Array.isArray(policy.terminalIds) && policy.terminalIds.length <= 20 && policy.terminalIds.every(validBrowserTerminalId))) &&
+    (policy.standing === undefined || policy.standing === true) &&
     (policy.preset !== "files" || policy.roots.length > 0) &&
     (policy.preset !== "apps" || policy.roots.length === 0) &&
     policy.screen === undefined && policy.appAccess === undefined && policy.restrictedTerminal === undefined &&
@@ -149,5 +159,6 @@ export function presetAccess(client) {
     write: scopes.includes("browser:write"),
     apps: (policy.apps || []).map(({ id, name, bundleId }) => ({ id, ...(name !== undefined ? { name } : {}), ...(bundleId !== undefined ? { bundleId } : {}) })),
     hidden: (policy.hidden || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })),
+    ...(policy.standing ? { standing: true } : {}),
   };
 }

@@ -29,13 +29,13 @@ const click = async (element) => { assert.ok(element, "element exists"); element
 const button = (c, label) => [...c.querySelectorAll("button")].find((item) => item.textContent.trim() === label || item.getAttribute("aria-label") === label);
 const choose = (c, title) => click(c.querySelector(`[aria-label="Access preset"] input[aria-label="${title}"]`));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true, maxFunnelSeconds = 86400 } = {}) {
+function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}) });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}) });
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [] });
     if (route === "/api/files") return reply({ items: [] });
@@ -148,6 +148,27 @@ test("a day of access is offered only when the server allows it", async () => {
   mock({ maxFunnelSeconds: 0 });
   const older = await open();
   assert.equal(button(older.c, "24 hours"), undefined, "an older server never sees a choice it would refuse");
+});
+
+test("Always sends no end time and tells the owner and the agent it lasts until ended", async () => {
+  const calls = mock({ standingAllowed: true });
+  const { c } = await open();
+  await choose(c, "Read only");
+  await click(button(c, "Always"));
+  assert.match(c.textContent, /a look at the screen and files, no touching until you end it/);
+  assert.match(c.textContent, /comes back from the same browser with no new invite\. The link works once; for a new browser, tap Reopen link/);
+  await click(button(c, "Create invite link"));
+  await dom.waitFor(() => issued(calls));
+  assert.equal(issued(calls).standing, true);
+  assert.equal(issued(calls).ttlSeconds, undefined, "Always has no duration to send");
+  await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
+  assert.match(c.textContent, /Until you end it in Settings → Agents/);
+  assert.doesNotMatch(c.textContent, /Join by/);
+  assert.match(message(c), /lasts until the owner ends it, in this browser.*The link works once; for a different browser, ask the owner to reopen it/);
+  assert.doesNotMatch(message(c), /temporary/);
+  mock();
+  const older = await open();
+  assert.equal(button(older.c, "Always"), undefined, "an older server never sees a choice it would refuse");
 });
 
 test("without the Mac's screen helpers, only Files can be created, and the form says why", async () => {

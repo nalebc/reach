@@ -25,6 +25,9 @@ export type FunnelState = {
   id: string;
   origin: string;
   invitation: string;
+  // Always access: kept in the browser's lasting storage so the agent can
+  // close the tab and come back without a new invitation.
+  standing?: boolean;
   claimAttempted?: boolean;
   receipt?: FunnelReceipt;
   session?: FunnelSession;
@@ -133,18 +136,20 @@ function validDevice(value: Device | undefined): value is Device {
 export function createFunnelAgent(dependencies: {
   origin: string;
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  keep?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   keys: FunnelKeys;
   crypto: Crypto;
   fetch: typeof fetch;
   now?: () => number;
 }) {
   const { origin, storage, keys, crypto } = dependencies;
+  const keep = dependencies.keep || storage;
   const now = dependencies.now || Date.now;
   const preparations = new Map<string, Promise<FunnelState>>();
   const exchanges = new Map<string, Promise<FunnelState>>();
   const random = () => base64url(crypto.getRandomValues(new Uint8Array(24)));
   const read = (): FunnelState | null => {
-    const value = JSON.parse(storage.getItem(funnelStorageKey) || "null");
+    const value = JSON.parse(storage.getItem(funnelStorageKey) || keep.getItem(funnelStorageKey) || "null");
     return value?.origin === origin &&
       typeof value.id === "string" &&
       secretPattern.test(value.invitation)
@@ -153,13 +158,17 @@ export function createFunnelAgent(dependencies: {
   };
   const save = (state: FunnelState) => {
     const value = JSON.stringify(state);
-    storage.setItem(funnelStorageKey, value);
-    if (storage.getItem(funnelStorageKey) !== value) throw storageError();
+    const place = state.standing ? keep : storage;
+    place.setItem(funnelStorageKey, value);
+    if (place.getItem(funnelStorageKey) !== value) throw storageError();
+    if (place !== storage) storage.removeItem(funnelStorageKey);
   };
   async function forget(state?: FunnelState | null) {
     const current = state || read();
-    if (!current || read()?.id === current.id)
+    if (!current || read()?.id === current.id) {
       storage.removeItem(funnelStorageKey);
+      keep.removeItem(funnelStorageKey);
+    }
     if (current) await keys.remove(current.id);
   }
   async function keyFor(state: FunnelState) {
@@ -202,7 +211,8 @@ export function createFunnelAgent(dependencies: {
     }
     if (!invitation)
       throw Error("Open the invitation link the computer’s owner sent you.");
-    if (state) await forget(state);
+    // Another invitation in this tab never drops an Always access kept here.
+    if (state && !state.standing) await forget(state);
     try {
       state = { id: random(), origin, invitation };
       save(state); // Check tab storage before creating or claiming anything.
@@ -361,6 +371,7 @@ export function createFunnelAgent(dependencies: {
         },
         expiresAt: result.expiresAt,
       };
+      if (result.standing === true) current.standing = true;
       delete current.receipt;
       // Token delivery is one-time: persist before a view can unmount.
       save(current);
@@ -452,6 +463,7 @@ export function browserFunnelAgent() {
   return (client ||= createFunnelAgent({
     origin: location.origin,
     storage: sessionStorage,
+    keep: (() => { try { return localStorage; } catch { return undefined; } })(),
     keys: browserFunnelKeys(),
     crypto,
     fetch: (...args) => fetch(...args),

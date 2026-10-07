@@ -113,6 +113,7 @@ export default function FunnelAgent({
             peers: [state.session.peer],
             expiresAt: state.session.expiresAt,
           }}
+          always={state.standing === true}
           onEnd={end}
         />
         <BrowserWorkspace peer={state.session.peer} onEnd={end} />

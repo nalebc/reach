@@ -1,8 +1,8 @@
-import { fail, isPlainRecord } from './core.mjs';
+import { browserIdleEnded, fail, isPlainRecord } from './core.mjs';
 
 // Owner controls stay outside the browser agent route allowlist. An agent name
 // is a label; only the server-created invitation ID identifies a session.
-export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, onStopped = () => {}, desktop = null }) {
+export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null }) {
   const owner = (req) => {
     const client = req.reauthorize();
     if (client.kind !== 'device' || !client.scopes?.includes('admin'))
@@ -23,7 +23,9 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
       return {
         id: client.id, name: client.name, kind: 'agent',
         createdAt: client.createdAt, expiresAt: client.expiresAt,
-        status: client.status === 'revoked' ? 'revoked' : client.expiresAt <= at || (client.status === 'accepted' && client.browserTransport === 'funnel' && !(client.browserIdleExpiresAt > at)) ? 'expired' : client.status,
+        status: client.status === 'revoked' ? 'revoked' : client.expiresAt <= at || (client.status === 'accepted' && browserIdleEnded(client, at)) ? 'expired' : client.status,
+        ...(client.policy?.standing ? { standing: true } : {}),
+        ...(client.relink ? { relink: true } : {}),
         scopes: client.scopes, policy: client.policy, browserTransport: client.browserTransport,
         folders: client.agentRoots || client.policy?.roots || [],
         activity: current ? { state: current.stopping ? 'stopping' : current.state, folder: current.folder, kind: current.kind, queuedAt: current.queuedAt, startedAt: current.startedAt } : { state: 'idle' },
@@ -50,6 +52,21 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     owner(req);
     const paused = desktop.setPaused(client.id, body.paused);
     res.json({ clientId: client.id, paused });
+  });
+  // Reopen an agent's link for a new browser: the browser it used is
+  // disconnected and the same link works once more, for 15 minutes.
+  app.post('/api/browser/agents/reopen', (req, res) => {
+    owner(req);
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some(key => key !== 'clientId') ||
+        typeof body.clientId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.clientId))
+      throw fail(400, 'Choose one agent to reopen its link.');
+    const client = auth.list().find(entry => entry.id === body.clientId);
+    if (!client || !eligible(client)) throw fail(404, "This agent's link can't be reopened. Make a new invite.");
+    owner(req);
+    const reopened = auth.reopenBrowserInvitation(client.id);
+    endSession(client.id);
+    res.json(reopened);
   });
   app.post('/api/browser/agents/stop', (req, res) => {
     owner(req);

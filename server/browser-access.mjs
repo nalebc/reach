@@ -138,7 +138,7 @@ export function browserAccessRoutes(
       // The longest a preset invitation may last over the public link; the
       // form offers a day only when the server allows it.
       maxFunnelSeconds: 86400,
-      // Always: access until the owner ends it, reconnecting with the same link.
+      // Always: access until the owner ends it; the agent returns from the same browser.
       standingAllowed: true});
   });
   // The link the agent opens, once the credential exists. Funnel links are

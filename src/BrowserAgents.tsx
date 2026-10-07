@@ -39,6 +39,10 @@ export type BrowserAgentSession = EditableAccess & {
   preset?: "full" | "apps" | "files" | "readonly";
   using?: { at: number; kind: string; app: string; bundle: string };
   holdsMac?: boolean;
+  // Always access: no end time, only the owner ends it.
+  standing?: boolean;
+  // Its link can be reopened for a new browser (Reopen link).
+  relink?: boolean;
   paused?: boolean;
   activity: {
     state: "idle" | "waiting" | "running" | "stopping";
@@ -283,6 +287,18 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       if (alive.current) setActionError((failure as Error).message);
     }
   };
+  // The agent's same link works once more for 15 minutes, joining with the
+  // code like the first time; the browser it used is disconnected.
+  const reopen = async (agent: BrowserAgentSession) => {
+    setActionError("");
+    try {
+      await request(peer, "/api/browser/agents/reopen", { method: "POST", body: JSON.stringify({ clientId: agent.id }) });
+      setRevision((value) => value + 1);
+      toast(`${agent.name} can open the same link again for 15 minutes`);
+    } catch (failure) {
+      if (alive.current) setActionError((failure as Error).message);
+    }
+  };
   const active = agents.filter((agent) => activeSession(agent, now));
   const busy = stopping.length > 0;
   const words = query.trim().toLowerCase();
@@ -382,7 +398,7 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
             <strong>{agent.name}</strong>
             <small title={agent.id}>
               {active
-                ? `Ends ${ends(agent.expiresAt || 0)}`
+                ? agent.standing ? "Always" : `Ends ${ends(agent.expiresAt || 0)}`
                 : `Ended · ${time(agent.expiresAt || 0)}`}
               {" · "}
               {sessionCode(agent.id)}
@@ -548,7 +564,7 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
               <Clock3 size={18} />
               <div>
                 <strong>{active ? "Access ends" : "Invitation expiry"}</strong>
-                <small>{time(agent.expiresAt || 0)}</small>
+                <small>{agent.standing && active ? "When you end it" : time(agent.expiresAt || 0)}</small>
               </div>
             </li>
           </ul>
@@ -570,6 +586,15 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
                 onClick={() => void pause(agent, !agent.paused)}
               >
                 {agent.paused ? "Resume" : "Pause"}
+              </button>
+            )}
+            {agent.relink && !["invited", "pending", "approved"].includes(agent.status || "") && (
+              <button
+                className="ag-secondary ag-small"
+                disabled={busy || !!error}
+                onClick={() => void reopen(agent)}
+              >
+                Reopen link
               </button>
             )}
             {active && (
