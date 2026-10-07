@@ -724,7 +724,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const guest = client.kind === "guest";
       const browser = client.policy?.browser === true;
       const expiresAt = changes.expiresAt ?? client.expiresAt;
-      const maxSeconds = client.browserTransport === "funnel" ? 3600 : guest || browser ? 86400 : 90 * 86400;
+      // Preset invitations over Funnel may run a full day; the earlier form stays at an hour.
+      const maxSeconds = client.browserTransport === "funnel" && client.policy?.preset === undefined ? 3600 : guest || browser ? 86400 : 90 * 86400;
       if (Object.hasOwn(changes, "expiresAt") &&
           (!Number.isSafeInteger(changes.expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + maxSeconds * 1000))
         throw fail(400, "Choose an end time within this invitation’s duration limit.");

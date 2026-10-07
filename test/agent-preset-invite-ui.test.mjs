@@ -29,13 +29,13 @@ const click = async (element) => { assert.ok(element, "element exists"); element
 const button = (c, label) => [...c.querySelectorAll("button")].find((item) => item.textContent.trim() === label || item.getAttribute("aria-label") === label);
 const choose = (c, title) => click(c.querySelector(`[aria-label="Access preset"] input[aria-label="${title}"]`));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true } = {}) {
+function mock({ desktopAvailable = true, maxFunnelSeconds = 86400 } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [] });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}) });
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [] });
     if (route === "/api/files") return reply({ items: [] });
@@ -133,6 +133,21 @@ test("Files: folders are required, editing is a switch; Read only can hide apps 
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
   assert.match(message(c), /Preset: Read only\. You look/);
   assert.match(message(c), /The owner also hid "Messages" and "Mail"/);
+});
+
+test("a day of access is offered only when the server allows it", async () => {
+  const calls = mock();
+  const { c } = await open();
+  await choose(c, "Full control");
+  await click(button(c, "24 hours"));
+  assert.match(c.textContent, /full control of this Mac for 24 hours/);
+  assert.match(c.textContent, /A day is long for an agent on your Mac/);
+  await click(button(c, "Create invite link"));
+  await dom.waitFor(() => issued(calls));
+  assert.equal(issued(calls).ttlSeconds, 86400);
+  mock({ maxFunnelSeconds: 0 });
+  const older = await open();
+  assert.equal(button(older.c, "24 hours"), undefined, "an older server never sees a choice it would refuse");
 });
 
 test("without the Mac's screen helpers, only Files can be created, and the form says why", async () => {

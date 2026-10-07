@@ -37,6 +37,7 @@ type PresetApp = { id: string; name: string; bundleId: string; running: boolean;
 type Options = {
   terminals: { id: string; name: string }[];
   desktopAvailable?: boolean;
+  maxFunnelSeconds?: number;
   presetApps?: PresetApp[];
   presetAppsError?: string;
 };
@@ -216,7 +217,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
     }
   };
   const toggleRow = (row: string) => setOpenRow((current) => (current === row ? null : row));
-  const minutesLabel = minutes === 60 ? "1 hour" : `${minutes} minutes`;
+  const minutesLabel = minutes === 1440 ? "24 hours" : minutes === 60 ? "1 hour" : `${minutes} minutes`;
+  const dayAllowed = (options?.maxFunnelSeconds ?? 3600) >= 86400;
   const summary = !preset ? "" : `${name.trim()} gets ${{
     full: `full control of this Mac${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}`,
     apps: chosenApps.length ? `${listWords(chosenApps.slice(0, 3).map((app) => app.name))}${chosenApps.length > 3 ? ` and ${chosenApps.length - 3} more` : ""}, nothing else` : "the apps you pick",
@@ -340,7 +342,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           </p>
         )}
 
-        <Segments label="Access duration" value={minutes} onChange={setMinutes} options={[{ value: 15, label: "15 min" }, { value: 30, label: "30 min" }, { value: 60, label: "1 hour" }]} />
+        <Segments label="Access duration" value={minutes} onChange={setMinutes} options={[{ value: 15, label: "15 min" }, { value: 30, label: "30 min" }, { value: 60, label: "1 hour" }, ...(dayAllowed ? [{ value: 1440, label: "24 hours" }] : [])]} />
+        {minutes === 1440 && <p className="ag-quiet">A day is long for an agent on your Mac. You can end or pause it any time from Settings → Agents.</p>}
 
         <div className="ag-send">
           <button className="ag-primary ag-wide" disabled={busy || !!missing || !options} onClick={() => void create()}>

@@ -52,6 +52,7 @@ test("the owner's picker lists every app with the protected ones marked", async 
   const options = await f.call("/api/agents/browser-options");
   assert.equal(options.status, 200, JSON.stringify(options.body));
   assert.equal(options.body.desktopAvailable, true);
+  assert.equal(options.body.maxFunnelSeconds, 86400);
   const byName = Object.fromEntries(options.body.presetApps.map((app) => [app.name, app]));
   assert.equal(byName["Google Chrome"].protected, false, "host browsers are the point of Full control and Apps");
   assert.equal(byName["Google Chrome"].running, true);

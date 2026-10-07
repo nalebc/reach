@@ -134,7 +134,10 @@ export function browserAccessRoutes(
     }
     owner(req);
     res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
-      desktopAvailable: !!desktop?.available?.(), presetApps, ...(presetAppsError ? { presetAppsError } : {})});
+      desktopAvailable: !!desktop?.available?.(), presetApps, ...(presetAppsError ? { presetAppsError } : {}),
+      // The longest a preset invitation may last over the public link; the
+      // form offers a day only when the server allows it.
+      maxFunnelSeconds: 86400});
   });
   // The link the agent opens, once the credential exists. Funnel links are
   // prepared after issuing; a failure takes the credential back.

@@ -54,9 +54,9 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
   if (typeof name !== "string" || !name.trim() || name.length > 80 || controls(name) || /[\n\t]/.test(name) ||
       !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400 ||
       !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||
-      !["tailnet", "funnel"].includes(transport) || (transport === "funnel" && (ttlSeconds > 3600 || joinSeconds > 900)) ||
+      !["tailnet", "funnel"].includes(transport) || (transport === "funnel" && joinSeconds > 900) ||
       typeof write !== "boolean" || !Array.isArray(terminalIds) || terminalIds.length > 20 || terminalIds.some((id) => !validBrowserTerminalId(id)))
-    throw invalid("Name the agent, pick a preset, and a duration from 1 minute to 24 hours.");
+    throw invalid("Name the agent, pick a preset, and a duration from 1 minute to 24 hours (joining within 15 minutes).");
   if (!Array.isArray(folders) || folders.length > 20 || folders.some((folder) =>
       !plain(folder) || Object.keys(folder).some((key) => !["root", "path"].includes(key)) ||
       !Number.isSafeInteger(folder.root) || folder.root < 0 || typeof folder.path !== "string" || folder.path.length > 4096 || controls(folder.path)))

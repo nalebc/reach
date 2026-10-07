@@ -60,7 +60,9 @@ test("validation accepts exactly what each preset needs", () => {
   refused({ ...base, preset: "apps", apps: [{ id: "/Applications/Tailscale.app", name: "Tailscale" }] }, /always protected/, 403);
   refused({ ...base, preset: "apps", apps: [{ id: "Chrome.app" }] }, /up to 30 apps/);
   refused({ ...base, preset: "apps", apps: [chrome, chrome] }, /once/);
-  refused({ ...base, preset: "full", transport: "funnel", ttlSeconds: 7200 }, /duration/);
+  assert.equal(validatePresetInvitation({ ...base, preset: "full", transport: "funnel", ttlSeconds: 86400 }).ttlSeconds, 86400, "a day over the public link");
+  refused({ ...base, preset: "full", transport: "funnel", ttlSeconds: 86401 }, /duration/);
+  refused({ ...base, preset: "full", transport: "funnel", joinSeconds: 1200 }, /duration/, 400);
   refused({ ...base, preset: "full", ttlSeconds: 30 }, /duration/);
   refused({ ...base, preset: "full", name: "Mu‮se" }, /duration/);
   refused({ ...base, preset: "full", terminalIds: ["bogus"] }, /duration/);
