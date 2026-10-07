@@ -26,3 +26,11 @@ The owner updated the release cutoff: main should include the reconciled Files, 
 Production builds, the complete Node 22 test suite with native policy/file-boundary/script-sandbox opt-ins, and focused security/lifecycle regressions are run on the reconciled source. Phone-sized Files visuals are inspected using the real components and synthetic files; served production asset bytes are checked against the build.
 
 These checks do not prove that a specific physical phone has refreshed, nor replace physical-device acceptance, permissioned desktop control or independent penetration testing. The original release evidence and remaining gates are in [OPEN_SOURCE_READINESS.md](OPEN_SOURCE_READINESS.md).
+
+## Agent-access integration follow-up
+
+The isolated agent audit was rebased onto completed Safari sizing source `a4074bf`, then onto the newly committed screen-reliability source `76f89e0`. Neither was overwritten. Independent review of the latter covered identity-cache refresh/revocation, client recovery and the native frame-drop contract; one client status defect was repaired before combined qualification at `60a98c1` (1,990 passed, zero failures, seven skips).
+
+Before integration, fresh private snapshots preserved the newer four-file chat-rendering work in the main checkout and eleven changed connector-worktree files, with hashes, modes, index/diffs and verified complete bundles containing 41 refs. The connector branch and later work remain outside this audited cutoff, per the owner's instruction to preserve ongoing changes separately. Active writers can make newer changes after a snapshot; no snapshot is described as preserving future edits. Existing historical preservation and its nine unresolved older manifest-body gaps remain unchanged.
+
+The supported `reach cli` command now links the global launcher to the current working checkout instead of the old checkout. The old checkout remains intact. No host restart was performed by this agent-access integration; loading new server modules requires the normal owner-approved restart.
