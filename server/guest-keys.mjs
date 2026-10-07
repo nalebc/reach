@@ -187,6 +187,7 @@ export function createGuestKeys({
     accessToken,
     addresses,
     port,
+    narrowDefaultWildcard = false,
     confirm = async () => true,
   }) {
     const secret = String(accessToken || "").trim();
@@ -240,12 +241,16 @@ export function createGuestKeys({
         tag: GUEST_TAG,
         addresses,
         port,
+        narrowDefaultWildcard,
       });
     } catch (error) {
       throw fail(409, error.message);
     }
     if (plan.allowAll.length)
-      throw fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`);
+      throw Object.assign(
+        fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`),
+        { canNarrowDefault: plan.canNarrowDefault },
+      );
     if (plan.added.length) {
       // 2. Tailscale checks the new policy (and your tests) first.
       const check = await as("POST", "/tailnet/-/acl/validate", {

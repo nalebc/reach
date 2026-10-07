@@ -65,10 +65,57 @@ export function codexSession(thread) {
   };
 }
 
+// Answers to Codex's questions, as the Codex app sends them into the running
+// turn: a message of this one envelope, each question named by its message
+// and its place there (the app's own format).
+const REPLY_OPEN = "<send_user_message_question_reply>";
+const REPLY_CLOSE = "</send_user_message_question_reply>";
+export const questionKey = (itemId, index) => JSON.stringify(["request_user_input_async", itemId, index]);
+export const questionReply = (replies) => `${REPLY_OPEN}\n${JSON.stringify(replies)}\n${REPLY_CLOSE}`;
+export function readQuestionReply(text) {
+  const t = String(text ?? "").trim();
+  if (!t.startsWith(REPLY_OPEN) || !t.endsWith(REPLY_CLOSE)) return null;
+  try {
+    const parsed = JSON.parse(t.slice(REPLY_OPEN.length, -REPLY_CLOSE.length));
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.length && list.every((r) => typeof r?.questionItemId === "string" && typeof r.question === "string" && typeof r.answer === "string")
+      ? list
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// Answers shown on the questions they answer, as the Codex app shows them,
+// not as messages of their own; one whose question isn't on this page stays
+// a message (its answers in words).
+export function withQuestionReplies(items) {
+  const questions = new Map(items.filter((i) => i.questions?.length).map((i) => [i.id, i]));
+  return items.filter((item) => {
+    if (!item.replies) return true;
+    const unplaced = [];
+    for (const reply of item.replies) {
+      let key;
+      try { key = JSON.parse(reply.questionItemId); } catch {}
+      const q = Array.isArray(key) && key.length === 3 && key[0] === "request_user_input_async" && Number.isInteger(key[2]) && key[2] >= 0
+        ? questions.get(key[1])?.questions?.[key[2]] : null;
+      if (q) q.answer = reply.answer;
+      else unplaced.push(reply);
+    }
+    delete item.replies;
+    item.text = unplaced.map((r) => r.answer).join("\n\n");
+    return unplaced.length > 0;
+  });
+}
+
 export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = {}) {
   const at = startedAtMs || undefined;
   switch (item?.type) {
     case "userMessage": {
+      const only = item.content?.length === 1 && item.content[0]?.type === "text" ? item.content[0].text : null;
+      const replies = only == null ? null : readQuestionReply(only);
+      if (replies)
+        return { id: item.id, role: "user", kind: "text", text: replies.map((r) => r.answer).join("\n\n"), replies, at, turnId };
       const text = visibleUserText((item.content || [])
         .filter((c) => c?.type === "text")
         .map((c) => c.text)
@@ -472,10 +519,10 @@ export function createCodexSessions({
           sentImages.set(`${id}:${entry.item.id}`, imageSources(entry.item));
           if (sentImages.size > 500) sentImages.delete(sentImages.keys().next().value);
         }
-      const items = (r.data || [])
+      const items = withQuestionReplies((r.data || [])
         .map((entry) => codexItem(entry, { maxOutput }))
         .filter(Boolean)
-        .reverse();
+        .reverse());
       const session = codexSession(thread);
       // Its sub-agents as Codex last reported them (this page of the chat).
       session.subagents = codexSubagents((r.data || []).map((entry) => entry?.item).reverse());

@@ -280,3 +280,22 @@ test("unsafe wildcard policies stop setup before any policy write or key mint", 
     assert.equal(keys.configured(), false);
   }
 });
+
+test("a reviewed default-policy fix validates and narrows the wildcard before minting a guest client", async (t) => {
+  const api = fakeTailscale({ policy: '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}' });
+  const keys = createGuestKeys({ dataDir: setupDir(t), self: "dev-a", request: api.request });
+  await assert.rejects(
+    keys.setupFromAccessToken({ accessToken: TOKEN, ...where }),
+    (error) => error.status === 409 && error.canNarrowDefault === true,
+  );
+  assert.equal(api.writes, 0);
+  let reviewed;
+  await keys.setupFromAccessToken({
+    accessToken: TOKEN, ...where, narrowDefaultWildcard: true,
+    confirm: async (plan) => ((reviewed = plan.added), true),
+  });
+  assert.ok(reviewed.some((line) => line.includes("all devices → tailnet members")));
+  assert.deepEqual(parsePolicy(api.policy).grants[1].src, ["autogroup:member"]);
+  assert.equal(api.writes, 1);
+  assert.equal(api.clients.length, 1);
+});

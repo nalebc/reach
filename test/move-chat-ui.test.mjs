@@ -341,10 +341,11 @@ test("one chat from a folder: 'Move one chat…', pick it, then 'Move this chat 
   assert.deepEqual(moved, [], "stays on this list until the chat opens");
 });
 
-test("In progress has no folder move, and an app that can't take chats says why", async () => {
+test("working chats stay in their project, and an app that can't take chats says why", async () => {
   await list({ health: both({ codex: { signedIn: false } }) });
-  const active = $('[aria-label="In progress"]');
-  assert.equal(active.querySelector(".move-section-open"), null);
+  const project = $('[aria-label="app conversations"]');
+  assert.ok(project.querySelector('.chat-card.running'), "the working chat stays under its folder");
+  assert.ok(project.querySelector('.chat-card.running .chat-row-status'), "working status is on the chat row");
   await folderMenu("app");
   const row = $$(".chat-popover .move-item").find((b) => b.textContent.includes("Move project app to Codex"));
   assert.ok(row.disabled);

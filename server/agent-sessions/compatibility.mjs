@@ -1,10 +1,45 @@
 // Compatibility is a capability check, not a promise about a version number.
 // Extra fields are tolerated; required fields and approval scope are not guessed.
 import fs from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { computerWord } from "../computer-word.mjs";
-const exec = promisify(execFile);
+// A command's output read from a file, not a pipe. Claude Code (2.1.291)
+// exits before a pipe has taken all of its --help: 8 or 16 KB of 22 KB came
+// through, cut mid-line, and the flags past the cut read as missing
+// ("Claude's CLI interface is incompatible with Reach", Oct 7). Writes to
+// a file complete before the process can exit.
+export async function runToFile(file, args, { timeout = 5000, maxBuffer = 256 * 1024, env } = {}) {
+  const tmp = path.join(os.tmpdir(), `reach-probe-${process.pid}-${crypto.randomUUID()}`);
+  const fd = fs.openSync(tmp, "w", 0o600);
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(file, args, { env, stdio: ["ignore", fd, "ignore"], windowsHide: true });
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(Error("Timed out."));
+      }, timeout);
+      child.once("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(Error(`Exited with ${code}.`));
+      });
+    });
+    return { stdout: fs.readFileSync(tmp, "utf8").slice(0, maxBuffer) };
+  } finally {
+    fs.closeSync(fd);
+    fs.rmSync(tmp, { force: true });
+  }
+}
+// A help text that stopped mid-way (no final newline, after at least a
+// pipe's worth): what it lacks can't be held against the agent.
+export const cutShort = (text) => text.length >= 4096 && !text.endsWith("\n");
 export const object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 export const compatibilityError = (agent, feature, uncertain = false) =>
   Object.assign(
@@ -166,7 +201,7 @@ export function validateCodexResult(method, result) {
 // Bounded, account-free probes. Cache by executable metadata, so an in-place
 // upgrade is noticed even before the TTL expires. Failed probes expire sooner.
 export function createAgentProbe({
-  run = exec,
+  run = runToFile,
   stat = fs.statSync,
   now = Date.now,
   ttlMs = 60000,
@@ -203,12 +238,6 @@ export function createAgentProbe({
         version =
           String(v.stdout).match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0] ||
           null;
-        const h = await run(
-          file,
-          agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"],
-          options,
-        );
-        const help = String(h.stdout);
         const required =
           agent === "claude"
             ? [
@@ -219,7 +248,29 @@ export function createAgentProbe({
                 "--permission-mode",
               ]
             : ["start"];
-        const missing = required.filter((flag) => !help.includes(flag));
+        // Read again while the text looks cut short (see runToFile): only a
+        // whole reading may find the agent incompatible.
+        let help = "",
+          missing = required;
+        for (let attempt = 0; attempt < 3 && missing.length; attempt++) {
+          const h = await run(
+            file,
+            agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"],
+            options,
+          );
+          help = String(h.stdout);
+          missing = required.filter((flag) => !help.includes(flag));
+          if (missing.length && !cutShort(help)) break;
+        }
+        if (missing.length && cutShort(help)) {
+          entry.expires = now() + Math.min(ttlMs, 10000);
+          return {
+            version,
+            status: "unavailable",
+            reason:
+              "Could not read the agent's command list fully. Try again in a moment, or use the screen or terminal.",
+          };
+        }
         if (missing.length)
           return {
             version,

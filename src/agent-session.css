@@ -2,7 +2,11 @@
    Codex app, .claude follows Claude Code. Colors were taken from the apps
    on this Mac (dark appearance). */
 .as-page,
-.chat-home {
+.chat-home,
+.codex .as-box,
+.ms-layer.codex,
+.ms-strip.codex,
+.as-mode-menu.codex {
   --as-bg: #181818;
   --as-text: #ececec;
   --as-muted: #8e8e8e;
@@ -31,7 +35,9 @@
   --as-reply-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --as-user-font: var(--as-reply-font);
 }
-/* The session page itself (the skin above is shared with the Chat home). */
+/* The session page itself (the skin above is shared with the Chat home; the
+   box, its menus and the model sheets keep it inside Reach's own page too,
+   chat-workspace.css). */
 .as-page {
   position: relative;
   display: flex;
@@ -52,7 +58,11 @@
    clay accent). The bubble and chips are its text at 5% over the page:
    #212121 here, #efeeec in the light screenshots, both as measured. */
 .as-page.claude,
-.chat-home.claude {
+.chat-home.claude,
+.claude .as-box,
+.ms-layer.claude,
+.ms-strip.claude,
+.as-mode-menu.claude {
   --as-bg: #151515;
   --as-text: #f9f9f7;
   --as-muted: #97958d;
@@ -80,7 +90,8 @@
    surfaces: page #131314, raised #1e1f20, the user's bubble #282a2c, text
    #e3e3e3, the light-blue send). */
 .as-page.gemini,
-.chat-home.gemini {
+.chat-home.gemini,
+.gemini .as-box {
   --as-bg: #131314;
   --as-text: #e3e3e3;
   --as-muted: #9aa0a6;
@@ -740,6 +751,12 @@ button.as-title:active {
 .as-prompt.elsewhere .as-asked {
   margin: 0;
   color: var(--as-muted);
+  font-size: 13.5px;
+}
+/* Your answer to a Codex question, under it, as the Codex app shows it. */
+.as-prompt.elsewhere .as-answered {
+  margin: 0;
+  color: var(--as-accent);
   font-size: 13.5px;
 }
 /* Why Claude asks (the Claude app's consent card shows it under the title). */
@@ -1497,6 +1514,41 @@ button.as-mode:disabled {
 .claude .as-tools > button.as-mode {
   padding: 0 12px;
 }
+/* Codex's chips are words in the box, muted, its chevron beside the model;
+   a press shows as a soft pill. */
+.codex .as-tools > .as-model,
+.codex .as-tools > button.as-mode,
+.codex .as-tools > .as-plan-toggle {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--as-muted);
+  font-size: 15px;
+}
+.codex .as-tools > .as-model > .as-model-effort {
+  color: inherit;
+}
+/* The model's name gives way with "…" (a bare text node couldn't). */
+.as-tools > .as-model > .as-model-name {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+}
+.as-tools > .as-model > .as-model-effort {
+  flex: none;
+}
+.claude .as-tools > button.as-mode {
+  color: var(--as-text);
+}
+.codex .as-tools > .as-model:not(:disabled):active,
+.codex .as-tools > .as-model[aria-expanded="true"],
+.codex .as-tools > button.as-mode[aria-expanded="true"],
+.claude .as-tools > .as-model[aria-expanded="true"],
+.claude .as-tools > button.as-mode[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--as-text) 9%, var(--as-chip));
+  color: var(--as-text);
+}
 
 /* Pictures sent with a message, above its text as in the apps. */
 .as-user-images {
@@ -1515,10 +1567,39 @@ button.as-mode:disabled {
 .as-image-wait {
   background: #ffffff14;
 }
-/* A narrow phone: Codex's model chip drops the effort word so the
-   permission chip and the model both read in full. */
-@media (max-width: 430px) {
-  .codex .as-tools > .as-model > span {
+/* A narrow phone keeps one row: the effort word goes (it's in the sheet),
+   the context shows as its ring, Codex's permission chip as its shield (the
+   mode stays its name to a screen reader), and a long Claude mode gives way
+   before the model. */
+@media (max-width: 560px) {
+  .as-tools > .as-model > .as-model-effort,
+  .as-context-num {
+    display: none;
+  }
+  .codex .as-tools > button.as-mode,
+  .codex .as-tools > .as-mode-pick {
+    position: relative;
+    flex: none;
+    justify-content: center;
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+  }
+  .codex .as-tools > button.as-mode > span,
+  .codex .as-tools > .as-mode-pick > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .codex .as-tools > button.as-mode > svg,
+  .codex .as-tools > .as-mode-pick > svg {
+    width: 18px;
+    height: 18px;
+  }
+  .codex .as-tools > .as-model > svg:last-child {
     display: none;
   }
 }
@@ -1581,7 +1662,8 @@ button.as-mode:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px;
+  min-height: 44px;
+  padding: 9px 12px;
   border: 0;
   border-radius: 10px;
   background: none;
@@ -1590,9 +1672,14 @@ button.as-mode:disabled {
   text-align: left;
   cursor: pointer;
 }
-.as-mode-menu button:active,
-.as-mode-menu button[aria-checked="true"] {
-  background: var(--as-bubble);
+.as-mode-menu button:not(:disabled):active {
+  background: color-mix(in srgb, var(--as-text) 8%, transparent);
+}
+.as-mode-menu button > svg {
+  flex: none;
+}
+.as-mode-menu.claude button > svg {
+  color: #4a8fe2;
 }
 .as-mode-menu-text {
   display: flex;
@@ -1602,7 +1689,7 @@ button.as-mode:disabled {
   min-width: 0;
 }
 .as-mode-menu-text > span {
-  font-size: 15px;
+  font-size: 16px;
 }
 .as-mode-menu-text small {
   color: var(--as-muted);
@@ -1612,6 +1699,15 @@ button.as-mode:disabled {
 .as-mode-menu button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+/* A new chat's menu: in its place above the box (the sheet would clip a
+   floating one). */
+.chat-new .as-mode-menu {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  width: auto;
+  margin-bottom: 10px;
 }
 .as-mode-menu-locked {
   margin: 4px 0 0;
@@ -1775,10 +1871,10 @@ button.as-mode:disabled {
   font: inherit;
   font-size: 13px;
 }
-.as-plan-toggle.on {
-  border-color: color-mix(in srgb, var(--lime, #b9efd4) 40%, transparent);
-  background: color-mix(in srgb, var(--lime, #b9efd4) 12%, transparent);
-  color: var(--lime, #b9efd4);
+/* On: a soft pill in the app's own ink, as Codex marks Plan. */
+.as-tools > .as-plan-toggle.on {
+  background: color-mix(in srgb, var(--as-text) 12%, transparent);
+  color: var(--as-text);
 }
 
 /* Renaming the chat, in its ⋯ menu. */

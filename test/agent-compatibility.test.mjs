@@ -40,6 +40,42 @@ test("CLI probes share work, expire, and detect replaced executables without sen
   await probe("claude", "/fake/claude");
   assert.equal(calls, 6);
 });
+test("a help text cut short is read again, and never makes the agent incompatible", async () => {
+  // Claude Code's --help came through a pipe as 8 or 16 KB of 22 KB, cut
+  // mid-line, about half the time: the flags past the cut read as missing.
+  const full = `${"-".repeat(5000)}\n${help}\n`;
+  const cut = full.slice(0, 4200);
+  let reads = 0;
+  const flaky = createAgentProbe({
+    stat: () => ({}),
+    run: async (_, args) => {
+      if (args[0] === "--version") return { stdout: "2.1.291 (Claude Code)" };
+      reads++;
+      return { stdout: reads === 1 ? cut : full };
+    },
+  });
+  assert.equal((await flaky("claude", "/fake")).status, "available");
+  assert.equal(reads, 2);
+  let now = 0;
+  const always = createAgentProbe({
+    now: () => now,
+    stat: () => ({}),
+    run: async (_, args) => ({ stdout: args[0] === "--version" ? "2.1.291" : cut }),
+  });
+  const first = await always("claude", "/fake");
+  assert.equal(first.status, "unavailable", "cut short three times: not known, not incompatible");
+  assert.match(first.reason, /Try again/);
+  // Looked at again soon, not after the usual minute.
+  now = 11000;
+  assert.equal((await always("claude", "/fake")).status, "unavailable");
+  // A whole text that lacks a flag is what incompatible means.
+  const whole = createAgentProbe({
+    stat: () => ({}),
+    run: async (_, args) => ({ stdout: args[0] === "--version" ? "2.1.291" : `${"-".repeat(5000)}\n--resume\n` }),
+  });
+  assert.equal((await whole("claude", "/fake")).status, "incompatible");
+});
+
 test("missing commands and failed version probes fail closed without exposing process output", async () => {
   const missing = createAgentProbe({
     run: async () => ({ stdout: "unexpected 9.0.0" }),

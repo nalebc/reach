@@ -88,7 +88,7 @@ import { createNotificationActions, notificationPush, admissionNotification, pus
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
-import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
+import { ScreenBroadcast, createScreenSource, hostAppName } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
 import { startInTerminal } from "../scripts/stop.mjs";
@@ -1513,6 +1513,7 @@ export async function createReach(overrides = {}) {
       const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
       const result = await guestKeys.setupFromAccessToken({
         accessToken: req.body.accessToken,
+        narrowDefaultWildcard: req.body.narrowDefaultWildcard === true,
         addresses: [
           v4(st?.Self),
           ...(fleet?.links() || []).map((l) =>
@@ -2824,6 +2825,14 @@ export async function createReach(overrides = {}) {
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
   });
+  // Answers to what Codex asked while it works, into that turn (as the Codex
+  // app answers them), never queued as a message.
+  app.post("/api/sessions/:agent/:id/questions/:item", async (req, res) => {
+    const { turnId, answers } = req.body || {};
+    const result = await agentSessions.answerQuestions(req.params.agent, req.params.id, { itemId: req.params.item, turnId, answers });
+    record("session", `Answered ${agentLabel(req.params.agent)} on the phone`);
+    res.json(result);
+  });
   // Your last message edited and sent again (the Codex app's Edit).
   app.post("/api/sessions/:agent/:id/edit-last", async (req, res) => {
     const { turnId, text } = req.body || {};
@@ -3403,6 +3412,21 @@ export async function createReach(overrides = {}) {
     res.download(file, path.basename(file));
   });
   serveBuild(app, express, dist);
+  // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,
+  // a disk: macOS's privacy settings, per app). "Your computer has not
+  // granted access" read on the phone as Reach refusing its owner (Oct 7):
+  // it names what to allow, and where.
+  const privacyRefusal = () => {
+    if (process.platform !== "darwin")
+      return "Your computer has not granted access to this location.";
+    let host = "";
+    try {
+      host = hostAppName();
+    } catch {
+      /* unknown: the generic wording */
+    }
+    return `macOS hasn't let Reach open this location. On your Mac, allow ${host || "the app running Reach, such as Terminal"} in System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then try again.`;
+  };
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     res
@@ -3424,10 +3448,11 @@ export async function createReach(overrides = {}) {
             : error.status
               ? error.message
               : error.code === "EACCES" || error.code === "EPERM"
-                ? "Your computer has not granted access to this location."
+                ? privacyRefusal()
                 : error.code === "EEXIST"
                   ? "That name is already in use."
                   : "Could not complete this action. Check the companion console.",
+        ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });

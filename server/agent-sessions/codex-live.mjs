@@ -20,7 +20,7 @@ import os from "node:os";
 import { codexArchive } from "./portable-history.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
-import { codexMode } from "./codex.mjs";
+import { codexMode, questionKey, questionReply } from "./codex.mjs";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 import { computerWord } from "../computer-word.mjs";
@@ -463,9 +463,9 @@ export function createCodexLive({
   }
   // Into a turn the Codex app runs, as its own Steer does: through the app,
   // which holds the thread. queued: the queued message it takes out of line.
-  async function steerElsewhere(threadId, input, { queued = null } = {}) {
+  // text: what the app puts back in its box should the steer fail.
+  async function steerElsewhere(threadId, input, { queued = null, text = input.filter((i) => i?.type === "text").map((i) => i.text).join("\n") } = {}) {
     const read = await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null);
-    const text = input.filter((i) => i?.type === "text").map((i) => i.text).join("\n");
     const r = await desktop.steer(threadId, { input, text, cwd: read?.thread?.cwd || null, queued });
     const t = state(threadId);
     t.items++;
@@ -714,6 +714,70 @@ export function createCodexLive({
       }
       begin(threadId, r.turn);
       return { turnId: r.turn?.id || null };
+    },
+    // Answers to the questions Codex asked while it works, as the Codex app
+    // sends them: into the turn that asked (never the queue, never a new
+    // turn), in the app's own envelope, so both show them as answers.
+    // answers: [{ index, answer }] for the question message itemId.
+    async answerQuestions(threadId, { itemId, turnId, answers } = {}) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      if (typeof itemId !== "string" || !itemId || itemId.length > 128 || typeof turnId !== "string" || !turnId || turnId.length > 128)
+        throw bad("Unknown question.", 404);
+      if (!Array.isArray(answers) || !answers.length || answers.length > 20) throw bad("Answer the question.");
+      const moved = () => bad("Codex has moved on from this question. Send your answer as a message.", 409);
+      let asked, cursor = null;
+      const cursors = new Set();
+      do {
+        const r = await daemon.rpc("thread/items/list", { threadId, limit: 100, sortDirection: "desc", ...(cursor ? { cursor } : {}) });
+        asked = (r?.data || []).find((entry) => entry?.item?.id === itemId && entry.item.type === "agentMessage");
+        cursor = r?.nextCursor;
+        if (cursors.has(cursor)) break;
+        cursors.add(cursor);
+      } while (!asked && cursor);
+      const questions = Array.isArray(asked?.item?.questions) ? asked.item.questions : [];
+      if (!questions.length) throw bad("Unknown question.", 404);
+      if (asked.turnId !== turnId) throw moved();
+      const replies = [];
+      const indices = new Set();
+      for (const a of answers) {
+        const q = questions[a?.index];
+        if (!Number.isInteger(a?.index) || a.index < 0 || !q || typeof q.title !== "string" || indices.has(a.index) || typeof a.answer !== "string" || a.answer.length > 2000) throw bad("Answer the question.");
+        indices.add(a.index);
+        // An empty answer skips that question, as in the app.
+        if (a.answer.trim()) replies.push({ questionItemId: questionKey(itemId, a.index), question: String(q.title ?? ""), answer: a.answer.trim() });
+      }
+      if (!replies.length) throw bad("Answer the question.");
+      const input = [{ type: "text", text: questionReply(replies), text_elements: [] }];
+      const t = state(threadId);
+      t.questionReplies ||= new Map();
+      const previous = t.questionReplies.get(itemId);
+      if (previous) throw bad(previous === "sending" ? "This answer is already being sent." : "Codex didn't confirm this answer. Check the Codex app before answering again.", 409);
+      t.questionReplies.set(itemId, "sending");
+      try {
+        if (subscribed.has(threadId) && t.turnId) {
+          if (t.turnId !== turnId || t.status === "idle") throw moved();
+          await daemon.rpc("turn/steer", { threadId, expectedTurnId: turnId, input });
+        } else {
+          const latest = (await daemon
+            .rpc("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" })
+            .catch(() => null))?.data?.[0];
+          if (!latest || finished(latest) || latest.id !== turnId) throw moved();
+          try {
+            await steerElsewhere(threadId, input, { text: replies.map((x) => x.answer).join("\n\n") });
+          } catch (error) {
+            if (error.uncertain) throw error;
+            throw bad(`Codex couldn't take the answer now. Try again, or answer in the Codex app on your ${computerWord(platform)}.`, 409);
+          }
+        }
+        t.items++;
+        changed(threadId);
+        return { answered: true };
+      } catch (error) {
+        if (error.uncertain) t.questionReplies.set(itemId, "uncertain");
+        throw error;
+      } finally {
+        if (t.questionReplies.get(itemId) === "sending") t.questionReplies.delete(itemId);
+      }
     },
     async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");

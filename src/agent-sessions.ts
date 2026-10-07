@@ -104,8 +104,9 @@ export type SessionItem = {
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
-  // Codex can ask these while continuing to work; answers are chat replies.
-  questions?: { title: string; options: string[] }[];
+  // Codex can ask these while continuing to work; answered into that turn,
+  // each answer shown on its question (answer), as in the Codex app.
+  questions?: { title: string; options: string[]; answer?: string }[];
   at?: number;
   turnId?: string;
 };
@@ -173,6 +174,7 @@ export type SessionPrompt = {
 // What Reach sees live for a session it drives (server/agent-sessions/codex-live).
 export type LiveView = {
   version: number;
+  turnId?: string | null;
   status: "running" | "waiting" | "idle" | null;
   error: string | null;
   prompts: SessionPrompt[];
@@ -536,6 +538,14 @@ export const deleteSession = (peer: Peer, s: { agent: AgentName; id: string }) =
 // A chat renamed, as in its app.
 export const renameSession = (peer: Peer, s: { agent: AgentName; id: string }, title: string) =>
   post<{ title: string }>(peer, `${sessionPath(s)}/rename`, { title });
+// Answers to what Codex asked while it works, into the turn that asked (the
+// Codex app's own answer, never a queued message). An empty answer skips one.
+export const answerCodexQuestions = (
+  peer: Peer,
+  s: { agent: AgentName; id: string },
+  item: string,
+  body: { turnId: string; answers: { index: number; answer: string }[] },
+) => post<{ answered: true }>(peer, `${sessionPath(s)}/questions/${encodeURIComponent(item)}`, body);
 // Your last message edited and sent again (the Codex app's Edit).
 export const editLastMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: { turnId: string; text: string }) =>
   post<{ edited: true }>(peer, `${sessionPath(s)}/edit-last`, body);

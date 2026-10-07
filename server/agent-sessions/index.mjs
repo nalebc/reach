@@ -1285,6 +1285,11 @@ export function createAgentSessions({
       listChanged();
       return done;
     },
+    // Answers to what Codex asked while working, as the Codex app sends them.
+    async answerQuestions(agent, id, body) {
+      if (host(agent) !== codexLive) throw Object.assign(new Error("Only Codex asks these."), { status: 400 });
+      return codexLive.answerQuestions(id, body);
+    },
     // Your last message edited and sent again, as the Codex app's Edit.
     async editLast(agent, id, body) {
       if (host(agent) !== codexLive) throw Object.assign(new Error("Edit your last message from the Claude app."), { status: 409 });

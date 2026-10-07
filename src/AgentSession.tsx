@@ -16,7 +16,6 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
-  SlidersHorizontal,
   ChevronRight,
   FileText,
   Globe,
@@ -61,6 +60,7 @@ import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
 import {
   agentLabel,
+  answerCodexQuestions,
   answerPrompt,
   appCard,
   sessionImage,
@@ -305,7 +305,7 @@ function ContextMeter({ used, window: size }: { used: number; window: number }) 
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
       </svg>
-      {percent}%
+      <span className="as-context-num">{percent}%</span>
     </span>
   );
 }
@@ -555,7 +555,7 @@ const CODEX_MODE_NOTES: Record<string, string> = {
   "full-access": "Unrestricted access to the internet and any file on your computer",
   custom: "Uses permissions defined in config.toml",
 };
-function ModeMenu({
+export function ModeMenu({
   agent,
   choices,
   current,
@@ -563,6 +563,7 @@ function ModeMenu({
   locked,
   busy = false,
   error,
+  inline = false,
   onPick,
   onClose,
 }: {
@@ -576,16 +577,21 @@ function ModeMenu({
   locked?: string;
   busy?: boolean;
   error?: string;
+  // A new chat's menu: drawn in its place above the box (a chat may be open
+  // under the sheet), its "Default" (your settings' own) first, as named.
+  inline?: boolean;
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
-  const rank = (id: string) => (CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length);
+  const settingsDefault = (id: string) => inline && id === "default";
+  const rank = (id: string) =>
+    settingsDefault(id) ? -1 : CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length;
   const list =
     agent === "claude"
-      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: modeLabel("claude", m.id) || m.label, note: "" }))
+      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: (!settingsDefault(m.id) && modeLabel("claude", m.id)) || m.label, note: "" }))
       : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
   return (
-    <ComposerMenu anchor={anchor} label="Permissions" className={agent} onClose={onClose}>
+    <ComposerMenu anchor={anchor} inline={inline} label="Permissions" className={agent} onClose={onClose}>
       {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
       {list.map((m) => (
         <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked || busy} onClick={() => onPick(m.id)}>
@@ -608,12 +614,14 @@ function ModeMenu({
 // sight), lined up with its button, closed by a tap outside or Escape.
 function ComposerMenu({
   anchor,
+  inline = false,
   label,
   className = "",
   onClose,
   children,
 }: {
   anchor: HTMLElement | null;
+  inline?: boolean;
   label: string;
   className?: string;
   onClose: () => void;
@@ -626,7 +634,7 @@ function ComposerMenu({
   }, [onClose]);
   // No button to open over (the model picked from "/model" while the model
   // button is hidden): over the composer.
-  const over = anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
+  const over = inline ? null : anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
   const page = over?.closest<HTMLElement>(".as-page") ?? null;
   const at = (() => {
     if (!over || !page) return undefined;
@@ -1039,17 +1047,39 @@ function ConsentApp({
   );
 }
 
-function AsyncQuestions({ item, logos, word, onAnswer }: {
+// Codex's questions asked while it works, as the Codex app shows them:
+// answered here while the turn that asked still runs (into that turn, never
+// queued), then each answer on its question; once Codex moves on, only said.
+function AsyncQuestions({ item, logos, word, answerable, onAnswer }: {
   item: SessionItem;
   logos: AgentLogos;
   word: string;
-  onAnswer: (text: string) => Promise<void>;
+  answerable: boolean;
+  onAnswer: (answers: { index: number; answer: string }[]) => Promise<void>;
 }) {
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<string[] | null>(null);
   const [error, setError] = useState("");
   const sending = useRef(false);
   const questions = item.questions || [];
-  if (sent) return <p className="as-note">Answer sent</p>;
+  const answered = questions.some((q) => q.answer != null) || !!sent;
+  if (answered || !answerable)
+    return (
+      <section className="as-prompt question elsewhere">
+        {questions.map((q, i) => {
+          const answer = q.answer ?? sent?.[i];
+          return (
+            <div className="as-question" key={i}>
+              <p>{q.title}</p>
+              {answer ? (
+                <p className="as-answered">{answer}</p>
+              ) : !answered && q.options.length ? (
+                <p className="as-asked">{q.options.join(" · ")}</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </section>
+    );
   return <>
     <PromptCard
       agent="codex" logos={logos} word={word}
@@ -1063,9 +1093,9 @@ function AsyncQuestions({ item, logos, word, onAnswer }: {
         sending.current = true;
         setError("");
         try {
-          const text = questions.map((q, i) => `${q.title}\n${(answers?.[String(i)] || []).join(", ")}`).join("\n\n");
-          await onAnswer(text);
-          setSent(true);
+          const picked = questions.map((_, i) => (answers?.[String(i)] || []).join(", ").trim());
+          await onAnswer(picked.map((answer, index) => ({ index, answer })));
+          setSent(picked);
         } catch (e) {
           setError((e as Error).message);
         } finally {
@@ -1420,7 +1450,6 @@ export default function AgentSessionView({
   }, [peer.url, peer.token, initial.id, agent, initial.inApp]);
   const [queueBusy, setQueueBusy] = useState<string | null>(null);
   const [removedQueue, setRemovedQueue] = useState<string[]>([]);
-  const [settings, setSettings] = useState(false);
   const [reviewId, setReviewId] = useState("");
   useWantedPrompt(initial.agent, initial.id, setReviewId);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -2036,23 +2065,12 @@ export default function AgentSessionView({
       setEditingLast((old) => (old ? { ...old, busy: false } : old));
     }
   };
-  const answerAsyncQuestion = async (text: string) => {
-    if (sendingNow.current) throw new Error("A message is being sent. Try again in a moment.");
-    sendingNow.current = true;
-    setSending(true);
-    try {
-      // An answer goes into Codex's running turn, as the Codex app sends it.
-      const r = await sendMessage(peer, initial, { text, images: [], steer: true });
-      setPending((list) => [...list, {
-        id: `pending-${Date.now()}`, text, images: 0, urls: [], at: Date.now(),
-        seen: (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length,
-        ...(r.messageId ? { messageId: r.messageId } : {}),
-      }]);
-      void load(false);
-    } finally {
-      sendingNow.current = false;
-      setSending(false);
-    }
+  // Into the turn that asked, as the Codex app answers: shown on the
+  // question, not as a message of its own.
+  const answerAsyncQuestion = async (item: SessionItem, answers: { index: number; answer: string }[]) => {
+    if (!item.turnId) throw new Error("Codex has moved on from this question. Send your answer as a message.");
+    await answerCodexQuestions(peer, initial, item.id, { turnId: item.turnId, answers });
+    void load(false);
   };
   const grow = () => {
     const el = field.current;
@@ -2068,6 +2086,8 @@ export default function AgentSessionView({
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
+  // The turn Codex is on: only its questions can still be answered.
+  const lastTurnId = live.turnId || [...(items || [])].reverse().find((i) => i.turnId)?.turnId;
   // A message just sent goes straight into the conversation, as in the
   // agents' own apps: it shows in the queue only when it has to wait (the
   // agent is working, or something holds it up, saying what).
@@ -2414,7 +2434,7 @@ export default function AgentSessionView({
             ) : b.item.questions?.length ? (
               <div key={b.item.id} className="as-async-questions">
                 {b.item.text && b.item.text !== b.item.questions.map((q) => [q.title, ...q.options.map((o) => `- ${o}`)].join("\n")).join("\n\n") && <AgentMarkdown text={b.item.text} />}
-                <AsyncQuestions item={b.item} logos={logos} word={word} onAnswer={answerAsyncQuestion} />
+                <AsyncQuestions item={b.item} logos={logos} word={word} answerable={working && !!b.item.turnId && b.item.turnId === lastTurnId} onAnswer={(answers) => answerAsyncQuestion(b.item, answers)} />
               </div>
             ) : b.item.kind === "output" ? (
               <div key={b.item.id} className="as-output">
@@ -2920,7 +2940,8 @@ export default function AgentSessionView({
             )}
             <span className="as-spacer" />
             {info.context && info.context.window > 0 && <ContextMeter used={info.context.used} window={info.context.window} />}
-            {settings && (agent === "codex" || agent === "claude") && (
+            {/* Always in sight, as both apps keep their model by the box. */}
+            {(agent === "codex" || agent === "claude") && (
               <button
                 ref={modelButton}
                 className="as-model"
@@ -2930,23 +2951,11 @@ export default function AgentSessionView({
                   setPicking(!picking);
                 }}
               >
-                {modelLabel || "Model"}{" "}
-                <span>{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
+                <span className="as-model-name">{modelLabel || "Model"}</span>{" "}
+                <span className="as-model-effort">{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
                 <ChevronDown size={14} />
               </button>
             )}
-            <button
-              className="as-icon"
-              aria-label="Chat settings"
-              aria-expanded={settings}
-              onClick={() => {
-                setSettings(!settings);
-                setPicking(false);
-                setChoosingMode(false);
-              }}
-            >
-              <SlidersHorizontal size={18} />
-            </button>
             {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
             {working && !text.trim() ? (

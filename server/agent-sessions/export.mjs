@@ -34,6 +34,10 @@ export function chatMarkdown({ title = "", agent = "", cwd = "", items = [], exp
     } else if (item.role === "assistant" && item.kind === "text") {
       flush();
       out.push(`**${who}**`, "", String(item.text || ""), "");
+      for (const q of item.questions || []) {
+        out.push(q.title, "");
+        if (q.answer != null) out.push("**You**", "", quote(q.answer), "");
+      }
     } else if (item.kind === "command") {
       steps.push(`Ran \`${String(item.text || "").split("\n")[0].slice(0, 200)}\`${item.status === "failed" ? " (failed)" : ""}`);
     } else if (item.kind === "file-change") {

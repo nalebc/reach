@@ -497,6 +497,7 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       health: async () => [],
       read: async (agent, id, { before }) => ({ session: { agent, id }, items: [{ id: before || "newest" }], before: "older" }),
       send: async (agent, id, body) => (seen.push(["send", agent, id, body]), { turnId: "t1" }),
+      answerQuestions: async (agent, id, body) => (seen.push(["answerQuestions", agent, id, body]), { answered: true }),
       start: async (agent, body) => (seen.push(["start", agent, body]), { threadId: T }),
       respond: async (agent, id, prompt, answer) => (seen.push(["respond", prompt, answer]), { answered: true }),
       stop: async () => ({ stopped: true }),
@@ -538,6 +539,10 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal((await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "bypassPermissions" })).status, 400);
     assert.deepEqual(seen.filter(([kind]) => kind === "mode"), [["mode", "claude", "plan"]]);
     assert.equal((await call(`/api/sessions/codex/${T}/messages`, agent.token, { text: "hi" })).status, 403);
+    const reply = { turnId: "t1", answers: [{ index: 0, answer: "Phone" }] };
+    assert.equal((await call(`/api/sessions/codex/${T}/questions/q1`, agent.token, reply)).status, 403);
+    assert.deepEqual(await (await call(`/api/sessions/codex/${T}/questions/q1`, owner.token, reply)).json(), { answered: true });
+    assert.deepEqual(seen.filter(([kind]) => kind === "answerQuestions"), [["answerQuestions", "codex", T, { itemId: "q1", ...reply }]]);
     const sent = await call(`/api/sessions/codex/${T}/messages`, owner.token, {
       text: "look at this",
       images: [id],

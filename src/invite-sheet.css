@@ -704,6 +704,29 @@
 .ivt-setup footer {
   min-height: 28px;
 }
+.ivt-policy-fix {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--ivt-line);
+  border-radius: 12px;
+  background: var(--ivt-field);
+}
+.ivt-policy-fix p {
+  margin: 0;
+  color: var(--ivt-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ivt-policy-fix code {
+  color: var(--ivt-text);
+  overflow-wrap: anywhere;
+}
+.ivt-policy-fix a {
+  color: var(--ivt-text);
+  font-size: 13px;
+}
 .ivt-field {
   height: 40px;
   padding: 0 12px;

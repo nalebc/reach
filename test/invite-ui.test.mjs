@@ -32,7 +32,7 @@ const secret = (c) => c.repeat(43);
 const KEY = { key: "tskey-auth-kTEST123456-abcdef", hostname: "rg-ab12-k3m9x2p7qa" };
 
 // `keyed`: true, false, or the hosts holding the invite-link credential.
-function computers({ keyed = true, failOn = "", guests = [] } = {}) {
+function computers({ keyed = true, failOn = "", guests = [], policyBlock = false } = {}) {
   const log = [];
   let n = 0;
   const holders = new Set(keyed === true ? ["mac-a", "mac-b"] : keyed === false ? [] : keyed);
@@ -47,8 +47,10 @@ function computers({ keyed = true, failOn = "", guests = [] } = {}) {
       if (body.accessToken !== undefined) {
         if (body.accessToken !== "tskey-api-good-1")
           return reply(400, { error: "Tailscale didn't accept that token: it may have expired, or your account isn't an admin of this tailnet." });
+        if (policyBlock && body.narrowDefaultWildcard !== true)
+          return reply(409, { error: "Guest access is not isolated: grants[1]", canNarrowDefault: true });
         holders.add(host);
-        return reply(200, { configured: true, added: ["tagOwners: tag:reach-guest → autogroup:admin", "grant: tag:reach-guest → 100.64.0.1 port 8443"], allowAll: true });
+        return reply(200, { configured: true, added: ["tagOwners: tag:reach-guest → autogroup:admin", "grant: tag:reach-guest → 100.64.0.1 port 8443"], allowAll: !policyBlock });
       }
       if (body.clientSecret !== "tskey-client-good") return reply(502, { error: "Tailscale didn't accept the OAuth client. Check its ID and secret." });
       holders.add(host);
@@ -323,6 +325,29 @@ test("set up invite links from the phone with one token, then the very next invi
   await click(inviteButton(c));
   await settle(80);
   assert.equal(parseGuestLink(new URL(link(c)).hash).key, KEY.key);
+  await view.unmount();
+});
+
+test("default all-access policy offers a reviewed fix before retrying the token", async () => {
+  dom.window.localStorage.clear();
+  const log = computers({ keyed: false, policyBlock: true });
+  const view = await render();
+  const c = view.container;
+  await settle(40);
+  await click(c.querySelector(".ivt-setup-line"));
+  const field = c.querySelector('[aria-label="Access token"]');
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(field, "tskey-api-good-1");
+  field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await settle();
+  await click([...c.querySelectorAll(".ivt-setup button")].find((b) => b.textContent === "Connect"));
+  assert.match(c.querySelector(".ivt-policy-fix").textContent, /tagged devices/);
+  assert.equal(c.querySelector(".ivt-policy-fix a").getAttribute("href"), "https://login.tailscale.com/admin/acls");
+  await click([...c.querySelectorAll(".ivt-policy-fix button")][0]);
+  assert.equal(c.querySelector(".ivt-setup"), null);
+  assert.deepEqual(log.filter(([m, , p]) => m === "POST" && p === "/api/guests/keys").map(([, , , body]) => body), [
+    { accessToken: "tskey-api-good-1" },
+    { accessToken: "tskey-api-good-1", narrowDefaultWildcard: true },
+  ]);
   await view.unmount();
 });
 
