@@ -74,12 +74,18 @@ export function normalizeAction(value) {
 }
 
 // One helper process: JSON lines in, JSON lines out, one request at a time.
-class Helper {
+export class AgentDesktopHelper {
   constructor(child, { timeoutMs = 15000 } = {}) {
     this.child = child;
     this.queue = [];
     this.current = null;
     this.stopped = false;
+    // send() rejects as soon as stopping starts, before the native process
+    // exits. Input ownership must last until it cannot post any more events.
+    this.terminated = new Promise(resolve => {
+      child.once("exit", resolve);
+      child.once("error", () => { if (!child.pid) resolve(); });
+    });
     this.timeoutMs = timeoutMs;
     let buffer = "";
     child.stderr?.on("data", () => {});
@@ -102,16 +108,24 @@ class Helper {
       }
     });
   }
-  send(request) {
+  send(request, beforeSend) {
     if (this.stopped) return Promise.reject(fail(503, "The Mac's agent helper is not running. Try again."));
-    return new Promise((resolve, reject) => { this.queue.push({ request, resolve, reject }); this.next(); });
+    return new Promise((resolve, reject) => { this.queue.push({ request, beforeSend, resolve, reject }); this.next(); });
   }
   next() {
-    if (this.current || this.stopped || !this.queue.length) return;
-    const item = this.queue.shift();
-    item.timer = setTimeout(() => { this.stop(); }, this.timeoutMs);
-    this.current = item;
-    this.child.stdin.write(JSON.stringify(item.request) + "\n");
+    if (this.current || this.stopped) return;
+    while (this.queue.length && !this.stopped) {
+      const item = this.queue.shift();
+      // Reads can occupy this helper while an input waits. Recheck the input
+      // synchronously at its actual dispatch, not only when it was enqueued.
+      try { item.beforeSend?.(); }
+      catch (error) { item.reject(error); continue; }
+      item.timer = setTimeout(() => { this.stop(); }, this.timeoutMs);
+      this.current = item;
+      try { this.child.stdin.write(JSON.stringify(item.request) + "\n"); }
+      catch { this.stop(); }
+      return;
+    }
   }
   stop() {
     if (this.stopped) return;
@@ -121,6 +135,7 @@ class Helper {
     for (const item of waiting) { clearTimeout(item.timer); item.reject(fail(503, "The Mac's agent helper stopped. Try again.")); }
     try { this.child.stdin.end(); } catch { /* already closed */ }
     const child = this.child;
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       const force = setTimeout(() => child.kill("SIGKILL"), 1000);
@@ -151,13 +166,14 @@ export function createAgentDesktop(config, {
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
   const shots = new Map();    // clientId -> recent screenshot times
   const lease = { holder: null, name: "", until: 0 };
+  const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
   const pausedAgents = new Set(); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
   const start = async (rules) => {
     if (spawnHelper) return spawnHelper(rules);
     const binary = await desktopBinary(config, "agent-desktop");
-    const helper = new Helper(spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", HOME: home } }));
+    const helper = new AgentDesktopHelper(spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", HOME: home } }));
     if (rules) {
       const ready = await helper.send({ op: "rules", ...rules });
       if (ready.error) { helper.stop(); throw refusal(ready); }
@@ -208,16 +224,44 @@ export function createAgentDesktop(config, {
     }
   };
   const answer = (value) => { if (!value || value.error) throw refusal(value || {}); return value; };
-  // One agent at a time on the Mac. Holding it is short: each action extends it.
-  const take = (client) => {
+  const checkInputAllowed = (client) => {
     if (pausedAgents.has(client.id)) throw Object.assign(fail(409, "The owner paused this agent. It can look, not touch, until they resume it."), { kind: "paused" });
     if (phoneControls()) throw Object.assign(fail(409, "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
-    if (lease.holder && lease.holder !== client.id && lease.until > now())
-      throw Object.assign(fail(409, `${lease.name} is using the Mac right now. Try again in a moment.`), { kind: "busy", holder: lease.name, retryInMs: Math.max(100, lease.until - now()) });
+  };
+  // One agent at a time on the Mac. Holding it is short: each action extends it.
+  const take = (client) => {
+    checkInputAllowed(client);
+    // Even the same agent must await its previous input. Queuing a second
+    // write in the native helper would let it run after the owner pauses us.
+    const running = pendingInputs.values().next().value;
+    if (running || (lease.holder && lease.holder !== client.id && lease.until > now())) {
+      const name = running ? String(running.client.name || "Another agent").slice(0, 80) : lease.name;
+      throw Object.assign(fail(409, `${name} is using the Mac right now. Try again in a moment.`), { kind: "busy", holder: name, retryInMs: Math.max(100, lease.until - now()) });
+    }
     lease.holder = client.id; lease.name = String(client.name || "Another agent").slice(0, 80); lease.until = now() + leaseMs;
   };
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
+  const dispatchInput = async (client, state, request, authorize, scope) => {
+    const pending = { client, helper: state.helper };
+    pendingInputs.add(pending);
+    try {
+      return await state.helper.send(request, () => {
+        checkState(client, authorize, scope, state);
+        checkInputAllowed(client);
+      });
+    } finally {
+      // Revoking a client releases its idle lease immediately, but a dying
+      // native helper must not overlap a replacement agent's input.
+      if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
+      pendingInputs.delete(pending);
+    }
+  };
+  const currentHolder = () => {
+    const pending = pendingInputs.values().next().value;
+    return pending ? { clientId: pending.client.id, name: String(pending.client.name || "Another agent").slice(0, 80) }
+      : lease.until > now() ? { clientId: lease.holder, name: lease.name } : null;
+  };
   const note = (client, kind, result) => {
     const previous = activity.get(client.id);
     const entry = { at: now(), kind, app: String(result?.app || "").slice(0, 100), bundle: String(result?.bundle || "").slice(0, 200), name: client.name };
@@ -266,9 +310,10 @@ export function createAgentDesktop(config, {
       checkState(client, authorize, "browser:screen", state);
       const result = answer(await state.helper.send({ op: "front" }));
       checkState(client, authorize, "browser:screen", state);
+      const holder = currentHolder();
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
-        holder: lease.holder && lease.holder !== latest.id && lease.until > now() ? lease.name : "" };
+        holder: holder && holder.clientId !== latest.id ? holder.name : "" };
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize) {
@@ -288,7 +333,7 @@ export function createAgentDesktop(config, {
         }
         checkState(client, authorize, "browser:control", state);
         take(latest);
-        const result = answer(await state.helper.send({ op: "act", action }));
+        const result = answer(await dispatchInput(latest, state, { op: "act", action }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
         note(latest, action.type, result);
@@ -306,7 +351,7 @@ export function createAgentDesktop(config, {
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
-      const result = answer(await state.helper.send({ op: "open", app: appPath }));
+      const result = answer(await dispatchInput(latest, state, { op: "open", app: appPath }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
       note(latest, "open", result);
@@ -314,7 +359,7 @@ export function createAgentDesktop(config, {
     },
     /** Who holds the Mac and what each agent last did, for the owner. */
     activity() {
-      return { holder: lease.until > now() ? { clientId: lease.holder, name: lease.name } : null,
+      return { holder: currentHolder(),
         agents: Object.fromEntries([...activity].map(([id, entry]) => [id, { ...entry }])), paused: [...pausedAgents] };
     },
     /** The owner's pause: the agent keeps looking, but every action waits until resumed. */

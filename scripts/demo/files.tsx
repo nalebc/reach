@@ -52,11 +52,28 @@ export function ProjectCard({ project }: { project: Project }) {
 const contents: Record<string, string> = {
   "Project notes.md": sampleMarkdown,
   "ProjectCard.tsx": sampleCode,
+  "index.html": `<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>Example website</title>
+    <meta name="description" content="A deliberately long HTML attribute that must scroll horizontally inside the code viewer while keeping the text and line numbers at the same size and spacing on a phone.">
+</head>
+
+<body>
+    <main>Hello from a sample file.</main>
+</body>
+</html>
+`,
 };
 const now = new Date().toISOString();
 const files = [
   "Project notes.md",
   "ProjectCard.tsx",
+  "index.html",
   "Photos.zip",
   "Backup.zip",
   "Designs",

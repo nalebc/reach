@@ -319,6 +319,86 @@ test("a dropped stream keeps the last picture, retries soon and says why", async
   await view.unmount();
 });
 
+test("the computer's quality reports say when the link is slow, without flickering", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1", fps: 60 });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  const report = (ackLatency, targetFps) =>
+    socket.says({ type: "quality", fps: 20, bitrate: 1500000, ackLatency, targetFps });
+  // One late acknowledgment is not a slow link.
+  report(450, 60);
+  await settle(5);
+  assert.equal(state().slow, false);
+  assert.equal(state().latency, 450);
+  report(80, 60);
+  report(90, 60);
+  await settle(5);
+  assert.equal(state().slow, false);
+  // Two struggling seconds in a row are: here the computer had to lower the
+  // frame rate well below what it aims for.
+  report(120, 30);
+  report(130, 30);
+  await settle(5);
+  assert.equal(state().slow, true);
+  // It takes three fine seconds to call the link fine again.
+  report(70, 60);
+  report(60, 60);
+  await settle(5);
+  assert.equal(state().slow, true);
+  report(60, 60);
+  await settle(5);
+  assert.equal(state().slow, false);
+  assert.equal(state().latency, 60);
+  await view.unmount();
+});
+
+test("batched quality reports keep their own slow-link and recovery transitions", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1", fps: 60 });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  const report = (ackLatency) => socket.says({ type: "quality", ackLatency, targetFps: 60 });
+  try {
+    report(450);
+    await settle(10);
+    assert.equal(state().slow, false, "one poor report does not cross the threshold");
+    report(50);
+    await settle(10);
+    assert.equal(state().slow, false);
+
+    report(450);
+    report(450);
+    report(50);
+    await settle(10);
+    assert.equal(state().slow, true, "two poor reports followed by only one good report stay slow");
+    assert.equal(state().latency, 50);
+
+    report(50);
+    report(50);
+    report(450);
+    await settle(10);
+    assert.equal(state().slow, false, "three good reports recover before the next single poor report");
+    assert.equal(state().latency, 450);
+
+    report(450);
+    report(450);
+    report(50);
+    report(50);
+    await settle(10);
+    assert.equal(state().slow, true, "repeated poor reports remain slow through only two good reports");
+    report(50);
+    await settle(10);
+    assert.equal(state().slow, false, "the third good report completes recovery");
+  } finally {
+    await view.unmount();
+  }
+});
+
 test("no fresh picture for 5 s brings the loading scene back", async () => {
   const { view, state } = await watch();
   const socket = FakeSocket.all[0];

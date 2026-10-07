@@ -9,18 +9,22 @@ import {
   computerIdentity,
 } from "../server/computer-identity.mjs";
 import { createReach } from "../server/index.mjs";
-const source = await fs.readFile(
-  new URL("../src/api.ts", import.meta.url),
-  "utf8",
-);
+const sourceUrl = new URL("../src/api.ts", import.meta.url);
+const source = await fs.readFile(sourceUrl, "utf8");
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
   },
 });
+// A data URL has no relative module base. Keep the actual production helper,
+// resolving its import against the original TypeScript file before loading.
+const resolvedOutput = outputText.replaceAll(
+  JSON.stringify("../server/agent-transport.mjs"),
+  JSON.stringify(new URL("../server/agent-transport.mjs", sourceUrl).href),
+);
 const { compactPeers, upsertPeer, reconcilePeers, sameComputer } = await import(
-  `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(resolvedOutput).toString("base64")}`
 );
 const peer = (overrides = {}) => ({
   id: "install-old",

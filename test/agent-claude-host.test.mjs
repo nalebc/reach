@@ -98,6 +98,27 @@ const host = (claude, extra = {}) =>
     ...extra,
   });
 
+test("a temporarily unavailable Claude probe asks to retry rather than update Reach", async (t) => {
+  const claude = fakeClaude(), h = host(claude, { check: async () => ({ status: "unavailable" }) });
+  t.after(() => h.close());
+  await assert.rejects(h.send(ID, { text: "hello", cwd: "/work/app" }), (error) => {
+    assert.equal(error.status, 503);
+    assert.match(error.message, /Try again/);
+    assert.equal(error.message.includes("Update Reach"), false);
+    return true;
+  });
+  assert.equal(claude.runs.length, 0);
+});
+
+test("Claude stream handling preserves the specific incompatible feature", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  await h.send(ID, { text: "hello", cwd: "/work/app" });
+  claude.last().print({ type: "assistant", message: { content: {} } });
+  assert.match(h.view(ID).error, /assistant message interface/);
+  assert.equal(h.view(ID).error.includes("stream interface"), false);
+});
+
 test("Claude keeps its confirmed mode and model after a rejected settings change", async (t) => {
   const claude = fakeClaude(), h = host(claude);
   t.after(() => h.close());

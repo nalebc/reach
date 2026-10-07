@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
 
 // What every agent preset keeps off limits, whatever the owner granted. One
@@ -62,10 +63,33 @@ export const terminalLikeApp = (app) => {
   const all = `${lower(app?.bundleId)} ${lower(app?.name)} ${lower(app?.id)}`;
   return TERMINAL_LIKE.some((word) => all.includes(word));
 };
+// Only unambiguous, explicit HTTP(S) URLs may discard their path/query for
+// Reach's host check. Keep the old conservative match for everything else.
+// This validates syntax; it deliberately does not canonicalize host aliases.
+const reachHostSubject = (value) => {
+  if (/[\s\\"'`<>\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value) || /%(?![a-f0-9]{2})/i.test(value)) return value;
+  const authority = /^https?:\/\/([^/?#]+)(?:[/?#]|$)/.exec(value)?.[1];
+  if (!authority || !/^[a-z0-9.!$&'()*+,;=_~:@\[\]-]+$/.test(authority)) return value;
+  const parts = /^(?:[^@]*@)?(\[[a-f0-9:.]+\]|[a-z0-9._-]+)(?::([0-9]{1,5}))?$/.exec(authority);
+  if (!parts || (parts[2] !== undefined && Number(parts[2]) > 65535)) return value;
+  const host = parts[1].replace(/^\[|\]$/g, "");
+  // Legacy numeric IP spellings and malformed DNS/IP values keep the fallback.
+  const dns = /^(?:[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\.)*[a-z_](?:[a-z0-9_-]*[a-z0-9_])?\.?$/;
+  if (parts[1].startsWith("[") ? isIP(host) !== 6 : !isIP(host) && !dns.test(host)) return value;
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) return value;
+    return authority;
+  } catch { return value; }
+};
+// A shell argument can execute substitutions even when its text parses as a
+// URL. Such arguments keep the whole-text check; browser URLs do not expand $.
+const commandHostSubject = (value) => value.includes("$") ? value : reachHostSubject(value);
 export const protectedPage = (url, hosts = []) => {
   const value = lower(url).trim();
   if (!value) return false;
-  return PROTECTED_PAGE_PATTERNS.some((pattern) => pattern.test(value)) || hosts.some((host) => host && value.includes(lower(host)));
+  const subject = reachHostSubject(value);
+  return PROTECTED_PAGE_PATTERNS.some((pattern) => pattern.test(value)) || hosts.some((host) => host && subject.includes(lower(host)));
 };
 export const protectedTitle = (title) => {
   const value = lower(title);
@@ -98,6 +122,10 @@ const isUrl = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
 export function commandRefusal(command, { protectedPaths = [], home = "", hosts = [] } = {}) {
   if (typeof command !== "string" || !command.trim()) return "Enter a command.";
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(command)) return "Hidden control characters are not allowed in commands.";
+  // Preserve quoted/embedded arguments before the conservative segment split:
+  // script text is not an independently validated navigation URL.
+  if (hosts.length && words(command).some((arg) => hosts.some((host) => host && commandHostSubject(lower(arg.text)).includes(lower(host)))))
+    return "That's Reach's own address. The agent can't open Reach.";
   const lowered = command.normalize("NFKC").toLowerCase();
   const canonicalPath = (value) => {
     const resolved = path.resolve(value);
@@ -128,7 +156,7 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
     if ((first && !first.quoted && mentionsReach(first.text)) || (ACTS_ON.has(name) && plainArgs.some((arg) => !isUrl(arg) && mentionsReach(arg))))
       return "That touches Reach or Tailscale. The agent can't change what keeps your phone connected.";
     // Reach's own addresses (its tailnet name, its local ports) stay closed.
-    if (hosts.length && values.some((arg) => hosts.some((host) => host && arg.toLowerCase().includes(host.toLowerCase()))))
+    if (hosts.length && values.some((arg) => hosts.some((host) => host && commandHostSubject(lower(arg)).includes(lower(host)))))
       return "That's Reach's own address. The agent can't open Reach.";
     if (PASSWORD_COMMANDS.test(name)) {
       if (name === "open" && !values.some((arg) => (!isUrl(arg) && mentionsReach(arg)) || /keychain|passwords|activity monitor|system settings|system preferences|\.app$/i.test(arg) || protectedPath(arg))) continue;
@@ -161,11 +189,15 @@ export function typedTextRefusal(text, { terminalLike = false, hosts = [], prote
   if (typeof text !== "string" || !text) return "Type something.";
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
-    if (protectedPage(line.trim(), hosts)) return "That page shows saved passwords or runs code. It stays closed to the agent.";
+    const value = line.trim();
+    // A recognizable shell command is checked argument by argument below.
+    // Direct URLs, malformed addresses and protected schemes retain this check.
+    const commandLike = terminalLike && /^[a-z0-9_./~\\-]+\s+\S/i.test(value);
+    if (protectedPage(value, commandLike ? [] : hosts)) return "That page shows saved passwords or runs code. It stays closed to the agent.";
   }
   if (terminalLike) {
     for (const line of lines) {
-      const reason = line.trim() ? commandRefusal(line, { protectedPaths, home }) : null;
+      const reason = line.trim() ? commandRefusal(line, { protectedPaths, home, hosts }) : null;
       if (reason) return reason;
     }
   }

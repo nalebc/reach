@@ -3,6 +3,8 @@ import { usePageVisible } from "./page-visible";
 import DeviceAccessBadge from "./DeviceAccessBadge";
 import BrowserAgents from "./BrowserAgents";
 import { useFleetConnections } from "./useFleetConnections";
+import { watchInterfaceUpdates } from "./build-reload";
+import InterfaceUpdates from "./InterfaceUpdates";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
@@ -147,6 +149,7 @@ const connectionLabel = (url: string) => {
   return host.endsWith(".ts.net") ? "Tailscale" : "Direct connection";
 };
 export default function App() {
+  useEffect(() => watchInterfaceUpdates(), []);
   return (
     <WorkspaceAtmosphere>
       <ReachWorkspace />
@@ -1668,6 +1671,7 @@ export function SettingsPage({
         <button aria-pressed={settingsView === "agents"} onClick={() => setSettingsView("agents")}>Agents <span>{browserAgentCount}</span></button>
       </div>
       <div className="settings-general" hidden={settingsView !== "general"}>
+        <InterfaceUpdates />
         <section className="panel settings-panel computer-settings-card">
           <div className="settings-device">
             <ComputerIcon platform={device.platform} size="large" />

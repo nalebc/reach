@@ -3828,3 +3828,116 @@ test("Claude's question in the Claude app is answered here: options tapped, then
     answers: { q0: ["Real folder, read-only (Recommended)"], q1: ["Step by step", "One page, 3 switches (Recommended)"] },
   });
 });
+
+
+for (const outcome of ["failure", "success"]) test(`a linked chat ignores a departed transcript ${outcome} and its queued reread`, async (t) => {
+  const local = "local_4ff35923-e6eb-432e-9e43-ba980333dcde";
+  const first = claudeSession({ inApp: false });
+  const second = claudeSession({ id: NEW, title: "Linked target", appSessionId: local, inApp: false });
+  const page = { session: first, items: [{ id: "link-1", role: "assistant", kind: "text", text: `[Open linked target](#${local})` }] };
+  mac.pages[`claude:${CLAUDE}`] = page;
+  mac.pages[`claude:${NEW}`] = { session: second, items: [{ id: "new-1", role: "assistant", kind: "text", text: "Target content" }] };
+  const route = `/api/sessions/claude/${CLAUDE}`;
+  const original = routes[route];
+  let reads = 0, finish;
+  routes[route] = () => {
+    reads++;
+    if (reads === 2) return new Promise((resolve, reject) => {
+      finish = () => outcome === "failure" ? reject(new Error("Synthetic old chat disconnected")) : resolve(page);
+    });
+    return page;
+  };
+  t.after(() => { routes[route] = original; });
+  const feed = { sessions: [first, second], errors: {}, health: signedIn, failure: "", reload: async () => {}, recheck() {} };
+  await mount(React.createElement(EverythingChat, { peer, feed, target: { agent: "claude", id: CLAUDE } }));
+  await dom.waitFor(() => $("button.md-session-link"));
+  await typeInto($(".as-composer textarea"), "Unsent source draft");
+  dom.window.dispatchEvent(new dom.window.Event("online"));
+  await dom.waitFor(() => finish);
+  dom.window.dispatchEvent(new dom.window.Event("online")); // queued behind that read
+  await click($("button.md-session-link"));
+  await dom.waitFor(() => dom.document.body.textContent.includes("Target content"));
+  assert.equal($(".as-composer textarea").value, "", "the target keeps its own draft");
+  assert.equal(dom.window.sessionStorage.getItem(`reach-chat-draft:${peer.id}:claude:${CLAUDE}`), "Unsent source draft");
+  finish();
+  await settle(1200);
+  assert.equal(reads, 2, "the departed chat must not retry or drain its queued reread");
+  assert.match(dom.document.body.textContent, /Target content/);
+});
+
+for (const outcome of ["failure", "success"]) test(`a replaced chat credential ignores the previous transcript ${outcome}`, async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}`;
+  const original = routes[route];
+  let finish, replace, oldReads = 0, newReads = 0;
+  const fresh = { session: claudeSession({ title: "Fresh pairing", inApp: false }), items: [{ id: "fresh", role: "assistant", kind: "text", text: "Fresh pairing content" }] };
+  routes[route] = (init) => {
+    if (init.headers.get("Authorization") === "Bearer replacement-token") {
+      newReads++;
+      return fresh;
+    }
+    oldReads++;
+    if (oldReads > 1) return mac.pages[`claude:${CLAUDE}`];
+    return new Promise((resolve, reject) => {
+      finish = () => outcome === "failure"
+        ? reject(new Error("Synthetic old credential failed"))
+        : resolve({ session: claudeSession({ title: "Old pairing", inApp: false }), items: [{ id: "old", role: "assistant", kind: "text", text: "Old pairing content" }] });
+    });
+  };
+  t.after(() => { routes[route] = original; });
+  function Host() {
+    const [current, setCurrent] = React.useState(peer);
+    replace = () => dom.update(() => setCurrent({ ...peer, token: "replacement-token" }));
+    return React.createElement(AgentSessionView, {
+      peer: current, session: claudeSession({ inApp: false }), siblings: [], health: signedIn,
+      onSelect() {}, onBack() {},
+    });
+  }
+  await mount(React.createElement(Host));
+  await dom.waitFor(() => finish);
+  replace();
+  await dom.waitFor(() => dom.document.body.textContent.includes("Fresh pairing content"));
+  finish();
+  await settle(1200);
+  assert.equal(oldReads, 1, "the old credential must not be used again");
+  assert.equal(newReads, 1, "the old failure must not schedule a read under the replacement credential");
+  assert.match(dom.document.body.textContent, /Fresh pairing content/);
+  assert.doesNotMatch(dom.document.body.textContent, /Old pairing content/);
+});
+
+
+test("a replaced chat credential drops a pending older page without blocking the new history button", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}`;
+  const original = routes[route];
+  let finish, replace;
+  routes[route] = (init, href) => {
+    if (init.headers.get("Authorization") === "Bearer replacement-token") return {
+      session: claudeSession({ title: "Fresh pairing", inApp: false }),
+      items: [{ id: "fresh", role: "assistant", kind: "text", text: "Fresh pairing content" }], before: "fresh-older",
+    };
+    if (href.searchParams.get("before")) return new Promise(resolve => {
+      finish = () => resolve({ session: claudeSession({ inApp: false }), items: [{ id: "old", role: "assistant", kind: "text", text: "Old pairing history" }], before: null });
+    });
+    return { session: claudeSession({ inApp: false }), items: [], before: "old-older" };
+  };
+  t.after(() => { routes[route] = original; });
+  function Host() {
+    const [current, setCurrent] = React.useState(peer);
+    replace = () => dom.update(() => setCurrent({ ...peer, token: "replacement-token" }));
+    return React.createElement(AgentSessionView, {
+      peer: current, session: claudeSession({ inApp: false }), siblings: [], health: signedIn,
+      onSelect() {}, onBack() {},
+    });
+  }
+  await mount(React.createElement(Host));
+  await dom.waitFor(() => $(".as-older"));
+  await click($(".as-older"));
+  await dom.waitFor(() => finish);
+  replace();
+  await dom.waitFor(() => dom.document.body.textContent.includes("Fresh pairing content"));
+  assert.equal($(".as-older").disabled, false, "the previous page's wait does not disable new history");
+  finish();
+  await settle(30);
+  assert.match(dom.document.body.textContent, /Fresh pairing content/);
+  assert.doesNotMatch(dom.document.body.textContent, /Old pairing history/);
+  assert.ok($(".as-older"), "the old page cannot replace the new pagination cursor");
+});

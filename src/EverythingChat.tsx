@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import AgentSessionView, { ModelPicker } from "./AgentSession";
+import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
 import ChatList, {
@@ -800,30 +801,43 @@ export default function EverythingChat({
   return (
     <>
       {open ? (
-        <AgentSessionView
-          key={peer.id + ":" + open.agent + ":" + open.id}
-          peer={peer}
-          session={open}
-          siblings={(sessions || []).filter(
-            (s) => !s.archived && s.agent === open.agent,
-          )}
-          health={health}
-          logos={logos}
-          deviceRequests={macPrompts.length}
-          onReviewDevice={() => setSheet("review")}
-          onScreen={onScreen}
-          onSignedIn={recheck}
-          onSelect={openChat}
-          onBack={() => {
-            setOpen(null);
-            void reload();
+        <SessionLinkContext.Provider
+          // A message's link to another Claude session ("[title](#local_…)",
+          // as the Claude app writes them) opens that session here.
+          value={(appSessionId) => {
+            const linked = (sessions || []).find(
+              (s) => s.appSessionId?.toLowerCase() === appSessionId.toLowerCase(),
+            );
+            if (!linked) return false;
+            if (linked.id !== open.id || linked.agent !== open.agent) openChat(linked);
+            return true;
           }}
-          onNew={() => {
-            setAgent(open.agent);
-            setNewFolder("");
-            setSheet("new");
-          }}
-        />
+        >
+          <AgentSessionView
+            key={peer.id + ":" + open.agent + ":" + open.id}
+            peer={peer}
+            session={open}
+            siblings={(sessions || []).filter(
+              (s) => !s.archived && s.agent === open.agent,
+            )}
+            health={health}
+            logos={logos}
+            deviceRequests={macPrompts.length}
+            onReviewDevice={() => setSheet("review")}
+            onScreen={onScreen}
+            onSignedIn={recheck}
+            onSelect={openChat}
+            onBack={() => {
+              setOpen(null);
+              void reload();
+            }}
+            onNew={() => {
+              setAgent(open.agent);
+              setNewFolder("");
+              setSheet("new");
+            }}
+          />
+        </SessionLinkContext.Provider>
       ) : picked.agent === "openclaw" ? (
         <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
           onScreen={onScreen}

@@ -36,12 +36,18 @@ export function useRemoteScreen(
     updated: 0,
     width: 0,
     height: 0,
+    // The computer's view of this link (its "quality" report each second):
+    // the time its frames take to be acknowledged, and whether it has had
+    // to lower the stream for a while. `slow` is what the toolbar says.
+    latency: 0,
+    slow: false,
   });
   const [selectedDisplay, setSelectedDisplay] = useState("");
   const [fallback, setFallback] = useState(false);
   const [fallbackReason, setFallbackReason] = useState("");
-  // Blips come back within a few seconds: retry soon, never 30 s later.
-  const retry = useRef(new ReconnectTimer(Math.random, 4000));
+  // Blips come back within a few seconds: retry soon (a quarter second the
+  // first time), never 30 s later.
+  const retry = useRef(new ReconnectTimer(Math.random, 4000, 250));
   // The source whose picture is on the canvas. Reconnecting to the same one
   // keeps that picture (the toolbar says "Connecting…") instead of the
   // loading scene; only 5 s without a fresh frame brings the scene back.
@@ -137,7 +143,15 @@ export function useRemoteScreen(
 
     if (shown.current === source) {
       holdFrame();
-      setState((s) => ({ ...s, connecting: true, error: "", fps: 0, mbps: 0 }));
+      setState((s) => ({
+        ...s,
+        connecting: true,
+        error: "",
+        fps: 0,
+        mbps: 0,
+        latency: 0,
+        slow: false,
+      }));
     } else {
       clearHold();
       shown.current = "";
@@ -152,8 +166,17 @@ export function useRemoteScreen(
         updated: 0,
         width: 0,
         height: 0,
+        latency: 0,
+        slow: false,
       });
     }
+    // The frame rate the computer aims for on this connection, and how many
+    // of its reports in a row found the link struggling or fine: the toolbar
+    // says "slow" after two struggling seconds, and drops it after three
+    // fine ones, never flickering on a single late acknowledgment.
+    let targetCap = 0,
+      struggling = 0,
+      fine = 0;
     const ack = (id: number, keyframe = false) => {
       if (id > lastAck && socket.readyState === WebSocket.OPEN) {
         lastAck = id;
@@ -222,7 +245,9 @@ export function useRemoteScreen(
       shown.current = source;
       lost.current = null;
       clearHold();
-      deadline(20000);
+      // The computer sends a real frame at least every second, even when
+      // nothing changed: 10 s of silence means the connection is gone.
+      deadline(10000);
       if (drawnWidth !== width || drawnHeight !== height) {
         drawnWidth = width;
         drawnHeight = height;
@@ -374,8 +399,28 @@ export function useRemoteScreen(
             fail(message.error, screenCanRetry(message));
           if (message.type === "ready") {
             wireFormat = message.format;
+            targetCap = Number(message.fps) || 0;
             setSelectedDisplay(message.display);
             setState((s) => ({ ...s, format: wireFormat }));
+          }
+          if (message.type === "quality") {
+            const latency = Math.max(0, Number(message.ackLatency) || 0);
+            const target = Number(message.targetFps) || 0;
+            const struggles =
+              latency > 300 ||
+              (targetCap > 0 && target > 0 && target < targetCap * 0.6);
+            struggling = struggles ? struggling + 1 : 0;
+            fine = struggles ? 0 : fine + 1;
+            // React may batch several reports before rendering. Each queued
+            // update must use the counters from its own report.
+            const strugglingReports = struggling,
+              fineReports = fine;
+            setState((s) => {
+              const slow = s.slow ? fineReports < 3 : strugglingReports >= 2;
+              return s.slow === slow && s.latency === latency
+                ? s
+                : { ...s, slow, latency };
+            });
           }
         } catch {
           fail("Invalid screen response.", false);
@@ -385,7 +430,7 @@ export function useRemoteScreen(
       const buffer = event.data as ArrayBuffer;
       if (!received) {
         received = true;
-        deadline(20000);
+        deadline(10000);
       }
       bytes += buffer.byteLength;
       if (buffer.byteLength < 5 || buffer.byteLength > 8 * 1024 * 1024 + 4) {

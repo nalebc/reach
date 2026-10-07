@@ -212,3 +212,23 @@ test("a Mac dialog is answered with one of its own buttons, or its password; the
   }
   prompts.close();
 });
+
+
+test("closing Mac prompts aborts helper preparation and prevents a late helper from spawning", async () => {
+  let prepared, signal;
+  const prompts = createMacPrompts({
+    dataDir: "/unused", platform: "darwin",
+    binary: ({ signal: pending }) => {
+      signal = pending;
+      return new Promise(resolve => { prepared = resolve; });
+    },
+    spawn: () => assert.fail("a watcher must not spawn after close"),
+  });
+  prompts.start();
+  prompts.close();
+  assert.equal(signal.aborted, true);
+  prepared("/unused/mac-prompts");
+  await settle();
+  prompts.start();
+  assert.deepEqual(prompts.current(), { version: 0, prompts: [] });
+});

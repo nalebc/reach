@@ -2,6 +2,7 @@
 // computer: `api(route, method, body)` does the requests (HTTPS on the
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
+import { agentErrorDetails } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
 
 const BROWSER_ONLY_NAMES = new Set(["reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
@@ -399,9 +400,10 @@ export function serveMcp({
             ),
           };
         } catch (e) {
+          const details = agentErrorDetails(e);
           result = {
             isError: true,
-            content: [{ type: "text", text: e.message }],
+            content: [{ type: "text", text: details.kind ? JSON.stringify(details) : details.error }],
           };
         }
       } else {

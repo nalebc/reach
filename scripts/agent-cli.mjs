@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import { agentErrorDetails } from "../server/agent-transport.mjs";
+import { toolsFor } from "./mcp-server.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -26,6 +28,7 @@ Owner, on the Mac:
 
 Agent, on an existing tailnet connection:
   reach-agent mcp --credential /run/secrets/reach.json
+  reach-agent tools --credential /run/secrets/reach.json
   reach-agent device --credential /run/secrets/reach.json
   reach-agent files list --credential /run/secrets/reach.json --root 0 --path .
   reach-agent files read --credential /run/secrets/reach.json --path README.md
@@ -245,6 +248,12 @@ export async function main(args = process.argv.slice(2)) {
   const api = createAgentClient(JSON.parse(privateFile(credentialFile)), {
     allowLocal: o["allow-local"],
   });
+  if (verb === "tools") {
+    const scopes = (await api("/api/device")).access?.scopes || [];
+    const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
+    output(toolsFor(scopes, access));
+    return 0;
+  }
   const query = new URLSearchParams({
     root: o.root || "0",
     path: o.path || "",
@@ -326,7 +335,7 @@ if (
       process.exitCode = code;
     })
     .catch((error) => {
-      console.error(JSON.stringify({ error: error.message }));
+      console.error(JSON.stringify(agentErrorDetails(error)));
       process.exitCode = 1;
     });
 }

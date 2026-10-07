@@ -1,3 +1,4 @@
+import { agentRequestTimeout } from "../server/agent-transport.mjs";
 export type Peer = {
   id: string;
   computerId?: string;
@@ -289,7 +290,7 @@ export async function peerFetch(
     ...options,
     headers,
     redirect: "error",
-    signal: options.signal || AbortSignal.timeout(35000),
+    signal: options.signal || AbortSignal.timeout(agentRequestTimeout(route, (options.method || "GET").toUpperCase())),
   });
 }
 export async function request<T = any>(

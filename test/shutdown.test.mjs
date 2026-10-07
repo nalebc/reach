@@ -84,9 +84,42 @@ async function startReach(t, { preload } = {}) {
     if (key.startsWith("REACH_") && key !== "REACH_CODEX") delete env[key];
   delete env.NODE_TEST_CONTEXT;
   const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
+  // Hold each native compile open using an inert Node child. These are
+  // shutdown tests, not permissioned native interaction tests: no helper
+  // binary is produced or launched. This makes a slow first build
+  // deterministic instead of depending on compiler load or cached binaries.
+  const nativePreload = "data:text/javascript," + encodeURIComponent(`
+    import cp from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+    import { promisify } from "node:util";
+    import path from "node:path";
+    const original = cp.execFile;
+    cp.execFile = function(command, args, options, callback) {
+      if (command === "/usr/bin/xcode-select")
+        return original(process.execPath, ["-e", "console.log(" + JSON.stringify(${JSON.stringify(root)}) + ")"], options, callback);
+      if (command === "/usr/bin/xcrun") {
+        const source = args.find(arg => /\\.(swift|m)$/.test(arg));
+        const child = original(process.execPath, ["-e", "setInterval(() => { if (process.ppid === 1) process.exit(0); }, 500)"], options, callback);
+        console.error("Fixture compiler:", JSON.stringify({ source: path.basename(source || "unknown"), pid: child.pid }));
+        child.once("exit", () => console.error("Fixture compiler exited:", child.pid));
+        return child;
+      }
+      return original(command, args, options, callback);
+    };
+    cp.execFile[promisify.custom] = (...args) => {
+      let child;
+      const result = new Promise((resolve, reject) => {
+        child = cp.execFile(...args, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }));
+      });
+      result.child = child;
+      return result;
+    };
+    syncBuiltinESMExports();
+  `);
   const child = spawn(
     process.execPath,
     [
+      ...(process.platform === "darwin" ? ["--import", nativePreload] : []),
       ...(preload ? ["--import", preload] : []),
       "--input-type=module",
       "-e",
@@ -105,6 +138,13 @@ async function startReach(t, { preload } = {}) {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
       await exited;
+    }
+    // A failing old implementation may leave the fixture compilers behind.
+    // Only PIDs emitted by our inert children are eligible for this cleanup.
+    for (const match of output.matchAll(/Fixture compiler: (.+)/g)) {
+      const { pid } = JSON.parse(match[1]);
+      if (output.includes(`Fixture compiler exited: ${pid}\n`)) continue;
+      try { process.kill(pid, "SIGKILL"); } catch {}
     }
   });
   const deadline = Date.now() + 20000;
@@ -166,11 +206,19 @@ for (const signal of ["SIGINT", "SIGTERM"])
     async (t) => {
       const reach = await startReach(t);
       await connectPhone(t, reach.url, reach.output());
+      if (process.platform === "darwin") {
+        const pending = ["mac-prompts.swift", "terminal-watch.swift", "permission-card.swift", "claude-consent.swift"];
+        const deadline = Date.now() + 15000;
+        while (pending.some(source => !reach.output().includes(JSON.stringify(source)))) {
+          assert.ok(Date.now() < deadline, "all four startup helper builds must be pending before shutdown");
+          await sleep(20);
+        }
+      }
       reach.child.kill(signal);
       const exit = await within(reach.exited, PROMPT_MS);
       assert.ok(
         exit,
-        `Still running ${PROMPT_MS} ms after ${signal}:\n${reach.output()}`,
+        `Still running ${PROMPT_MS} ms after ${signal}:\n${reach.output().split("\n").filter(line => /^(Shutdown diagnostics:|Fixture compiler)/.test(line)).join("\n")}`,
       );
       assert.deepEqual(exit, [0, null], reach.output());
       await assert.rejects(fetch(reach.url + "/api/health"));

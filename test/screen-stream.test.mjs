@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { RemoteBroadcast } from "../server/remote-screen.mjs";
 import {
   NativeScreenSource,
   ScreenBroadcast,
@@ -32,6 +33,66 @@ test("native frame pipe handles split packets and reuses one capture process", a
     source.stop();
   }
   await assert.rejects(source.next(), /stopped/);
+});
+
+test("requested keyframes survive dropped pipe replies and normal frames resume on the same helper", { timeout: 10000 }, async () => {
+  // Actual length-prefixed helper protocol through an inert Node child. The
+  // payload is a synthetic video envelope; this does not exercise an encoder
+  // or claim that its placeholder NAL bytes decode as H.264.
+  const source = new NativeScreenSource(process.execPath, [
+    "-e",
+    `const {createInterface}=require('node:readline');let n=0;
+     createInterface({input:process.stdin}).on('line',command=>{
+       process.stderr.write(JSON.stringify({command,n:++n})+'\\n');
+       let packet=Buffer.from([0]);
+       if(n>2){
+         const json=Buffer.from(JSON.stringify({key:command==='key',timestamp:n*16666,width:16,height:16,codec:'avc1.64002a'}));
+         const header=Buffer.alloc(4);header.writeUInt32BE(json.length);
+         packet=Buffer.concat([header,json,Buffer.from([0,0,0,1,command==='key'?0x65:0x41,0x80])]);
+       }
+       const size=Buffer.alloc(4);size.writeUInt32BE(packet.length);
+       process.stdout.write(Buffer.concat([size,packet]));
+     });`,
+  ]);
+  const exited = once(source.child, "exit");
+  let trace = "", starts = 0;
+  source.child.stderr.on("data", (data) => { trace += data.toString(); });
+  const frames = [], messages = [];
+  const broadcast = new RemoteBroadcast(async () => () => { starts++; return source; }, {
+    fps: 60, bitrate: 4000000, quality: "auto",
+  });
+  const ws = {
+    readyState: 1, bufferedAmount: 0,
+    send(data) {
+      if (!Buffer.isBuffer(data)) { messages.push(JSON.parse(data)); return; }
+      frames.push(data);
+      broadcast.ack(ws, data.readUInt32BE(0));
+      if (frames.length === 2) ws.bufferedAmount = 512 * 1024;
+    },
+    close() { ws.readyState = 3; },
+  };
+  try {
+    broadcast.add(ws, () => true);
+    const deadline = Date.now() + 5000;
+    while ((frames.length < 2 || trace.trim().split("\n").length < 4) && Date.now() < deadline) await sleep(10);
+    assert.equal(frames.length, 2, "no-frame replies must be consumed, then delivery must continue");
+    assert.deepEqual(trace.trim().split("\n").map((line) => JSON.parse(line).command), ["key", "key", "key", "frame"]);
+    assert.deepEqual(frames.map((packet) => packet.readUInt32BE(0)), [1, 2], "drops neither reach the viewer nor consume sequence numbers");
+    const metadata = frames.map((packet) => {
+      const length = packet.readUInt32BE(4);
+      assert.ok(length > 0 && 8 + length < packet.length, "valid video envelope with a payload");
+      return JSON.parse(packet.subarray(8, 8 + length));
+    });
+    assert.deepEqual(metadata.map(({ key }) => key), [true, false], "the requested keyframe arrives before normal delta delivery");
+    assert.ok(metadata[1].timestamp > metadata[0].timestamp);
+    assert.equal(starts, 1, "a drop must not replace the capture process");
+    assert.equal(source.failure, null);
+    assert.equal(messages.some((message) => message.type === "error"), false);
+  } finally {
+    broadcast.remove(ws);
+    source.stop();
+    await exited;
+  }
 });
 
 test("native frame pipe rejects oversized input before buffering a frame", async () => {

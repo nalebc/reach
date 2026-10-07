@@ -71,3 +71,143 @@ test("this Mac's developer tools are found without asking anything", { skip: pro
   resetDeveloperTools();
   assert.equal(typeof (await developerTools()), "boolean");
 });
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((a, b) => { resolve = a; reject = b; });
+  return { promise, resolve, reject };
+};
+const mac = { skip: process.platform !== "darwin" };
+
+test("one owner quitting does not cancel the shared native build another owner still needs", mac, async (t) => {
+  resetDeveloperTools();
+  t.after(resetDeveloperTools);
+  const folder = await dir();
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const file = path.join(folder, "reach-shared-0123456789ab");
+  const started = deferred(), finish = deferred();
+  let compiles = 0, compiling;
+  const run = async (command, args, { signal }) => {
+    if (command === "/usr/bin/xcode-select") return { stdout: folder };
+    compiles++;
+    compiling = signal;
+    started.resolve();
+    await finish.promise;
+    signal.throwIfAborted();
+    await fs.writeFile(args.at(-1), "shared binary");
+    return { stdout: "" };
+  };
+  const owner = new AbortController();
+  const first = buildNative(file, ["swiftc", "shared.swift"], { run, signal: owner.signal });
+  const other = buildNative(file, ["swiftc", "shared.swift"], { run });
+  await started.promise;
+  owner.abort();
+  await assert.rejects(first, { name: "AbortError" });
+  assert.equal(compiling.aborted, false, "the other caller still owns its build");
+  finish.resolve();
+  assert.equal(await other, file);
+  assert.equal(compiles, 1);
+  assert.equal(await fs.readFile(file, "utf8"), "shared binary");
+});
+
+test("the final native-build owner quitting aborts its compiler and removes partial output", mac, async (t) => {
+  resetDeveloperTools();
+  t.after(resetDeveloperTools);
+  const folder = await dir();
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const file = path.join(folder, "reach-stopped-0123456789ab");
+  const started = deferred(), stopped = deferred();
+  let compiling;
+  const run = async (command, args, { signal }) => {
+    if (command === "/usr/bin/xcode-select") return { stdout: folder };
+    compiling = signal;
+    await fs.writeFile(args.at(-1), "partial output");
+    return new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => { stopped.resolve(); reject(signal.reason); }, { once: true });
+      started.resolve();
+    });
+  };
+  const firstOwner = new AbortController(), secondOwner = new AbortController();
+  const first = buildNative(file, ["swiftc", "stopped.swift"], { run, signal: firstOwner.signal });
+  const second = buildNative(file, ["swiftc", "stopped.swift"], { run, signal: secondOwner.signal });
+  await started.promise;
+  firstOwner.abort();
+  await assert.rejects(first, { name: "AbortError" });
+  assert.equal(compiling.aborted, false);
+  secondOwner.abort();
+  await assert.rejects(second, { name: "AbortError" });
+  await stopped.promise;
+  assert.equal(compiling.aborted, true);
+  // The caller's wait cancels immediately; the compiler cleanup settles next.
+  for (let i = 0; (await fs.readdir(folder)).length && i < 100; i++)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(await fs.readdir(folder), []);
+});
+
+test("shutdown during developer-tool discovery cancels it without starting a compiler or caching failure", mac, async (t) => {
+  resetDeveloperTools();
+  t.after(resetDeveloperTools);
+  const folder = await dir();
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const started = deferred();
+  const owner = new AbortController();
+  const commands = [];
+  let discovery;
+  const run = (command, args, { signal }) => {
+    commands.push(command);
+    discovery = signal;
+    return new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      started.resolve();
+    });
+  };
+  const pending = buildNative(path.join(folder, "helper"), ["swiftc", "helper.swift"], { run, signal: owner.signal });
+  await started.promise;
+  owner.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(discovery.aborted, true);
+  assert.deepEqual(commands, ["/usr/bin/xcode-select"]);
+  assert.equal(await developerTools({ run: toolsAt(folder) }), true, "an aborted lookup is not a cached missing-tools result");
+});
+
+test("a cancelled compile cannot publish late output or interfere with a fresh retry", mac, async (t) => {
+  resetDeveloperTools();
+  t.after(resetDeveloperTools);
+  const folder = await dir();
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const file = path.join(folder, "reach-retry-0123456789ab");
+  const started = deferred(), late = deferred(), released = deferred();
+  const owner = new AbortController();
+  let compiles = 0;
+  const run = async (command, args) => {
+    if (command === "/usr/bin/xcode-select") return { stdout: folder };
+    const order = ++compiles;
+    if (order === 1) { started.resolve(); await late.promise; }
+    await fs.writeFile(args.at(-1), order === 1 ? "stale" : "fresh");
+    if (order === 1) released.resolve();
+    return { stdout: "" };
+  };
+  const cancelled = buildNative(file, ["swiftc", "retry.swift"], { run, signal: owner.signal });
+  await started.promise;
+  owner.abort();
+  await assert.rejects(cancelled, { name: "AbortError" });
+  assert.equal(await buildNative(file, ["swiftc", "retry.swift"], { run }), file);
+  late.resolve();
+  await released.promise;
+  for (let i = 0; (await fs.readdir(folder)).some(name => name.endsWith(".tmp")) && i < 100; i++)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(await fs.readFile(file, "utf8"), "fresh");
+  assert.deepEqual(await fs.readdir(folder), [path.basename(file)]);
+});
+
+test("an already closed owner cannot receive a cached helper or start a new compiler", async (t) => {
+  const folder = await dir();
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const file = path.join(folder, "cached");
+  await fs.writeFile(file, "binary");
+  const owner = new AbortController();
+  owner.abort();
+  const run = () => assert.fail("a closed owner must not run native tools");
+  await assert.rejects(buildNative(file, [], { run, signal: owner.signal }), { name: "AbortError" });
+  await assert.rejects(buildNative(path.join(folder, "missing"), [], { run, signal: owner.signal }), { name: "AbortError" });
+});

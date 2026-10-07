@@ -122,6 +122,14 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     write(packet)
     encoding = false
   }
+  // The encoder dropped the frame it was given: answer the server's request
+  // with "nothing changed" (one byte) and keep the picture marked fresh, so
+  // the next request encodes it again.
+  func dropped() {
+    encoding = false
+    fresh = true
+    write(Data([0]))
+  }
   func emit() {
     guard wanted, !encoding, let buffer = latest else { return }
     wanted = false
@@ -145,7 +153,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     guard let encoder = encoder else { return }
     encoding = true
     frame += 1
-    if changed && Date().timeIntervalSince(lastKeyTime) >= 2 { keyframe = true }
+    // A keyframe at a phone's full resolution weighs as much as seconds of
+    // delta frames; one every 2 s was the live screen's biggest bandwidth
+    // burst on a slow link. The phone asks for one whenever it needs one
+    // (a new viewer, a restarted decoder: the "key" command), so the
+    // periodic one is only a safety net.
+    if changed && Date().timeIntervalSince(lastKeyTime) >= 10 { keyframe = true }
     if keyframe { lastKeyTime = Date() }
     let properties = keyframe ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     keyframe = false
@@ -183,7 +196,19 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       outputCallback: { ref, _, status, _, sample in
         guard let ref = ref else { return }
         let capture = Unmanaged<Capture>.fromOpaque(ref).takeUnretainedValue()
-        guard status == noErr, let sample = sample else { capture.failure("Video encoder failed.") }
+        // The VideoToolbox status (-12911 malfunction, -12915 busy, …) is the
+        // one clue to why: it lands in Reach's log (server/screen-stream.mjs).
+        guard status == noErr else {
+          capture.failure("Video encoder failed (VideoToolbox \(status)).")
+        }
+        // No sample and no error: the encoder dropped this frame to hold its
+        // bitrate (low-latency rate control), which it does just when the
+        // server lowers the bitrate on a struggling link. Treated as fatal,
+        // that ended the stream about once a second on a slow link (Oct 7).
+        guard let sample = sample else {
+          capture.queue.async { capture.dropped() }
+          return
+        }
         capture.queue.async { capture.compressed(sample) }
       }, refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &encoder)
     guard status == noErr, let encoder = encoder else {
@@ -196,8 +221,8 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_High_AutoLevel,
       kVTCompressionPropertyKey_AverageBitRate: bitrate,
       kVTCompressionPropertyKey_ExpectedFrameRate: fps,
-      kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * 2,
-      kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 2,
+      kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * 10,
+      kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 10,
     ]
     for (key, value) in properties {
       VTSessionSetProperty(encoder, key: key, value: value as CFTypeRef)

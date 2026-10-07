@@ -166,6 +166,37 @@ test("invalidation and stale async lookup never revive a previous host identity"
   assert.equal(g.guard.allows(g.request(), g.owner()), false);
 });
 
+test("a host identity refreshed every 2 s never lapses for the checks between refreshes", async () => {
+  // A live screen refreshes the guard every 2 s and checks it every second
+  // (trackIdentity, server/index.mjs): no second may find the cache lapsed.
+  const f = fixture(); f.setActive(true);
+  for (let t = 1000; t <= 31000; t += 1000) {
+    f.setTime(t);
+    if ((t - 1000) % 2000 === 0) await f.guard.refresh();
+    assert.equal(f.guard.fresh(), true, `fresh at ${t}`);
+    assert.equal(f.guard.allows(f.request(), f.owner()), true, `allowed at ${t}`);
+  }
+  assert.ok(f.calls() >= 6 && f.calls() <= 16, `refreshed ${f.calls()} times in 30 s`);
+  // While a refresh is in flight, the copy still within its lifetime serves;
+  // a lapsed one does not.
+  let resolve;
+  const started = () => new Promise((done) => setImmediate(done));
+  const g = fixture({ lookup: () => new Promise((done) => { resolve = done; }) });
+  g.setActive(true);
+  const first = g.guard.refresh(); await started(); resolve(status()); await first;
+  g.setTime(4000);
+  const second = g.guard.refresh(); await started();
+  assert.equal(g.guard.allows(g.request(), g.owner()), true, "kept during the refresh");
+  resolve(status()); await second;
+  assert.equal(g.guard.fresh(), true);
+  g.setTime(20000);
+  const third = g.guard.refresh(); await started();
+  assert.equal(g.guard.fresh(), false);
+  assert.equal(g.guard.allows(g.request(), g.owner()), false, "a lapsed copy never serves");
+  resolve(status()); await third;
+  assert.equal(g.guard.allows(g.request(), g.owner()), true);
+});
+
 test("an unreadable or ambiguous client list fails closed", async () => {
   for (const clients of [() => { throw Error("unreadable grants"); }, () => undefined]) {
     const f = fixture({ clients }); await f.guard.refresh();

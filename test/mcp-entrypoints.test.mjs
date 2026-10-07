@@ -261,7 +261,9 @@ test("preset remote CLI and stdio MCP discover apps, open the browser, and deliv
   const f = await presetFixture(t, { desktopExtras: {
     open: async (client, app, authorize) => { authorize(); nativeCalls.push(["open", client.id, app]); return { ok: true, app: "Google Chrome" }; },
     screenshot: async (client, authorize) => { authorize(); nativeCalls.push(["screen", client.id]); return { jpeg, width: 100, height: 60 }; },
-    act: async (client, action, authorize) => { authorize(); nativeCalls.push(["act", client.id, action]); return { ok: true }; },
+    act: async (client, action, authorize) => { authorize();
+      if (action.text === "fixture busy") throw Object.assign(Error("Agent A is using the Mac."), { status: 409, kind: "busy", holder: "Agent A", retryInMs: 1200 });
+      nativeCalls.push(["act", client.id, action]); return { ok: true }; },
   } });
   const joined = await f.join({ preset: "apps", apps: [{ id: apps.chrome.id }] });
   // A loopback proxy represents the tested private ingress. Tailscale identity
@@ -284,11 +286,20 @@ test("preset remote CLI and stdio MCP discover apps, open the browser, and deliv
   await fs.writeFile(file, JSON.stringify(credential), { mode: 0o600 });
   const run = args => exec(process.execPath, [remote, ...args, "--allow-local"], { env: { ...process.env, REACH_AGENT_HOME: home }, timeout: 15000 });
   const list = await run(["tools"]);
+  const discovered = JSON.parse(list.stdout);
+  const credentialTools = JSON.parse((await exec(process.execPath, [cli, "tools", "--credential", file, "--allow-local"])).stdout);
+  assert.deepEqual(credentialTools, discovered, "both CLI entrypoints provide the same current schemas");
+  assert.deepEqual(discovered.find(tool => tool.name === "reach_open_app").inputSchema.required, ["app"]);
+  assert.ok(discovered.find(tool => tool.name === "reach_act").inputSchema.properties.action.oneOf.some(action => action.properties.type.enum.includes("type")));
   assert.match(list.stdout, /reach_open_app/); assert.match(list.stdout, /reach_screenshot/); assert.doesNotMatch(list.stdout, /reach_shell/);
   assert.equal(JSON.parse((await run(["call", "reach_open_app", JSON.stringify({ app: apps.chrome.id })])).stdout).ok, true);
   for (const action of [{ type: "click", x: 0.4, y: 0.5 }, { type: "type", text: "Reach browser task" }, { type: "key", key: "enter" }])
     assert.equal(JSON.parse((await run(["call", "reach_act", JSON.stringify({ action })])).stdout).ok, true);
   assert.deepEqual(nativeCalls.filter(call => call[0] === "act").map(call => call[2].type), ["click", "type", "key"]);
+  await assert.rejects(run(["call", "reach_act", JSON.stringify({ action: { type: "type", text: "fixture busy" } })]), error => {
+    assert.deepEqual(JSON.parse(error.stderr), { error: "Agent A is using the Mac.", status: 409, kind: "busy", holder: "Agent A", retryInMs: 1200 });
+    return true;
+  });
   const responses = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, "mcp", "--credential", file, "--allow-local"]);
     let output = "", error = "";

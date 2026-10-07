@@ -14,6 +14,7 @@
 //
 // JSON-RPC and results go to stdout; everything else to stderr.
 import fs from "node:fs";
+import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -317,7 +318,7 @@ function waitFor(t, origin, withKey, timeoutMs) {
 }
 
 // Requests through the agent's own tailnet node.
-export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
+export function tailnetApi(node, origin, token, { timeoutMs } = {}) {
   return async (
     route,
     method = "GET",
@@ -343,7 +344,7 @@ export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
       ...(data ? { body: new Uint8Array(data) } : {}),
       redirect: "error",
     });
-    const deadline = setTimeout(() => call.abort(), timeoutMs);
+    const deadline = setTimeout(() => call.abort(), timeoutMs ?? agentRequestTimeout(route, method));
     try {
       const head = await call.response;
       const screenImage = isScreenImageRoute(route) && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
@@ -369,10 +370,10 @@ export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
         Buffer.concat(chunks).toString("utf8") || "null",
       );
       if (head.status < 200 || head.status >= 300)
-        throw Error(result?.error || `Reach returned HTTP ${head.status}.`);
+        throw agentRequestError(head.status, result);
       return result;
     } catch (e) {
-      if (/abort|cancel/i.test(e.message))
+      if (!(Number.isInteger(e.status) && e.status >= 400 && e.status <= 599) && /abort|cancel/i.test(e.message))
         throw Error(
           "Reach request timed out. Mutating operations are not retried.",
         );
@@ -535,7 +536,7 @@ export function shareNode(conn, api) {
         const result = await api(r.route, r.method, r.body);
         socket.write(JSON.stringify({ id, result }) + "\n");
       } catch (e) {
-        socket.write(JSON.stringify({ id, error: e.message }) + "\n");
+        socket.write(JSON.stringify({ id, error: agentErrorDetails(e).error, details: agentErrorDetails(e) }) + "\n");
       }
     });
     socket.on("error", () => {});
@@ -569,7 +570,7 @@ export function viaShared(conn) {
         const r = JSON.parse(line);
         const w = waiting.get(r.id);
         waiting.delete(r.id);
-        if (r.error) w?.reject(Error(r.error));
+        if (r.error) w?.reject(agentRequestError(r.details?.status, r.details || { error: r.error }));
         else w?.resolve(r.result);
       });
     });
@@ -783,7 +784,7 @@ export async function main(argv = process.argv.slice(2)) {
   const verb = o._[0];
   if (!verb || ["help", "--help", "-h"].includes(verb)) {
     process.stdout.write(
-      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  status                computers you're connected to\n  tools                 what you can use there\n  call TOOL '{json}'    use one tool once\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
+      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
     );
     return 0;
   }
@@ -836,9 +837,7 @@ export async function main(argv = process.argv.slice(2)) {
     const scopes = (await api("/api/device")).access?.scopes || [];
     const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
     process.stdout.write(
-      toolsFor(scopes, access)
-        .map((t) => `${t.name}  ${t.description}`)
-        .join("\n") + "\n",
+      JSON.stringify(toolsFor(scopes, access), null, 2) + "\n",
     );
     return 0;
   }
@@ -875,5 +874,5 @@ if (entry === fileURLToPath(import.meta.url))
   main()
     .then((code) => process.stdout.write("", () => process.exit(code ?? 0)))
     .catch((e) =>
-      process.stderr.write(`Reach: ${e.message}\n`, () => process.exit(1)),
+      process.stderr.write(JSON.stringify(agentErrorDetails(e)) + "\n", () => process.exit(1)),
     );

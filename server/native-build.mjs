@@ -17,14 +17,17 @@ const exec = promisify(execFile);
 // - Older builds of the same helper are removed once a new one is in place.
 
 let tools = null; // { at, ok }
-export async function developerTools({ run = exec, now = Date.now } = {}) {
+export async function developerTools({ run = exec, now = Date.now, signal } = {}) {
+  signal?.throwIfAborted();
   if (process.platform !== "darwin") return false;
   if (tools?.ok || (tools && now() - tools.at < 60000)) return tools.ok;
   let ok = false;
   try {
-    const { stdout } = await run("/usr/bin/xcode-select", ["-p"], { timeout: 5000 });
+    const { stdout } = await run("/usr/bin/xcode-select", ["-p"], { timeout: 5000, ...(signal ? { signal } : {}) });
+    signal?.throwIfAborted();
     ok = !!stdout.trim() && existsSync(stdout.trim());
   } catch {
+    signal?.throwIfAborted();
     ok = false;
   }
   tools = { at: now(), ok };
@@ -34,24 +37,57 @@ export const resetDeveloperTools = () => {
   tools = null;
 };
 
-const building = new Map(); // output file -> promise
+const building = new Map(); // output file -> build and its current callers
+
+// Each caller owns only its wait. Quitting one session must not cancel a
+// shared compile another live session still needs; the compiler is stopped
+// only after its final caller lets go.
+function waitForBuild(build, signal) {
+  const caller = {};
+  build.callers.add(caller);
+  return new Promise((resolve, reject) => {
+    const detach = () => {
+      signal?.removeEventListener("abort", abort);
+      build.callers.delete(caller);
+    };
+    const abort = () => {
+      detach();
+      if (!build.callers.size) build.controller.abort();
+      reject(signal.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    build.promise.then(
+      (file) => { detach(); resolve(file); },
+      (error) => { detach(); reject(error); },
+    );
+    if (signal?.aborted) abort();
+  });
+}
+
 // Builds `file` with `/usr/bin/xcrun <args… -o tmp>` unless it's there. The
 // temporary file is this build's own; the result appears whole or not at all.
 export function buildNative(file, args, { timeout = 120000, signal, missing, run = exec, prune = true } = {}) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
   if (existsSync(file)) return Promise.resolve(file);
   let build = building.get(file);
-  if (!build) {
-    build = (async () => {
-      if (!(await developerTools({ run }))) {
+  if (!build || build.controller.signal.aborted) {
+    build = { controller: new AbortController(), callers: new Set() };
+    const current = build;
+    const compiling = build.controller.signal;
+    build.promise = (async () => {
+      if (!(await developerTools({ run, signal: compiling }))) {
         throw Object.assign(
           new Error(missing || "This needs Apple Command Line Tools. Run xcode-select --install on your Mac."),
           { status: 503, developerTools: false },
         );
       }
+      compiling.throwIfAborted();
       const tmp = `${file}-${process.pid}-${crypto.randomBytes(4).toString("hex")}.tmp`;
       try {
-        await run("/usr/bin/xcrun", [...args, "-o", tmp], { timeout, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
+        await run("/usr/bin/xcrun", [...args, "-o", tmp], { timeout, maxBuffer: 1024 * 1024, signal: compiling });
+        compiling.throwIfAborted();
         await fs.chmod(tmp, 0o700);
+        compiling.throwIfAborted();
         await fs.rename(tmp, file);
       } catch (e) {
         await fs.rm(tmp, { force: true });
@@ -60,11 +96,11 @@ export function buildNative(file, args, { timeout = 120000, signal, missing, run
       if (prune) await pruneOlder(file);
       return file;
     })().finally(() => {
-      if (building.get(file) === build) building.delete(file);
+      if (building.get(file) === current) building.delete(file);
     });
     building.set(file, build);
   }
-  return build;
+  return waitForBuild(build, signal);
 }
 
 // reach-<kind>-<hash>: the builds of one helper differ only in their hash.

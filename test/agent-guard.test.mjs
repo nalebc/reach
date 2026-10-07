@@ -100,3 +100,78 @@ test("native rules carry the whole protected list and the preset's app set", () 
   assert.equal(nativeRules({ preset: "readonly" }).mode, "view");
   assert.deepEqual(nativeRules({ preset: "full", hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] }).hiddenApps, [{ id: "/System/Applications/Messages.app", bundleId: "", name: "Messages" }]);
 });
+
+
+test("Reach URL checks narrow only unambiguous HTTP authorities and preserve conservative fallback", () => {
+  const hosts = ["mac.tail1234.ts.net", "localhost:8443", "127.0.0.1:8443", "[::1]:8443"];
+  for (const address of [
+    "https://example.com/help/mac.tail1234.ts.net",
+    "https://example.com/search?q=localhost:8443",
+    "https://example.com/#https://mac.tail1234.ts.net/",
+    "https://example.com:443/?next=http://localhost:8443/",
+    "https://user:pass@example.com/mac.tail1234.ts.net",
+    "http://127.0.0.2:8443/?next=localhost:8443",
+    "http://[::2]:8443/?next=localhost:8443",
+    "https://example.com./?next=mac.tail1234.ts.net",
+    "https://example.com/%20?next=localhost:8443",
+  ]) {
+    assert.equal(protectedPage(address, hosts), false, address);
+    assert.equal(typedTextRefusal(address, { hosts }), null, address);
+    assert.equal(typedTextRefusal(address, { hosts, terminalLike: true }), null, address);
+  }
+  for (const address of [
+    "https://mac.tail1234.ts.net/", "http://localhost:8443/", "http://127.0.0.1:8443/", "http://[::1]:8443/",
+    // Existing raw-authority substring semantics intentionally remain conservative.
+    "https://mac.tail1234.ts.net@ordinary.test/", "https://ordinary.test@mac.tail1234.ts.net/",
+    "https://mac.tail1234.ts.net.evil.test/", "http://localhost:84430/", "https://mac.tail1234.ts.net./",
+    "example.com/help/mac.tail1234.ts.net", "//example.com/?next=localhost:8443",
+    "ftp://example.com/mac.tail1234.ts.net", "https:///example.com/?next=localhost:8443",
+    "https://example.com:65536/?next=localhost:8443", "https://example.com:bad/?next=localhost:8443",
+    "https://example.com/%zz?next=localhost:8443", "https://%65xample.com/?next=localhost:8443",
+    "https://example.com/space here?next=localhost:8443", "https://example.com/\t?next=localhost:8443",
+    String.raw`https://example.com\@localhost:8443/`, "https://例子.example/?next=localhost:8443",
+    "http://127.1/?next=localhost:8443", "http://2130706433/?next=localhost:8443",
+    "http://256.1/?next=localhost:8443", "http://[::::]/?next=localhost:8443",
+    "http://[1:2:3]/?next=localhost:8443",
+  ]) {
+    assert.equal(protectedPage(address, hosts), true, address);
+    assert.ok(typedTextRefusal(address, { hosts }), address);
+    assert.ok(typedTextRefusal(address, { hosts, terminalLike: true }), address);
+  }
+});
+
+test("terminal URL arguments allow unrelated destinations but keep true and embedded Reach targets closed", () => {
+  const hosts = ["mac.tail1234.ts.net", "localhost:8443"];
+  for (const command of [
+    "curl https://example.com/search?q=localhost:8443",
+    'curl "https://example.com/help/mac.tail1234.ts.net"',
+    "open https://example.com/#mac.tail1234.ts.net",
+    "curl --url https://example.com/search?q=localhost:8443",
+  ]) {
+    assert.equal(commandRefusal(command, { ...context, hosts }), null, command);
+    assert.equal(typedTextRefusal(command, { ...context, hosts, terminalLike: true }), null, command);
+  }
+  for (const command of [
+    'curl "https://mac.tail1234.ts.net/"', "open http://localhost:8443/",
+    "curl --url=https://mac.tail1234.ts.net/", "curl --url https://mac.tail1234.ts.net/",
+    'node -e \'fetch("http://localhost:8443")\'',
+    'node -e \'fetch("https://example.com/?next=localhost:8443")\'',
+    "echo note; curl http://localhost:8443/", "curl https://example.com/%zz?next=localhost:8443",
+    `python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8443")'`,
+    `sh -c 'curl "http://localhost:8443/"'`,
+    `curl "https://example.com/"'localhost:8443'`,
+    `curl https://example.com/"mac.tail1234.ts.net"`,
+    // These are literal policy inputs, never executed as shell commands.
+    'curl https://example.com/$(curl${IFS}http://localhost:8443/)',
+    'curl "https://example.com/$(curl${IFS}http://localhost:8443/)"',
+    'curl https://example.com/${target:-localhost:8443}',
+    'curl https://example.com/`curl${IFS}http://localhost:8443/`',
+    // Embedded and non-URL arguments retain the conservative whole-argument check.
+    "curl --url=https://example.com/?next=localhost:8443", "echo mac.tail1234.ts.net",
+    "mac.tail1234.ts.net document", "https://example.com/ malformed localhost:8443",
+  ]) {
+    assert.ok(commandRefusal(command, { ...context, hosts }), command);
+    assert.ok(typedTextRefusal(command, { ...context, hosts, terminalLike: true }), command);
+  }
+  assert.ok(typedTextRefusal("curl https://example.com/?next=localhost:8443", { hosts }), "non-terminal prose keeps conservative fallback");
+});

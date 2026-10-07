@@ -433,7 +433,9 @@ export function createClaudeHost({
     if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     const compatible = await check(claude);
-    if (compatible.status !== "available") throw compatibilityError("claude", "CLI");
+    if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
+    if (compatible.status !== "available")
+      throw bad("Couldn’t check Claude Code’s connection. Try again in a moment, or use the screen or terminal.", 503);
     if (closed) throw bad("Claude session service is closed.", 503);
     const mode = claudeMode(s.settings.mode);
     const args = [
@@ -479,8 +481,10 @@ export function createClaudeHost({
         if (!line.trim()) continue;
         try {
           handle(s, JSON.parse(line));
-        } catch {
-          s.error = compatibilityError("claude", "stream").message;
+        } catch (error) {
+          // Preserve the specific checked feature; a malformed JSON line is
+          // a stream mismatch. Never expose arbitrary provider payloads.
+          s.error = error?.code === "AGENT_INCOMPATIBLE" ? error.message : compatibilityError("claude", "stream").message;
           end(s); changed(s); return;
         }
       }

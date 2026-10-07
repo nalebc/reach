@@ -275,6 +275,25 @@ export async function createReach(overrides = {}) {
     return client?.policy?.browser && req.headers.upgrade?.toLowerCase() === "websocket"
       ? null : client;
   };
+  // Why `verify` refused a sound credential for a moment, if that's what
+  // happened: Tailscale's word on the phone (whois) or on this Mac (the host
+  // guard, while an agent has app access) hasn't come in time. An open
+  // connection (a live screen, a terminal) ends as retryable then, not as
+  // revoked: the phone reconnects, and is checked afresh (a device that was
+  // removed is refused there). Before, a busy Mac or a network change stopped
+  // the phone on "Screen access expired or was revoked" (Oct 7).
+  const transientDenial = (req, token) => {
+    if (!config.tailscaleOwner || funnelRequests.has(req)) return "";
+    if (!(req.reachIdentity?.validUntil > Date.now()))
+      return "Checking this phone's connection. Reconnecting…";
+    if (
+      browserHostGuard.isActive() &&
+      !browserHostGuard.fresh() &&
+      auth.verify(token, req.reachIdentity)
+    )
+      return "Checking this Mac's connection. Reconnecting…";
+    return "";
+  };
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
   const trackIdentity = (req, end) => {
     if (!config.tailscaleOwner || funnelRequests.has(req)) return () => {};
@@ -602,7 +621,7 @@ export async function createReach(overrides = {}) {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder(), paused: () => paused, record,
+    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(), paused: () => paused, record,
   }) : null);
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
@@ -3252,6 +3271,8 @@ export async function createReach(overrides = {}) {
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
+    if (screenControl.inputStopping())
+      throw fail(409, "Wait for the previous desktop input helper to stop.");
     if (inputInFlight)
       throw fail(409, "Wait for the previous screen action to finish.");
     inputInFlight = true;
@@ -3265,6 +3286,8 @@ export async function createReach(overrides = {}) {
           )
             throw fail(403, "Screen access was turned off or revoked.");
           screenControl.check(req.client);
+          if (screenControl.inputStopping())
+            throw fail(409, "Wait for the previous desktop input helper to stop.");
         }),
       );
     } finally {
@@ -3563,12 +3586,25 @@ export async function createReach(overrides = {}) {
     if (req.url === "/ws/screen-input") {
       desktopConnection(ws, {
         config,
-        auth: { verify: (token) => verify(req, token) },
+        auth: {
+          verify: (token) => verify(req, token),
+          interruption: (token) => transientDenial(req, token),
+        },
         control: screenControl,
         create: overrides.desktopInputFactory,
         register: (id, socket) => {
-          if (inputConnections.has(id))
-            throw fail(409, "This device already has a control connection.");
+          // One control connection per phone; one on its way out (closed
+          // here to reconnect, or by the phone for the same reason) makes
+          // room for the one taking its place.
+          const current = inputConnections.get(id);
+          if (current && current.readyState === WebSocket.OPEN)
+            // Retryable: a reconnect can arrive a moment before the stalled
+            // connection it replaces is noticed here (3 s without a word).
+            throw Object.assign(
+              fail(409, "This device already has a control connection. Reconnecting…"),
+              { retryable: true },
+            );
+          current?.endControl?.("Desktop control reconnecting…", true);
           inputConnections.set(id, socket);
         },
         unregister: (id, socket) => {
@@ -3620,6 +3656,12 @@ export async function createReach(overrides = {}) {
       const authorized = () => {
         const client = credential && verify(req, credential);
         if (!client) {
+          const interruption = transientDenial(req, credential);
+          if (interruption) {
+            console.warn(`Reach: screen stream reconnecting: ${interruption}`);
+            reject(interruption, 503);
+            return false;
+          }
           reject("Screen access expired or was revoked.", 401);
           return false;
         }
@@ -3730,7 +3772,11 @@ export async function createReach(overrides = {}) {
         screenStreams.remove(ws);
         remoteScreens.remove(ws);
         appScreens.remove(ws);
-        if (!inputConnections.has(ws.clientId))
+        // No control connection and none expected back: control is over.
+        if (
+          !inputConnections.has(ws.clientId) &&
+          !screenControl.reconnecting(ws.clientId)
+        )
           screenControl.revoke(ws.clientId);
       });
       ws.on("error", () => {});
@@ -3748,7 +3794,10 @@ export async function createReach(overrides = {}) {
           client.agentRoots.some((root) => within(root, session.cwd)))
       )
         return true;
-      ws.close(4001, "Access revoked or expired");
+      // The phone's terminal reconnects on any close but 4001 (Sessions.tsx).
+      if (!client && transientDenial(req, credential))
+        ws.close(1012, "Checking the connection");
+      else ws.close(4001, "Access revoked or expired");
       return false;
     };
     const expiryCheck = setInterval(stillAuthorized, 1000);

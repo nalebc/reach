@@ -4,16 +4,18 @@ export class ReconnectTimer {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: (() => void) | undefined;
   // A live screen waits at most `max`: a phone held for 30 s on the loading
-  // scene after a few blips felt like Reach had died.
+  // scene after a few blips felt like Reach had died. Its first try comes
+  // after `base`: a blip that is over at once costs a quarter second, not one.
   constructor(
     private random = Math.random,
     private max = 30000,
+    private base = 1000,
   ) {}
   schedule(run: () => void) {
     this.cancel();
     this.pending = run;
     const delay =
-      Math.min(this.max, 1000 * 2 ** Math.min(this.attempt++, 5)) *
+      Math.min(this.max, this.base * 2 ** Math.min(this.attempt++, 5)) *
       (0.8 + this.random() * 0.2);
     this.timer = setTimeout(() => this.wake(), delay);
     return delay;

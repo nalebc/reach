@@ -510,6 +510,7 @@ export function createAgentSessions({
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
   let closed = false;
+  const preparingHelpers = new AbortController();
   const delivering = new Set();
   const deliveringMessage = new Map();
   const wakers = new Map();
@@ -1454,7 +1455,7 @@ export function createAgentSessions({
       if (listenForAsks && process.platform === "darwin")
         setTimeout(() => {
           if (closed) return;
-          for (const kind of ["permission-card", "claude-consent"]) desktopBinary({ dataDir }, kind).catch(() => {});
+          for (const kind of ["permission-card", "claude-consent"]) desktopBinary({ dataDir }, kind, { signal: preparingHelpers.signal }).catch(() => {});
         }, 2000).unref?.();
       return this.list().catch(() => null);
     },
@@ -1462,6 +1463,7 @@ export function createAgentSessions({
     // the Codex daemon (its open socket would keep Reach running).
     close() {
       closed = true;
+      preparingHelpers.abort();
       connectors.close();
       for (const agent of ["claude", "codex"]) signIn?.cancel?.(agent);
       claudeHost?.close?.();
@@ -1565,7 +1567,7 @@ export function createAgentSessions({
         const { id: consentId, kind: about, title, reason, options, apps: names = [] } = result.session.consent;
         // Built while the card is read (not at start: the compiler would hold
         // up quitting), so the answer is quick.
-        if (listenForAsks && process.platform === "darwin") desktopBinary({ dataDir }, "claude-consent").catch(() => {});
+        if (listenForAsks && process.platform === "darwin") desktopBinary({ dataDir }, "claude-consent", { signal: preparingHelpers.signal }).catch(() => {});
         const installed = names.length ? await Promise.resolve(installedApps()).catch(() => []) : [];
         result.session.asking = {
           kind: "consent",
@@ -1617,7 +1619,7 @@ export function createAgentSessions({
       // A card answerable from the phone: its helper built while it's read,
       // so the tap is quick (not at start: the compiler would hold up quitting).
       if (newest && result.session.asking?.id?.startsWith?.("app-permission:") && listenForAsks && process.platform === "darwin")
-        desktopBinary({ dataDir }, "permission-card").catch(() => {});
+        desktopBinary({ dataDir }, "permission-card", { signal: preparingHelpers.signal }).catch(() => {});
       if (newest) settleWaiting(result.session);
       return result;
     },

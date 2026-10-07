@@ -1,4 +1,30 @@
-import { Fragment, memo, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
+
+// A link to another Claude session, as the Claude app writes them
+// ("[title](#local_<id>)"): the chat that shows this message opens that
+// session here, when it's one of this Mac's. Without a provider (OpenClaw's
+// space) the link shows as text, like any other link into an app.
+export const SessionLinkContext = createContext<
+  ((appSessionId: string) => boolean) | null
+>(null);
+const SESSION_LINK = /^#?(local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+function SessionLink({ id, children }: { id: string; children: ReactNode }) {
+  const open = useContext(SessionLinkContext);
+  // Tapped, but that session isn't on this Mac yet (Reach reads the Claude
+  // app's sessions every little while): said once, on the link.
+  const [missing, setMissing] = useState(false);
+  if (!open) return <u>{children}</u>;
+  return (
+    <button
+      type="button"
+      className="md-session-link"
+      onClick={() => setMissing(!open(id))}
+    >
+      {children}
+      {missing && <small> · not here yet</small>}
+    </button>
+  );
+}
 
 // The little markdown agents write: code blocks, inline code, bold, lists,
 // headings and tables. Rendered as React elements only; nothing becomes HTML.
@@ -18,6 +44,12 @@ function inline(text: string, key: string): ReactNode[] {
         <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
           {match[3]}
         </a>,
+      );
+    else if (SESSION_LINK.test(match[4]))
+      out.push(
+        <SessionLink key={k} id={match[4].replace(/^#/, "")}>
+          {match[3]}
+        </SessionLink>,
       );
     else out.push(<u key={k}>{match[3]}</u>);
     last = match.index! + match[0].length;

@@ -344,3 +344,119 @@ test(
     );
   },
 );
+
+
+test("ending a watch aborts preparation and discards a helper that arrives after close", async () => {
+  let prepared, signal, stopped = false;
+  const helper = new EventEmitter();
+  helper.stop = () => { stopped = true; };
+  const watch = new MacTerminalWatch({
+    terminals: { list: () => assert.fail("a closed watch cannot inspect terminals") },
+    start: ({ signal: pending }) => {
+      signal = pending;
+      return new Promise(resolve => { prepared = resolve; });
+    },
+  });
+  watch.retain();
+  const starting = watch.starting;
+  watch.end();
+  assert.equal(signal.aborted, true, "pending native compilation receives cancellation");
+  prepared(helper); // even a dependency that ignores cancellation cannot install a helper
+  await starting;
+  assert.equal(stopped, true);
+  assert.equal(watch.helper, null);
+  assert.deepEqual(watch.timers, {});
+});
+
+test("ending a watch during its first refresh cannot reinstall its safety timer", async () => {
+  let listed;
+  const helper = new EventEmitter();
+  helper.send = () => {};
+  helper.stop = () => {};
+  const watch = new MacTerminalWatch({
+    terminals: { list: () => new Promise(resolve => { listed = resolve; }) },
+    start: async () => helper,
+  });
+  watch.retain();
+  await until(() => listed);
+  const starting = watch.starting;
+  watch.end();
+  listed({ sessions: [], providers: [] });
+  await starting;
+  assert.equal(watch.helper, null);
+  assert.deepEqual(watch.timers, {});
+});
+
+
+test("a new phone can prepare a watch before an aborted preparation settles", async () => {
+  const pending = [];
+  const watch = new MacTerminalWatch({
+    terminals: { list: async () => ({ sessions: [], providers: [] }) },
+    start: ({ signal }) => new Promise(resolve => pending.push({ signal, resolve })),
+  });
+  const helper = () => {
+    const h = new EventEmitter();
+    h.send = () => {};
+    h.stop = () => { h.stopped = true; };
+    return h;
+  };
+  watch.retain();
+  const first = watch.starting;
+  watch.end();
+  assert.equal(pending[0].signal.aborted, true);
+  assert.equal(pending.length, 1, "end must not restart just because users remain");
+  watch.retain();
+  const replacement = watch.starting;
+  assert.equal(pending.length, 2, "an explicit new retain starts fresh preparation");
+  assert.notEqual(replacement, first);
+  const stale = helper();
+  pending[0].resolve(stale); // the cancelled dependency ignores its signal
+  await first;
+  assert.equal(stale.stopped, true);
+  assert.equal(watch.starting, replacement, "old finally cannot clear the replacement's ownership");
+  assert.equal(watch.preparing.signal, pending[1].signal);
+  assert.equal(pending[1].signal.aborted, false);
+  const current = helper();
+  pending[1].resolve(current);
+  await replacement;
+  assert.equal(watch.helper, current);
+  assert.equal(watch.ready, true);
+  watch.end();
+  assert.equal(current.stopped, true);
+});
+
+
+test("late events from a stopped or replaced helper cannot restart terminal discovery", async (t) => {
+  let lists = 0;
+  const helpers = [];
+  const watch = new MacTerminalWatch({
+    terminals: { list: async () => { lists++; return { sessions: [], providers: [] }; } },
+    start: async () => {
+      const helper = new EventEmitter();
+      helper.send = () => {};
+      helper.stop = () => {};
+      helpers.push(helper);
+      return helper;
+    },
+  });
+  t.after(() => watch.end());
+  watch.retain();
+  await watch.starting;
+  assert.equal(lists, 1);
+  const old = helpers[0];
+  watch.end();
+  old.emit("event", { type: "opened" });
+  old.emit("event", { type: "output", tty: "/dev/synthetic" });
+  assert.deepEqual(watch.timers, {}, "a stopped helper must not enqueue discovery");
+  await settle(300);
+  assert.equal(lists, 1);
+  watch.retain();
+  await watch.starting;
+  assert.equal(lists, 2);
+  old.emit("event", { type: "opened" });
+  old.emit("event", { type: "output", tty: "/dev/synthetic" });
+  assert.equal(watch.timers.soon, undefined, "a replaced helper must not enqueue discovery");
+  assert.equal(watch.timers.rename, undefined);
+  helpers[1].emit("event", { type: "opened" });
+  await until(() => lists === 3);
+});

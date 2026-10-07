@@ -112,7 +112,7 @@ function fixture(answer) {
         "every proof has a new nonce",
       );
       calls.push({ envelope, payload });
-      return answer(payload, calls);
+      return answer(payload, calls, init);
     },
   };
   return {
@@ -477,4 +477,32 @@ test("a signed browser verifies an owner extension after its original local dead
   assert.equal(resumed.session.expiresAt, extended);
   assert.equal(f.calls.at(-1).payload.path, "/api/device");
   assert.equal(f.keyStore.data.get(state.id).expiresAt, extended + 86400000);
+});
+
+
+test("signed shell requests keep the 60s execution budget while other requests retain the ordinary deadline", async t => {
+  const deadlines = [];
+  t.mock.method(AbortSignal, "timeout", ms => {
+    const controller = new AbortController(); deadlines.push({ ms, controller }); return controller.signal;
+  });
+  const f = fixture((payload, _calls, init) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "status") return reply(approved());
+    // Advance only ordinary deadlines: the server is still allowed to finish.
+    if (payload.path === "/api/browser/shell" && payload.method === "POST") deadlines.filter(d => d.ms <= 35000).forEach(d => d.controller.abort());
+    if (init.signal.aborted) throw Error("shell request ended before allowed completion");
+    return reply({ status: "executed", output: "signed late result" });
+  });
+  let state = await f.client.prepare(invitation);
+  state = await f.client.claim(state);
+  state = await f.client.status(state);
+  deadlines.length = 0;
+  const result = await f.client.request(state.session.peer, "/api/browser/shell", { method: "POST", body: JSON.stringify({ command: "fixture", root: 0 }) });
+  assert.equal((await result.json()).output, "signed late result");
+  assert.deepEqual(deadlines.map(d => d.ms), [70000]);
+  for (const [path, method] of [["/api/browser/shell?extra=1", "POST"], ["/api/browser/shell", "GET"], ["/api/browser/desktop/input", "POST"]]) {
+    deadlines.length = 0;
+    await f.client.request(state.session.peer, path, { method });
+    assert.deepEqual(deadlines.map(d => d.ms), [35000]);
+  }
 });

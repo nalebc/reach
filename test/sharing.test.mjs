@@ -5,15 +5,21 @@ import ts from "typescript";
 
 // Exercise the same TypeScript shipped to the browser, without a DOM runner.
 async function sourceModule(path) {
-  const source = await fs.readFile(new URL(path, import.meta.url), "utf8");
+  const sourceUrl = new URL(path, import.meta.url);
+  const source = await fs.readFile(sourceUrl, "utf8");
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.ESNext,
     },
   });
+  // Data URLs cannot resolve relative imports; use the real shared helper.
+  const resolvedOutput = outputText.replaceAll(
+    JSON.stringify("../server/agent-transport.mjs"),
+    JSON.stringify(new URL("../server/agent-transport.mjs", sourceUrl).href),
+  );
   return import(
-    `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
+    `data:text/javascript;base64,${Buffer.from(resolvedOutput).toString("base64")}`
   );
 }
 const {

@@ -52,3 +52,27 @@ test("bridge aborts outstanding calls on disposal and expires on server revocati
 });
 
 test("tool bridge produces no React warnings", () => { assert.deepEqual(dom.errors, []); });
+
+test("Full-control shell results can arrive after the ordinary request deadline", async (t) => {
+  const timers = [], realTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 35000 || ms === 70000) {
+      timers.push({ ms, fire: () => callback(...args) });
+      return realTimeout(callback, 10000, ...args);
+    }
+    return realTimeout(callback, ms, ...args);
+  });
+  const full = { ...access, preset: "full", shell: true, screen: true, control: true, open: true, write: true };
+  globalThis.fetch = dom.window.fetch = async (url, init) => {
+    if (new URL(url).pathname === "/api/browser") return reply(full);
+    timers.filter(timer => timer.ms <= 35000).forEach(timer => timer.fire());
+    if (init.signal.aborted) throw Error("fixture request aborted before the allowed shell finished");
+    return reply({ status: "executed", output: "late fixture success" });
+  };
+  const session = installBrowserTools(peer);
+  try {
+    const result = await session.bridge.callTool("reach_shell", { root: 0, command: "fixture" });
+    assert.equal(result.output, "late fixture success");
+    assert.ok(timers.every(timer => timer.ms > 60000));
+  } finally { session.dispose(); }
+});
