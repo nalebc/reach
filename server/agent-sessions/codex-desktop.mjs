@@ -10,13 +10,20 @@ import { randomUUID } from "node:crypto";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const fail = (message) => Object.assign(new Error(message), { status: 409 });
-const unavailable = () =>
+const settingsUnavailable = () =>
   fail(
     "Codex desktop couldn't apply the model change. Try again once the chat is open in Codex.",
   );
-const uncertain = () =>
+const settingsUncertain = () =>
   fail(
     "Codex didn't confirm the model change. Check its model before trying again.",
+  );
+const steerUnavailable = () =>
+  fail("The Codex app couldn't take it now. It stays queued.");
+const steerUncertain = () =>
+  Object.assign(
+    fail("The Codex app didn't confirm it. It may already be in the chat: check there before sending again."),
+    { uncertain: true },
   );
 const MAX_FRAME = 16 * 1024 * 1024;
 
@@ -42,10 +49,13 @@ export function createCodexDesktop({
       socket.mode & 0o022 ||
       directory.mode & 0o022
     )
-      throw unavailable();
+      throw settingsUnavailable();
   },
 } = {}) {
-  const update = async (conversationId, threadSettings) => {
+  // One request to the app that owns the chat (found by asking): it's
+  // written once and never replayed; with no clear answer after it's written,
+  // the outcome is uncertain, not failed.
+  const ask = async (conversationId, { method, version, params, check, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
     if (!UUID.test(conversationId)) throw unavailable();
     try {
       await checkEndpoint();
@@ -90,7 +100,7 @@ export function createCodexDesktop({
           targetClientId,
         });
         try {
-          if (method === "thread-follower-update-thread-settings")
+          if (method !== "initialize" && method !== "thread-owner-discovery")
             wroteSettings = true;
           send({
             type: "request",
@@ -184,22 +194,52 @@ export function createCodexDesktop({
         !owner.handledByClientId
       )
         throw unavailable();
-      const applied = await rpc(
-        "thread-follower-update-thread-settings",
-        { conversationId, threadSettings },
-        2,
-        owner.handledByClientId,
-      );
-      if (applied.result?.applied !== true) throw uncertain();
-      return { ...threadSettings, applied: true };
+      const answer = await rpc(method, { conversationId, ...params }, version, owner.handledByClientId);
+      if (!check(answer.result)) throw uncertain();
+      return answer.result;
     } finally {
       end(unavailable());
     }
   };
+  const update = async (conversationId, threadSettings) => {
+    await ask(conversationId, {
+      method: "thread-follower-update-thread-settings",
+      version: 2,
+      params: { threadSettings },
+      check: (result) => result?.applied === true,
+    });
+    return { ...threadSettings, applied: true };
+  };
   return {
+    // Into the running turn now, as the Codex app's own Steer does (from its
+    // composer, or a queued message's Steer: then queued names it, and the
+    // app takes it out of its queue). input: Codex's UserInput items.
+    steer(conversationId, { input, text = "", cwd = null, clientUserMessageId = randomUUID(), queued = null }) {
+      if (!Array.isArray(input) || !input.length) return Promise.reject(steerUnavailable());
+      return ask(conversationId, {
+        method: "thread-follower-steer-turn",
+        version: 1,
+        params: {
+          clientUserMessageId,
+          input,
+          attachments: [],
+          // What the app shows, and puts back, should the steer fail.
+          restoreMessage: {
+            id: clientUserMessageId,
+            text,
+            cwd,
+            context: { workspaceRoots: cwd ? [cwd] : [], collaborationMode: null },
+            ...(queued ? { serverQueuedMessageId: queued } : {}),
+          },
+        },
+        check: (result) => result != null && typeof result === "object",
+        unavailable: steerUnavailable,
+        uncertain: steerUncertain,
+      }).then(() => ({ steered: true, clientUserMessageId }));
+    },
     model(conversationId, { model, effort }) {
       if (typeof model !== "string" || !model.trim())
-        return Promise.reject(unavailable());
+        return Promise.reject(settingsUnavailable());
       return update(conversationId, { model, ...(effort ? { effort } : {}) });
     },
     permissions(
@@ -212,7 +252,7 @@ export function createCodexDesktop({
         typeof permissions !== "string" ||
         !/^:?[\w.-]+$/.test(permissions)
       )
-        return Promise.reject(unavailable());
+        return Promise.reject(settingsUnavailable());
       return update(conversationId, {
         approvalPolicy,
         approvalsReviewer,

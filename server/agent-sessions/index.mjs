@@ -1190,11 +1190,10 @@ export function createAgentSessions({
       return current.stop(id);
     },
     // Send now, as the agents' apps have it: first in line and in at once
-    // (a Claude app chat switches to it even while the Mac is in use). Codex
-    // runs its own queue; Reach can't jump it.
+    // (a Claude app chat switches to it even while the Mac is in use; Codex
+    // steers it into the turn it's running, as the Codex app's Steer).
     async sendQueuedNow(agent, id, messageId) {
-      if (host(agent) === codexLive)
-        throw Object.assign(new Error("The Codex app runs its queue itself. Steer it from the Codex app."), { status: 409 });
+      if (host(agent) === codexLive) return codexLive.sendQueuedNow(id, messageId);
       const message = outbox.list(id).find((m) => m.id === messageId);
       if (!message) throw Object.assign(new Error("That message already left the queue."), { status: 409 });
       if (message.delivery) throw Object.assign(new Error("Delivery is in progress or uncertain. Check Claude before sending again."), { status: 409 });
@@ -1215,6 +1214,15 @@ export function createAgentSessions({
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
+    },
+    // A queued message edited where it waits, as in both apps.
+    async editQueued(agent, id, messageId, text) {
+      if (host(agent) === codexLive) return codexLive.editQueued(id, messageId, text);
+      if (deliveringMessage.get(id) === messageId)
+        throw Object.assign(new Error("That message is being sent. Wait for the chat to update."), { status: 409 });
+      if (!outbox.edit(id, messageId, text))
+        throw Object.assign(new Error("That message already left the queue."), { status: 409 });
+      return { edited: true };
     },
     async cancelQueued(agent, id, messageId) {
       if (host(agent) === codexLive) return codexLive.cancelQueued(id, messageId);

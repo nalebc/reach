@@ -2,10 +2,10 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Queued messages as the agents' own apps show them: one line each (the
-// whole message used to show, wrapped); Claude's fold into a stack and offer
-// Send now and a new order; Codex's list Edit and remove only (the Codex app
-// runs its own queue).
+// Queued messages as the agents' own apps show them: one line each, the
+// whole of it on a tap; Edit where it waits (pictures kept); Send now (Claude:
+// into its app chat at once; Codex: its Steer); Claude's fold into a stack and
+// take a new order.
 let dom, React, QueuedMessages;
 before(async () => {
   dom = await startDom({ mobile: true });
@@ -27,7 +27,9 @@ const render = (props) => {
       React.createElement(QueuedMessages, {
         busy: null,
         canEdit: true,
-        onEdit: (m) => calls.edit.push(m.id),
+        onEdit: async (m, text) => {
+          calls.edit.push([m.id, text]);
+        },
         onRemove: (m) => calls.remove.push(m.id),
         onSendNow: (m) => calls.now.push(m.id),
         onReorder: (ids) => calls.order.push(ids),
@@ -39,60 +41,91 @@ const render = (props) => {
 const $$ = (sel) => [...dom.document.querySelectorAll(sel)];
 const button = (label) => $$("button").filter((b) => b.getAttribute("aria-label") === label);
 
-test("Claude: a stack of one line each, opened with a tap", async () => {
+
+test("Claude: a stack of one line each, opened with a tap; a message opens whole on a tap", async () => {
   const { view } = await render({ agent: "claude", messages: three });
-  assert.equal($$(".qm-row").length, 1, "folded: the first one only");
-  const head = $$(".qm-head")[0];
-  assert.match(head.textContent, /3 queued/);
-  head.click();
-  await settle(10);
-  assert.equal($$(".qm-row").length, 3);
-  // One line each: its text in a single line, the whole of it only on hover/long-press.
-  const first = $$(".qm-text p")[0];
-  assert.equal(first.textContent, long);
-  assert.equal(first.getAttribute("title"), long);
-  assert.equal($$(".qm-text p").length, 3);
-  // Why one waits, in one line under it.
-  assert.match($$(".qm-why")[0].textContent, /Claude app/);
-  await view.unmount();
+  try {
+    assert.equal($$(".qm-row").length, 1, "folded: the first one only");
+    const head = $$(".qm-head")[0];
+    assert.match(head.textContent, /3 queued/);
+    head.click();
+    await settle(10);
+    assert.equal($$(".qm-row").length, 3);
+    // One line each; a tap shows all of it, another folds it back.
+    const first = $$(".qm-open")[0];
+    assert.equal(first.textContent, long);
+    assert.equal(first.getAttribute("aria-expanded"), "false");
+    first.click();
+    await settle(10);
+    assert.equal($$(".qm-open")[0].getAttribute("aria-expanded"), "true");
+    assert.equal($$(".qm-text.whole").length, 1);
+    $$(".qm-open")[0].click();
+    await settle(10);
+    assert.equal($$(".qm-text.whole").length, 0);
+    // Why one waits, in one line under it.
+    assert.match($$(".qm-why")[0].textContent, /Claude app/);
+  } finally {
+    await view.unmount();
+  }
   assert.deepEqual(dom.errors, []);
 });
 
 test("Claude: Send now and a new order, by the handle and the arrow keys", async () => {
   const { view, calls } = await render({ agent: "claude", messages: three });
-  $$(".qm-head")[0].click();
-  await settle(10);
-  button("Send now")[1].click();
-  assert.deepEqual(calls.now, ["m2"]);
-  const grip = button("Reorder queued message 1 of 3")[0];
-  grip.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-  assert.deepEqual(calls.order, [["m2", "m1", "m3"]]);
-  await view.unmount();
+  try {
+    $$(".qm-head")[0].click();
+    await settle(10);
+    button("Send now")[1].click();
+    assert.deepEqual(calls.now, ["m2"]);
+    const grip = button("Reorder queued message 1 of 3")[0];
+    grip.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    assert.deepEqual(calls.order, [["m2", "m1", "m3"]]);
+  } finally {
+    await view.unmount();
+  }
 });
 
-test("Claude: Edit is in the row's menu", async () => {
-  const { view, calls } = await render({ agent: "claude", messages: [three[1]] });
-  button("Queued message actions")[0].click();
-  await settle(10);
-  const edit = $$('[role="menuitem"]')[0];
-  assert.match(edit.textContent, /Edit in composer/);
-  edit.click();
-  assert.deepEqual(calls.edit, ["m2"]);
-  await view.unmount();
+test("Edit changes a queued message where it waits, one with pictures too", async () => {
+  const { view, calls } = await render({ agent: "claude", messages: [three[0]] });
+  try {
+    button("Queued message actions")[0].click();
+    await settle(10);
+    const edit = $$('[role="menuitem"]')[0];
+    assert.match(edit.textContent, /Edit message/);
+    edit.click();
+    await settle(10);
+    const box = $$('textarea[aria-label="Edit queued message"]')[0];
+    assert.equal(box.value, long);
+    dom.update(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "shorter");
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    $$(".qm-edit button.primary")[0].click();
+    await settle(20);
+    assert.deepEqual(calls.edit, [["m1", "shorter"]]);
+    // Saved: back to one line.
+    assert.equal($$("textarea").length, 0);
+  } finally {
+    await view.unmount();
+  }
 });
 
-test("Codex: a plain list, no Send now or reordering (the Codex app runs its queue)", async () => {
+test("Codex: a plain list with Send now (its Steer), no reordering (the Codex app keeps its order)", async () => {
   const { view, calls } = await render({
     agent: "codex",
     messages: three.map(({ via, ...m }) => m),
-    onSendNow: undefined,
     onReorder: undefined,
   });
-  assert.equal($$(".qm-row").length, 3, "all shown, no stack");
-  assert.equal($$(".qm-head").length, 0);
-  assert.equal(button("Send now").length, 0);
-  assert.equal($$(".qm-grip").length, 0);
-  button("Remove queued message")[2].click();
-  assert.deepEqual(calls.remove, ["m3"]);
-  await view.unmount();
+  try {
+    assert.equal($$(".qm-row").length, 3, "all shown, no stack");
+    assert.equal($$(".qm-head").length, 0);
+    assert.equal(button("Send now").length, 3);
+    button("Send now")[0].click();
+    assert.deepEqual(calls.now, ["m1"]);
+    assert.equal($$(".qm-grip").length, 0);
+    button("Remove queued message")[2].click();
+    assert.deepEqual(calls.remove, ["m3"]);
+  } finally {
+    await view.unmount();
+  }
 });

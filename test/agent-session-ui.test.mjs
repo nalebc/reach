@@ -155,18 +155,27 @@ test("app-owned Codex turns have Stop; queued messages sit above the composer an
   const session = codexSession({ held: "codex-app", status: "running" });
   mac.pages[`codex:${CODEX}`].session = session;
   mac.live = { ...idleLive(), outbox: [{ id: "q-edit", text: "Then test", images: 0 }] };
-  const route = `/api/sessions/codex/${CODEX}/queue/q-edit/cancel`;
-  routes[route] = () => ({ deleted: true });
+  const route = `/api/sessions/codex/${CODEX}/queue/q-edit/edit`;
+  const edits = [];
+  routes[route] = (init) => (edits.push(JSON.parse(init.body)), { edited: true });
   await open(session);
   await dom.waitFor(() => $(".qm-row"));
   assert.ok(button("Stop"));
   assert.equal($(".as-scroll .qm"), null);
   assert.ok($(".as-composer .qm"));
-  // Edit is in the row's menu, as in the Codex app.
+  // Edit is in the row's menu, as in the Codex app, and changes it where it waits.
   await click(button("Queued message actions"));
   await click($('[role="menuitem"]'));
-  await dom.waitFor(() => $("textarea").value === "Then test");
-  assert.equal($(".qm-row"), null);
+  const box = $('textarea[aria-label="Edit queued message"]');
+  assert.equal(box.value, "Then test");
+  dom.update(() => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "Then test it all");
+    box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  await click($(".qm-edit button.primary"));
+  await dom.waitFor(() => edits.length === 1);
+  assert.deepEqual(edits, [{ text: "Then test it all" }]);
+  assert.ok($(".qm-row"), "still queued, edited where it waits");
   assert.deepEqual(dom.errors, []);
   delete routes[route];
 });
@@ -1728,7 +1737,7 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
   await click($(".qm-head"));
   await dom.waitFor(() => $$(".qm-row").length === 2);
   const [first, second] = $$(".qm-row");
-  assert.equal(first.querySelector(".qm-text p").textContent, "Run the tests");
+  assert.equal(first.querySelector(".qm-open").textContent, "Run the tests");
   assert.equal(first.querySelector(".qm-images").getAttribute("aria-label"), "1 image");
   assert.equal(second.querySelector(".qm-why").textContent, "Claude Code is signed out on your Mac.");
   // Handed over: it leaves the outbox (and shows from the transcript).

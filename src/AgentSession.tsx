@@ -70,6 +70,7 @@ import {
   readSession,
   sendMessage,
   cancelQueuedMessage,
+  editQueued,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -1819,7 +1820,8 @@ export default function AgentSessionView({
     sendingNow.current = true;
     setSending(true);
     try {
-      const r = await sendMessage(peer, initial, { text, images: [] });
+      // An answer goes into Codex's running turn, as the Codex app sends it.
+      const r = await sendMessage(peer, initial, { text, images: [], steer: true });
       setPending((list) => [...list, {
         id: `pending-${Date.now()}`, text, images: 0, urls: [], at: Date.now(),
         seen: (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length,
@@ -2414,16 +2416,13 @@ export default function AgentSessionView({
             agent={agent}
             messages={queued}
             busy={queueBusy}
-            canEdit={!queueBusy && !text.trim()}
-            onEdit={async (m) => {
+            canEdit={!queueBusy}
+            onEdit={async (m, words) => {
               setQueueBusy(m.id);
               try {
-                await cancelQueuedMessage(peer, initial, m.id);
-                setRemovedQueue((old) => [...old, m.id]);
-                setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
-                setText(visibleUserText(m.text));
-                field.current?.focus({ preventScroll: true });
-              } catch (error) { setProblem((error as Error).message); }
+                await editQueued(peer, initial, m.id, words);
+                void load(false);
+              } catch (error) { setProblem((error as Error).message); throw error; }
               finally { setQueueBusy(null); }
             }}
             onRemove={async (m) => {
@@ -2435,14 +2434,15 @@ export default function AgentSessionView({
               } catch (error) { setProblem((error as Error).message); }
               finally { setQueueBusy(null); }
             }}
+            onSendNow={async (m: OutboxMessage) => {
+              setQueueBusy(m.id);
+              try {
+                await sendQueuedNow(peer, initial, m.id);
+                void load(false);
+              } catch (error) { setProblem((error as Error).message); }
+              finally { setQueueBusy(null); }
+            }}
             {...(agent === "claude" && {
-              onSendNow: async (m: OutboxMessage) => {
-                setQueueBusy(m.id);
-                try {
-                  await sendQueuedNow(peer, initial, m.id);
-                } catch (error) { setProblem((error as Error).message); }
-                finally { setQueueBusy(null); }
-              },
               onReorder: async (ids: string[]) => {
                 try {
                   await reorderQueued(peer, initial, ids);

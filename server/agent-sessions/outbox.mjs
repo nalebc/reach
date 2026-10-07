@@ -108,6 +108,17 @@ export function createOutbox({ file = null } = {}) {
       changed(id);
       return true;
     },
+    // New words for one still waiting (not one on its way); pictures kept.
+    edit(id, messageId, text) {
+      const message = queues.get(id)?.find((m) => m.id === messageId);
+      if (!message || message.delivery === "sending") return false;
+      const words = String(text ?? "");
+      if (!words.trim() && !message.images.length) return false;
+      message.text = words;
+      delete message.error;
+      changed(id, true);
+      return true;
+    },
     // Send now: first in line, and allowed to go at once.
     hurry(id, messageId) {
       const list = queues.get(id) || [];

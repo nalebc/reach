@@ -2674,6 +2674,8 @@ export async function createReach(overrides = {}) {
         ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body.skill)
           ? { skill: req.body.skill }
           : {}),
+        // An answer to what Codex asked: into its running turn, not the queue.
+        ...(req.params.agent === "codex" && req.body?.steer === true ? { steer: true } : {}),
         owner: req.client.id,
       },
     );
@@ -2747,6 +2749,12 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // A queued message's words changed where it waits (its pictures kept).
+  app.post("/api/sessions/:agent/:id/queue/:message/edit", async (req, res) => {
+    const text = req.body?.text;
+    if (typeof text !== "string" || text.length > 50000) throw fail(400, "Messages can be up to 50,000 characters.");
+    res.json(await agentSessions.editQueued(req.params.agent, req.params.id, req.params.message, text));
+  });
   app.post("/api/sessions/:agent/:id/queue/:message/cancel", async (req, res) =>
     res.json(await agentSessions.cancelQueued(req.params.agent, req.params.id, req.params.message)),
   );

@@ -451,6 +451,26 @@ export function createCodexLive({
     void taken(threadId, queued, input);
     return { queued: true, delivered: false, ...(queued ? { messageId: String(queued) } : {}) };
   }
+  // Into a turn the Codex app runs, as its own Steer does: through the app,
+  // which holds the thread. queued: the queued message it takes out of line.
+  async function steerElsewhere(threadId, input, { queued = null } = {}) {
+    const read = await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null);
+    const text = input.filter((i) => i?.type === "text").map((i) => i.text).join("\n");
+    const r = await desktop.steer(threadId, { input, text, cwd: read?.thread?.cwd || null, queued });
+    const t = state(threadId);
+    t.items++;
+    changed(threadId);
+    return r;
+  }
+  // A message in Codex's queue, as Codex keeps it (its input, pictures too).
+  async function queuedOne(threadId, messageId) {
+    if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
+      throw bad("Unknown queued message.", 404);
+    const list = await daemon.rpc("thread/queue/list", { threadId });
+    const found = (list?.data || []).find((q) => String(q.id) === messageId);
+    if (!found || !Array.isArray(found.input)) throw bad("That message already left the queue.", 409);
+    return found;
+  }
   async function taken(threadId, queued, input) {
     try {
       const deadline = now() + deliverMs;
@@ -610,7 +630,9 @@ export function createCodexLive({
       changed(threadId);
       return { mode, applied: true };
     },
-    async send(threadId, { text, images, model, effort, speed, mode, skill } = {}) {
+    // steer: an answer to what Codex asked, into the running turn at once
+    // (as the Codex app does), never behind the queue.
+    async send(threadId, { text, images, model, effort, speed, mode, skill, steer = false } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const input = codexInput({ text, images, skill });
       const t = state(threadId);
@@ -622,8 +644,16 @@ export function createCodexLive({
       try {
         await attach(threadId);
       } catch (e) {
-        if (WRITER_HELD.test(e.message)) return queueElsewhere(threadId, input);
-        throw e;
+        if (!WRITER_HELD.test(e.message)) throw e;
+        if (steer && (await runningOnDisk(threadId))) {
+          try {
+            return { ...(await steerElsewhere(threadId, input)), delivered: true };
+          } catch (error) {
+            // Uncertain: it may be in; never sent twice. Refused: it waits its turn.
+            if (error.uncertain) throw error;
+          }
+        }
+        return queueElsewhere(threadId, input);
       }
       t.error = null;
       let r;
@@ -733,6 +763,46 @@ export function createCodexLive({
       // Same request as the app. Never take over the thread or kill its process.
       await daemon.rpc("turn/interrupt", { threadId, turnId });
       return { stopped: true };
+    },
+    // Send now, as the Codex app's Steer on a queued message: into the turn
+    // Codex is running (the app's own when it holds the chat), or started
+    // now when nothing runs.
+    async sendQueuedNow(threadId, messageId) {
+      const q = await queuedOne(threadId, messageId);
+      const t = state(threadId);
+      if (await runningOnDisk(threadId)) {
+        if (subscribed.has(threadId) && t.turnId) {
+          const removed = await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId });
+          if (removed?.deleted !== true) throw bad("That message already left the queue.", 409);
+          try {
+            await daemon.rpc("turn/steer", { threadId, expectedTurnId: t.turnId, input: q.input });
+          } catch (e) {
+            // Not taken: back in line, so nothing is lost.
+            await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input: q.input }).catch(() => {});
+            await readQueue(threadId);
+            throw e;
+          }
+        } else {
+          await steerElsewhere(threadId, q.input, { queued: messageId });
+          // The app takes it out of its queue; made sure of here.
+          await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId }).catch(() => {});
+        }
+      } else {
+        await daemon.rpc("thread/queue/start", { threadId, queuedSubmissionId: messageId });
+      }
+      await readQueue(threadId);
+      return { sent: true };
+    },
+    // A queued message's words changed in place, its pictures kept.
+    async editQueued(threadId, messageId, text) {
+      const q = await queuedOne(threadId, messageId);
+      const words = String(text ?? "");
+      if (words.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+      const input = [...(words.trim() ? [{ type: "text", text: words, text_elements: [] }] : []), ...q.input.filter((i) => i?.type !== "text")];
+      if (!input.length) throw bad("Write a message or keep its pictures.");
+      await daemon.rpc("thread/queue/update", { threadId, queuedSubmissionId: messageId, input });
+      await readQueue(threadId);
+      return { edited: true };
     },
     async cancelQueued(threadId, messageId) {
       if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
