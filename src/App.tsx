@@ -868,6 +868,20 @@ function ReachWorkspace() {
                       };
                     }}
                     onSession={session}
+                    agentSessions={
+                      chatPeer?.id === peer.id
+                        ? agentFeed.sessions || []
+                        : undefined
+                    }
+                    agentLogos={agentLogos}
+                    openAgentSession={
+                      pageAccessible("sessions", features)
+                        ? (s) => {
+                            setChatTarget({ agent: s.agent, id: s.id });
+                            navigate("sessions");
+                          }
+                        : undefined
+                    }
                     toast={toast}
                   />
                 )}

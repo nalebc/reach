@@ -797,6 +797,9 @@ h1.files-title {
     min-height: 50px;
     padding: 6px 0 6px 10px;
   }
+  .files-list.is-selecting .file-main {
+    grid-template-columns: 24px 34px minmax(0, 1fr) 120px 110px 84px;
+  }
   .file-main .file-kind {
     width: 34px;
     height: 34px;
@@ -1028,6 +1031,159 @@ h1.files-title {
 .file-viewer-send select {
   flex: 1;
   min-height: 40px;
+}
+/* Select mode: a check beside each item, as in the Files app. */
+.files-text-tool {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  color: #b9efd4;
+  font: inherit;
+  font-size: 15px;
+}
+.files-text-tool.is-strong {
+  font-weight: 650;
+}
+.file-pick {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #7f9184;
+}
+.file-pick.is-on {
+  color: #b9efd4;
+}
+.file-tile {
+  position: relative;
+}
+.file-tile .file-pick {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+  border-radius: 50%;
+  background: #0c110ecc;
+}
+.file-item.is-picked {
+  background: #b9efd40d;
+}
+.files-actionbar.is-selection {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 10px 12px 12px;
+}
+.file-actions button:disabled {
+  opacity: 0.45;
+}
+
+/* Send to agent: pick a session, add a note. */
+.files-send {
+  width: min(460px, calc(100vw - 24px));
+  max-height: min(640px, 86dvh);
+  padding: 0;
+  border: 1px solid #d3ead21f;
+  border-radius: 18px;
+  background: #121915;
+  color: var(--text, #eef1e5);
+  box-shadow: 0 20px 60px #00000099;
+}
+.files-send::backdrop {
+  background: #040806b3;
+  backdrop-filter: blur(6px);
+}
+.files-send form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: inherit;
+  padding: 12px 14px 14px;
+}
+.files-send header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+}
+.files-send header small {
+  grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8fa395;
+  font-size: 12.5px;
+}
+.files-send header .files-tool {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  border-color: transparent;
+  background: none;
+}
+.files-send-list {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -6px;
+}
+.files-send-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 52px;
+  padding: 6px 8px;
+  border-radius: 11px;
+  cursor: pointer;
+}
+.files-send-list label:hover {
+  background: #b9efd40a;
+}
+.files-send-list label.is-on {
+  background: #b9efd417;
+  color: #e6f8ea;
+}
+.files-send-list label:has(input:focus-visible) {
+  outline: 2px solid #b9efd480;
+}
+.files-send-list input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.files-send-list span {
+  display: grid;
+  min-width: 0;
+}
+.files-send-list strong,
+.files-send-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-send-list strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.files-send-list small {
+  color: #8fa395;
+  font-size: 12px;
+}
+.files-send-list svg {
+  color: #b9efd4;
+}
+.files-send textarea {
+  resize: none;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d3ead21f;
+  border-radius: 11px;
+  background: #0c110e;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+}
+.files-send .button {
+  justify-content: center;
 }
 @media (min-width: 760px) {
   .file-viewer {
