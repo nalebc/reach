@@ -231,7 +231,7 @@ test("Codex: ChatGPT's apps and its servers, through its daemon", async () => {
 
 test("Codex signs in to a server: link out, the localhost address back, finished on the computer", async () => {
   const auth = "https://mcp.sentry.dev/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A40111%2Fcallback&state=Z9";
-  const daemon = fakeDaemon({ "mcpServer/oauth/login": { authorizationUrl: auth } });
+  const daemon = fakeDaemon({ "mcpServer/oauth/login": { authorizationUrl: auth }, "mcpServerStatus/list": { data: [{ name: "sentry", authStatus: "oAuth" }] } });
   const visited = [];
   const c = createConnectors({
     daemon,
@@ -448,4 +448,52 @@ test("revocation during a Codex config write prevents the subsequent server relo
     assert.equal(daemon.calls.filter(([method]) => method === "config/mcpServer/reload").length, 0);
     c.close();
   }
+});
+
+test("list, remove, and failed CLI OAuth never expose existing provider credentials", async () => {
+  const marker = "existing-private-credential";
+  const term = fakeTerminal();
+  const c = createConnectors({ locate: located, spawn: term.spawn, linkMs: 1000, run: async () => {
+    throw Object.assign(Error(marker), { stderr: marker, stdout: marker });
+  } });
+  for (const operation of [() => c.list("claude"), () => c.remove("claude", "linear"), () => c.remove("gemini", "linear")]) {
+    await assert.rejects(operation(), (error) => !error.message.includes(marker));
+  }
+  const login = c.login("claude", "linear");
+  await settle();term.print(LOGIN_OUTPUT);await login;
+  term.print(marker);term.exit(1);
+  assert.equal(JSON.stringify(c.loginView("claude", "linear")).includes(marker), false);
+  c.close();
+});
+
+test("closing during CLI discovery blocks add and remove dispatch", async () => {
+  for (const action of ["add", "remove"]) {
+    let discovered, runs = 0;
+    const c = createConnectors({ locate: { gemini: () => new Promise((r) => { discovered = r; }) }, run: async () => { runs++;return { stdout: "" }; } });
+    const pending = action === "add" ? c.add("gemini", { name: "linear", url: "https://mcp.linear.app/mcp" }) : c.remove("gemini", "linear");
+    await settle();c.close();discovered("/usr/bin/gemini");
+    await assert.rejects(pending, /closed/);
+    assert.equal(runs, 0);
+  }
+});
+
+test("a cancelled Codex attempt cannot authenticate its replacement through a name-only notification", async () => {
+  const answers = [];
+  let authenticated = false;
+  const daemon = fakeDaemon({
+    "mcpServer/oauth/login": () => new Promise((r) => answers.push(r)),
+    "mcpServerStatus/list": () => ({ data: [{ name: "linear", authStatus: authenticated ? "oAuth" : "notLoggedIn" }] }),
+  });
+  const c = createConnectors({ daemon, locate: located, visit: async () => {} });
+  const first = c.login("codex", "linear");await settle();c.cancel("codex", "linear");
+  const second = c.login("codex", "linear");await settle();
+  const notify = () => daemon.notify({ method: "mcpServer/oauthLogin/completed", params: { name: "linear", success: true } });
+  notify();assert.equal(c.loginView("codex", "linear").state, "starting");
+  answers[0]({ authorizationUrl: AUTH });assert.equal((await first).state, "cancelled");
+  answers[1]({ authorizationUrl: AUTH });assert.equal((await second).state, "link");
+  notify();await settle();assert.equal(c.loginView("codex", "linear").state, "link");
+  const callback = c.callback("codex", "linear", "http://localhost:59547/callback?code=new&state=S1");
+  notify();await settle();assert.equal(c.loginView("codex", "linear").state, "checking");
+  authenticated = true;notify();assert.equal((await callback).state, "done");
+  c.close();
 });

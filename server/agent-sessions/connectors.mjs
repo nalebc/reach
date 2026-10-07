@@ -153,22 +153,8 @@ export function parseClaudeList(output) {
   return servers;
 }
 
-const lastLine = (output) =>
-  plainText(output)
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !/paste the redirect URL|^Waiting for authorization/i.test(l))
-    .pop() || "";
-// execFile errors include their command line; bearer tokens are arguments.
-// Never return that message, and redact tokens even when the CLI echoes them.
-const safeCliError = (error, args) => {
-  let said = lastLine(`${error.stdout || ""}\n${error.stderr || ""}`);
-  for (const arg of args) {
-    const token = String(arg).match(/^Authorization:\s*Bearer\s+(.+)$/i)?.[1];
-    if (token) said = said.split(token).join("[redacted]");
-  }
-  return said || (error.killed ? "The agent didn't answer in time." : "The agent command failed.");
-};
+// Both command lines and provider output can contain existing credentials.
+const safeCliError = (error) => error.killed ? "The agent didn't answer in time." : "The agent command failed. Check its connector settings on the computer.";
 
 const shown = (url) => {
   try {
@@ -196,6 +182,8 @@ export function createConnectors({
   timeoutMs = 10 * 60000,
   linkMs = 10000,
 }) {
+  let closed = false;
+  const ensureOpen = () => { if (closed) throw bad("Connector service is closed.", 409); };
   // Reach's own environment, never a host app's.
   const clean = Object.fromEntries(
     Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|REACH_)/.test(k) && k !== "CLAUDECODE"),
@@ -212,8 +200,10 @@ export function createConnectors({
   // An agent's CLI as the owner's login shell runs it, from their home folder
   // (so `-s user` is the only scope touched).
   const cli = async (agent, args, timeout = 30000, authorize = () => {}) => {
+    ensureOpen();
     if (platform === "win32") throw bad("Connector CLI management is not supported on Windows yet.", 409);
     const file = await need(agent);
+    ensureOpen();
     authorize();
     try {
       const { stdout } = await run(shell, ["-lc", `exec ${[file, ...args].map(quote).join(" ")}`], {
@@ -224,7 +214,7 @@ export function createConnectors({
       });
       return String(stdout);
     } catch (e) {
-      throw bad(safeCliError(e, args), 502);
+      throw bad(safeCliError(e), 502);
     }
   };
   const readJson = async (file) => {
@@ -235,6 +225,7 @@ export function createConnectors({
     }
   };
   const codexRequest = async (method, params) => {
+    ensureOpen();
     try {
       return await daemon.rpc(method, params);
     } catch {
@@ -337,7 +328,6 @@ export function createConnectors({
   }
 
   // ── Signing in to a server ──
-  let closed = false;
   const flows = new Map(); // `${agent}:${name}` -> flow
   const active = (flow) => !closed && ["starting", "link", "checking"].includes(flow.state);
   const view = (flow) =>
@@ -366,9 +356,15 @@ export function createConnectors({
   const unsubscribe = daemon?.onNotification?.((m) => {
     if (m.method !== "mcpServer/oauthLogin/completed") return;
     const flow = flows.get(`codex:${m.params?.name}`);
-    if (!flow || !active(flow)) return;
-    if (m.params?.success) finish(flow, "done");
-    else finish(flow, "failed", "Sign-in didn't finish. Start again.");
+    // This notification has only a server name, so it can belong to a
+    // cancelled attempt. Accept it only after this flow's own callback and
+    // confirm the server's actual authentication before reporting success.
+    if (!flow || !active(flow) || flow.state !== "checking") return;
+    if (!m.params?.success) return;
+    codexRequest("mcpServerStatus/list", { detail: "toolsAndAuthOnly" }).then((status) => {
+      if (flows.get(`codex:${flow.name}`) !== flow || !active(flow) || flow.state !== "checking") return;
+      if ((status?.data || []).some((s) => s.name === flow.name && s.authStatus === "oAuth")) finish(flow, "done");
+    }).catch(() => {});
   });
 
   async function loginClaude(flow) {
@@ -399,7 +395,7 @@ export function createConnectors({
     });
     proc.onExit(({ exitCode }) => {
       if (exitCode === 0) finish(flow, "done");
-      else finish(flow, "failed", lastLine(flow.output) || `Sign-in ended (code ${exitCode}).`);
+      else finish(flow, "failed", `Sign-in ended (code ${exitCode}). Check Claude Code's connector settings on the computer.`);
     });
   }
   async function loginCodex(flow) {
@@ -426,6 +422,7 @@ export function createConnectors({
     // A remote server added in the agent's own configuration, for every
     // project; with a token, sent as its Authorization header.
     async add(agent, { name, url, token = null, authorize = () => {} }) {
+      ensureOpen();
       if (!AGENTS.includes(agent)) throw bad("Unknown agent.", 404);
       name = validName(name);
       url = validUrl(url);
@@ -469,6 +466,7 @@ export function createConnectors({
       return { agent, name };
     },
     async remove(agent, name, { authorize = () => {} } = {}) {
+      ensureOpen();
       if (!AGENTS.includes(agent)) throw bad("Unknown agent.", 404);
       name = validName(name);
       if (agent === "codex") {
@@ -488,6 +486,7 @@ export function createConnectors({
     },
     // One of ChatGPT's apps on or off for Codex (linking it is ChatGPT's).
     async setApp(id, enabled, { authorize = () => {} } = {}) {
+      ensureOpen();
       if (!daemon) throw bad("Codex isn't installed on this computer.", 404);
       if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw bad("Unknown app.", 404);
       authorize();
@@ -501,6 +500,7 @@ export function createConnectors({
     // GitHub's token from the GitHub CLI signed in on this computer, for the
     // owner who chose it; it never goes to the phone.
     async githubToken(url) {
+      ensureOpen();
       if (validUrl(url) !== CATALOG.find((entry) => entry.id === "github").url)
         throw bad("Use the GitHub connector address when reusing the GitHub CLI token.");
       try {

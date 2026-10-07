@@ -142,8 +142,10 @@ export async function stopReach(
     if ((await waitGone(hostPids, 2000)).length)
       throw Error("Reach did not stop. Its route was not transferred; try again after it exits.");
     const file = path.join(state(root), "serve-owner.json");
-    const sources = [...new Set(others.map((host) =>
-      path.join(state(host.root), "serve-owner.json"),
+    const sources = [...new Set(others.flatMap((host) =>
+      // The caller's REACH_HOME may be a new destination. Also inspect the
+      // old checkout's default state; handoff verifies exact route ownership.
+      [state(host.root), state(host.root, undefined, {})].map((dir) => path.join(dir, "serve-owner.json")),
     ))];
     await handoffRoute({ file, sources });
   }

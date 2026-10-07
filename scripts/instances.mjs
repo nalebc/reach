@@ -154,7 +154,7 @@ export function whereItRuns(host) {
 }
 
 // Its saved state: a source folder keeps .reach inside; an npm install, ~/.reach.
-export const stateOf = (root, exists = fs.existsSync) => stateDir(root, { installed: !exists(path.join(root, "src/main.tsx")) });
+export const stateOf = (root, exists = fs.existsSync, env = process.env) => stateDir(root, { installed: !exists(path.join(root, "src/main.tsx")), env });
 
 // What its server reports while it runs: its link, and whether it keeps the Mac awake.
 export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {

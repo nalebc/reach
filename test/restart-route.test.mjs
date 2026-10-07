@@ -8,6 +8,7 @@ import { stopReach } from "../scripts/stop.mjs";
 import { startInTerminal } from "../scripts/stop.mjs";
 import { backgroundPlist } from "../scripts/background-service.mjs";
 import { handoffPersistentRoute, ensurePersistentRoute } from "../scripts/persistent-serve.mjs";
+import { stateOf } from "../scripts/instances.mjs";
 
 const origin = "https://computer.example.ts.net:8443";
 const oldTarget = "unix:/tmp/old-reach/s";
@@ -117,4 +118,21 @@ test("Terminal and service launches retain explicit Reach settings and data path
   assert.ok(plist.includes("<key>REACH_HOME</key><string>/Users/me/shared reach's state</string>"));
   assert.ok(plist.includes("<key>REACH_DATA</key><string>/Users/me/shared data</string>"));
   assert.equal(plist.includes("must-not-export"), false);
+});
+
+test("a new explicit state destination can adopt the old checkout's default route", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-restart-state-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const oldRoot = path.join(dir, "old"), newRoot = path.join(dir, "new"), destination = path.join(dir, "custom-state");
+  atomicJson(path.join(oldRoot, ".reach", "serve-owner.json"), { version: 1, origin, target: oldTarget });
+  const env = { REACH_HOME: destination };
+  let alive = true;
+  await stopReach(newRoot, {
+    platform: "linux", restarting: true, print() {},
+    state: (root, exists, sourceEnv = env) => stateOf(root, () => true, sourceEnv),
+    table: () => [{ pid: 100, ppid: 1, tty: "ttys000", command: `/node ${oldRoot}/scripts/bootstrap.mjs` }],
+    kill(pid, signal) { if (signal === "SIGINT") alive = false;else if (!alive) throw Object.assign(Error("gone"), { code: "ESRCH" }); },
+    handoffRoute: (options) => handoffPersistentRoute({ ...options, inspect: async () => route(oldTarget) }),
+  });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(destination, "serve-owner.json"))), { version: 1, origin, target: oldTarget });
 });
