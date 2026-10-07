@@ -23,7 +23,11 @@ test("a page left open on an old phone interface reloads once Reach serves a new
   forgetBuild();
   let reloads = 0;
   const waits = [];
-  const options = { reload: () => reloads++, busy: () => busyHere(dom.document), wait: (f) => waits.push(f) };
+  const options = {
+    reload: () => reloads++,
+    busy: () => busyHere(dom.document),
+    wait: (f) => waits.push(f),
+  };
   // The first build seen is this page's; the same again changes nothing.
   noteBuild("old", options);
   noteBuild("old", options);
@@ -55,16 +59,20 @@ test("a page left open on an old phone interface reloads once Reach serves a new
 
 test("a restored old Home Screen page updates even when its first presence packet is the new build", async () => {
   reload.forgetBuild();
-  let reloads = 0, busy = true;
+  let reloads = 0,
+    busy = true;
   const waits = [];
   reload.noteBuild("new", {
-    reload: () => reloads++, busy: () => busy,
-    wait: (f) => waits.push(f), currentPage: async () => false,
+    reload: () => reloads++,
+    busy: () => busy,
+    wait: (f) => waits.push(f),
+    currentPage: async () => false,
   });
   await Promise.resolve();
   assert.equal(reloads, 0);
   assert.equal(waits.length, 1);
-  busy = false;waits.shift()();
+  busy = false;
+  waits.shift()();
   assert.equal(reloads, 1);
   reload.noteBuild("newer", { reload: () => reloads++ });
   assert.equal(reloads, 1);
@@ -72,20 +80,42 @@ test("a restored old Home Screen page updates even when its first presence packe
 
 test("page comparison detects changed hashed assets and tolerates offline responses", async () => {
   const doc = dom.document.implementation.createHTMLDocument();
-  doc.head.innerHTML = '<script type="module" src="/assets/main-old.js"></script><link rel="stylesheet" href="/assets/main-old.css">';
+  doc.head.innerHTML =
+    '<script type="module" src="/assets/main-old.js"></script><link rel="stylesheet" href="/assets/main-old.css">';
   const { currentPageMatches } = reload;
-  assert.equal(await currentPageMatches(doc, async (url, options) => {
-    assert.equal(options.cache, "no-store");
-    return new Response('<script type="module" src="/assets/main-new.js"></script><link rel="stylesheet" href="/assets/main-new.css">');
-  }), false);
-  assert.equal(await currentPageMatches(doc, async () => new Response(doc.documentElement.outerHTML)), true);
-  assert.equal(await currentPageMatches(doc, async () => { throw Error("offline"); }), null);
+  assert.equal(
+    await currentPageMatches(doc, async (url, options) => {
+      assert.equal(options.cache, "no-store");
+      return new Response(
+        '<script type="module" src="/assets/main-new.js"></script><link rel="stylesheet" href="/assets/main-new.css">',
+      );
+    }),
+    false,
+  );
+  assert.equal(
+    await currentPageMatches(
+      doc,
+      async () => new Response(doc.documentElement.outerHTML),
+    ),
+    true,
+  );
+  assert.equal(
+    await currentPageMatches(doc, async () => {
+      throw Error("offline");
+    }),
+    null,
+  );
 });
 
 test("a failed initial page comparison retries on the next same-build presence packet", async () => {
   reload.forgetBuild();
-  let checks = 0, reloads = 0;
-  const options = { reload: () => reloads++, busy: () => false, currentPage: async () => ++checks === 1 ? null : false };
+  let checks = 0,
+    reloads = 0;
+  const options = {
+    reload: () => reloads++,
+    busy: () => false,
+    currentPage: async () => (++checks === 1 ? null : false),
+  };
   reload.noteBuild("new", options);
   await Promise.resolve();
   assert.equal(reloads, 0);
@@ -95,69 +125,171 @@ test("a failed initial page comparison retries on the next same-build presence p
   assert.equal(checks, 2);
 });
 
-test("Reach's live connection says which phone interface it serves", { timeout: 15000 }, async () => {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "reach-build-"));
-  const reach = await createReach({ roots: [dir], dataDir: path.join(dir, ".reach") });
-  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
-  const socket = new WebSocket(`ws://127.0.0.1:${reach.server.address().port}/ws/presence`);
-  try {
-    await once(socket, "open");
-    const reply = once(socket, "message");
-    socket.send(JSON.stringify({ type: "auth", token: reach.auth.issue("My phone", ALL_SCOPES).token, kind: "phone" }));
-    const [value] = await reply;
-    const html = new URL("../dist/index.html", import.meta.url);
-    const expected = fs.existsSync(html)
-      ? crypto.createHash("sha256").update(fs.readFileSync(html)).digest("base64url").slice(0, 12)
-      : undefined;
-    assert.equal(JSON.parse(value.toString()).changes?.build, expected);
-  } finally {
-    socket.close();
-    reach.server.close();
-    await reach.close?.();
-    await fsp.rm(dir, { recursive: true, force: true });
-  }
-});
+test(
+  "Reach's live connection says which phone interface it serves",
+  { timeout: 15000 },
+  async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "reach-build-"));
+    const reach = await createReach({
+      roots: [dir],
+      dataDir: path.join(dir, ".reach"),
+    });
+    await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${reach.server.address().port}/ws/presence`,
+    );
+    try {
+      await once(socket, "open");
+      const reply = once(socket, "message");
+      socket.send(
+        JSON.stringify({
+          type: "auth",
+          token: reach.auth.issue("My phone", ALL_SCOPES).token,
+          kind: "phone",
+        }),
+      );
+      const [value] = await reply;
+      const html = new URL("../dist/index.html", import.meta.url);
+      const expected = fs.existsSync(html)
+        ? crypto
+            .createHash("sha256")
+            .update(fs.readFileSync(html))
+            .digest("base64url")
+            .slice(0, 12)
+        : undefined;
+      assert.equal(JSON.parse(value.toString()).changes?.build, expected);
+    } finally {
+      socket.close();
+      reach.server.close();
+      await reach.close?.();
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("lazy workspace styles do not make a current public-start page reload forever", async () => {
   const doc = dom.document.implementation.createHTMLDocument();
-  doc.head.innerHTML = '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css"><link rel="stylesheet" href="/assets/workspace-lazy.css">';
-  const page = '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css">';
-  assert.equal(await reload.currentPageMatches(doc, async () => new Response(page)), true);
-  assert.equal(await reload.currentPageMatches(doc, async () => new Response(page.replace('start-current.css', 'start-new.css'))), false);
+  doc.head.innerHTML =
+    '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css"><link rel="stylesheet" href="/assets/workspace-lazy.css">';
+  const page =
+    '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css">';
+  assert.equal(
+    await reload.currentPageMatches(doc, async () => new Response(page)),
+    true,
+  );
+  assert.equal(
+    await reload.currentPageMatches(
+      doc,
+      async () =>
+        new Response(page.replace("start-current.css", "start-new.css")),
+    ),
+    false,
+  );
 });
 
 test("foreground, page restore, online, and periodic checks work without presence packets and clean up", () => {
-  const win = new dom.window.EventTarget(), doc = new dom.window.EventTarget();
+  const win = new dom.window.EventTarget(),
+    doc = new dom.window.EventTarget();
   doc.hidden = false;
-  let checks = 0, tick, cleared = 0;
-  const stop = reload.watchInterfaceUpdates({ doc, win, check: () => checks++, every: (f) => { tick = f;return 42; }, clear: (id) => { assert.equal(id, 42);cleared++; } });
+  let checks = 0,
+    tick,
+    cleared = 0;
+  const stop = reload.watchInterfaceUpdates({
+    doc,
+    win,
+    check: () => checks++,
+    every: (f) => {
+      tick = f;
+      return 42;
+    },
+    clear: (id) => {
+      assert.equal(id, 42);
+      cleared++;
+    },
+  });
   assert.equal(checks, 1);
-  for (const event of ['pageshow', 'focus', 'online']) win.dispatchEvent(new dom.window.Event(event));
-  doc.dispatchEvent(new dom.window.Event('visibilitychange'));tick();
+  for (const event of ["pageshow", "focus", "online"])
+    win.dispatchEvent(new dom.window.Event(event));
+  doc.dispatchEvent(new dom.window.Event("visibilitychange"));
+  tick();
   assert.equal(checks, 6);
-  doc.hidden = true;tick();win.dispatchEvent(new dom.window.Event('focus'));
+  doc.hidden = true;
+  tick();
+  win.dispatchEvent(new dom.window.Event("focus"));
   assert.equal(checks, 6);
-  stop();doc.hidden = false;win.dispatchEvent(new dom.window.Event('online'));
-  assert.equal(checks, 6);assert.equal(cleared, 1);
+  stop();
+  doc.hidden = false;
+  win.dispatchEvent(new dom.window.Event("online"));
+  assert.equal(checks, 6);
+  assert.equal(cleared, 1);
 });
 
 test("automatic checks retry after offline, expose waiting state, and apply only once when idle", async () => {
   reload.forgetBuild();
-  let checks = 0, applied = 0, busy = true;
+  let checks = 0,
+    applied = 0,
+    busy = true;
   const waits = [];
-  const options = { currentPage: async () => ++checks === 1 ? null : false, reload: () => applied++, busy: () => busy, wait: (f) => waits.push(f) };
-  reload.checkForUpdates(options);await Promise.resolve();
-  assert.equal(reload.getUpdateState(), 'offline');
-  reload.checkForUpdates(options);await Promise.resolve();
-  assert.equal(reload.getUpdateState(), 'waiting');assert.equal(applied, 0);
-  busy = false;waits.shift()();
-  assert.equal(applied, 1);assert.equal(reload.getUpdateState(), 'reloading');
-  reload.checkForUpdates(options);assert.equal(applied, 1);
+  const options = {
+    currentPage: async () => (++checks === 1 ? null : false),
+    reload: () => applied++,
+    busy: () => busy,
+    wait: (f) => waits.push(f),
+  };
+  reload.checkForUpdates(options);
+  await Promise.resolve();
+  assert.equal(reload.getUpdateState(), "offline");
+  reload.checkForUpdates(options);
+  await Promise.resolve();
+  assert.equal(reload.getUpdateState(), "waiting");
+  assert.equal(applied, 0);
+  busy = false;
+  waits.shift()();
+  assert.equal(applied, 1);
+  assert.equal(reload.getUpdateState(), "reloading");
+  reload.checkForUpdates(options);
+  assert.equal(applied, 1);
 });
 
 test("fresh reload preserves the existing origin, path, parameters and pairing fragment", () => {
-  const url = new URL(reload.freshInterfaceUrl('https://mac.example.ts.net:8443/guest?view=files#pair=12345678', 42));
-  assert.equal(url.origin, 'https://mac.example.ts.net:8443');assert.equal(url.pathname, '/guest');
-  assert.equal(url.searchParams.get('view'), 'files');assert.equal(url.searchParams.get('reach-update'), '42');
-  assert.equal(url.hash, '#pair=12345678');
+  const url = new URL(
+    reload.freshInterfaceUrl(
+      "https://mac.example.ts.net:8443/guest?view=files#pair=12345678",
+      42,
+    ),
+  );
+  assert.equal(url.origin, "https://mac.example.ts.net:8443");
+  assert.equal(url.pathname, "/guest");
+  assert.equal(url.searchParams.get("view"), "files");
+  assert.equal(url.searchParams.get("reach-update"), "42");
+  assert.equal(url.hash, "#pair=12345678");
+});
+
+test("a stalled network check times out so later foreground checks can recover", async () => {
+  const doc = dom.document.implementation.createHTMLDocument();
+  doc.head.innerHTML =
+    '<script type="module" src="/assets/main-old.js"></script>';
+  assert.equal(
+    await reload.currentPageMatches(
+      doc,
+      (url, { signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(Error("offline")), {
+            once: true,
+          });
+        }),
+      { timeoutMs: 5 },
+    ),
+    null,
+  );
+  assert.equal(
+    await reload.currentPageMatches(
+      doc,
+      async () =>
+        new Response(
+          '<script type="module" src="/assets/main-new.js"></script>',
+        ),
+    ),
+    false,
+  );
 });
