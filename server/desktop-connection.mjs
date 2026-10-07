@@ -15,6 +15,9 @@ export function desktopConnection(
       : null,
     register = () => {},
     unregister = () => {},
+    // How long a dropped connection's control lease waits for it to come
+    // back (a blip on the phone's link, Tailscale answering late).
+    grace = 15000,
   },
 ) {
   let token,
@@ -22,6 +25,9 @@ export function desktopConnection(
     starting = false,
     busy = false,
     closed = false,
+    // How this connection ended: "retry" (the phone reconnects and resumes
+    // control) or "end" (control is over: revoked, expired, a bad message).
+    ended = "",
     lastId = 0,
     // The last input the Mac has done: a field map reflects the screen after it.
     doneId = 0,
@@ -72,22 +78,35 @@ export function desktopConnection(
     scanTimer = setTimeout(() => void scan(), 200);
   };
   const changes = new Set(["click", "down", "up", "key", "text", "type-edit", "scroll", "menu"]);
-  const close = (message = "Desktop control ended.") => {
+  // A retryable end (the connection, not the grant, is the trouble) closes
+  // with 1012 and keeps the lease a moment; the phone reconnects quietly
+  // (src/useDesktopInput.ts). Anything else is 4001: control is over.
+  const close = (message = "Desktop control ended.", retryable = false) => {
     if (closed) return;
     closed = true;
+    ended = retryable ? "retry" : "end";
     clearTimeout(scanTimer);
     fields?.stop();
     for (const item of queue) item.reject?.(fail(403, message));
     queue.length = 0;
     helper?.stop();
     if (ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: "error", error: message }));
-      ws.close(4001, "Desktop control ended");
+      ws.send(
+        JSON.stringify({ type: "error", error: message, ...(retryable && { retryable: true }) }),
+      );
+      if (retryable) ws.close(1012, "Desktop control reconnecting");
+      else ws.close(4001, "Desktop control ended");
     }
   };
   ws.endControl = close;
   const authorize = () => {
     const client = auth.verify(token);
+    if (!client) {
+      // Not refused, just not confirmed yet (Tailscale's word on the phone
+      // or on this Mac is late): the phone reconnects and is checked afresh.
+      const interruption = auth.interruption?.(token);
+      if (interruption) throw Object.assign(fail(503, interruption), { retryable: true });
+    }
     if (
       !client ||
       !config.screen ||
@@ -142,7 +161,7 @@ export function desktopConnection(
           ws.send(JSON.stringify({ type: "ack", id: item.id, ...result }));
       }
     } catch (e) {
-      close(e.message);
+      close(e.message, e?.retryable === true);
     } finally {
       busy = false;
     }
@@ -153,13 +172,13 @@ export function desktopConnection(
       try {
         authorize();
         if (!starting && !busy && Date.now() - lastSeen > 3000)
-          close("Desktop control disconnected.");
+          close("Desktop control disconnected. Reconnecting…", true);
         // Changes on the Mac itself (a window opening, an app switch): a
         // cheap look, a full one only when windows moved.
         else if (fields && !scanning && Date.now() - scannedAt > 1000)
           void scan(true);
       } catch (e) {
-        close(e.message);
+        close(e.message, e?.retryable === true);
       }
     }
   }, 500);
@@ -181,6 +200,8 @@ export function desktopConnection(
         const client = authorize();
         register(client.id, ws);
         ws.clientId = client.id;
+        // Back within the grace: the lease is this connection's again.
+        control.keep?.(client.id);
         clearTimeout(deadline);
         const options = streamOptions({ display: message.display });
         // Which display this control is on: an agent waits only for its own.
@@ -260,10 +281,10 @@ export function desktopConnection(
       queue.push({ action, id: message.id, at: Date.now() });
       void drain();
     } catch (e) {
-      close(e.message);
+      close(e.message, e?.retryable === true);
     }
   });
-  ws.on("close", () => {
+  ws.on("close", (code) => {
     closed = true;
     for (const item of queue)
       item.reject?.(fail(403, "Desktop control ended."));
@@ -273,9 +294,16 @@ export function desktopConnection(
     clearInterval(check);
     helper?.stop();
     fields?.stop();
-    if (ws.clientId) {
-      if (unregister(ws.clientId, ws) !== false) control.revoke(ws.clientId);
+    if (ws.clientId && unregister(ws.clientId, ws) !== false) {
+      // Over for good (revoked, expired, or the phone let go: a clean close,
+      // 1000 or one without a code): control ends now. Dropped (the link,
+      // 1006; a retryable end here; the phone closing to reconnect, 4002):
+      // the lease waits for it, up to the grace.
+      if (ended === "end" || code === 1000 || code === 1005 || !control.revokeLater)
+        control.revoke(ws.clientId);
+      else control.revokeLater(ws.clientId, grace);
     }
   });
-  ws.on("error", () => close());
+  // The socket itself failed: the link, not the grant.
+  ws.on("error", () => close("Desktop control disconnected. Reconnecting…", true));
 }

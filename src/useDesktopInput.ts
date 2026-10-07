@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
+import { ReconnectTimer } from "./reconnect";
 import {
   DesktopInputQueue,
   type DesktopAction,
@@ -24,6 +25,13 @@ export function useDesktopInput(
   } | null>(null);
   const [ready, setReady] = useState(false),
     [latency, setLatency] = useState(0);
+  // A brief interruption (the link blinks, the Mac checks the phone late)
+  // reconnects quietly, as the live screen does: control stays on, nothing
+  // sent before it is replayed. A few in a row with no ready end control.
+  const [reconnecting, setReconnecting] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useRef(new ReconnectTimer(Math.random, 4000, 250));
+  const tries = useRef(0);
   const dispatcher = useRef<(a: DesktopAction) => Promise<InputResult>>(() =>
     Promise.reject(Error("Enable screen control first.")),
   );
@@ -40,7 +48,12 @@ export function useDesktopInput(
     setInitialCursor(null);
     fieldMap.current = null;
     lastChange.current = 0;
-    if (!enabled) return;
+    if (!enabled) {
+      retry.current.reset();
+      tries.current = 0;
+      setReconnecting(false);
+      return;
+    }
     const url = new URL("/ws/screen-input", peer.url);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
@@ -49,21 +62,40 @@ export function useDesktopInput(
       queue: DesktopInputQueue | undefined,
       measured = 0;
     let deadline: ReturnType<typeof setTimeout>;
-    const fail = (message: string) => {
+    const stop = (message: string, retryable = false) => {
       if (stopped || failed) return;
       failed = true;
       clearTimeout(deadline);
       setReady(false);
       queue?.close();
+      if (retryable && tries.current < 6) {
+        tries.current++;
+        setReconnecting(true);
+        // 4002: closing to come back. The Mac keeps control for the phone a
+        // moment (server/desktop-connection.mjs); a clean close lets it go.
+        socket.close(4002, "Reconnecting");
+        retry.current.schedule(() => {
+          if (!stopped) setAttempt((n) => n + 1);
+        });
+        return;
+      }
+      retry.current.reset();
+      tries.current = 0;
+      setReconnecting(false);
       socket.close();
-      end.current(message);
+      end.current(
+        retryable
+          ? `${message.replace(/\s*Reconnecting…$/u, "")} Try Control again.`
+          : message,
+      );
     };
+    const fail = (message: string) => stop(message);
     dispatcher.current = (a) =>
       queue && !failed
         ? queue.enqueue(a)
         : Promise.reject(Error("Desktop input is not connected."));
     deadline = setTimeout(
-      () => fail("Desktop input connection timed out. Try Control again."),
+      () => stop("Desktop input connection timed out. Reconnecting…", true),
       12000,
     );
     socket.onopen = () => {
@@ -83,17 +115,24 @@ export function useDesktopInput(
       try {
         const m = JSON.parse(event.data);
         if (m.type === "error") {
-          fail(m.error);
+          // The Mac says whether this is the connection (back in a moment)
+          // or the grant (over): older companions only ever meant the grant.
+          stop(m.error, m.retryable === true);
           return;
         }
         if (m.type === "ready" && !queue) {
           clearTimeout(deadline);
+          retry.current.reset();
+          tries.current = 0;
+          setReconnecting(false);
           queue = new DesktopInputQueue(
             (id, action) => {
               if (changes.has(action.type)) lastChange.current = id;
               socket.send(JSON.stringify({ type: "input", id, action }));
             },
-            fail,
+            // A stalled or filled queue is the link's trouble: reconnect
+            // with an empty one (nothing it held is sent late).
+            (message) => stop(message, true),
             Number.isInteger(m.window) ? Math.max(1, Math.min(8, m.window)) : 1,
           );
           if (
@@ -133,15 +172,33 @@ export function useDesktopInput(
         fail((e as Error).message);
       }
     };
-    socket.onerror = () => fail("Desktop input could not connect.");
-    socket.onclose = () => fail("Desktop control disconnected.");
+    socket.onerror = () =>
+      stop("Desktop input could not connect. Reconnecting…", true);
+    // 4001 is the Mac ending control (revoked, expired, taken over, paused):
+    // its error message already said why. Any other close is the link.
+    socket.onclose = (event) =>
+      stop(
+        event.code === 4001
+          ? "Desktop control ended."
+          : "Desktop control disconnected. Reconnecting…",
+        event.code !== 4001,
+      );
     const heartbeat = setInterval(() => {
       if (queue?.idle)
         void queue.enqueue({ type: "heartbeat" }).catch(() => {});
       queue?.checkTimeout();
     }, 500);
+    // The network is back, or the page is: try now, not after the wait.
+    const wake = () => {
+      if (!document.hidden) retry.current.wake();
+    };
+    window.addEventListener("online", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
+      retry.current.cancel();
+      window.removeEventListener("online", wake);
+      document.removeEventListener("visibilitychange", wake);
       clearTimeout(deadline);
       clearInterval(heartbeat);
       queue?.close();
@@ -149,9 +206,11 @@ export function useDesktopInput(
       dispatcher.current = () =>
         Promise.reject(Error("Enable screen control first."));
     };
-  }, [peer.url, peer.token, enabled, display]);
+  }, [peer.url, peer.token, enabled, display, attempt]);
   return {
     ready,
+    // Between a dropped connection and the next: control is still on.
+    reconnecting,
     typing,
     probe,
     // A text field under this point, known before the tap: only from a map
