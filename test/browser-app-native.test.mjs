@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { BrowserAppNative } from "../server/browser-app-native.mjs";
 
 const identity = "a".repeat(64), instance = "b".repeat(64);
-const target = { appId: "/System/Applications/Notes.app", windowId: 42, pid: 123, instance, identity, width: 1200, height: 800 };
+// appId() takes an absolute, normalized path to an .app bundle. On Windows the
+// same checks run on a path in that notation: "/System/…" normalizes to
+// backslashes there and would be refused before the behaviour under test.
+const onWindows = process.platform === "win32";
+const bundle = (folder, name) => onWindows ? `C:\\${folder.replaceAll("/", "\\")}\\${name}.app` : `/${folder}/${name}.app`;
+const target = { appId: bundle("System/Applications", "Notes"), windowId: 42, pid: 123, instance, identity, width: 1200, height: 800 };
 
 test("native app requests carry a signed process and exact window geometry", async () => {
   const calls = [];
@@ -152,7 +157,9 @@ test("native protections reject browsers, embedded webviews, secure content and 
   assert.match(source,/childResult == \.success \|\| childResult == \.attributeUnsupported \|\| childResult == \.noValue/);
 });
 
-test("native wrapper blocks host browsers before helper work and protects mislabeled catalog identities",async()=>{
+test("native wrapper blocks host browsers before helper work and protects mislabeled catalog identities", {
+  skip: onWindows && "host browsers are recognised by the last segment of a macOS bundle path (…/Safari.app); a Windows path has none",
+}, async()=>{
   let calls=0;
   const native=new BrowserAppNative({}, {run:async()=>{calls++;return {apps:[{id:'/Applications/Renamed.app',name:'Renamed',bundleId:'com.google.Chrome',identity,protected:false}]};}});
   await assert.rejects(native.input({...target,appId:'/Applications/Google Chrome.app'},{type:'click',x:.5,y:.5}),{status:403});

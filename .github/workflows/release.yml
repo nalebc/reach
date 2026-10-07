@@ -1,0 +1,99 @@
+name: Release Reach
+# Pushing a tag v<version> builds, tests and verifies Reach once, then publishes
+# the very tarball that verify:package produced. Nothing is rebuilt after it.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - name: The tag must be v plus the package.json version
+        id: version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: node scripts/check-release.mjs
+        env:
+          REACH_PRIVATE_IDENTIFIERS: ${{ secrets.REACH_PRIVATE_IDENTIFIERS }}
+      - run: npm run build:release
+      - run: npm test
+        env:
+          TMPDIR: ${{ runner.temp }}
+          REACH_TEST_SCRIPT_SANDBOX: "0"
+      - run: npm run package
+      - run: npm run verify:package
+      - name: Checksums for the verified tarball and the portable folder
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          set -- release/*.tgz
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "Expected exactly one tarball from verify:package in release/, found: $*" >&2
+            exit 1
+          fi
+          tgz="$1"
+          portable="release/reach-$VERSION-portable.tar.gz"
+          tar -czf "$portable" -C release reach
+          (cd release && sha256sum "$(basename "$tgz")" "$(basename "$portable")" > SHA256SUMS)
+          cat release/SHA256SUMS
+          echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
+          echo "portable=$portable" >> "$GITHUB_OUTPUT"
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node - <<'NOTES'
+          const fs = require("node:fs");
+          const version = process.env.VERSION;
+          const lines = fs.readFileSync("CHANGELOG.md", "utf8").split("\n");
+          const start = lines.findIndex((line) => /^## /.test(line) && line.includes(`[${version}]`));
+          if (start < 0) { console.error(`CHANGELOG.md has no "## [${version}]" entry.`); process.exit(1); }
+          if (/unreleased/i.test(lines[start])) { console.error(`CHANGELOG.md still marks ${version} as unreleased; date it before tagging.`); process.exit(1); }
+          const next = lines.findIndex((line, i) => i > start && /^## /.test(line));
+          const notes = lines.slice(start + 1, next < 0 ? lines.length : next).join("\n").trim();
+          const sums = fs.readFileSync("release/SHA256SUMS", "utf8").trim();
+          fs.writeFileSync("release/NOTES.md", `${notes}\n\n## Checksums (SHA-256)\n\n\`\`\`\n${sums}\n\`\`\`\n`);
+          NOTES
+          cat release/NOTES.md
+      - name: Publish the verified tarball to npm
+        run: npm publish "${{ steps.assets.outputs.tgz }}" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.assets.outputs.tgz }}" \
+            "${{ steps.assets.outputs.portable }}" \
+            release/SHA256SUMS \
+            --verify-tag \
+            --title "Reach ${{ steps.version.outputs.version }}" \
+            --notes-file release/NOTES.md

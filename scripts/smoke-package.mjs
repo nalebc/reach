@@ -7,6 +7,12 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { assertReleaseAssets } from "./release-assets.mjs";
+import { tailnetManifestFiles } from "./build-tailnet.mjs";
+
+// The browser sign-in client dominates the tarball; a second copy of it is the
+// usual way to blow past this.
+const PACKAGE_BUDGET = 30 * 1024 * 1024;
+const megabytes = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
@@ -27,6 +33,14 @@ for (const required of ["dist/index.html", "dist/start.html", "dist/agent.mjs", 
   assert.ok(paths.includes(required), `Missing from npm artifact: ${required}`);
 for (const file of paths)
   assert.ok(!/(^|\/)(?:\.reach|\.env|work|node_modules|test|ios)(?:\/|$)/.test(file), `Private or development file in artifact: ${file}`);
+  // tailnet/dist ships whole: exactly the current manifest's files, no earlier build.
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "tailnet/dist/tailnet.json"), "utf8"));
+  const expected = new Set(tailnetManifestFiles(manifest).map((name) => `tailnet/dist/${name}`));
+  for (const file of paths)
+    if (file.startsWith("tailnet/dist/")) assert.ok(expected.has(file), `Stale browser sign-in build in npm artifact: ${file}`);
+  for (const file of expected) assert.ok(paths.includes(file), `Missing from npm artifact: ${file}`);
+  console.log(`Packed ${pack.filename}: ${megabytes(pack.size)} (${paths.length} files, ${megabytes(pack.unpackedSize)} unpacked).`);
+  assert.ok(pack.size <= PACKAGE_BUDGET, `npm artifact is ${megabytes(pack.size)}; the budget is ${megabytes(PACKAGE_BUDGET)}.`);
 
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
   runNpm(["install", "--prefix", temp, "--omit=dev", "--no-audit", "--no-fund", path.join(output, pack.filename)]);

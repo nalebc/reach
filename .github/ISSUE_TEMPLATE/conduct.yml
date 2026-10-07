@@ -1,0 +1,14 @@
+name: Conduct
+description: Ask a maintainer to follow up privately about a conduct matter. Put no details here.
+title: Conduct
+body:
+  - type: markdown
+    attributes:
+      value: "Submit this as it is. A maintainer will follow up with you privately; keep names and details out of this public issue."
+  - type: checkboxes
+    id: request
+    attributes:
+      label: Request
+      options:
+        - label: Please follow up with me privately about a conduct matter.
+          required: true

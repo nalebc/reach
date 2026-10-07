@@ -36,6 +36,38 @@ export function tailnetCurrent(out = tailnetOut) {
   }
 }
 
+// Every file a manifest accounts for: the module, the Go glue and their
+// precompressed copies. Anything else with these names is an earlier build.
+export function tailnetManifestFiles(manifest) {
+  const files = ["tailnet.json"];
+  for (const name of [manifest?.wasm, manifest?.exec]) {
+    if (typeof name !== "string" || !name || path.basename(name) !== name) continue;
+    for (const suffix of ["", ".br", ".gz"]) files.push(name + suffix);
+  }
+  return files;
+}
+
+// npm packs the whole folder, so an earlier build's hashed outputs left next
+// to the current one would ship. Removes what the manifest does not list.
+export function pruneTailnet(out = tailnetOut, log = () => {}) {
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(out, "tailnet.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  const keep = new Set(tailnetManifestFiles(manifest));
+  const removed = [];
+  for (const entry of fs.readdirSync(out)) {
+    if (keep.has(entry) || !/^(?:reach-tailnet|wasm_exec)\./.test(entry)) continue;
+    fs.rmSync(path.join(out, entry), { recursive: true, force: true });
+    removed.push(entry);
+  }
+  if (removed.length)
+    log(`Reach: removed ${removed.length} stale browser sign-in file(s): ${removed.join(", ")}`);
+  return removed;
+}
+
 const hashed = (name, data) => {
   const ext = path.extname(name);
   return `${path.basename(name, ext)}.${crypto.createHash("sha256").update(data).digest("hex").slice(0, 12)}${ext}`;
@@ -114,6 +146,7 @@ export async function buildTailnet({
     );
     fs.rmSync(out, { recursive: true, force: true });
     fs.renameSync(stage, out);
+    pruneTailnet(out, log);
     return names;
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
@@ -129,6 +162,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     : await buildTailnet({ out, required });
   if (required && !names)
     throw Error("Go is required to build a release with browser sign-in. Install the version in tailnet/go.mod and retry.");
+  // Also when the build was skipped as current: older outputs must not ship.
+  pruneTailnet(out, console.log);
   console.log(
     names ? `Built ${names.wasm} in ${out}` : "Go is not installed; skipped.",
   );

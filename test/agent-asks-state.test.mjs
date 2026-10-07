@@ -6,6 +6,11 @@ import { createAgentAsks } from "../server/agent-sessions/agent-asks.mjs";
 
 const SESSION = "34ab778a-0bc2-4a3d-a86b-887f8209431d";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (check, ms = 5000) => {
+  const end = Date.now() + ms;
+  while (!check() && Date.now() < end) await delay(5);
+  return check();
+};
 // Exercise the broker's real connection handler without opening a socket.
 // agent-asks.test.mjs separately covers the child hook and Unix permissions.
 function setup(t, options = {}) {
@@ -34,15 +39,16 @@ const questions = [
 
 test("remote input and poll gaps cannot remove a question being answered on the phone", async (t) => {
   let watching = true;
-  const { asks, socket, send } = setup(t, { idle: async () => 0, watching: () => watching });
+  // The Mac is in use the whole time (idle 0 s). A grace far longer than the
+  // phone's gap keeps the outcome the same on coarse or starved timers.
+  const { asks, socket, send } = setup(t, { idle: async () => 0, watching: () => watching, watchGraceMs: 2000 });
   send(questions);
-  await delay(45);
-  assert.equal(asks.has("claude", SESSION), true);
+  assert.ok(await until(() => asks.has("claude", SESSION)));
   watching = false;
-  await delay(10);
+  await delay(60); // several poll rounds (everyMs 5) with the phone away
   assert.equal(asks.has("claude", SESSION), true);
   watching = true;
-  await delay(45);
+  await delay(20);
   const [prompt] = asks.prompts("claude", SESSION);
   assert.equal(prompt.questions.length, 2);
   asks.answer("claude", SESSION, prompt.id, { answers: { "Choose one": ["B"], "Choose several": ["C", "D"] } });
@@ -69,7 +75,6 @@ test("leaving the phone still hands the request back when the Mac is in use", as
   const { asks, socket, send } = setup(t, { idle: async () => 0, watching: () => watching });
   send(questions);
   watching = false;
-  await delay(90);
-  assert.equal(asks.has("claude", SESSION), false);
+  assert.ok(await until(() => !asks.has("claude", SESSION)));
   assert.deepEqual(socket.result, {});
 });

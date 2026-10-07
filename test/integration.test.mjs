@@ -9,6 +9,9 @@ import { createReach } from "../server/index.mjs";
 import { atomicJson, hash, id, loadJson } from "../server/core.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A real shell's first output waits for it to start. PowerShell in a ConPTY on
+// a shared Windows runner has needed well over the 5 s this test once allowed.
+const SHELL_START_MS = process.platform === "win32" ? 60000 : 15000;
 test("Reach companion: authenticated end-to-end flows", async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "reach-test-")),
     root = path.join(temp, "shared"),
@@ -167,22 +170,23 @@ test("Reach companion: authenticated end-to-end flows", async (t) => {
                 : "printf 'reach-pty-ok\\n'\r",
           }),
         );
-        for (
-          let i = 0;
-          i < 50 &&
-          !first.received.some((m) => m.data?.includes("reach-pty-ok"));
-          i++
-        )
+        const echoed = () =>
+          first.received.some((m) => m.data?.includes("reach-pty-ok"));
+        for (let waited = 0; waited < SHELL_START_MS && !echoed(); waited += 100)
           await sleep(100);
-        assert.ok(first.received.some((m) => m.data?.includes("reach-pty-ok")));
+        assert.ok(
+          echoed(),
+          `no terminal output within ${SHELL_START_MS / 1000} s: ${JSON.stringify(first.received).slice(0, 400)}`,
+        );
         first.ws.close();
         await once(first.ws, "close");
         const second = connect();
         await once(second.ws, "open");
         for (
-          let i = 0;
-          i < 30 && !second.received.some((m) => m.type === "snapshot");
-          i++
+          let waited = 0;
+          waited < SHELL_START_MS &&
+          !second.received.some((m) => m.type === "snapshot");
+          waited += 100
         )
           await sleep(100);
         assert.ok(

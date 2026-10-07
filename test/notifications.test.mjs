@@ -9,6 +9,11 @@ import {
 } from "../server/notifications.mjs";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (check, ms = 5000) => {
+  const end = Date.now() + ms;
+  while (!check() && Date.now() < end) await wait(5);
+  return check();
+};
 const sources = (extra = {}) => ({
   agentSessions: { list: async () => ({ sessions: [], errors: {} }) },
   openClaw: { overview: async () => ({ connected: false }) },
@@ -149,15 +154,15 @@ test("background checks start only for subscribed devices, retry failed push, an
     notify: async () => ({ sent: ++sends > 1 ? 1 : 0 }),
   });
   feed.start();
-  await wait(35);
+  await wait(60); // several intervals: nothing is read while no device subscribes
   assert.equal(reads, 0);
   enabled = true;
-  await wait(70);
-  assert.ok(reads >= 2);
-  assert.equal(sends, 2);
+  // Fixed sleeps starved on a busy CI runner; wait for the retry itself.
+  assert.ok(await until(() => reads >= 2 && sends >= 2), `reads ${reads}, sends ${sends}`);
+  assert.equal(sends, 2); // the failed push was retried once, then remembered
   feed.close();
   const stoppedAt = reads;
-  await wait(35);
+  await wait(60);
   assert.equal(reads, stoppedAt);
 });
 
