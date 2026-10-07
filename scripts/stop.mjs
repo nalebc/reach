@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
 import { loginScript } from "./login-start.mjs";
+import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // `reach stop` / `reach restart`: every Reach running on this computer (one
 // should; any folder), in a terminal tab, started detached, or the background
@@ -15,7 +16,7 @@ import { loginScript } from "./login-start.mjs";
 
 // The processes and every Reach among them (instances.mjs): one Reach per
 // computer, so stop and restart reach it whichever folder it came from.
-import { processTable, reachHosts } from "./instances.mjs";
+import { processTable, reachHosts, stateOf } from "./instances.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -72,6 +73,8 @@ export async function stopReach(
     platform = process.platform,
     graceMs = 15000,
     termMs = 5000,
+    state = stateOf,
+    handoffRoute = handoffPersistentRoute,
   } = {},
 ) {
   const hosts = findReach(null, table(), self);
@@ -135,6 +138,15 @@ export async function stopReach(
     try {
       kill(pid, "SIGKILL");
     } catch {}
+  if (restarting && !serviceRunning) {
+    if ((await waitGone(hostPids, 2000)).length)
+      throw Error("Reach did not stop. Its route was not transferred; try again after it exits.");
+    const file = path.join(state(root), "serve-owner.json");
+    const sources = [...new Set(others.map((host) =>
+      path.join(state(host.root), "serve-owner.json"),
+    ))];
+    await handoffRoute({ file, sources });
+  }
   const stopped = others.length;
   if (serviceRunning && !restarting)
     print("The background service stopped; it starts again at your next sign-in, or with ./reach restart.");

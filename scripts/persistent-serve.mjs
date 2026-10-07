@@ -66,6 +66,40 @@ export function recordedRouteOwned(file, config, origin) {
     exactPersistentRoute(config, origin, record.target)
   );
 }
+// A restart from a different checkout stops the old Reach but its background
+// Serve route stays registered. Carry only verified ownership into the new
+// checkout; ensurePersistentRoute then replaces the old target at launch.
+export async function handoffPersistentRoute({
+  file,
+  sources,
+  inspect = () => tailscaleJson(["serve", "status", "--json"]),
+}) {
+  const records = sources
+    .filter((source) => source !== file)
+    .map((source) => loadJson(source, null))
+    .filter((record) =>
+      record?.version === 1 &&
+      typeof record.origin === "string" &&
+      typeof record.target === "string",
+    );
+  if (!records.length) return false;
+  const config = await inspect();
+  for (const record of records) {
+    try {
+      if (new URL(record.origin).protocol !== "https:") continue;
+    } catch {
+      continue;
+    }
+    if (!exactPersistentRoute(config, record.origin, record.target)) continue;
+    atomicJson(file, {
+      version: 1,
+      origin: record.origin,
+      target: record.target,
+    });
+    return true;
+  }
+  return false;
+}
 // Returns true when a route was created, false when the recorded one was
 // reused as it is (nothing on the port changed).
 export async function ensurePersistentRoute({

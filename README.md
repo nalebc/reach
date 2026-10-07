@@ -189,6 +189,8 @@ The service saves a fixed loopback health port and a stable private socket targe
 
 One Reach runs per computer. Starting a second one, from any folder, says where the first runs (a Terminal window, the background with no window, or the service) and offers `./reach restart` (stop it and start Reach here) or `./reach stop`. `./reach status`, `./reach stop` and `./reach restart` find Reach whichever folder it was started from. `./reach cli` adds a `reach` command to every Terminal (a link in `~/.local/bin` or another folder of yours on PATH; no sudo, no shell profile changes), so `reach status` works from anywhere.
 
+When you run `./reach restart` in Terminal from another checkout, Reach transfers the stopped instance's verified private route ownership to that checkout and replaces the route's target, keeping the same phone URL. Other services and routes with changed handlers remain protected. Restart uses the source already in the checkout; it does not pull Git updates. Each checkout keeps its own settings and paired phones; use `./reach import <old-folder>` before the first setup in a new checkout to copy them. An installed background service restarts from its installed folder.
+
 `./reach approve` reviews pending device requests from the running background host. Select the device, then choose Approve, Deny, or Review later. Approval still requires entering the matching code from the phone. `./reach pair` prints a fresh eight-digit fallback code and QR from the running foreground or background host. It replaces the previous unused code, works once, and expires in ten minutes. Pairing codes are not printed into background service logs. Connect your phone to Tailscale before opening the QR link.
 
 #### Keep the Mac available
