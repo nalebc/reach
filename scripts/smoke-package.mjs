@@ -21,7 +21,8 @@ const npm = process.env.npm_execpath;
 if (!npm) throw Error("Run this check with npm run verify:package.");
 const output = path.join(root, "release");
 fs.mkdirSync(output, { recursive: true });
-const temp = fs.mkdtempSync(path.join(os.tmpdir(), "reach-package-smoke-"));
+// Managed checkouts and installed tools can live under hidden directories.
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), ".reach-package-smoke-"));
 const runNpm = (args) => execFileSync(process.execPath, [npm, ...args], {
   cwd: root, encoding: "utf8", timeout: 180000, maxBuffer: 8 << 20,
   env: { ...process.env, npm_config_cache: path.join(temp, "npm-cache") },
@@ -52,7 +53,7 @@ for (const file of paths)
   const run = (args) => execFileSync(process.execPath, args, { cwd: temp, env, encoding: "utf8", timeout: 30000 });
   assert.match(run([path.join(installed, "bin/reach.mjs"), "--help"]), /Reach/);
   assert.equal(run([path.join(installed, "bin/reach.mjs"), "--version"]).trim(), pkg.version);
-  const smoke = `
+  const smoke = String.raw`
     import assert from 'node:assert/strict';
     import fs from 'node:fs';
     import { createReach } from ${JSON.stringify(pathToFileURL(path.join(installed, "server/index.mjs")).href)};
@@ -63,7 +64,23 @@ for (const file of paths)
     try {
       await new Promise(r => app.server.listen(0, '127.0.0.1', r));
       const base = 'http://127.0.0.1:' + app.server.address().port;
-      assert.equal((await fetch(base + '/')).status, 200);
+      const page = await fetch(base + '/');
+      assert.equal(page.status, 200);
+      const html = await page.text();
+      const installedDist = ${JSON.stringify(path.join(installed, "dist"))};
+      assert.equal(html, fs.readFileSync(installedDist + '/index.html', 'utf8'));
+      const assets = [...new Set([...html.matchAll(/(?:src|href)="(\/assets\/[^"?]+)"/g)].map(match => match[1]))];
+      assert.ok(assets.length > 0, 'the built page must reference assets');
+      for (const asset of assets) {
+        const response = await fetch(base + asset);
+        assert.equal(response.status, 200, asset);
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(installedDist + asset), asset);
+      }
+      for (const [route, file] of [['/agent-browser', '/agent.html'], ['/files/smoke-deep-link', '/index.html']]) {
+        const response = await fetch(base + route);
+        assert.equal(response.status, 200, route);
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(installedDist + file), route);
+      }
       assert.equal((await fetch(base + '/api/files')).status, 401);
       const owner = app.auth.issue('Release tester', ['files'], 'agent');
       const response = await fetch(base + '/api/files', { headers: { Authorization: 'Bearer ' + owner.token } });
@@ -74,7 +91,7 @@ for (const file of paths)
     } finally { await app.close(); }
   `;
   run(["--input-type=module", "-e", smoke]);
-  console.log(`Clean package install passed: ${pack.filename} (${paths.length} files). CLI, UI, authenticated files and access boundaries verified.`);
+  console.log(`Clean package install passed: ${pack.filename} (${paths.length} files). CLI, all initial UI assets, agent entry, deep links, authenticated files and access boundaries verified under a hidden install directory.`);
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

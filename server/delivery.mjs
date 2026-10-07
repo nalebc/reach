@@ -11,8 +11,14 @@ const accepts = (req, encoding) =>
 // so they never change: cache them for a year and serve the copy precompressed
 // at build time. The page itself is revalidated on every open.
 export function serveBuild(app, express, dist) {
+  // A checkout may itself live beneath a hidden directory (such as .codex).
+  // Root relative filenames there so sendFile checks only requested path
+  // components for dotfiles, while retaining its default traversal protection.
   app.get("/agent-browser", (req, res) =>
-    res.sendFile(path.join(dist, "agent.html"), { headers: { "Cache-Control": "no-store" } }),
+    res.sendFile("agent.html", {
+      root: dist,
+      headers: { "Cache-Control": "no-store" },
+    }),
   );
   const exists = new Map();
   const has = (file) => {
@@ -22,7 +28,8 @@ export function serveBuild(app, express, dist) {
   app.use("/assets", (req, res, next) => {
     if (!["GET", "HEAD"].includes(req.method) || !/^\/[\w.-]+$/.test(req.path))
       return next();
-    const file = path.join(dist, "assets", req.path.slice(1));
+    const name = path.join("assets", req.path.slice(1));
+    const file = path.join(dist, name);
     if (!has(file)) return next();
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.setHeader("Vary", "Accept-Encoding");
@@ -33,9 +40,9 @@ export function serveBuild(app, express, dist) {
       if (accepts(req, encoding) && has(file + ext)) {
         res.setHeader("Content-Encoding", encoding);
         res.type(path.extname(file));
-        return res.sendFile(file + ext, { cacheControl: false });
+        return res.sendFile(name + ext, { root: dist, cacheControl: false });
       }
-    res.sendFile(file, { cacheControl: false });
+    res.sendFile(name, { root: dist, cacheControl: false });
   });
   const page = path.join(dist, "index.html");
   app.use(
@@ -47,7 +54,10 @@ export function serveBuild(app, express, dist) {
     }),
   );
   app.use((req, res) =>
-    res.sendFile(page, { headers: { "Cache-Control": "no-cache" } }),
+    res.sendFile("index.html", {
+      root: dist,
+      headers: { "Cache-Control": "no-cache" },
+    }),
   );
 }
 
