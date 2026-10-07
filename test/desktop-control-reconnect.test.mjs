@@ -63,6 +63,115 @@ function mac({ grace = 400 } = {}) {
   return { control, state, connect };
 }
 
+// Exercise already-queued expiry callbacks explicitly: clearing a timeout
+// alone is not sufficient once a replacement grant has been created.
+function graceTimers(t) {
+  const timers = [];
+  t.mock.method(globalThis, "setTimeout", (callback, ms) => {
+    const timer = { callback, ms, cleared: false, unref() {} };
+    timers.push(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, "clearTimeout", (timer) => { if (timer) timer.cleared = true; });
+  return timers;
+}
+
+test("explicit release or a new grant invalidates an old reconnect expiry", (t) => {
+  const timers = graceTimers(t);
+  for (const release of [false, true]) {
+    let now = 1000;
+    const control = new ScreenControl(() => now);
+    control.acquire(phone, true);
+    control.revokeLater(phone.id, 15000);
+    const old = timers.at(-1);
+    if (release) {
+      control.acquire(phone, false);
+      assert.equal(control.reconnecting(phone.id), false, "explicit release cancels grace");
+    }
+    now += 1000;
+    const grant = control.acquire(phone, true);
+    assert.equal(grant.expiresAt, now + 30000, "the normal new-grant lifetime is unchanged");
+    assert.equal(control.reconnecting(phone.id), false);
+    assert.equal(old.cleared, true);
+    old.callback();
+    assert.equal(control.holder()?.clientId, phone.id, "queued old expiry cannot revoke replacement");
+    control.clear();
+  }
+});
+
+test("takeover discards obsolete grace but a refused takeover leaves it active", (t) => {
+  const timers = graceTimers(t);
+  const control = new ScreenControl(() => 1000);
+  const other = { ...phone, id: "other" };
+  control.acquire(phone, true);
+  control.revokeLater(phone.id, 15000);
+  const old = timers.at(-1);
+  assert.throws(() => control.acquire(other, true), { status: 409 });
+  assert.equal(control.reconnecting(phone.id), true, "failed request must not cancel holder's expiry");
+  assert.equal(old.cleared, false);
+  control.acquire(other, true, { takeover: true });
+  assert.equal(control.reconnecting(phone.id), false);
+  control.acquire(phone, true, { takeover: true });
+  old.callback();
+  assert.equal(control.holder()?.clientId, phone.id, "retaking control creates a new grant");
+  control.clear();
+});
+
+test("only the current reconnect generation can expire its own original lease", (t) => {
+  const timers = graceTimers(t);
+  let now = 1000;
+  const control = new ScreenControl(() => now);
+  control.acquire(phone, true);
+  const expiresAt = control.lease.expiresAt;
+  control.revokeLater(phone.id, 15000);
+  const first = timers.at(-1);
+  control.revokeLater(phone.id, 15000);
+  const second = timers.at(-1);
+  first.callback();
+  assert.equal(control.reconnecting(phone.id), true, "stale callback leaves replacement grace intact");
+  assert.equal(control.holder()?.clientId, phone.id);
+  assert.equal(control.lease.expiresAt, expiresAt, "grace never extends the underlying lease");
+  now = expiresAt;
+  assert.equal(control.holder(), null, "authorization expires even if grace is still pending");
+  second.callback();
+  assert.equal(control.reconnecting(phone.id), false);
+  assert.equal(control.lease, null);
+});
+
+test("native retirement survives revoke and clear until every process actually exits", async () => {
+  const control = new ScreenControl();
+  let endFirst, endSecond;
+  const first = new Promise((resolve) => { endFirst = resolve; });
+  const second = new Promise((resolve) => { endSecond = resolve; });
+  control.acquire(phone, true);
+  control.retireInput(first);
+  control.retireInput(first);
+  assert.equal(control.retiringInputs.size, 1, "repeated close callbacks do not duplicate ownership");
+  let stopped = false;
+  const wait = control.waitForInputStop().then(() => { stopped = true; });
+  control.revoke(phone.id);
+  control.clear();
+  assert.equal(control.inputStopping(), true, "grant revocation is not process termination");
+  control.retireInput(second); // arrives after wait took its first snapshot
+  endFirst();
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(stopped, false);
+  assert.equal(control.inputStopping(), true);
+  endSecond();
+  await wait;
+  assert.equal(stopped, true);
+  assert.equal(control.inputStopping(), false);
+});
+
+test("an unconfirmed native termination fails closed instead of releasing input ownership", async () => {
+  const control = new ScreenControl();
+  const failure = Error("termination unconfirmed");
+  control.retireInput(Promise.reject(failure));
+  await assert.rejects(control.waitForInputStop(), failure);
+  control.clear();
+  assert.equal(control.inputStopping(), true);
+});
+
 test("a transient denial closes control as retryable and keeps the lease for the reconnect", async () => {
   const { control, state, connect } = mac();
   control.acquire(phone, true);

@@ -1,5 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import { startDom } from "./dom/harness.mjs";
 
 // Tables in a chat (Claude's /context, its comparisons) showed as raw "|"
@@ -85,4 +86,32 @@ test("pipes that aren't a table stay as written", async () => {
   assert.match(root.textContent, /Use a \| b to pipe\./);
   await done();
   assert.deepEqual(dom.errors, []);
+});
+
+
+test("session links keep a visible keyboard focus indicator after the link-style reset", async () => {
+  const style = dom.document.createElement("style");
+  const [base, chat] = await Promise.all(["styles.css", "agent-session.css"].map(
+    file => fs.readFile(new URL(`../src/${file}`, import.meta.url), "utf8"),
+  ));
+  // jsdom does not expand `all: unset`. Model its initial outline values so
+  // the lower-specificity global button rule cannot hide this regression.
+  style.textContent = `${base}\n.md .md-session-link { outline: none; outline-offset: 0; }\n${chat}`;
+  dom.document.head.append(style);
+  const view = await dom.render(React.createElement(
+    SessionLinkContext.Provider, { value: () => true },
+    React.createElement(AgentMarkdown, { text: "[Related chat](#local_4ff35923-e6eb-432e-9e43-ba980333dcde)" }),
+  ));
+  try {
+    const link = view.container.querySelector("button.md-session-link");
+    dom.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    link.focus();
+    assert.equal(dom.document.activeElement, link);
+    assert.equal(link.matches(":focus-visible"), true, "the fixture represents keyboard focus");
+    assert.match(dom.window.getComputedStyle(link).outline, /2px solid/, "keyboard focus must remain visible");
+    assert.equal(dom.window.getComputedStyle(link).outlineOffset, "4px");
+  } finally {
+    await view.unmount();
+    style.remove();
+  }
 });

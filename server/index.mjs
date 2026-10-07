@@ -621,7 +621,7 @@ export async function createReach(overrides = {}) {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder(), paused: () => paused, record,
+    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(), paused: () => paused, record,
   }) : null);
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
@@ -3199,6 +3199,8 @@ export async function createReach(overrides = {}) {
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
+    if (screenControl.inputStopping())
+      throw fail(409, "Wait for the previous desktop input helper to stop.");
     if (inputInFlight)
       throw fail(409, "Wait for the previous screen action to finish.");
     inputInFlight = true;
@@ -3212,6 +3214,8 @@ export async function createReach(overrides = {}) {
           )
             throw fail(403, "Screen access was turned off or revoked.");
           screenControl.check(req.client);
+          if (screenControl.inputStopping())
+            throw fail(409, "Wait for the previous desktop input helper to stop.");
         }),
       );
     } finally {
@@ -3528,6 +3532,7 @@ export async function createReach(overrides = {}) {
               fail(409, "This device already has a control connection. Reconnecting…"),
               { retryable: true },
             );
+          current?.endControl?.("Desktop control reconnecting…", true);
           inputConnections.set(id, socket);
         },
         unregister: (id, socket) => {

@@ -61,6 +61,14 @@ export class DesktopInput {
     this.child = child;
     this.pending = null;
     this.stopped = false;
+    this.exited = false;
+    // Pending requests reject as soon as stop starts, but the native process
+    // can still finish an action or release held buttons until it really exits.
+    this.terminated = new Promise((resolve) => {
+      const finished = () => { this.exited = true; resolve(); };
+      child.once("exit", finished);
+      child.once("error", () => { if (!child.pid) finished(); });
+    });
     let buffer = "";
     child.stderr.on("data", () => {});
     child.stdin.on("error", () => this.stop());
@@ -135,10 +143,12 @@ export class DesktopInput {
       this.pending.reject(fail(403, "Desktop input disconnected."));
       this.pending = null;
     }
-    this.child.stdin.end();
+    try { this.child.stdin.end(); } catch { /* already closed */ }
     const child = this.child;
+    if (this.exited || !child.pid) return;
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
+      if (this.exited) return;
       const force = setTimeout(() => child.kill("SIGKILL"), 1000);
       force.unref();
       child.once("exit", () => clearTimeout(force));

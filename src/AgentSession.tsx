@@ -1387,9 +1387,30 @@ export default function AgentSessionView({
   // waking, Reach restarting) is tried again soon, and said only if it lasts.
   const failed = useRef(0);
   const retryRead = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Every mounted identity owns its reads. Closing the chat or replacing its
+  // credential invalidates pending replies before they can update this view,
+  // retry, or drain a queued reread. A generation also separates effect
+  // re-activation (Strict Mode) from the previous setup's pending requests.
+  const readLife = useMemo(() => ({ active: false, generation: 0 }), [peer.url, peer.token, initial.agent, initial.id]);
+  useLayoutEffect(() => {
+    readLife.active = true;
+    readLife.generation++;
+    known.current = "";
+    reading.current = null;
+    failed.current = 0;
+    clearTimeout(retryRead.current);
+    setOlderBusy(false);
+    return () => {
+      readLife.active = false;
+      clearTimeout(retryRead.current);
+      reading.current = null;
+    };
+  }, [readLife]);
   const load = useCallback(
     async (first: boolean) => {
-      if (document.hidden && !first) return;
+      const generation = readLife.generation;
+      const current = () => readLife.active && readLife.generation === generation;
+      if (!current() || (document.hidden && !first)) return;
       if (!first && reading.current) {
         reading.current.again = true;
         return;
@@ -1403,6 +1424,7 @@ export default function AgentSessionView({
           null,
           first ? undefined : known.current,
         );
+        if (!current()) return;
         known.current = r.version || "";
         failed.current = 0;
         clearTimeout(retryRead.current);
@@ -1432,18 +1454,21 @@ export default function AgentSessionView({
           ),
         );
       } catch (e) {
+        if (!current()) return;
         failed.current++;
         if (failed.current > 1) setLoadError((e as Error).message);
         clearTimeout(retryRead.current);
-        retryRead.current = setTimeout(() => void again.current(first), Math.min(8000, 1000 * 2 ** (failed.current - 1)));
+        retryRead.current = setTimeout(() => {
+          if (current()) void again.current(first);
+        }, Math.min(8000, 1000 * 2 ** (failed.current - 1)));
       } finally {
-        if (reading.current === turn) {
+        if (current() && reading.current === turn) {
           reading.current = null;
           if (turn.again) void again.current(false);
         }
       }
     },
-    [peer.url, peer.token, initial.agent, initial.id],
+    [peer.url, peer.token, initial.agent, initial.id, readLife],
   );
   const again = useRef(load);
   again.current = load;
@@ -1517,11 +1542,14 @@ export default function AgentSessionView({
   );
 
   const older = async () => {
-    if (!before) return;
+    const generation = readLife.generation;
+    const current = () => readLife.active && readLife.generation === generation;
+    if (!before || !current()) return;
     setOlderBusy(true);
     try {
       // Older pages are never versioned, so they always come back whole.
       const r = (await readSession(peer, initial, before)) as SessionPage;
+      if (!current()) return;
       atBottom.current = false;
       setReadingHistory(true);
       const el = scroller.current;
@@ -1529,9 +1557,9 @@ export default function AgentSessionView({
       setItems((current) => [...r.items, ...(current || [])]);
       setBefore(r.before);
     } catch (e) {
-      setLoadError((e as Error).message);
+      if (current()) setLoadError((e as Error).message);
     } finally {
-      setOlderBusy(false);
+      if (current()) setOlderBusy(false);
     }
   };
 

@@ -23,6 +23,25 @@ export class ScreenControl {
   lease = null;
   // Leases kept a moment for a control connection on its way back.
   pending = new Map();
+  // Native input ownership outlives a closed socket until its process exits.
+  // Revoking a grant never means that an old helper has finished stopping.
+  retiringInputs = new Map();
+  retireInput(terminated) {
+    if (this.retiringInputs.has(terminated)) return;
+    const retirement = Promise.resolve(terminated).then(() => {
+      this.retiringInputs.delete(terminated);
+    });
+    this.retiringInputs.set(terminated, retirement);
+    // Unexpected failure to confirm termination stays fail-closed. Waiters
+    // receive that error; it must not free native input ownership silently.
+    retirement.catch(() => {});
+  }
+  inputStopping() {
+    return this.retiringInputs.size > 0;
+  }
+  async waitForInputStop() {
+    while (this.retiringInputs.size) await Promise.all([...this.retiringInputs.values()]);
+  }
   // While paused nobody gets control, renewals included.
   paused = false;
   // Whether macOS shows one of its own dialogs now (set by the server).
@@ -50,7 +69,7 @@ export class ScreenControl {
     if (enabled && this.paused) throw fail(423, pausedMessage());
     if (enabled) this.ownerOnly(client);
     if (!enabled) {
-      if (this.lease?.clientId === client.id) this.lease = null;
+      this.revoke(client.id);
       return { enabled: false };
     }
     const held = this.holder();
@@ -67,6 +86,10 @@ export class ScreenControl {
         );
       taken = held.clientId;
     }
+    // Only a successful new grant supersedes the old grace period. Failed
+    // takeovers leave the current holder's pending expiry unchanged.
+    if (this.lease) this.keep(this.lease.clientId);
+    this.keep(client.id);
     this.lease = {
       clientId: client.id,
       name: client.name || "",
@@ -102,12 +125,16 @@ export class ScreenControl {
   revokeLater(clientId, ms) {
     this.keep(clientId);
     if (this.lease?.clientId !== clientId) return;
-    const timer = setTimeout(() => {
+    const pending = { lease: this.lease, timer: null };
+    pending.timer = setTimeout(() => {
+      // clearTimeout cannot retract a callback already queued. Both the
+      // pending generation and lease must still be the ones it reserved.
+      if (this.pending.get(clientId) !== pending) return;
       this.pending.delete(clientId);
-      this.revoke(clientId);
+      if (this.lease === pending.lease) this.revoke(clientId);
     }, ms);
-    timer.unref?.();
-    this.pending.set(clientId, timer);
+    pending.timer.unref?.();
+    this.pending.set(clientId, pending);
   }
   // Whether this phone's control connection is expected back.
   reconnecting(clientId) {
@@ -115,9 +142,9 @@ export class ScreenControl {
   }
   // Its connection is back (or ended for good): no release on the timer.
   keep(clientId) {
-    const timer = this.pending.get(clientId);
-    if (!timer) return;
-    clearTimeout(timer);
+    const pending = this.pending.get(clientId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
     this.pending.delete(clientId);
   }
   clear() {

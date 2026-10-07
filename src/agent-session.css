@@ -378,6 +378,10 @@ button.as-title:active {
   text-decoration-color: var(--as-faint);
   text-underline-offset: 2px;
 }
+.md .md-session-link:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 4px;
+}
 .md .md-session-link small {
   color: var(--as-faint);
   text-decoration: none;

@@ -78,6 +78,13 @@ export function desktopConnection(
     scanTimer = setTimeout(() => void scan(), 200);
   };
   const changes = new Set(["click", "down", "up", "key", "text", "type-edit", "scroll", "menu"]);
+  const stopInput = (input) => {
+    if (!input) return;
+    // Retirement is independent of the grant: even a revoked/expired phone
+    // keeps native ownership until cleanup can no longer post input.
+    if (input.terminated) control.retireInput?.(input.terminated);
+    input.stop();
+  };
   // A retryable end (the connection, not the grant, is the trouble) closes
   // with 1012 and keeps the lease a moment; the phone reconnects quietly
   // (src/useDesktopInput.ts). Anything else is 4001: control is over.
@@ -89,7 +96,7 @@ export function desktopConnection(
     fields?.stop();
     for (const item of queue) item.reject?.(fail(403, message));
     queue.length = 0;
-    helper?.stop();
+    stopInput(helper);
     if (ws.readyState === 1) {
       ws.send(
         JSON.stringify({ type: "error", error: message, ...(retryable && { retryable: true }) }),
@@ -120,6 +127,12 @@ export function desktopConnection(
     control.check(client);
     return client;
   };
+  const readyForInput = async () => {
+    await control.waitForInputStop?.();
+    if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
+    // A grant, pause or identity can change while the old native helper exits.
+    return authorize();
+  };
   const drain = async () => {
     if (busy || closed) return;
     busy = true;
@@ -128,7 +141,7 @@ export function desktopConnection(
         const item = queue.shift();
         let result;
         try {
-          authorize();
+          await readyForInput();
           if (Date.now() - item.at > 1000) {
             // A move or scroll that waited too long is let go (the next one
             // stands for it); a click or key never runs late.
@@ -141,6 +154,7 @@ export function desktopConnection(
             throw fail(408, "Desktop action became stale.");
           }
           result = await helper.send(item.action);
+          if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
           authorize();
         } catch (e) {
           item.reject?.(e);
@@ -214,15 +228,17 @@ export function desktopConnection(
           )
             throw fail(400, "Display unavailable.");
         }
+        await readyForInput();
         helper = await create(config, options.display);
         if (closed || ws.readyState !== 1) {
-          helper.stop();
+          stopInput(helper);
           return;
         }
-        authorize();
+        await readyForInput();
         lastSeen = Date.now();
         // Probe authorization without generating any OS input.
         const initial = await helper.send({ type: "heartbeat" });
+        if (closed || ws.readyState !== 1) { stopInput(helper); return; }
         authorize();
         starting = false;
         ws.send(
@@ -292,7 +308,7 @@ export function desktopConnection(
     clearTimeout(deadline);
     clearTimeout(scanTimer);
     clearInterval(check);
-    helper?.stop();
+    stopInput(helper);
     fields?.stop();
     if (ws.clientId && unregister(ws.clientId, ws) !== false) {
       // Over for good (revoked, expired, or the phone let go: a clean close,
