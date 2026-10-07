@@ -315,8 +315,18 @@ export function createCodexLive({
       });
     return t.queueReading;
   };
+  // How full each chat's context is, as Codex reports it.
+  const contexts = new Map();
   daemon.onNotification((m) => {
     const p = m.params || {};
+    if (m.method === "thread/tokenUsage/updated" && typeof p.threadId === "string") {
+      const used = Number(p.tokenUsage?.last?.totalTokens) || 0;
+      const window = Number(p.tokenUsage?.modelContextWindow) || 0;
+      if (used > 0 && window > 0) {
+        contexts.set(p.threadId, { used, window });
+        if (contexts.size > 500) contexts.delete(contexts.keys().next().value);
+      }
+    }
     // Some resolved notifications identify only the server request. Clear the
     // original card even without a threadId (or with a string request id).
     if (m.method === "serverRequest/resolved") {
@@ -917,6 +927,7 @@ export function createCodexLive({
         prompt.replying = false;
       }
     },
+    contextOf: (threadId) => contexts.get(threadId) || null,
     view(threadId) {
       // The phone is looking: what waits in Codex's queue, if not read lately.
       // The Codex app takes queued messages without a notice to Reach, but

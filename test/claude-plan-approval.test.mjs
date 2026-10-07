@@ -88,3 +88,26 @@ test("Claude's edits show their diff; its todo list stands as it last left it", 
     { id: "2", text: "Ship", status: "pending" },
   ]);
 });
+
+test("how full a chat's context is, as each agent counts it", async () => {
+  const { parseClaudeTranscript } = await import("../server/agent-sessions/claude-transcript.mjs");
+  const { createCodexLive } = await import("../server/agent-sessions/codex-live.mjs");
+  const line = (e) => JSON.stringify(e) + "\n";
+  const reply = (uuid, parentUuid, usage, extra = {}) =>
+    line({ type: "assistant", uuid, parentUuid, message: { role: "assistant", model: "claude-opus-5-5", usage, content: [{ type: "text", text: "ok" }] }, ...extra });
+  const v = parseClaudeTranscript(
+    line({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "go" } }) +
+      reply("a1", "u1", { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 50000, output_tokens: 500 }) +
+      // A sub-agent's own replies don't fill the chat's context.
+      reply("s1", null, { input_tokens: 900000, output_tokens: 1 }, { isSidechain: true }),
+  );
+  assert.deepEqual(v.context, { used: 51510, window: 200000 });
+  const big = parseClaudeTranscript(line({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "go" } }) + reply("a1", "u1", { input_tokens: 300000, output_tokens: 1 }));
+  assert.equal(big.context.window, 1000000, "past 200k: a 1M model");
+  // Codex says it itself.
+  let notify;
+  const live = createCodexLive({ daemon: { rpc: async () => ({}), onNotification: (fn) => (notify = fn), onRequest() {}, onClose() {} }, desktop: {} });
+  notify({ method: "thread/tokenUsage/updated", params: { threadId: "t1", turnId: "x", tokenUsage: { last: { totalTokens: 64000 }, total: { totalTokens: 900000 }, modelContextWindow: 258000 } } });
+  assert.deepEqual(live.contextOf("t1"), { used: 64000, window: 258000 });
+  assert.equal(live.contextOf("t2"), null);
+});

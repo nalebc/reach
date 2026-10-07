@@ -322,6 +322,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   let updatedAt = null;
   // Claude's usage as this session last saw it (see add()).
   let usage = null;
+  // How full its context is: the last reply's tokens, as Claude Code counts
+  // them (input, cache and output), and the model that replied.
+  let context = null;
   // Where each line holding pictures sits in the file (when the reader is
   // told where its text starts), so one picture can be read back alone.
   const imageLines = new Map();
@@ -356,6 +359,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
+        if (e.type === "assistant" && !e.isSidechain && e.message?.usage && e.message.model !== "<synthetic>") {
+          const u = e.message.usage;
+          const used = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens, u.output_tokens].reduce((a, n) => a + (Number(n) || 0), 0);
+          if (used > 0) context = { used, model: String(e.message.model || "") };
+        }
         if (e.type === "assistant" && e.timestamp) {
           const when = Date.parse(e.timestamp);
           const quota = e.quotaLimits;
@@ -506,6 +514,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         ...(memory ? { memory } : {}),
         tasks: [...tasks.values()],
         todos: todoList(todoCalls),
+        // The window: a 1M-token model's when its id says so or it's past 200k.
+        ...(context ? { context: { used: context.used, window: /\[1m\]/.test(context.model) || context.used > 200000 ? 1000000 : 200000 } } : {}),
         items,
       };
     },

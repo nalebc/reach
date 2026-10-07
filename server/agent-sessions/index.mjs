@@ -1500,6 +1500,7 @@ export function createAgentSessions({
       const result = await adapter(agent).read(id, options);
       // What its next message will use, shown as its mode.
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
+      if (agent === "codex" && result.session && codexLive.contextOf?.(id)) result.session.context = codexLive.contextOf(id);
       if (agent === "claude" && result.session && claudeHost.modeOf?.(id) && (!result.session.inApp || claudeHost.drives(id)))
         result.session.mode = claudeHost.modeOf(id);
       // Its sub-agents can be stopped one by one while Reach's own Claude

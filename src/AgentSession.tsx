@@ -278,6 +278,27 @@ function Copyable({
   );
 }
 
+// How full the chat's context is, as both apps show it: a ring and the share.
+function ContextMeter({ used, window: size }: { used: number; window: number }) {
+  const share = Math.min(1, used / size);
+  const percent = Math.round(share * 100);
+  const r = 7;
+  const around = 2 * Math.PI * r;
+  return (
+    <span
+      className={`as-context ${share >= 0.8 ? "full" : ""}`}
+      title={`${used.toLocaleString()} of ${size.toLocaleString()} tokens of context used`}
+      aria-label={`${percent}% of context used`}
+    >
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
+      </svg>
+      {percent}%
+    </span>
+  );
+}
+
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app writes it.
 const claudeModel = (id?: string | null) => {
   if (id === "default") return "Default";
@@ -2793,6 +2814,7 @@ export default function AgentSessionView({
               </button>
             )}
             <span className="as-spacer" />
+            {info.context && info.context.window > 0 && <ContextMeter used={info.context.used} window={info.context.window} />}
             {settings && (agent === "codex" || agent === "claude") && (
               <button
                 ref={modelButton}

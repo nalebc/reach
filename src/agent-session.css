@@ -1867,3 +1867,17 @@ button.as-mode:disabled {
   font-size: 14px;
   text-align: left;
 }
+
+/* How full the chat's context is, beside the model (as both apps show it). */
+.as-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  color: var(--as-muted, var(--muted));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.as-context.full {
+  color: #f0c46b;
+}

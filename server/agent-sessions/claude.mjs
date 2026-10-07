@@ -355,7 +355,13 @@ export function createClaudeSessions({
       });
       return {
         // Its todo list as Claude last left it (claude-transcript.mjs todoList).
-        session: { ...(await summary(found, byCli.get(id))), subagents, todos: parsed.todos || [] },
+        session: {
+          ...(await summary(found, byCli.get(id))),
+          subagents,
+          todos: parsed.todos || [],
+          // The app's model naming a 1M window ("…[1m]") widens it.
+          ...(parsed.context ? { context: /\[1m\]/.test(byCli.get(id)?.model || "") ? { ...parsed.context, window: 1000000 } : parsed.context } : {}),
+        },
         items,
         before: start > 0 ? String(start) : null,
       };

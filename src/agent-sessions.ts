@@ -37,6 +37,8 @@ export type AgentSession = {
   model?: string | null;
   // Its sub-agents, newest first.
   subagents?: Subagent[];
+  // How full its context is (tokens), as its agent counts them.
+  context?: { used: number; window: number };
   // Claude's todo list as it stands.
   todos?: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[];
   effort?: string | null;
