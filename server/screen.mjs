@@ -21,6 +21,8 @@ export class ScreenControl {
     this.now = now;
   }
   lease = null;
+  // Leases kept a moment for a control connection on its way back.
+  pending = new Map();
   // While paused nobody gets control, renewals included.
   paused = false;
   // Whether macOS shows one of its own dialogs now (set by the server).
@@ -90,9 +92,36 @@ export class ScreenControl {
       );
   }
   revoke(clientId) {
+    this.keep(clientId);
     if (this.lease?.clientId === clientId) this.lease = null;
   }
+  // A control connection that dropped for a moment (the phone's link
+  // blinked, Tailscale answered late) keeps its lease for `ms`: the
+  // reconnect resumes control without the owner granting it again. Nobody
+  // back in time, it's released as if the connection had ended.
+  revokeLater(clientId, ms) {
+    this.keep(clientId);
+    if (this.lease?.clientId !== clientId) return;
+    const timer = setTimeout(() => {
+      this.pending.delete(clientId);
+      this.revoke(clientId);
+    }, ms);
+    timer.unref?.();
+    this.pending.set(clientId, timer);
+  }
+  // Whether this phone's control connection is expected back.
+  reconnecting(clientId) {
+    return this.pending.has(clientId);
+  }
+  // Its connection is back (or ended for good): no release on the timer.
+  keep(clientId) {
+    const timer = this.pending.get(clientId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.pending.delete(clientId);
+  }
   clear() {
+    for (const clientId of [...this.pending.keys()]) this.keep(clientId);
     this.lease = null;
   }
 }

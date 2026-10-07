@@ -3510,12 +3510,24 @@ export async function createReach(overrides = {}) {
     if (req.url === "/ws/screen-input") {
       desktopConnection(ws, {
         config,
-        auth: { verify: (token) => verify(req, token) },
+        auth: {
+          verify: (token) => verify(req, token),
+          interruption: (token) => transientDenial(req, token),
+        },
         control: screenControl,
         create: overrides.desktopInputFactory,
         register: (id, socket) => {
-          if (inputConnections.has(id))
-            throw fail(409, "This device already has a control connection.");
+          // One control connection per phone; one on its way out (closed
+          // here to reconnect, or by the phone for the same reason) makes
+          // room for the one taking its place.
+          const current = inputConnections.get(id);
+          if (current && current.readyState === WebSocket.OPEN)
+            // Retryable: a reconnect can arrive a moment before the stalled
+            // connection it replaces is noticed here (3 s without a word).
+            throw Object.assign(
+              fail(409, "This device already has a control connection. Reconnecting…"),
+              { retryable: true },
+            );
           inputConnections.set(id, socket);
         },
         unregister: (id, socket) => {
@@ -3683,7 +3695,11 @@ export async function createReach(overrides = {}) {
         screenStreams.remove(ws);
         remoteScreens.remove(ws);
         appScreens.remove(ws);
-        if (!inputConnections.has(ws.clientId))
+        // No control connection and none expected back: control is over.
+        if (
+          !inputConnections.has(ws.clientId) &&
+          !screenControl.reconnecting(ws.clientId)
+        )
           screenControl.revoke(ws.clientId);
       });
       ws.on("error", () => {});

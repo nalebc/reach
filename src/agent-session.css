@@ -369,6 +369,19 @@ button.as-title:active {
   text-decoration-color: var(--as-faint);
   text-underline-offset: 2px;
 }
+/* A link to another Claude session: drawn as a link, opens it in this chat. */
+.md .md-session-link {
+  all: unset;
+  cursor: pointer;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--as-faint);
+  text-underline-offset: 2px;
+}
+.md .md-session-link small {
+  color: var(--as-faint);
+  text-decoration: none;
+}
 /* Tables scroll sideways on a phone rather than squeezing their words. */
 .md-table {
   margin: 0 0 10px;

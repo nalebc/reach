@@ -801,7 +801,10 @@ export default function Screen({
           <div className="simple-screen-dock screen-bar-dock">
             {(feedback || (control && !input.ready)) && (
               <span className="simple-screen-caption" role="status">
-                {feedback || "Connecting controls…"}
+                {feedback ||
+                  (input.reconnecting
+                    ? "Reconnecting controls…"
+                    : "Connecting controls…")}
               </span>
             )}
             <div
