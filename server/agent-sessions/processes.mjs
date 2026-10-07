@@ -1,0 +1,164 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const SESSION_FLAG = new RegExp(`(?:--resume[= ]|(?:^|\\s)-r\\s|--session-id[= ])(${UUID})`, "i");
+
+// "[[dd-]hh:]mm:ss" (macOS ps etime) -> seconds.
+export function elapsedSeconds(etime) {
+  const m = String(etime).trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+  if (!m) return null;
+  return (+(m[1] || 0)) * 86400 + (+(m[2] || 0)) * 3600 + +m[3] * 60 + +m[4];
+}
+
+// `ps -axo pid=,ppid=,etime=,tty=,command=` -> processes with start times.
+export function parsePs(text, now = Date.now()) {
+  const procs = new Map();
+  for (const line of String(text).split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/);
+    if (!m) continue;
+    const secs = elapsedSeconds(m[3]);
+    procs.set(+m[1], {
+      pid: +m[1],
+      ppid: +m[2],
+      startedAt: secs === null ? null : now - secs * 1000,
+      tty: m[4] === "??" ? null : m[4],
+      command: m[5],
+    });
+  }
+  return procs;
+}
+
+// The claude executable itself; the Claude app's "disclaimer" wrapper merely
+// passes it as an argument and is skipped (verified).
+const isClaude = (command) =>
+  !/\/Helpers\/disclaimer\b/.test(command) &&
+  /^(?:\S*\/|.*\/MacOS\/)?claude(?:\s|$)/.test(command);
+
+// The settings a claude process was started with (the Claude app passes
+// --model, --effort and --permission-mode; verified in ps). The app can change
+// effort later without restarting, so its own record wins when it has one.
+const flag = (command, name) => command.match(new RegExp(`--${name}[= ]([^\\s]+)`))?.[1] || null;
+export function claudeSettings(command) {
+  return { model: flag(command, "model"), effort: flag(command, "effort"), mode: flag(command, "permission-mode") };
+}
+
+export function claudeProcesses(procs) {
+  const out = [];
+  for (const p of procs.values()) {
+    if (!isClaude(p.command)) continue;
+    let host = p.tty ? "terminal" : "background";
+    for (let a = procs.get(p.ppid), seen = 0; a && seen < 12; a = procs.get(a.ppid), seen++)
+      if (a.command.includes("/Claude.app/")) {
+        host = "claude-app";
+        break;
+      }
+    out.push({ ...p, host, sessionId: p.command.match(SESSION_FLAG)?.[1] || null });
+  }
+  return out;
+}
+
+// Matches live claude processes to sessions. With --resume/--session-id the id
+// is explicit; a session started fresh is the transcript in the process's
+// folder whose first entry follows the process start within two minutes
+// (verified: a fresh app session began 1 s after its process).
+export function matchClaude(processes, cwds, starts) {
+  const live = new Map();
+  for (const p of processes) {
+    let id = p.sessionId;
+    if (!id && p.startedAt) {
+      const cwd = cwds.get(p.pid);
+      const candidates = starts
+        .filter((s) => s.cwd === cwd && s.firstAt >= p.startedAt - 5000 && s.firstAt <= p.startedAt + 120000)
+        .sort((a, b) => a.firstAt - b.firstAt);
+      id = candidates[0]?.id || null;
+    }
+    if (id && !live.has(id))
+      // exact: the process names the session (not matched by its start time).
+      live.set(id, { where: p.host, pid: p.pid, tty: p.tty, exact: !!p.sessionId, ...claudeSettings(p.command) });
+  }
+  return live;
+}
+
+// lsof -nP -a -d cwd -p 1,2 -Fpn -> Map(pid -> cwd). -n/-P keep it fast.
+export function parseLsofCwd(text) {
+  const out = new Map();
+  let pid = null;
+  for (const line of String(text).split("\n")) {
+    if (line.startsWith("p")) pid = +line.slice(1);
+    else if (line.startsWith("n") && pid) out.set(pid, line.slice(1));
+  }
+  return out;
+}
+
+// Claude Code's own registry of running sessions: ~/.claude/sessions/<pid>.json
+// names the session, its host (the Claude app's sessions say
+// entrypoint "claude-desktop"), and whether it's busy or idle right now
+// (verified with 2.1.286). Exact, unlike matching processes by start time.
+export function readSessionRegistry({
+  dir = path.join(os.homedir(), ".claude", "sessions"),
+  alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+} = {}) {
+  const found = new Map();
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => /^\d+\.json$/.test(f));
+  } catch {
+    return found;
+  }
+  for (const file of files) {
+    try {
+      const r = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+      if (!r.sessionId || !Number.isInteger(r.pid) || !alive(r.pid)) continue;
+      const where =
+        r.entrypoint === "claude-desktop" ? "claude-app" : r.kind && r.kind !== "interactive" ? "background" : "terminal";
+      found.set(r.sessionId, {
+        where,
+        pid: r.pid,
+        tty: null,
+        exact: true,
+        busy: r.status === "busy",
+        // Stopped on you: "input needed" (a question) or "permission prompt".
+        waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
+        ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),
+      });
+    } catch {
+      /* a record being rewritten */
+    }
+  }
+  return found;
+}
+
+export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry } = {}) {
+  const { stdout } = await run("ps", ["-axo", "pid=,ppid=,etime=,tty=,command="], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const processes = claudeProcesses(parsePs(stdout, now()));
+  const unknown = processes.filter((p) => !p.sessionId).map((p) => p.pid);
+  let cwds = new Map();
+  if (unknown.length) {
+    try {
+      const r = await run("lsof", ["-nP", "-a", "-d", "cwd", "-p", unknown.join(","), "-Fpn"], {
+        timeout: 5000,
+      });
+      cwds = parseLsofCwd(r.stdout);
+    } catch (e) {
+      cwds = parseLsofCwd(e.stdout || "");
+    }
+  }
+  // The registry's word wins; process matching fills in older versions.
+  const live = matchClaude(processes, cwds, starts);
+  for (const [id, entry] of registry()) live.set(id, { ...live.get(id), ...entry });
+  return live;
+}

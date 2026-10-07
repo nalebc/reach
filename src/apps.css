@@ -1,0 +1,241 @@
+/* Apps: a home screen of the computer's real app logos. */
+.apps-page {
+  max-width: 1020px;
+  margin: 0 auto;
+}
+.apps-page .page-title {
+  margin-bottom: 18px;
+}
+.apps-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 520px;
+  min-height: 44px;
+  padding: 0 6px 0 14px;
+  margin-bottom: 22px;
+  background: #1a211d;
+  border: 1px solid #d1e5cf19;
+  border-radius: 12px;
+  color: #91a698;
+}
+.apps-search:focus-within {
+  border-color: #b9efd473;
+}
+.apps-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 0;
+  border: 0 !important;
+  outline: none;
+  background: transparent !important;
+  color: #e5eee6;
+  font-size: 16px;
+}
+.apps-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.apps-search input:focus,
+.apps-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.apps-search button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: #c2d9c5;
+}
+.apps-section + .apps-section {
+  margin-top: 22px;
+}
+.apps-section h2 {
+  margin: 0 0 10px;
+  font:
+    10px ui-monospace,
+    monospace;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: #92a197;
+}
+.launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 18px 8px;
+}
+.app-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 2px 6px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--text, #e9eee9);
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.app-tile-logo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  transition: transform 0.12s ease;
+}
+.app-tile:active .app-tile-logo {
+  transform: scale(0.92);
+}
+.app-tile:focus-visible {
+  outline: 2px solid #b9efd480;
+  outline-offset: 2px;
+}
+.app-tile:disabled {
+  opacity: 0.45;
+}
+.app-tile[aria-busy="true"] .app-logo {
+  opacity: 0.4;
+}
+.app-tile-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #e5f4e8;
+}
+.app-tile-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: #d6e2d8;
+}
+@media (hover: hover) {
+  .app-tile:hover {
+    background: #b9efd40a;
+  }
+}
+.app-tile.skeleton .app-tile-logo {
+  width: 51px;
+  height: 51px;
+  margin: 6.5px;
+  border-radius: 12px;
+  background: #ffffff0b;
+}
+.app-tile.skeleton .app-tile-name {
+  width: 56px;
+  height: 10px;
+  margin-top: 3px;
+  border-radius: 5px;
+  background: #ffffff08;
+}
+@media (max-width: 520px) {
+  /* Four across on a phone, like its own home screen. */
+  .launcher-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px 4px;
+  }
+  .app-tile-logo {
+    width: 56px;
+    height: 56px;
+  }
+  .app-tile.skeleton .app-tile-logo {
+    width: 45px;
+    height: 45px;
+    margin: 5.5px;
+  }
+  .app-tile-name {
+    font-size: 11px;
+  }
+}
+
+/* Apps open on the phone: a row of their last-seen screens. */
+.apps-running {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.apps-running::-webkit-scrollbar {
+  display: none;
+}
+.apps-running-card {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  -webkit-touch-callout: none;
+}
+.apps-running-shot {
+  height: 196px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line, #ffffff1a);
+  border-radius: 16px;
+  background: #000;
+}
+.apps-running-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+.apps-running-card[aria-busy="true"] .apps-running-shot {
+  opacity: 0.6;
+}
+.apps-running-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.apps-running-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-running-state {
+  font-size: 12px;
+  color: var(--muted, #8c9690);
+}
+.app-tile {
+  -webkit-touch-callout: none;
+}
+.apps-running-item {
+  flex: 0 0 112px;
+  display: grid;
+  gap: 6px;
+  scroll-snap-align: start;
+}
+.apps-running-card {
+  touch-action: pan-x;
+  transition:
+    transform 0.2s ease,
+    opacity 0.2s ease;
+}
+.apps-running-confirm {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted, #8c9690);
+}

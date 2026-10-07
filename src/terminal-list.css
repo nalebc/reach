@@ -1,0 +1,269 @@
+/* Terminals, organized: a row of ways to start one, then grouped lists. */
+.terminal-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
+  color: #e9f0ec;
+}
+.terminal-list section {
+  margin-top: 18px;
+}
+.terminal-list h3 {
+  margin: 0 0 6px 10px;
+  font:
+    600 13px system-ui,
+    sans-serif;
+  color: var(--muted, #93a096);
+}
+.terminal-list-note {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+.terminal-list-note.center {
+  margin-top: 28px;
+  text-align: center;
+}
+
+/* Start: like a share sheet's row of apps. */
+.terminal-quick {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -6px;
+}
+.terminal-quick::-webkit-scrollbar {
+  display: none;
+}
+.terminal-quick button {
+  flex: 0 0 auto;
+  width: 82px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 2px 8px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: #e9f0ec;
+  font:
+    500 12px system-ui,
+    sans-serif;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.terminal-quick button:active {
+  background: #ffffff10;
+}
+.terminal-quick button:disabled {
+  opacity: 0.5;
+}
+.terminal-quick .terminal-glyph,
+.terminal-quick .agent-logo {
+  width: 46px !important;
+  height: 46px !important;
+}
+/* App icons carry a clear margin; the tile matches their body. */
+.terminal-quick .terminal-glyph {
+  width: 40px !important;
+  height: 40px !important;
+  margin: 3px;
+  border-radius: 11px;
+}
+
+/* Lists like a drawer (the design language): rows, no boxes, no dividers;
+   the terminal you're in sits in a soft pill. */
+.terminal-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.terminal-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 16px;
+  transition: background 0.12s ease;
+}
+.terminal-row.current {
+  background: color-mix(in srgb, var(--lime, #b9efd4) 8%, transparent);
+}
+.terminal-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.terminal-row-main:active {
+  border-radius: 16px;
+  background: #ffffff0d;
+}
+/* In a row, Reach's own shells are a plain line icon, lit when open; real
+   app logos stay as they are. */
+.terminal-row .terminal-glyph {
+  background: none;
+  box-shadow: none;
+  color: #dfe8e2;
+}
+.terminal-row.current .terminal-glyph {
+  color: var(--lime, #b9efd4);
+}
+.terminal-row-icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+}
+.terminal-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.terminal-row-text strong,
+.terminal-row-text small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.terminal-row-text strong {
+  font:
+    600 15px system-ui,
+    sans-serif;
+}
+.terminal-row-text small {
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+.terminal-row-check {
+  flex: 0 0 auto;
+  color: var(--lime, #b9efd4);
+}
+.terminal-row-action {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  margin-right: 4px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--muted, #93a096);
+}
+.terminal-row-action:active {
+  background: #ffffff14;
+  color: #e9f0ec;
+}
+
+/* Reach's own shells: a terminal tile the size of an app icon's body. */
+.terminal-glyph {
+  display: grid;
+  place-items: center;
+  width: 29px;
+  height: 29px;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #26332b, #141b17);
+  box-shadow: inset 0 0 0 1px #ffffff1a;
+  color: var(--lime, #b9efd4);
+}
+.terminal-glyph.quiet {
+  color: #e9f0ec;
+}
+.terminal-list .agent-logo {
+  display: inline-grid;
+  place-items: center;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.terminal-list .agent-logo.glyph {
+  width: 29px;
+  height: 29px;
+  background: #ffffff14;
+}
+.terminal-list .agent-logo.glyph svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* First visit: a small note under the start row, gone once used or tapped. */
+.terminal-hint {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--lime, #b9efd4) 9%, #0c110f);
+  color: #e9f0ec;
+  font:
+    500 13px/1.35 system-ui,
+    sans-serif;
+  text-align: left;
+  animation: terminal-hint-in 0.25s ease-out both;
+}
+.terminal-hint::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 34px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-top: 1px solid
+    color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
+  border-left: 1px solid
+    color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
+  background: color-mix(in srgb, var(--lime, #b9efd4) 9%, #0c110f);
+}
+.terminal-quick button.hinted .terminal-glyph {
+  animation: terminal-hint-pulse 1.8s ease-out infinite;
+}
+@keyframes terminal-hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes terminal-hint-pulse {
+  0% {
+    box-shadow:
+      inset 0 0 0 1px #ffffff1a,
+      0 0 0 0 color-mix(in srgb, var(--lime, #b9efd4) 45%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow:
+      inset 0 0 0 1px #ffffff1a,
+      0 0 0 9px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-hint,
+  .terminal-quick button.hinted .terminal-glyph {
+    animation: none;
+  }
+}

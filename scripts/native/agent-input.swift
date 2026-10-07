@@ -1,0 +1,215 @@
+// An agent acting inside one app without the Mac's pointer or keyboard, so a
+// person can keep using the Mac at the same time (server/agent-apps.mjs).
+// JSON lines in and out: {id, cmd, …} -> {id, done, …}.
+//
+// Window-level (safe even while a person uses the same app): `press` and
+// `text` act on the element at a point on the agent's own hidden display,
+// through Accessibility. App-level (keys, menus): only while the app isn't in
+// front and the agent's window is the app's key window, so nothing lands in a
+// window the person is using. Anything else answers done: false and the
+// server falls back (the pointer, when nobody is at the Mac) or waits.
+// Nothing here moves the pointer or brings an app to the front.
+import AppKit
+import ApplicationServices
+
+let source = CGEventSource(stateID: .privateState)
+// The text field each thread last focused, for `text`.
+var fields: [String: AXUIElement] = [:]
+
+func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
+  var v: AnyObject?
+  return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+}
+func role(_ e: AXUIElement) -> String { (attr(e, kAXRoleAttribute) as? String) ?? "" }
+func actions(_ e: AXUIElement) -> [String] {
+  var names: CFArray?
+  return AXUIElementCopyActionNames(e, &names) == .success ? (names as? [String]) ?? [] : []
+}
+func parent(_ e: AXUIElement) -> AXUIElement? { attr(e, kAXParentAttribute).map { $0 as! AXUIElement } }
+func window(_ e: AXUIElement) -> AXUIElement? {
+  if let w = attr(e, kAXWindowAttribute) { return (w as! AXUIElement) }
+  var at: AXUIElement? = e
+  for _ in 0..<40 {
+    guard let x = at else { return nil }
+    if role(x) == kAXWindowRole { return x }
+    at = parent(x)
+  }
+  return nil
+}
+let textRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"]
+
+func running(_ path: String) -> NSRunningApplication? {
+  NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == path }
+}
+// A point on a display, in that display's points, as the screen's global point.
+func global(_ display: String, _ x: Double, _ y: Double) -> CGPoint {
+  let id = CGDirectDisplayID(UInt32(display) ?? CGMainDisplayID())
+  let origin = CGDisplayBounds(id).origin
+  return CGPoint(x: origin.x + x, y: origin.y + y)
+}
+func element(_ app: AXUIElement, _ at: CGPoint) -> AXUIElement? {
+  var found: AXUIElement?
+  return AXUIElementCopyElementAtPosition(app, Float(at.x), Float(at.y), &found) == .success ? found : nil
+}
+// App-level input is safe only when it can only reach the agent's window,
+// or when nobody is at the Mac (`alone`, the server's call).
+var alone = false
+func appLevelSafe(_ app: NSRunningApplication, _ ax: AXUIElement, _ agentWindow: AXUIElement?) -> String? {
+  if alone { return nil }
+  if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+    return "the app is in front"
+  }
+  guard let mine = agentWindow else { return "no agent window" }
+  guard let key = attr(ax, kAXFocusedWindowAttribute) ?? attr(ax, kAXMainWindowAttribute) else {
+    return "no key window"
+  }
+  return CFEqual(key, mine) ? nil : "another window of the app is in use"
+}
+
+let keyCodes: [String: CGKeyCode] = [
+  "enter": 36, "tab": 48, "space": 49, "backspace": 51, "escape": 53, "delete": 117, "home": 115,
+  "end": 119, "pageup": 116, "pagedown": 121, "left": 123, "right": 124, "down": 125, "up": 126,
+  "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+  "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+  "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40,
+  "n": 45, "m": 46, "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98,
+  "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+]
+let modifierFlags: [String: CGEventFlags] = [
+  "meta": .maskCommand, "alt": .maskAlternate, "control": .maskControl, "shift": .maskShift,
+  "fn": .maskSecondaryFn, "caps": .maskAlphaShift,
+]
+func post(_ pid: pid_t, key: CGKeyCode, flags: CGEventFlags) {
+  for down in [true, false] {
+    let e = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
+    e?.flags = flags
+    e?.postToPid(pid)
+  }
+}
+func post(_ pid: pid_t, text: String) {
+  for unit in text.utf16 {
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
+      var c = unit
+      e?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &c)
+      e?.postToPid(pid)
+    }
+  }
+}
+// Menu titles match as shown, with or without a trailing "…".
+func same(_ a: String, _ b: String) -> Bool {
+  let trim = { (s: String) in s.replacingOccurrences(of: "…", with: "").replacingOccurrences(of: "...", with: "").trimmingCharacters(in: .whitespaces).lowercased() }
+  return trim(a) == trim(b)
+}
+
+func handle(_ r: [String: Any]) -> [String: Any] {
+  let cmd = r["cmd"] as? String ?? ""
+  if cmd == "probe" { return ["done": true, "trusted": AXIsProcessTrusted()] }
+  // Whether the app is running already (starting one can take the focus).
+  if cmd == "running" {
+    return ["done": true, "running": (r["app"] as? String).flatMap(running) != nil]
+  }
+  guard AXIsProcessTrusted() else { return ["done": false, "why": "Accessibility is off for Reach"] }
+  guard let path = r["app"] as? String, let app = running(path) else {
+    return ["done": false, "why": "the app isn't running"]
+  }
+  let ax = AXUIElementCreateApplication(app.processIdentifier)
+  alone = r["alone"] as? Bool == true
+  let thread = r["thread"] as? String ?? ""
+  let display = r["display"] as? String ?? "primary"
+  let at: CGPoint? = {
+    guard let x = r["x"] as? Double, let y = r["y"] as? Double else { return nil }
+    return global(display, x, y)
+  }()
+  let agentWindow = at.flatMap { element(ax, $0) }.flatMap(window)
+  switch cmd {
+  case "press":
+    guard let point = at, let hit = element(ax, point) else { return ["done": false, "why": "nothing there"] }
+    // A text field: focus it (its window only), for `text` after.
+    var e: AXUIElement? = hit
+    for _ in 0..<3 {
+      guard let x = e else { break }
+      if textRoles.contains(role(x)) {
+        let ok = AXUIElementSetAttributeValue(x, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+        if ok { fields[thread] = x }
+        return ok ? ["done": true, "kind": "focused", "role": role(x)] : ["done": false, "why": "can't focus that field"]
+      }
+      e = parent(x)
+    }
+    e = hit
+    for _ in 0..<6 {
+      guard let x = e else { break }
+      if actions(x).contains(kAXPressAction as String) {
+        let ok = AXUIElementPerformAction(x, kAXPressAction as CFString) == .success
+        return ok ? ["done": true, "kind": "pressed", "role": role(x)] : ["done": false, "why": "press refused"]
+      }
+      e = parent(x)
+    }
+    return ["done": false, "why": "nothing to press there"]
+  case "text":
+    guard let text = r["text"] as? String else { return ["done": false, "why": "no text"] }
+    // Into the field the agent focused in its own window: no keyboard at all.
+    if let field = fields[thread],
+      AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+    {
+      return ["done": true, "kind": "inserted"]
+    }
+    if let why = appLevelSafe(app, ax, agentWindow ?? fields[thread].flatMap(window)) {
+      return ["done": false, "why": why]
+    }
+    post(app.processIdentifier, text: text)
+    return ["done": true, "kind": "posted"]
+  case "key":
+    guard let name = r["key"] as? String, let code = keyCodes[name] else { return ["done": false, "why": "unknown key"] }
+    if let why = appLevelSafe(app, ax, agentWindow ?? fields[thread].flatMap(window)) {
+      return ["done": false, "why": why]
+    }
+    var flags = CGEventFlags()
+    for m in (r["modifiers"] as? [String]) ?? [] { if let f = modifierFlags[m] { flags.insert(f) } }
+    post(app.processIdentifier, key: code, flags: flags)
+    return ["done": true, "kind": "posted"]
+  case "menu":
+    guard let names = r["path"] as? [String], !names.isEmpty else { return ["done": false, "why": "no menu path"] }
+    if let why = appLevelSafe(app, ax, agentWindow ?? fields[thread].flatMap(window)) {
+      return ["done": false, "why": why]
+    }
+    guard let bar = attr(ax, kAXMenuBarAttribute) else { return ["done": false, "why": "no menu bar"] }
+    var level: AXUIElement = bar as! AXUIElement
+    for (i, name) in names.enumerated() {
+      var items = (attr(level, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+      // A menu bar item or menu item holds its menu as its only child.
+      if items.count == 1, role(items[0]) == kAXMenuRole { items = (attr(items[0], kAXChildrenAttribute) as? [AXUIElement]) ?? [] }
+      guard let item = items.first(where: { same((attr($0, kAXTitleAttribute) as? String) ?? "", name) }) else {
+        return ["done": false, "why": "no menu item \(name)"]
+      }
+      if i == names.count - 1 {
+        if (attr(item, kAXEnabledAttribute) as? Bool) == false { return ["done": false, "why": "\(name) is dimmed"] }
+        let ok = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+        return ok ? ["done": true, "kind": "menu"] : ["done": false, "why": "menu refused"]
+      }
+      level = item
+    }
+    return ["done": false, "why": "no menu"]
+  default:
+    return ["done": false, "why": "unknown command"]
+  }
+}
+
+@main
+struct AgentInput {
+  static func main() {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    while let line = readLine() {
+      guard let data = line.data(using: .utf8),
+        let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+      else { continue }
+      var reply = handle(request)
+      reply["id"] = request["id"]
+      if let out = try? JSONSerialization.data(withJSONObject: reply),
+        let text = String(data: out, encoding: .utf8)
+      {
+        print(text)
+      }
+    }
+  }
+}

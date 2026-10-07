@@ -1,0 +1,1201 @@
+import { validAppAccess } from "./browser-app-policy.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
+import { defaultFileRoots } from "./file-roots.mjs";
+
+export const fail = (status, message) =>
+  Object.assign(new Error(message), { status });
+export const isPlainRecord = (value) => value !== null && typeof value === "object" &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value));
+// Names and review explanations must not hide or reorder the action being approved.
+export const hasReviewControls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
+export function validateBrowserInvitation(input) {
+  const fields = ["name", "ttlSeconds", "joinSeconds", "folders", "terminalIds", "screen", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "transport", "appAccess", "workspaceMode"];
+  if (!isPlainRecord(input) || Object.keys(input).some((key) => !fields.includes(key)))
+    throw fail(400, "This invitation contains unsupported fields.");
+  const {
+    name, ttlSeconds, joinSeconds = 900, folders = [], terminalIds = [],
+    screen = "off", commandRequests = false, restrictedTerminal = false, terminalApproval = false, scriptApproval = false, transport = "tailnet", appAccess = [], workspaceMode = "shared",
+  } = input;
+  if (
+    typeof name !== "string" || !name.trim() || name.length > 80 || hasReviewControls(name) || /[\n\t]/.test(name) ||
+    !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400 ||
+    !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||
+    !Array.isArray(terminalIds) || terminalIds.length > 20 ||
+    terminalIds.some((id) => !validBrowserTerminalId(id)) ||
+    !["off", "view", "scroll", "ask", "apps"].includes(screen) ||
+    !validAppAccess(appAccess) || (screen !== "apps" && appAccess.length > 0) ||
+    typeof commandRequests !== "boolean" || typeof restrictedTerminal !== "boolean" ||
+    (restrictedTerminal && commandRequests) ||
+    typeof terminalApproval !== "boolean" || (terminalApproval && !restrictedTerminal) ||
+    typeof scriptApproval !== "boolean" || (scriptApproval && (!terminalApproval || !restrictedTerminal)) ||
+    !["tailnet", "funnel"].includes(transport) || !["shared", "private"].includes(workspaceMode) ||
+    (transport === "funnel" && (ttlSeconds > 3600 || joinSeconds > 900))
+  ) throw fail(400, "Name the browser agent, choose its access, and a duration from 1 minute to 24 hours.");
+  if (!Array.isArray(folders) || folders.length > 20 || folders.some((folder) =>
+    !isPlainRecord(folder) || Object.keys(folder).some((key) => !["root", "path"].includes(key)) ||
+    !Number.isSafeInteger(folder.root) || folder.root < 0 ||
+    typeof folder.path !== "string" || folder.path.length > 4096 || hasReviewControls(folder.path)))
+    throw fail(400, "Choose up to 20 folders on this computer.");
+  if (workspaceMode === "private" && !folders.length) throw fail(400, "Choose a folder for the private working copy.");
+  return { name, ttlSeconds, joinSeconds, folders, terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess, workspaceMode };
+}
+export const id = () => crypto.randomUUID();
+export const hash = (value) =>
+  crypto.createHash("sha256").update(value).digest("hex");
+export function atomicJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${id()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+export function loadJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+export function getConfig(overrides = {}) {
+  const dataDir = path.resolve(
+    process.env.REACH_DATA || path.join(process.cwd(), ".reach"),
+  );
+  const roots = (
+    process.env.REACH_ROOTS
+      ? process.env.REACH_ROOTS.split(path.delimiter)
+      : defaultFileRoots()
+  ).map((p) => fs.realpathSync.native(p));
+  return {
+    port: Number(process.env.PORT || 4317),
+    host: "127.0.0.1",
+    dataDir,
+    roots,
+    name: process.env.REACH_NAME || os.hostname().replace(/\.local$/, ""),
+    publicOrigin: process.env.REACH_ORIGIN || "",
+    screen: process.env.REACH_SCREEN === "1",
+    privatePaths: [path.join(process.cwd(), ".reach")],
+    allowedOrigins: (process.env.REACH_ALLOWED_ORIGINS || "")
+      .split(",")
+      .filter(Boolean),
+    agentPolicyFile: path.resolve(
+      process.env.REACH_AGENT_POLICY ||
+        path.join(process.cwd(), ".reach/agent-policy.json"),
+    ),
+    agentPolicyRequired: !!process.env.REACH_AGENT_POLICY,
+    ...overrides,
+  };
+}
+// The same checks for safePath and safePathAsync: a valid root, a path that
+// stays inside it, and (after following links) a real target inside it too.
+function locate(roots, rootIndex, relative) {
+  const root = roots[Number(rootIndex)];
+  if (
+    !root ||
+    typeof relative !== "string" ||
+    relative.includes("\0") ||
+    path.isAbsolute(relative)
+  )
+    throw fail(400, "Choose a valid folder.");
+  const target = path.resolve(root, relative);
+  const within = (p) => {
+    const rel = path.relative(root, p);
+    return (
+      rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel)
+    );
+  };
+  if (!within(target))
+    throw fail(403, "This path is outside your shared folders.");
+  const inside = (resolved) => {
+    if (!within(resolved))
+      throw fail(403, "This shortcut points outside your shared folders.");
+    return resolved;
+  };
+  return { target, inside };
+}
+const gone = () => fail(404, "This file or folder is no longer available.");
+export function safePath(roots, rootIndex = 0, relative = "") {
+  const { target, inside } = locate(roots, rootIndex, relative);
+  let resolved;
+  try {
+    resolved = fs.realpathSync.native(target);
+  } catch {
+    throw gone();
+  }
+  return inside(resolved);
+}
+// For hot paths (folder listings): the same rules without blocking the server.
+export async function safePathAsync(roots, rootIndex = 0, relative = "") {
+  const { target, inside } = locate(roots, rootIndex, relative);
+  let resolved;
+  try {
+    resolved = await fs.promises.realpath(target);
+  } catch {
+    throw gone();
+  }
+  return inside(resolved);
+}
+export function validLeafName(name) {
+  return (
+    typeof name === "string" &&
+    name.length > 0 &&
+    name.length <= 255 &&
+    !name.startsWith(".") &&
+    !/[. ]$/.test(name) &&
+    !/[\/\\:<>"|?*\x00-\x1f]/.test(name) &&
+    !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)
+  );
+}
+export function validOrigin(origin, allowed = []) {
+  if (!origin) return true; // Native clients do not send Origin.
+  if (origin === "capacitor://localhost") return true; // The Reach iPhone app.
+  try {
+    const u = new URL(origin);
+    return (
+      u.origin === origin &&
+      allowed.includes(origin) &&
+      (u.protocol === "https:" ||
+        (u.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)))
+    );
+  } catch {
+    return false;
+  }
+}
+export const ALL_SCOPES = [
+  "admin",
+  "files",
+  "exec",
+  "terminal",
+  "apps",
+  "codex",
+  "screen",
+  "device",
+  "files:read",
+  "files:write",
+  // Control the screen (keyboard and mouse) without owning this computer.
+  "screen:control",
+  // Watch chosen apps' windows on the phone (client.guestApps; all if unset).
+  "apps:open",
+  // An agent uses apps it opens on hidden displays, and hands them to you
+  // (server/agent-apps.mjs). Granted on purpose only, never to guests.
+  "apps:drive",
+];
+// Agents never control the screen or open app windows.
+export const AGENT_SCOPES = ALL_SCOPES.filter(
+  (s) => !["admin", "screen:control", "apps:open"].includes(s),
+);
+// What an invitation may grant. `full` uses this computer like you do, except
+// managing access (devices, invitations, settings): see GUEST_BLOCKED_ROUTES.
+export const GUEST_BLOCKED_ROUTES = [
+  "clients",
+  "guests",
+  "settings",
+  "agents",
+  "activity",
+  "fleet",
+  // What agents hand you is yours to answer.
+  "handoffs",
+  // Notifications go to your own devices.
+  "push",
+  // Every AI session's transcript, its approvals, and the Mac's own dialogs
+  // (pressing their buttons, typing the Mac's password): the owner only, not
+  // grantable to anyone, a full invitation included.
+  "sessions",
+];
+// A credential a Face ID sign-in made for its own tagged device: only the
+// /api/auth/face-join route issues these (server/face-join.mjs).
+const faceJoined = (client) =>
+  client.kind === "device" &&
+  client.tailscale?.faceJoin === true &&
+  client.tailscale.tagged === true &&
+  client.tailscale.userId === "";
+export function createAuth(config, { rotatePairing = true } = {}) {
+  fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
+  const file = path.join(config.dataDir, "clients.json");
+  let clients = loadJson(file, []);
+  let credentialStoreCreated = fs.existsSync(file);
+  const listStoredClients = () => {
+    try {
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (!Array.isArray(stored) || stored.some((client) => !isPlainRecord(client)))
+        throw Error("Invalid credential store");
+      credentialStoreCreated = true;
+      return stored;
+    } catch (error) {
+      // An absent file is normal only before this installation has issued its
+      // first credential. Losing/corrupting an existing store must not tell the
+      // app host guard that all agent sessions disappeared and reopen admission.
+      if (error.code === "ENOENT" && !credentialStoreCreated) return [];
+      throw fail(503, "Reach cannot read its access records. Access stays locked until they are restored.");
+    }
+  };
+  const changeClients = (change) => {
+    const lock = `${file}.lock`;
+    let fd;
+    try {
+      fd = fs.openSync(lock, "wx", 0o600);
+    } catch {
+      throw fail(409, "Credentials are being updated. Try again shortly.");
+    }
+    try {
+      clients = change(loadJson(file, []));
+      atomicJson(file, clients);
+      credentialStoreCreated = true;
+    } finally {
+      fs.closeSync(fd);
+      fs.unlinkSync(lock);
+    }
+  };
+  const attempts = new Map();
+  let pairing = {
+    code: crypto.randomInt(10000000, 100000000).toString(),
+    expiresAt: Date.now() + 600000,
+  };
+  const pairFile = path.join(config.dataDir, "pairing.json");
+  if (rotatePairing) atomicJson(pairFile, pairing);
+  function verify(token, identity) {
+    if (!token || typeof token !== "string" || token.length > 256) return null;
+    return verifyDigest(hash(token), identity);
+  }
+  // Every check `verify` makes, from the credential's stored hash: used by
+  // download links, which must never hold the credential itself.
+  function verifyDigest(digest, identity) {
+    clients = loadJson(file, []);
+    if (typeof digest !== "string" || !digest) return null;
+    const client = clients.find(
+      (c) =>
+        c.hash === digest &&
+        c.browserTransport !== "funnel" &&
+        !c.browserBinding &&
+        (!c.admission || (c.admission.status === "collected" &&
+          (c.policy?.browser !== true || c.policy.screen !== "apps" || c.admission.grant === admissionGrant(c)))) &&
+        Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
+    );
+    if (
+      config.tailscaleOwner &&
+      (!identity || identity.validUntil <= Date.now())
+    )
+      return null;
+    if (
+      client?.tailscale &&
+      (!identity ||
+        identity.validUntil <= Date.now() ||
+        client.tailscale.userId !== identity.userId ||
+        client.tailscale.nodeId !== identity.nodeId)
+    )
+      return null;
+    // Yours: a device of your Tailscale account, or the one tagged device a
+    // Face ID sign-in made (bound to it above; server/face-join.mjs).
+    if (
+      client &&
+      config.tailscaleOwner &&
+      !["guest", "agent"].includes(client.kind) &&
+      (!client.tailscale ||
+        (identity.tagged
+          ? !faceJoined(client)
+          : identity.userId !== config.tailscaleOwner.userId))
+    )
+      return null;
+    if (client)
+      client.expiresAt ||= Date.parse(client.createdAt) + 30 * 86400000;
+    if (client?.kind === "guest") {
+      const roots = client.guestRoots.filter((root) =>
+        config.roots.some((shared) => within(shared, root)),
+      );
+      return { ...client, agentRoots: roots };
+    }
+    return client ? applyAgentPolicy(client, config) : null;
+  }
+  function pair(code, name, address, identity) {
+    if (
+      config.tailscaleOwner &&
+      (!identity ||
+        identity.tagged ||
+        identity.validUntil <= Date.now() ||
+        identity.userId !== config.tailscaleOwner.userId)
+    )
+      throw fail(
+        403,
+        "Connect through Tailscale using the configured owner account before pairing.",
+      );
+    const now = Date.now();
+    if (attempts.size > 1000)
+      for (const [key, value] of attempts)
+        if (value.reset < now) attempts.delete(key);
+    const state = attempts.get(address) || { count: 0, reset: now + 60000 };
+    if (state.reset < now) {
+      state.count = 0;
+      state.reset = now + 60000;
+    }
+    if (++state.count > 5)
+      throw fail(429, "Too many attempts. Try again in one minute.");
+    attempts.set(address, state);
+    pairing = loadJson(pairFile, pairing);
+    if (
+      typeof code !== "string" ||
+      !/^\d{8}$/.test(code.replace(/\s/g, "")) ||
+      code.replace(/\s/g, "") !== pairing.code ||
+      now > pairing.expiresAt
+    )
+      throw fail(
+        401,
+        "That pairing code is incorrect or expired. Open Reach on your computer for a fresh code.",
+      );
+    const issued = issue(
+      name || "My browser",
+      ALL_SCOPES,
+      "device",
+      identity
+        ? { tailscale: { userId: identity.userId, nodeId: identity.nodeId } }
+        : {},
+    );
+    // Single use: generating a fresh code is a local-computer action.
+    pairing = { code: "", expiresAt: 0, usedAt: now, usedBy: issued.name };
+    atomicJson(pairFile, pairing);
+    return { token: issued.token, clientId: issued.clientId };
+  }
+  // A guest invite and its redeemed credential share one absolute deadline.
+  // Both transitions use the credential lock, including single-use redemption.
+  // Folders chosen by browsing (for guests and agents): real folders inside
+  // what Reach shares, never Reach's own private data.
+  function chooseFolders(folders) {
+    const chosen = [];
+    if (!Array.isArray(folders) || folders.length > 20)
+      throw fail(400, "Choose up to 20 folders.");
+    for (const f of folders) {
+      if (
+        !f ||
+        !Number.isInteger(f.root) ||
+        !config.roots[f.root] ||
+        typeof f.path !== "string" ||
+        f.path.length > 4096
+      )
+        throw fail(400, "Choose folders on this computer.");
+      const dir = safePath(config.roots, f.root, f.path);
+      if (!fs.statSync(dir).isDirectory())
+        throw fail(400, "Choose a folder, not a file.");
+      // (A folder that contains it is fine: its files stay hidden there.)
+      const real = (p) => {
+        try {
+          return fs.realpathSync.native(p);
+        } catch {
+          return path.resolve(p);
+        }
+      };
+      if (
+        [config.dataDir, ...(config.privatePaths || [])].some((p) =>
+          within(real(p), dir),
+        )
+      )
+        throw fail(403, "Reach's own private folder can't be shared.");
+      chosen.push(dir);
+    }
+    return chosen;
+  }
+  // What you choose when inviting someone (or changing it later):
+  //   roots/write  shared folders by index, read or read/write
+  //   folders      any folder inside them: [{ root, path }] (path relative)
+  //   screen       false | "view" | "control" (true means "view")
+  //   apps         undefined | "all" | [app ids]: watch those apps' windows
+  //   terminal     their own terminals;  agents  AI sessions (Codex)
+  //   full         everything you can do, except managing access
+  // `chosen`: the folders, already checked. Null if the choice isn't valid.
+  function guestAccess(
+    {
+      roots = [],
+      write = false,
+      screen = false,
+      apps,
+      terminal = false,
+      agents = false,
+      full = false,
+    },
+    chosen,
+  ) {
+    const screenMode = screen === true ? "view" : screen;
+    const appList =
+      apps === undefined || apps === "all"
+        ? apps
+        : Array.isArray(apps) &&
+            apps.length > 0 &&
+            apps.length <= 100 &&
+            apps.every((a) => typeof a === "string" && a && a.length <= 300)
+          ? [...new Set(apps)]
+          : null;
+    if (
+      !Array.isArray(roots) ||
+      roots.some((r) => !Number.isInteger(r) || !config.roots[r]) ||
+      typeof write !== "boolean" ||
+      ![false, "view", "control"].includes(screenMode) ||
+      appList === null ||
+      typeof terminal !== "boolean" ||
+      typeof agents !== "boolean" ||
+      typeof full !== "boolean" ||
+      (!full &&
+        !roots.length &&
+        !chosen.length &&
+        !screenMode &&
+        !appList &&
+        !terminal &&
+        !agents)
+    )
+      return null;
+    return {
+      scopes: full
+        ? ALL_SCOPES.filter((s) => s !== "apps:drive")
+        : [
+            "device",
+            ...(roots.length || chosen.length
+              ? ["files:read", ...(write ? ["files:write"] : [])]
+              : []),
+            ...(screenMode ? ["screen"] : []),
+            ...(screenMode === "control" ? ["screen:control"] : []),
+            ...(appList ? ["apps:open"] : []),
+            ...(terminal ? ["terminal"] : []),
+            ...(agents ? ["codex"] : []),
+          ],
+      guestRoots: full
+        ? [...config.roots]
+        : [
+            ...new Set([
+              ...roots.map((r) => config.roots[r]),
+              ...chosen,
+            ]),
+          ],
+      ...(Array.isArray(appList) && !full ? { guestApps: appList } : {}),
+    };
+  }
+  // One invitation over several computers: the same id on each (the phone
+  // changes their access together).
+  const GROUP = /^[A-Za-z0-9_-]{8,64}$/;
+  function inviteGuest({ name, ttlSeconds, group, folders = [], ...choice }) {
+    const access = guestAccess(choice, chooseFolders(folders));
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 80 ||
+      !Number.isInteger(ttlSeconds) ||
+      ttlSeconds < 60 ||
+      ttlSeconds > 86400 ||
+      (group !== undefined && !GROUP.test(group)) ||
+      !access
+    )
+      throw fail(
+        400,
+        "Choose a guest name, what they may use, and a duration from 1 minute to 24 hours.",
+      );
+    const token = crypto.randomBytes(32).toString("base64url");
+    const client = {
+      id: id(),
+      kind: "guest",
+      name: name.trim(),
+      ...access,
+      ...(group ? { group } : {}),
+      inviteHash: hash(token),
+      createdAt: new Date().toISOString(),
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    };
+    changeClients((latest) => {
+      if (
+        latest.filter((c) => c.kind === "guest" && c.expiresAt > Date.now())
+          .length >= 100
+      )
+        throw fail(
+          429,
+          "Revoke an existing guest before creating another invitation.",
+        );
+      return [...latest, client];
+    });
+    return {
+      invitation: token,
+      clientId: client.id,
+      expiresAt: client.expiresAt,
+      scopes: client.scopes,
+    };
+  }
+  // Invite an agent: its own folders and access, for up to 90 days, joined
+  // within a short window (a pasted but unused command stops working).
+  // Agents never get screen or app control, or manage access.
+  function inviteAgent({
+    name,
+    ttlSeconds,
+    joinSeconds = 900,
+    folders = [],
+    write = false,
+    exec = false,
+    terminal = false,
+    codex = false,
+  }) {
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 80 ||
+      !Number.isInteger(ttlSeconds) ||
+      ttlSeconds < 60 ||
+      ttlSeconds > 90 * 86400 ||
+      !Number.isInteger(joinSeconds) ||
+      joinSeconds < 60 ||
+      joinSeconds > 86400 ||
+      [write, exec, terminal, codex].some((v) => typeof v !== "boolean")
+    )
+      throw fail(
+        400,
+        "Name the agent and choose how long it may use this computer (up to 90 days).",
+      );
+    const { scopes, roots } = agentAccess(
+      { write, exec, terminal, codex },
+      chooseFolders(folders),
+    );
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const client = {
+      id: id(),
+      kind: "agent",
+      name: name.trim(),
+      scopes,
+      // Its own folders and limits, not a profile in the agent policy file.
+      policy: { invite: true, roots, maxJobMs: 30 * 60000 },
+      inviteHash: hash(token),
+      inviteExpiresAt: now + joinSeconds * 1000,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: now + ttlSeconds * 1000,
+    };
+    changeClients((latest) => [...latest, client]);
+    return {
+      invitation: token,
+      clientId: client.id,
+      expiresAt: client.expiresAt,
+      joinBy: client.inviteExpiresAt,
+      scopes,
+    };
+  }
+  // A browser agent gets structured reads and, optionally, screen scrolling
+  // or requests for one owner-reviewed action. Restricted commands are reads;
+  // legacy command requests remain manual handoffs.
+  // It never inherits shell, ordinary screen-input, or owner capabilities.
+  function inviteBrowser(input, browserAppApprover, workspace) {
+    const {
+      name, ttlSeconds, joinSeconds, folders, terminalIds, screen,
+      commandRequests, restrictedTerminal, terminalApproval, scriptApproval, transport, appAccess, workspaceMode,
+    } = validateBrowserInvitation(input);
+    const sources = [...new Set(chooseFolders(folders))];
+    if (workspaceMode === "private" && (!workspace || typeof workspace.id !== "string" ||
+        !Array.isArray(workspace.roots) || !workspace.roots.length ||
+        workspace.roots.some(root => typeof root !== "string" || !path.isAbsolute(root)) ||
+        JSON.stringify(workspace.sources) !== JSON.stringify(sources)))
+      throw fail(403, "The private working copy must be prepared by Reach before inviting an agent.");
+    if (workspaceMode !== "private" && workspace) throw fail(400, "Choose a private workspace invitation.");
+    const roots = workspaceMode === "private" ? [...workspace.roots] : sources;
+    const { scopes, policy } = browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots);
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const client = {
+      id: id(), kind: "agent", name: name.trim(), scopes,
+      ...(workspace ? { browserWorkspaceId: workspace.id } : {}),
+      ...(screen === "apps" && browserAppApprover ? { browserAppApprover: structuredClone(browserAppApprover) } : {}),
+      ...(transport === "funnel" ? { browserTransport: "funnel" } : {}),
+      policy,
+      inviteHash: hash(token),
+      inviteExpiresAt: now + Math.min(joinSeconds, ttlSeconds) * 1000,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: now + ttlSeconds * 1000,
+    };
+    changeClients((latest) => {
+      if (latest.filter((entry) => entry.policy?.browser === true &&
+          entry.expiresAt > now && (!entry.inviteExpiresAt || entry.inviteExpiresAt > now)).length >= 50)
+        throw fail(429, "End an existing browser invitation before creating another.");
+      return [...latest, client];
+    });
+    return {
+      invitation: token, clientId: client.id,
+      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+    };
+  }
+  function browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots) {
+    if (restrictedTerminal && !roots.length)
+      throw fail(400, "Choose at least one folder for restricted terminal commands.");
+    if (!roots.length && !terminalIds.length && screen === "off" && !commandRequests && !restrictedTerminal)
+      throw fail(400, "Choose a folder, terminal output, screen access, or command requests.");
+    const scopes = [
+      "device",
+      ...(roots.length ? ["files:read"] : []),
+      "browser:read",
+      ...(screen === "scroll" ? ["browser:scroll"] : []),
+      ...(["ask", "apps"].includes(screen) || commandRequests || restrictedTerminal ? ["browser:request"] : []),
+    ];
+    return {
+      scopes,
+      policy: {
+        invite: true, browser: true, roots,
+        terminalIds: [...new Set(terminalIds)], screen,
+        ...(screen === "apps" ? { appAccess: structuredClone(appAccess) } : {}),
+        ...(commandRequests ? { commandRequests: true } : {}),
+        ...(restrictedTerminal ? { restrictedTerminal: true } : {}),
+        ...(terminalApproval ? { terminalApproval: true } : {}),
+        ...(scriptApproval ? { scriptApproval: true } : {}),
+      },
+    };
+  }
+  // What an agent may do in its folders (inviting it, or changing it later).
+  // Never the screen, apps or managing access: only agent scopes.
+  function agentAccess({ write = false, exec = false, terminal = false, codex = false }, roots) {
+    if ([write, exec, terminal, codex].some((v) => typeof v !== "boolean"))
+      throw fail(400, "Choose what the agent may do.");
+    // At least one folder: it's where the agent's files, commands and
+    // sessions start.
+    if (!roots.length)
+      throw fail(400, "Choose at least one folder for the agent.");
+    const scopes = [
+      "device",
+      "files:read",
+      ...(write ? ["files:write"] : []),
+      ...(exec ? ["exec"] : []),
+      ...(terminal ? ["terminal"] : []),
+      ...(codex ? ["codex"] : []),
+    ];
+    if (scopes.some((s) => !AGENT_SCOPES.includes(s)))
+      throw fail(400, "Invalid agent access.");
+    return { scopes, roots };
+  }
+  // Change what someone you invited may use, without a new link: the same
+  // choices and checks as inviting them. Their credential, their device and
+  // their time stay; every request checks the new access from the next one.
+  // `folders: "keep"` keeps the folders they have (never "everything" from
+  // full access: those are chosen again).
+  function changeAccess(clientId, changes = {}) {
+    if (!isPlainRecord(changes) || Object.keys(changes).some((key) =>
+      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess"].includes(key)))
+      throw fail(400, "Choose valid permissions and an end time.");
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId);
+      if (client?.browserWorkspaceId) throw fail(409, "Create a new invitation to change access to a private working copy.");
+      if (
+        !client ||
+        !(
+          client.kind === "guest" ||
+          (client.kind === "agent" && client.policy?.invite)
+        ) ||
+        client.expiresAt <= Date.now() ||
+        (client.inviteExpiresAt && client.inviteExpiresAt <= Date.now())
+      )
+        throw fail(404, "That invitation has ended.");
+      if (client.browserTransport === "funnel" && client.admission && admissionStatus(client) === "expired")
+        throw fail(404, "That invitation has ended.");
+      if (client.admission && client.admission.status !== "collected")
+        throw fail(409, "This agent's first connection is waiting or has ended. Create a new invitation to change its access.");
+      const guest = client.kind === "guest";
+      const browser = client.policy?.browser === true;
+      const expiresAt = changes.expiresAt ?? client.expiresAt;
+      const maxSeconds = client.browserTransport === "funnel" ? 3600 : guest || browser ? 86400 : 90 * 86400;
+      if (Object.hasOwn(changes, "expiresAt") &&
+          (!Number.isSafeInteger(changes.expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + maxSeconds * 1000))
+        throw fail(400, "Choose an end time within this invitation’s duration limit.");
+      const had = guest
+        ? client.scopes.includes("admin")
+          ? []
+          : client.guestRoots || []
+        : client.policy.roots || [];
+      const keep = changes.folders === "keep";
+      if (keep && !had.length)
+        throw fail(400, "Choose the folders they may use.");
+      const folders = keep ? had : chooseFolders(changes.folders ?? []);
+      const before = {
+        scopes: [...client.scopes],
+        roots: guest ? [...(client.guestRoots || [])] : [...had],
+        apps: client.guestApps,
+      };
+      if (browser) {
+        const { folders: ignoredFolders, expiresAt: ignoredExpiry, ...permissions } = changes;
+        // Use the invitation's schema, so edits cannot add shell/admin scopes,
+        // change transport, or enable unsupported command execution.
+        const input = validateBrowserInvitation({
+          ...permissions, name: client.name, ttlSeconds: 60,
+          transport: client.browserTransport || "tailnet", folders: [],
+        });
+        const access = browserAccess(input, folders);
+        client.scopes = access.scopes;
+        client.policy = access.policy;
+      } else if (guest) {
+        const { roots, write, screen, apps, terminal, agents, full } = changes;
+        const access = guestAccess(
+          { roots, write, screen, apps, terminal, agents, full },
+          folders,
+        );
+        if (!access) throw fail(400, "Choose what they may use.");
+        client.scopes = access.scopes;
+        client.guestRoots = access.guestRoots;
+        if (access.guestApps) client.guestApps = access.guestApps;
+        else delete client.guestApps;
+      } else {
+        const access = agentAccess(changes, folders);
+        client.scopes = access.scopes;
+        client.policy = { ...client.policy, roots: access.roots };
+      }
+      client.expiresAt = expiresAt;
+      // Keep the already-approved, browser-bound credential. Outstanding
+      // action approvals have their own old grant and are invalidated below.
+      if (client.admission?.status === "collected")
+        client.admission.grant = admissionGrant(client);
+      client.changedAt = new Date().toISOString();
+      result = {
+        client: {
+          id: client.id,
+          kind: client.kind,
+          name: client.name,
+          scopes: client.scopes,
+          expiresAt: client.expiresAt,
+          ...(guest
+            ? { guestRoots: client.guestRoots }
+            : { policy: client.policy }),
+          ...(client.guestApps ? { guestApps: client.guestApps } : {}),
+          ...(client.group ? { group: client.group } : {}),
+        },
+        before,
+        after: {
+          scopes: client.scopes,
+          roots: guest ? client.guestRoots : client.policy.roots,
+          apps: client.guestApps,
+        },
+      };
+      return latest;
+    });
+    return result;
+  }
+  const admissionGrant = (client) => hash(JSON.stringify({
+    id: client.id,
+    name: client.name,
+    kind: client.kind,
+    scopes: client.scopes,
+    policy: client.policy,
+    expiresAt: client.expiresAt,
+    tailscale: client.tailscale,
+    browserTransport: client.browserTransport,
+    browserBinding: client.browserBinding,
+    browserAppApprover: client.browserAppApprover,
+    ...(client.browserWorkspaceId ? { browserWorkspaceId: client.browserWorkspaceId } : {}),
+  }));
+  const admissionStatus = (client, now = Date.now()) => {
+    const request = client.admission;
+    if (!request) return null;
+    if (client.expiresAt <= now) return "expired";
+    if ((client.browserTransport === "funnel" || (client.policy?.browser === true && client.policy.screen === "apps")) &&
+        request.grant !== admissionGrant(client)) return "expired";
+    if (request.status === "collected")
+      return client.browserTransport === "funnel" && !(client.browserIdleExpiresAt > now)
+        ? "expired" : "accepted";
+    if (request.status === "denied") return "denied";
+    if (request.expiresAt <= now || request.grant !== admissionGrant(client)) return "expired";
+    return ["pending", "approved"].includes(request.status) ? request.status : "expired";
+  };
+  const admissionView = (client) => ({
+    requestId: client.admission.requestId,
+    clientId: client.id,
+    name: client.name,
+    scopes: [...client.scopes],
+    roots: [...(client.policy?.roots || [])],
+    browser: client.policy?.browser === true,
+    ...(client.policy?.browser ? {
+      screen: client.policy.screen,
+      terminalIds: [...client.policy.terminalIds],
+      commandRequests: client.policy.commandRequests === true,
+      ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
+      ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
+      ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
+      ...(client.policy.screen === "apps" ? { appAccess: client.policy.appAccess.map(({id,mode}) => ({id,mode})) } : {}),
+      ...(client.browserTransport === "funnel" ? { browserTransport: "funnel" } : {}),
+    } : {}),
+    requestedAt: client.admission.requestedAt,
+    expiresAt: client.admission.expiresAt,
+    accessExpiresAt: client.expiresAt,
+    verificationCode: client.admission.verificationCode,
+    ...(client.nodeName ? { nodeName: client.nodeName } : {}),
+    ...(client.tailscale?.nodeId ? { nodeId: client.tailscale.nodeId } : {}),
+  });
+  // Invited people keep immediate single-use redemption. Invited agents first
+  // consume the link into a receipt with no access credential. A paired owner
+  // must separately approve that exact claim before the claimant can collect.
+  const validBrowserBinding = (value) =>
+    typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value) &&
+    Buffer.from(value, "base64url").toString("base64url") === value;
+  const isFunnelBrowser = (client) =>
+    client?.kind === "agent" && client.policy?.invite === true &&
+    client.policy.browser === true && client.browserTransport === "funnel" &&
+    !client.tailscale;
+  const claimSource = (client) => client.browserTransport === "funnel"
+    ? `browser:${client.browserBinding}`
+    : `tailnet:${client.tailscale?.nodeId || "unbound"}`;
+  function redeemGuest(invitation, identity) {
+    return redeemInvitation(invitation, identity);
+  }
+  function redeemFunnelBrowser(invitation, keyThumbprint) {
+    if (!validBrowserBinding(keyThumbprint))
+      throw fail(401, "A valid browser key is required to claim this invitation.");
+    return redeemInvitation(invitation, undefined, keyThumbprint);
+  }
+  function redeemInvitation(invitation, identity, keyThumbprint) {
+    const funnel = keyThumbprint !== undefined;
+    if (
+      typeof invitation !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(invitation)
+    )
+      throw fail(
+        401,
+        "This guest link expired, was revoked, or has already been used.",
+      );
+    let result;
+    changeClients((latest) => {
+      const client = latest.find(
+        (c) =>
+          ["guest", "agent"].includes(c.kind) &&
+          (funnel ? isFunnelBrowser(c) : c.browserTransport !== "funnel" && !c.browserBinding) &&
+          c.inviteHash === hash(invitation) &&
+          c.expiresAt > Date.now() &&
+          !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
+      );
+      if (!client)
+        throw fail(
+          401,
+          "This guest link expired, was revoked, or has already been used.",
+        );
+      const now = Date.now();
+      if (client.kind === "agent") {
+        if (!funnel && (config.tailscaleOwner || identity) &&
+            (!identity?.nodeId || !(identity.validUntil > now)))
+          throw fail(401, "A current Tailscale identity is required to claim this agent invitation.");
+        const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
+        const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
+        if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
+          throw fail(429, "An agent connection is already waiting. Finish it before opening another invitation.");
+        const recent = latest.filter((c) => c.admission?.requestedAt > now - 60000);
+        if (recent.length >= 60 || recent.filter((c) => claimSource(c) === source).length >= 10)
+          throw fail(429, "Too many agent connection requests. Wait a minute and try again.");
+        delete client.inviteHash;
+        delete client.hash;
+        delete client.inviteExpiresAt;
+        if (funnel) client.browserBinding = keyThumbprint;
+        if (identity?.nodeId) client.tailscale = {
+          userId: identity.userId || "",
+          nodeId: identity.nodeId,
+          ...(identity.tagged ? { tagged: true } : {}),
+        };
+        if (typeof identity?.nodeName === "string") client.nodeName = identity.nodeName.slice(0, 160);
+        const requestSecret = crypto.randomBytes(32).toString("base64url");
+        client.admission = {
+          requestId: id(),
+          secretHash: hash(requestSecret),
+          verificationCode: crypto.randomInt(100000, 1000000).toString(),
+          requestedAt: now,
+          expiresAt: Math.min(now + 300000, client.expiresAt),
+          status: "pending",
+          grant: admissionGrant(client),
+        };
+        result = {
+          status: "pending",
+          requestId: client.admission.requestId,
+          requestSecret,
+          verificationCode: client.admission.verificationCode,
+          expiresAt: client.admission.expiresAt,
+          clientId: client.id,
+          kind: "agent",
+        };
+        return latest;
+      }
+      const token = crypto.randomBytes(32).toString("base64url");
+      delete client.inviteHash;
+      client.hash = hash(token);
+      client.redeemedAt = new Date().toISOString();
+      if (identity?.nodeId)
+        client.tailscale = {
+          userId: identity.userId || "",
+          nodeId: identity.nodeId,
+          ...(identity.tagged ? { tagged: true } : {}),
+        };
+      delete client.inviteExpiresAt;
+      result = {
+        token,
+        clientId: client.id,
+        expiresAt: client.expiresAt,
+        kind: client.kind,
+        scopes: client.scopes,
+      };
+      return latest;
+    });
+    return result;
+  }
+  function listAgentAdmissions() {
+    return loadJson(file, []).filter((client) =>
+      client.kind === "agent" && admissionStatus(client) === "pending",
+    ).map(admissionView);
+  }
+  function decideAgentAdmission(requestId, decision) {
+    if (!["approve", "deny"].includes(decision))
+      throw fail(400, "Approve or deny this agent connection.");
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.kind === "agent" && c.admission?.requestId === requestId);
+      if (!client) throw fail(404, "This agent connection request was not found.");
+      if (admissionStatus(client) !== "pending")
+        throw fail(409, "This agent connection request is no longer pending.");
+      client.admission.status = decision === "approve" ? "approved" : "denied";
+      result = { requestId, clientId: client.id, status: client.admission.status };
+      return latest;
+    });
+    return result;
+  }
+  function pollAgentAdmission(requestId, requestSecret, identity) {
+    return pollAdmission(requestId, requestSecret, identity);
+  }
+  function pollFunnelAdmission(requestId, requestSecret, keyThumbprint) {
+    if (!validBrowserBinding(keyThumbprint))
+      throw fail(401, "This agent connection receipt is invalid or belongs to another browser.");
+    return pollAdmission(requestId, requestSecret, undefined, keyThumbprint);
+  }
+  function pollAdmission(requestId, requestSecret, identity, keyThumbprint) {
+    const funnel = keyThumbprint !== undefined;
+    if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId) ||
+        typeof requestSecret !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(requestSecret))
+      throw fail(401, "This agent connection receipt is invalid.");
+    const inspect = (latest) => {
+      const client = latest.find((c) => c.kind === "agent" && c.admission?.requestId === requestId);
+      if (!client) return { result: { status: "expired" } };
+      const request = client.admission;
+      if (funnel ? !isFunnelBrowser(client) || client.browserBinding !== keyThumbprint
+        : client.browserTransport === "funnel" || client.browserBinding)
+        throw fail(401, "This agent connection receipt belongs to another connection type or browser.");
+      if (hash(requestSecret) !== request.secretHash ||
+          (!funnel && config.tailscaleOwner && !(identity?.validUntil > Date.now())) ||
+          (client.tailscale && (!identity || !(identity.validUntil > Date.now()) ||
+            client.tailscale.nodeId !== identity.nodeId || client.tailscale.userId !== (identity.userId || ""))))
+        throw fail(401, "This agent connection receipt is invalid or belongs to another device.");
+      const status = admissionStatus(client);
+      if (["pending", "denied", "expired"].includes(status))
+        return { result: { status, expiresAt: request.expiresAt } };
+      if (status === "accepted")
+        throw fail(409, "This agent credential was already collected. If the response was lost, ask for a new invitation.");
+      if (status !== "approved") throw fail(401, "This agent connection receipt is invalid.");
+      return { client };
+    };
+    // Public receipt polling is read-only until a valid, approved claimant
+    // collects. Unknown IDs must never rewrite credentials or hold their lock.
+    const initial = inspect(loadJson(file, []));
+    if (initial.result) return initial.result;
+    let result;
+    changeClients((latest) => {
+      // Another process may have denied, revoked, or collected after the read.
+      // Recheck the secret, identity, exact grant, state, and deadline under lock.
+      const checked = inspect(latest);
+      if (checked.result) { result = checked.result; return latest; }
+      const client = checked.client;
+      const request = client.admission;
+      const permitted = applyAgentPolicy(client, config);
+      if (!permitted) {
+        request.status = "denied";
+        result = { status: "denied", expiresAt: request.expiresAt };
+        return latest;
+      }
+      const token = crypto.randomBytes(32).toString("base64url");
+      client.hash = hash(token);
+      client.redeemedAt = new Date().toISOString();
+      request.status = "collected";
+      if (funnel) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      // Persist the consumed receipt and token hash in one atomic write before
+      // returning. A dropped response can never mint a second credential.
+      result = {
+        status: "approved", token, clientId: client.id, kind: "agent",
+        scopes: permitted.scopes, expiresAt: client.expiresAt,
+      };
+      return latest;
+    });
+    return result;
+  }
+  function funnelSession(client, keyThumbprint, now = Date.now()) {
+    if (!isFunnelBrowser(client) || !validBrowserBinding(keyThumbprint) ||
+        client.browserBinding !== keyThumbprint || !client.hash ||
+        client.admission?.status !== "collected" || !(client.expiresAt > now) ||
+        !(client.browserIdleExpiresAt > now) ||
+        client.admission.grant !== admissionGrant(client)) return null;
+    return applyAgentPolicy(client, config);
+  }
+  function verifyFunnel(token, keyThumbprint) {
+    if (typeof token !== "string" || !token || token.length > 256 ||
+        !validBrowserBinding(keyThumbprint)) return null;
+    const digest = hash(token);
+    const client = loadJson(file, []).find((entry) => entry.hash === digest);
+    return funnelSession(client, keyThumbprint);
+  }
+  // Only an authenticated browser request renews this short lease. Internal
+  // stream authorization checks are read-only and cannot keep a dead tab alive.
+  function touchFunnel(token, keyThumbprint) {
+    const permitted = verifyFunnel(token, keyThumbprint);
+    if (!permitted) throw fail(401, "This browser connection has ended.");
+    const now = Date.now();
+    if (permitted.browserIdleExpiresAt >= Math.min(permitted.expiresAt, now + 110000))
+      return;
+    const digest = hash(token);
+    changeClients((latest) => {
+      const client = latest.find((entry) => entry.hash === digest);
+      if (!funnelSession(client, keyThumbprint)) throw fail(401, "This browser connection has ended.");
+      client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + 120000);
+      return latest;
+    });
+  }
+  // Only explicit public browser invitations keep the shared Funnel open.
+  // A pending admission has a five-minute deadline, not its longer grant.
+  // Opening a new invitation never extends any existing client's credential.
+  function funnelWindow() {
+    const now = Date.now();
+    let result = { open: false, until: 0, reason: null };
+    for (const client of loadJson(file, [])) {
+      if (!isFunnelBrowser(client) || !(client.expiresAt > now) ||
+          !applyAgentPolicy(client, config)) continue;
+      let until = 0, reason = "invitation";
+      if (client.inviteHash && !client.admission && !client.hash && !client.browserBinding)
+        until = Math.min(client.inviteExpiresAt || 0, client.expiresAt);
+      else if (["pending", "approved"].includes(admissionStatus(client, now)) &&
+          validBrowserBinding(client.browserBinding))
+        until = Math.min(client.admission.expiresAt, client.expiresAt);
+      else if (funnelSession(client, client.browserBinding, now)) {
+        until = Math.min(client.expiresAt, client.browserIdleExpiresAt);
+        reason = "session";
+      }
+      if (until > now && until > result.until) result = { open: true, until, reason };
+    }
+    return result;
+  }
+  function issue(name, scopes, kind = "device", options = {}) {
+    let policy,
+      ttlSeconds = 30 * 86400;
+    if (
+      kind === "agent" &&
+      (options.profile ||
+        config.agentPolicyRequired ||
+        fs.existsSync(config.agentPolicyFile))
+    ) {
+      const profile = agentProfile(config, options.profile);
+      ttlSeconds = options.ttlSeconds ?? profile.ttlSeconds;
+      if (
+        !Number.isInteger(ttlSeconds) ||
+        ttlSeconds < 60 ||
+        ttlSeconds > profile.ttlSeconds
+      )
+        throw fail(400, "Agent lifetime exceeds its profile limit.");
+      scopes = profile.scopes;
+      policy = {
+        profile: options.profile,
+        roots: profile.roots,
+        maxJobMs: profile.maxJobMs,
+      };
+    }
+    if (
+      !Array.isArray(scopes) ||
+      !scopes.length ||
+      scopes.some((s) => !ALL_SCOPES.includes(s)) ||
+      (kind === "agent" && scopes.some((s) => !AGENT_SCOPES.includes(s)))
+    )
+      throw fail(400, "Invalid credential scopes.");
+    const token = crypto.randomBytes(32).toString("base64url");
+    const client = {
+      id: id(),
+      kind,
+      scopes,
+      name: String(name).slice(0, 80),
+      hash: hash(token),
+      createdAt: new Date().toISOString(),
+      expiresAt: Date.now() + ttlSeconds * 1000,
+      ...(policy ? { policy } : {}),
+      ...(options.tailscale ? { tailscale: options.tailscale } : {}),
+      ...(typeof options.nodeName === "string"
+        ? { nodeName: options.nodeName.slice(0, 160) }
+        : {}),
+      ...(typeof options.deviceGroup === "string"
+        ? { deviceGroup: options.deviceGroup.slice(0, 64) }
+        : {}),
+    };
+    changeClients((latest) => [...latest, client]);
+    return {
+      token,
+      clientId: client.id,
+      name: client.name,
+      scopes,
+      expiresAt: client.expiresAt,
+    };
+  }
+  return {
+    verify,
+    verifyDigest,
+    verifyFunnel,
+    touchFunnel,
+    funnelWindow,
+    inviteGuest,
+    inviteAgent,
+    inviteBrowser,
+    changeAccess,
+    redeemGuest,
+    redeemFunnelBrowser,
+    listAgentAdmissions,
+    decideAgentAdmission,
+    pollAgentAdmission,
+    pollFunnelAdmission,
+    pair,
+    issue,
+    list: () =>
+      listStoredClients().map(({ hash, inviteHash, admission, ...rest }) => ({
+        ...rest,
+        ...(rest.kind === "guest" || rest.policy?.invite
+          ? {
+              // An agent that never joined in time can't anymore.
+              status:
+                admission ? admissionStatus({ ...rest, admission }) : rest.expiresAt <= Date.now() ||
+                (inviteHash && rest.inviteExpiresAt <= Date.now())
+                  ? "expired"
+                  : inviteHash
+                    ? "invited"
+                    : "accepted",
+            }
+          : {}),
+      })),
+    // A reduction must survive pause/restart. This internal method cannot grant
+    // access; only an existing base grant may be removed or reduced to viewing.
+    restrictBrowserApp(clientId, appId, mode) {
+      if (!["hidden", "view"].includes(mode) || typeof appId !== "string") throw fail(400, "Choose a reduced app permission.");
+      changeClients((latest) => {
+        const client = latest.find((entry) => entry.id === clientId);
+        if (!client || client.kind !== "agent" || client.policy?.screen !== "apps" || client.expiresAt <= Date.now()) throw fail(404, "This app invitation has ended.");
+        client.policy.appAccess = client.policy.appAccess.flatMap((entry) => entry.id !== appId ? [entry] : mode === "hidden" ? [] : [{...entry, mode:"view"}]);
+        if (client.admission?.status === "collected") client.admission.grant = admissionGrant(client);
+        client.changedAt = new Date().toISOString();
+        return latest;
+      });
+    },
+    // Admission carries its own one-use capability before a browser token exists.
+    // This narrow check only bypasses the host UI guard; the normal claim/poll
+    // handlers still consume/revalidate secrets, grant hashes and node binding.
+    isBrowserAppAdmission(req) {
+      if (req.method !== "POST") return false;
+      const route = (req.originalUrl || req.url || "").split("?", 1)[0];
+      const body = req.body;
+      if (!isPlainRecord(body)) return false;
+      const entries = loadJson(file, []), now = Date.now();
+      const eligible = (client) => client.kind === "agent" && client.policy?.browser === true && client.policy.screen === "apps" && client.browserTransport !== "funnel" && client.expiresAt > now;
+      if (route === "/api/invitations/redeem" && typeof body.invitation === "string" && body.invitation.length <= 256) {
+        const digest = hash(body.invitation);
+        return entries.some((client) => eligible(client) && client.inviteExpiresAt > now && client.inviteHash === digest);
+      }
+      const match = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
+      if (match && typeof body.secret === "string" && body.secret.length <= 256) {
+        const digest = hash(body.secret);
+        return entries.some((client) => eligible(client) && client.admission?.requestId === match[1] && client.admission.expiresAt > now && client.admission.secretHash === digest);
+      }
+      return false;
+    },
+    revoke(clientId) {
+      changeClients((latest) => latest.filter((c) => c.id !== clientId));
+    },
+    pairing,
+  };
+}

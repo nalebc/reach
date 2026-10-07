@@ -1,0 +1,174 @@
+/* Queued messages above the composer (QueuedMessages.tsx), as the Claude
+   and Codex apps show theirs: one line each, small actions, a short list that
+   scrolls; Claude's folds into a stack. Colors come from the agent's skin. */
+.qm {
+  margin: 0 8px -5px;
+  padding: 6px 6px 9px;
+  border: 1px solid var(--as-composer-line, var(--border));
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: var(--as-composer);
+  color: var(--as-text);
+}
+.qm-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 2px 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--as-muted, var(--muted));
+  font-size: 12px;
+}
+.qm-head svg {
+  transition: transform 0.15s ease;
+}
+.qm-head svg.up {
+  transform: rotate(180deg);
+}
+.qm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: min(35dvh, 240px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.qm-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 40px;
+  padding: 0 2px 0 8px;
+  border-radius: 10px;
+  touch-action: pan-y;
+}
+.qm-row.dragging {
+  background: color-mix(in srgb, var(--as-text) 8%, transparent);
+}
+/* Folded: the newest waits on top, the others peek out underneath. */
+.qm.stacked .qm-list {
+  overflow: visible;
+}
+.qm.stacked .qm-row::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -5px;
+  height: 5px;
+  border-radius: 0 0 8px 8px;
+  background: color-mix(in srgb, var(--as-text) 7%, transparent);
+}
+.qm-text {
+  flex: 1;
+  min-width: 0;
+}
+.qm-text p {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+  /* Its start only, fading out before the buttons, as in the Claude app. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+.qm-text small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--as-muted, var(--muted));
+  font-size: 12px;
+  line-height: 16px;
+}
+.qm-images {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-right: 4px;
+  color: var(--as-muted, var(--muted));
+}
+.qm-images small {
+  font-size: 11px;
+}
+.qm-row button,
+.qm-menu > button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--as-muted, var(--muted));
+}
+.qm-row button:disabled {
+  opacity: 0.35;
+}
+/* Rows line up whether or not they have a handle (one being sent has none). */
+.qm.sortable .qm-row {
+  padding-left: 22px;
+}
+.qm.sortable .qm-row .qm-grip {
+  position: absolute;
+  left: 2px;
+  margin: 0;
+}
+.qm-row .qm-grip {
+  width: 22px;
+  margin-left: -6px;
+  cursor: grab;
+  touch-action: none;
+}
+.qm-row .qm-now {
+  background: color-mix(in srgb, var(--as-text) 9%, transparent);
+  color: var(--as-text);
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+}
+.qm-menu {
+  position: relative;
+  flex: none;
+}
+.qm-popover {
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  bottom: 36px;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--as-composer-line, var(--border));
+  border-radius: 12px;
+  background: var(--as-float, var(--as-composer));
+  box-shadow: 0 10px 28px -12px rgb(0 0 0 / 0.6);
+}
+.qm-popover button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--as-text);
+  font-size: 14px;
+  text-align: left;
+}
+.qm-popover button:disabled {
+  opacity: 0.4;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qm-head svg {
+    transition: none;
+  }
+}

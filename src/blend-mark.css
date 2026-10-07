@@ -1,0 +1,72 @@
+/* The AI apps' mark (BlendMark.tsx): Claude, Codex and Gemini melting into one
+   drop. A disc of their colours swirled together; each app's icon sits in
+   it, sharp at its heart, its edge dissolving into the others. */
+.blend-mark {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
+  isolation: isolate;
+}
+/* The liquid: the three colours poured into one another. */
+.blend-mark::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: conic-gradient(
+    from 210deg at 50% 55%,
+    #d97757,
+    #f0b089 18%,
+    #9168c0 38%,
+    #4796e3 52%,
+    #6f7dff 66%,
+    #f2f0ff 78%,
+    #d97757
+  );
+  filter: blur(3px);
+}
+/* Each app, its edge melting away. */
+.bm-one {
+  position: absolute;
+  width: 64%;
+  height: 64%;
+  overflow: hidden;
+  border-radius: 50%;
+  -webkit-mask-image: radial-gradient(closest-side, #000 58%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 58%, transparent 100%);
+}
+.bm-gemini {
+  left: 18%;
+  top: -4%;
+  z-index: 1;
+  background: #fff;
+}
+.bm-claude {
+  left: -6%;
+  top: 40%;
+  z-index: 2;
+  background: #d97757;
+}
+.bm-codex {
+  left: 42%;
+  top: 40%;
+  z-index: 3;
+  background: #1f1f2e;
+}
+.bm-one svg {
+  position: absolute;
+  inset: 18%;
+  width: 64%;
+  height: 64%;
+}
+/* Mac app icons leave a margin around their body: crop it, edge to edge. */
+.bm-one img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 128%;
+  height: 128%;
+  max-width: none;
+  transform: translate(-50%, -50%);
+}

@@ -1,0 +1,768 @@
+/* Purpose-built interiors: browse, converse, configure, and launch. */
+.section-kicker,
+.inbox-caption {
+  font:
+    10px ui-monospace,
+    SFMono-Regular,
+    monospace;
+  letter-spacing: 1.5px;
+  color: #8fa594;
+}
+
+/* Files: location, search, filter, contents. Only the contents have a surface. */
+.page-files .file-icon {
+  background: #24332a;
+  color: #c2dfc8;
+  border: 0;
+  border-radius: 9px;
+  width: 42px;
+  height: 46px;
+}
+
+/* More: one launcher, with descriptions instead of a second navigation rail. */
+.screen-popup.workspace-launcher {
+  width: min(520px, calc(100vw - 28px));
+}
+.workspace-launcher .screen-popup-body > header {
+  margin-bottom: 20px;
+}
+.workspace-launcher .screen-popup-body > header h2 {
+  font-size: 27px;
+  font-weight: 500;
+  letter-spacing: -1px;
+}
+.explore-computer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+  background: #b9efd408;
+  border: 1px solid #b9efd41e;
+  border-radius: 11px;
+  margin-bottom: 28px;
+}
+.explore-computer > span {
+  display: grid;
+  place-items: center;
+  color: #b9efd4;
+  background: #b9efd40b;
+  width: 42px;
+  height: 42px;
+  border-radius: 9px;
+}
+.explore-computer > div {
+  flex: 1;
+  min-width: 0;
+}
+.explore-computer strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.explore-computer small {
+  display: block;
+  font-size: 10px;
+  color: #92aa9b;
+  margin-top: 5px;
+}
+.workspace-launcher .section-kicker {
+  margin: 22px 0 13px;
+}
+.explore-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.explore-grid > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 17px;
+  padding: 17px;
+  border: 1px solid #d3ead21e;
+  border-radius: 11px;
+  background: #202821;
+  color: #e2eade;
+  text-align: left;
+  min-height: 130px;
+  position: relative;
+}
+.explore-grid > button:hover {
+  border-color: #b9efd450;
+  background: #24322a;
+}
+.explore-grid > button > svg:last-child {
+  display: none;
+}
+.explore-icon {
+  color: #b9efd4;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+}
+.explore-icon.explore-invite {
+  color: #e6cf9d;
+}
+.explore-icon.explore-agents {
+  color: #bcb2e6;
+}
+.explore-grid strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 550;
+}
+.explore-grid small {
+  display: block;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #98a99d;
+  margin-top: 5px;
+}
+.explore-grid > button.explore-settings {
+  grid-column: 1/-1;
+  flex-direction: row;
+  align-items: center;
+  min-height: 70px;
+  gap: 16px;
+  background: transparent;
+}
+.explore-settings > span {
+  flex: 1;
+}
+.explore-grid > button.explore-settings > svg:last-child {
+  display: block;
+}
+.workspace-launcher .mobile-workspace-options {
+  gap: 0;
+}
+.workspace-launcher .mobile-workspace-options button {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  min-height: 61px;
+  padding: 12px 4px;
+}
+.workspace-launcher .mobile-workspace-options button strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.workspace-launcher .mobile-workspace-options button small {
+  display: block;
+  font-size: 10px;
+  margin-top: 4px;
+  color: #92a598;
+}
+
+/* Settings: two clear destinations. No wall of stacked cards. */
+.settings-workspace {
+  max-width: 800px;
+  margin: 0 auto;
+}
+.settings-workspace [hidden] {
+  display: none !important;
+}
+.settings-segments {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 25px;
+}
+.settings-segments button {
+  padding: 12px 22px 15px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: #95a89b;
+  font-size: 14px;
+}
+.settings-segments button[aria-pressed="true"] {
+  color: #d5f2de;
+  border-bottom-color: #b9efd4;
+}
+.settings-segments button > span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  margin-left: 6px;
+  border-radius: 6px;
+  background: #b9efd410;
+  color: #b8cebe;
+  font-size: 10px;
+}
+.page-settings .settings-general .settings-panel {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  border-radius: 0;
+  padding: 22px 0;
+  margin: 0;
+}
+.page-settings .settings-general .computer-settings-card {
+  padding: 0 0 24px;
+}
+.settings-workspace .settings-device {
+  gap: 14px;
+}
+.settings-workspace .settings-device-icon {
+  background: #b9efd40c;
+  border: 1px solid #b9efd42a;
+  color: #b9efd4;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+}
+.settings-workspace .settings-device h2 {
+  font-size: 17px;
+  font-weight: 550;
+  letter-spacing: -0.5px;
+  margin: 0 0 5px;
+}
+.settings-workspace .settings-device .muted {
+  font-size: 11px;
+}
+.settings-workspace .settings-details {
+  margin-top: 20px;
+  padding-top: 14px;
+}
+.settings-workspace .settings-details summary {
+  color: #a3b8a9;
+  font-size: 12px;
+}
+.page-settings .settings-general h2 {
+  font-size: 11px;
+  color: #8da491;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  font-family: ui-monospace, monospace;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+.page-settings .settings-general .settings-device h2 {
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 550;
+  text-transform: none;
+  letter-spacing: -0.4px;
+  color: #e2ece2;
+  margin-bottom: 5px;
+}
+.settings-workspace .switch-row {
+  margin: 0;
+  gap: 24px;
+}
+.settings-workspace .switch-row strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+.settings-workspace .switch-row small {
+  color: #94a399;
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 470px;
+  margin-top: 6px;
+}
+.settings-workspace .switch-row .switch {
+  flex-shrink: 0;
+}
+.settings-workspace .settings-access .invite-banner {
+  background: #b9efd40a;
+  border: 1px solid #b9efd431;
+  padding: 20px;
+  border-radius: 12px;
+  margin: 0 0 25px;
+}
+.settings-workspace .settings-access .settings-panel {
+  background: none;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+}
+.settings-workspace .settings-access .settings-panel > h2 {
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+}
+.settings-workspace .settings-access .settings-panel > p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #93a699;
+}
+.access-group-title {
+  margin: 25px 0 9px;
+  font:
+    10px ui-monospace,
+    monospace;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: #a2b3a2;
+}
+.settings-workspace .client-row {
+  border: 1px solid #d3ead219;
+  border-radius: 10px;
+  padding: 17px 13px;
+  background: #19221b;
+  margin-bottom: 8px;
+  align-items: flex-start;
+}
+.settings-workspace .client-row > svg {
+  margin-top: 3px;
+  color: #8baf98;
+  flex-shrink: 0;
+}
+.settings-workspace .client-row strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.settings-workspace .client-row small {
+  font-size: 10px !important;
+  line-height: 1.6;
+}
+.revoke-access {
+  min-width: 0;
+  padding: 4px 0;
+  min-height: 28px;
+  font-size: 10px;
+  color: #d3a898;
+}
+.forget-computer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 0;
+  margin-top: 22px;
+  color: #c6a397;
+  border: 0;
+  background: none;
+  font-size: 12px;
+}
+
+/* Codex: an inbox and a focused conversation, with a keyboard-aware mobile stage. */
+.codex-workspace {
+  max-width: 1160px;
+  margin: 0 auto;
+}
+.codex-workspace .chat-layout {
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 18px;
+  height: min(720px, calc(100dvh - 330px));
+  min-height: 420px;
+  background: none;
+}
+.codex-workspace .chat-list {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  display: block;
+  overflow-y: auto;
+}
+.conversation-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #1a231c;
+  color: #91a696;
+  margin-bottom: 20px;
+}
+.conversation-search input {
+  background: transparent !important;
+  outline: none;
+  border: 0 !important;
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+  padding: 0 !important;
+  color: #d8e9dc;
+}
+.inbox-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 9px;
+  margin: 0 3px 12px;
+}
+.codex-workspace .chat-list > button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 100px;
+  padding: 16px 12px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-bottom-color: var(--border);
+  border-radius: 0;
+  background: none;
+  color: #e0eade;
+}
+.codex-workspace .chat-list > button.active {
+  border: 1px solid #b9efd42c;
+  border-radius: 10px;
+  background: #b9efd409;
+}
+.conversation-icon {
+  width: 38px;
+  height: 42px;
+  background: #b9efd40a;
+  display: grid !important;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid #b9efd417;
+  border-radius: 9px;
+  color: #b9efd4;
+}
+.conversation-icon.waiting {
+  background: #e6c48d12;
+  color: #e6c48d;
+}
+.conversation-summary {
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+.conversation-summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.codex-workspace .conversation-summary small {
+  display: block !important;
+  color: #93a599;
+  font-size: 10px;
+  margin-top: 5px;
+}
+.conversation-summary em {
+  font-style: normal;
+  display: block;
+  font-size: 10px;
+  color: #a2c6ac;
+  margin-top: 8px;
+}
+.inbox-footnote,
+.inbox-empty {
+  margin: 22px 3px;
+  color: #849e8d;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.codex-workspace .chat-panel {
+  display: flex;
+  flex-direction: column;
+  background: #141d17 !important;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 0;
+}
+.codex-workspace .chat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #19221b;
+  flex-shrink: 0;
+}
+.codex-workspace .chat-top .thread-heading {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.thread-heading strong {
+  display: block;
+  font-weight: 500;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.codex-workspace .chat-top .thread-heading small {
+  display: block;
+  color: #8fa997;
+  font-size: 10px;
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-back {
+  display: none;
+}
+.codex-workspace .chat-messages {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px;
+}
+.codex-workspace .message {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.codex-workspace .message.user {
+  background: #263a2c;
+  color: #e0f0e3;
+  border-radius: 14px 14px 3px 14px;
+  padding: 13px 16px;
+  max-width: 88%;
+}
+.codex-workspace .message.assistant {
+  background: none;
+  padding: 16px 0;
+}
+.codex-workspace .message-author {
+  color: #9cc4a6;
+  font:
+    10px ui-monospace,
+    monospace;
+  letter-spacing: 1px;
+}
+.codex-workspace .chat-composer {
+  flex-shrink: 0;
+  border: 1px solid #c9e4cd29 !important;
+  border-radius: 14px !important;
+  background: #202c23 !important;
+  margin: 10px 16px 16px;
+  padding: 12px 13px;
+}
+.codex-workspace .chat-composer:focus-within {
+  border-color: #b9efd473 !important;
+}
+.codex-workspace .chat-composer textarea {
+  min-height: 54px;
+  max-height: 140px;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 15px;
+  line-height: 1.5;
+  width: 100%;
+  resize: vertical;
+}
+.codex-workspace .chat-composer > div > span {
+  font-size: 9px;
+  color: #8fa895;
+}
+.codex-workspace .send-button {
+  border-radius: 9px;
+  background: #b9efd4;
+  color: #143422;
+  width: 36px;
+  height: 36px;
+}
+.codex-workspace .tool-card {
+  background: #1d2a20;
+  border-color: #b9efd41a;
+  border-radius: 9px;
+}
+@media (max-width: 760px) {
+  .settings-workspace .page-title {
+    margin-bottom: 16px;
+  }
+  .settings-segments {
+    margin-bottom: 22px;
+  }
+  .settings-segments button {
+    flex: 1;
+  }
+  .page-settings .settings-general .settings-panel {
+    padding-block: 22px;
+  }
+  .settings-workspace .switch-row {
+    gap: 16px;
+  }
+  .screen-popup.workspace-launcher {
+    margin: auto 0 0;
+    width: 100%;
+    max-width: none;
+    border-radius: 24px 24px 0 0;
+    max-height: calc(100dvh - 35px);
+  }
+  .workspace-launcher .screen-popup-body {
+    padding: 24px 20px max(26px, env(safe-area-inset-bottom));
+  }
+  /* The grab handle (ScreenPopup): a wide, easy target around a small bar. */
+  .workspace-launcher [data-sheet-grab] {
+    touch-action: none;
+  }
+  .workspace-launcher .sheet-handle {
+    display: block;
+    height: 30px;
+    margin: -24px -20px 8px;
+    touch-action: none;
+    cursor: grab;
+  }
+  .workspace-launcher .sheet-handle::after {
+    content: "";
+    display: block;
+    width: 36px;
+    height: 5px;
+    margin: 11px auto 0;
+    border-radius: 5px;
+    background: #78927d55;
+  }
+  .codex-workspace .chat-layout {
+    display: block;
+    height: auto;
+    min-height: 0;
+  }
+  .codex-workspace .chat-list {
+    display: block;
+    max-height: none;
+  }
+  .codex-workspace .chat-list > button {
+    min-width: 0;
+    min-height: 105px;
+    padding: 18px 3px;
+    border: 0 !important;
+    border-bottom: 1px solid var(--border) !important;
+    border-radius: 0 !important;
+    background: none !important;
+  }
+  .codex-workspace .conversation-summary {
+    max-width: none !important;
+  }
+  .codex-workspace .conversation-summary strong {
+    font-size: 15px;
+    white-space: normal;
+  }
+  .codex-workspace .conversation-summary small {
+    font-size: 11px;
+  }
+  .codex-workspace .conversation-summary em {
+    font-size: 11px;
+  }
+  .conversation-search {
+    min-height: 48px;
+  }
+  .conversation-search input {
+    font-size: 16px;
+  }
+  .codex-workspace.is-inbox .chat-panel {
+    display: none;
+  }
+  .codex-workspace.is-thread {
+    --chat-nav-space: 74px;
+    position: fixed;
+    z-index: 24;
+    top: var(--chat-offset, 0px);
+    left: 0;
+    right: 0;
+    max-width: none;
+    height: calc(
+      var(--chat-height, 100dvh) - var(--chat-nav-space) -
+        env(safe-area-inset-bottom)
+    );
+    background: #101713;
+    padding: env(safe-area-inset-top) 0 0;
+  }
+  .codex-workspace.is-thread > .page-title,
+  .codex-workspace.is-thread .chat-list {
+    display: none;
+  }
+  .codex-workspace.is-thread .chat-layout {
+    height: 100%;
+    min-height: 0;
+  }
+  .codex-workspace.is-thread .chat-panel {
+    height: 100%;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+  .codex-workspace.is-thread .thread-back {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 38px;
+    height: 42px;
+  }
+  .codex-workspace.is-thread .chat-top {
+    padding: 12px 13px;
+    min-height: 69px;
+  }
+  .codex-workspace.is-thread .chat-messages {
+    padding: 20px 18px;
+    min-height: 0;
+  }
+  .codex-workspace.is-thread .chat-composer {
+    margin: 8px 12px 12px;
+  }
+  .codex-workspace.is-thread .chat-composer textarea {
+    font-size: 16px;
+    min-height: 50px;
+    height: 50px;
+    resize: none;
+  }
+  .codex-workspace.is-thread.keyboard-open {
+    --chat-nav-space: 0px;
+  }
+  body:has(.codex-workspace.is-thread.keyboard-open) .mobile-nav {
+    display: none !important;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .explore-grid > button {
+    transition:
+      background 140ms,
+      border-color 140ms;
+  }
+  .workspace-launcher[open] {
+    animation: launcher-in 180ms ease-out;
+  }
+}
+@keyframes launcher-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.codex-workspace .chat-layout {
+  border: 0;
+  background: none;
+}
+.codex-workspace .chat-list > button {
+  max-width: none;
+}
+.access-metadata {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #93a597;
+}
+.access-metadata summary {
+  cursor: pointer;
+}
+.access-metadata[open] summary {
+  margin-bottom: 8px;
+}
+.screen-popup.workspace-launcher {
+  background: #181f1a;
+}
+.page-terminal .terminal-panel {
+  border: 1px solid #b9efd426;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.page-terminal .terminal-picker button {
+  border-radius: 8px;
+}
+@media (max-width: 760px) {
+  .app-shell:has(.codex-workspace.is-thread) .topbar,
+  .app-shell:has(.codex-workspace.is-thread) .fleet-switcher {
+    visibility: hidden;
+  }
+}

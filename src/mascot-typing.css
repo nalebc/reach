@@ -1,0 +1,55 @@
+/* While an agent works (MascotTyping.tsx): the mascot sits with a laptop on
+   its lap and types. */
+.mascot-typing {
+  flex: none;
+  width: 26px;
+  height: 31px;
+  overflow: visible;
+}
+/* At rest: one pose. */
+.mascot-typing .mt-b {
+  visibility: hidden;
+}
+/* Typing: each hand taps, the two in turn. */
+.mascot-typing.playing .mt-left.mt-a,
+.mascot-typing.playing .mt-right.mt-b {
+  animation: mt-tap 320ms steps(1, end) infinite;
+}
+.mascot-typing.playing .mt-left.mt-b,
+.mascot-typing.playing .mt-right.mt-a {
+  animation: mt-tap 320ms steps(1, end) -160ms infinite;
+}
+/* The screen's light flickers on its face as lines come and go. */
+.mascot-typing.playing .mt-glow {
+  animation: mt-glow 2.4s steps(1, end) infinite;
+}
+.mascot-typing.playing .mt-logo {
+  animation: mt-breathe 3s ease-in-out infinite;
+}
+/* Now and then it looks up at you. */
+.mascot-typing.playing .mt-eyes {
+  animation: mt-look 7s steps(1, end) infinite;
+}
+@keyframes mt-tap {
+  0% { visibility: visible; }
+  50% { visibility: hidden; }
+}
+@keyframes mt-glow {
+  0% { opacity: 0.08; }
+  30% { opacity: 0.22; }
+  55% { opacity: 0.12; }
+  80% { opacity: 0.28; }
+}
+@keyframes mt-breathe {
+  50% { opacity: 0.55; }
+}
+@keyframes mt-look {
+  0% { transform: translateY(0); }
+  86% { transform: translateY(-3px); }
+  94% { transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mascot-typing.playing * {
+    animation: none !important;
+  }
+}

@@ -1,0 +1,5 @@
+/* While typing on a phone, the key row (KeyRow, key-row.css) replaces the
+   dock. */
+.simple-screen.screen-typing.screen-expanded:has(> .typing-keys) > .simple-screen-dock {
+  display: none;
+}

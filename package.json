@@ -1,0 +1,89 @@
+{
+  "name": "@nalebc/reach",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Your devices, within reach. A private mobile workspace for your computers.",
+  "license": "MIT",
+  "author": "Reach Contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nalebc/reach.git"
+  },
+  "homepage": "https://github.com/nalebc/reach#readme",
+  "bugs": "https://github.com/nalebc/reach/issues",
+  "files": [
+    "bin/",
+    "server/",
+    "scripts/",
+    "!scripts/demo/",
+    "!scripts/dev.mjs",
+    "!scripts/package.mjs",
+    "!scripts/benchmark-desktop.mjs",
+    "!scripts/compress-assets.mjs",
+    "dist/",
+    "tailnet/dist/",
+    "docs/*.md",
+    "!scripts/smoke-package.mjs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "go": "node scripts/bootstrap.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build-brand.mjs && tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
+    "prepack": "node scripts/check-release.mjs && npm run build:release",
+    "start": "node server/index.mjs",
+    "test": "node --test --test-concurrency=4 test/*.test.mjs",
+    "pair": "node scripts/pair.mjs",
+    "share": "node scripts/share.mjs",
+    "install-service": "node scripts/service.mjs install",
+    "uninstall-service": "node scripts/service.mjs uninstall",
+    "package": "node scripts/package.mjs",
+    "agent-token": "node scripts/agent-token.mjs",
+    "mcp": "node scripts/mcp.mjs",
+    "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs",
+    "build:release": "npm run build && node scripts/build-tailnet.mjs --required && node scripts/release-assets.mjs",
+    "verify:package": "node scripts/smoke-package.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "json5": "^2.2.3",
+    "multer": "^2.0.2",
+    "node-pty": "^1.1.0",
+    "prompts": "2.4.2",
+    "qrcode-terminal": "0.12.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/ios": "^8.5.2",
+    "@capacitor/share": "^8.0.3",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "jsdom": "^29.1.1",
+    "lucide-react": "^0.468.0",
+    "prettier": "^3.9.9",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.1"
+  },
+  "overrides": {
+    "xcode": {
+      "uuid": "11.1.1"
+    }
+  },
+  "bin": {
+    "reach": "bin/reach.mjs",
+    "reach-agent": "scripts/agent-cli.mjs"
+  }
+}

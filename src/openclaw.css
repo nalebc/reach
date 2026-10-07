@@ -1,0 +1,227 @@
+.claw-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.claw-icon:hover {
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  color: var(--text-strong);
+}
+.claw-library-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -10px 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.claw-channels {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  margin: 0 0 24px;
+  padding: 3px 0;
+}
+.claw-channels button {
+  flex: none;
+  padding: 6px 10px;
+  font-size: 11px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--muted);
+  background: transparent;
+}
+.claw-channels button[aria-pressed="true"] {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+}
+.claw-note,
+.claw-footnote {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.claw-footnote {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.claw-error {
+  color: var(--danger, #e5a18b);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 10px 0;
+}
+.claw-conversation {
+  max-width: 880px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 120px);
+  min-height: 360px;
+  padding-top: 12px;
+}
+.claw-thread-head {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0 15px;
+}
+.claw-thread-head > div {
+  flex: 1;
+  min-width: 0;
+}
+.claw-conversation .claw-thread-head h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 550;
+  margin: 0 0 4px;
+  color: var(--text-strong);
+}
+.claw-thread-head span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.claw-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 4px;
+}
+.claw-message {
+  margin: 0 0 26px;
+  max-width: 100%;
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+}
+.claw-message > small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.claw-message.from-user {
+  margin-left: 12%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--muted) 9%, transparent);
+}
+.claw-message p:first-child {
+  margin-top: 0;
+}
+.claw-message p:last-child {
+  margin-bottom: 0;
+}
+.claw-message pre,
+.claw-tool pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+.claw-tool {
+  margin: 8px 0 20px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.claw-tool summary {
+  cursor: pointer;
+}
+.claw-composer {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--panel, var(--bg));
+}
+.claw-composer:focus-within {
+  border-color: color-mix(in srgb, var(--lime) 45%, var(--border));
+}
+.claw-composer textarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: 0;
+  box-shadow: none;
+  outline: none;
+  margin: 0;
+  padding: 0 2px;
+  min-height: 46px;
+  max-height: 160px;
+  color: var(--text-strong);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+}
+.claw-compose-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.claw-destination select {
+  width: auto;
+  max-width: 100%;
+  border: 0;
+  padding: 7px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  background: var(--panel, var(--bg));
+}
+.claw-delivery-note {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+.claw-text-button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 0;
+  margin-bottom: 12px;
+}
+@media (max-width: 720px) {
+  .claw-conversation {
+    height: calc(100dvh - 96px - env(safe-area-inset-bottom));
+    padding: calc(16px + env(safe-area-inset-top)) 18px 0;
+  }
+  .claw-thread-head {
+    padding-top: 2px;
+  }
+  .claw-message.from-user {
+    margin-left: 6%;
+  }
+  .claw-composer textarea {
+    font-size: 16px;
+  }
+  .claw-library-meta {
+    flex-wrap: wrap;
+    gap: 0;
+  }
+}
+.claw-conversation .need-text small { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; }

@@ -1,0 +1,128 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #101512;
+  color: #e9eee9;
+}
+body {
+  margin: 0;
+  background: #101512;
+}
+.start {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 16px
+    max(24px, env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+.start-card {
+  width: min(360px, 100%);
+  display: grid;
+  gap: 14px;
+  text-align: center;
+}
+.start-mark {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #b9efd4;
+}
+.start h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.start p {
+  margin: 0;
+  color: #93a096;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.start-action {
+  display: block;
+  padding: 14px 18px;
+  border: 0;
+  border-radius: 14px;
+  background: #b9efd4;
+  color: #19250f;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: none;
+}
+.start-action[aria-busy="true"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.start-secondary {
+  border: 0;
+  background: none;
+  color: #93a096;
+  font: inherit;
+}
+.start-diagnostics {
+  margin-top: 4px;
+  color: #93a096;
+  text-align: left;
+  font-size: 13px;
+}
+.start-diagnostics summary {
+  cursor: pointer;
+  text-align: center;
+}
+.start-diagnostics pre {
+  padding: 12px;
+  border: 1px solid #2b332d;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+  user-select: text;
+}
+.start-diagnostics button {
+  display: block;
+  margin: 0 auto;
+  font-size: 13px;
+}
+.start .start-hint {
+  font-size: 13px;
+}
+.start-hint a {
+  color: #e9eee9;
+}
+.start-switch {
+  position: fixed;
+  z-index: 1000;
+  top: max(8px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 7px 12px;
+  border: 1px solid #2b332d;
+  border-radius: 999px;
+  background: #171e19;
+  color: #e9eee9;
+  font:
+    13px/1.2 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Step 1 of 2 · Join your network": where you are, signing in without the app. */
+.start-step {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  opacity: 0.65;
+}

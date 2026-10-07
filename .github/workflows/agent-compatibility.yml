@@ -1,0 +1,46 @@
+name: Agent release compatibility
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "server/agent-sessions/**"
+      - "scripts/check-agent-compatibility.mjs"
+      - "scripts/agent-protocol-canary.mjs"
+      - ".github/workflows/agent-compatibility.yml"
+  push:
+    branches: [main]
+    paths:
+      - "server/agent-sessions/**"
+      - "scripts/check-agent-compatibility.mjs"
+      - "scripts/agent-protocol-canary.mjs"
+      - ".github/workflows/agent-compatibility.yml"
+permissions:
+  contents: read
+jobs:
+  published-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - agent: claude
+            package: "@anthropic-ai/claude-code@latest"
+          - agent: codex
+            package: "@openai/codex@latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install published CLI in disposable runner
+        run: npm install --global "${{ matrix.package }}"
+      - name: Check CLI and protocol contracts without signing in
+        run: node scripts/check-agent-compatibility.mjs "${{ matrix.agent }}" > agent-compatibility.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-${{ matrix.agent }}
+          path: agent-compatibility.json
