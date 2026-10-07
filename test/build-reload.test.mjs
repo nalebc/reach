@@ -117,3 +117,47 @@ test("Reach's live connection says which phone interface it serves", { timeout: 
     await fsp.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("lazy workspace styles do not make a current public-start page reload forever", async () => {
+  const doc = dom.document.implementation.createHTMLDocument();
+  doc.head.innerHTML = '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css"><link rel="stylesheet" href="/assets/workspace-lazy.css">';
+  const page = '<script type="module" src="/assets/start-current.js"></script><link rel="stylesheet" href="/assets/start-current.css">';
+  assert.equal(await reload.currentPageMatches(doc, async () => new Response(page)), true);
+  assert.equal(await reload.currentPageMatches(doc, async () => new Response(page.replace('start-current.css', 'start-new.css'))), false);
+});
+
+test("foreground, page restore, online, and periodic checks work without presence packets and clean up", () => {
+  const win = new dom.window.EventTarget(), doc = new dom.window.EventTarget();
+  doc.hidden = false;
+  let checks = 0, tick, cleared = 0;
+  const stop = reload.watchInterfaceUpdates({ doc, win, check: () => checks++, every: (f) => { tick = f;return 42; }, clear: (id) => { assert.equal(id, 42);cleared++; } });
+  assert.equal(checks, 1);
+  for (const event of ['pageshow', 'focus', 'online']) win.dispatchEvent(new dom.window.Event(event));
+  doc.dispatchEvent(new dom.window.Event('visibilitychange'));tick();
+  assert.equal(checks, 6);
+  doc.hidden = true;tick();win.dispatchEvent(new dom.window.Event('focus'));
+  assert.equal(checks, 6);
+  stop();doc.hidden = false;win.dispatchEvent(new dom.window.Event('online'));
+  assert.equal(checks, 6);assert.equal(cleared, 1);
+});
+
+test("automatic checks retry after offline, expose waiting state, and apply only once when idle", async () => {
+  reload.forgetBuild();
+  let checks = 0, applied = 0, busy = true;
+  const waits = [];
+  const options = { currentPage: async () => ++checks === 1 ? null : false, reload: () => applied++, busy: () => busy, wait: (f) => waits.push(f) };
+  reload.checkForUpdates(options);await Promise.resolve();
+  assert.equal(reload.getUpdateState(), 'offline');
+  reload.checkForUpdates(options);await Promise.resolve();
+  assert.equal(reload.getUpdateState(), 'waiting');assert.equal(applied, 0);
+  busy = false;waits.shift()();
+  assert.equal(applied, 1);assert.equal(reload.getUpdateState(), 'reloading');
+  reload.checkForUpdates(options);assert.equal(applied, 1);
+});
+
+test("fresh reload preserves the existing origin, path, parameters and pairing fragment", () => {
+  const url = new URL(reload.freshInterfaceUrl('https://mac.example.ts.net:8443/guest?view=files#pair=12345678', 42));
+  assert.equal(url.origin, 'https://mac.example.ts.net:8443');assert.equal(url.pathname, '/guest');
+  assert.equal(url.searchParams.get('view'), 'files');assert.equal(url.searchParams.get('reach-update'), '42');
+  assert.equal(url.hash, '#pair=12345678');
+});
