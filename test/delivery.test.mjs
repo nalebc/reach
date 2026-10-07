@@ -239,6 +239,48 @@ test("build delivery works inside a hidden checkout without exposing dotfiles or
   }
 });
 
+test("failed asset delivery cannot cache errors or label them as compressed assets", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-dist-errors-"));
+  const dist = path.join(dir, "dist");
+  fs.mkdirSync(path.join(dist, "assets"), { recursive: true });
+  const script = "console.log('fixture asset');";
+  for (const name of ["app-removed.js", ".private.js"]) {
+    const file = path.join(dist, "assets", name);
+    fs.writeFileSync(file, script);
+    fs.writeFileSync(file + ".br", zlib.brotliCompressSync(script));
+    fs.writeFileSync(file + ".gz", zlib.gzipSync(script));
+  }
+  const app = express();
+  serveBuild(app, express, dist);
+  app.use((error, req, res, next) => res.status(error.status || 500).json({ error: "fixture delivery failed" }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const { port } = server.address();
+  try {
+    // Prime the existence cache, then simulate a rebuild removing those files.
+    for (const encoding of ["identity", "br", "gzip"]) {
+      const successful = await get(port, "/assets/app-removed.js", { "Accept-Encoding": encoding });
+      assert.equal(successful.status, 200);
+      assert.equal(successful.headers["cache-control"], "public, max-age=31536000, immutable");
+    }
+    for (const suffix of ["", ".br", ".gz"])
+      fs.unlinkSync(path.join(dist, "assets", "app-removed.js" + suffix));
+    for (const route of ["/assets/app-removed.js", "/assets/.private.js", "/agent-browser", "/missing-page"]) {
+      for (const encoding of ["identity", "br", "gzip"]) {
+        const failed = await get(port, route, { "Accept-Encoding": encoding });
+        assert.equal(failed.status, 404, `${route} (${encoding})`);
+        assert.equal(failed.headers["cache-control"], "no-store");
+        assert.equal(failed.headers["content-encoding"], undefined);
+        assert.match(failed.headers["content-type"], /application\/json/);
+        assert.deepEqual(JSON.parse(failed.body), { error: "fixture delivery failed" });
+      }
+    }
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("large API responses are compressed; small ones and old clients are not", async () => {
   const app = express();
   app.use(compressJson());

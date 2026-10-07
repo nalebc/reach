@@ -11,14 +11,23 @@ const accepts = (req, encoding) =>
 // so they never change: cache them for a year and serve the copy precompressed
 // at build time. The page itself is revalidated on every open.
 export function serveBuild(app, express, dist) {
+  const send = (res, next, file, options = {}) =>
+    res.sendFile(file, { root: dist, ...options }, (error) => {
+      if (!error) return;
+      if (!res.headersSent) {
+        // An immutable asset policy must never cache a failed delivery. Error
+        // middleware sends its own body, not the selected compressed asset.
+        res.setHeader("Cache-Control", "no-store");
+        for (const header of ["Content-Encoding", "Content-Type", "Content-Length", "Content-Range", "ETag", "Last-Modified"])
+          res.removeHeader(header);
+      }
+      next(error);
+    });
   // A checkout may itself live beneath a hidden directory (such as .codex).
   // Root relative filenames there so sendFile checks only requested path
   // components for dotfiles, while retaining its default traversal protection.
-  app.get("/agent-browser", (req, res) =>
-    res.sendFile("agent.html", {
-      root: dist,
-      headers: { "Cache-Control": "no-store" },
-    }),
+  app.get("/agent-browser", (req, res, next) =>
+    send(res, next, "agent.html", { headers: { "Cache-Control": "no-store" } }),
   );
   const exists = new Map();
   const has = (file) => {
@@ -40,9 +49,9 @@ export function serveBuild(app, express, dist) {
       if (accepts(req, encoding) && has(file + ext)) {
         res.setHeader("Content-Encoding", encoding);
         res.type(path.extname(file));
-        return res.sendFile(name + ext, { root: dist, cacheControl: false });
+        return send(res, next, name + ext, { cacheControl: false });
       }
-    res.sendFile(name, { root: dist, cacheControl: false });
+    send(res, next, name, { cacheControl: false });
   });
   const page = path.join(dist, "index.html");
   app.use(
@@ -53,11 +62,8 @@ export function serveBuild(app, express, dist) {
       },
     }),
   );
-  app.use((req, res) =>
-    res.sendFile("index.html", {
-      root: dist,
-      headers: { "Cache-Control": "no-cache" },
-    }),
+  app.use((req, res, next) =>
+    send(res, next, "index.html", { headers: { "Cache-Control": "no-cache" } }),
   );
 }
 
