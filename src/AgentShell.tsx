@@ -44,13 +44,8 @@ export default function AgentShell({ peer, roots, onError }: Props) {
     } finally { if (mounted.current) setRunning(false); }
   };
   return (
-    <section className="ag-shell" aria-labelledby="agent-shell-title">
-      <div className="browser-section-heading ag-ws-section-head">
-        <div>
-          <h2 id="agent-shell-title">Terminal</h2>
-          <p className="browser-policy">Commands run as the owner, from the folder below, up to 60 seconds each. Everything is logged for them.</p>
-        </div>
-      </div>
+    <section className="ag-shell" aria-label="Commands">
+      <p className="browser-policy">Commands run as the owner, from the folder below, up to 60 seconds each. Everything is logged for them.</p>
       {roots.length > 1 && (
         <OptionButtons label="Shared folder" value={currentRoot} onChange={(index) => { setRoot(Number(index)); setCwd(""); }}
           options={roots.map((folder) => ({ value: folder.index, label: folder.name, icon: <Folder size={16} />, title: folder.path }))} />

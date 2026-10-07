@@ -23,9 +23,7 @@ import { installBrowserTools } from "./browser-tools";
 import BrowserScreenControls from "./BrowserScreenControls";
 import BrowserTerminal from "./BrowserTerminal";
 import BrowserAppScreen from "./BrowserAppScreen";
-import AgentDesktop, { type DesktopAccess } from "./AgentDesktop";
-import AgentShell from "./AgentShell";
-import AgentFileChanges from "./AgentFileChanges";
+import AgentPage, { type PresetAccess } from "./AgentPage";
 import { OptionButtons } from "./agent-ui";
 import "./browser-workspace.css";
 import "./agent-workspace.css";
@@ -367,6 +365,10 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
       </main>
     );
 
+  // A preset session gets its own page: one column, nothing behind tabs
+  // (AgentPage.tsx). The tabbed page below serves invitations from the
+  // earlier form until they end.
+  if (access.preset !== undefined) return <AgentPage peer={peer} access={access as PresetAccess} onEnd={onEnd} />;
   const endsAt = new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const minutesLeft = Math.max(0, Math.round((access.expiresAt - Date.now()) / 60000));
   const crumbs = dir ? dir.split("/").filter(Boolean) : [];
@@ -490,13 +492,10 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         aria-labelledby={`browser-tab-${activeTab}`}
         tabIndex={0}
       >
-        {access.preset !== undefined && hasScreen && activeTab === "screen" && (
-          <AgentDesktop peer={peer} access={access as DesktopAccess} visible={visible} onError={fail} />
-        )}
-        {access.preset === undefined && access.screen === "apps" && activeTab === "screen" && visible && (
+        {access.screen === "apps" && activeTab === "screen" && visible && (
           <BrowserAppScreen peer={peer} expiresAt={access.expiresAt} onError={fail} />
         )}
-        {hasScreen && access.preset === undefined && access.screen !== "apps" && (
+        {hasScreen && access.screen !== "apps" && (
           <section className="browser-screen" aria-labelledby="browser-screen-title" hidden={activeTab !== "screen"}>
             <div className="browser-section-heading ag-ws-section-head">
               <div>
@@ -614,16 +613,6 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
                 </button>
               )}
             </nav>
-            {access.write && (
-              <AgentFileChanges
-                peer={peer}
-                root={currentRoot}
-                dir={dir}
-                file={file}
-                onChanged={(opened) => { setFilesRevision((r) => r + 1); if (opened !== undefined) setFile(opened); }}
-                onError={fail}
-              />
-            )}
             <div className={`browser-file-layout ag-ws-file-layout${file || fileBusy ? " has-preview" : ""}`}>
               <div className="browser-file-directory">
                 {filesBusy ? <p className="browser-empty" role="status">Loading files…</p> : listing.items.length ? (
@@ -656,10 +645,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
             </div>
           </section>
         )}
-        {activeTab === "terminal" && access.shell && (
-          <AgentShell peer={peer} roots={access.roots} onError={fail} />
-        )}
-        {activeTab === "terminal" && hasTerminal && !access.shell && (
+        {activeTab === "terminal" && hasTerminal && (
           <section className="browser-terminal" aria-labelledby="browser-terminals-title">
             <div className="browser-section-heading ag-ws-section-head">
               <div>
