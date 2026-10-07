@@ -20,14 +20,22 @@ const shell = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // Run by Terminal at sign-in. Terminal doesn't pass on your shell's PATH,
 // so Node's folder is written in; the window closes when Reach ends (also
 // when it was already running).
-export function loginScript(root, nodeDir) {
+// What starts Reach in `root`: a source checkout has ./reach; an npm install
+// has bin/reach.mjs and no launcher script.
+export function reachCommand(root, nodeDir, exists = fs.existsSync) {
+  if (!exists(path.join(root, "reach")) && exists(path.join(root, "bin/reach.mjs")))
+    return `${shell(path.join(nodeDir, "node"))} ${shell(path.join(root, "bin/reach.mjs"))}`;
+  return "./reach";
+}
+export function loginScript(root, nodeDir, { args = "", restart = false, exists } = {}) {
+  const command = reachCommand(root, nodeDir, exists);
   return [
     "#!/bin/bash",
-    "# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:",
-    `#   node ${shell(path.join(root, "scripts/login-start.mjs"))} uninstall`,
+    restart ? "# Reach: opened in Terminal by ./reach restart." : "# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:",
+    ...(restart ? [] : [`#   node ${shell(path.join(root, "scripts/login-start.mjs"))} uninstall`]),
     `export PATH=${shell(nodeDir)}:/opt/homebrew/bin:/usr/local/bin:$PATH`,
     `cd ${shell(root)} || exit 1`,
-    "./reach",
+    args ? `${command} ${args}` : command,
     "exit 0",
     "",
   ].join("\n");

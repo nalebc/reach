@@ -77,5 +77,11 @@ test("only on macOS, and only the three commands", () => {
   assert.throws(() => loginStart("start", setup()), /install, uninstall or status/);
   // Paths are quoted for the shell and escaped for the plist.
   assert.ok(loginScript("/a/b'c", "/n").includes(`cd '/a/b'\\''c' || exit 1`));
+  // An npm install has no ./reach: the script runs bin/reach.mjs with the chosen Node.
+  const npmLayout = (file) => file.endsWith("/bin/reach.mjs");
+  assert.ok(loginScript("/opt/pkg", "/n/bin", { exists: npmLayout }).includes("\n'/n/bin/node' '/opt/pkg/bin/reach.mjs'\n"));
+  assert.ok(loginScript("/opt/pkg", "/n/bin", { exists: npmLayout, args: "restart --yes", restart: true }).includes("\n'/n/bin/node' '/opt/pkg/bin/reach.mjs' restart --yes\n"));
+  assert.ok(loginScript("/src/reach", "/n/bin", { exists: (file) => true }).includes("\n./reach\n"), "a checkout keeps its launcher");
+  assert.ok(!loginScript("/opt/pkg", "/n/bin", { exists: npmLayout, restart: true }).includes("uninstall"));
   assert.ok(loginPlist("/x/<y>&.command").includes("<string>/x/&lt;y&gt;&amp;.command</string>"));
 });

@@ -57,6 +57,25 @@ test("Funnel must be explicit and never changes existing invitation transports",
   assert.deepEqual(f.auth.funnelWindow(), { open: true, until: publicInvite.joinBy, reason: "invitation" });
 });
 
+test("a person's or a CLI agent's unopened invitation opens the public page until it is used or ends", (t) => {
+  const f = fixture(t);
+  assert.deepEqual(f.auth.funnelWindow(), closed);
+  // A CLI agent fetches agent.mjs from the start page within its join window.
+  const agent = f.auth.inviteAgent({ name: "Codex", ttlSeconds: 86400, joinSeconds: 600, folders: [{ root: 0, path: "" }] });
+  assert.deepEqual(f.auth.funnelWindow(), { open: true, until: agent.joinBy, reason: "invitation" });
+  assert.equal(f.auth.redeemGuest(agent.invitation, { ...f.identity, nodeId: "agent-node" }).status, "pending");
+  assert.deepEqual(f.auth.funnelWindow(), closed, "once the link is used, the agent continues over the tailnet");
+  // A person without the Tailscale app signs in through the start page while the link is unused.
+  const guest = f.auth.inviteGuest({ name: "Pat", ttlSeconds: 1800, folders: [{ root: 0, path: "" }] });
+  assert.deepEqual(f.auth.funnelWindow(), { open: true, until: guest.expiresAt, reason: "invitation" });
+  assert.ok(f.auth.redeemGuest(guest.invitation, f.identity).token);
+  assert.deepEqual(f.auth.funnelWindow(), closed);
+  // An ended invitation never holds the page open.
+  f.auth.inviteGuest({ name: "Late", ttlSeconds: 60, folders: [{ root: 0, path: "" }] });
+  f.alter((clients) => { for (const client of clients) if (client.name === "Late") client.expiresAt = Date.now() - 1; });
+  assert.deepEqual(f.auth.funnelWindow(), closed);
+});
+
 test("Funnel claim consumes one invitation into a powerless browser-bound receipt", (t) => {
   const f = fixture(t);
   const grant = f.invite();

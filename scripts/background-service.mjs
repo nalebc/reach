@@ -78,7 +78,7 @@ export function backgroundPlist(options, root, executable, env, logDir) {
   return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
 <key>Label</key><string>${serviceLabel}</string>
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
-<key>WorkingDirectory</key><string>${xml(root)}</string>
+<key>WorkingDirectory</key><string>/</string>
 <key>EnvironmentVariables</key><dict>${Object.entries(variables)
     .map(([key, value]) => `<key>${key}</key><string>${xml(value)}</string>`)
     .join("")}</dict>
@@ -154,9 +154,10 @@ export async function backgroundService(options, root, deps = {}) {
     : "";
   const ours =
     (!installedPlist && !loaded) ||
-    installedPlist.includes(
-      `<key>WorkingDirectory</key><string>${xml(root)}</string>`,
-    );
+    // This checkout's job: by its program path (older plists also named the
+    // folder as the working directory).
+    (installedPlist.includes(xml(path.join(root, "scripts/bootstrap.mjs"))) ||
+      installedPlist.includes(`<key>WorkingDirectory</key><string>${xml(root)}</string>`));
   if (command === "status") {
     const runtime = loadJson(path.join(state, "host-status.json"), {});
     const result = {

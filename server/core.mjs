@@ -1106,6 +1106,15 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const now = Date.now();
     let result = { open: false, until: 0, reason: null };
     for (const client of loadJson(file, [])) {
+      // A person's or a CLI agent's unopened invitation needs the start page
+      // too: to sign in without the Tailscale app, or to fetch agent.mjs. The
+      // page closes again once the link is used or runs out.
+      if (!isFunnelBrowser(client) && client.policy?.browser !== true && ["guest", "agent"].includes(client.kind) &&
+          client.inviteHash && !client.hash && client.expiresAt > now) {
+        const until = Math.min(client.expiresAt, client.inviteExpiresAt || client.expiresAt);
+        if (until > now && until > result.until) result = { open: true, until, reason: "invitation" };
+        continue;
+      }
       if (!isFunnelBrowser(client) || !(client.expiresAt > now) ||
           !applyAgentPolicy(client, config)) continue;
       let until = 0, reason = "invitation";
