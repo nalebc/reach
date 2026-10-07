@@ -98,6 +98,9 @@ function permittedPath(method, value) {
         "/api/browser/requests",
         "/api/browser/terminal/history",
         "/api/browser/apps", "/api/browser/apps/windows", "/api/browser/apps/screen",
+        // Preset sessions (agent-presets.mjs): the screen, what is in front,
+        // the apps it may open, its command history.
+        "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/apps", "/api/browser/shell/history",
         "/api/browser/files/search",
         "/api/files",
         "/api/files/text",
@@ -107,7 +110,9 @@ function permittedPath(method, value) {
       ].includes(route)) ||
     (read && /^\/api\/browser\/terminals\/[A-Za-z0-9_:.-]+$/.test(route)) ||
     (method === "POST" &&
-      ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests"].includes(route)) ||
+      ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
+        // Preset sessions: one input action, opening an app, one command, one file change.
+        "/api/browser/desktop/input", "/api/browser/desktop/open", "/api/browser/shell", "/api/browser/files/change"].includes(route)) ||
     (method === "DELETE" &&
       (route === "/api/device/access" ||
         /^\/api\/browser\/requests\/[a-f0-9-]{36}$/.test(route)));

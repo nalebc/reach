@@ -445,6 +445,45 @@ test("a public request can reach only explicitly granted browser APIs, with no a
   const route = "/api/files/text?root=0&path=Project%20notes%2Fbrief.txt";
   assert.equal((await f.call(f.request(token, route))).status, 200);
   assert.equal(f.dispatched[0].context.path, route);
+  // Preset sessions (agent-presets.mjs) reach the Mac through the same gateway:
+  // their screen, input, apps, shell and file changes pass; nothing else new does.
+  // The gateway still applies each invitation's own allowlist, so a Full
+  // control invitation is claimed and admitted here.
+  const presetReceipt = await f.claim(f.auth.inviteBrowser({ name: "Muse", ttlSeconds: 600, preset: "full", transport: "funnel" }));
+  f.auth.decideAgentAdmission(presetReceipt.requestId, "approve");
+  const admitted = await f.call(signed(f.key, { operation: "status", requestId: presetReceipt.requestId, secret: presetReceipt.requestSecret }));
+  assert.equal(admitted.body.status, "approved");
+  const presetToken = admitted.body.token;
+  assert.equal((await f.call(f.request(token, "/api/browser/desktop/screen"))).status, 403, "the earlier form's invitation never gets the screen");
+  for (const [presetRoute, method, body] of [
+    ["/api/browser/desktop/screen?maxWidth=1440", "GET", null],
+    ["/api/browser/desktop/front", "GET", null],
+    ["/api/browser/desktop/apps", "GET", null],
+    ["/api/browser/shell/history", "GET", null],
+    ["/api/browser/desktop/input", "POST", { action: { type: "click", x: 0.5, y: 0.5 } }],
+    ["/api/browser/desktop/open", "POST", { app: "/Applications/Safari.app" }],
+    ["/api/browser/shell", "POST", { command: "ls", root: 0, cwd: "" }],
+    ["/api/browser/files/change", "POST", { op: "write", root: 0, path: "a.txt", content: "x" }],
+  ]) {
+    const before = f.dispatched.length;
+    assert.equal((await f.call(f.request(presetToken, presetRoute, method, body))).status, 200, `${method} ${presetRoute}`);
+    assert.equal(f.dispatched.length, before + 1, `${method} ${presetRoute} dispatched`);
+    assert.equal(f.dispatched.at(-1).context.path, presetRoute);
+    assert.equal(f.dispatched.at(-1).context.method, method);
+  }
+  for (const [deniedRoute, method] of [
+    ["/api/browser/desktop/input", "GET"],
+    ["/api/browser/desktop/screen", "POST"],
+    ["/api/browser/desktop/other", "GET"],
+    ["/api/browser/shell", "GET"],
+    ["/api/browser/files/change", "GET"],
+    ["/api/browser/agents/pause", "POST"],
+    ["/api/agents/browser-invitations", "POST"],
+  ]) {
+    const before = f.dispatched.length;
+    assert.equal((await f.call(f.request(presetToken, deniedRoute, method, method === "POST" ? {} : null))).status, 403, `${method} ${deniedRoute}`);
+    assert.equal(f.dispatched.length, before, `${method} ${deniedRoute} never dispatched`);
+  }
   assert.equal(
     (await f.call(f.request(token, "/api/browser/terminals/reach%3Asession-1")))
       .status,
