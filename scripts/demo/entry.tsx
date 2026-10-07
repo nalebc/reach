@@ -8,7 +8,11 @@ const peer = {
 };
 localStorage.setItem("reach.devices", JSON.stringify([peer]));
 localStorage.setItem("reach.active", peer.id);
-const now = "2026-10-04T12:00:00.000Z";
+const now = new Date().toISOString();
+const sessions = [
+  { agent: "codex", id: "demo-codex", title: "Build a better workspace", preview: "The mobile workspace is ready to review.", status: "idle" },
+  { agent: "claude", id: "demo-claude", title: "Review the sign-in flow", preview: "Checking the connection and permissions flow.", status: "idle" },
+].map((session) => ({ ...session, cwd: "/Projects/Reach", branch: "main", origin: "reach", inApp: false, held: "reach", archived: false, model: "sample", effort: "medium", mode: "auto", updatedAt: Date.now(), createdAt: Date.now() }));
 const device = {
   ...peer,
   arch: "arm64",
@@ -44,6 +48,28 @@ const chats = [
   },
 ];
 const realFetch = window.fetch.bind(window);
+// A self-contained two-page PDF fixture for the real file viewer; offsets are byte
+// positions because this entire sample uses ASCII.
+const pdfSample = (() => {
+  const drawing = "BT /F1 24 Tf 40 180 Td (Reach file preview) Tj ET\n";
+  const second = "BT /F1 24 Tf 40 180 Td (Second page verified) Tj ET\n";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 260] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 260] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${drawing.length} >>\nstream\n${drawing}endstream`,
+    `<< /Length ${second.length} >>\nstream\n${second}endstream`,
+  ];
+  let data = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((body, i) => { offsets.push(data.length); data += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = data.length;
+  data += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  data += offsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  return data + `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+})();
 window.fetch = async (input, init) => {
   const url = new URL(
     typeof input === "string"
@@ -54,7 +80,32 @@ window.fetch = async (input, init) => {
     location.href,
   );
   if (!url.pathname.startsWith("/api/")) return realFetch(input, init);
+  if (url.pathname === "/api/files/content" && url.searchParams.get("path") === "Preview sample.pdf" && (!init?.method || init.method === "GET"))
+    return new Response(pdfSample, { headers: { "Content-Type": "application/pdf", "Content-Length": String(pdfSample.length) } });
   let data: unknown = [];
+  if (url.pathname === "/api/terminals/desktop") data = { sessions: [] };
+  if (url.pathname === "/api/terminals/agents") data = { agents: ["codex", "claude"] };
+  if (url.pathname === "/api/sessions") data = { sessions, macPrompts: [], errors: {}, version: "demo-v2" };
+  if (url.pathname === "/api/sessions/health") data = { agents: ["codex", "claude"].map(agent => ({ agent, name: agent === "codex" ? "Codex" : "Claude Code", supported: true, installed: true, signedIn: true, usable: true })) };
+  if (url.pathname === "/api/sessions/logos") data = { logos: {}, version: "demo-v2" };
+  if (url.pathname === "/api/sessions/stranded") data = { messages: [] };
+  if (url.pathname === "/api/sessions/commands") data = { commands: [] };
+  if (url.pathname === "/api/sessions/models") data = { models: [{ id: "sample", name: "Sample model", efforts: ["low", "medium", "high"], defaultEffort: "medium", isDefault: true }], modes: [{ id: "auto", label: "Ask for approval" }], mode: "auto" };
+  if (url.pathname === "/api/notifications") data = { items: [], unavailable: [] };
+  if (url.pathname === "/api/browser/agents") data = { agents: [], at: Date.now() };
+  if (url.pathname === "/api/pause") data = { paused: false };
+  if (url.pathname === "/api/guests/keys") data = { configured: true };
+  if (url.pathname === "/api/agents/browser-options") data = { terminals: [], desktopAvailable: true, maxFunnelSeconds: 86400, standingAllowed: true, presetApps: [] };
+  const session = sessions.find(s => url.pathname.startsWith(`/api/sessions/${s.agent}/${s.id}`));
+  if (session) {
+    data = url.pathname.endsWith("/live")
+      ? { version: 1, status: "idle", prompts: [], streaming: "", activity: null, items: 2, queue: [] }
+      : { session, items: [
+          { id: "sample-user", role: "user", kind: "text", text: "Help me make this workspace simpler.", at: Date.now() - 120000 },
+          { id: "sample-reply", role: "assistant", kind: "text", text: "Your chats, files, and computer are together in Reach.\n\nYou can continue a conversation, browse a shared folder, or open the live screen from the navigation below.", at: Date.now() - 60000 },
+        ], before: null };
+    if (url.pathname.endsWith("/live")) await new Promise(resolve => setTimeout(resolve, 1000));
+  }
   if (url.pathname === "/api/device") data = device;
   if (url.pathname === "/api/codex/status")
     data = { available: true, signedIn: true };
@@ -140,6 +191,13 @@ window.fetch = async (input, init) => {
           modified: now,
         },
         {
+          name: "Preview sample.pdf",
+          path: "Preview sample.pdf",
+          type: "file",
+          size: pdfSample.length,
+          modified: now,
+        },
+        {
           name: "Designs",
           path: "Designs",
           type: "directory",
@@ -148,6 +206,7 @@ window.fetch = async (input, init) => {
         },
       ],
     };
+  if (url.pathname === "/api/files/text") data = { text: "# Project notes\n\nA private workspace for your computers.\n\n- Continue a chat\n- Browse your files\n- Open the live screen\n", size: 128, truncated: false };
   if (init?.method && init.method !== "GET")
     return new Response(
       JSON.stringify({ error: "This UI demo is read-only." }),
@@ -167,10 +226,12 @@ class DemoSocket {
   onopen: ((event: unknown) => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: ((event: { code: number }) => void) | null = null;
-  constructor(url: string | URL) {
+  constructor(url: string | URL, protocols?: string | string[]) {
     // Vite HMR is the only actual socket, and only to this local demo server.
-    if (String(url).includes("vite-hmr"))
-      return new RealSocket(url) as unknown as DemoSocket;
+    const hmr = protocols === "vite-hmr" || (Array.isArray(protocols) && protocols.includes("vite-hmr"));
+    const target = new URL(String(url), location.href);
+    if (hmr && target.hostname === location.hostname && target.port === location.port)
+      return new RealSocket(url, protocols) as unknown as DemoSocket;
     setTimeout(() => {
       if (this.readyState !== 3) {
         this.readyState = 1;

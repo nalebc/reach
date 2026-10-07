@@ -184,6 +184,11 @@ export function codexMode(p) {
   if (p.approvalsReviewer === "auto_review" || p.approvalsReviewer === "guardian_subagent") return "guardian-approvals";
   if (profile === ":read-only") return "read-only";
   if (profile === ":workspace" && p.approvalPolicy === "on-request") return "auto";
+  // Preserve named profiles exactly as the model catalog offers them. Calling
+  // every named profile "custom" drops its identity when building the next turn.
+  if (typeof profile === "string" && /^:?[\w.-]+$/.test(profile) &&
+      !ORDER.includes(profile) && p.approvalPolicy === "on-request" &&
+      (!p.approvalsReviewer || p.approvalsReviewer === "user")) return `profile:${profile}`;
   return "custom";
 }
 

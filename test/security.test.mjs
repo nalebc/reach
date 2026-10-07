@@ -60,6 +60,18 @@ test(
       return { ws, messages };
     };
     try {
+      await t.test("document preview does not permit external frames, plugins, or embedding Reach", async () => {
+        const response = await call("/api/health");
+        const policy = response.headers.get("content-security-policy");
+        const directives = new Map(policy.split(";").map((part) => {
+          const [name, ...sources] = part.trim().split(/\s+/);
+          return [name, sources];
+        }));
+        assert.deepEqual(directives.get("frame-src") || directives.get("default-src"), ["'self'"]);
+        assert.deepEqual(directives.get("frame-ancestors"), ["'none'"]);
+        assert.deepEqual(directives.get("object-src"), ["'none'"]);
+        assert.equal(response.headers.get("x-frame-options"), "DENY");
+      });
       await t.test(
         "mixed-case routes cannot bypass scopes, including agent approvals",
         async () => {
@@ -213,6 +225,17 @@ test(
             403,
           );
           assert.equal(approved, false);
+          const guestInvitation = reach.auth.inviteGuest({ name: "Full guest", ttlSeconds: 600, full: true });
+          const guest = reach.auth.redeemGuest(guestInvitation.invitation);
+          const service = reach.auth.issue("Service credential", ALL_SCOPES, "service");
+          for (const credential of [guest, service]) {
+            assert.equal(
+              (await call("/api/chats/owned-chat/approvals/42", credential, { decision: "accept" })).status,
+              403,
+              "admin scope alone cannot answer the owner's Codex approvals",
+            );
+            assert.equal(approved, false);
+          }
           assert.equal(
             (
               await call("/api/chats/owned-chat/approvals/42", admin, {

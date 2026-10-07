@@ -27,6 +27,7 @@ export function createUploads({
     if (name.endsWith(".part"))
       fs.rmSync(path.join(dir, name), { force: true });
   const sessions = new Map();
+  const creating = new Map();
   const own = (id, client) => {
     const session = typeof id === "string" ? sessions.get(id) : undefined;
     if (!session || session.clientId !== client.id)
@@ -56,39 +57,49 @@ export function createUploads({
           `Files up to ${Math.floor(maxBytes / 1024 ** 3)} GB can be uploaded.`,
         );
       if (
-        [...sessions.values()].filter((s) => s.clientId === client.id).length >=
+        [...sessions.values()].filter((s) => s.clientId === client.id).length +
+          (creating.get(client.id) || 0) >=
         perClient
       )
         throw fail(429, "Too many uploads at once. Wait for one to finish.");
-      const target = path.join(folder, name);
-      if (await exists(target))
-        throw fail(
-          409,
-          "A file with that name already exists. Rename it before uploading.",
-        );
-      // Room for the partial copy (here) and the finished file (there).
-      const margin = 64 * 1024 * 1024;
-      for (const where of new Set([dir, folder]))
-        if ((await freeSpace(where)) < size + margin)
-          throw fail(507, "There isn't enough free space on the computer.");
-      const id = crypto.randomBytes(16).toString("hex");
-      const file = path.join(dir, `${id}.part`);
-      // Normal permissions for the finished file (the folder keeps it private
-      // until then).
-      await (await fsp.open(file, "wx", 0o666)).close();
-      sessions.set(id, {
-        id,
-        clientId: client.id,
-        root,
-        path: relative,
-        name,
-        size,
-        received: 0,
-        file,
-        writing: false,
-        touched: Date.now(),
-      });
-      return { id, offset: 0, chunk: CHUNK };
+      // Reserve before the first filesystem await: simultaneous requests must
+      // not all observe the same free slot and bypass the upload quota.
+      creating.set(client.id, (creating.get(client.id) || 0) + 1);
+      try {
+        const target = path.join(folder, name);
+        if (await exists(target))
+          throw fail(
+            409,
+            "A file with that name already exists. Rename it before uploading.",
+          );
+        // Room for the partial copy (here) and the finished file (there).
+        const margin = 64 * 1024 * 1024;
+        for (const where of new Set([dir, folder]))
+          if ((await freeSpace(where)) < size + margin)
+            throw fail(507, "There isn't enough free space on the computer.");
+        const id = crypto.randomBytes(16).toString("hex");
+        const file = path.join(dir, `${id}.part`);
+        // Normal permissions for the finished file (the folder keeps it private
+        // until then).
+        await (await fsp.open(file, "wx", 0o666)).close();
+        sessions.set(id, {
+          id,
+          clientId: client.id,
+          root,
+          path: relative,
+          name,
+          size,
+          received: 0,
+          file,
+          writing: false,
+          touched: Date.now(),
+        });
+        return { id, offset: 0, chunk: CHUNK };
+      } finally {
+        const pending = creating.get(client.id) - 1;
+        if (pending) creating.set(client.id, pending);
+        else creating.delete(client.id);
+      }
     },
     status(id, client) {
       const { received, size } = own(id, client);

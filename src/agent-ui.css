@@ -302,6 +302,7 @@ input.ag-switch[type="checkbox"]:disabled {
 /* ---- Segments ---------------------------------------------------------- */
 .ag-segments {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
   border-radius: 14px;

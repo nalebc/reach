@@ -199,12 +199,23 @@ test("Read only looks and never touches; Apps shows only its apps", async () => 
   assert.equal(c.querySelector('[aria-label="Command"]'), null);
   assert.equal(c.querySelector('[aria-label="New file name"]'), null);
   assert.match(c.textContent, /Look only\. Nothing on this page clicks or types on the Mac/);
+  assert.doesNotMatch(c.querySelector(".ap-abilities").textContent, /Click the picture/);
   assert.ok(!calls.some(([, route]) => route === "/api/browser/desktop/apps"));
   for (const view of views) await view.unmount(); views.clear();
   const apps = await open({ ...full, preset: "apps", presetName: "Apps", shell: false, write: false, roots: [], apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }] });
   assert.match(apps.c.textContent, /You may see and use only the chosen apps, open apps\./);
   assert.deepEqual([...apps.c.querySelectorAll("h2")].map((h) => h.textContent.trim()), ["The Mac's screen", "Open an app on the Mac"]);
   assert.match(apps.c.textContent, /Only these apps\./);
+});
+
+test("Files describes only shared files, without offering absent screen controls", async () => {
+  const { c, calls } = await open({ ...full, preset: "files", presetName: "Files", screen: false, control: false, open: false, shell: false, write: false });
+  assert.equal(c.querySelector(".ap-abilities").textContent, "You may read files. Everything else is closed.");
+  assert.doesNotMatch(button(c, "Reload page").title, /screen/);
+  assert.ok(!calls.some(([, route]) => route.startsWith("/api/browser/desktop/")));
+  await click(await dom.waitFor(() => button(c, "Read file notes.md")));
+  await dom.waitFor(() => /Done: read notes\.md/.test(c.textContent));
+  assert.match(c.querySelector(".ap-file pre").textContent, /# Notes/);
 });
 
 test("the agent page renders without React warnings", () => assert.deepEqual(dom.errors, []));

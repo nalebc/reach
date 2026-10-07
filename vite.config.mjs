@@ -1,5 +1,14 @@
 import { defineConfig } from "vite";
+import fs from "node:fs";
 export default defineConfig({
+  plugins: [{
+    name: "reach-pdf-image-fallbacks",
+    generateBundle() {
+      for (const name of ["jbig2_nowasm_fallback.js", "openjpeg_nowasm_fallback.js"])
+        this.emitFile({ type: "asset", fileName: `pdfjs/${name}`,
+          source: fs.readFileSync(new URL(`./node_modules/pdfjs-dist/wasm/${name}`, import.meta.url)) });
+    },
+  }],
   server: {
     host: "127.0.0.1",
     port: 5178,
@@ -19,7 +28,9 @@ export default defineConfig({
         // their own chunk, which stays cached across Reach updates. Capacitor's
         // web shims are loaded on demand, so they stay out of it.
         manualChunks: (id) =>
-          id.includes("/node_modules/@xterm/")
+          id.includes("/node_modules/pdfjs-dist/")
+            ? "pdf"
+            : id.includes("/node_modules/@xterm/")
             ? "terminal"
             : // The public start page needs only this helper, not all libraries.
               /vite\/(preload-helper|modulepreload-polyfill)/.test(id)

@@ -30,6 +30,9 @@ in a local capture directory:
 4. `chat.png` — Open “Build a better workspace.”
 5. `explore.png` — More.
 6. `settings.png` — More → Settings → General.
+7. `agents.png` — Home → Invite someone → Agent → Browser link (no invitation created).
+
+The October 7 recording uses the current interface at 390 × 844 and includes agent presets. Its GIF is about 24 seconds and its 30 fps MP4 about 25 seconds. Both are captioned sequences of screenshots; neither is a recording of live screen control, a physical phone, or real model responses.
 
 Keep capture files outside the repository. Compose the GIF and poster using
 Python 3 and Pillow (a demo authoring dependency, not a Reach runtime dependency):
@@ -66,3 +69,5 @@ traffic is answered locally in the page, without executing commands.
 Check at 390 × 844 and 390 × 430 (keyboard-sized): scroll history, use Latest,
 type, resize, and fit the screen after zooming. This does not replace testing
 Safari's native keyboard and gestures on a physical iPhone.
+
+The fixture sends the companion's Content Security Policy. PDF preview uses a two-page synthetic file; page navigation, close, and Markdown formatted/source modes were checked in a real browser. The demo never accesses the computer's real files or terminals.

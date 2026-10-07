@@ -186,3 +186,41 @@ test("the helper is told the effort by the menu's name, and a level the menu lac
     /Couldn't find that effort level/,
   );
 });
+
+test("native model changes require the exact visible session and confirmed menu selection", async () => {
+  const m = mac({ onScreen: A });
+  const c = compose(m, { type: async (value) => (m.typed.push(value), { model: value.model }) });
+  assert.deepEqual(await c.model(A, { title: message.title, model: "Sonnet 5.5" }), { model: "Sonnet 5.5" });
+  assert.deepEqual(m.typed, [{ title: message.title, session: `local_${A}`, waitMs: 0, model: "Sonnet 5.5" }]);
+  m.onScreen = B;
+  await assert.rejects(c.model(A, { title: message.title, model: "Opus 5.5" }), /Open this chat/);
+  assert.equal(m.typed.length, 1);
+  assert.deepEqual(m.opened, []);
+  const unknown = compose(mac({ onScreen: A }), { type: async () => ({ model: "Sonnet 5.5", unconfirmed: true }) });
+  await assert.rejects(unknown.model(A, { title: message.title, model: "Sonnet 5.5" }), /confirm/);
+});
+
+test("the model helper carries no text or images and rejects a native refusal", async () => {
+  const calls = [];
+  const run = (stdout) => (file, args) => (calls.push(args), Promise.resolve({ stdout }));
+  await typeIntoClaude({ title: "Audit", session: `local_${A}`, model: "Sonnet 5.5", text: "never send", images: ["/x.png"] }, { binary: async () => "/bin/helper", run: run('{"model":"Sonnet 5.5"}\n') });
+  assert.deepEqual(calls, [["--title", "Audit", "--session", `local_${A}`, "--model", "Sonnet 5.5"]]);
+  await assert.rejects(typeIntoClaude({ title: "Audit", model: "Sonnet 5.5" }, { binary: async () => "/bin/helper", run: run('{"error":"unexpected model confirmation","unconfirmed":true}\n') }), /unexpected model confirmation/);
+});
+
+test("mode and effort settings follow exact visible session identity when app records lag", async () => {
+  const m = mac({ onScreen: A });
+  const c = compose(m, { onScreen: async () => `local_${B}` });
+  await assert.rejects(c.mode(A, { title: message.title, mode: "plan" }), /when this chat is open/);
+  await assert.rejects(c.effort(A, { title: message.title, effort: "high" }), /Open this chat/);
+  assert.deepEqual(m.typed, []);
+});
+
+test("a setting selection that lost its session is uncertain and never automatically retried", async () => {
+  for (const setting of [{ mode: "Plan" }, { effort: "High" }]) {
+    const output = JSON.stringify({ error: "Claude changed chats. Check the current setting.", unconfirmed: true });
+    await assert.rejects(typeIntoClaude({ title: message.title, session: `local_${A}`, ...setting }, {
+      binary: async () => "/bin/helper", run: async () => ({ stdout: output }),
+    }), (e) => e.code === "AGENT_SETTINGS_UNKNOWN" && e.uncertain === true && e.retryable === false && !e.waiting);
+  }
+});

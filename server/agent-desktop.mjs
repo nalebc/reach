@@ -193,6 +193,20 @@ export function createAgentDesktop(config, {
     }
     return state;
   };
+  // Starting a helper, inspecting focus and capturing a frame all await native
+  // work. Its rules must still match the live grant when we dispatch or return.
+  const checkState = (client, authorize, scope, state) => {
+    try {
+      const current = live(client, authorize, scope);
+      if (fingerprint(current) !== state.fingerprint)
+        throw fail(403, "This agent's access changed. Refresh before using the Mac again.");
+      return current;
+    } catch (error) {
+      state.helper.stop();
+      if (sessions.get(client.id) === state) sessions.delete(client.id);
+      throw error;
+    }
+  };
   const answer = (value) => { if (!value || value.error) throw refusal(value || {}); return value; };
   // One agent at a time on the Mac. Holding it is short: each action extends it.
   const take = (client) => {
@@ -237,8 +251,9 @@ export function createAgentDesktop(config, {
       if (recent.length >= 4) throw fail(429, "Wait a moment between screenshots.");
       recent.push(now()); shots.set(latest.id, recent);
       const state = await session(latest);
+      checkState(client, authorize, "browser:screen", state);
       const result = answer(await state.helper.send({ op: "shot", maxWidth: Math.max(320, Math.min(3840, Number(maxWidth) || 2560)) }));
-      live(client, authorize, "browser:screen");
+      checkState(client, authorize, "browser:screen", state);
       if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
@@ -248,8 +263,9 @@ export function createAgentDesktop(config, {
     async front(client, authorize) {
       const latest = live(client, authorize, "browser:screen");
       const state = await session(latest);
+      checkState(client, authorize, "browser:screen", state);
       const result = answer(await state.helper.send({ op: "front" }));
-      live(client, authorize, "browser:screen");
+      checkState(client, authorize, "browser:screen", state);
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         holder: lease.holder && lease.holder !== latest.id && lease.until > now() ? lease.name : "" };
@@ -259,6 +275,7 @@ export function createAgentDesktop(config, {
       const latest = live(client, authorize, "browser:control");
       const action = normalizeAction(input);
       const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
       take(latest);
       try {
         if (action.type === "type") {
@@ -267,10 +284,12 @@ export function createAgentDesktop(config, {
           if (front.secure) throw Object.assign(fail(403, "That's a password field. The agent never types passwords; sign in yourself from Screen."), { kind: "blocked" });
           const reason = typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
           if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
-          action.terminalLikeChecked = true;
+          action.terminalLikeChecked = front.terminalLike === true;
         }
-        live(client, authorize, "browser:control");
+        checkState(client, authorize, "browser:control", state);
+        take(latest);
         const result = answer(await state.helper.send({ op: "act", action }));
+        checkState(client, authorize, "browser:control", state);
         extend(latest);
         note(latest, action.type, result);
         return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
@@ -285,8 +304,10 @@ export function createAgentDesktop(config, {
       if (typeof appPath !== "string" || !appPath.startsWith("/") || !appPath.endsWith(".app") || appPath.length > 4096 || /[\u0000-\u001f\u007f]/.test(appPath))
         throw fail(400, "Choose an app by its path on this Mac.");
       const state = await session(latest);
+      checkState(client, authorize, "browser:open", state);
       take(latest);
       const result = answer(await state.helper.send({ op: "open", app: appPath }));
+      checkState(client, authorize, "browser:open", state);
       extend(latest);
       note(latest, "open", result);
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };

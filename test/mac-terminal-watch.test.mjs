@@ -121,6 +121,29 @@ async function start(t, mac = fakeMac()) {
   return { mac, call, presence, reach };
 }
 
+for (const duringPeek of [false, true]) test(`opening an idle tab loads scrollback ${duringPeek ? "during" : "after"} a Home peek`, async (t) => {
+  const mac = fakeMac();
+  const run = mac.run;
+  mac.slowRead = duringPeek ? 40 : 0;
+  mac.run = async (payload) => {
+    const result = await run(payload);
+    return payload.action === "read" && payload.scrollback
+      ? { text: `earlier output\n${result.text}` }
+      : result;
+  };
+  const { call, presence } = await start(t, mac);
+  const phone = await presence();
+  await until(phone.latest);
+  const id = (await call("/api/terminals/desktop")).body.sessions[0].id;
+  const peek = call("/api/terminals/desktop/activity?after=-1");
+  if (duringPeek) await until(() => mac.reads() > 0);
+  else await peek;
+  const viewed = await call(`/api/terminals/desktop/${id}?after=0`);
+  assert.equal(viewed.status, 200);
+  assert.equal(viewed.body.text, "earlier output\none");
+  await peek;
+});
+
 test("a connected phone is told about Mac terminal changes at once, from a cached list", async (t) => {
   const { mac, call, presence } = await start(t);
   const phone = await presence();

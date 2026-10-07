@@ -84,6 +84,5 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     const as = (route, options = {}) => call(route, { node: "nAgent", token: joined.token, ...options });
     return { created: created.body, joined, as };
   };
-  return { reach, call, invite, join, home, cancelled };
+  return { reach, call, invite, join, home, cancelled, socketPath };
 }
-

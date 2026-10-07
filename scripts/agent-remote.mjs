@@ -23,7 +23,7 @@ import net from "node:net";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { callTool, serveMcp, toolsFor } from "./mcp-server.mjs";
-import { createAgentClient } from "./agent-client.mjs";
+import { createAgentClient, isScreenImageRoute } from "./agent-client.mjs";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const tailnetHost = (u) =>
@@ -346,7 +346,7 @@ export function tailnetApi(node, origin, token, { timeoutMs = 35000 } = {}) {
     const deadline = setTimeout(() => call.abort(), timeoutMs);
     try {
       const head = await call.response;
-      const screenImage = (route === "/api/browser/screen" || /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route)) && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
+      const screenImage = isScreenImageRoute(route) && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
       const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
       const chunks = [];
       let size = 0;
@@ -809,12 +809,11 @@ export async function main(argv = process.argv.slice(2)) {
     for (const k of ["log", "info", "debug", "warn"])
       console[k] = console.error;
     const { api, credential } = await open(home, name, o.allowLocal);
-    // Its access is fixed by the invitation (and checked by the computer):
-    // the tool list doesn't wait for the tailnet.
+    // Owner edits may change a browser preset during this process's lifetime.
+    // Refresh the grant when the client asks for its current tools.
     await serveMcp({
       api,
       scopes: credential.scopes,
-      liveScopes: false,
       name: `reach-${name}`,
     });
     return 0;
@@ -822,15 +821,22 @@ export async function main(argv = process.argv.slice(2)) {
   if (verb === "call") {
     const { api } = await open(home, name, o.allowLocal);
     const args = o._[2] ? JSON.parse(o._[2]) : {};
+    // Some tool names (notably reach_open_app) exist in both the original
+    // apps:drive API and browser presets, with different arguments/routes.
+    // Resolve the live grant exactly as MCP does, including owner edits.
+    const scopes = (await api("/api/device")).access?.scopes || [];
+    const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
     process.stdout.write(
-      JSON.stringify(await callTool(api, o._[1], args), null, 2) + "\n",
+      JSON.stringify(await callTool(api, o._[1], args, access), null, 2) + "\n",
     );
     return 0;
   }
   if (verb === "tools") {
-    const c = readCredential(path.join(home, name));
+    const { api } = await open(home, name, o.allowLocal);
+    const scopes = (await api("/api/device")).access?.scopes || [];
+    const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
     process.stdout.write(
-      toolsFor(c.scopes)
+      toolsFor(scopes, access)
         .map((t) => `${t.name}  ${t.description}`)
         .join("\n") + "\n",
     );

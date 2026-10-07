@@ -2,7 +2,7 @@
 
 Requires Pillow. Run: python render.py CAPTURE_DIRECTORY OUTPUT_DIRECTORY
 Captures: home.png, home-000.png…home-031.png, files.png, codex.png,
-chat.png, explore.png, settings.png. Optional --frames DIR exports a video timeline.
+chat.png, explore.png, settings.png, agents.png. Optional --frames DIR exports a video timeline.
 """
 from pathlib import Path
 import argparse
@@ -29,10 +29,11 @@ def font(size, bold=False):
 scenes = [
     ("home", "Your computer.\nStill with you.", "A familiar workspace,\nright on your phone.", "01  /  YOUR WORKSPACE"),
     ("files", "That file\nyou needed.", "Browse folders. Find your files.\nShare them from your phone.", "02  /  FILES"),
-    ("codex", "Pick up\nthe conversation.", "Your Reach-created Codex chats,\nin one mobile inbox.", "03  /  CONVERSATIONS"),
+    ("codex", "Pick up\nthe conversation.", "Codex and Claude conversations,\nin one mobile workspace.", "03  /  CONVERSATIONS"),
     ("chat", "Keep an\nidea moving.", "Continue a conversation\nwith Codex on your computer.", "04  /  CODEX"),
     ("explore", "More of\nyour computer.", "Apps, terminals, invitations,\nand agent access in one place.", "05  /  EXPLORE"),
     ("settings", "Make yourself\nat home.", "Computer preferences\nand access settings, together.", "06  /  SETTINGS"),
+    ("agents", "Invite an\nassistant.", "Choose its access.\nPause or end it when you need.", "07  /  AGENT ACCESS"),
 ]
 
 def compose(scene, screenshot, progress=0):
@@ -60,8 +61,8 @@ def compose(scene, screenshot, progress=0):
     ImageDraw.Draw(mask).rounded_rectangle((0,0,shot.width-1,shot.height-1),radius=23,fill=255)
     im.paste(shot,(x,y),mask)
     for i in range(len(scenes)):
-        a=54+i*75
-        d.rounded_rectangle((a,699,a+57,703),radius=2,fill=MINT if i==scene else "#364038")
+        a=54+i*64
+        d.rounded_rectangle((a,699,a+48,703),radius=2,fill=MINT if i==scene else "#364038")
     d.text((54,737),"UI WALKTHROUGH  ·  SAMPLE DATA",font=font(12,True),fill=MUTED)
     return im
 

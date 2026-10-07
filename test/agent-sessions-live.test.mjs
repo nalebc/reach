@@ -638,6 +638,7 @@ test("Codex modes read like the app's permissions menu", () => {
   assert.equal(codexMode({ activePermissionProfile: { id: ":danger-full-access" }, approvalPolicy: "never" }), "full-access");
   assert.equal(codexMode({ activePermissionProfile: { id: ":read-only" }, approvalPolicy: "never", approvalsReviewer: "user" }), "read-only");
   assert.equal(codexMode({ activePermissionProfile: { id: ":workspace" }, approvalPolicy: "untrusted" }), "custom");
+  assert.equal(codexMode({ activePermissionProfile: { id: "network-only" }, approvalPolicy: "on-request", approvalsReviewer: "user" }), "profile:network-only");
 });
 
 test("Codex threads another engine is running show as running; idle or old ones don't", async () => {
@@ -879,4 +880,20 @@ test("a Codex speed picked on the phone reaches Codex as its service tier", asyn
   const plain = fakeDaemon({ "turn/start": { turn: { id: "turn-3" } } });
   await createCodexLive({ daemon: plain }).send(T, { text: "hi" });
   assert.equal("serviceTier" in plain.calls.find(([m]) => m === "turn/start")[1], false);
+});
+
+
+test("a named native permission profile stays selected for the next Reach turn", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "t-profile" } } });
+  const live = createCodexLive({ daemon });
+  daemon.emit("thread/settings/updated", {
+    threadId: T,
+    threadSettings: { activePermissionProfile: { id: "network-only" }, approvalPolicy: "on-request", approvalsReviewer: "user" },
+  });
+  assert.equal(live.currentMode(T), "profile:network-only");
+  await live.send(T, { text: "continue", mode: live.currentMode(T) });
+  const [, params] = daemon.calls.find(([method]) => method === "turn/start");
+  assert.equal(params.permissions, "network-only");
+  assert.equal(params.approvalPolicy, "on-request");
+  assert.equal(params.approvalsReviewer, "user");
 });

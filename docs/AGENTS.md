@@ -1,10 +1,45 @@
 # Connect an agent to Reach
 
-Reach is a remote execution backend for **computers the user owns or is authorized to operate**. Run its MCP adapter on the agent's machine; the adapter connects over the private Tailscale URL. Tailscale must be connected on that machine too.
+Reach gives agents access to **computers the user owns or is authorized to operate**. Browser invitations use a preset; command-line credentials use explicit scopes. Discover the current tools before starting: these are different contracts, and the owner can change access while an agent is connected.
+
+## Browser invitations and presets
+
+The owner invites an agent from Reach and chooses **Full control**, **Apps**, **Files**, or **Read only**. The agent opens the whole invitation link and waits for the owner to match and approve its connection code. Claiming a link does not itself grant access. Browser automation can use the visible controls or the session-bound `window.reach` interface:
+
+```js
+const tools = await window.reach.listTools();
+const access = await window.reach.callTool("reach_access", {});
+```
+
+| Preset | Available tools, subject to current access |
+| --- | --- |
+| Full control | Screenshot, front app, screen actions, opening apps, file reads/changes and shell commands |
+| Apps | Screenshot, front app, screen actions and opening only the selected apps |
+| Files | List, search and read chosen folders; `reach_change_file` when editing is enabled |
+| Read only | Screenshot, front app, shared-file reads and explicitly shared terminal output |
+
+The tools are `reach_access`, `reach_screenshot`, `reach_front`, `reach_act`, `reach_desktop_apps`, `reach_open_app`, `reach_list_files`, `reach_search_files`, `reach_read_file`, `reach_change_file`, `reach_read_terminal`, `reach_shell`, and `reach_shell_history`. Only the tools allowed by this session are advertised; use their returned schemas. Preset `reach_open_app` takes `{app: "/path/to/App.app"}`; the separate `apps:drive` tool below takes `{appId}`. A preset screenshot becomes an MCP image, or `{image, mimeType}` through the browser bridge/CLI.
+
+Preset actions run directly within the granted access after admission; there is no per-click approval queue. Full control runs shell commands as the owner's OS account and is appropriate only for trusted agents. Its command checks are guardrails, not an execution sandbox. Older restricted invitations retain their per-command approval workflow: a `pending` result means wait and inspect `reach_list_requests`, never submit repeatedly or attempt owner approval. If another agent changes a shared folder, the old pending write may be cancelled and require a fresh review.
+
+For a simple file task, ask the agent to find a specified file and report its contents:
+
+```js
+const access = await window.reach.callTool("reach_access", {});
+const root = access.roots[0].index;
+const files = await window.reach.callTool("reach_list_files", {root, path: ""});
+// Choose a returned path, not a guessed host path.
+const result = await window.reach.callTool("reach_read_file", {root, path: "task.txt"});
+// Report result.text and the path used; missing access is a task limitation.
+```
+
+For an Apps browser task, list `reach_desktop_apps`, open a returned browser with `reach_open_app`, inspect `reach_screenshot`, then use `reach_act` for one observed click/key/type action at a time. Coordinates are fractions of the screenshot's width and height. Take another screenshot to verify the result. For example, navigate to `https://example.com` and report the visible heading. A successful input response alone does not prove the page changed. Stop for blocked/password content; if the Mac is busy or paused, wait as directed, then observe again. Distinct agents keep distinct credentials even when their display names match; they take turns controlling the same Mac.
+
+See [Browser agent tools](BROWSER_AGENT_TOOLS.md) for preset details and [API.md](API.md#browser-agent-presets) for HTTP contracts. Do not pass browser credentials to unrelated tabs, print them, or put them in URLs.
 
 ## MCP configuration
 
-Use your client's stdio MCP configuration format. Typical JSON:
+For a scoped command-line agent on an existing tailnet connection, run the adapter on the agent's machine. Use your client's stdio MCP configuration format. Typical JSON:
 
 ```json
 {

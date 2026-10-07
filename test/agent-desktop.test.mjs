@@ -7,7 +7,7 @@ import { presetScopes } from "../server/agent-presets.mjs";
 // native helper. Nothing here touches this computer.
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" };
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString("base64");
-function world({ leaseMs = 2500 } = {}) {
+function world({ leaseMs = 2500, onSpawn } = {}) {
   const clients = new Map();
   const make = (id, preset, extra = {}) => {
     const policy = { invite: true, browser: true, preset, roots: preset === "apps" ? [] : ["/Users/me"], ...(preset === "apps" ? { apps: [chrome] } : {}), ...extra };
@@ -32,6 +32,7 @@ function world({ leaseMs = 2500 } = {}) {
       },
       stop() { this.stopped = true; } };
     helpers.push(helper);
+    await onSpawn?.(helper);
     return helper;
   };
   const activity = [];
@@ -105,7 +106,7 @@ test("typing asks what is in front first: terminals take the deny list, password
   assert.deepEqual(typed, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" });
   const sent = w.helpers[0].requests.filter((request) => request.op === "act");
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].action.terminalLikeChecked, true);
+  assert.equal(sent[0].action.terminalLikeChecked, false);
   w.setFront({ app: "Terminal", bundle: "com.apple.Terminal", terminalLike: true });
   await rejects(() => w.desktop.act(full, { type: "type", text: "sudo rm -rf /\n" }, authorize(full)), 403, /needs your password/, "blocked");
   await rejects(() => w.desktop.act(full, { type: "type", text: "cat ~/.ssh/id_rsa" }, authorize(full)), 403, /passwords, keys/, "blocked");
@@ -120,6 +121,68 @@ test("typing asks what is in front first: terminals take the deny list, password
   // Clicks and keys go straight to the checker.
   await w.desktop.act(full, { type: "key", key: "enter" }, authorize(full));
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
+});
+
+test("typing into a browser does not certify a later terminal focus for command execution", async () => {
+  const w = world();
+  const full = w.make("muse", "full");
+  // Native focus changed to Terminal after the server's browser inspection.
+  // The native helper refuses text unless its command check actually ran.
+  w.setAct(action => action.terminalLikeChecked
+    ? { ok: true, app: "Terminal", bundle: "com.apple.Terminal" }
+    : { error: "A terminal is in front now. Try again.", kind: "retry" });
+  await rejects(() => w.desktop.act(full, { type: "type", text: "sudo whoami\n" }, authorize(full)), 409, /terminal is in front/, "retry");
+});
+
+test("a policy change while the helper starts cannot reveal a screenshot under the old rules", async () => {
+  const w = world({ onSpawn: () => {
+    const original = w.clients.get("watcher");
+    w.clients.set("watcher", { ...original, policy: { ...original.policy, hidden: [{ id: chrome.id, bundleId: chrome.bundleId }] } });
+  } });
+  const watcher = w.make("watcher", "readonly");
+  await rejects(() => w.desktop.screenshot(watcher, () => w.clients.get("watcher")), 403, /changed/);
+  assert.equal(w.helpers[0].requests.some(request => request.op === "shot"), false);
+  assert.equal(w.helpers[0].stopped, true);
+});
+
+test("revocation during helper startup prevents opening an app", async () => {
+  let allowed = true;
+  const w = world({ onSpawn: () => { allowed = false; } });
+  const full = w.make("muse", "full");
+  const check = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return full; };
+  await rejects(() => w.desktop.open(full, chrome.id, check), 401, /ended/);
+  assert.equal(w.helpers[0].requests.some(request => request.op === "open"), false);
+});
+
+test("a screenshot completed under an obsolete grant is discarded", async () => {
+  const w = world({ onSpawn: helper => {
+    const send = helper.send.bind(helper);
+    helper.send = async request => {
+      const result = await send(request);
+      if (request.op === "shot") {
+        const current = w.clients.get("watcher");
+        w.clients.set("watcher", { ...current, policy: { ...current.policy, hidden: [{ id: chrome.id }] } });
+      }
+      return result;
+    };
+  } });
+  const watcher = w.make("watcher", "readonly");
+  await rejects(() => w.desktop.screenshot(watcher, () => w.clients.get("watcher")), 403, /changed/);
+  assert.equal(w.helpers[0].stopped, true);
+});
+
+test("the owner's phone taking control during focus inspection prevents the queued typing", async () => {
+  const w = world({ onSpawn: helper => {
+    const send = helper.send.bind(helper);
+    helper.send = async request => {
+      const result = await send(request);
+      if (request.op === "front") w.phone(true);
+      return result;
+    };
+  } });
+  const full = w.make("muse", "full");
+  await rejects(() => w.desktop.act(full, { type: "type", text: "hello" }, authorize(full)), 409, /from your phone/, "paused");
+  assert.equal(w.helpers[0].requests.some(request => request.op === "act"), false);
 });
 
 test("one agent at a time on the Mac: a short lease, the owner's phone first, helper refusals keep their kind", async () => {

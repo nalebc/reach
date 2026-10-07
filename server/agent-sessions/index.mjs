@@ -1037,7 +1037,7 @@ export function createAgentSessions({
       // process never showed there). The app signs in on its own.
       if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
-          throw Object.assign(new Error("Reach can't change the model or thinking level in Claude desktop yet. This message hasn't been sent."), { status: 409 });
+          throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
         // A loop already waiting tries again now, with this one in line.
         wakers.get(id)?.();
@@ -1073,15 +1073,31 @@ export function createAgentSessions({
       if (agent === "claude" && !claudeHost.drives(id) && claudeCompose && await claudeOpen()) {
         const { session } = await claude.read(id, { limit: 1 });
         if (session.inApp) {
-          // Effort: picked in the Claude app's own menu (claude-compose).
-          // A model change there isn't supported yet.
-          if (model && model !== session.model)
-            throw Object.assign(new Error("Reach can't change the model in Claude desktop yet. Your current selection is unchanged."), { status: 409 });
-          if (!effort || effort === session.effort) return { model, effort, applied: true };
-          if (!claudeCompose.effort)
-            throw Object.assign(new Error("Reach can't change the thinking level in Claude desktop yet. Your current selection is unchanged."), { status: 409 });
-          await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
-          listChanged();
+          // Apply to the app's own visible chat; the CLI host cannot mutate a
+          // desktop-owned process. Catalog IDs become exact native menu names.
+          if (model && model !== session.model) {
+            if (!claudeCompose.model)
+              throw Object.assign(new Error("Reach can't change the model in this Claude app. Your current selection is unchanged."), { status: 409 });
+            const catalog = await claudeHost.models();
+            const entry = catalog.find((m) => m.value === model || m.resolvedModel === model);
+            const name = entry && claudeModelName(entry.resolvedModel);
+            if (!name)
+              throw Object.assign(new Error("Claude didn't identify that desktop model. Your current selection is unchanged."), { status: 409 });
+            const result = await claudeCompose.model(id, { title: session.appTitle || "Untitled", model: name });
+            listChanged();
+            if (result?.model !== name || result.unconfirmed)
+              throw Object.assign(new Error("Claude didn't confirm the model change. Check the model in Claude before trying again."), { status: 409 });
+          }
+          if (effort && effort !== session.effort) {
+            if (!claudeCompose.effort)
+              throw Object.assign(new Error("Reach can't change the thinking level in this Claude app. Check its current settings."), { status: 409 });
+            const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
+            listChanged();
+            // A click alone is not acknowledgement. The app's own record can
+            // confirm a chip that has not redrawn; otherwise keep uncertainty.
+            if ((result?.effort !== effort || result.unconfirmed) && (await claude.read(id, { limit: 1 })).session.effort !== effort)
+              throw Object.assign(new Error("Claude didn't confirm the thinking level. Check it in Claude before trying again."), { status: 409 });
+          }
           return { model, effort, applied: true };
         }
       }

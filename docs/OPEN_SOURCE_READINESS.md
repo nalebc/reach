@@ -1,44 +1,40 @@
-# Release status — 2026-10-06
+# Release status — October 7, 2026
 
-Reach 0.1.0 is an early-access release. This page says what has been checked, what has not, and how to describe it. The repository is public. Install from source until 0.1.0 is on npm (`@nalebc/reach`).
+Reach 0.1.0 remains an early-access candidate. The repository is currently **private**. Do not describe this audit as complete end-to-end qualification or an independent penetration-test certification. The [October 7 audit](AUDIT_2026-10-07.md) records the fixes, tests, live evidence, limitations and preservation of local work.
 
-## Supported platforms
+## Verified on this candidate
 
-- **macOS host with an iPhone or Android phone in the browser:** the supported path.
-- **Windows host:** experimental. The Windows CI job is not green and no device test is recorded.
-- **Linux host:** files and terminals only; no desktop.
-- **Native iOS app:** optional developer build, unsigned.
+- Node 22.23.3 on macOS ARM64: **1,846 passed, 0 failed, 4 skipped** out of 1,850 tests, with native policy/file-boundary/script-sandbox flags enabled.
+- TypeScript, production UI/agent build, Go browser networking build and dependency notices passed.
+- A clean production-only install of the packed artifact passed CLI, served UI, authenticated file access and access-denial checks. The final reconciled build was qualified; requalify after any subsequent source edit.
+- A real browser agent opened a disposable files invitation, waited for owner approval, read the task and target file, found the requested answer, and left successfully. CLI/MCP tests used actual local HTTP and stdio subprocesses; concurrent-agent security tests passed.
+- Real Codex prompt/reply, model/effort observation through a second adapter, read-only permission update and approval cancellation passed in isolated chats. Installed Codex and Claude protocol canaries passed. A real Claude desktop prompt/reply and native model change were read by Reach's adapter.
+- Today's terminal stop controls, scrollback, launcher mascot, PDF preview and Markdown formatted/source views are integrated and preserved in source history. A scrollback cache bug and blank native PDF viewer found during integration were fixed.
+- Confirmed authorization, revocation, upload-concurrency, desktop-policy race, screenshot-filter, MCP dispatch, chat-sync and agent-UI defects were repaired with regressions.
+- The README has a new roughly 25-second MP4 / 24-second GIF interface tour, including current agent presets. It uses actual browser captures and synthetic data, clearly labeled.
+- Dependabot vulnerability alerts are enabled. The candidate install's npm audit reported zero known vulnerabilities. The preceding main commit's Go security and unsigned iOS CI jobs passed; final-commit results are required.
 
-## Verified
+## Release gates
 
-- **CI matrix.** `.github/workflows/ci.yml` builds and tests on macOS, Linux and Windows with Node 22, builds the browser Tailscale client, stages the release and smoke-tests its CLI, runs `govulncheck`, and compiles the iOS plugins in an unsigned simulator build. `agent-compatibility.yml` checks the published Claude Code and Codex CLIs without accounts or model calls. The Windows job is not green; read the runs on the exact release commit, not this page.
-- **Tests.** 1,741 pass locally on macOS with Node 22, including the preset suites (`test/agent-presets.test.mjs`, `test/agent-guard.test.mjs`, `test/agent-desktop.test.mjs`, `test/agent-shell.test.mjs`, `test/agent-preset-invitations.test.mjs`, `test/agent-preset-desktop-routes.test.mjs`, `test/agent-desktop-policy-native.test.mjs`).
-- **Privacy check.** `node scripts/check-release.mjs` passes on the current tree when `REACH_PRIVATE_IDENTIFIERS` (or `.reach/private-identifiers`) lists the owner's identifiers; without such a list it scans only known credential formats and says so. Git history was rewritten before publication so that every commit carries the project identity. The scanner is a guardrail, not a complete secret audit: large and binary files and other secret formats need human review.
-- **Dependencies.** `npm audit` reports zero known vulnerabilities for the lockfile (also with `--omit=dev`, 2026-10-06). `govulncheck` on the browser `js/wasm` target finds no reachable affected symbols; the module-level advisory GO-2026-5932 (`golang.org/x/crypto/openpgp`) is not in the dependency graph. These are separate results, not one certification.
-- **Artifact.** `npm run verify:package` installs the packed artifact with production dependencies and passes CLI, served interface, authenticated file access and access-denial checks.
-- **Muse.** A Full control session with Muse saw the Mac's screen on 2026-10-06. Clicks and typing are not yet recorded.
-- **OpenClaw.** Conversations owned by external channels are read-only in Reach; Reach sends only into its own conversations.
-
-## Pending
-
-| Gate | Status |
+| Gate | Current status / next action |
 | --- | --- |
-| Device gates | [RELEASE_TESTING.md](RELEASE_TESTING.md) on a real iPhone (Safari, Home Screen app) and an Android phone (Chrome): onboarding, Face ID, notifications, keyboard and scrolling, background and reconnect, files, grants, revocation. Not recorded for this candidate. |
-| Windows host | CI not green, no device test. Experimental until both are done. |
-| Muse clicks and typing | Record a Full control session in which a click and typed text land in the intended app, a `busy` and a `paused` refusal, the owner-presence pause, and Stop from Settings → Agents. No Grok session is recorded. |
-| Security review | Independent review of the on-demand Funnel window, the signed agent gateway (`server/funnel-agent.mjs`), the preset derivation and native per-event checks, the shell deny list and the custom passkey verifier. Use disposable folders and accounts. |
-| Repository controls | Private vulnerability reporting and main-branch checks on, now that the repository is public. |
-| Public assets | The demo recording predates the preset invitation and shows the older interface; review before reusing it in an announcement. |
-| Release artifact | Build and qualify one exact tarball; publish its checksum, platform matrix, known limitations and upgrade/recovery instructions with 0.1.0. |
+| Private metadata in history | **Blocked:** seven reachable commits carry personal author/committer identities, and two historical comment blobs contain an identifying example. The privacy check remains failing. Coordinate a source-preserving history cleanup before publication; do not silently force-push over shared work. |
+| Full desktop control | **Unverified live:** native field detection failed because the audit process lacks Accessibility permission. Run the real capture, click, text, keys, scroll, owner-takeover, pause/revoke and video checks from a permissioned host process. Native policy compilation and simulated input are not substitutes. |
+| Claude end-to-end | **Partly verified:** native desktop prompt/reply and model → Reach observation passed. The separate CLI is signed out, and Reach's native write helper lacks Accessibility permission. Model selection is now implemented with exact-chat/menu acknowledgement tests; run real Reach → Claude settings/approval/queue/move/restart checks from a permissioned host before claiming universal sync. |
+| Bidirectional app synchronization | Real Codex transport checks and fixture coverage pass; actual desktop GUI ↔ Reach observation for every control and provider is still needed. |
+| Physical phones | Follow [RELEASE_TESTING.md](RELEASE_TESTING.md) on real iPhone Safari/Home Screen and Android Chrome: pairing, passkeys, notifications, keyboard, scrolling, network transitions, file sharing and revocation. No candidate device acceptance is recorded. |
+| Named external agents | The local browser task passed. Muse/Grok/other remote VM browsers, real Funnel/Tailscale admission and public-window closure need their own recorded results. Do not infer them from local browser success. |
+| Platforms | macOS is the primary target. Require final macOS/Linux/Windows CI; Windows remains experimental until a physical-host run also passes. Native iOS remains an unsigned developer build. |
+| Repository controls | Secret scanning/push protection was unavailable for this private repository (GitHub 422); branch-protection access was plan-restricted (403). Configure available protection, Code scanning and private vulnerability reporting before public release, without treating Dependabot updates as those controls. |
+| Exact release artifact | Rebuild after the final edit, qualify one tarball, publish its checksum, supported-platform matrix, known limitations and recovery instructions. No npm publication or visibility change is part of this audit. |
+| Independent security review | Perform a disposable-account live desktop/adversarial review. Full control shell is trusted account access and not a sandbox. |
 
-## How to describe it
+## Product claims
 
-- A browser agent (Muse, ChatGPT agent, a Grok bot) is invited with one preset: **Full control**, **Apps**, **Files** or **Read only**. There are no per-action approvals.
-- Full control is full control except passwords and Reach. Say that. Do not write "owner approval for sensitive actions", "full access, fully controlled", or "sandbox" for Full control: the deny list stops obvious harm, the shell runs as the owner, and anything running or signed in is open to the agent.
-- What stays protected in every preset, never configurable: Reach and Tailscale, password stores and browser password or payment pages, password fields, security prompts and `sudo`, System Settings' privacy panes, Activity Monitor and Force Quit, developer tools, a shell deny list. The owner can hide more apps.
-- One agent acts on the Mac at a time; the owner can Pause or Stop it from Settings → Agents; the owner's own hands pause it. Full control and Apps bind the phone that created the invitation.
-- Transport: the agent's browser connects through Tailscale Funnel on port 443 to a signed gateway with a fixed path allowlist and the invitation's allowlist behind it; TLS terminates on the Mac. The start page and gateway are public only while an invitation or an agent session is live. A guest without the Tailscale app, Face ID for a new browser and the command-line agent's join command work only in that window; owners with the Tailscale app on their phone are unaffected.
-- Muse: say only that a Full control session saw the Mac's screen on 2026-10-06 and that clicks and typing are not yet recorded. Nothing about Grok.
-- Command-line agents (Claude Code, Codex) still use read, edit or run roles via Invite someone → Agent → Command line.
+- A browser agent receives **Full control**, **Apps**, **Files** or **Read only**. Preset operations do not require per-action approvals. The first invited-agent connection still needs owner approval. Legacy invitations and provider chat approvals have separate contracts.
+- Full control commands run with the owner's account rights and can access sensitive files. UI target checks and a command deny list are best-effort guardrails, not confinement. Do not claim “everything except passwords and Reach” is securely isolated.
+- Apps restricts native viewing/input to selected apps. Selecting a browser, IDE or terminal also trusts what that app can do. Files without editing is the narrower choice for reading documents.
+- Public Funnel serves the limited start/gateway surface only while an invitation or browser-agent session keeps the window open. **Always** access may keep that window open until the owner ends it. Owner APIs and WebSockets remain on private ingress.
+- The demo is an interface walkthrough, not proof of live control, physical-phone performance or universal chat synchronization.
 
-See [RELEASE.md](RELEASE.md) for packaging, [BROWSER_AGENT_TOOLS.md](BROWSER_AGENT_TOOLS.md) for the agent contract and [SECURITY.md](SECURITY.md) for the security model and historical findings.
+See [RELEASE.md](RELEASE.md) for packaging, [BROWSER_AGENT_TOOLS.md](BROWSER_AGENT_TOOLS.md) for tool contracts, and [SECURITY.md](SECURITY.md) for trust boundaries. Raw local audit logs and private workset backups are deliberately excluded from release assets.

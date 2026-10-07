@@ -2215,7 +2215,7 @@ export async function createReach(overrides = {}) {
       await desktopTerminals.action(
         req.params.id,
         "read",
-        null,
+        { scrollback: true },
         authorizeDesktopTerminal(req),
       ),
     );
@@ -3136,7 +3136,7 @@ export async function createReach(overrides = {}) {
     res.json({ ok: true });
   });
   app.post("/api/chats/:id/approvals/:requestId", async (req, res) => {
-    if (!req.client.scopes.includes("admin"))
+    if (req.client.kind !== "device" || !req.client.scopes.includes("admin"))
       throw fail(403, "Only a paired person can answer Codex approvals.");
     await codex.respond(req.params.id, req.params.requestId, req.body);
     res.json({ ok: true });

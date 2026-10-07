@@ -19,6 +19,9 @@ const exec = promisify(execFile);
 // Why a message (or a draft, a Stop) is still waiting; shown on the phone. An
 // expected state, not a failure: 409, so the server never logs it as a crash.
 const waiting = (message) => Object.assign(new Error(message), { waiting: true, status: 409 });
+const settingUnknown = (message) => Object.assign(new Error(message), {
+  status: 409, code: "AGENT_SETTINGS_UNKNOWN", uncertain: true, retryable: false,
+});
 
 // The Claude app, as macOS names it.
 export const CLAUDE_BUNDLE = "com.anthropic.claudefordesktop";
@@ -38,13 +41,13 @@ export const APP_EFFORTS = { low: "Low", medium: "Medium", high: "High", xhigh: 
 // session: the chat by the app's own id (local_…), which the window must
 // show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
-  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode, effort },
+  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode, effort, model },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
 ) {
   const file = await binary();
   const json = draft || expected !== undefined;
   let call;
-  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(mode ? ["--mode", mode] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(mode || effort ? [] : images.flatMap((image) => ["--image", image]))], {
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : mode ? ["--mode", mode] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || mode || effort ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
   }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
@@ -57,14 +60,20 @@ export async function typeIntoClaude(
     result = JSON.parse(String(stdout).trim().split("\n").at(-1));
   } catch { throw uncertainDelivery("claude"); }
   if (!object(result)) throw uncertainDelivery("claude");
+  if (model) {
+    if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
+    if (result.model !== model || result.unconfirmed) throw settingUnknown("Claude didn't confirm the model change. Check the model in Claude before trying again.");
+    return result;
+  }
   if (mode) {
-    if (result.mode !== mode || result.error) throw uncertainDelivery("claude");
+    if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
+    if (result.mode !== mode || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
     return result;
   }
   // An effort the app's menu didn't offer says so; nothing was changed.
   if (effort) {
-    if (typeof result.error === "string") throw waiting(result.error);
-    if (result.effort !== effort) throw uncertainDelivery("claude");
+    if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
+    if (result.effort !== effort) throw settingUnknown("Claude didn't confirm the thinking level. Check it in Claude before trying again.");
     return result;
   }
   const action = stop ? "stopped" : draft ? "drafted" : "sent";
@@ -180,11 +189,27 @@ export function createClaudeCompose({
       return serial(async () => {
         const label = APP_MODES[mode];
         if (!label) throw Object.assign(new Error("Reach can't pick that mode in the Claude app."), { status: 400 });
-        if (!(await appRunning()) || shown()[0]?.id !== id)
+        const session = sessionOf(id);
+        if (!session || !(await appRunning()) || await screen() !== session)
           throw waiting("Changes in the Claude app when this chat is open there, or with your next message.");
-        const result = await type({ title, session: sessionOf(id), waitMs: 0, mode: label });
-        if (result?.mode !== label) throw waiting("The Claude app didn't switch modes.");
+        const result = await type({ title, session, waitMs: 0, mode: label });
+        if (result?.mode !== label || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
         return { mode };
+      });
+    },
+    // The catalog resolves an API model id to the exact name in the app's menu.
+    // Never switch chats for a setting or accept an unconfirmed native click.
+    model(id, { title, model }) {
+      return serial(async () => {
+        if (typeof model !== "string" || !/^[A-Za-z][A-Za-z0-9 .()-]{0,79}$/.test(model))
+          throw Object.assign(new Error("Reach can't identify that model in the Claude app."), { status: 400 });
+        const session = sessionOf(id);
+        if (!session || !(await appRunning()) || await screen() !== session)
+          throw waiting("Open this chat in the Claude app on your Mac to change its model from here.");
+        const result = await type({ title, session, waitMs: 0, model });
+        if (result?.model !== model || result.unconfirmed)
+          throw waiting("Claude didn't confirm the model change. Check the model in Claude before trying again.");
+        return { model };
       });
     },
     // An effort level picked on the phone, picked in the app's own menu (so
@@ -193,9 +218,10 @@ export function createClaudeCompose({
       return serial(async () => {
         const label = APP_EFFORTS[effort];
         if (!label) throw Object.assign(new Error("Reach can't pick that effort level in the Claude app."), { status: 400 });
-        if (!(await appRunning()) || shown()[0]?.id !== id)
+        const session = sessionOf(id);
+        if (!session || !(await appRunning()) || await screen() !== session)
           throw waiting("Open this chat in the Claude app on your Mac to change its effort from here.");
-        const result = await type({ title, session: sessionOf(id), waitMs: 0, effort: label });
+        const result = await type({ title, session, waitMs: 0, effort: label });
         return { effort, unconfirmed: !!result.unconfirmed };
       });
     },

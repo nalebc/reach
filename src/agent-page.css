@@ -1,7 +1,7 @@
 /* The preset agent's page: one column, nothing hidden. Big labels, one accent,
    the Mac's screen first. Read by agents driving a browser by sight, so every
    state is written out and every action has a visible result. */
-.agent-page { max-width: 1120px; margin: 0 auto; padding: 16px 16px 40px; display: grid; gap: 14px; color: var(--ag-ink, #16181d); }
+.agent-page { --ag-ink: var(--ag-text, #e9eee9); --ag-ink-2: var(--ag-muted, #93a198); --ag-surface-2: var(--ag-raised, #1a221e); --ag-accent: var(--lime, #b9efd4); max-width: 1120px; margin: 0 auto; padding: 16px 16px 40px; display: grid; gap: 14px; color: var(--ag-ink); }
 .ap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .ap-title { display: flex; align-items: center; gap: 12px; }
 .ap-title h1 { margin: 0; font-size: 20px; }
@@ -45,7 +45,7 @@
 .ap-file-list li > button:first-child span { flex: 1; display: grid; }
 .ap-file-list li > button:first-child small { font-size: 12px; color: var(--ag-ink-2, #4b5563); }
 .ap-file-list em { font-style: normal; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
-.ap-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 13px; background: none; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+.ap-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 13px; color: inherit; background: none; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
 .ap-file h3 { margin: 10px 0 6px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
 .ap-file pre { margin: 0; padding: 10px; border-radius: 10px; background: var(--ag-surface-2, #f3f4f6); font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-height: 420px; overflow: auto; }
 .ap-foot { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ag-ink-2, #4b5563); }

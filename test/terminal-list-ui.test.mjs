@@ -11,6 +11,7 @@ const tabs = [
   { id: "a3", provider: "iterm2", name: "ssh pi@raspberrypi (ssh)", tty: "/dev/ttys013" },
 ];
 const calls = [];
+const closedTabs = [];
 // Which Macs were asked for the AI apps' logos (by host).
 const logoAsks = [];
 let listed = 0;
@@ -35,6 +36,10 @@ before(async () => {
         return { id: "s9", name: "Claude Code", cwd: "/Users/n/reach", status: "running", createdAt: "" };
       },
       "/api/terminals/desktop/a2": () => ({ text: "working…" }),
+      "/api/terminals/desktop/a2/close": (init) => {
+        closedTabs.push(JSON.parse(init.body));
+        return { ok: true };
+      },
       "/api/sessions/logos": (init, href) => (logoAsks.push(href.host), {}),
     },
   });
@@ -147,4 +152,28 @@ test("inside a terminal, the title opens the same list over it", async () => {
   assert.ok(!root.querySelector(".terminal-quick"), "no start row in the switcher");
   await view.unmount();
   assert.deepEqual(dom.errors, []);
+});
+
+test("closing the viewed Mac tab requires confirmation and returns to the remaining list", async (t) => {
+  const previousConfirm = globalThis.confirm;
+  let approved = false;
+  const prompts = [];
+  globalThis.confirm = (message) => (prompts.push(message), approved);
+  t.after(() => { globalThis.confirm = previousConfirm; });
+  const view = await dom.render(page({ peer: { ...peer, id: "close-mac" }, source: "mac:a2" }));
+  t.after(() => view.unmount());
+  const root = view.container;
+  const close = await dom.waitFor(() => root.querySelector('[aria-label="Close this tab on your Mac"]'));
+  close.click();
+  await settle();
+  assert.equal(closedTabs.length, 0);
+  assert.match(prompts[0], /Anything running in it will stop/);
+  assert.match(prompts[0], /runs Reach, you will disconnect/);
+  approved = true;
+  close.click();
+  await dom.waitFor(() => closedTabs.length === 1);
+  await dom.waitFor(() => root.querySelectorAll(".terminal-row").length === 2);
+  assert.deepEqual(closedTabs, [{ confirm: true }]);
+  assert.ok(!root.querySelector('[aria-label="Close this tab on your Mac"]'));
+  assert.ok(!rows(root).some(([title]) => title === "Fix terminal list"));
 });

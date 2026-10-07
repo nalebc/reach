@@ -3,6 +3,12 @@ import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 
+// Binary decoding is limited to the exact screenshot routes. Ordinary API
+// responses must remain JSON even if a server sends an image content type.
+export const isScreenImageRoute = (route) => route === "/api/browser/screen" ||
+  /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route) ||
+  /^\/api\/browser\/desktop\/screen(?:\?maxWidth=[0-9]{3,4})?$/.test(route);
+
 export function privateFile(file) {
   const fd = fs.openSync(
     file,
@@ -141,7 +147,7 @@ export function createAgentClient(
         (res) => {
           const chunks = [];
           // Only the named browser screen route may return a binary image.
-          const screenImage = (route === "/api/browser/screen" || /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route)) && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
+          const screenImage = isScreenImageRoute(route) && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
           const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
           let size = 0;
           res.on("data", (chunk) => {

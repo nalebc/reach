@@ -8,15 +8,17 @@ const env = { ...process.env, GOOS: "js", GOARCH: "wasm", GOTOOLCHAIN: "auto" };
 const go = (args) => execFileSync("go", args, { cwd: path.join(root, "tailnet"), env, encoding: "utf8", maxBuffer: 64 << 20, timeout: 120000 });
 const sections = [];
 function license(name, directory) {
-  const files = fs.readdirSync(directory).filter(f => /^(LICENSE|COPYING|NOTICE|COPYRIGHT)(?:$|[.-])/i.test(f) && fs.statSync(path.join(directory, f)).isFile()).sort();
+  const files = fs.readdirSync(directory).filter(f => /^(LICENSE|COPYING|NOTICE|COPYRIGHT)(?:$|[._-])/i.test(f) && fs.statSync(path.join(directory, f)).isFile()).sort();
   if (!files.length) throw Error(`No license text found for ${name}. Review before distributing.`);
-  sections.push(`## ${name}\n\n` + files.map(file => `### ${file}\n\n\`\`\`text\n${fs.readFileSync(path.join(directory, file), "utf8").trim()}\n\`\`\`\n`).join("\n"));
+  sections.push(`## ${name}\n\n` + files.map(file => `### ${file}\n\n\`\`\`text\n${fs.readFileSync(path.join(directory, file), "utf8").replace(/[ \t]+$/gm, "").trim()}\n\`\`\`\n`).join("\n"));
 }
-for (const name of ["react", "react-dom", "scheduler", "lucide-react", "@xterm/xterm", "@xterm/addon-fit", "@capacitor/core", "@capacitor/app", "@capacitor/filesystem", "@capacitor/share", "ws", "json5"]) {
+for (const name of ["react", "react-dom", "scheduler", "lucide-react", "@xterm/xterm", "@xterm/addon-fit", "@capacitor/core", "@capacitor/app", "@capacitor/filesystem", "@capacitor/share", "ws", "json5", "pdfjs-dist"]) {
   const directory = path.join(root, "node_modules", name);
   const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
   license(`${name} ${pkg.version}`, directory);
 }
+for (const directory of ["cmaps", "standard_fonts", "wasm"])
+  license(`PDF.js ${directory} assets`, path.join(root, "node_modules/pdfjs-dist", directory));
 // go list emits successive JSON objects. Package records end at a column-zero brace.
 const modules = new Map();
 for (const record of go(["list", "-deps", "-json", "."]).trim().split(/\n(?=\{)/)) {

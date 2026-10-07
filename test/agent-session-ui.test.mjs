@@ -1067,7 +1067,7 @@ test("Codex: the model and effort as words and dots over the composer, the model
     { route: `/api/sessions/codex/${CODEX}/model`, body: { model: "gpt-6-sol", effort: "high" } },
     {
       route: `/api/sessions/codex/${CODEX}/messages`,
-      body: { text: "go", images: [], model: "gpt-6-sol", effort: "high" },
+      body: { text: "go", images: [] },
     },
   ]);
   // Sending drops local picks: the native read still returns the saved one.
@@ -1166,6 +1166,24 @@ test("a model change on a working app-labelled chat waits for native confirmatio
     await dom.waitFor(() => /Sol/.test($(".as-model").textContent));
     assert.equal(mac.sent.length, 1);
   } finally { routes[route] = previous; }
+});
+
+test("a confirmed model selection follows later native changes and never resends the old choice", async () => {
+  await open(codexSession());
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Astra"));
+  await click($(".as-model"));
+  await click($(".ms-strip-label"));
+  await click(modelRow("GPT-6 Sol"));
+  await dom.waitFor(() => checkedModel() === "GPT-6 Sol");
+  await click($(".ms-done"));
+  // Another device changes the same native chat before the next message.
+  Object.assign(mac.pages[`codex:${CODEX}`].session, { model: "gpt-6-astra", effort: "low" });
+  mac.bump();
+  await dom.waitFor(() => /Astra Low/.test($(".as-model").textContent));
+  await typeInto($("textarea"), "use the current native settings");
+  await click(button("Send"));
+  assert.deepEqual(mac.sent.at(-1).body, { text: "use the current native settings", images: [] });
+  assert.deepEqual(dom.errors, []);
 });
 
 test("a rejected native model change stays visible beside the choices and keeps the actual model", async () => {

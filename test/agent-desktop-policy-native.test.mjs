@@ -6,6 +6,15 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { nativeRules } from "../server/agent-guard.mjs";
 
+test("selected-app screenshots preserve the protected-window exclusions", async () => {
+  const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
+  const screenshot = source.split("func shot(")[1].split("func catalog(")[0];
+  assert.match(screenshot, /titleReason\(window\.title/);
+  assert.match(screenshot, /including: apps, exceptingWindows: excluded/);
+  assert.match(screenshot, /excludingWindows: excluded/);
+  assert.doesNotMatch(screenshot, /exceptingWindows: \[\]/);
+});
+
 // The native checker's pure policy, compiled on its own (no AppKit calls run)
 // and fed the same rules the server sends it. Protected apps, Reach's windows
 // and addresses, the Apps preset's set and the owner's hidden apps are
@@ -77,6 +86,8 @@ check(appReason("com.google.Chrome.helper", "Google Chrome Helper", "", apps) ==
 // Titles: Reach's windows, privacy panes, developer tools and password pages.
 check(titleReason("reach — node — 80x24", "com.apple.Terminal", full) == reachReason, "Reach terminal title")
 check(titleReason("Reach", "com.google.Chrome", full) == reachReason, "Reach tab title")
+check(titleReason("Reach", "com.google.Chrome", apps) == reachReason, "selected Chrome still hides Reach")
+check(titleReason("Password Manager", "com.google.Chrome", apps) == protectedReason, "selected Chrome still hides password windows")
 check(titleReason("Preacher notes", "com.apple.Notes", full) == nil, "Preacher is not Reach")
 check(titleReason("Privacy & Security", "com.apple.systempreferences", full) == protectedReason, "privacy pane")
 check(titleReason("Displays", "com.apple.systempreferences", full) == nil, "displays pane")

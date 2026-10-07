@@ -49,15 +49,19 @@ test("typing a message into the Claude app has no fixed pauses and reads the win
   assert.match(after, /value\(currentBox\)\.isEmpty/);
 });
 
-test("the helper picks a permission mode from the Claude app's own menu, and never Bypass permissions", () => {
+test("native permission selection excludes Bypass and uses one session-gated menu item", () => {
   assert.match(swift, /let modeNames = \["Auto", "Manual", "Accept edits", "Plan"\]/);
-  const pick = between('if let wanted = option("--mode")', 'if args.contains("--stop")');
+  const pick = between('if let wanted = option("--mode")', 'if let wanted = option("--effort")');
   assert.match(pick, /guard modeNames\.contains\(wanted\)/);
-  // Already in it: nothing is opened.
-  assert.match(pick, /if window\.modeName == wanted \{ out\(\["mode": wanted\]\) \}\s*guard AXUIElementPerformAction\(button/);
-  // The menu item is the one that starts with the mode's name; then checked.
+  assert.doesNotMatch(pick, /Bypass permissions|AXUIElementPerformAction|postToPid/);
+  // Check the live session before even opening its menu; never widen modes.
+  assert.match(pick, /let current = settingsWindow\(\)/);
+  assert.match(pick, /guard settingsPress\(button\)/);
   assert.match(pick, /text == wanted \|\| text\.hasPrefix\(wanted \+ " "\)/);
-  assert.match(pick, /look\(app\)\.modeName == wanted/);
+  assert.match(pick, /guard items\.count == 1 else/);
+  assert.match(pick, /guard settingsPress\(items\[0\], selection: true\)/);
+  const dispatch = between("func settingsPress(", "func settingsKeys(");
+  assert.match(dispatch, /settings\.perform\(sessions: \{ look\(app\)\.sessions \}, selection: selection\)/);
 });
 
 test("typing a message into the Claude app has no fixed pauses and reads the window in one call per element", () => {
@@ -75,13 +79,18 @@ test("typing a message into the Claude app has no fixed pauses and reads the win
   assert.match(after, /value\(currentBox\)\.isEmpty/);
 });
 
-test("the helper picks a permission mode from the Claude app's own menu, and never Bypass permissions", () => {
-  assert.match(swift, /let modeNames = \["Auto", "Manual", "Accept edits", "Plan"\]/);
-  const pick = between('if let wanted = option("--mode")', 'if args.contains("--stop")');
-  assert.match(pick, /guard modeNames\.contains\(wanted\)/);
-  // Already in it: nothing is opened.
-  assert.match(pick, /if window\.modeName == wanted \{ out\(\["mode": wanted\]\) \}\s*guard AXUIElementPerformAction\(button/);
-  // The menu item is the one that starts with the mode's name; then checked.
-  assert.match(pick, /text == wanted \|\| text\.hasPrefix\(wanted \+ " "\)/);
-  assert.match(pick, /look\(app\)\.modeName == wanted/);
+test("native permission acknowledgements require the same session and preserve uncertain selection", () => {
+  const pick = between('if let wanted = option("--mode")', 'if let wanted = option("--effort")');
+  // Both early no-op and post-click success require native session + value.
+  const confirmed = /if settings\.confirms\(current\.sessions, matched: current\.modeName == wanted\) \{ out\(\["mode": wanted\]\) \}/g;
+  assert.equal([...pick.matchAll(confirmed)].length, 2);
+  assert.equal([...pick.matchAll(/out\(\["mode": wanted\]\)/g)].length, 2, "no optimistic success path");
+  const afterPress = pick.slice(pick.indexOf("guard settingsPress(items[0], selection: true)"));
+  assert.match(afterPress, /usleep\(50_000\)\s*let current = settingsWindow\(\)/);
+  assert.match(afterPress, /settingsError\("Claude didn't confirm the permission mode/);
+  const gate = between("struct SettingsSessionGate", "// The permission modes");
+  assert.match(gate, /guard permits\(sessions\(\)\) else \{ return false \}\s*if selection \{ selectionAttempted = true \}\s*return action\(\)/);
+  assert.match(gate, /permits\(sessions\) && matched/);
+  const error = between("func settingsError(", "func settingsWindow(");
+  assert.match(error, /"unconfirmed": settings\.selectionAttempted/);
 });

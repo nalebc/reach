@@ -82,11 +82,11 @@ export default function AgentPage({ peer, access, onEnd, reload = () => window.l
             </p>
           </div>
         </div>
-        <button type="button" className="ag-secondary ag-small ap-reload" onClick={() => reload()} title="Reloads this web page. The Mac's screen below updates by itself.">
+        <button type="button" className="ag-secondary ag-small ap-reload" onClick={() => reload()} title={access.screen ? "Reloads this web page. The Mac's screen below updates by itself." : "Reloads this web page and its shared files."}>
           <RotateCw size={15} /> Reload page
         </button>
       </header>
-      <p className="ap-abilities">You may {abilities.join(", ") || "do nothing yet"}. Everything else is closed. The screen below updates by itself; you never need to refresh it. Click the picture to click there on the Mac.</p>
+      <p className="ap-abilities">You may {abilities.join(", ") || "do nothing yet"}. Everything else is closed.{access.screen && " The screen below updates by itself; you never need to refresh it."}{access.screen && access.control && " Click the picture to click there on the Mac."}</p>
       {status.text && <p className={`ap-status ${status.tone}`} role="status" aria-live="polite">{status.text}</p>}
 
       {access.screen && <ScreenCard peer={peer} access={access} now={now} tell={tell} ended={ended} />}
@@ -538,4 +538,3 @@ function TerminalsCard({ peer, access, ended }: { peer: Peer; access: PresetAcce
     </section>
   );
 }
-

@@ -189,6 +189,31 @@ The server sends `{type:"presence",devices:[{id,name,kind,self,activity,access:[
 
 Presence `access.kind` is `paired`, `invited`, or `agent`, derived exclusively from server-side credentials. A deduplicated node retains every distinct live grant kind/expiry; it is never silently promoted from invited to paired. Guest pages open a presence socket after redemption and close it when their session ends.
 
+## Browser agent presets
+
+`POST /api/agents/browser-invitations` is an owner operation. It accepts `{name, preset, ttlSeconds, transport, folders?, apps?, write?, hidden?, terminalIds?, standing?}`. `preset` is `full`, `apps`, `files`, or `readonly`; `transport` is `tailnet` or `funnel`. Timed invitations last 60–86,400 seconds. Apps requires selected catalog entries; Files requires chosen folders and optionally `write:true`. Full control and Apps require a supervising owner device and available Mac desktop helpers. Consult `GET /api/agents/browser-options` for actual support and allowed durations; `standing` is the explicit Always-access choice.
+
+The agent claims the one-use invitation through `POST /api/invitations/redeem` with `{invitation}`. A 202 response supplies a powerless pending receipt: `{requestId, requestSecret, ...}`. The owner approves or denies `/api/agents/admissions/:requestId`; the claimant polls `POST /api/invitations/claims/:requestId/status` with `{secret: requestSecret}` to collect approved access. Browser Funnel enrollment uses the browser-bound signed gateway protocol instead; a public invitation is not an ordinary Bearer API credential. Use the supplied agent page to establish that transport.
+
+Every browser operation rechecks the current grant. `GET /api/browser` returns its preset, permitted operations, expiry and credential-local root indices. These endpoints under `/api/browser` are available only when granted:
+
+| Endpoint | Request / response |
+| --- | --- |
+| `GET /desktop/screen?maxWidth=2560` | JPEG bytes, `no-store`; supported widths 320–3840. Full control, Apps and Read only; Apps excludes other apps. |
+| `GET /desktop/front` | Current app/window and whether it is blocked, terminal-like or secure. |
+| `GET /desktop/apps` | Apps this session may open. Full control and Apps only. |
+| `POST /desktop/open` | `{app}` using a returned app path. Opens or raises it; inspect a new screenshot. |
+| `POST /desktop/input` | `{action}`: click/move/drag/scroll/type/key, with coordinates in `[0,1]`; preset and native target checks still apply. Use tool schemas for the exact shape. |
+| `POST /files/change` | `{op,root,path,content?,to?}`; `op` is write/mkdir/rm/cp. A write supplies whole UTF-8 content up to 1 MiB; cp supplies `to`. Changes are immediate within granted folders. |
+| `POST /shell` | Full control only: `{command,root,cwd?}`, returning a logged status, output and exit code. A blocked command is a result, not successful execution. |
+| `GET /shell/history` | This credential's command history only. |
+| `GET /files/search?root=0&q=term` | Find names in a shared folder. File list/read also use `/api/files` and `/api/files/text`. |
+| `GET /terminals/:id` | Output of a specifically shared terminal; never permission to type into it. |
+
+HTTP desktop refusals include `{error,kind,holder?,retryInMs?}` where `kind` can be `busy`, `paused`, `retry`, or `blocked`. Another agent's lease or a person using the Mac may require waiting; observing again resolves stale focus. Revocation invalidates access. Full control shell execution uses the owner's OS privileges; its guardrails are not an OS sandbox. Preset actions need no separate per-action approval after admission. Earlier invitations still expose restricted terminal and selected-app routes with their own approval semantics; a pending command must be polled, not resubmitted. These credentials cannot call owner approval routes.
+
+The browser bridge, `window.reach.listTools()` and `window.reach.callTool(name,args)`, and the stdio MCP catalog describe the same available tools. MCP encodes screenshot bytes as image content. `node scripts/agent-remote.mjs tools` and `call TOOL '{...}'` refresh current access before selecting a route. The generic `reach-agent` file/job CLI is a separate scoped-credential interface; see [AGENTS.md](AGENTS.md).
+
 ## Other route families
 
 Routes the sections above do not describe, one line each; the named source file is the reference. Every route keeps its own scope, ownership and identity checks.

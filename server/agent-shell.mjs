@@ -18,13 +18,14 @@ export function createAgentShell({
   home = os.homedir(),
   record = () => {},
   now = Date.now,
-  run = null,            // test override: ({ command, cwd, env, timeoutMs, maxOutput }) => { output, exitCode, timedOut }
+  run = null,            // test override: ({ command, cwd, env, timeoutMs, maxOutput, signal }) => { output, exitCode, timedOut }
   timeoutMs = 60000,
   maxOutput = 256 * 1024,
   maxConcurrent = 4,
 } = {}) {
   const busy = new Set();
-  const execute = run || (({ command, cwd, env }) => new Promise((resolve) => {
+  const execute = run || (({ command, cwd, env, signal }) => new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
     const child = spawn("/bin/zsh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks = []; let size = 0, truncated = false, timedOut = false, finished = false;
     const collect = (chunk) => {
@@ -36,9 +37,12 @@ export function createAgentShell({
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
     const stop = (signal) => { try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } } };
-    const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); setTimeout(() => stop("SIGKILL"), 2000).unref(); }, timeoutMs);
+    const abort = () => stop("SIGKILL");
+    signal.addEventListener("abort", abort, { once: true });
+    let killTimer;
+    const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); killTimer = setTimeout(() => { if (!finished) stop("SIGKILL"); }, 2000); killTimer.unref(); }, timeoutMs);
     const done = (exitCode) => {
-      if (finished) return; finished = true; clearTimeout(timer);
+      if (finished) return; finished = true; clearTimeout(timer); clearTimeout(killTimer); signal.removeEventListener("abort", abort);
       resolve({ output: Buffer.concat(chunks).toString("utf8") + (truncated ? "\n[Output truncated]" : ""), exitCode, timedOut });
     };
     child.on("error", () => done(null));
@@ -60,6 +64,14 @@ export function createAgentShell({
       if (latest.policy?.preset !== "full" || !latest.scopes?.includes("browser:shell")) throw fail(403, "Commands need the Full control preset.");
       if (!latest.agentRoots?.[root]) throw fail(403, "Choose one of this session's shared folders.");
       const folder = resolve(root, cwd, latest);
+      const check = () => {
+        const current = authorize();
+        if (current?.id !== latest.id || current.policy?.preset !== "full" ||
+            !current.scopes?.includes("browser:shell") || current.agentRoots?.[root] !== latest.agentRoots[root] ||
+            resolve(root, cwd, current) !== folder)
+          throw fail(403, "Command access changed. The command was stopped.");
+        return current;
+      };
       const item = {
         id: crypto.randomUUID(), clientId: latest.id, name: String(latest.name).slice(0, 80),
         action: { type: "shell", command, root, cwd: cwd.slice(0, 4096) },
@@ -77,15 +89,25 @@ export function createAgentShell({
       if (busy.has(latest.id)) throw fail(429, "Wait for the agent's previous command to finish.");
       if (busy.size >= maxConcurrent) throw fail(429, "Too many agent commands are running. Try again shortly.");
       busy.add(latest.id);
+      const controller = new AbortController();
+      let watch;
       try {
         await save({ ...item, status: "executing" });
+        check();
         const started = now();
         const env = {
           PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, USER: os.userInfo().username,
           LOGNAME: os.userInfo().username, SHELL: "/bin/zsh", LANG: "en_US.UTF-8", TERM: "dumb", TMPDIR: os.tmpdir(), REACH_AGENT: "1",
         };
-        const result = await execute({ command, cwd: folder, env, timeoutMs, maxOutput });
-        authorize();
+        watch = setInterval(() => {
+          try { check(); }
+          catch (error) { controller.abort(error); }
+        }, 50);
+        watch.unref();
+        const result = await execute({ command, cwd: folder, env, timeoutMs, maxOutput, signal: controller.signal });
+        clearInterval(watch);
+        if (controller.signal.aborted) throw controller.signal.reason;
+        check();
         const finished = {
           ...item, status: result.timedOut ? "failed" : "executed", output: result.output, exitCode: result.exitCode ?? null,
           directory: folder, completedAt: now(),
@@ -94,7 +116,11 @@ export function createAgentShell({
         await save(finished);
         record("agent", `${latest.name} ran a command in ${path.basename(folder) || folder} (${Math.round((now() - started) / 100) / 10}s)`);
         return finished;
-      } finally { busy.delete(latest.id); }
+      } catch (error) {
+        await save({ ...item, status: [401, 403].includes(error?.status) ? "revoked" : "failed",
+          error: error?.status ? error.message : "The command could not complete.", completedAt: now() }).catch(() => {});
+        throw error;
+      } finally { clearInterval(watch); busy.delete(latest.id); }
     },
     async history(client, limit = 100) {
       if (!commandLog) return [];

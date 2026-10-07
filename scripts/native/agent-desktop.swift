@@ -376,20 +376,24 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
     try refuse("No screen to show.", "unavailable")
   }
   let filter: SCContentFilter
+  // A selected app can itself host Reach or a password-manager window.
+  // Apply these exclusions in Apps mode as well as full-screen modes.
+  let excluded = content.windows.filter { window in
+    let app = window.owningApplication
+    let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
+    return appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
+      titleReason(window.title ?? "", app?.bundleIdentifier ?? "", rules) != nil
+  }
   var hidden = 0
   if rules.mode == "apps" {
     // Only the preset's apps appear; the rest of the screen is black.
     let apps = content.applications.filter { app in rules.allowedApps.contains(where: { matchesApp(app.bundleIdentifier, "", $0) }) }
-    filter = SCContentFilter(display: display, including: apps, exceptingWindows: [])
-    hidden = content.windows.count - content.windows.filter { window in apps.contains(where: { $0.processID == window.owningApplication?.processID }) }.count
+    filter = SCContentFilter(display: display, including: apps, exceptingWindows: excluded)
+    hidden = content.windows.count - content.windows.filter { window in
+      apps.contains(where: { $0.processID == window.owningApplication?.processID }) && !excluded.contains(where: { $0.windowID == window.windowID })
+    }.count
   } else {
     // Reach's windows, the protected apps and the owner's hidden apps are left out.
-    let excluded = content.windows.filter { window in
-      let app = window.owningApplication
-      let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
-      return appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
-        titleReason(window.title ?? "", app?.bundleIdentifier ?? "", rules) != nil
-    }
     filter = SCContentFilter(display: display, excludingWindows: excluded)
     hidden = excluded.count
   }

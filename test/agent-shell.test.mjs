@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createAgentShell } from "../server/agent-shell.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
 // The Full control shell, with the command runner replaced: what gets refused,
 // what gets logged, and what the command would run with.
-function world({ run } = {}) {
+function world({ run, append } = {}) {
   const records = [];
-  const commandLog = { append: async (record) => { records.push(structuredClone(record)); }, history: async ({ clientId }) => records.filter((r) => r.clientId === clientId) };
+  const commandLog = { append: async (record) => { records.push(structuredClone(record)); await append?.(record); }, history: async ({ clientId }) => records.filter((r) => r.clientId === clientId) };
   const calls = [];
   const runner = run || (async (input) => { calls.push(input); return { output: "done\n", exitCode: 0, timedOut: false }; });
   const shell = createAgentShell({ commandLog, hosts: () => ["mac.tail1.ts.net"], protectedPaths: () => ["/Users/me/code/reach", "/Users/me/.reach"], protectedPids: () => [4242, 4243],
@@ -32,6 +35,58 @@ test("a refused command is logged as blocked and never runs", async () => {
   }
   const fine = await w.shell.run(w.client, { command: "kill 12424", root: 0, cwd: "" }, { resolve: w.resolve, authorize: w.authorize });
   assert.equal(fine.status, "executed");
+});
+
+test("revocation while the execution log is saving prevents dispatch", async () => {
+  let allowed = true;
+  const w = world({ append: async (record) => { if (record.status === "executing") allowed = false; } });
+  const authorize = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return w.client; };
+  await assert.rejects(w.shell.run(w.client, { command: "echo should-not-run" }, { resolve: w.resolve, authorize }), { status: 401 });
+  assert.equal(w.calls.length, 0, "revoked credentials must not start a shell after asynchronous logging");
+});
+
+test("revocation aborts a command already in flight and closes its log record", async () => {
+  let allowed = true, started;
+  const running = new Promise(resolve => { started = resolve; });
+  const w = world({ run: ({ signal }) => new Promise(resolve => {
+    started();
+    // The timeout lets this regression fail cleanly on the old implementation.
+    const fallback = setTimeout(() => resolve({ output: "finished without cancellation", exitCode: 0 }), 500);
+    signal?.addEventListener("abort", () => { clearTimeout(fallback); resolve({ output: "stopped", exitCode: null }); }, { once: true });
+  }) });
+  const authorize = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return w.client; };
+  const pending = w.shell.run(w.client, { command: "sleep 5" }, { resolve: w.resolve, authorize });
+  const refused = assert.rejects(pending, { status: 401 });
+  await running;
+  allowed = false;
+  await refused;
+  assert.equal(w.records.at(-1).status, "revoked");
+});
+
+test("native shell revocation stops its process group before a later file write", { skip: process.platform !== "darwin", timeout: 10000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "reach-shell-revoke-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const records = [];
+  const shell = createAgentShell({ home: directory, timeoutMs: 5000,
+    commandLog: { append: async item => records.push(item) } });
+  const policy = { preset: "full", roots: [directory] };
+  const client = { id: "native-agent", name: "Native agent", policy,
+    expiresAt: Date.now() + 10000, scopes: presetScopes(policy), agentRoots: [directory] };
+  let allowed = true;
+  const authorize = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return client; };
+  const result = shell.run(client, { command: "printf ready > started.txt; /bin/sleep 1; printf forbidden > after.txt" },
+    { resolve: () => directory, authorize });
+  const refused = assert.rejects(result, { status: 401 });
+  const deadline = Date.now() + 3000;
+  while (!(await fs.access(path.join(directory, "started.txt")).then(() => true, () => false))) {
+    assert.ok(Date.now() < deadline, "the disposable test shell started");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  allowed = false;
+  await refused;
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  await assert.rejects(fs.access(path.join(directory, "after.txt")), { code: "ENOENT" });
+  assert.equal(records.at(-1).status, "revoked");
 });
 
 test("an allowed command runs in the chosen folder with a clean environment and is logged twice", async () => {

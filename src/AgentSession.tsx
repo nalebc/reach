@@ -2376,8 +2376,16 @@ export default function AgentSessionView({
               setModelError("");
               try {
                 const result = await setAgentModel(peer, initial, next);
-                setChoice((previous) => ({ ...previous, ...next }));
-                if (result.applied) setInfo((previous) => ({ ...previous, ...next }));
+                if (result.applied) {
+                  // Once native settings are confirmed, follow subsequent
+                  // desktop/device changes instead of pinning this old pick.
+                  setInfo((previous) => ({ ...previous, ...next }));
+                  setChoice((previous) => ({
+                    ...previous,
+                    ...(next.model !== undefined ? { model: undefined } : {}),
+                    ...(next.effort !== undefined ? { effort: undefined } : {}),
+                  }));
+                } else setChoice((previous) => ({ ...previous, ...next }));
                 if (!stay) setPicking(false);
               } catch (e) {
                 setModelError((e as Error).message);

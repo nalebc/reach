@@ -44,6 +44,7 @@ export default function TerminalList({
   onOpenMac,
   onEnd,
   onShowOnScreen,
+  onCloseMac,
 }: {
   peer: Peer;
   logos: AgentLogos;
@@ -63,6 +64,7 @@ export default function TerminalList({
   onOpenMac: (tab: MacTerminal) => void;
   onEnd: (id: string) => void;
   onShowOnScreen?: (tab: MacTerminal) => void;
+  onCloseMac?: (tab: MacTerminal) => void;
 }) {
   const icon = (summary: TerminalSummary, mac?: MacTerminal) =>
     summary.agent ? (
@@ -217,15 +219,26 @@ export default function TerminalList({
                   `mac:${tab.id}`,
                   describeMacTerminal(tab.name, tab.provider),
                   () => onOpenMac(tab),
-                  onShowOnScreen && (
-                    <button
-                      className="terminal-row-action"
-                      aria-label={`Show ${tab.name || "this window"} on Screen`}
-                      onClick={() => onShowOnScreen(tab)}
-                    >
-                      <Monitor size={15} />
-                    </button>
-                  ),
+                  <>
+                    {onShowOnScreen && (
+                      <button
+                        className="terminal-row-action"
+                        aria-label={`Show ${tab.name || "this window"} on Screen`}
+                        onClick={() => onShowOnScreen(tab)}
+                      >
+                        <Monitor size={15} />
+                      </button>
+                    )}
+                    {onCloseMac && (
+                      <button
+                        className="terminal-row-action"
+                        aria-label={`Close ${tab.name || "this window"} on your Mac`}
+                        onClick={() => onCloseMac(tab)}
+                      >
+                        <Square size={13} />
+                      </button>
+                    )}
+                  </>,
                   tab,
                 ),
               )}

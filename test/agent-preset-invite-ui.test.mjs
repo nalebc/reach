@@ -64,8 +64,9 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   const titles = [...c.querySelectorAll('[aria-label="Access preset"] input')].map((input) => input.getAttribute("aria-label"));
   assert.deepEqual(titles, ["Full control", "Apps", "Files", "Read only"]);
   await choose(c, "Full control");
-  assert.match(c.textContent, /except passwords, security prompts and Reach/);
-  assert.match(c.textContent, /Your hands always win/);
+  assert.match(c.textContent, /commands can read sensitive files or change Reach/);
+  assert.match(c.textContent, /guardrails, not a sandbox/);
+  assert.match(c.textContent, /Touching the Mac pauses input/);
   assert.match(c.textContent, /gets full control of this Mac for 30 minutes/);
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -75,6 +76,7 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   const text = message(c);
   assert.match(text, /^Open this temporary Reach link in your browser/);
   assert.match(text, /Preset: Full control\./);
+  assert.match(text, /Full control is not sandboxed/);
   assert.match(text, /password fields and password apps/);
   assert.match(text, /Reach and Tailscale/);
   assert.match(text, /One agent acts on the Mac at a time/);

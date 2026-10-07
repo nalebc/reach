@@ -168,18 +168,22 @@ const imageTypes: Record<string, string> = {
   svg: "image/svg+xml",
 };
 export const imageType = (name: string) => imageTypes[extension(name)];
+// Markdown can be shown formatted as well as as source.
+export const isMarkdown = (name: string) =>
+  ["md", "markdown"].includes(extension(name));
 // Formats the computer can turn into plain text (macOS textutil).
 const documents = new Set(["doc", "docx", "rtf", "odt"]);
 
-// How the viewer opens a file: show the image, read it as text, extract a
-// document's text, or offer a download.
+// How the viewer opens a file: show the image or PDF, read it as text, extract
+// a document's text, or offer a download.
 export function previewMode(entry: {
   name: string;
   type: string;
-}): "image" | "text" | "document" | null {
+}): "image" | "pdf" | "text" | "document" | null {
   if (entry.type === "directory") return null;
   const ext = extension(entry.name);
   if (imageTypes[ext]) return "image";
+  if (ext === "pdf") return "pdf";
   if (documents.has(ext)) return "document";
   const kind = fileKind(entry);
   return kind === "text" ||

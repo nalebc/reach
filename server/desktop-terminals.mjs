@@ -143,6 +143,10 @@ export class DesktopTerminals {
         ...target,
         action,
         ...(action === "send" ? { text: body.text } : {}),
+        // Someone viewing the tab gets its scrollback, not just the screen.
+        ...(action === "read" && body?.scrollback === true
+          ? { scrollback: true }
+          : {}),
       });
       if (action === "close") this.targets.delete(id);
       authorize();

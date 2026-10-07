@@ -3,6 +3,8 @@ import {
   type WorkspaceCapabilities,
 } from "./capabilities";
 import {
+  lazy,
+  Suspense,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -17,6 +19,7 @@ import {
   ChevronDown,
   ChevronLeft,
   Code2,
+  Eye,
   Copy,
   Download,
   File,
@@ -47,6 +50,7 @@ import {
   fileKind,
   friendlyDate,
   imageType,
+  isMarkdown,
   kindLabel,
   baseName,
   iconType,
@@ -56,6 +60,7 @@ import {
   type FileKind,
 } from "./file-kinds";
 import { preparedFile, useFileShare } from "./useFileShare";
+import AgentMarkdown from "./AgentMarkdown";
 import {
   backgroundDownloads,
   downloadInBackground,
@@ -66,6 +71,8 @@ import {
 } from "./transfers";
 import { useFileTypeIcons } from "./app-icons";
 import "./files.css";
+
+const FilePdf = lazy(() => import("./FilePdf"));
 
 const kindIcons: Record<FileKind, typeof File> = {
   folder: Folder,
@@ -1011,6 +1018,7 @@ function ShareChip({
 
 const isGone = (e: unknown) => (e as { status?: number })?.status === 404;
 const MAX_IMAGE_PREVIEW = 25 * 1024 * 1024;
+const MAX_PDF_PREVIEW = 50 * 1024 * 1024;
 const nouns: Partial<Record<FileKind, string>> = {
   image: "image",
   video: "video",
@@ -1022,7 +1030,7 @@ const nouns: Partial<Record<FileKind, string>> = {
   doc: "document",
   package: "installer",
 };
-// Recently viewed images, so reopening one doesn't download it again.
+// Recently viewed images and PDFs, so reopening one doesn't download it again.
 const viewed = new Map<string, Blob>();
 const remember = (key: string, blob: Blob) => {
   viewed.delete(key);
@@ -1063,6 +1071,8 @@ function Viewer({
   const mode = previewMode(file);
   const [text, setText] = useState(""),
     [image, setImage] = useState(""),
+    [pdf, setPdf] = useState<Blob | null>(null),
+    [source, setSource] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
     [copied, setCopied] = useState(false),
@@ -1078,10 +1088,11 @@ function Viewer({
     const timer = setTimeout(() => setCopied(false), 1600);
     return () => clearTimeout(timer);
   }, [copied]);
-  // Images are shared from the copy fetched for the preview, not a second one.
+  // Images and PDFs are shared from the copy fetched for the preview, not a
+  // second one.
   useEffect(() => {
-    if (mode !== "image") sharer.warm(file);
-  }, [file.path]);
+    if (mode !== "image" && mode !== "pdf") sharer.warm(file);
+  }, [peer.url, peer.token, root, file.path, file.modified, file.size, mode]);
   // The write happens inside the tap: phones refuse clipboard writes after it.
   const copy = () => {
     const fallback = () => {
@@ -1105,43 +1116,62 @@ function Viewer({
   useEffect(() => {
     const controller = new AbortController();
     let url = "";
+    setText("");
+    setImage("");
+    setPdf(null);
+    setSource(false);
+    setError("");
+    setLoading(true);
+    const maximum = mode === "pdf" ? MAX_PDF_PREVIEW : MAX_IMAGE_PREVIEW;
+    const tooLarge = () =>
+      new Error(`This ${nouns[kind] || "file"} is too large to preview. Download it instead.`);
     (async () => {
       try {
-        const type = imageType(file.name);
-        if (mode === "image") {
-          if (file.size > MAX_IMAGE_PREVIEW)
-            throw new Error(
-              "This image is too large to preview. Download it instead.",
-            );
+        if (mode === "image" || mode === "pdf") {
+          if (file.size > maximum) throw tooLarge();
           const key = JSON.stringify([
             peer.url,
+            peer.token,
             root,
             file.path,
             file.modified,
+            file.size,
           ]);
           let blob = viewed.get(key);
           if (!blob) {
             blob = await fileBlob(peer, file.path, root, {
               signal: controller.signal,
+              maxBytes: maximum,
             });
-            remember(key, blob);
           }
+          // A response may settle after this preview closes, or the file can
+          // grow since listing. Never create a leaked/stale object URL.
+          if (controller.signal.aborted) return;
+          if (blob.size > maximum) throw tooLarge();
+          if (mode === "pdf" && (await blob.slice(0, 5).text()) !== "%PDF-")
+            throw new Error("This file is not a PDF. Download it instead.");
+          if (controller.signal.aborted) return;
+          remember(key, blob);
           sharer.warm(file, blob);
-          url = URL.createObjectURL(new Blob([blob], { type }));
-          setImage(url);
+          if (mode === "pdf") setPdf(blob);
+          else {
+            url = URL.createObjectURL(new Blob([blob], { type: imageType(file.name) }));
+            setImage(url);
+          }
         } else if (mode === "text" || mode === "document") {
           const r = await request(
             peer,
             `/api/files/${mode === "text" ? "text" : "document-text"}?${new URLSearchParams({ root: String(root), path: file.path })}`,
             { signal: controller.signal },
           );
+          if (controller.signal.aborted) return;
           setText(r.text);
         } else
           throw new Error(`Download to open this ${nouns[kind] || "file"}.`);
       } catch (e) {
         if (controller.signal.aborted) return;
         if (isGone(e)) return gone();
-        setError((e as Error).message);
+        setError((e as { status?: number }).status === 413 ? tooLarge().message : (e as Error).message);
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -1150,7 +1180,7 @@ function Viewer({
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [file.path]);
+  }, [peer.url, peer.token, root, file.path, file.name, file.modified, file.size, mode]);
   const others = peers.filter((p) => p.id !== peer.id);
   return (
     <dialog
@@ -1178,7 +1208,17 @@ function Viewer({
               {bytes(file.size)} · {friendlyDate(file.modified)}
             </small>
           </div>
-          {!loading && !error && !image && text && (
+          {!loading && !error && text && isMarkdown(file.name) && (
+            <button
+              className="files-tool"
+              aria-label={source ? "Show formatted" : "Show source"}
+              aria-pressed={source}
+              onClick={() => setSource((s) => !s)}
+            >
+              {source ? <Eye size={19} /> : <Code2 size={19} />}
+            </button>
+          )}
+          {!loading && !error && !image && !pdf && text && (
             <button
               className={`files-tool ${copied ? "is-done" : ""}`}
               aria-label={copied ? "Copied" : "Copy text"}
@@ -1213,7 +1253,7 @@ function Viewer({
           </button>
         </header>
         <div
-          className={`file-viewer-body ${image ? "is-image" : ""} ${mode === "document" ? "is-document" : ""}`}
+          className={`file-viewer-body ${image ? "is-image" : ""} ${pdf ? "is-pdf" : ""} ${mode === "document" ? "is-document" : ""}`}
         >
           {loading ? (
             <Loader2 className="spin" size={24} aria-label="Loading preview" />
@@ -1227,6 +1267,14 @@ function Viewer({
             </div>
           ) : image ? (
             <img src={image} alt={file.name} />
+          ) : pdf ? (
+            <Suspense fallback={<Loader2 className="spin" size={24} aria-label="Loading PDF preview" />}>
+              <FilePdf blob={pdf} name={file.name} />
+            </Suspense>
+          ) : text && isMarkdown(file.name) && !source ? (
+            <div className="file-viewer-markdown">
+              <AgentMarkdown text={text} />
+            </div>
           ) : (
             <pre>{text || "(Empty file)"}</pre>
           )}

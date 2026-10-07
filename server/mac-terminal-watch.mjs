@@ -236,10 +236,17 @@ export class MacTerminalWatch {
     const tab = this.tabs.get(id);
     if (!tab) throw fail(404, "This terminal has closed. Refresh the list.");
     tab.watchedUntil = Date.now() + 60000;
-    if (!tab.version) await this.read(id);
+    // A Home peek may have cached just the screen. Upgrade it when opening
+    // the tab, even if the terminal is idle and no new output event arrives.
+    if (!tab.version || !tab.scrollback) {
+      await this.read(id);
+      // A peek already in flight completes first; read() schedules the full
+      // read behind it. Wait for that upgrade before publishing this view.
+      if (!tab.scrollback && !tab.error) await this.read(id);
+    }
     authorize();
     // A first read that failed (a permission prompt, a busy app) says why.
-    if (!tab.version && tab.error) throw tab.error;
+    if ((!tab.version || !tab.scrollback) && tab.error) throw tab.error;
     if (!this.tabs.has(id))
       throw fail(404, "This terminal has closed. Refresh the list.");
     if (tab.version !== after) return { text: tab.text, version: tab.version };
@@ -283,16 +290,20 @@ export class MacTerminalWatch {
         tab.every = undefined;
         if (gap > 0) await new Promise((r) => setTimeout(r, gap));
         tab.readAt = Date.now();
+        // A phone viewing the tab scrolls back through it; a Home peek
+        // needs only the screen.
+        const viewed = tab.waiters.size > 0 || tab.watchedUntil > Date.now();
         const { text } = await this.terminals.action(
           id,
           "read",
-          null,
+          viewed ? { scrollback: true } : null,
           () => {},
           {
             background: true,
           },
         );
         tab.error = null;
+        tab.scrollback = viewed;
         if (!tab.version || text !== tab.text) {
           tab.text = text;
           tab.version++;

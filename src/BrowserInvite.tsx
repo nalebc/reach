@@ -69,7 +69,9 @@ export const museMessage = (link: string, issued: Issued) => {
   }[issued.preset];
   const protectedWords = issued.preset === "files"
     ? " Reach's own files and the owner's secret files stay closed."
-    : ` Always closed: password fields and password apps (ask the owner to sign in from their phone), Reach and Tailscale, the Mac's security prompts, and commands that need the owner's password or could erase the Mac.${hidden}`;
+    : issued.preset === "full"
+      ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Do not access password fields and password apps, Reach and Tailscale, or security prompts; ask the owner to sign in.${hidden}`
+      : ` Reach filters known protected windows and blocks password fields and password apps, Reach and Tailscale, and security prompts. Ask the owner to sign in. These UI guards do not sandbox commands run through a chosen terminal or IDE.${hidden}`;
   const sharing = ["full", "apps"].includes(issued.preset)
     ? " One agent acts on the Mac at a time: a busy or paused reply means wait and retry. The owner's own hands come first. Take a screenshot before and after you act."
     : "";
@@ -326,7 +328,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
               open={openRow === "hidden"}
               onToggle={() => toggleRow("hidden")}
             >
-              <p className="ag-quiet">Passwords and Reach are always hidden. Add apps where your codes and mail arrive.</p>
+              <p className="ag-quiet">Reach filters known password and Reach windows from pictures. Add apps where your codes and mail arrive. This does not limit Full control commands.</p>
               {suggested.length > 0 && !hidden.length && (
                 <button type="button" className="ag-link" onClick={() => setHidden(suggested.map((app) => app.id))}>
                   Hide {listWords(suggested.map((app) => app.name))}
@@ -342,8 +344,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           <p className="ag-note">
             {preset === "full" ? <ShieldCheck size={14} /> : preset === "readonly" ? <Eye size={14} /> : <Lock size={14} />}
             {{
-              full: "It can do anything you can, except passwords, security prompts and Reach. Anything already open or signed in is open to it. Your hands always win: touching the Mac pauses it.",
-              apps: "Only these apps appear on its screen and take its clicks. Password fields, Reach and security prompts stay closed even inside them.",
+              full: "Only invite an agent you trust with your account. Its commands can read sensitive files or change Reach. Screen protections are guardrails, not a sandbox. Anything already signed in is available. Touching the Mac pauses input.",
+              apps: "Only these apps appear on its screen and take its clicks. Reach filters known protected windows and blocks password fields. A selected terminal or IDE can still run commands as you.",
               files: write ? "Changes land in your real folders at once. Reach's own files and your secret files stay closed." : "It reads your real folders. Nothing is copied, nothing changes.",
               readonly: "It watches the screen and reads files. Passwords and Reach stay out of its pictures.",
             }[preset]}

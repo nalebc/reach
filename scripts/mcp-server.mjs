@@ -4,19 +4,21 @@
 import readline from "node:readline";
 import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
 
-const BROWSER_ONLY_NAMES = new Set(["reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request"]);
+const BROWSER_ONLY_NAMES = new Set(["reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
 const BROWSER_TOOL_SCOPES = {
   reach_access: "browser:read", reach_list_files: "files:read", reach_search_files: "files:read", reach_read_file: "files:read",
   reach_read_terminal: "browser:read", reach_screen: "browser:read", reach_scroll: "browser:scroll",
   reach_request_action: "browser:request", reach_request_batch: "browser:request", reach_list_requests: "browser:request", reach_cancel_request: "browser:request",
+  reach_terminal_command: "browser:request", reach_terminal_history: "browser:request",
+  reach_apps: "browser:read", reach_app_windows: "browser:read", reach_app_screen: "browser:read", reach_request_app: "browser:request",
   // Preset sessions (server/agent-presets.mjs): the Mac itself, within the preset.
   reach_screenshot: "browser:screen", reach_front: "browser:screen", reach_act: "browser:control",
   reach_desktop_apps: "browser:open", reach_open_app: "browser:open", reach_change_file: "browser:write",
   reach_shell: "browser:shell", reach_shell_history: "browser:shell",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_act", "reach_open_app", "reach_change_file", "reach_shell"]);
-const BROWSER_DESTRUCTIVE = new Set(["reach_change_file", "reach_shell"]);
+const BROWSER_WRITES = new Set(["reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_open_app", "reach_change_file", "reach_shell"]);
+const BROWSER_DESTRUCTIVE = new Set(["reach_terminal_command", "reach_change_file", "reach_shell"]);
 
 const location = {
   root: {

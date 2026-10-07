@@ -49,6 +49,13 @@
 .terminal-bar-icon:active {
   background: #ffffff14;
 }
+/* Stop: ends the open terminal (after a confirmation). */
+.terminal-bar-icon.terminal-stop {
+  color: #f1a3a3;
+}
+.terminal-bar-icon.terminal-stop:active {
+  background: #f18d8d24;
+}
 .terminal-switch {
   flex: 1;
   min-width: 0;
