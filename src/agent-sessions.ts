@@ -37,6 +37,8 @@ export type AgentSession = {
   model?: string | null;
   // Its sub-agents, newest first.
   subagents?: Subagent[];
+  // Rewound: shown as it stood then, until the next message goes on from there.
+  rewound?: boolean;
   // How full its context is (tokens), as its agent counts them.
   context?: { used: number; window: number };
   // Claude's todo list as it stands.
@@ -518,6 +520,13 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// Rewind to before a message (Claude Code's own rewind).
+export type RewindPreview = { canRewind: boolean; error?: string; files: string[]; insertions: number; deletions: number };
+export const rewindSession = (
+  peer: Peer,
+  s: { agent: AgentName; id: string },
+  body: { messageId: string; code?: boolean; conversation?: boolean; dryRun?: boolean },
+) => post<RewindPreview & { rewound?: boolean }>(peer, `${sessionPath(s)}/rewind`, body);
 // One sub-agent stopped, the chat going on.
 export const stopSubagent = (peer: Peer, s: { agent: AgentName; id: string }, task: string) =>
   post<{ stopped: true }>(peer, `${sessionPath(s)}/subagents/${encodeURIComponent(task)}/stop`);

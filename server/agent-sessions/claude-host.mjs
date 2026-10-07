@@ -453,12 +453,16 @@ export function createClaudeHost({
       "--include-partial-messages",
       "--replay-user-messages",
       ...(resume ? ["--resume", s.id] : ["--session-id", s.id]),
+      // A rewind: the conversation goes on from that entry, as Claude Code's
+      // own rewind (the SDK's resumeSessionAt).
+      ...(resume && s.resumeAt ? ["--resume-session-at", s.resumeAt] : []),
       ...(s.settings.model ? ["--model", s.settings.model] : []),
       ...(s.settings.effort ? ["--effort", s.settings.effort] : []),
       ...(mode ? ["--permission-mode", mode] : []),
     ];
     const proc = spawn(claude, args, { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
+    if (resume) s.resumeAt = null;
     s.launchedEffort = s.settings.effort || null;
     let buffer = "";
     proc.stdout.setEncoding?.("utf8");
@@ -590,6 +594,8 @@ export function createClaudeHost({
         }
       }
       await turn(s, input);
+      // A rewind waiting for this message is done: the chat goes on from there.
+      s.rewound = null;
       return { turnId: null };
       });
       s.sending = operation;
@@ -644,6 +650,37 @@ export function createClaudeHost({
       changed(s);
       return { answered: true };
     },
+    // Rewind, as Claude Code's own: files back as they were before a
+    // message (rewind_files; dryRun: what would change, nothing done), and
+    // the conversation going on from before it (on its next message).
+    async rewindFiles(id, { messageId, cwd, dryRun = false }) {
+      if (!UUID.test(id) || typeof messageId !== "string" || !UUID.test(messageId)) throw bad("Unknown message.", 404);
+      const s = state(id);
+      if (s.turns) throw bad("Claude is working in this chat. Stop it first.", 409);
+      if (cwd) s.cwd = cwd;
+      if (!s.proc) await launch(s, { resume: true });
+      const r = await control(s, { subtype: "rewind_files", user_message_id: messageId, ...(dryRun ? { dry_run: true } : {}) });
+      return {
+        canRewind: r?.canRewind !== false,
+        ...(typeof r?.error === "string" ? { error: r.error } : {}),
+        files: Array.isArray(r?.filesChanged) ? r.filesChanged.slice(0, 200) : [],
+        insertions: Number(r?.insertions) || 0,
+        deletions: Number(r?.deletions) || 0,
+      };
+    },
+    rewindConversation(id, entry) {
+      if (!UUID.test(id)) throw bad("Unknown session.", 404);
+      const s = state(id);
+      if (s.turns) throw bad("Claude is working in this chat. Stop it first.", 409);
+      // The next launch resumes there; a process running now ends first.
+      if (s.proc) end(s);
+      s.resumeAt = entry || null;
+      s.rewound = entry === null ? "start" : entry;
+      changed(s);
+      return { rewound: true };
+    },
+    // Where a rewind waits for the next message: an entry, "start", or null.
+    rewoundTo: (id) => sessions.get(id)?.rewound || null,
     // One background task or sub-agent stopped, the rest going on
     // (Claude Code's stop_task, as the Claude app's per-task stop).
     async stopTask(id, taskId) {

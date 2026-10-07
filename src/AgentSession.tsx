@@ -32,6 +32,7 @@ import {
   SquarePen,
   ListChecks,
   GitFork,
+  RotateCcw,
   Trash2,
   Square,
   Terminal,
@@ -79,6 +80,8 @@ import {
   renameSession,
   deleteSession,
   stopSubagent,
+  rewindSession,
+  type RewindPreview,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -222,6 +225,7 @@ function Copyable({
   bare = false,
   onEdit,
   onFork,
+  onRewind,
   children,
 }: {
   text: string;
@@ -231,6 +235,8 @@ function Copyable({
   onEdit?: () => void;
   // A new chat with everything up to here (the Codex app's Fork).
   onFork?: () => void;
+  // Back to before this message (Claude Code's rewind).
+  onRewind?: () => void;
   children: ReactNode;
 }) {
   const [shown, setShown] = useState(false);
@@ -270,6 +276,11 @@ function Copyable({
           {onFork && (
             <button className="as-icon" aria-label="Fork from here" onClick={onFork}>
               <GitFork size={15} />
+            </button>
+          )}
+          {onRewind && (
+            <button className="as-icon" aria-label="Rewind to before this" onClick={onRewind}>
+              <RotateCcw size={15} />
             </button>
           )}
         </div>
@@ -1952,6 +1963,30 @@ export default function AgentSessionView({
     const last = [...(items || [])].reverse().find((i) => i.role === "user");
     return last?.turnId && !last.slash ? last.id : null;
   }, [agent, info.status, items]);
+  // Rewind, as Claude Code's own: what would change, then which to restore.
+  const [rewinding, setRewinding] = useState<{ item: SessionItem; preview: RewindPreview | null; busy: string; error: string } | null>(null);
+  const openRewind = async (item: SessionItem) => {
+    setRewinding({ item, preview: null, busy: "preview", error: "" });
+    try {
+      const preview = await rewindSession(peer, initial, { messageId: item.id, dryRun: true });
+      setRewinding((r) => (r?.item.id === item.id ? { ...r, preview, busy: "" } : r));
+    } catch (e) {
+      setRewinding((r) => (r?.item.id === item.id ? { ...r, busy: "", error: (e as Error).message } : r));
+    }
+  };
+  const doRewind = async (what: { code: boolean; conversation: boolean }, key: string) => {
+    if (!rewinding || rewinding.busy) return;
+    setRewinding({ ...rewinding, busy: key, error: "" });
+    try {
+      await rewindSession(peer, initial, { messageId: rewinding.item.id, ...what });
+      // As in Claude Code: the message is back in the box, to send again or change.
+      if (what.conversation) setText(visibleUserText(rewinding.item.text));
+      setRewinding(null);
+      void load(false);
+    } catch (e) {
+      setRewinding((r) => (r ? { ...r, busy: "", error: (e as Error).message } : r));
+    }
+  };
   // A new chat with everything up to this message (the Codex app's Fork).
   const forkFrom = async (turnId: string) => {
     try {
@@ -2193,6 +2228,47 @@ export default function AgentSessionView({
           </div>
         </>
       )}
+      {rewinding && (
+        <>
+          <div className="as-details-scrim" aria-hidden="true" onClick={() => !rewinding.busy && setRewinding(null)} />
+          <div className="as-rewind" role="dialog" aria-label="Rewind">
+            <strong>Rewind to before this message?</strong>
+            <p className="as-rewind-quote">{visibleUserText(rewinding.item.text).slice(0, 200)}</p>
+            {rewinding.busy === "preview" ? (
+              <p>
+                <Loader2 size={14} className="spin" /> Checking what would change…
+              </p>
+            ) : rewinding.preview && rewinding.preview.files.length ? (
+              <p>
+                {rewinding.preview.files.length} file{rewinding.preview.files.length === 1 ? "" : "s"} will change{" "}
+                <b className="plus">+{rewinding.preview.insertions}</b> <b className="minus">-{rewinding.preview.deletions}</b>
+              </p>
+            ) : rewinding.preview ? (
+              <p>No code changed since then.</p>
+            ) : null}
+            {rewinding.error && <p className="bad">{rewinding.error}</p>}
+            <div className="as-rewind-actions">
+              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
+                <button className="primary" disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: true }, "both")}>
+                  {rewinding.busy === "both" ? <Loader2 size={14} className="spin" /> : "Restore code and conversation"}
+                </button>
+              )}
+              <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || rewinding.busy === "preview"} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
+                {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
+              </button>
+              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
+                <button disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: false }, "code")}>
+                  {rewinding.busy === "code" ? <Loader2 size={14} className="spin" /> : "Restore code only"}
+                </button>
+              )}
+              <button className="quiet" disabled={!!rewinding.busy && rewinding.busy !== "preview"} onClick={() => setRewinding(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      {info.rewound && <p className="as-note as-rewound">Rewound. Your next message continues from here.</p>}
       {/* Its sub-agents at a glance, above the conversation. */}
       {!!info.subagents?.length && <SubagentStrip agents={info.subagents} />}
       <div
@@ -2277,6 +2353,7 @@ export default function AgentSessionView({
                 bare={!b.item.text.trim()}
                 onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
                 onFork={agent === "codex" && b.item.turnId ? () => void forkFrom(b.item.turnId!) : undefined}
+                onRewind={agent === "claude" && !b.item.slash && info.status !== "running" && info.status !== "waiting" ? () => void openRewind(b.item) : undefined}
               >
               <div className="as-user">
                 {b.item.queued && (

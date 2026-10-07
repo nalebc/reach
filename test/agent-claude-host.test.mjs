@@ -54,6 +54,13 @@ function fakeClaude({ models = [], title = "Proposed title" } = {}) {
             queueMicrotask(() =>
               proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
             );
+          if (message.type === "control_request" && subtype === "rewind_files")
+            queueMicrotask(() =>
+              proc.print({
+                type: "control_response",
+                response: { subtype: "success", request_id: message.request_id, response: { canRewind: true, filesChanged: ["src/a.ts", "src/b.ts"], insertions: 12, deletions: 4 } },
+              }),
+            );
           if (message.type === "control_request" && subtype === "rename_session")
             queueMicrotask(() =>
               proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
@@ -1456,4 +1463,33 @@ test("one sub-agent stops, the chat going on, while Reach runs it (stop_task); o
   assert.deepEqual(await h.stopTask(ID, "a28230b100dfc3978"), { stopped: true });
   assert.deepEqual(claude.last().lines.find((l) => l.request?.subtype === "stop_task").request, { subtype: "stop_task", task_id: "a28230b100dfc3978" });
   await assert.rejects(h.stopTask(ID, "../x"), (e) => e.status === 404);
+});
+
+test("rewind, as Claude Code's own: what would change, the code back, and the conversation going on from before the message", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  const MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  // Nothing running: one is started to answer (resumed, never a new session).
+  assert.deepEqual(await h.rewindFiles(ID, { messageId: MSG, cwd: "/work/app", dryRun: true }), {
+    canRewind: true,
+    files: ["src/a.ts", "src/b.ts"],
+    insertions: 12,
+    deletions: 4,
+  });
+  const first = claude.last();
+  assert.deepEqual(first.args.slice(first.args.indexOf("--resume"), first.args.indexOf("--resume") + 2), ["--resume", ID]);
+  assert.deepEqual(first.lines.find((l) => l.request?.subtype === "rewind_files").request, { subtype: "rewind_files", user_message_id: MSG, dry_run: true });
+  await h.rewindFiles(ID, { messageId: MSG });
+  assert.equal(first.lines.filter((l) => l.request?.subtype === "rewind_files").at(-1).request.dry_run, undefined);
+  // The conversation: the running process ends; the next message resumes there.
+  assert.deepEqual(h.rewindConversation(ID, BEFORE), { rewound: true });
+  assert.equal(first.ended, true);
+  assert.equal(h.rewoundTo(ID), BEFORE);
+  await h.send(ID, { text: "do it differently" });
+  const next = claude.last();
+  assert.notEqual(next, first);
+  const at = next.args.indexOf("--resume-session-at");
+  assert.deepEqual(next.args.slice(at, at + 2), ["--resume-session-at", BEFORE]);
+  assert.equal(h.rewoundTo(ID), null, "done once the next message goes");
+  await assert.rejects(h.rewindFiles(ID, { messageId: "../x" }), (e) => e.status === 404);
 });

@@ -380,10 +380,15 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       }
     },
     imageLine: (uuid) => imageLines.get(uuid) || null,
-    view() {
+    // The entry before a message (where a rewind to it continues from).
+    parentOf: (uuid) => byId.get(uuid)?.parentUuid ?? null,
+    has: (uuid) => byId.has(uuid),
+    // from: the conversation as it stood at that entry (a rewind waiting for
+    // its next message); otherwise as it stands.
+    view({ from = null } = {}) {
       const chain = [];
       const seen = new Set();
-      for (let cur = last; cur && !seen.has(cur.uuid); ) {
+      for (let cur = from ? byId.get(from) : last; cur && !seen.has(cur.uuid); ) {
         seen.add(cur.uuid);
         chain.push(cur);
         cur = cur.parentUuid

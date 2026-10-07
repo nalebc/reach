@@ -1881,3 +1881,62 @@ button.as-mode:disabled {
 .as-context.full {
   color: #f0c46b;
 }
+
+/* Rewind (Claude Code's own): what would change, then which to restore. */
+.as-rewind {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--panel, #171e19);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.5), inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  font-size: 14px;
+}
+.as-rewind p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.as-rewind-quote {
+  padding-left: 10px;
+  border-left: 2px solid rgb(255 255 255 / 0.2);
+  color: var(--as-muted, var(--muted));
+}
+.as-rewind .plus { color: #9fe3bb; }
+.as-rewind .minus { color: #f1a08d; }
+.as-rewind .bad { color: #f1a08d; }
+.as-rewind-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.as-rewind-actions button {
+  min-height: 42px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 12px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+}
+.as-rewind-actions button.primary {
+  border-color: transparent;
+  background: var(--lime, #b9efd4);
+  color: var(--lime-ink, #16362a);
+}
+.as-rewind-actions button.quiet {
+  border-color: transparent;
+  font-weight: 400;
+}
+.as-rewound {
+  margin: 6px 12px;
+}

@@ -1216,6 +1216,23 @@ export function createAgentSessions({
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
     },
+    // Rewind to before a message, as Claude Code's own: what would change
+    // first (dryRun), then the code, the conversation, or both.
+    async rewind(agent, id, { messageId, code = false, conversation = false, dryRun = false } = {}) {
+      if (agent !== "claude") throw Object.assign(new Error("Codex rewinds from your last message: edit it."), { status: 409 });
+      const holder = await holderOf(id);
+      if (holder && holder.where !== "reach") throw Object.assign(new Error(`Claude is running this chat in ${holder.where === "claude-app" ? "the Claude app" : "a terminal"}: rewind it there.`), { status: 409 });
+      const { session } = await claude.read(id, { limit: 1 });
+      if (dryRun) return claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true });
+      if (!code && !conversation) throw Object.assign(new Error("Choose what to rewind."), { status: 400 });
+      const entry = conversation ? await claude.rewindPoint(id, messageId) : undefined;
+      if (conversation && entry === null) throw Object.assign(new Error("That's the chat's first message: start a new chat instead."), { status: 409 });
+      const files = code ? await claudeHost.rewindFiles(id, { messageId, cwd: session.cwd }) : null;
+      if (files && !files.canRewind) throw Object.assign(new Error(files.error || "Claude Code can't restore the code from there."), { status: 409 });
+      if (conversation) claudeHost.rewindConversation(id, entry);
+      listChanged();
+      return { rewound: true, ...(files ? { files: files.files, insertions: files.insertions, deletions: files.deletions } : {}) };
+    },
     // One sub-agent stopped, as the Claude app's stop on a task (stop_task).
     async stopSubagent(agent, id, taskId) {
       if (agent !== "claude") throw Object.assign(new Error("Stop it from Codex."), { status: 409 });
@@ -1497,7 +1514,10 @@ export function createAgentSessions({
         const start = Math.max(0, end - limit);
         return { items: items.slice(start, end), before: start > 0 ? `moved:${start}` : null };
       }
-      const result = await adapter(agent).read(id, options);
+      // A rewind waiting for its next message: the chat as it stood then.
+      const rewound = agent === "claude" ? claudeHost.rewoundTo?.(id) : null;
+      const result = await adapter(agent).read(id, rewound ? { ...options, at: rewound === "start" ? null : rewound } : options);
+      if (rewound && result.session) result.session.rewound = true;
       // What its next message will use, shown as its mode.
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
       if (agent === "codex" && result.session && codexLive.contextOf?.(id)) result.session.context = codexLive.contextOf(id);

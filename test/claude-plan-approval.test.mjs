@@ -111,3 +111,19 @@ test("how full a chat's context is, as each agent counts it", async () => {
   assert.deepEqual(live.contextOf("t1"), { used: 64000, window: 258000 });
   assert.equal(live.contextOf("t2"), null);
 });
+
+test("a chat shows as it stood at an earlier entry (a rewind waiting for its next message)", async () => {
+  const { createClaudeTranscript } = await import("../server/agent-sessions/claude-transcript.mjs");
+  const line = (e) => JSON.stringify(e) + "\n";
+  const t = createClaudeTranscript();
+  t.add(
+    line({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "first" } }) +
+      line({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", content: [{ type: "text", text: "one" }] } }) +
+      line({ type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "second" } }) +
+      line({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", content: [{ type: "text", text: "two" }] } }),
+  );
+  assert.equal(t.parentOf("u2"), "a1");
+  assert.equal(t.parentOf("u1"), null);
+  assert.deepEqual(t.view().items.map((i) => i.text), ["first", "one", "second", "two"]);
+  assert.deepEqual(t.view({ from: "a1" }).items.map((i) => i.text), ["first", "one"]);
+});

@@ -2772,6 +2772,19 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // Rewind to before a message (Claude Code's own rewind).
+  app.post("/api/sessions/:agent/:id/rewind", async (req, res) => {
+    const b = req.body || {};
+    if (typeof b.messageId !== "string") throw fail(400, "Choose a message.");
+    const result = await agentSessions.rewind(req.params.agent, req.params.id, {
+      messageId: b.messageId,
+      code: b.code === true,
+      conversation: b.conversation === true,
+      dryRun: b.dryRun === true,
+    });
+    if (!b.dryRun) record("session", `Rewound a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
   // One sub-agent stopped, the chat going on.
   app.post("/api/sessions/:agent/:id/subagents/:task/stop", async (req, res) => {
     const result = await agentSessions.stopSubagent(req.params.agent, req.params.id, req.params.task);

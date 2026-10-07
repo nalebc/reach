@@ -338,11 +338,27 @@ export function createClaudeSessions({
       }
       return out;
     },
-    async read(id, { before = null, limit = 200 } = {}) {
+    // The entry a rewind to this message continues from (its parent), if
+    // the message is the chat's: null for its first message.
+    async rewindPoint(id, messageId) {
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await parse(found.file, { full: true });
+      const t = cache.get(found.file)?.transcript;
+      if (!t?.has(messageId)) throw Object.assign(new Error("That message isn't in this chat."), { status: 404 });
+      return t.parentOf(messageId);
+    },
+    // at: show the conversation as it stood at that entry (a rewind waiting
+    // for the next message).
+    async read(id, { before = null, limit = 200, at = undefined } = {}) {
       const found = await locate(id);
       if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
       const byCli = await records();
-      const parsed = await parse(found.file, { full: true });
+      let parsed = await parse(found.file, { full: true });
+      if (at !== undefined) {
+        const t = cache.get(found.file)?.transcript;
+        parsed = at === null ? { ...parsed, items: [] } : t?.has(at) ? { ...parsed, ...t.view({ from: at }) } : parsed;
+      }
       // Pages count back from the newest item; `before` is an item index.
       const end = before === null ? parsed.items.length : Math.max(0, Math.min(Number(before) || 0, parsed.items.length));
       const start = Math.max(0, end - Math.min(Math.max(limit, 1), 500));
