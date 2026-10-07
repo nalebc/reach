@@ -460,3 +460,20 @@ test("a chat joins the app's list whatever happens: written for its next launch,
   assert.deepEqual(opened, []);
   imports.close();
 });
+
+test("the Claude app is found by its bundle id wherever it lives, its process path only as a fallback", async () => {
+  const calls = [];
+  const mac = (pid, lstart) => async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (cmd === "/usr/bin/lsappinfo") return { stdout: pid ? `"pid"=${pid}\n` : "" };
+    if (args[0] === "-o") return { stdout: `${lstart}\n` };
+    return { stdout: "" }; // no Claude.app path in the process list
+  };
+  // Renamed or moved (~/Applications/Claude 2.app): still found.
+  assert.equal(await claudeAppRunning(mac(4242)), true);
+  assert.deepEqual(calls[0], ["/usr/bin/lsappinfo", "info", "-only", "pid", "-app", "com.anthropic.claudefordesktop"]);
+  assert.equal(await claudeAppStartedAt(mac(4242, "Mon Oct  5 03:29:13 2026")), new Date(2026, 9, 5, 3, 29, 13).getTime());
+  // Closed: neither way finds it.
+  assert.equal(await claudeAppRunning(mac(null)), false);
+  assert.equal(await claudeAppStartedAt(mac(null)), null);
+});

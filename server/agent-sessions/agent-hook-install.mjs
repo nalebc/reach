@@ -15,6 +15,27 @@ export function agentHookCommand({ node = process.execPath, script, agent, socke
   return `${quote(node)} ${quote(script)} ${quote(agent)} ${quote(socketPath)}`;
 }
 
+// Whole or not at all: written beside it, then moved over it (a Claude Code
+// or Codex reading it meanwhile, or Reach stopping halfway, never sees half a
+// file). Keeps the file's own permissions; a symlink's target is written.
+export function writeWhole(file, text) {
+  let target = file;
+  try {
+    target = fs.realpathSync(file);
+  } catch {}
+  let mode = 0o600;
+  try {
+    mode = fs.statSync(target).mode & 0o777;
+  } catch {}
+  const tmp = `${target}.reach-${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text, { mode });
+    fs.renameSync(tmp, target);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
 function edit(settingsPath, backupDir, change) {
   let raw = "";
   try {
@@ -33,7 +54,7 @@ function edit(settingsPath, backupDir, change) {
   }
   const indent = raw.match(/\n( +|\t)"/)?.[1] || "  ";
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, indent) + (raw && !raw.endsWith("\n") ? "" : "\n"));
+  writeWhole(settingsPath, JSON.stringify(settings, null, indent) + (raw && !raw.endsWith("\n") ? "" : "\n"));
   return { changed: true };
 }
 
@@ -103,7 +124,7 @@ function editText(file, backupDir, change, label) {
     fs.writeFileSync(path.join(backupDir, `${label}-${stamp}`), raw, { mode: 0o600 });
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, next, { mode: 0o600 });
+  writeWhole(file, next);
   return { changed: true };
 }
 

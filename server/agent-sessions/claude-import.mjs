@@ -29,10 +29,30 @@ export async function idleSeconds(run = exec) {
   return m ? Number(m[1]) / 1e9 : null;
 }
 
+// The Claude app's process by its bundle id, as macOS's own app list has it
+// (wherever the app lives or whatever it's named); null when it isn't open,
+// undefined when that list can't be read.
+export const CLAUDE_APP_ID = "com.anthropic.claudefordesktop";
+async function claudeAppPid(run) {
+  try {
+    const { stdout } = await run("/usr/bin/lsappinfo", ["info", "-only", "pid", "-app", CLAUDE_APP_ID], { timeout: 3000 });
+    const m = String(stdout).match(/"pid"\s*=\s*(\d+)/);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return undefined;
+  }
+}
+// ps prints dates in the Mac's own language and order ("Wed  7 Oct" here):
+// read in the C locale, the one fixed format.
+const PS_ENV = { ...process.env, LC_ALL: "C", LANG: "C" };
+// The app's own executable path, for when macOS's list can't say.
+const APP_PATH = /\/Claude\.app\/Contents\/MacOS\/Claude$/;
+
 export async function claudeAppRunning(run = exec) {
+  if (await claudeAppPid(run)) return true;
   try {
     const { stdout } = await run("/bin/ps", ["-axo", "comm="], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
-    return stdout.split("\n").some((line) => /\/Claude\.app\/Contents\/MacOS\/Claude$/.test(line.trim()));
+    return stdout.split("\n").some((line) => APP_PATH.test(line.trim()));
   } catch {
     return false;
   }
@@ -86,11 +106,22 @@ export async function claudeAppAccess({
 
 // When the Claude app was opened (ms), or null while it's closed.
 export async function claudeAppStartedAt(run = exec) {
+  const START = /^(\w{3} \w{3} +\d+ [\d:]+ \d{4})(?: +(.+))?$/;
+  const pid = await claudeAppPid(run);
+  if (pid) {
+    try {
+      const { stdout } = await run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5000, env: PS_ENV });
+      const m = String(stdout).trim().match(START);
+      if (m && !m[2]) return Date.parse(m[1]) || null;
+    } catch {
+      /* the listing below */
+    }
+  }
   try {
-    const { stdout } = await run("/bin/ps", ["-axo", "lstart=,comm="], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+    const { stdout } = await run("/bin/ps", ["-axo", "lstart=,comm="], { timeout: 5000, maxBuffer: 4 * 1024 * 1024, env: PS_ENV });
     for (const line of stdout.split("\n")) {
-      const m = line.trim().match(/^(\w{3} \w{3} +\d+ [\d:]+ \d{4}) +(.+)$/);
-      if (m && /\/Claude\.app\/Contents\/MacOS\/Claude$/.test(m[2])) return Date.parse(m[1]) || null;
+      const m = line.trim().match(START);
+      if (m?.[2] && APP_PATH.test(m[2])) return Date.parse(m[1]) || null;
     }
   } catch {
     /* no ps: as if closed */

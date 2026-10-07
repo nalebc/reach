@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { apps, launchApp, exec } from "./platform.mjs";
 import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
 import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
+import { bundledCodexPaths } from "./capabilities.mjs";
 
 export function shortcutUrl(value) {
   if (
@@ -81,8 +82,22 @@ function definition(value) {
     throw fail(400, "Choose an installed app or a website.");
   return { name, type: "app", actionId: value.actionId };
 }
+// The Codex desktop app (now ChatGPT.app) registers codex:// under this id.
+const CODEX_BUNDLE = "com.openai.codex";
+// A Mac app's bundle id, from its Info.plist (binary or XML), or null.
+async function readBundleId(app) {
+  if (process.platform !== "darwin" || !/\.app$/.test(app)) return null;
+  try {
+    const plist = path.join(app, "Contents", "Info.plist");
+    const { stdout } = await exec("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist], { timeout: 4000 });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // Where an agent CLI can be started from a terminal, or null when missing.
+// bundled: a list of paths, or a function giving one.
 async function findCli(name, bundled = []) {
   try {
     const { stdout } =
@@ -93,7 +108,7 @@ async function findCli(name, bundled = []) {
           });
     if (stdout.trim()) return name;
   } catch {}
-  for (const file of bundled) {
+  for (const file of typeof bundled === "function" ? await bundled() : bundled) {
     try {
       await fs.access(file, fs.constants.X_OK);
       return shellQuote(file);
@@ -124,14 +139,7 @@ const RECIPES = [
     name: "Codex in Terminal",
     detail: "New terminal in your shared folder, running Codex",
     cli: "codex",
-    // The desktop apps bundle the CLI; its location has moved between versions.
-    bundled: [
-      "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-      "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
-      "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-      "/Applications/Codex.app/Contents/Resources/codex",
-      "/Applications/ChatGPT.app/Contents/Resources/codex",
-    ],
+    bundled: bundledCodexPaths,
   },
   {
     id: "recipe:claude-terminal",
@@ -164,6 +172,7 @@ export function createAppShortcuts({
     throw fail(501, "Terminal shortcuts are not available here.");
   },
   locateCli = findCli,
+  bundleId = readBundleId,
 } = {}) {
   const terminalAvailable =
     process.platform === "win32" || (process.platform === "darwin" && !!macTerminal);
@@ -175,6 +184,14 @@ export function createAppShortcuts({
     const cwd = resolveFolder(root, folder);
     authorize();
     await openTerminal({ cwd, command }, authorize);
+  };
+  // Bundle ids by app path; an app at a path keeps its id.
+  const bundles = new Map();
+  const bundleOf = (app) => {
+    if (typeof app.bundleId === "string") return app.bundleId;
+    if (!bundles.has(app.id))
+      bundles.set(app.id, Promise.resolve(app.id).then(bundleId).catch(() => null));
+    return bundles.get(app.id);
   };
   let cliCache = { at: 0, commands: new Map() };
   const recipeCommands = async () => {
@@ -221,8 +238,12 @@ export function createAppShortcuts({
   };
   const catalog = async () => {
     const installed = await listApps();
-    // ChatGPT alone does not establish that the Codex desktop app is installed.
-    const codex = installed.find((a) => /^codex$/i.test(a.name));
+    // The app registering codex://, by bundle id; the name only when ids are
+    // unknown. ChatGPT's name alone does not establish that Codex is installed.
+    const ids = await Promise.all(installed.map(bundleOf));
+    const codex =
+      installed.find((a, i) => ids[i] === CODEX_BUNDLE) ||
+      installed.find((a, i) => !ids[i] && /^codex$/i.test(a.name));
     const commands = await recipeCommands();
     return [
       // Multi-step shortcuts: open a terminal in the shared folder and start an agent.
@@ -248,7 +269,7 @@ export function createAppShortcuts({
       ...installed.map((a) => {
         const known =
           a === codex
-            ? ["Codex", "codex"]
+            ? [/^codex$/i.test(a.name) ? "Codex" : a.name, "codex"]
             : /^Google Chrome$/i.test(a.name)
               ? ["Chrome", "browser"]
               : /^Safari$/i.test(a.name)

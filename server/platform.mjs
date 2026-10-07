@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fail } from "./core.mjs";
+import { tailscaleCli } from "../scripts/tailscale.mjs";
 export const exec = promisify(execFile);
 const options = {
   timeout: 12000,
@@ -79,7 +80,8 @@ export async function launchApp(appId) {
 export async function tailscaleInfo() {
   try {
     const { stdout } = await exec(
-      process.env.REACH_TAILSCALE || "tailscale",
+      // The app's own command line, the one matching its daemon.
+      tailscaleCli(),
       ["status", "--json"],
       { ...options, timeout: 3000 },
     );

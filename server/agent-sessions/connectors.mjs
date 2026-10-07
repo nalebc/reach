@@ -119,14 +119,18 @@ export function oauthCallback(authorizationUrl, pasted) {
   return back.href;
 }
 
-// The link `claude mcp login --no-browser` prints (inside an OSC 8 hyperlink
-// the target comes first and ends at ESC).
+// The link `claude mcp login --no-browser` prints: the https link whose
+// redirect_uri calls back to this computer (inside an OSC 8 hyperlink the
+// target comes first and ends at ESC). Found by what it is, not by the words
+// printed around it.
 export function claudeLoginLink(output) {
-  const text = String(output);
-  const at = text.indexOf("Visit this URL to authorize");
-  if (at < 0) return null;
-  const m = text.slice(at).match(/https:\/\/[^\s\x07\x1b"'<>]+/);
-  return m && /[?&]redirect_uri=/.test(m[0]) ? m[0] : null;
+  for (const m of String(output).matchAll(/https:\/\/[^\s\x07\x1b"'<>]+/g)) {
+    try {
+      const redirect = new URL(new URL(m[0]).searchParams.get("redirect_uri") || "");
+      if (redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)) return m[0];
+    } catch {}
+  }
+  return null;
 }
 
 // `claude mcp list` lines: "<name>: <url or command> [(HTTP)] - <status>".

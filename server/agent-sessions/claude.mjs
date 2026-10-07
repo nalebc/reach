@@ -361,6 +361,10 @@ export function createClaudeSessions({
       const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
       if (!file) throw Object.assign(new Error("Only chats in the Claude app can be archived."), { status: 409 });
       const record = JSON.parse(await fs.readFile(file, "utf8"));
+      // Only a record kept the way Reach knows (isArchived on it): a Claude
+      // app that keeps it elsewhere would silently ignore the change.
+      if (typeof record?.isArchived !== "boolean")
+        throw Object.assign(new Error("This Claude app keeps archived chats differently. Archive it in the Claude app."), { status: 409 });
       record.isArchived = !!archived;
       const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
       const { mode } = await fs.stat(file);

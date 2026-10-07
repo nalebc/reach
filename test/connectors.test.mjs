@@ -75,6 +75,10 @@ test("Claude Code's server list and sign-in link are read from its output", () =
   ]);
   assert.equal(claudeLoginLink(LOGIN_OUTPUT), AUTH);
   assert.equal(claudeLoginLink("Starting authentication…"), null);
+  // Other words around it (a newer Claude Code, another language): still found.
+  assert.equal(claudeLoginLink(`Öffne diesen Link:\n${AUTH}\n`), AUTH);
+  // A link that doesn't call back to this computer isn't it.
+  assert.equal(claudeLoginLink("See https://docs.example/help?redirect_uri=https%3A%2F%2Fx.example"), null);
 });
 
 test("only the localhost address this sign-in waits for is accepted back", () => {

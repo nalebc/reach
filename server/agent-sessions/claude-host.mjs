@@ -21,9 +21,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // later shows under its own id; "dontAsk" is for scripts, not a person.
 const MODE_NAMES = { manual: "Manual", plan: "Plan", acceptEdits: "Accept edits", bypassPermissions: "Bypass Permissions", auto: "Auto" };
 export function claudeModes(help = "") {
+  // No help at all (it didn't run): nothing, asked again next time.
+  if (!String(help).trim()) return [];
   const choices = help.match(/--permission-mode[\s\S]*?\(choices:([^)]*)\)/)?.[1] || "";
-  const ids = [...choices.matchAll(/"([\w-]+)"/g)].map((m) => m[1]).filter((id) => id !== "dontAsk");
   const order = Object.keys(MODE_NAMES);
+  // Help worded differently one day: the modes Reach knows, not none.
+  const listed = [...choices.matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+  const ids = (listed.length ? listed : order).filter((id) => id !== "dontAsk");
   const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   return ids.sort((a, b) => rank(a) - rank(b)).map((id) => ({ id, label: MODE_NAMES[id] || id }));
 }

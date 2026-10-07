@@ -106,3 +106,26 @@ test("Codex's config gets one marked block at the end, trusted only by the perso
   fs.writeFileSync(configPath, "hooks = {}\n");
   assert.throws(() => installCodexHook({ configPath, command }), /inline/);
 });
+
+test("settings are replaced whole: same permissions, through a symlink, nothing left beside them", async () => {
+  const { writeWhole } = await import("../server/agent-sessions/agent-hook-install.mjs");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const dir = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "reach-whole-"));
+  const real = pathm.join(dir, "dotfiles-settings.json");
+  fsm.writeFileSync(real, "{}\n", { mode: 0o640 });
+  fsm.chmodSync(real, 0o640);
+  const link = pathm.join(dir, "settings.json");
+  fsm.symlinkSync(real, link);
+  writeWhole(link, '{"a":1}\n');
+  assert.equal(fsm.lstatSync(link).isSymbolicLink(), true);
+  assert.equal(fsm.readFileSync(real, "utf8"), '{"a":1}\n');
+  assert.equal(fsm.statSync(real).mode & 0o777, 0o640);
+  assert.deepEqual(fsm.readdirSync(dir).sort(), ["dotfiles-settings.json", "settings.json"]);
+  // A new file is the owner's only.
+  const fresh = pathm.join(dir, "new.json");
+  writeWhole(fresh, "{}\n");
+  assert.equal(fsm.statSync(fresh).mode & 0o777, 0o600);
+  fsm.rmSync(dir, { recursive: true, force: true });
+});

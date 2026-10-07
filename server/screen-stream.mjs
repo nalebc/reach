@@ -99,7 +99,7 @@ export class NativeScreenSource {
         () =>
           this.stop(
             Error(
-              "Live screen capture timed out. Check Screen Recording permission and reconnect.",
+              "Live screen capture didn’t answer in time. Reconnecting…",
             ),
           ),
         15000,
