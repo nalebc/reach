@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAgentDesktop, normalizeAction, reachAddresses } from "../server/agent-desktop.mjs";
+import { EventEmitter } from "node:events";
+import { AgentDesktopHelper, createAgentDesktop, normalizeAction, reachAddresses } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
 // The server side of an agent's screen and input, against a stand-in for the
@@ -21,7 +22,8 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
   let clock = 1_000_000;
   const spawnHelper = async (rules) => {
     const helper = { rules, requests: [], stopped: false,
-      async send(request) {
+      async send(request, beforeSend) {
+        beforeSend?.();
         this.requests.push(request);
         if (request.op === "front") return front;
         if (request.op === "shot") return { ok: true, jpeg, width: 100, height: 60, hidden: 2 };
@@ -157,7 +159,7 @@ test("revocation during helper startup prevents opening an app", async () => {
 test("a screenshot completed under an obsolete grant is discarded", async () => {
   const w = world({ onSpawn: helper => {
     const send = helper.send.bind(helper);
-    helper.send = async request => {
+    helper.send = async (request, beforeSend) => {
       const result = await send(request);
       if (request.op === "shot") {
         const current = w.clients.get("watcher");
@@ -174,7 +176,7 @@ test("a screenshot completed under an obsolete grant is discarded", async () => 
 test("the owner's phone taking control during focus inspection prevents the queued typing", async () => {
   const w = world({ onSpawn: helper => {
     const send = helper.send.bind(helper);
-    helper.send = async request => {
+    helper.send = async (request, beforeSend) => {
       const result = await send(request);
       if (request.op === "front") w.phone(true);
       return result;
@@ -244,4 +246,256 @@ test("opening apps, the catalog and Reach's addresses", async () => {
     ["localhost:8443", "127.0.0.1:8443", "[::1]:8443", "0.0.0.0:8443", "mac:8443", "mac.tail1.ts.net"]);
   w.desktop.close();
   await rejects(() => w.desktop.screenshot(muse, authorize(muse)), 503);
+});
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+
+test("native input retains the agent lease until completion, beyond its idle timeout", async () => {
+  for (const op of ["act", "open"]) {
+    const entered = deferred(), finish = deferred();
+    let spawned = 0;
+    const w = world({ onSpawn(helper) {
+      if (++spawned !== 1) return;
+      const send = helper.send.bind(helper);
+      helper.send = async (request, beforeSend) => {
+        if (request.op === op) { entered.resolve(); await finish.promise; }
+        return send(request, beforeSend);
+      };
+    } });
+    const first = w.make("First", "full"), second = w.make("Second", "full");
+    try {
+      const action = () => op === "act"
+        ? w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first))
+        : w.desktop.open(first, chrome.id, authorize(first));
+      const pending = action();
+      await entered.promise;
+      w.tick(3000);
+      assert.equal(w.desktop.activity().holder.clientId, first.id, "the running operation remains visible");
+      assert.equal((await w.desktop.front(second, authorize(second))).holder, first.name);
+      await rejects(() => w.desktop.act(second, { type: "click", x: 0.5, y: 0.5 }, authorize(second)), 409, /First/, "busy");
+      await w.desktop.screenshot(second, authorize(second));
+      w.tick(10000);
+      await rejects(() => w.desktop.open(second, chrome.id, authorize(second)), 409, /First/, "busy");
+      finish.resolve();
+      await pending;
+      w.tick(2499);
+      await rejects(() => w.desktop.open(second, chrome.id, authorize(second)), 409, /First/, "busy");
+      w.tick(2);
+      await w.desktop.open(second, chrome.id, authorize(second));
+    } finally { finish.resolve(); w.desktop.close(); }
+  }
+});
+
+test("the same agent cannot queue another input, and owner pause prevents its later retry", async () => {
+  const entered = deferred(), finish = deferred();
+  let inputSends = 0;
+  const w = world({ onSpawn(helper) {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => {
+      if (["act", "open"].includes(request.op)) {
+        inputSends++;
+        if (inputSends === 1) {
+          beforeSend?.(); beforeSend = undefined; // already dispatched; only its reply is held
+          entered.resolve(); await finish.promise;
+        }
+      }
+      return send(request, beforeSend);
+    };
+  } });
+  const first = w.make("First", "full");
+  try {
+    const pending = w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first));
+    await entered.promise;
+    w.tick(3000);
+    await rejects(() => w.desktop.act(first, { type: "key", key: "enter" }, authorize(first)), 409, /First/, "busy");
+    await rejects(() => w.desktop.open(first, chrome.id, authorize(first)), 409, /First/, "busy");
+    assert.equal(inputSends, 1, "another input never enters the helper queue, even after the idle lease expires");
+    w.desktop.setPaused(first.id, true);
+    finish.resolve(); await pending;
+    await rejects(() => w.desktop.act(first, { type: "key", key: "enter" }, authorize(first)), 409, /owner paused/, "paused");
+    await rejects(() => w.desktop.open(first, chrome.id, authorize(first)), 409, /owner paused/, "paused");
+    assert.equal(inputSends, 1, "the completed first input cannot authorize a retry after owner pause");
+    w.desktop.setPaused(first.id, false);
+    await w.desktop.act(first, { type: "key", key: "enter" }, authorize(first));
+    await w.desktop.open(first, chrome.id, authorize(first));
+    assert.equal(inputSends, 3, "serialized actions can retry after completion and resume");
+  } finally { finish.resolve(); w.desktop.close(); }
+});
+
+test("failed native input releases its operation while preserving the normal idle lease", async () => {
+  const w = world();
+  const first = w.make("First", "full"), second = w.make("Second", "full");
+  try {
+    w.setAct(() => ({ error: "Protected target", kind: "blocked" }));
+    await rejects(() => w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first)), 403, /Protected target/);
+    await rejects(() => w.desktop.open(second, chrome.id, authorize(second)), 409, /First/, "busy");
+    w.tick(2501);
+    await w.desktop.open(second, chrome.id, authorize(second));
+  } finally { w.desktop.close(); }
+});
+
+test("revoking a running helper holds input until native termination, then frees it", async () => {
+  const entered = deferred(), reply = deferred(), terminated = deferred();
+  let spawned = 0;
+  const w = world({ onSpawn(helper) {
+    if (++spawned !== 1) return;
+    const send = helper.send.bind(helper), stop = helper.stop.bind(helper);
+    helper.terminated = terminated.promise;
+    helper.send = (request, beforeSend) => {
+      if (request.op === "act") { entered.resolve(); return reply.promise; }
+      return send(request, beforeSend);
+    };
+    helper.stop = () => { stop(); reply.reject(Object.assign(new Error("Helper stopped"), { status: 503 })); };
+  } });
+  const first = w.make("First", "full"), second = w.make("Second", "full");
+  try {
+    const pending = w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first));
+    const stopped = rejects(pending, 503, /Helper stopped/);
+    await entered.promise;
+    w.desktop.cancelClient(first.id);
+    w.tick(30000);
+    // A fresh helper for the same credential must not race its dying helper.
+    await rejects(() => w.desktop.open(first, chrome.id, authorize(first)), 409, /First/, "busy");
+    await rejects(() => w.desktop.open(second, chrome.id, authorize(second)), 409, /First/, "busy");
+    await w.desktop.screenshot(second, authorize(second));
+    terminated.resolve(); await stopped;
+    await w.desktop.open(second, chrome.id, authorize(second));
+  } finally { terminated.resolve(); w.desktop.close(); }
+});
+
+// Exercise the real serial protocol queue without a native process or OS input.
+function inertQueueWorld() {
+  const child = new EventEmitter(), writes = [];
+  child.pid = 123456789; child.exitCode = null; child.signalCode = null;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+  child.stdin.write = line => { writes.push(JSON.parse(line)); return true; };
+  child.stdin.end = () => { child.exitCode = 0; child.emit("exit", 0); };
+  child.kill = () => { child.signalCode = "SIGTERM"; child.emit("exit", null, "SIGTERM"); return true; };
+  const helper = new AgentDesktopHelper(child);
+  const policy = { invite: true, browser: true, preset: "full", roots: ["/tmp/synthetic"] };
+  const client = { id: "synthetic", kind: "agent", name: "Synthetic Agent", policy, scopes: presetScopes(policy), expiresAt: Date.now() + 60000 };
+  let current = client, permitted = true, phone = false;
+  const authorize = () => { if (!permitted) throw Object.assign(Error("Access ended."), { status: 401 }); return current; };
+  const desktop = createAgentDesktop({ screen: true }, {
+    available: () => true, spawnHelper: async () => helper, verifyClient: () => current, phoneControls: () => phone,
+  });
+  return { desktop, helper, writes, client, authorize,
+    reply: () => child.stdout.emit("data", Buffer.from('{"ok":true,"app":"Synthetic App","title":"Synthetic"}\n')),
+    change: name => {
+      if (name === "owner pause") desktop.setPaused(client.id, true);
+      else if (name === "phone control") phone = true;
+      else if (name === "revocation") permitted = false;
+      else if (name === "changed policy") current = { ...client, policy: { ...policy, hidden: [{ id: chrome.id, bundleId: chrome.bundleId }] } };
+    },
+  };
+}
+const turn = () => new Promise(resolve => setImmediate(resolve));
+const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
+
+for (const op of ["act", "open"]) {
+  for (const change of ["owner pause", "phone control", "revocation", "changed policy"]) {
+    test(`queued native ${op} rechecks ${change} after a read and never writes refused input`, async () => {
+      const w = inertQueueWorld();
+      try {
+        const read = outcome(w.desktop.front(w.client, w.authorize));
+        await turn();
+        assert.deepEqual(w.writes.map(item => item.op), ["front"]);
+        const input = outcome(op === "act"
+          ? w.desktop.act(w.client, { type: "key", key: "enter" }, w.authorize)
+          : w.desktop.open(w.client, chrome.id, w.authorize));
+        await turn();
+        const laterRead = outcome(w.desktop.front(w.client, w.authorize));
+        await turn();
+        assert.deepEqual(w.helper.queue.map(item => item.request.op), [op, "front"]);
+        w.change(change);
+        w.reply();
+        const result = await input;
+        assert.equal(result.error?.status, change === "revocation" ? 401 : change === "changed policy" ? 403 : 409);
+        assert.equal(w.writes.some(item => ["act", "open"].includes(item.op)), false, "no refused input bytes reach native stdin");
+        if (["owner pause", "phone control"].includes(change)) {
+          assert.equal(result.error.kind, "paused");
+          assert.equal(w.helper.stopped, false, "an input pause does not kill unrelated reads");
+          assert.deepEqual(w.writes.map(item => item.op), ["front", "front"]);
+          w.reply();
+          assert.equal((await read).value.app, "Synthetic App");
+          assert.equal((await laterRead).value.app, "Synthetic App");
+        } else {
+          assert.equal(w.helper.stopped, true, "revoked or obsolete rules stop this helper");
+          assert.ok((await read).error);
+          assert.ok((await laterRead).error);
+        }
+      } finally { w.desktop.close(); }
+    });
+  }
+  test(`queued native ${op} proceeds normally after a read without rejecting automatic refresh`, async () => {
+    const w = inertQueueWorld();
+    try {
+      const read = w.desktop.front(w.client, w.authorize);
+      await turn();
+      const input = op === "act"
+        ? w.desktop.act(w.client, { type: "key", key: "enter" }, w.authorize)
+        : w.desktop.open(w.client, chrome.id, w.authorize);
+      await turn();
+      assert.deepEqual(w.writes.map(item => item.op), ["front"]);
+      assert.deepEqual(w.helper.queue.map(item => item.request.op), [op]);
+      w.reply();
+      assert.deepEqual(w.writes.map(item => item.op), ["front", op]);
+      w.reply();
+      assert.equal((await read).app, "Synthetic App");
+      assert.equal((await input).ok, true);
+      assert.equal(w.helper.current, null);
+      assert.equal(w.helper.queue.length, 0);
+      assert.equal(w.helper.stopped, false);
+    } finally { w.desktop.close(); }
+  });
+}
+
+
+test("helper timeout drains queued work and retains termination until a forced native exit", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // No child process is launched: an inert process ignores graceful shutdown.
+  const child = new EventEmitter(), events = [];
+  child.pid = 123456789; child.exitCode = null; child.signalCode = null;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+  child.stdin.write = line => { events.push(`write:${JSON.parse(line).op}`); return true; };
+  child.stdin.end = () => { events.push("stdin-end"); };
+  child.kill = signal => {
+    events.push(signal);
+    if (signal === "SIGKILL") { child.signalCode = signal; child.emit("exit", null, signal); }
+    return true;
+  };
+  const helper = new AgentDesktopHelper(child);
+  let terminated = false;
+  helper.terminated.then(() => { terminated = true; });
+  const active = outcome(helper.send({ op: "act" }));
+  const queued = outcome(helper.send({ op: "front" }, () => assert.fail("timed-out queue must never dispatch")));
+  t.mock.timers.tick(14999);
+  assert.equal(helper.stopped, false);
+  assert.deepEqual(events, ["write:act"]);
+  t.mock.timers.tick(1);
+  assert.equal((await active).error.status, 503);
+  assert.equal((await queued).error.status, 503);
+  assert.equal(helper.stopped, true);
+  assert.equal(helper.current, null);
+  assert.equal(helper.queue.length, 0);
+  assert.equal(terminated, false, "rejecting send is not proof the native process stopped");
+  await assert.rejects(helper.send({ op: "act" }), { status: 503 });
+  t.mock.timers.tick(299);
+  assert.deepEqual(events, ["write:act", "stdin-end"]);
+  t.mock.timers.tick(1);
+  assert.deepEqual(events, ["write:act", "stdin-end", "SIGTERM"]);
+  assert.equal(terminated, false);
+  t.mock.timers.tick(999);
+  assert.equal(terminated, false);
+  t.mock.timers.tick(1);
+  await helper.terminated;
+  assert.equal(terminated, true);
+  assert.deepEqual(events, ["write:act", "stdin-end", "SIGTERM", "SIGKILL"]);
+  helper.stop();
+  t.mock.timers.tick(60000);
+  assert.equal(events.length, 4, "stopping again cannot send more signals");
 });

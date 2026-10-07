@@ -1,3 +1,4 @@
+import { agentRequestTimeout } from "../server/agent-transport.mjs";
 import type { Peer } from "./api";
 
 export const funnelStorageKey = "reach.funnel-agent";
@@ -434,7 +435,7 @@ export function createFunnelAgent(dependencies: {
     const response = await signed(
       state,
       { operation: "request", token: peer.token, method, path, body },
-      init.signal || undefined,
+      init.signal || AbortSignal.timeout(agentRequestTimeout(path, method)),
     );
     if (response.ok && method === "GET" && path === "/api/device") {
       const device = await response.clone().json();

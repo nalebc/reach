@@ -100,7 +100,7 @@ export default function AgentPage({ peer, access, onEnd, reload = () => window.l
       )}
       {access.terminals.length > 0 && <TerminalsCard peer={peer} access={access} ended={ended} />}
       <footer className="ap-foot">
-        <Lock size={13} /> Only what is listed above is available. You can't invite anyone, share this link, or reach other folders or apps. {access.standing ? "Access lasts until the owner ends it, in this browser: if you close this page, open it again here." : `Access ends at ${new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
+        <Lock size={13} /> You can't invite anyone or manage other agents. {access.shell ? "Commands run as the owner and are not confined to shared folders." : "Only the shared apps and folders are available."} {access.standing ? "Access lasts until the owner ends it, in this browser: if you close this page, open it again here." : `Access ends at ${new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
       </footer>
     </main>
   );
@@ -113,11 +113,15 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
   const [hiddenCount, setHiddenCount] = useState(0);
   const [screenError, setScreenError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const [mode, setMode] = useState<"click" | "double" | "right">("click");
   const [text, setText] = useState("");
+  const textRevision = useRef(0);
   const [shortcut, setShortcut] = useState("");
-  const [xPercent, setXPercent] = useState("");
-  const [yPercent, setYPercent] = useState("");
+  const [xPercent, setXPercent] = useState("50");
+  const [yPercent, setYPercent] = useState("50");
+  const [toXPercent, setToXPercent] = useState("");
+  const [toYPercent, setToYPercent] = useState("");
   const [front, setFront] = useState<Front | null>(null);
   const [imageSize, setImageSize] = useState<{ w: number; h: number } | null>(null);
   const [zooming, setZooming] = useState(false);
@@ -190,24 +194,35 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
     if (kind === "paused" || kind === "retry") return tell(`Not done: ${error.message} Wait, then try again.`, "is-wait");
     tell(`Not done: ${error.message}`, "is-blocked");
   };
-  const act = async (action: Action, words: string) => {
-    if (acting.current || !access.control) return;
+  // Keep one lock across dependent actions: Enter must never follow refused
+  // typing, and another submit/key must not interleave with Type + Enter.
+  const runActions = async (steps: { action: Action; words: string; applied?: () => void }[]): Promise<boolean> => {
+    if (acting.current || !access.control || !mounted.current) return false;
     acting.current = true;
+    setActionBusy(true);
     inFlight.current?.abort();
-    tell(`${words}…`);
     try {
-      const result = await post("/api/browser/desktop/input", { action });
-      if (!mounted.current) return;
-      tell(`Done: ${words}${result.app ? ` in ${result.app}` : ""}. The screen below is updating.`, "is-done");
+      for (const { action, words, applied } of steps) {
+        if (!mounted.current) return false;
+        tell(`${words}…`);
+        const result = await post("/api/browser/desktop/input", { action });
+        if (!mounted.current) return false;
+        applied?.();
+        tell(`Done: ${words}${result.app ? ` in ${result.app}` : ""}. The screen below is updating.`, "is-done");
+      }
+      return true;
     } catch (e) {
-      if (!mounted.current) return;
+      if (!mounted.current) return false;
       ended(e);
       explain(e as { status?: number; message: string });
+      return false;
     } finally {
       acting.current = false;
+      if (mounted.current) setActionBusy(false);
       setTimeout(() => void refresh(), 350);
     }
   };
+  const act = (action: Action, words: string) => runActions([{ action, words }]);
   // The zoomed view: a quarter of the picture drawn four times larger, from
   // the full-resolution image, so an agent can aim at small controls. Clicks
   // inside it map back to the exact spot on the Mac.
@@ -260,17 +275,47 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
     if (!spot) return;
     clickFraction(zoom.x0 + spot.x * zoom.w, zoom.y0 + spot.y * zoom.h);
   };
+  const coordinates = (xText: string, yText: string, label = "X and Y") => {
+    const x = Number(xText), y = Number(yText);
+    if (!xText.trim() || !yText.trim() || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) {
+      tell(`Not done: give ${label} as percentages from 0 to 100.`, "is-blocked");
+      return null;
+    }
+    return { x: x / 100, y: y / 100 };
+  };
   const clickTyped = () => {
-    const x = Number(xPercent), y = Number(yPercent);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) return tell("Not done: give X and Y as percentages from 0 to 100.", "is-blocked");
-    clickFraction(x / 100, y / 100);
+    const point = coordinates(xPercent, yPercent);
+    if (point) clickFraction(point.x, point.y);
+  };
+  const moveTyped = () => {
+    const point = coordinates(xPercent, yPercent);
+    if (point) void act({ type: "move", ...point }, `moved pointer to ${percent(point.x)}, ${percent(point.y)}`);
+  };
+  const dragTyped = () => {
+    const from = coordinates(xPercent, yPercent);
+    if (!from) return;
+    const to = coordinates(toXPercent, toYPercent, "destination X and Y");
+    if (to) void act({ type: "drag", ...from, toX: to.x, toY: to.y }, `dragged from ${percent(from.x)}, ${percent(from.y)} to ${percent(to.x)}, ${percent(to.y)}`);
+  };
+  const scrollAt = (dx: number, dy: number, direction: string) => {
+    const point = coordinates(xPercent, yPercent);
+    if (point) void act({ type: "scroll", ...point, dx, dy }, `scrolled ${direction} at ${percent(point.x)}, ${percent(point.y)}`);
   };
   const typeText = async (enter: boolean) => {
-    const value = text;
+    const value = text, revision = textRevision.current;
     if (!value) return;
-    await act({ type: "type", text: value }, `typed ${JSON.stringify(value.length > 40 ? value.slice(0, 37) + "…" : value)}`);
-    if (enter && mounted.current) await act({ type: "key", key: "enter" }, "pressed Enter");
-    if (mounted.current) setText("");
+    await runActions([
+      {
+        action: { type: "type", text: value },
+        words: `typed ${JSON.stringify(value.length > 40 ? value.slice(0, 37) + "…" : value)}`,
+        applied: () => {
+          // Acknowledged typing clears its own draft even if Enter later
+          // fails. Edits made while the request was pending remain untouched.
+          if (textRevision.current === revision) { textRevision.current++; setText(""); }
+        },
+      },
+      ...(enter ? [{ action: { type: "key", key: "enter" }, words: "pressed Enter" }] : []),
+    ]);
   };
   const pressShortcut = async () => {
     const parts = shortcut.toLowerCase().split(/[+\s-]+/).filter(Boolean).map((part) => aliases[part] || part);
@@ -283,7 +328,7 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
     try { const value = await request<Front>(peer, "/api/browser/desktop/front"); if (mounted.current) setFront(value); }
     catch (e) { ended(e); tell(`Not done: ${(e as Error).message}`, "is-blocked"); }
   };
-  const canAct = !!access.control && !!imageUrl;
+  const canAct = !!access.control && !!imageUrl && !actionBusy;
   const canAim = canAct || (!!imageUrl && zooming);
   const marker = lastClick && now - lastClick.at < 3000 ? lastClick : null;
   return (
@@ -349,17 +394,26 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
       {access.control ? (
         <div className="ap-controls">
           <div className="ap-row">
-            <span className="ap-row-label"><MousePointerClick size={15} /> Click the picture, or</span>
+            <span className="ap-row-label"><MousePointerClick size={15} /> Pointer position</span>
             <OptionButtons label="Click mode" value={mode} onChange={setMode} options={[{ value: "click", label: "Click" }, { value: "double", label: "Double-click" }, { value: "right", label: "Right-click" }]} />
             <form className="ap-inline" onSubmit={(event) => { event.preventDefault(); clickTyped(); }} aria-label="Click at a position">
               <label>X <input aria-label="X percent" inputMode="numeric" placeholder="50" value={xPercent} onChange={(event) => setXPercent(event.target.value)} /> %</label>
               <label>Y <input aria-label="Y percent" inputMode="numeric" placeholder="50" value={yPercent} onChange={(event) => setYPercent(event.target.value)} /> %</label>
               <button className="ag-secondary ag-small" type="submit" disabled={!canAct}>Click there</button>
+              <button className="ag-secondary ag-small" type="button" disabled={!canAct} onClick={moveTyped}>Move pointer</button>
             </form>
           </div>
+          <form className="ap-row" onSubmit={(event) => { event.preventDefault(); dragTyped(); }} aria-label="Drag from X and Y">
+            <span className="ap-row-label">Drag from X/Y above</span>
+            <span className="ap-inline">
+              <label>To X <input aria-label="Destination X percent" inputMode="decimal" placeholder="75" value={toXPercent} onChange={(event) => setToXPercent(event.target.value)} /> %</label>
+              <label>To Y <input aria-label="Destination Y percent" inputMode="decimal" placeholder="75" value={toYPercent} onChange={(event) => setToYPercent(event.target.value)} /> %</label>
+              <button className="ag-secondary ag-small" type="submit" disabled={!canAct}>Drag there</button>
+            </span>
+          </form>
           <form className="ap-row ap-type" onSubmit={(event) => { event.preventDefault(); void typeText(false); }}>
             <span className="ap-row-label"><Keyboard size={15} /> Type on the Mac</span>
-            <input aria-label="Text to type" placeholder="Text for the focused field" value={text} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(event) => setText(event.target.value)} />
+            <input aria-label="Text to type" placeholder="Text for the focused field" value={text} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(event) => { textRevision.current++; setText(event.target.value); }} />
             <button className="ag-primary ag-small" type="submit" disabled={!text || !canAct}>Type</button>
             <button className="ag-secondary ag-small" type="button" disabled={!text || !canAct} onClick={() => void typeText(true)}><CornerDownLeft size={14} /> Type + Enter</button>
           </form>
@@ -374,9 +428,11 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
             </form>
           </div>
           <div className="ap-row">
-            <span className="ap-row-label">Scroll</span>
-            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => void act({ type: "scroll", x: 0.5, y: 0.5, dy: -600 }, "scrolled up")}><ArrowUp size={15} /> Scroll up</button>
-            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => void act({ type: "scroll", x: 0.5, y: 0.5, dy: 600 }, "scrolled down")}><ArrowDown size={15} /> Scroll down</button>
+            <span className="ap-row-label">Scroll at X/Y above</span>
+            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => scrollAt(0, -600, "up")}><ArrowUp size={15} /> Scroll up</button>
+            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => scrollAt(0, 600, "down")}><ArrowDown size={15} /> Scroll down</button>
+            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => scrollAt(-600, 0, "left")}><ArrowLeft size={15} /> Scroll left</button>
+            <button type="button" className="ag-secondary ag-small" disabled={!canAct} onClick={() => scrollAt(600, 0, "right")}><ArrowRight size={15} /> Scroll right</button>
             <button type="button" className="ag-secondary ag-small" onClick={() => void lookFront()}><Eye size={15} /> Check what's in front</button>
             {front && (
               <span className="ap-front" aria-label="In front">
@@ -398,6 +454,10 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
 
 function AppsCard({ peer, access, tell, ended }: { peer: Peer; access: PresetAccess; tell: (text: string, tone?: "" | "is-wait" | "is-blocked" | "is-done") => void; ended: (e: unknown) => void }) {
   const [apps, setApps] = useState<DesktopApp[] | null>(null);
+  const [query, setQuery] = useState("");
+  const search = query.trim().toLowerCase();
+  const matchingApps = apps?.filter((app) => `${app.name} ${app.bundleId} ${app.id}`.toLowerCase().includes(search)) || [];
+  const shownApps = matchingApps.slice(0, 80);
   const busy = useRef(false);
   const load = useCallback(() => request<{ apps: DesktopApp[] }>(peer, "/api/browser/desktop/apps").then((value) => setApps(value.apps)).catch((e) => { ended(e); tell(`Not done: ${(e as Error).message}`, "is-blocked"); }), [peer, ended, tell]);
   useEffect(() => { void load(); const timer = setInterval(() => void load(), 15000); return () => clearInterval(timer); }, [load]);
@@ -422,7 +482,20 @@ function AppsCard({ peer, access, tell, ended }: { peer: Peer; access: PresetAcc
     <section className="ap-card" aria-labelledby="ap-apps-title">
       <div className="ap-card-head"><h2 id="ap-apps-title"><AppWindow size={16} /> Open an app on the Mac</h2><p className="ap-live">{access.preset === "apps" ? "Only these apps." : "Password apps and Reach are never listed."}</p></div>
       {apps === null ? <p className="ap-quiet">Loading apps…</p> : apps.length ? (
-        <OptionButtons label="Apps you may use" value="" onChange={(id) => void open(String(id))} options={apps.slice(0, 80).map((app) => ({ value: app.id, label: app.name, detail: app.running ? "Running · click to bring it in front" : "Not running · click to open", title: app.id }))} />
+        <>
+          <label className="ap-row ap-type">
+            <span className="ap-row-label"><Search size={15} /> Find an app</span>
+            <input aria-label="Search apps" type="search" placeholder="App name, bundle ID or path" value={query} onChange={(event) => setQuery(event.target.value)} />
+          </label>
+          <p className="ap-quiet" role="status" aria-live="polite">
+            {matchingApps.length > shownApps.length
+              ? `Showing ${shownApps.length} of ${matchingApps.length} ${search ? "matching " : ""}apps. Narrow your search to see the rest.`
+              : search
+                ? matchingApps.length ? `${matchingApps.length} ${matchingApps.length === 1 ? "app matches" : "apps match"} your search (${apps.length} available).` : `No apps match your search (${apps.length} available).`
+                : `${apps.length} apps available.`}
+          </p>
+          {matchingApps.length > 0 && <OptionButtons label="Apps you may use" value="" onChange={(id) => void open(String(id))} options={shownApps.map((app) => ({ value: app.id, label: app.name, detail: app.running ? "Running · click to bring it in front" : "Not running · click to open", title: app.id }))} />}
+        </>
       ) : <p className="ap-quiet">No apps to open.</p>}
     </section>
   );

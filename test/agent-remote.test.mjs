@@ -333,6 +333,7 @@ test(
         seen.push([route, method, body]);
         if (route === "/api/fail")
           throw Error("This credential does not grant exec access.");
+        if (route === "/api/busy") throw Object.assign(Error("Agent B is using the Mac."), { status: 409, body: { kind: "busy", holder: "Agent B", retryInMs: 900, secret: "must not cross" } });
         if (route === "/api/slow") return new Promise(() => {});
         return { ok: route };
       });
@@ -351,6 +352,10 @@ test(
       assert.deepEqual([a, b], [{ ok: "/api/device" }, { ok: "/api/jobs" }]);
       assert.deepEqual(seen[1], ["/api/jobs", "POST", { command: "pwd" }]);
       await assert.rejects(api("/api/fail"), /does not grant exec/);
+      await assert.rejects(api("/api/busy"), error => {
+        assert.deepEqual(error.body, { error: "Agent B is using the Mac.", status: 409, kind: "busy", holder: "Agent B", retryInMs: 900 });
+        return true;
+      });
       // The holder ends (its process exits): callers learn it's gone, then
       // hold the connection themselves.
       const pending = api("/api/slow");

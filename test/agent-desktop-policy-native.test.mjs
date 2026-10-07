@@ -15,6 +15,13 @@ test("selected-app screenshots preserve the protected-window exclusions", async 
   assert.doesNotMatch(screenshot, /exceptingWindows: \[\]/);
 });
 
+test("secure-field key checks use the tested native policy only for secure targets", async () => {
+  const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
+  const keyHandler = source.split('case "key":')[1].split('default:')[0];
+  assert.match(keyHandler, /if target\.element\.secure, !secureKeyAllowed\(name, command\) \{ try refuse\(secureReason\) \}/);
+  assert.doesNotMatch(keyHandler, /target\.element\.secure, !command/);
+});
+
 // The native checker's pure policy, compiled on its own (no AppKit calls run)
 // and fed the same rules the server sends it. Protected apps, Reach's windows
 // and addresses, the Apps preset's set and the owner's hidden apps are
@@ -109,6 +116,15 @@ check(terminalLikeApp("com.apple.Terminal", "Terminal", "/System/Applications/Ut
 check(terminalLikeApp("com.microsoft.VSCode", "Code", "/Applications/Visual Studio Code.app", full), "an IDE is terminal-like")
 check(!terminalLikeApp("com.google.Chrome", "Google Chrome", "/Applications/Google Chrome.app", full), "a browser is not")
 check(mentionsReach("com.reach.app", full) && mentionsReach("Reach — node", full) && !mentionsReach("preacher", full) && !mentionsReach("outreach", full), "reach as a word")
+// Secure fields allow navigation, never typing, deletion or Command shortcuts.
+for key in ["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"] {
+  check(secureKeyAllowed(key, false), "secure field keeps navigation " + key)
+  check(!secureKeyAllowed(key, true), "secure field refuses Command shortcut " + key)
+}
+for key in ["v", "a", "x", "c", "z", "delete", "backspace", "forwarddelete", "space", "1"] {
+  check(!secureKeyAllowed(key, false), "secure field refuses content key " + key)
+  check(!secureKeyAllowed(key, true), "secure field refuses Command content key " + key)
+}
 print("OK")
 `;
     await fs.writeFile(path.join(directory, "policy.swift"), "import Foundation\n" + policy);

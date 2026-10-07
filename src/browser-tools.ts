@@ -1,4 +1,5 @@
 import { peerFetch, request, type Peer } from "./api";
+import { agentRequestTimeout } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest, type BrowserAccess, type BrowserTool } from "../server/browser-tools.mjs";
 export type { BrowserAccess, BrowserTool } from "../server/browser-tools.mjs";
 
@@ -44,11 +45,11 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
   const active = () => {
     if (disposed || expiresAt <= Date.now()) throw Error("This Reach session has ended. Open a new invitation.");
   };
-  const run = async <T,>(operation: (signal: AbortSignal) => Promise<T>) => {
+  const run = async <T,>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs = agentRequestTimeout("")) => {
     active();
     const controller = new AbortController();
     pending.add(controller);
-    const timeout = setTimeout(() => controller.abort(), 35000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const result = await operation(controller.signal);
       active();
@@ -82,7 +83,7 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
         throw Object.assign(Error(body.error || "The shared screen could not be read."), { status: response.status });
       }
       return screenResult(response);
-    }),
+    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : "", "POST")),
   });
   function dispose() {
     disposed = true;

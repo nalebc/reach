@@ -111,7 +111,28 @@ func terminalLikeApp(_ bundleId: String, _ name: String, _ path: String, _ rules
 func compile(_ sources: [String]) -> [NSRegularExpression] {
   sources.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 }
+// Command shortcuts can paste clipboard content or invoke autofill. A secure
+// field accepts navigation only; entering its content belongs to the owner.
+func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
+  !command && ["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"].contains(name)
+}
 // END PURE DESKTOP POLICY
+
+// BEGIN PURE DESKTOP TEXT
+// Each keyboard event must contain complete UTF-16 surrogate pairs. Splitting
+// an emoji between events can insert two replacement characters in the app.
+func keyboardChunks(_ text: String) -> [[UInt16]] {
+  var result: [[UInt16]] = [], chunk: [UInt16] = []
+  for scalar in text.unicodeScalars {
+    let units = Array(String(scalar).utf16)
+    if chunk.count + units.count > 16 { result.append(chunk); chunk = [] }
+    chunk.append(contentsOf: units)
+  }
+  if !chunk.isEmpty { result.append(chunk) }
+  return result
+}
+// END PURE DESKTOP TEXT
+
 
 func out(_ value: [String: Any]) {
   let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8)
@@ -334,9 +355,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
         post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true))
         post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false))
       }
-      let units = Array(line.element.utf16)
-      for start in stride(from: 0, to: units.count, by: 16) {
-        let chunk = Array(units[start..<min(start + 16, units.count)])
+      for chunk in keyboardChunks(line.element) {
         for down in [true, false] {
           let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
           event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
@@ -355,7 +374,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
     if command, ["q", "w"].contains(name), hostsReach(target.app, rules) { try refuse(reachReason) }
     // The developer tools read a page's passwords and run code.
     if isBrowser(target.app.bundleIdentifier ?? ""), (command && option && ["i", "j", "c"].contains(name)) || name == "f12" { try refuse(protectedReason) }
-    if target.element.secure, !command, !["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"].contains(name) { try refuse(secureReason) }
+    if target.element.secure, !secureKeyAllowed(name, command) { try refuse(secureReason) }
     for down in [true, false] {
       let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
       event?.flags = shortcut

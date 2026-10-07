@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { agentRequestTimeout, agentRequestError } from "../server/agent-transport.mjs";
 import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
@@ -171,9 +172,7 @@ export function createAgentClient(
               }
               const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
               if (res.statusCode < 200 || res.statusCode >= 300)
-                throw Error(
-                  result.error || `Reach returned HTTP ${res.statusCode}.`,
-                );
+                throw agentRequestError(res.statusCode, result);
               resolve(result);
             } catch (e) {
               reject(e);
@@ -188,7 +187,7 @@ export function createAgentClient(
               "Reach request timed out. Mutating operations are not retried.",
             ),
           ),
-        35000,
+        agentRequestTimeout(route, method),
       );
       req.on("close", () => clearTimeout(deadline));
       req.on("error", reject);
