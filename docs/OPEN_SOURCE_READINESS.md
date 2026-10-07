@@ -4,7 +4,13 @@ Reach 0.1.0 remains an early-access candidate. The repository is currently **pri
 
 The owner subsequently selected a combined main containing the newer Files, connector and restart work. The original audited cutoff remains on `codex/audited-release-2026-10-07`; the original qualification below describes that cutoff. See the [source reconciliation](RECONCILIATION_2026-10-07.md) for the integrated changes and verification boundary.
 
-## Verified on this candidate
+## Combined-main addendum — October 7, 2026
+
+The owner authorized inclusion of the newer Files viewers, connector management, cross-checkout restart handoff and restored Home Screen refresh fixes. Product source at `67b33dd` passed **1,936 tests: 1,929 passed, 0 failed, 7 skipped** on macOS ARM64 / Node 22.23.3 with native policy/file-boundary/script-sandbox opt-ins enabled. The release build passed. A clean production-only install of the resulting 25.2 MB npm artifact passed CLI, served UI and authenticated file/access-boundary checks. Phone-sized visual checks used real Files components with synthetic data, and the existing private phone address served assets matching the production build byte-for-byte.
+
+Independent review prompted additional regressions for credential-safe errors, cancelled login notifications, shutdown during CLI discovery, reauthorization after config writes, custom-state route handoff, failed page-verification retry and deterministic Windows app discovery. Final combined-main hosted CI is pending. The original cutoff is preserved separately; the historical evidence below does not establish native desktop or physical-device acceptance for these additions. Those gates remain open.
+
+## Verified on the original audited candidate
 
 - Node 22.23.3 on macOS ARM64: **1,892 passed, 0 failed, 7 skipped** out of 1,899 tests, with native policy/file-boundary/script-sandbox flags enabled.
 - TypeScript, production UI/agent build, Go browser networking build and dependency notices passed.
