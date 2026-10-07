@@ -2555,6 +2555,75 @@ export async function createReach(overrides = {}) {
   app.delete("/api/sessions/sign-in", (req, res) =>
     res.json(agentSessions.signIn.cancel(signInAgent(req.query.agent))),
   );
+  // Connectors (agent-sessions/connectors.mjs): GitHub, Linear, … added to
+  // an agent's own configuration from the phone. Tokens go into it and
+  // nowhere else: never in a response or the activity.
+  const connectors = agentSessions.connectors;
+  const connectorName = (value) => (typeof value === "string" ? value : "");
+  app.get("/api/sessions/connectors", async (req, res) =>
+    res.json(
+      await connectors.list(String(req.query.agent || ""), {
+        fresh: req.query.fresh === "1",
+        q: typeof req.query.q === "string" ? req.query.q : "",
+      }),
+    ),
+  );
+  // One connector for several agents at once: the token travels once.
+  app.post("/api/sessions/connectors", async (req, res) => {
+    const body = req.body || {};
+    const agents = [...new Set((Array.isArray(body.agents) ? body.agents : [body.agent]).map(String))].slice(0, 3);
+    const token =
+      body.tokenFrom === "gh"
+        ? await connectors.githubToken()
+        : typeof body.token === "string" && body.token.trim()
+          ? body.token
+          : null;
+    const results = [];
+    for (const agent of agents) {
+      try {
+        const { name } = await connectors.add(agent, { name: body.name, url: body.url, token });
+        record("session", `Added connector ${name} to ${agentLabel(agent)}`);
+        results.push({ agent, ok: true });
+      } catch (e) {
+        results.push({ agent, ok: false, error: e.message, status: e.status });
+      }
+    }
+    const failed = results.find((r) => !r.ok);
+    if (!results.some((r) => r.ok) && failed) throw fail(failed.status || 400, failed.error);
+    res.json({ name: String(body.name || "").trim(), results: results.map(({ status, ...r }) => r) });
+  });
+  app.delete("/api/sessions/connectors", async (req, res) => {
+    const agent = String(req.query.agent || "");
+    const result = await connectors.remove(agent, connectorName(req.query.name));
+    record("session", `Removed connector ${result.name} from ${agentLabel(agent)}`);
+    res.json(result);
+  });
+  app.post("/api/sessions/connectors/apps", async (req, res) => {
+    const result = await connectors.setApp(req.body?.id, req.body?.enabled === true);
+    record("session", `Turned a ChatGPT app ${result.enabled ? "on" : "off"} for Codex`);
+    res.json(result);
+  });
+  app.get("/api/sessions/connectors/login", (req, res) =>
+    res.json(connectors.loginView(String(req.query.agent || ""), connectorName(req.query.name))),
+  );
+  app.post("/api/sessions/connectors/login", async (req, res) => {
+    const agent = String(req.body?.agent || "");
+    const result = await connectors.login(agent, connectorName(req.body?.name));
+    record("session", `Started signing ${agentLabel(agent)} in to connector ${result.name}`);
+    res.json(result);
+  });
+  app.post("/api/sessions/connectors/login/callback", async (req, res) =>
+    res.json(
+      await connectors.callback(
+        String(req.body?.agent || ""),
+        connectorName(req.body?.name),
+        req.body?.url,
+      ),
+    ),
+  );
+  app.delete("/api/sessions/connectors/login", (req, res) =>
+    res.json(connectors.cancel(String(req.query.agent || ""), connectorName(req.query.name))),
+  );
   // Spends one of the account's rate-limit resets, only when asked from the phone.
   app.post("/api/sessions/usage/reset", async (req, res) => {
     const result = await agentSessions.resetUsage(req.body?.agent);

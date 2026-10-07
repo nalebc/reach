@@ -11,6 +11,8 @@ import { createCodexLive } from "./codex-live.mjs";
 import { createClaudeSessions } from "./claude.mjs";
 import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
+import { createConnectors } from "./connectors.mjs";
+import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
@@ -131,6 +133,22 @@ export function createAgentSessions({
   platform = process.platform,
   // The agents' real logos, from the apps installed here (logos.mjs).
   logos = createLogos({ dataDir }),
+  // GitHub, Linear, … for each agent, in its own configuration
+  // (connectors.mjs); none of this computer's in tests.
+  connectors = createConnectors({
+    daemon,
+    locate: process.env.NODE_TEST_CONTEXT
+      ? {}
+      : {
+          claude: () => locateClaude(),
+          codex: () => findCodexExecutable(),
+          gemini: () =>
+            exec(process.env.SHELL || "/bin/zsh", ["-lc", "command -v gemini"], { timeout: 8000 })
+              .then(({ stdout }) => String(stdout).trim().split("\n").pop() || null)
+              .then((found) => (found?.startsWith("/") ? found : null)),
+        },
+    ...(process.env.NODE_TEST_CONTEXT ? { home: path.join(os.tmpdir(), "reach-no-connectors") } : {}),
+  }),
   // Ending another process's hold on a session (the Claude app's).
   kill = (pid, signal) => process.kill(pid, signal),
   alive = (pid) => {
@@ -1007,6 +1025,7 @@ export function createAgentSessions({
       }
     },
     signIn,
+    connectors,
     logos,
     // An agent's files changed (agent-watch): what a chat's status reads from.
     onActivity: (listener) => agentWatch?.onChange(listener) || (() => {}),

@@ -22,6 +22,7 @@ import ChatList, {
 import StrandedMessages from "./StrandedMessages";
 import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
+import Connectors from "./Connectors";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
   AgentLogo,
@@ -702,7 +703,7 @@ export default function EverythingChat({
   }, [health, apps, savedAgent]);
   const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
-  const [sheet, setSheet] = useState<"" | "new" | "review">("");
+  const [sheet, setSheet] = useState<"" | "new" | "review" | "connectors">("");
   // A new chat's folder, when one was asked for (a chat's menu on the list).
   const [newFolder, setNewFolder] = useState("");
   // An OpenClaw chat to open in its own space (one a chat just moved to).
@@ -844,6 +845,7 @@ export default function EverythingChat({
             onAgentChange={setAgent}
             appPending={appPending}
             onRefresh={() => { recheck(); void reload(); }}
+            onConnectors={() => setSheet("connectors")}
             health={health}
             onSectionMoved={() => void reload()}
             onArchived={() => void reload()}
@@ -921,6 +923,11 @@ export default function EverythingChat({
               <p className="chat-sheet-footnote">On {peer.name}</p>
             </>
           )}
+        </ChatSheet>
+      )}
+      {sheet === "connectors" && (
+        <ChatSheet title="Connectors" onClose={() => setSheet("")}>
+          <Connectors peer={peer} logos={logos} />
         </ChatSheet>
       )}
       {sheet === "review" && (

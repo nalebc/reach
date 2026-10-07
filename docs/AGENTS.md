@@ -70,6 +70,22 @@ Available tools:
 - `reach_list_chats`, `reach_create_chat`, `reach_send_message`, `reach_get_chat` (requires `codex` scope)
 - `reach_list_apps`, `reach_open_app`, `reach_see_app`, `reach_app_action`, `reach_hand_to_person`, `reach_wait_for_person`, `reach_close_app` (requires `apps:drive`, Mac only)
 
+## Connectors for Claude Code, Codex and Gemini CLI
+
+Chat → the plug button opens **Connectors**: one list of services, with a chip per agent installed on the computer. Add one and choose which agents get it (all, by default). Reach writes it with each agent's own tools, for every project (user scope):
+
+| Agent | Added with | Signs in |
+| --- | --- | --- |
+| Claude Code | `claude mcp add -s user -t http` (`~/.claude.json`); its claude.ai connectors are listed too | `claude mcp login --no-browser` |
+| Codex | its app-server: `config/batchWrite` on `mcp_servers.<name>` (`~/.codex/config.toml`); ChatGPT's apps from `app/list`, connected on chatgpt.com | `mcpServer/oauth/login` |
+| Gemini CLI | `gemini mcp add -s user -t http` (`~/.gemini/settings.json`) | on the computer: run `gemini`, then `/mcp auth <name>` (a Reach terminal works) |
+
+Signing in from the phone: open the sign-in page, approve, and paste the address the browser lands on (a `localhost` page that can't load on the phone). Reach accepts only the address that sign-in waits for (same localhost port and path as its link, same `state`) and finishes it on the computer.
+
+GitHub's MCP server can't be signed in to by these CLIs (it has no dynamic client registration), so it takes a token: paste a fine-grained personal access token, or use the token of the GitHub CLI signed in on the computer (`gh auth token`; it's read there and never sent to the phone, but it has the GitHub CLI's broad scopes). The token is saved as the server's `Authorization` header in each agent's settings; it is never returned to the phone or written to Reach's activity. Codex keeps using ChatGPT's GitHub app when you have it.
+
+Only the owner's own devices reach these routes (`/api/sessions/connectors…`). Open chats pick a new connector up once restarted.
+
 ## Use apps, and hand them to the person (Tag in)
 
 With `apps:drive`, an agent opens a Mac app on its own hidden display, shaped like a phone, where it works without touching the Mac's own screen. `reach_see_app` returns a picture of the window; `reach_app_action` clicks, types, presses keys or scrolls at that picture's pixels and returns a fresh picture. When only a person should go on (a sign-in code, a payment, "does this look right?"), `reach_hand_to_person` puts the live app on the person's phone with one sentence of what to do, and `reach_wait_for_person` waits for them to hand it back (`back`, with their note) or tell the agent to stop (`stopped`).
