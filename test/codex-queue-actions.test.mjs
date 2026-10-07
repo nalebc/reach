@@ -131,3 +131,57 @@ test("Claude's queue: a waiting message edited where it waits, never one on its 
   assert.equal(outbox.edit("s1", m.id, "too late"), false);
   assert.equal(outbox.edit("s1", "nope", "x"), false);
 });
+
+test("your last message is edited and sent again, as the Codex app's Edit: pictures kept, never mid-turn, only the latest", async () => {
+  const picture = { type: "localImage", path: "/tmp/p.png" };
+  const items = { data: [
+    { turnId: "turn-2", item: { type: "agentMessage", id: "a2", text: "done" } },
+    { turnId: "turn-2", item: { type: "userMessage", id: "u2", content: [{ type: "text", text: "fix it", text_elements: [] }, picture] } },
+    { turnId: "turn-1", item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "older" }] } },
+  ] };
+  const daemon = fakeDaemon({ "thread/turns/list": idle, "thread/items/list": items, "turn/start": { turn: { id: "turn-3", status: "inProgress" } } });
+  const live = createCodexLive({ daemon, desktop: fakeDesktop() });
+  assert.deepEqual(await live.editLast(T, { turnId: "turn-2", text: "fix it properly" }), { edited: true, turnId: "turn-3" });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/revert")[1], { threadId: T, beforeTurnId: "turn-2" });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "turn/start")[1].input, [{ type: "text", text: "fix it properly", text_elements: [] }, picture]);
+  await assert.rejects(live.editLast(T, { turnId: "turn-1", text: "x" }), /most recent/);
+  // While Codex works: stop it first.
+  const busy = createCodexLive({ daemon: fakeDaemon({ "thread/turns/list": running }), desktop: fakeDesktop() });
+  await assert.rejects(busy.editLast(T, { turnId: "turn-2", text: "x" }), /Stop it first/);
+  // Held by the Codex app: the app does it.
+  const edits = [];
+  const held = createCodexLive({
+    daemon: fakeDaemon({ "thread/turns/list": idle, "thread/resume": HELD }),
+    desktop: { editLast: async (id, o) => (edits.push([id, o]), { edited: true }) },
+  });
+  assert.deepEqual(await held.editLast(T, { turnId: "turn-2", text: "via app" }), { edited: true });
+  assert.deepEqual(edits, [[T, { turnId: "turn-2", message: "via app" }]]);
+});
+
+test("Codex's queue takes a new order, and compacting a chat the app holds goes through the app", async () => {
+  const daemon = fakeDaemon({ "thread/queue/list": { data: [] }, "thread/resume": HELD });
+  const compacted = [];
+  const live = createCodexLive({ daemon, desktop: { compact: async (id) => (compacted.push(id), { compacted: true }) } });
+  assert.deepEqual(await live.reorderQueued(T, ["q2", "q1"]), { reordered: true });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/queue/reorder")[1], { threadId: T, queuedSubmissionIds: ["q2", "q1"] });
+  await assert.rejects(live.reorderQueued(T, "q1"), /Invalid order/);
+  assert.deepEqual(await live.call(T, "thread/compact/start", {}), { compacted: true });
+  assert.deepEqual(compacted, [T]);
+  // Anything else stays the app's to run.
+  await assert.rejects(live.call(T, "review/start", {}), /runs this there/);
+});
+
+test("Plan sends Codex's plan mode with the turn, with the chat's model; a chat the Codex app holds says to turn it on there", async () => {
+  const daemon = fakeDaemon({
+    "thread/read": { thread: { id: T, model: "gpt-5.5", cwd: "/w" } },
+    "turn/start": { turn: { id: "turn-9", status: "inProgress" } },
+  });
+  const live = createCodexLive({ daemon, desktop: fakeDesktop() });
+  await live.send(T, { text: "think first", collaboration: "plan" });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "turn/start")[1].collaborationMode, {
+    mode: "plan",
+    settings: { model: "gpt-5.5", reasoning_effort: null, developer_instructions: null },
+  });
+  const held = createCodexLive({ daemon: fakeDaemon({ "thread/resume": HELD }), desktop: fakeDesktop() });
+  await assert.rejects(held.send(T, { text: "x", collaboration: "plan" }), /turn Plan on there/);
+});

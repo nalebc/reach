@@ -170,7 +170,7 @@ test("/rename, /fork and /mcp are Codex's own calls; a fork is left to Codex, no
   );
 });
 
-test("/compact and /review run in the chat as a turn does; a chat the Codex app holds says so", async () => {
+test("/compact and /review run in the chat as a turn does; in a chat the Codex app holds, /compact goes through the app, /review says so", async () => {
   const daemon = fakeDaemon({ "review/start": { turn: { id: "turn-1" }, reviewThreadId: T } });
   const live = createCodexLive({ daemon, queues: false });
   const slash = createSlashCommands({ daemon, codex: codexAdapter, codexLive: live, codexMethods: everything });
@@ -181,9 +181,13 @@ test("/compact and /review run in the chat as a turn does; a chat the Codex app 
   ]);
   assert.equal(live.view(T).status, "running");
   const held = fakeDaemon({ "thread/resume": new Error("thread already has a live local writer") });
-  const busy = createSlashCommands({ daemon: held, codex: codexAdapter, codexLive: createCodexLive({ daemon: held, queues: false }), codexMethods: everything });
-  await assert.rejects(busy.run("codex", T, "compact"), (e) => e.status === 409 && /Codex app has this chat open/.test(e.message));
+  const compacted = [];
+  const desktop = { compact: async (id) => (compacted.push(id), { compacted: true }) };
+  const busy = createSlashCommands({ daemon: held, codex: codexAdapter, codexLive: createCodexLive({ daemon: held, queues: false, desktop }), codexMethods: everything });
+  await busy.run("codex", T, "compact");
+  assert.deepEqual(compacted, [T], "as the Codex app's own /compact");
   assert.ok(!held.calls.some(([m]) => m === "thread/compact/start"));
+  await assert.rejects(busy.run("codex", T, "review", "main"), (e) => e.status === 409 && /Codex app has this chat open/.test(e.message));
 });
 
 test("a skill goes with the message as Codex's skill input; its path is Codex's, never the phone's", async () => {

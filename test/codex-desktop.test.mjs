@@ -247,3 +247,12 @@ test("a steer with no answer after it's written is uncertain, never retried", as
   await assert.rejects(desktop.steer(thread, { input: [{ type: "text", text: "x", text_elements: [] }] }), (e) => e.uncertain === true);
   assert.equal(messages.filter((m) => m.method === "thread-follower-steer-turn").length, 1);
 });
+
+test("editing your last message asks the app that owns the chat, as its own Edit", async () => {
+  const { desktop, messages } = fixture();
+  assert.deepEqual(await desktop.editLast(thread, { turnId: "turn-2", message: "again" }), { edited: true });
+  const edit = messages.find((m) => m.method === "thread-follower-edit-last-user-turn");
+  assert.equal(edit.version, 2);
+  assert.equal(edit.targetClientId, "desktop-owner");
+  assert.deepEqual(edit.params, { conversationId: thread, turnId: "turn-2", message: "again" });
+});

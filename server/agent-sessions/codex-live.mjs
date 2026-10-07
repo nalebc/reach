@@ -550,8 +550,16 @@ export function createCodexLive({
       try {
         await attach(threadId);
       } catch (e) {
-        if (WRITER_HELD.test(e.message))
+        if (WRITER_HELD.test(e.message)) {
+          // Compacting goes through the Codex app itself, as its /compact.
+          if (method === "thread/compact/start") {
+            const done = await desktop.compact(threadId);
+            state(threadId).items++;
+            changed(threadId);
+            return done;
+          }
           throw bad("The Codex app has this chat open, so it runs this there. Run it in the Codex app, or close the chat there and try again.", 409);
+        }
         throw e;
       }
       t.error = null;
@@ -632,7 +640,9 @@ export function createCodexLive({
     },
     // steer: an answer to what Codex asked, into the running turn at once
     // (as the Codex app does), never behind the queue.
-    async send(threadId, { text, images, model, effort, speed, mode, skill, steer = false } = {}) {
+    // collaboration: Codex's plan mode ("plan") or not ("default"), as the
+    // Codex app's Plan toggle sends it with a turn.
+    async send(threadId, { text, images, model, effort, speed, mode, skill, steer = false, collaboration = null } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const input = codexInput({ text, images, skill });
       const t = state(threadId);
@@ -645,6 +655,8 @@ export function createCodexLive({
         await attach(threadId);
       } catch (e) {
         if (!WRITER_HELD.test(e.message)) throw e;
+        if (collaboration === "plan")
+          throw bad("The Codex app has this chat open: turn Plan on there, or close the chat in the Codex app.", 409);
         if (steer && (await runningOnDisk(threadId))) {
           try {
             return { ...(await steerElsewhere(threadId, input)), delivered: true };
@@ -658,10 +670,26 @@ export function createCodexLive({
       t.error = null;
       let r;
       try {
+        // Plan mode names the model it runs with: the one picked, or the chat's.
+        const planned =
+          collaboration === "plan" || collaboration === "default"
+            ? {
+                collaborationMode: {
+                  mode: collaboration,
+                  settings: {
+                    model: model || (await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null))?.thread?.model || "",
+                    reasoning_effort: effort || null,
+                    developer_instructions: null,
+                  },
+                },
+              }
+            : {};
+        if (planned.collaborationMode && !planned.collaborationMode.settings.model) throw bad("Pick a model for plan mode.", 409);
         r = await daemon.rpc("turn/start", {
           threadId,
           input,
           clientUserMessageId: randomUUID(),
+          ...planned,
           ...(model ? { model } : {}),
           ...(effort ? { effort } : {}),
           // The speed too, for this turn and the ones after, as in the app.
@@ -792,6 +820,51 @@ export function createCodexLive({
       }
       await readQueue(threadId);
       return { sent: true };
+    },
+    // The last message edited and sent again, as the Codex app's Edit: only
+    // the most recent one, never while Codex works; its pictures kept. When
+    // the Codex app holds the chat, the app does it.
+    async editLast(threadId, { turnId, text } = {}) {
+      if (!UUID.test(threadId) || typeof turnId !== "string" || !turnId || turnId.length > 128) throw bad("Unknown message.", 404);
+      const words = String(text ?? "");
+      if (!words.trim()) throw bad("Write the message.");
+      if (words.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+      if (await runningOnDisk(threadId)) throw bad("Codex is working. Stop it first to edit your last message.", 409);
+      try {
+        await attach(threadId);
+      } catch (e) {
+        if (!WRITER_HELD.test(e.message)) throw e;
+        const done = await desktop.editLast(threadId, { turnId, message: words });
+        state(threadId).items++;
+        changed(threadId);
+        return done;
+      }
+      try {
+        const r = await daemon.rpc("thread/items/list", { threadId, limit: 50, sortDirection: "desc" });
+        const latest = (r?.data || []).find((entry) => entry?.item?.type === "userMessage");
+        if (!latest || latest.turnId !== turnId) throw bad("Only your most recent message can be edited.", 409);
+        const content = Array.isArray(latest.item.content) ? latest.item.content : [];
+        const at = content.findIndex((c) => c?.type === "text");
+        const input =
+          at < 0
+            ? [{ type: "text", text: words, text_elements: [] }, ...content]
+            : content.map((c, i) => (i === at ? { ...c, text: words, text_elements: [] } : c));
+        await daemon.rpc("thread/revert", { threadId, beforeTurnId: turnId });
+        const started = await daemon.rpc("turn/start", { threadId, input, clientUserMessageId: randomUUID() });
+        begin(threadId, started.turn);
+        return { edited: true, turnId: started.turn?.id || null };
+      } catch (e) {
+        release(threadId);
+        throw e;
+      }
+    },
+    // A new order for what waits, as dragged in the Codex app.
+    async reorderQueued(threadId, order) {
+      if (!UUID.test(threadId) || !Array.isArray(order) || order.length > 100 || !order.every((id) => typeof id === "string" && id && id.length <= 128))
+        throw bad("Invalid order.");
+      await daemon.rpc("thread/queue/reorder", { threadId, queuedSubmissionIds: order });
+      await readQueue(threadId);
+      return { reordered: true };
     },
     // A queued message's words changed in place, its pictures kept.
     async editQueued(threadId, messageId, text) {

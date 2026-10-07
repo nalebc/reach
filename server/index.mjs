@@ -2676,6 +2676,8 @@ export async function createReach(overrides = {}) {
           : {}),
         // An answer to what Codex asked: into its running turn, not the queue.
         ...(req.params.agent === "codex" && req.body?.steer === true ? { steer: true } : {}),
+        // Codex's plan mode for this turn and on (the Codex app's Plan toggle).
+        ...(req.params.agent === "codex" && ["plan", "default"].includes(req.body?.collaboration) ? { collaboration: req.body.collaboration } : {}),
         owner: req.client.id,
       },
     );
@@ -2749,6 +2751,14 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // Your last message edited and sent again (the Codex app's Edit).
+  app.post("/api/sessions/:agent/:id/edit-last", async (req, res) => {
+    const { turnId, text } = req.body || {};
+    if (typeof turnId !== "string" || typeof text !== "string") throw fail(400, "Write the message.");
+    const result = await agentSessions.editLast(req.params.agent, req.params.id, { turnId, text });
+    record("session", `Edited the last message in ${agentLabel(req.params.agent)}`);
+    res.json(result);
+  });
   // A queued message's words changed where it waits (its pictures kept).
   app.post("/api/sessions/:agent/:id/queue/:message/edit", async (req, res) => {
     const text = req.body?.text;

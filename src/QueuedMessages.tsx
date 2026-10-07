@@ -18,7 +18,7 @@ import "./queued-messages.css";
 // - Claude's: a stack that opens on a tap; each row has Send now (into the
 //   chat at once), Edit, remove, and a handle to drag it up or down;
 // - Codex's: a plain list; Send now (its Steer: into the turn it's running),
-//   Edit and remove (the Codex app keeps its own order).
+//   Edit, remove, and a new order (Codex's own thread/queue/reorder).
 // A row opens on a tap to show all of it; Edit changes it where it waits,
 // pictures kept.
 export default function QueuedMessages({
@@ -61,7 +61,7 @@ export default function QueuedMessages({
     .map((id) => byId.get(id))
     .filter(Boolean) as OutboxMessage[];
   const stacked = claude && messages.length > 1 && !open;
-  const sortable = claude && !!onReorder && messages.length > 1 && !stacked;
+  const sortable = !!onReorder && messages.length > 1 && !stacked;
   const label = (m: OutboxMessage) =>
     visibleUserText(m.text) ||
     (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message");

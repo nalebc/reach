@@ -1207,13 +1207,17 @@ export function createAgentSessions({
     // A new order for what waits, dragged on the phone (Claude's outbox only:
     // Codex keeps its own queue).
     async reorderQueued(agent, id, order) {
-      if (host(agent) === codexLive)
-        throw Object.assign(new Error("The Codex app keeps its own queue order."), { status: 409 });
+      if (host(agent) === codexLive) return codexLive.reorderQueued(id, order);
       if (!Array.isArray(order) || order.length > 100 || !order.every((m) => typeof m === "string"))
         throw Object.assign(new Error("Invalid order."), { status: 400 });
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
+    },
+    // Your last message edited and sent again, as the Codex app's Edit.
+    async editLast(agent, id, body) {
+      if (host(agent) !== codexLive) throw Object.assign(new Error("Edit your last message from the Claude app."), { status: 409 });
+      return codexLive.editLast(id, body);
     },
     // A queued message edited where it waits, as in both apps.
     async editQueued(agent, id, messageId, text) {

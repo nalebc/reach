@@ -18,6 +18,10 @@ const settingsUncertain = () =>
   fail(
     "Codex didn't confirm the model change. Check its model before trying again.",
   );
+const editUnavailable = () =>
+  fail("The Codex app couldn't edit that message. Try again once the chat is open in Codex.");
+const editUncertain = () =>
+  Object.assign(fail("The Codex app didn't confirm the edit. Check the chat before trying again."), { uncertain: true });
 const steerUnavailable = () =>
   fail("The Codex app couldn't take it now. It stays queued.");
 const steerUncertain = () =>
@@ -236,6 +240,31 @@ export function createCodexDesktop({
         unavailable: steerUnavailable,
         uncertain: steerUncertain,
       }).then(() => ({ steered: true, clientUserMessageId }));
+    },
+    // Compact the chat's context, as the Codex app's own /compact.
+    compact(conversationId) {
+      return ask(conversationId, {
+        method: "thread-follower-compact-thread",
+        version: 1,
+        params: {},
+        check: (result) => result?.ok === true,
+        unavailable: () => fail("The Codex app couldn't compact this chat now."),
+        uncertain: () => Object.assign(fail("The Codex app didn't confirm compacting. Check the chat."), { uncertain: true }),
+      }).then(() => ({ compacted: true }));
+    },
+    // The last message edited and sent again, as the Codex app's own Edit:
+    // the app reverts that turn and starts it with the new words.
+    editLast(conversationId, { turnId, message }) {
+      if (typeof turnId !== "string" || !turnId || typeof message !== "string" || !message.trim())
+        return Promise.reject(editUnavailable());
+      return ask(conversationId, {
+        method: "thread-follower-edit-last-user-turn",
+        version: 2,
+        params: { turnId, message },
+        check: (result) => result != null && typeof result === "object",
+        unavailable: editUnavailable,
+        uncertain: editUncertain,
+      }).then(() => ({ edited: true }));
     },
     model(conversationId, { model, effort }) {
       if (typeof model !== "string" || !model.trim())

@@ -30,6 +30,7 @@ import {
   Share,
   ShieldCheck,
   SquarePen,
+  ListChecks,
   Square,
   Terminal,
   TriangleAlert,
@@ -70,6 +71,7 @@ import {
   readSession,
   sendMessage,
   cancelQueuedMessage,
+  editLastMessage,
   editQueued,
   reorderQueued,
   sendQueuedNow,
@@ -211,11 +213,14 @@ function Copyable({
   text,
   side,
   bare = false,
+  onEdit,
   children,
 }: {
   text: string;
   side: "user" | "assistant";
   bare?: boolean;
+  // Your last message, edited and sent again (the Codex app's Edit).
+  onEdit?: () => void;
   children: ReactNode;
 }) {
   const [shown, setShown] = useState(false);
@@ -247,6 +252,11 @@ function Copyable({
           >
             {copied ? <Check size={15} /> : <Copy size={15} />}
           </button>
+          {onEdit && (
+            <button className="as-icon" aria-label="Edit message" onClick={onEdit}>
+              <SquarePen size={15} />
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1429,6 +1439,24 @@ export default function AgentSessionView({
   const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
+  // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
+  // phone; once touched, each message says whether it's on.
+  const planKey = `reach:codex-plan:${initial.id}`;
+  const [planMode, setPlanMode] = useState<"plan" | "default" | null>(() => {
+    try {
+      const saved = localStorage.getItem(planKey);
+      return saved === "plan" || saved === "default" ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+  const togglePlan = () => {
+    const next = planMode === "plan" ? "default" : "plan";
+    setPlanMode(next);
+    try {
+      localStorage.setItem(planKey, next);
+    } catch {}
+  };
 
   // The version of the newest page we hold; unchanged polls cost no render.
   const known = useRef("");
@@ -1832,6 +1860,7 @@ export default function AgentSessionView({
         ...(!heldByApp && choice.speed ? { speed: choice.speed } : {}),
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
         ...(skill ? { skill: skill.name } : {}),
+        ...(agent === "codex" && planMode ? { collaboration: planMode } : {}),
       });
       if (skill) slashMenu.clearSkill();
       sentUrls.current.push(...ready.map((a) => a.url));
@@ -1863,6 +1892,26 @@ export default function AgentSessionView({
       setProblem((e as Error).message);
     } finally {
       setStopping(false);
+    }
+  };
+  // Your last message, editable as in the Codex app: the most recent one,
+  // while Codex isn't working.
+  const [editingLast, setEditingLast] = useState<{ id: string; turnId: string; text: string; busy: boolean } | null>(null);
+  const lastEditable = useMemo(() => {
+    if (agent !== "codex" || info.status === "running" || info.status === "waiting") return null;
+    const last = [...(items || [])].reverse().find((i) => i.role === "user");
+    return last?.turnId && !last.slash ? last.id : null;
+  }, [agent, info.status, items]);
+  const saveLastEdit = async () => {
+    if (!editingLast || editingLast.busy) return;
+    setEditingLast({ ...editingLast, busy: true });
+    try {
+      await editLastMessage(peer, initial, { turnId: editingLast.turnId, text: editingLast.text });
+      setEditingLast(null);
+      void load(false);
+    } catch (e) {
+      setProblem((e as Error).message);
+      setEditingLast((old) => (old ? { ...old, busy: false } : old));
     }
   };
   const answerAsyncQuestion = async (text: string) => {
@@ -2082,8 +2131,39 @@ export default function AgentSessionView({
                 item={b.item}
                 agent={info.subagents?.find((a) => a.toolUseId === b.item.id || a.id === b.item.agentId)}
               />
+            ) : b.item.role === "user" && editingLast?.id === b.item.id ? (
+              <form
+                key={b.item.id}
+                className="as-edit-last"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void saveLastEdit();
+                }}
+              >
+                <textarea
+                  autoFocus
+                  aria-label="Edit your message"
+                  value={editingLast.text}
+                  rows={Math.min(10, Math.max(3, editingLast.text.split("\n").length + 1))}
+                  onChange={(e) => setEditingLast({ ...editingLast, text: e.target.value })}
+                />
+                <span className="as-edit-actions">
+                  <button type="button" disabled={editingLast.busy} onClick={() => setEditingLast(null)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="primary" disabled={editingLast.busy || !editingLast.text.trim()}>
+                    {editingLast.busy ? <Loader2 size={14} className="spin" /> : "Send"}
+                  </button>
+                </span>
+              </form>
             ) : b.item.role === "user" ? (
-              <Copyable key={b.item.id} text={b.item.text} side="user" bare={!b.item.text.trim()}>
+              <Copyable
+                key={b.item.id}
+                text={b.item.text}
+                side="user"
+                bare={!b.item.text.trim()}
+                onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
+              >
               <div className="as-user">
                 {b.item.queued && (
                   <span className="as-tag">Sent while working</span>
@@ -2494,7 +2574,7 @@ export default function AgentSessionView({
               } catch (error) { setProblem((error as Error).message); }
               finally { setQueueBusy(null); }
             }}
-            {...(agent === "claude" && {
+            {...((agent === "claude" || agent === "codex") && {
               onReorder: async (ids: string[]) => {
                 try {
                   await reorderQueued(peer, initial, ids);
@@ -2591,6 +2671,16 @@ export default function AgentSessionView({
               >
                 {agent === "codex" && <ShieldCheck size={14} />}
                 <span>{modeShown ? modeName(modeShown) : "Default"}</span>
+              </button>
+            )}
+            {agent === "codex" && (
+              <button
+                className={`as-plan-toggle ${planMode === "plan" ? "on" : ""}`}
+                aria-pressed={planMode === "plan"}
+                title={heldByApp ? "The Codex app has this chat open: turn Plan on there" : "Plan before doing, as the Codex app's Plan"}
+                onClick={togglePlan}
+              >
+                <ListChecks size={14} /> Plan
               </button>
             )}
             <span className="as-spacer" />

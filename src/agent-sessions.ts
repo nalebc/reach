@@ -504,7 +504,7 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean };
+export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
 // Messages from the phone whose chat was deleted (server outbox.mjs): sent to
@@ -514,6 +514,9 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// Your last message edited and sent again (the Codex app's Edit).
+export const editLastMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: { turnId: string; text: string }) =>
+  post<{ edited: true }>(peer, `${sessionPath(s)}/edit-last`, body);
 // A queued message's words changed where it waits (pictures kept).
 export const editQueued = (peer: Peer, s: { agent: AgentName; id: string }, id: string, text: string) =>
   post<{ edited: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/edit`, { text });

@@ -1701,3 +1701,65 @@ button.as-mode:disabled {
   color: inherit;
   font-size: 16px; /* no zoom on iOS */
 }
+
+/* Your last message, edited where it is (the Codex app's Edit). */
+.as-edit-last {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: flex-end;
+  width: min(100%, 520px);
+  margin: 6px 0;
+}
+.as-edit-last textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 14px;
+  background: rgb(0 0 0 / 0.25);
+  color: inherit;
+  font: inherit;
+  font-size: 16px; /* no zoom on iOS */
+  resize: vertical;
+}
+.as-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.as-edit-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.as-edit-actions button.primary {
+  border-color: transparent;
+  background: var(--lime, #b9efd4);
+  color: var(--lime-ink, #16362a);
+}
+
+/* Codex's Plan toggle, beside the permission mode (the Codex app's Plan). */
+.as-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted, var(--muted));
+  font: inherit;
+  font-size: 13px;
+}
+.as-plan-toggle.on {
+  border-color: color-mix(in srgb, var(--lime, #b9efd4) 40%, transparent);
+  background: color-mix(in srgb, var(--lime, #b9efd4) 12%, transparent);
+  color: var(--lime, #b9efd4);
+}
