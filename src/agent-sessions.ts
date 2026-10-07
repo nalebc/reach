@@ -504,7 +504,7 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
+export type Outgoing = { text: string; images: string[]; files?: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
 // Messages from the phone whose chat was deleted (server outbox.mjs): sent to
@@ -514,6 +514,9 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// A chat deleted, as in its app.
+export const deleteSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
+  request<{ deleted: true }>(peer, sessionPath(s), { method: "DELETE" });
 // A chat renamed, as in its app.
 export const renameSession = (peer: Peer, s: { agent: AgentName; id: string }, title: string) =>
   post<{ title: string }>(peer, `${sessionPath(s)}/rename`, { title });
@@ -652,6 +655,17 @@ export function listCommands(peer: Peer, agent: AgentName) {
   return commandCache.get(key)!;
 }
 
+// Any other file for a message; it goes to the agent as its path.
+export async function uploadFile(peer: Peer, file: Blob, name = "file") {
+  const form = new FormData();
+  form.append("file", file, name);
+  const r = await request<{ id: string; name: string }>(peer, "/api/sessions/files", {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(300000),
+  });
+  return r.id;
+}
 export async function uploadImage(peer: Peer, file: Blob, name = "image") {
   const form = new FormData();
   form.append("file", file, name);

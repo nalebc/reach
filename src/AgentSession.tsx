@@ -31,6 +31,8 @@ import {
   ShieldCheck,
   SquarePen,
   ListChecks,
+  GitFork,
+  Trash2,
   Square,
   Terminal,
   TriangleAlert,
@@ -44,12 +46,13 @@ import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
+import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
-import { SkillChip, SlashMenu, useSlashMenu } from "./SlashMenu";
+import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -74,6 +77,7 @@ import {
   editLastMessage,
   editQueued,
   renameSession,
+  deleteSession,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -81,6 +85,7 @@ import {
   setAgentModel,
   stopSession,
   uploadImage,
+  uploadFile,
   usageLink,
   useSessionLive,
   whereLabel,
@@ -215,6 +220,7 @@ function Copyable({
   side,
   bare = false,
   onEdit,
+  onFork,
   children,
 }: {
   text: string;
@@ -222,6 +228,8 @@ function Copyable({
   bare?: boolean;
   // Your last message, edited and sent again (the Codex app's Edit).
   onEdit?: () => void;
+  // A new chat with everything up to here (the Codex app's Fork).
+  onFork?: () => void;
   children: ReactNode;
 }) {
   const [shown, setShown] = useState(false);
@@ -256,6 +264,11 @@ function Copyable({
           {onEdit && (
             <button className="as-icon" aria-label="Edit message" onClick={onEdit}>
               <SquarePen size={15} />
+            </button>
+          )}
+          {onFork && (
+            <button className="as-icon" aria-label="Fork from here" onClick={onFork}>
+              <GitFork size={15} />
             </button>
           )}
         </div>
@@ -1278,7 +1291,8 @@ export function PromptCard({
   );
 }
 
-type Attachment = { key: number; url: string; id?: string; error?: string };
+// A picture (url: its preview), or any other file (file: its name).
+type Attachment = { key: number; url: string; id?: string; error?: string; file?: string };
 let attachmentSeq = 0;
 
 // A new chat's model and effort: the same pickers as in a chat (ModelSheet.tsx).
@@ -1440,6 +1454,8 @@ export default function AgentSessionView({
   const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
+  // "@" typed last in the box: the files to pick from (MentionMenu).
+  const mentionQuery = /(?:^|\s)@([^\s@]{0,80})$/.exec(text)?.[1] ?? null;
   // The chat's new name, while it's being typed (⋯ → its pencil).
   const [renaming, setRenaming] = useState<string | null>(null);
   // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
@@ -1763,8 +1779,16 @@ export default function AgentSessionView({
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
-      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name))
+      // Not a picture: sent as a file, the agent reads it by its path.
+      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) {
+        const key = ++attachmentSeq;
+        setAttachments((list) => [...list, { key, url: "", file: file.name || "file" }]);
+        uploadFile(peer, file, file.name || "file").then(
+          (id) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, id } : a))),
+          (e) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, error: (e as Error).message } : a))),
+        );
         continue;
+      }
       const key = ++attachmentSeq;
       setAttachments((list) => [
         ...list,
@@ -1787,7 +1811,7 @@ export default function AgentSessionView({
   const removeAttachment = (key: number) =>
     setAttachments((list) => {
       const gone = list.find((a) => a.key === key);
-      if (gone) URL.revokeObjectURL(gone.url);
+      if (gone?.url) URL.revokeObjectURL(gone.url);
       return list.filter((a) => a.key !== key);
     });
   const uploading = attachments.some((a) => !a.id && !a.error);
@@ -1857,7 +1881,8 @@ export default function AgentSessionView({
       await draftSync.current?.settle();
       const r = await sendMessage(peer, initial, {
         text: message.text,
-        images: ready.map((a) => a.id!),
+        images: ready.filter((a) => !a.file).map((a) => a.id!),
+        ...(ready.some((a) => a.file) ? { files: ready.filter((a) => a.file).map((a) => a.id!) } : {}),
         ...(!heldByApp && choice.model ? { model: choice.model } : {}),
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
         ...(!heldByApp && choice.speed ? { speed: choice.speed } : {}),
@@ -1905,6 +1930,15 @@ export default function AgentSessionView({
     const last = [...(items || [])].reverse().find((i) => i.role === "user");
     return last?.turnId && !last.slash ? last.id : null;
   }, [agent, info.status, items]);
+  // A new chat with everything up to this message (the Codex app's Fork).
+  const forkFrom = async (turnId: string) => {
+    try {
+      const r = await runSlashCommand(peer, initial, "fork", turnId);
+      if (r.session) onSelect(r.session as AgentSession);
+    } catch (e) {
+      setProblem((e as Error).message);
+    }
+  };
   const saveLastEdit = async () => {
     if (!editingLast || editingLast.busy) return;
     setEditingLast({ ...editingLast, busy: true });
@@ -2103,6 +2137,25 @@ export default function AgentSessionView({
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>
+            {(agent === "claude" || agent === "codex") && (
+              <button
+                className="as-details-delete"
+                role="menuitem"
+                onClick={async () => {
+                  if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
+                    return;
+                  try {
+                    await deleteSession(peer, initial);
+                    setDetails(false);
+                    onBack();
+                  } catch (error) {
+                    setProblem((error as Error).message);
+                  }
+                }}
+              >
+                <Trash2 size={15} /> Delete chat
+              </button>
+            )}
             {/* Continue this chat in the other app. */}
             <MoveItems
               peer={peer}
@@ -2193,6 +2246,7 @@ export default function AgentSessionView({
                 side="user"
                 bare={!b.item.text.trim()}
                 onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
+                onFork={agent === "codex" && b.item.turnId ? () => void forkFrom(b.item.turnId!) : undefined}
               >
               <div className="as-user">
                 {b.item.queued && (
@@ -2625,12 +2679,18 @@ export default function AgentSessionView({
                     className={`as-thumb ${a.error ? "bad" : ""}`}
                     title={a.error}
                   >
-                    <img src={a.url} alt="" />
+                    {a.file ? (
+                      <span className="as-file-chip">
+                        <FileText size={14} aria-hidden="true" /> {a.file}
+                      </span>
+                    ) : (
+                      <img src={a.url} alt="" />
+                    )}
                     {!a.id && !a.error && (
                       <Loader2 size={16} className="spin" />
                     )}
                     <button
-                      aria-label="Remove image"
+                      aria-label={a.file ? "Remove file" : "Remove image"}
                       onClick={() => removeAttachment(a.key)}
                     >
                       <X size={12} />
@@ -2640,6 +2700,20 @@ export default function AgentSessionView({
               </div>
             )}
             <SkillChip menu={slashMenu} />
+            {(agent === "claude" || agent === "codex") && mentionQuery !== null && (
+              <MentionMenu
+                peer={peer}
+                session={initial}
+                query={mentionQuery}
+                onPick={(file) => {
+                  // As each agent names a file: @path for Claude Code, the path for Codex.
+                  const next = text.replace(/@([^\s@]{0,80})$/, `${agent === "claude" ? "@" : ""}${file} `);
+                  setText(next);
+                  draftSync.current?.update(next);
+                  field.current?.focus({ preventScroll: true });
+                }}
+              />
+            )}
             <textarea
               ref={field}
               aria-label="Message"
@@ -2679,7 +2753,6 @@ export default function AgentSessionView({
             <input
               ref={picker}
               type="file"
-              accept="image/*"
               multiple
               hidden
               onChange={(e) => {

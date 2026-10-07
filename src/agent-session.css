@@ -1793,3 +1793,77 @@ button.as-mode:disabled {
   color: var(--lime-ink, #16362a);
   font-weight: 600;
 }
+
+/* "@" in the box: the chat folder's files to pick from. */
+.as-mentions {
+  display: flex;
+  flex-direction: column;
+  max-height: 40vh;
+  margin: 0 0 6px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgb(0 0 0 / 0.3);
+  list-style: none;
+}
+.as-mentions button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.as-mentions button:hover {
+  background: rgb(255 255 255 / 0.06);
+}
+.as-mention-name {
+  flex: none;
+  font-size: 14px;
+}
+.as-mentions small {
+  overflow: hidden;
+  color: var(--as-muted, var(--muted));
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A file attached (not a picture): its name. */
+.as-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  height: 100%;
+  padding: 0 10px;
+  overflow: hidden;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.as-thumb:has(.as-file-chip) {
+  width: auto;
+}
+
+/* Delete, at the end of the chat's ⋯ menu. */
+.as-details-delete {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
+  background: none;
+  color: #f1a08d;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}

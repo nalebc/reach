@@ -95,3 +95,27 @@ test("renaming a Claude chat writes Claude Code's own title line, and the Claude
   await assert.rejects(() => claude.rename("33333333-4444-4555-8666-777777777777", "x"), (e) => e.status === 404);
   await fs.rm(root, { recursive: true, force: true });
 });
+
+test("deleting a Claude chat moves its transcript and the app's record to the Trash; while the Claude app lists it, it's deleted there", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-delete-"));
+  const projects = path.join(root, "projects", "-work-app");
+  const records = path.join(root, "records", "acct", "org");
+  const trash = path.join(root, "Trash");
+  await fs.mkdir(projects, { recursive: true });
+  await fs.mkdir(records, { recursive: true });
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), said(ID));
+  await fs.writeFile(path.join(projects, `${CLI_ONLY}.jsonl`), said(CLI_ONLY));
+  await fs.writeFile(path.join(records, `local_${ID}.json`), JSON.stringify({ sessionId: `local_${ID}`, cliSessionId: ID, isArchived: false }));
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  await assert.rejects(() => claude.remove(ID, { appOpen: true, trash }), (e) => e.status === 409 && /delete it there/.test(e.message));
+  assert.deepEqual(await claude.remove(ID, { appOpen: false, trash }), { deleted: true });
+  assert.deepEqual(await fs.readdir(projects), [`${CLI_ONLY}.jsonl`]);
+  assert.deepEqual(await fs.readdir(records), []);
+  const kept = await fs.readdir(trash);
+  assert.equal(kept.length, 2, "both still in the Trash");
+  assert.ok(kept.some((f) => f.startsWith(ID) && f.endsWith(".jsonl")));
+  // Only Claude Code has it: deleted while the app is open too.
+  assert.deepEqual(await claude.remove(CLI_ONLY, { appOpen: true, trash }), { deleted: true });
+  await assert.rejects(() => claude.remove(ID, { trash }), (e) => e.status === 404);
+  await fs.rm(root, { recursive: true, force: true });
+});

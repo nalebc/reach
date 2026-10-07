@@ -12,6 +12,7 @@ import { createClaudeSessions } from "./claude.mjs";
 import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createConnectorLogos } from "./connector-logos.mjs";
+import { createFileSearch } from "./file-search.mjs";
 import { createConnectors } from "./connectors.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
@@ -286,6 +287,7 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? { write: null, appRunning: async () => false } : {}),
   });
   const adapters = { codex, claude, gemini };
+  const fileSearch = createFileSearch();
   const adapter = (agent) => {
     const a = adapters[agent];
     if (!a) throw Object.assign(new Error("Unknown agent."), { status: 404 });
@@ -1213,6 +1215,36 @@ export function createAgentSessions({
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
+    },
+    // A chat deleted, as in its app: Codex's own delete; a Claude chat's
+    // transcript and record to the Trash (claude.mjs remove).
+    async deleteChat(agent, id) {
+      adapter(agent);
+      if (agent === "codex") {
+        await daemon.rpc("thread/delete", { threadId: id });
+        listChanged();
+        return { deleted: true };
+      }
+      if (agent !== "claude") throw Object.assign(new Error("This chat can't be deleted here."), { status: 409 });
+      if (claudeHost.drives(id)) throw Object.assign(new Error("Claude is working in this chat. Stop it first."), { status: 409 });
+      const done = await claude.remove(id, { appOpen: await claudeOpen() });
+      listChanged();
+      return done;
+    },
+    // Files in a chat's folder for "@" in its composer: Codex's own search
+    // for Codex, the folder's files for Claude Code (file-search.mjs).
+    async findFiles(agent, id, query) {
+      adapter(agent);
+      if (agent === "codex") {
+        const { thread } = await daemon.rpc("thread/read", { threadId: id, includeTurns: false });
+        if (!thread?.cwd) return [];
+        const r = await daemon.rpc("fuzzyFileSearch", { query: String(query || ""), roots: [thread.cwd], cancellationToken: null }).catch(() => null);
+        if (r && Array.isArray(r.files))
+          return r.files.slice(0, 30).map((f) => ({ path: String(f.path), name: String(f.file_name || path.basename(String(f.path))) }));
+        return fileSearch.search(thread.cwd, query);
+      }
+      const { session } = await adapters[agent].read(id, { limit: 1 });
+      return fileSearch.search(session.cwd, query);
     },
     // A chat renamed, as in its app: Codex's thread name, Claude Code's
     // custom title (and the Claude app's record).

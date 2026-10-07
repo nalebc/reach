@@ -100,7 +100,7 @@ import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
-import { createAgentImages } from "./agent-sessions/images.mjs";
+import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
@@ -2427,6 +2427,11 @@ export async function createReach(overrides = {}) {
   const agentImages = createAgentImages({
     dir: path.join(config.dataDir, "agent-images"),
   });
+  const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
+  const fileUpload = multer({
+    dest: path.join(config.dataDir, "agent-files"),
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
+  });
   const imageUpload = multer({
     dest: path.join(config.dataDir, "agent-images"),
     limits: {
@@ -2445,6 +2450,8 @@ export async function createReach(overrides = {}) {
     codex: ["auto", "guardian-approvals", "full-access", "read-only"],
     claude: ["default", "auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"],
   };
+  const withFiles = (text, files, agent) =>
+    files.length ? [text.trim(), files.map((f) => (agent === "claude" ? `@${f}` : f)).join("\n")].filter(Boolean).join("\n\n") : text;
   const turnOptions = (body, agent) => {
     if (body.model !== undefined && body.model !== null && !MODEL.test(body.model))
       throw fail(400, "Unknown model.");
@@ -2456,7 +2463,9 @@ export async function createReach(overrides = {}) {
     if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
       throw fail(400, "Unknown speed.");
     return {
-      text: typeof body.text === "string" ? body.text : "",
+      // Files attached go as their paths, as each agent's composer names a
+      // file: @path for Claude Code, the path for Codex.
+      text: withFiles(typeof body.text === "string" ? body.text : "", agentFiles.paths(body.files), agent || body.agent),
       images: agentImages.paths(body.images),
       model: body.model || undefined,
       effort: body.effort || undefined,
@@ -2630,6 +2639,15 @@ export async function createReach(overrides = {}) {
     record("session", "Used a Codex rate-limit reset from the phone");
     res.json(result);
   });
+  // Any file for a message (images go as images, above).
+  app.post("/api/sessions/files", fileUpload.single("file"), async (req, res) => {
+    if (!req.file) throw fail(400, "Choose a file.");
+    res.json({ id: agentFiles.add(req.file.path, req.file.originalname), name: path.basename(req.file.originalname || "file") });
+  });
+  // Files in a chat's folder, for "@" in its composer.
+  app.get("/api/sessions/:agent/:id/files", async (req, res) =>
+    res.json({ files: await agentSessions.findFiles(req.params.agent, req.params.id, typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "") }),
+  );
   app.post(
     "/api/sessions/images",
     imageUpload.single("file"),
@@ -2751,6 +2769,13 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // A chat deleted, as in its app (Codex's delete; a Claude chat to the Trash).
+  app.delete("/api/sessions/:agent/:id", async (req, res) => {
+    macOwner(req);
+    const result = await agentSessions.deleteChat(req.params.agent, req.params.id);
+    record("session", `Deleted a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
   // A chat renamed, as in its app.
   app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
     if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");

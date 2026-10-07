@@ -382,6 +382,34 @@ export function createClaudeSessions({
       recordCache.delete(file);
       return { archived: !!archived };
     },
+    // Deleted: its transcript (and the Claude app's record of it) to the
+    // Trash, where it can still be found. appOpen: the Claude app is running;
+    // a chat it lists is deleted there then (it would write it back).
+    async remove(id, { appOpen = false, trash = path.join(os.homedir(), ".Trash") } = {}) {
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await records();
+      const record = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0] || null;
+      if (record && appOpen) throw Object.assign(new Error("The Claude app has this chat in its list: delete it there."), { status: 409 });
+      await fs.mkdir(trash, { recursive: true });
+      const away = async (file) => {
+        const to = path.join(trash, `${path.basename(file, path.extname(file))} ${new Date().toISOString().replace(/[:.]/g, "-")}${path.extname(file)}`);
+        try {
+          await fs.rename(file, to);
+        } catch (e) {
+          if (e.code !== "EXDEV") throw e;
+          await fs.copyFile(file, to);
+          await fs.rm(file);
+        }
+      };
+      await away(found.file);
+      if (record) {
+        await away(record);
+        recordCache.delete(record);
+      }
+      cache.delete(found.file);
+      return { deleted: true };
+    },
     // Renamed as Claude Code renames a chat: a custom-title line in its
     // transcript (what rename_session writes; appended whole, as one line);
     // in the Claude app's list too, its record's title.
