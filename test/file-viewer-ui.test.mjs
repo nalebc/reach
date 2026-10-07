@@ -134,7 +134,7 @@ test("Markdown renders formatted text safely and toggles exact source", async ()
     view.container.querySelector(".file-viewer-markdown"),
   );
   assert.equal(
-    view.container.querySelector(".file-viewer-markdown h4").textContent,
+    view.container.querySelector(".file-viewer-markdown h1").textContent,
     "Notes",
   );
   assert.equal(
@@ -158,18 +158,28 @@ test("Markdown renders formatted text safely and toggles exact source", async ()
   dom.update(() =>
     view.container.querySelector('[aria-label="Show source"]').click(),
   );
+  await dom.waitFor(() => view.container.querySelector(".file-code-source"));
   assert.equal(
-    view.container.querySelector(".file-viewer-body > pre").textContent,
+    view.container.querySelector(".file-code-source").textContent,
     text,
   );
   assert.equal(
     view.container
       .querySelector('[aria-label="Show formatted"]')
       .getAttribute("aria-pressed"),
+    "false",
+  );
+  assert.equal(
+    view.container
+      .querySelector('[aria-label="Show source"]')
+      .getAttribute("aria-pressed"),
     "true",
   );
   dom.update(() =>
     view.container.querySelector('[aria-label="Show formatted"]').click(),
+  );
+  await dom.waitFor(() =>
+    view.container.querySelector(".file-viewer-markdown"),
   );
   assert.ok(view.container.querySelector(".file-viewer-markdown"));
   assert.equal(
@@ -177,6 +187,69 @@ test("Markdown renders formatted text safely and toggles exact source", async ()
     0,
     "Markdown does not download binary preview bytes",
   );
+  await view.unmount();
+});
+
+test("Markdown files show nested lists, tasks, quotes, tables and fenced code", async () => {
+  text =
+    "# Project\n\n> A *useful* note\n\n- Parent\n  - Child\n\n- [x] Done\n- [ ] Next\n\n| Name | Value |\n| --- | ---: |\n| **Total** | 42 |\n\n```js\nconst answer = 42;\n```\n\n![remote](https://example.com/track.png)";
+  const view = await show("README.markdown");
+  const markdown = await dom.waitFor(() =>
+    view.container.querySelector(".file-viewer-markdown"),
+  );
+  assert.equal(markdown.querySelector("blockquote em").textContent, "useful");
+  assert.equal(markdown.querySelector("ul ul li").textContent, "Child");
+  assert.equal(
+    markdown.querySelectorAll('input[type="checkbox"]:disabled').length,
+    2,
+  );
+  assert.equal(markdown.querySelector('input[type="checkbox"]').checked, true);
+  assert.equal(markdown.querySelector("tbody strong").textContent, "Total");
+  assert.equal(
+    markdown.querySelector("pre .hljs-keyword").textContent,
+    "const",
+  );
+  assert.equal(markdown.querySelector("img"), null);
+  await view.unmount();
+});
+
+test("code files keep exact source, highlight syntax and separate line numbers", async () => {
+  text =
+    'const value = "<script>alert(1)</script>";\n// a note\nconsole.log(value);\n';
+  const view = await show("app.ts");
+  const source = await dom.waitFor(() =>
+    view.container.querySelector(".file-code-source"),
+  );
+  assert.equal(source.textContent, text);
+  assert.equal(source.querySelector(".hljs-keyword").textContent, "const");
+  assert.equal(source.querySelector(".hljs-comment").textContent, "// a note");
+  assert.equal(view.container.querySelector("script"), null);
+  assert.equal(
+    view.container.querySelector(".file-code-gutter").textContent,
+    "1\n2\n3\n4",
+  );
+  assert.equal(
+    view.container
+      .querySelector(".file-code-gutter")
+      .getAttribute("aria-hidden"),
+    "true",
+  );
+  dom.update(() =>
+    view.container.querySelector('[aria-label="Wrap lines"]').click(),
+  );
+  assert.ok(view.container.querySelector(".file-code.is-wrapped"));
+  assert.equal(source.textContent, text);
+  await view.unmount();
+});
+
+test("large code previews preserve source without expensive syntax parsing", async () => {
+  text = `// ${"x".repeat(210_000)}`;
+  const view = await show("large.js", { size: text.length });
+  const source = await dom.waitFor(() =>
+    view.container.querySelector(".file-code-source"),
+  );
+  assert.equal(source.textContent, text);
+  assert.equal(source.querySelector("span"), null);
   await view.unmount();
 });
 
