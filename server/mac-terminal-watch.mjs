@@ -283,10 +283,13 @@ export class MacTerminalWatch {
         tab.every = undefined;
         if (gap > 0) await new Promise((r) => setTimeout(r, gap));
         tab.readAt = Date.now();
+        // A phone viewing the tab scrolls back through it; a Home peek
+        // needs only the screen.
+        const viewed = tab.waiters.size > 0 || tab.watchedUntil > Date.now();
         const { text } = await this.terminals.action(
           id,
           "read",
-          null,
+          viewed ? { scrollback: true } : null,
           () => {},
           {
             background: true,

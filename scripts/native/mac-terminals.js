@@ -91,10 +91,18 @@ function run() {
         error: "This terminal has closed. Refresh the list.",
         status: 404,
       });
-    if (payload.action === "read")
-      return JSON.stringify({
-        text: String(found.pane.contents()).slice(-128000),
-      });
+    if (payload.action === "read") {
+      // A Terminal tab's `contents` is only what fits on screen; `history`
+      // is its whole scrollback, asked for only by a phone viewing the tab
+      // (it can be large). iTerm2 offers only the visible text.
+      var text;
+      if (payload.scrollback && payload.provider === "terminal")
+        try {
+          text = found.pane.history();
+        } catch (e) {}
+      if (text === undefined || text === null) text = found.pane.contents();
+      return JSON.stringify({ text: String(text).slice(-128000) });
+    }
     if (payload.action === "send") {
       if (payload.provider === "terminal")
         app.doScript(payload.text, { in: found.pane });

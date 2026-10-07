@@ -18,6 +18,7 @@ const {
   kindLabel,
   previewMode,
   imageType,
+  isMarkdown,
   parentPath,
   baseName,
   whenMissing,
@@ -82,9 +83,11 @@ test("the viewer only fetches what it can show or copy", () => {
   // Word, RTF and OpenDocument text comes from the computer.
   for (const name of ["Contract.docx", "old.doc", "letter.rtf", "draft.odt"])
     assert.equal(mode(name), "document", name);
+  assert.equal(mode("Quarterly.PDF"), "pdf");
+  assert.equal(isMarkdown("README.MD"), true);
+  assert.equal(isMarkdown("notes.txt"), false);
   // Everything else is a download: nothing is fetched to preview it.
   for (const name of [
-    "Quarterly.pdf",
     "clip.mov",
     "photo.heic",
     "deck.key",

@@ -6,26 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
+import { background, shapes } from "./brand-mascot.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const background = "#18241f";
-// The selected logo portrait, kept as pixel geometry for every export size.
-const rect = (x, y, width, height, fill) => ({ x, y, width, height, fill });
-const shapes = [
-  rect(19, 48, 26, 5, "#101b16"),
-  rect(23, 46, 18, 11, "#80ad95"),
-  rect(29, 51, 6, 3, "#d7f3e2"),
-  rect(10, 27, 6, 15, "#5c7d6b"),
-  rect(18, 12, 28, 38, "#bce7ce"),
-  rect(12, 18, 40, 26, "#bce7ce"),
-  rect(18, 15, 28, 3, "#e5f7e8"),
-  rect(18, 44, 28, 3, "#a3cdb5"),
-  rect(46, 21, 3, 20, "#a3cdb5"),
-  rect(20, 25, 24, 15, "#213e31"),
-  rect(18, 28, 28, 9, "#213e31"),
-  rect(24, 28, 4, 7, "#f5f4d9"),
-  rect(36, 28, 4, 7, "#f5f4d9"),
-];
 const svgShape = (shape) =>
   `<rect x="${shape.x}" y="${shape.y}" width="${shape.width}" height="${shape.height}" fill="${shape.fill}"/>`;
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="14" fill="${background}"/><g shape-rendering="crispEdges">${shapes.map(svgShape).join("")}</g></svg>\n`;

@@ -17,6 +17,7 @@ import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import qr from "qrcode-terminal";
+import { banner } from "./brand-mascot.mjs";
 import { PrivateLinkRecovery } from "./private-link-recovery.mjs";
 import {
   ensurePersistentRoute,
@@ -346,6 +347,12 @@ export async function launch(options, root) {
       }
     }
     if (stopped) return;
+    // The mascot greets once, in a terminal someone is watching; fresh
+    // pairing codes and the background service's log get the name alone.
+    const heading = (plain = false) =>
+      plain || options.service
+        ? `  REACH · ${reach.config.name}`
+        : banner(`REACH · ${reach.config.name}`);
     const showCode = (renew = false) => {
       const pairing = renew
         ? {
@@ -355,7 +362,7 @@ export async function launch(options, root) {
         : reach.auth.pairing;
       atomicJson(path.join(reach.config.dataDir, "pairing.json"), pairing);
       console.log(
-        `\n  REACH · ${reach.config.name}\n\n  ${options.local ? "Open on this computer" : "Open on your phone"}: ${origin}\n  Pairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\n`,
+        `\n${heading(renew)}\n\n  ${options.local ? "Open on this computer" : "Open on your phone"}: ${origin}\n  Pairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\n`,
       );
       if (!options.local && process.stdout.isTTY) {
         const fragment = new URLSearchParams({
@@ -375,7 +382,7 @@ export async function launch(options, root) {
         : origin;
       if (startUrl) noteLink(link);
       console.log(
-        `\n  REACH · ${reach.config.name}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
+        `\n${heading()}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
       if (!options.service) qr.generate(link, { small: true });
       if (startUrl && link !== startUrl)

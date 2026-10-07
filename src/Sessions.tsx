@@ -474,6 +474,29 @@ export function TerminalView({
       toast((e as Error).message);
     }
   };
+  // Close a tab already open on the Mac, as if closed there.
+  const closeMacTab = async (tab: MacTerminal) => {
+    const name = describeMacTerminal(tab.name, tab.provider).title;
+    if (
+      !confirm(
+        `Close “${name}” on your Mac? Anything running in it will stop. If this terminal runs Reach, you will disconnect.`,
+      )
+    )
+      return;
+    try {
+      await post(peer, `/api/terminals/desktop/${tab.id}/close`, {
+        confirm: true,
+      });
+      setMacTabs((tabs) => {
+        const left = tabs.filter((t) => t.id !== tab.id);
+        knownMacTabs.set(peer.id, left);
+        return left;
+      });
+      if (macSelected === tab.id) setMacSelected("");
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
   const folder = (cwd: string) =>
     cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
   const openReach = (id: string) => {
@@ -516,6 +539,18 @@ export function TerminalView({
             <ChevronDown size={16} />
           </button>
         )}
+        {(macTab || current?.status === "running") && (
+          <button
+            className="terminal-bar-icon terminal-stop"
+            aria-label={macTab ? "Close this tab on your Mac" : "Stop this terminal"}
+            title={macTab ? "Close tab" : "Stop terminal"}
+            onClick={() =>
+              macTab ? void closeMacTab(macTab) : current && void end(current.id)
+            }
+          >
+            <Square size={15} />
+          </button>
+        )}
         <button
           className="terminal-bar-icon"
           aria-label="New terminal"
@@ -550,6 +585,7 @@ export function TerminalView({
             onOpenMac={openMac}
             onEnd={(id) => void end(id)}
             onShowOnScreen={onOpenScreen && ((tab) => void openMacTab(tab))}
+            onCloseMac={(tab) => void closeMacTab(tab)}
           />
         </div>
       )}
@@ -646,6 +682,7 @@ export function TerminalView({
           onOpenMac={openMac}
           onEnd={(id) => void end(id)}
           onShowOnScreen={onOpenScreen && ((tab) => void openMacTab(tab))}
+          onCloseMac={(tab) => void closeMacTab(tab)}
         />
       )}
       </div>

@@ -136,6 +136,7 @@ function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
     tty: () => tty,
     customTitle: () => "",
     contents: () => `output:${tty}`,
+    history: () => `earlier:${tty}\noutput:${tty}`,
     // tty2's command has finished: Terminal keeps the tab, nothing runs in it.
     processes: () => (tty === "tty2" ? [] : ["login", "-zsh"]),
   }));
@@ -178,6 +179,15 @@ function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
     panes,
   };
 }
+test("a viewed Terminal tab reads its scrollback; peeks read only the screen", () => {
+  const { target } = nativeFixture({ provider: "terminal", action: "list" })
+    .result.sessions[0];
+  const read = (extra) =>
+    nativeFixture({ provider: "terminal", action: "read", target, ...extra })
+      .result.text;
+  assert.equal(read({ scrollback: true }), "earlier:tty1\noutput:tty1");
+  assert.equal(read({}), "output:tty1");
+});
 test("Terminal tabs whose command has finished are not listed", async () => {
   const listed = nativeFixture({ provider: "terminal", action: "list" });
   assert.deepEqual(

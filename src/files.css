@@ -929,6 +929,79 @@ h1.files-title {
     "Segoe UI",
     sans-serif;
 }
+.file-viewer-body.is-pdf {
+  place-items: stretch;
+  background: #070a08;
+}
+.file-viewer-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+/* Markdown reads as formatted prose; the header toggle shows the source. */
+.file-viewer-markdown {
+  place-self: stretch;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 18px 20px calc(env(safe-area-inset-bottom) + 18px);
+  font:
+    15px/1.65 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #dbe6dd;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.file-viewer-markdown .md > :first-child {
+  margin-top: 0;
+}
+.file-viewer-markdown .md p {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+}
+.file-viewer-markdown .md h4 {
+  margin: 20px 0 8px;
+  font-size: 17px;
+  color: #f1f7f2;
+}
+.file-viewer-markdown .md ul,
+.file-viewer-markdown .md ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+.file-viewer-markdown .md li + li {
+  margin-top: 3px;
+}
+.file-viewer-markdown .md code {
+  padding: 1px 5px;
+  border: 1px solid #2a332d;
+  border-radius: 5px;
+  background: #141a16;
+  font:
+    0.86em "SF Mono",
+    SFMono-Regular,
+    ui-monospace,
+    Menlo,
+    monospace;
+}
+.file-viewer-markdown .md pre {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid #2a332d;
+  border-radius: 10px;
+  background: #141a16;
+}
+.file-viewer-markdown .md pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
 .file-viewer-empty {
   display: grid;
   justify-items: center;

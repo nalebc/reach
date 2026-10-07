@@ -785,7 +785,7 @@ export async function createReach(overrides = {}) {
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; font-src 'self'; frame-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
     if (req.path.startsWith("/api")) res.setHeader("Cache-Control", "no-store");
     if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -2171,7 +2171,7 @@ export async function createReach(overrides = {}) {
       await desktopTerminals.action(
         req.params.id,
         "read",
-        null,
+        { scrollback: true },
         authorizeDesktopTerminal(req),
       ),
     );

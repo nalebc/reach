@@ -17,6 +17,7 @@ import {
   ChevronDown,
   ChevronLeft,
   Code2,
+  Eye,
   Copy,
   Download,
   File,
@@ -47,6 +48,7 @@ import {
   fileKind,
   friendlyDate,
   imageType,
+  isMarkdown,
   kindLabel,
   baseName,
   iconType,
@@ -56,6 +58,7 @@ import {
   type FileKind,
 } from "./file-kinds";
 import { preparedFile, useFileShare } from "./useFileShare";
+import AgentMarkdown from "./AgentMarkdown";
 import {
   backgroundDownloads,
   downloadInBackground,
@@ -1011,6 +1014,7 @@ function ShareChip({
 
 const isGone = (e: unknown) => (e as { status?: number })?.status === 404;
 const MAX_IMAGE_PREVIEW = 25 * 1024 * 1024;
+const MAX_PDF_PREVIEW = 50 * 1024 * 1024;
 const nouns: Partial<Record<FileKind, string>> = {
   image: "image",
   video: "video",
@@ -1022,7 +1026,7 @@ const nouns: Partial<Record<FileKind, string>> = {
   doc: "document",
   package: "installer",
 };
-// Recently viewed images, so reopening one doesn't download it again.
+// Recently viewed images and PDFs, so reopening one doesn't download it again.
 const viewed = new Map<string, Blob>();
 const remember = (key: string, blob: Blob) => {
   viewed.delete(key);
@@ -1063,6 +1067,8 @@ function Viewer({
   const mode = previewMode(file);
   const [text, setText] = useState(""),
     [image, setImage] = useState(""),
+    [pdf, setPdf] = useState(""),
+    [source, setSource] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
     [copied, setCopied] = useState(false),
@@ -1078,9 +1084,10 @@ function Viewer({
     const timer = setTimeout(() => setCopied(false), 1600);
     return () => clearTimeout(timer);
   }, [copied]);
-  // Images are shared from the copy fetched for the preview, not a second one.
+  // Images and PDFs are shared from the copy fetched for the preview, not a
+  // second one.
   useEffect(() => {
-    if (mode !== "image") sharer.warm(file);
+    if (mode !== "image" && mode !== "pdf") sharer.warm(file);
   }, [file.path]);
   // The write happens inside the tap: phones refuse clipboard writes after it.
   const copy = () => {
@@ -1107,11 +1114,12 @@ function Viewer({
     let url = "";
     (async () => {
       try {
-        const type = imageType(file.name);
-        if (mode === "image") {
-          if (file.size > MAX_IMAGE_PREVIEW)
+        if (mode === "image" || mode === "pdf") {
+          if (
+            file.size > (mode === "pdf" ? MAX_PDF_PREVIEW : MAX_IMAGE_PREVIEW)
+          )
             throw new Error(
-              "This image is too large to preview. Download it instead.",
+              `This ${nouns[kind]} is too large to preview. Download it instead.`,
             );
           const key = JSON.stringify([
             peer.url,
@@ -1127,8 +1135,10 @@ function Viewer({
             remember(key, blob);
           }
           sharer.warm(file, blob);
+          const type =
+            mode === "pdf" ? "application/pdf" : imageType(file.name);
           url = URL.createObjectURL(new Blob([blob], { type }));
-          setImage(url);
+          (mode === "pdf" ? setPdf : setImage)(url);
         } else if (mode === "text" || mode === "document") {
           const r = await request(
             peer,
@@ -1178,7 +1188,17 @@ function Viewer({
               {bytes(file.size)} · {friendlyDate(file.modified)}
             </small>
           </div>
-          {!loading && !error && !image && text && (
+          {!loading && !error && text && isMarkdown(file.name) && (
+            <button
+              className="files-tool"
+              aria-label={source ? "Show formatted" : "Show source"}
+              aria-pressed={source}
+              onClick={() => setSource((s) => !s)}
+            >
+              {source ? <Eye size={19} /> : <Code2 size={19} />}
+            </button>
+          )}
+          {!loading && !error && !image && !pdf && text && (
             <button
               className={`files-tool ${copied ? "is-done" : ""}`}
               aria-label={copied ? "Copied" : "Copy text"}
@@ -1213,7 +1233,7 @@ function Viewer({
           </button>
         </header>
         <div
-          className={`file-viewer-body ${image ? "is-image" : ""} ${mode === "document" ? "is-document" : ""}`}
+          className={`file-viewer-body ${image ? "is-image" : ""} ${pdf ? "is-pdf" : ""} ${mode === "document" ? "is-document" : ""}`}
         >
           {loading ? (
             <Loader2 className="spin" size={24} aria-label="Loading preview" />
@@ -1227,6 +1247,12 @@ function Viewer({
             </div>
           ) : image ? (
             <img src={image} alt={file.name} />
+          ) : pdf ? (
+            <iframe src={pdf} title={file.name} />
+          ) : text && isMarkdown(file.name) && !source ? (
+            <div className="file-viewer-markdown">
+              <AgentMarkdown text={text} />
+            </div>
           ) : (
             <pre>{text || "(Empty file)"}</pre>
           )}
