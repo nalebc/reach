@@ -117,8 +117,8 @@ test("Claude Code: its account's connectors and its own servers, nothing secret"
   try {
     const v = await c.list("claude");
     assert.equal(v.installed, true);
-    assert.deepEqual(v.native, [{ id: "claude.ai Gmail", name: "Gmail", state: "connected", detail: "gmailmcp.googleapis.com/mcp/v1" }]);
-    assert.deepEqual(v.servers, [{ name: "github", url: "api.githubcopilot.com/mcp/", remote: true, state: "connected" }]);
+    assert.deepEqual(v.native, [{ id: "claude.ai Gmail", name: "Gmail", state: "connected", detail: "gmailmcp.googleapis.com/mcp/v1", logo: null }]);
+    assert.deepEqual(v.servers, [{ name: "github", url: "api.githubcopilot.com/mcp/", remote: true, state: "connected", logo: null }]);
     assert.equal(JSON.stringify(v).includes("SECRET"), false);
     // The list is shared for a while: Claude Code checks every server's health.
     await c.list("claude");
@@ -151,8 +151,8 @@ test("Gemini CLI: servers from its settings, added at user scope", async () => {
   try {
     const v = await c.list("gemini");
     assert.deepEqual(v.servers, [
-      { name: "linear", url: "mcp.linear.app/mcp", remote: true, state: "added" },
-      { name: "local", url: null, remote: false, state: "added" },
+      { name: "linear", url: "mcp.linear.app/mcp", remote: true, state: "added", logo: null },
+      { name: "local", url: null, remote: false, state: "added", logo: null },
     ]);
     assert.equal(JSON.stringify(v).includes("SECRET"), false);
     await c.add("gemini", { name: "linear", url: "https://mcp.linear.app/mcp" });
@@ -204,8 +204,8 @@ test("Codex: ChatGPT's apps and its servers, through its daemon", async () => {
   );
   assert.equal(v.native[1].connectUrl, "https://chatgpt.com/apps/linear/connector_li");
   assert.deepEqual(v.servers, [
-    { name: "sentry", url: "mcp.sentry.dev/mcp", remote: true, state: "needs-auth" },
-    { name: "node_repl", url: null, remote: false, state: "added" },
+    { name: "sentry", url: "mcp.sentry.dev/mcp", remote: true, state: "needs-auth", logo: null },
+    { name: "node_repl", url: null, remote: false, state: "added", logo: null },
   ]);
   assert.equal(JSON.stringify(v).includes("SECRET"), false);
   assert.deepEqual((await c.list("codex", { q: "plan" })).native.map((a) => a.name), ["Planner"]);
@@ -500,4 +500,40 @@ test("a cancelled Codex attempt cannot authenticate its replacement through a na
   notify();await settle();assert.equal(c.loginView("codex", "linear").state, "checking");
   authenticated = true;notify();assert.equal((await callback).state, "done");
   c.close();
+});
+
+test("connector logos come only from public https addresses, small images, cached either way", async () => {
+  const { createConnectorLogos, iconAddresses, privateAddress } = await import("../server/agent-sessions/connector-logos.mjs");
+  assert.deepEqual(iconAddresses("https://mcp.linear.app/mcp?key=secret"), ["https://linear.app/favicon.ico", "https://mcp.linear.app/favicon.ico"]);
+  assert.deepEqual(iconAddresses("http://x.example/mcp"), []);
+  for (const a of ["127.0.0.1", "10.1.2.3", "100.101.102.103", "192.168.1.1", "172.20.0.1", "169.254.1.1", "::1", "fd7a:115c:a1e0::1", "fc00::1", "::ffff:10.0.0.1"])
+    assert.equal(privateAddress(a), true, a);
+  assert.equal(privateAddress("140.82.112.3"), false);
+  const { default: fss } = await import("node:fs");
+  const dir = fss.mkdtempSync(path.join(os.tmpdir(), "reach-logos-"));
+  const fetched = [];
+  const png = Buffer.from("89504e470d0a1a0a", "hex");
+  const hosts = { "linear.app": "76.76.21.21", "mcp.internal.example": "10.0.0.5", "big.example": "93.184.216.34", "hop.example": "93.184.216.35" };
+  const logos = createConnectorLogos({
+    dir,
+    lookup: async (host) => (hosts[host] ? [{ address: hosts[host] }] : []),
+    fetch: async (url) => {
+      fetched.push(url);
+      if (url.startsWith("https://hop.example")) return new Response(null, { status: 302, headers: { location: "https://mcp.internal.example/x.png" } });
+      if (url.startsWith("https://big.example")) return new Response(Buffer.alloc(300 * 1024), { headers: { "content-type": "image/png" } });
+      return new Response(png, { headers: { "content-type": "image/png" } });
+    },
+  });
+  assert.equal(await logos.logo(["https://linear.app/favicon.ico"]), `data:image/png;base64,${png.toString("base64")}`);
+  // A private address, a redirect into one, an oversized image: none, never fetched inside.
+  assert.equal(await logos.logo(["https://mcp.internal.example/favicon.ico"]), null);
+  assert.equal(await logos.logo(["https://hop.example/favicon.ico"]), null);
+  assert.equal(await logos.logo(["https://big.example/favicon.ico"]), null);
+  assert.equal(fetched.some((u) => u.includes("internal")), false);
+  // Cached: asked again, nothing fetched; a miss isn't retried for a day.
+  const before = fetched.length;
+  await logos.logo(["https://linear.app/favicon.ico"]);
+  await logos.logo(["https://big.example/favicon.ico"]);
+  assert.equal(fetched.length, before);
+  fss.rmSync(dir, { recursive: true, force: true });
 });

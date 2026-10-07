@@ -1,57 +1,131 @@
-/* Connectors: services for every agent, one row each with a chip per agent. */
-.connectors {
+/* Connectors: one list of services, a logo and one obvious action each. */
+.cn {
   display: flex;
   flex-direction: column;
   gap: 14px;
   color: var(--text-strong, #eef4ef);
   font-size: 14px;
 }
-.connectors .sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
+.cn-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-.connectors-intro,
-.connectors-empty,
-.connectors-note {
+.cn-intro {
+  flex: 1;
   margin: 0;
   color: var(--muted, #93a096);
   font-size: 13px;
   line-height: 1.4;
 }
-.connectors-note a,
-.connectors-links a {
+.cn-agents {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+.cn-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted, #93a096);
+}
+.cn-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.cn-search > svg {
+  position: absolute;
+  left: 12px;
+  color: var(--muted, #93a096);
+  pointer-events: none;
+}
+.cn-search input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 38px 0 36px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 12px;
+  background: rgb(0 0 0 / 0.25);
+  color: inherit;
+  font-size: 16px; /* no zoom on iOS */
+}
+.cn-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.cn-search button {
+  position: absolute;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted, #93a096);
+}
+.cn-empty,
+.cn-note,
+.cn-foot {
+  margin: 0;
+  color: var(--muted, #93a096);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.cn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.cn-foot a,
+.cn-note a {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   color: var(--lime, #b9efd4);
   text-decoration: none;
 }
-.connectors-note code {
+.cn-note code {
   padding: 1px 5px;
   border-radius: 5px;
-  background: #00000040;
+  background: rgb(0 0 0 / 0.3);
   font-size: 12px;
 }
-.connectors-flash {
+.cn-flash {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
-  padding: 9px 12px;
+  padding: 10px 8px 10px 12px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--lime, #b9efd4) 10%, transparent);
   font-size: 13px;
 }
-.connectors-group {
+.cn-flash span {
+  flex: 1;
+}
+.cn-flash button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: none;
+  color: inherit;
+}
+.cn-group {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.connectors-group > h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.cn-group > h2,
+.cn-apps > h3 {
   margin: 0 0 0 4px;
   color: var(--muted, #93a096);
   font:
@@ -59,176 +133,108 @@
     -apple-system,
     sans-serif;
 }
-.connectors-checking {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 400;
-  font-size: 12px;
+.cn-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
 }
-.connectors-refresh {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  margin-left: auto;
-  border: 0;
-  border-radius: 50%;
-  background: none;
-  color: inherit;
-}
-.connectors-list,
-.connectors-agents,
-.connectors-results {
+.cn-list {
   display: flex;
   flex-direction: column;
   margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.connectors-list {
   overflow: hidden;
+  padding: 0;
   border-radius: 16px;
   background: var(--group-bg, rgb(255 255 255 / 0.045));
+  list-style: none;
 }
-.connectors-item + .connectors-item {
+.cn-item + .cn-item {
   border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
 }
-.connectors-row {
+.cn-row {
   display: flex;
   align-items: center;
+  gap: 8px;
+  padding-right: 12px;
+}
+.cn-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
   gap: 12px;
-  width: 100%;
-  min-height: 56px;
-  padding: 8px 12px;
+  min-width: 0;
+  min-height: 60px;
+  padding: 8px 0 8px 12px;
   border: 0;
   background: none;
   color: inherit;
   font: inherit;
   text-align: left;
 }
-.connectors-mark {
+.cn-row-main.static {
+  cursor: default;
+}
+.cn-logo {
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  overflow: hidden;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+.cn-logo.image {
+  background: #fff;
+}
+.cn-logo.image img {
+  object-fit: contain;
+}
+.cn-logo.letter {
   background: rgb(255 255 255 / 0.08);
   font-weight: 650;
 }
-.connectors-text {
+.cn-text {
   display: flex;
   flex: 1;
   flex-direction: column;
+  gap: 1px;
   min-width: 0;
 }
-.connectors-text strong {
+.cn-text strong {
   font-weight: 600;
 }
-.connectors-text small {
+.cn-text small {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   overflow: hidden;
   color: var(--muted, #93a096);
   font-size: 12.5px;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.connectors-chips {
-  display: flex;
-  flex: none;
-  gap: 4px;
-}
-/* An agent's chip: lit when it has the service, a dot for what it needs. */
-.connectors-chip {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 0.06);
-}
-.connectors-chip.missing,
-.connectors-chip.available,
-.connectors-chip.off {
-  opacity: 0.32;
-  filter: grayscale(1);
-}
-.connectors-chip::after {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid var(--bg, #101512);
-  border-radius: 50%;
-}
-.connectors-chip.connected::after,
-.connectors-chip.added::after {
-  content: "";
-  background: #7fd8a4;
-}
-.connectors-chip.needs-auth::after {
-  content: "";
-  background: #f0c46b;
-}
-.connectors-chip.failed::after {
-  content: "";
-  background: #f1a08d;
-}
-.connectors-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 0 12px 12px 56px;
-}
-.connectors-agents > li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  padding: 7px 0;
-}
-.connectors-agents > li + li {
-  border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
-}
-.connectors-agent {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 110px;
-  font-weight: 500;
-}
-.connectors-state {
-  flex: 1;
-  color: var(--muted, #93a096);
-  font-size: 12.5px;
-}
-.connectors-state.connected,
-.connectors-state.added {
+.cn-text small.ok {
   color: #9fe3bb;
 }
-.connectors-state.needs-auth {
+.cn-text small.warn {
   color: #f0c46b;
 }
-.connectors-state.failed {
+.cn-text small.bad {
   color: #f1a08d;
 }
-.connectors-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.cn-chev {
+  flex: none;
+  color: var(--muted, #93a096);
 }
-.connectors-agents .connectors-note,
-.connectors-agents .connectors-sign-in {
-  flex-basis: 100%;
-}
-.connectors-btn {
+.cn-btn {
   display: inline-flex;
+  flex: none;
   align-items: center;
+  justify-content: center;
   gap: 5px;
-  padding: 6px 12px;
-  border: 1px solid rgb(255 255 255 / 0.18);
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgb(255 255 255 / 0.16);
   border-radius: 999px;
   background: none;
   color: inherit;
@@ -238,109 +244,184 @@
   text-decoration: none;
   white-space: nowrap;
 }
-.connectors-btn.primary {
+.cn-btn.primary {
   border-color: transparent;
   background: var(--lime, #b9efd4);
   color: var(--lime-ink, #16362a);
 }
-.connectors-btn:disabled {
+.cn-btn.warn {
+  border-color: transparent;
+  background: #f0c46b;
+  color: #3a2a06;
+}
+.cn-btn:disabled {
   opacity: 0.5;
 }
-.connectors-icon {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+.cn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 2px;
   border: 0;
-  border-radius: 50%;
   background: none;
-  color: var(--muted, #93a096);
+  color: var(--lime, #b9efd4);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
 }
-.connectors-form {
+.cn-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 14px 14px 58px;
+}
+.cn-agent-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cn-agent-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 40px;
+  padding: 4px 0;
+}
+.cn-agent-list > li + li {
+  border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
+}
+.cn-agent-name {
+  min-width: 96px;
+  font-weight: 500;
+}
+.cn-state {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted, #93a096);
+  font-size: 12.5px;
+}
+.cn-state.connected,
+.cn-state.added {
+  color: #9fe3bb;
+}
+.cn-state.needs-auth {
+  color: #f0c46b;
+}
+.cn-state.failed {
+  color: #f1a08d;
+}
+.cn-row > .cn-state {
+  flex: none;
+}
+.cn-agent-list .cn-note {
+  flex-basis: 100%;
+}
+.cn-form {
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin: 0;
 }
-.connectors-form label {
+.cn-form label {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12.5px;
   color: var(--muted, #93a096);
+  font-size: 12.5px;
 }
-.connectors-form input:not([type="checkbox"]),
-.connectors-search input {
+.cn-form input,
+.cn-paste input {
   width: 100%;
-  padding: 9px 11px;
-  border: 1px solid #ffffff2a;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid rgb(255 255 255 / 0.14);
   border-radius: 10px;
-  background: #00000040;
+  background: rgb(0 0 0 / 0.25);
   color: var(--text-strong, #eef4ef);
   font-size: 16px; /* no zoom on iOS */
 }
-.connectors-targets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.connectors-targets legend {
-  margin-bottom: 4px;
-  color: var(--muted, #93a096);
-  font-size: 12.5px;
-}
-.connectors-targets label {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  color: inherit;
-  font-size: 14px;
-}
-.connectors-form-actions {
+.cn-form-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-.connectors-search label {
-  position: relative;
-  display: block;
-}
-.connectors-search label svg {
-  position: absolute;
-  top: 50%;
-  left: 11px;
-  color: var(--muted, #93a096);
-  transform: translateY(-50%);
-}
-.connectors-search input {
-  padding-left: 32px;
-}
-.connectors-results {
-  margin-top: 8px;
-}
-.connectors-results > li {
-  display: flex;
+.cn-remove {
+  align-self: flex-start;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 4px;
-}
-.connectors-results > li + li {
-  border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
-}
-.connectors-results .connectors-state {
-  flex: none;
-}
-.connectors-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
+  gap: 5px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: #f1a08d;
+  font: inherit;
   font-size: 13px;
 }
+.cn-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cn-steps > li {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.04);
+  opacity: 0.55;
+}
+.cn-steps > li.now {
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
+}
+.cn-steps > li.done {
+  opacity: 0.8;
+}
+.cn-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.cn-step-head > span {
+  flex: 1;
+}
+.cn-step-head > svg:last-child {
+  color: #9fe3bb;
+}
+.cn-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+}
+.cn-signin p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.cn-signin .bad {
+  color: #f1a08d;
+}
+.cn-paste {
+  display: flex;
+  align-self: stretch;
+  gap: 6px;
+}
 @media (max-width: 380px) {
-  .connectors-detail {
-    padding-left: 12px;
+  .cn-detail {
+    padding-left: 14px;
   }
 }

@@ -11,6 +11,7 @@ import { createCodexLive } from "./codex-live.mjs";
 import { createClaudeSessions } from "./claude.mjs";
 import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
+import { createConnectorLogos } from "./connector-logos.mjs";
 import { createConnectors } from "./connectors.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
@@ -136,6 +137,7 @@ export function createAgentSessions({
   // GitHub, Linear, … for each agent, in its own configuration
   // (connectors.mjs); none of this computer's in tests.
   connectors = createConnectors({
+    logos: process.env.NODE_TEST_CONTEXT ? null : createConnectorLogos({ dir: path.join(dataDir, "connector-logos") }),
     daemon,
     locate: process.env.NODE_TEST_CONTEXT
       ? {}

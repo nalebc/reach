@@ -17,6 +17,7 @@
 // Signing in to a server calls back to localhost on the computer, a page the
 // phone can't open: the phone pastes the address it was sent to, checked
 // against the link Reach handed out, and the computer finishes it.
+import { iconAddresses } from "./connector-logos.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -185,8 +186,21 @@ export function createConnectors({
   appsMs = 5 * 60000,
   timeoutMs = 10 * 60000,
   linkMs = 10000,
+  // connector-logos.mjs, or null: no logos.
+  logos = null,
 }) {
   let closed = false;
+  // Each one's logo as a data: image, fetched by the computer
+  // (connector-logos.mjs); the addresses it came from never leave.
+  const withLogos = async (view) => {
+    const all = [...(view.native || []), ...(view.servers || [])];
+    const got = logos ? await logos.many(all.filter((x) => x.icon?.length).map((x) => [x, x.icon])).catch(() => new Map()) : new Map();
+    const strip = (x) => {
+      const { icon, ...rest } = x;
+      return { ...rest, logo: got.get(x) || null };
+    };
+    return { ...view, native: (view.native || []).map(strip), servers: (view.servers || []).map(strip) };
+  };
   const ensureOpen = () => { if (closed) throw bad("Connector service is closed.", 409); };
   // Reach's own environment, never a host app's.
   const clean = Object.fromEntries(
@@ -241,7 +255,7 @@ export function createConnectors({
   // headers, environment or arguments (they hold tokens).
   const server = (name, entry, state) => {
     const url = typeof entry?.url === "string" ? entry.url : typeof entry?.httpUrl === "string" ? entry.httpUrl : null;
-    return { name, url: url && shown(url), remote: !!url, state };
+    return { name, url: url && shown(url), remote: !!url, state, icon: url ? iconAddresses(url) : [] };
   };
 
   // ── Claude Code ──
@@ -259,7 +273,7 @@ export function createConnectors({
     const ours = config?.mcpServers && typeof config.mcpServers === "object" ? config.mcpServers : {};
     const native = listed
       .filter((s) => s.name.startsWith("claude.ai "))
-      .map((s) => ({ id: s.name, name: s.name.slice("claude.ai ".length), state: s.state, detail: shown(s.target) }));
+      .map((s) => ({ id: s.name, name: s.name.slice("claude.ai ".length), state: s.state, detail: shown(s.target), icon: iconAddresses(s.target) }));
     const servers = Object.entries(ours).map(([name, entry]) =>
       server(name, entry, listed.find((s) => s.name === name)?.state || "added"),
     );
@@ -291,7 +305,7 @@ export function createConnectors({
     id: a.id,
     name: clip(a.name, 60),
     description: clip(a.description, 140) || null,
-    logo: /^https:\/\//.test(a.logoUrl || "") ? a.logoUrl : null,
+    icon: /^https:\/\//.test(a.logoUrl || "") ? [a.logoUrl] : [],
     state: a.isAccessible ? (a.isEnabled === false ? "off" : "connected") : "available",
     enabled: a.isEnabled !== false,
     connectUrl: /^https:\/\/chatgpt\.com\//.test(a.installUrl || "") ? a.installUrl : null,
@@ -421,7 +435,7 @@ export function createConnectors({
       const installed = agent === "codex" ? !!(await where("codex")) && !!daemon : !!(await where(agent));
       if (!installed) return { agent, installed: false, native: [], servers: [], manageUrl: null, catalog: CATALOG };
       const v = agent === "claude" ? await claudeView({ fresh }) : agent === "codex" ? await codexView({ fresh, q }) : await geminiView();
-      return { agent, installed: true, ...v, catalog: CATALOG, signIn: agent !== "gemini" };
+      return { agent, installed: true, ...(await withLogos(v)), catalog: CATALOG, signIn: agent !== "gemini" };
     },
     // A remote server added in the agent's own configuration, for every
     // project; with a token, sent as its Authorization header.
