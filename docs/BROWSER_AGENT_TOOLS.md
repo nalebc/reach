@@ -13,7 +13,7 @@ These presets require macOS. The protected file helper is macOS-only, so Linux a
 | **Full control** | The screen with known protected windows filtered | Screen input with guardrails | File API uses shared folders; shell can access other files as the owner | Unsandboxed shell as the owner |
 | **Apps** | Only the chosen apps' windows | Only those apps | None | None |
 | **Files** | Nothing | Nothing | Chosen folders; read, or read and edit | None |
-| **Read only** | The whole screen | Nothing | Every shared folder, or the ones chosen; read | Watch chosen terminals |
+| **Read only** | The screen with known protected and hidden windows filtered | Nothing | Every shared folder, or the ones chosen; read | Watch chosen terminals |
 
 The preset is one field on the invitation (`policy.preset`). Its scopes, its route allowlist, its tools and the rules the native checker applies are derived from it on every request (`server/agent-presets.mjs`). A stored credential can't grow. Full control and Apps bind the phone that created the invitation (the host guard, as app sessions did): while one exists, ordinary Reach APIs answer only that phone. Lowering a preset later is always allowed; raising Files or Read only into Full control or Apps needs a new invitation from the phone.
 
@@ -32,7 +32,7 @@ Anything already running or signed in can be available to the agent, including o
 
 ## Several agents at once
 
-Each invitation is its own session with its own helper process, log and lease. The Mac has one pointer and one keyboard, so **one agent acts at a time**: an action takes a short lease that each further action extends; another agent's action is answered `409 {kind: "busy", holder, retryInMs}` and should wait. Screenshots are reads and run side by side. The owner's phone control (Screen) and the owner's pause come before every agent. File edits from Files-with-editing go through the sandboxed helper; Reach's writer coordinator still serialises overlapping folders for the approval-based sessions that remain.
+Each invitation is its own session with its own helper process, log and lease. The Mac has one pointer and one keyboard, so **one input operation runs at a time**, including calls from the same agent. Ownership lasts until the operation finishes or its stopped helper actually exits; an idle lease then keeps successive actions together briefly. Competing input is answered `409 {kind: "busy", holder, retryInMs}`. Wait, observe again, and retry the intended action only after access is available. Screenshots are reads and run side by side. Input queued behind a read rechecks authorization, owner pause and phone control immediately before native dispatch. The owner's phone control (Screen) and the owner's pause come before every agent. File edits from Files-with-editing go through the sandboxed helper; Reach's writer coordinator still serialises overlapping folders for the approval-based sessions that remain.
 
 ## Tools (`window.reach`)
 
