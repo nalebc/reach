@@ -39,6 +39,9 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
   const [tone, setTone] = useState<"" | "is-wait" | "is-blocked">("");
   const [front, setFront] = useState<Front | null>(null);
   const [apps, setApps] = useState<DesktopApp[] | null>(null);
+  // Why the last screenshot failed, shown where the picture would be: an
+  // agent reading this page needs the reason, not a blank frame.
+  const [screenError, setScreenError] = useState("");
   const objectUrl = useRef("");
   const inFlight = useRef<AbortController | null>(null);
   const acting = useRef(false);
@@ -56,7 +59,7 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
   }, []);
 
   const refresh = useCallback(async () => {
-    if (inFlight.current || !live.current.visible || !mounted.current) return;
+    if (inFlight.current || !mounted.current) return;
     const controller = new AbortController();
     inFlight.current = controller;
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -74,9 +77,13 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
       objectUrl.current = url;
       setImageUrl(url);
       setImageAt(new Date());
+      setScreenError("");
       try { setHiddenCount(Number(JSON.parse(response.headers.get("X-Reach-Screen") || "{}").hidden) || 0); } catch { setHiddenCount(0); }
     } catch (e) {
-      if (!controller.signal.aborted && mounted.current) onError(e);
+      if (!controller.signal.aborted && mounted.current) {
+        setScreenError((e as Error).message || "The screen could not be read.");
+        if ((e as { status?: number }).status === 401) onError(e);
+      }
     } finally {
       clearTimeout(timeout);
       if (inFlight.current === controller) inFlight.current = null;
@@ -84,13 +91,14 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
     }
   }, [peer, onError]);
 
+  // Refreshes while the page is open, even when the agent's browser reports
+  // the tab as hidden (an automated browser often does), just more slowly.
   useEffect(() => {
-    if (!visible) { inFlight.current?.abort(); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const loop = async () => {
       if (!acting.current) await refresh();
-      if (alive) timer = setTimeout(() => void loop(), REFRESH_MS);
+      if (alive) timer = setTimeout(() => void loop(), visible ? REFRESH_MS : REFRESH_MS * 3);
     };
     void loop();
     return () => { alive = false; clearTimeout(timer); inFlight.current?.abort(); };
@@ -201,7 +209,7 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
         </div>
         <div className="browser-screen-toolbar">
           <span className="browser-screen-status" aria-live="off">{imageAt ? `Updated ${imageAt.toLocaleTimeString()}` : busy ? "Reading the screen…" : "Waiting for the screen"}</span>
-          <button className="ag-secondary ag-small" disabled={busy || !visible} aria-label="Refresh screen" onClick={() => void refresh()}>
+          <button className="ag-secondary ag-small" disabled={busy} aria-label="Refresh screen" onClick={() => void refresh()}>
             <RefreshCw size={15} /> Refresh
           </button>
         </div>
@@ -227,8 +235,9 @@ export default function AgentDesktop({ peer, access, visible, onError }: Props) 
         onClick={clickAt}
       >
         {imageUrl ? <img src={imageUrl} alt={`Screen of ${peer.name}`} draggable={false} />
-          : <div className="browser-screen-placeholder" role="status"><Eye size={32} /><span>{busy ? "Reading the screen…" : "Waiting for a screen image…"}</span></div>}
+          : <div className="browser-screen-placeholder" role="status"><Eye size={32} /><span>{screenError ? `The screen could not be read: ${screenError}` : busy ? "Reading the screen…" : "Waiting for a screen image…"}</span></div>}
       </div>
+      {imageUrl && screenError && <p className="ag-desk-status is-blocked" role="alert">The last refresh failed: {screenError}</p>}
       {status && <p className={`ag-desk-status ${tone}`} role="status" aria-live="polite">{status}</p>}
       {access.control && (
         <div className="ag-desk-controls">
