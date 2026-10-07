@@ -53,12 +53,24 @@ let dom,
   overviewReads = 0,
   decisions = [],
   screenOpens = 0,
+  // What an open chat's history adds (a model being retried…).
+  historyExtra = {},
+  removed = [],
+  // OpenClaw's Gateway stopped; gatewayStarts: Start was tapped.
+  down = false,
+  gatewayStarts = 0,
   view;
 const base = "/api/sessions/openclaw";
 before(async () => {
   dom = await startDom({
     routes: {
-      [base + "/overview"]: () => (overviewReads++, {
+      [base + "/overview"]: () => (overviewReads++, down ? {
+        connected: false,
+        sessions: [],
+        approvals: [],
+        canStart: true,
+        error: "OpenClaw Gateway is unavailable. Start OpenClaw on this computer, then retry.",
+      } : {
         connected: true,
         sessions,
         approvals: [],
@@ -88,8 +100,18 @@ before(async () => {
           approvals,
           streaming: "",
           error: "",
+          ...historyExtra,
           ...(watched ? { version: watched.version } : {}),
         };
+      },
+      [base + "/remove"]: (init) => {
+        removed.push(JSON.parse(init.body));
+        return { removed: true };
+      },
+      [base + "/gateway/start"]: () => {
+        gatewayStarts++;
+        down = false;
+        return { connected: true, sessions, approvals: [] };
       },
       [base + "/approval"]: (init) => {
         decisions.push(JSON.parse(init.body));
@@ -133,13 +155,15 @@ const click = async (name) => {
   b.click();
   await settle();
 };
-async function mount() {
+async function mount(waitFor = "Weekend plans") {
   sent = [];
   reads = [];
   fail = false;
   approvals = [];
   decisions = [];
   screenOpens = 0;
+  historyExtra = {};
+  removed = [];
   dom.window.localStorage.clear();
   dom.window.sessionStorage.clear();
   view = await dom.render(
@@ -169,7 +193,7 @@ async function mount() {
   await settle(80);
   await click("OpenClaw");
   await dom.waitFor(() =>
-    dom.document.body.textContent.includes("Weekend plans"),
+    dom.document.body.textContent.includes(waitFor),
   );
 }
 test("auto discovery is app-separated, searchable, and reads no messages until selection", async () => {
@@ -273,7 +297,9 @@ test("a new OpenClaw chat starts from New chat, as a chat of Reach's own, and op
   await typeInto(sheet().querySelector('textarea[aria-label="New OpenClaw chat"]'), "Plan the trip");
   [...sheet().querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Start").click();
   await dom.waitFor(() => reads.includes("agent:main:reach-newchat"));
-  assert.deepEqual(started, [{ text: "Plan the trip" }]);
+  // With its own request id: asked again, the Mac starts the same chat.
+  assert.deepEqual(started.map((s) => s.text), ["Plan the trip"]);
+  assert.match(started[0].requestId, /^[\w-]{8,}$/);
   assert.equal(dom.document.querySelector('[role="dialog"]'), null);
 });
 
@@ -303,5 +329,45 @@ test("with a Mac that says when OpenClaw changes, the list and an open chat are 
   } finally {
     for (const w of watched.waits) w.resolve({});
     watched = null;
+  }
+});
+
+test("a chat Reach made is deleted, in OpenClaw too, only after a second tap; others offer no delete", async () => {
+  await mount();
+  await click("Weekend plans");
+  await dom.waitFor(() => dom.document.body.textContent.includes("Ready to continue."));
+  assert.equal(button("Delete chat"), undefined);
+  await click("Back to OpenClaw sessions");
+  await click("Login page");
+  await dom.waitFor(() => !!button("Delete chat"));
+  await click("Delete chat");
+  assert.deepEqual(removed, []);
+  await click("Tap again to delete this chat");
+  await dom.waitFor(() => removed.length === 1);
+  assert.deepEqual(removed, [{ key: "agent:main:reach-1a2b3c4d" }]);
+  await dom.waitFor(() => !!button("Refresh OpenClaw sessions"));
+});
+
+test("while OpenClaw tries another model, the chat says why and keeps working", async () => {
+  // Oct 6, live: Anthropic had no credit; OpenClaw answered on gpt-4o.
+  await mount();
+  historyExtra = { session: { ...sessions[2], status: "running" }, phase: "retrying", retrying: "Your credit balance is too low" };
+  await click("Login page");
+  await dom.waitFor(() => /trying another/.test(dom.document.body.textContent));
+  assert.match(dom.document.body.textContent, /That model didn’t answer \(Your credit balance is too low\)\. OpenClaw is trying another…/);
+  assert.equal(dom.document.querySelector(".claw-error"), null);
+});
+
+test("a stopped OpenClaw Gateway is started from Reach with one tap", async () => {
+  down = true;
+  gatewayStarts = 0;
+  try {
+    await mount("Start OpenClaw on Home Mac");
+    await click("Start OpenClaw on Home Mac");
+    await dom.waitFor(() => dom.document.body.textContent.includes("Weekend plans"));
+    assert.equal(gatewayStarts, 1);
+    assert.equal(button("Start OpenClaw on Home Mac"), undefined);
+  } finally {
+    down = false;
   }
 });

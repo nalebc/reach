@@ -948,13 +948,16 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const startingNow = useRef(false);
+  // Asked again (a dropped answer), the same message starts the same chat.
+  const attempt = useRef<{ text: string; id: string } | null>(null);
   const start = async () => {
     if (!text.trim() || busy || startingNow.current) return;
     startingNow.current = true;
+    if (attempt.current?.text !== text) attempt.current = { text, id: crypto.randomUUID() };
     setBusy(true);
     setProblem("");
     try {
-      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text });
+      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text, requestId: attempt.current.id });
       onStarted(key);
     } catch (e) {
       startingNow.current = false;

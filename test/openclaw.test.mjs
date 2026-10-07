@@ -436,7 +436,7 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-http-"));
   const calls = [];
   const fake = Object.fromEntries(
-    ["overview", "history", "send", "stop", "approve"].map((method) => [
+    ["overview", "history", "send", "stop", "approve", "start", "remove"].map((method) => [
       method,
       async (...args) => {
         calls.push({ method, args });
@@ -465,8 +465,11 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     ["send", "POST"],
     ["stop", "POST"],
     ["approval", "POST"],
+    ["new", "POST"],
+    ["remove", "POST"],
   ];
-  for (const [route, method] of routes) {
+  // Starting OpenClaw's Gateway: owners only too (it runs on this computer).
+  for (const [route, method] of [...routes, ["gateway/start", "POST"]]) {
     assert.equal((await fetch(`${url}/${route}`, { method })).status, 401);
     for (const credential of [agent, linked])
       assert.equal(
@@ -506,7 +509,7 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     );
   assert.deepEqual(
     calls.map((c) => c.method),
-    ["overview", "history", "send", "stop", "approve"],
+    ["overview", "history", "send", "stop", "approve", "start", "remove"],
   );
 });
 
@@ -853,4 +856,141 @@ test("changed session labels cannot become React objects or crash the chat", asy
   const overview = await c.overview();
   assert.equal(overview.connected, false);
   assert.match(overview.error, /unsupported session list/);
+});
+
+test("a model that fails mid-run while OpenClaw tries its fallbacks doesn't end the run", async (t) => {
+  // Oct 6, live: Anthropic had no credit and gpt-5.1-codex wasn't available,
+  // so OpenClaw answered "pong" on gpt-4o, but Reach had called the chat
+  // failed at the first error and dropped the rest. These are the Gateway's
+  // own frames from that run (the retries carry no sessionKey).
+  const { c, sockets, handle } = await fixture(t, { retryGraceMs: 60 });
+  let replied = false;
+  handle((req) =>
+    req.method === "chat.history" && replied
+      ? { payload: { messages: [{ id: "u", role: "user", content: "ping" }, { id: "a", role: "assistant", content: "pong" }] } }
+      : undefined,
+  );
+  const runId = "fallback-run";
+  await c.send({ key: REACH, text: "ping", requestId: runId });
+  const ws = sockets[0];
+  const life = (phase, extra = {}, keyed = false) =>
+    ws.event("agent", { runId, stream: "lifecycle", data: { phase, ...extra }, ...(keyed ? { sessionKey: REACH } : {}) });
+  life("start", {}, true);
+  life("error", { error: "LLM request rejected: Your credit balance is too low" }, true);
+  ws.event("chat", { runId, sessionKey: REACH, state: "error", errorMessage: "LLM request rejected: Your credit balance is too low" });
+  let h = await c.history(REACH);
+  assert.equal(h.session.status, "running");
+  assert.equal(h.phase, "retrying");
+  assert.match(h.retrying, /credit balance/);
+  assert.equal(h.error, "");
+  ws.event("agent", { runId, stream: "error", data: { reason: "seq gap", expected: 1, received: 3 } });
+  life("start");
+  life("error", { error: "404 The model `gpt-5.1-codex` does not exist" });
+  life("start");
+  // Past the grace a failed model alone would have had: still running.
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal((await c.history(REACH)).session.status, "running");
+  ws.event("agent", { runId, stream: "assistant", data: { text: "pong" } });
+  h = await c.history(REACH);
+  assert.equal(h.phase, "generation");
+  assert.equal(h.streaming, "pong");
+  life("end");
+  life("fallback", { activeModel: "gpt-4o" }, true);
+  replied = true;
+  h = await c.history(REACH);
+  assert.equal(h.session.status, "idle");
+  assert.equal(h.error, "");
+  assert.deepEqual(h.items.map((i) => i.text), ["ping", "pong"]);
+});
+
+test("a model that fails with nothing after it ends the run once the grace passes", async (t) => {
+  const { c, sockets } = await fixture(t, { retryGraceMs: 30 });
+  await c.send({ key: REACH, text: "ping", requestId: "failed-run" });
+  sockets[0].event("chat", { runId: "failed-run", sessionKey: REACH, state: "error", errorMessage: "No model could answer" });
+  assert.equal((await c.history(REACH)).session.status, "running");
+  await new Promise((r) => setTimeout(r, 60));
+  const h = await c.history(REACH);
+  assert.equal(h.session.status, "error");
+  assert.equal(h.error, "No model could answer");
+  // Over: a late start can't reopen it.
+  sockets[0].event("agent", { runId: "failed-run", stream: "lifecycle", data: { phase: "start" } });
+  assert.equal((await c.history(REACH)).session.status, "error");
+});
+
+test("a new chat starts once per request; a refused first message leaves no empty chat behind", async (t) => {
+  const { c, calls, handle } = await fixture(t, { timeoutMs: 200 });
+  // The Gateway lists what was made (sessions.reset), as OpenClaw does.
+  const made = [];
+  let send = "ok";
+  handle((req) => {
+    if (req.method === "sessions.reset") made.push({ key: req.params.key, channel: "webchat", updatedAt: 1 });
+    if (req.method === "sessions.delete") made.splice(made.findIndex((r) => r.key === req.params.key), 1);
+    if (req.method === "sessions.list") return { payload: { sessions: [...rows, ...made] } };
+    if (req.method === "chat.send" && send === "refuse") return { error: { message: "agent busy" } };
+    if (req.method === "chat.send" && send === "drop") return { drop: true };
+  });
+  const resets = () => calls.filter((x) => x.method === "sessions.reset").length;
+  // A phone asking again (its answer dropped) gets the same chat.
+  const [one, two] = await Promise.all([
+    c.start({ text: "Plan the trip", requestId: "start-request-1" }),
+    c.start({ text: "Plan the trip", requestId: "start-request-1" }),
+  ]);
+  assert.equal(one.key, two.key);
+  assert.equal(resets(), 1);
+  assert.equal((await c.start({ text: "Plan the trip", requestId: "start-request-1" })).key, one.key);
+  assert.equal(resets(), 1);
+  assert.throws(() => c.start({ text: "Something else", requestId: "start-request-1" }), (e) => e.status === 409);
+  // OpenClaw refused the first message: the chat it would sit in goes too.
+  send = "refuse";
+  await assert.rejects(c.start({ text: "Hello", requestId: "start-request-2" }), (e) => e.status === 409);
+  const refused = calls.filter((x) => x.method === "sessions.reset").at(-1).params.key;
+  assert.deepEqual(calls.filter((x) => x.method === "sessions.delete").map((x) => x.params.key), [refused]);
+  // Unknown whether it got there: the chat stays, to show what happened.
+  send = "drop";
+  const kept = await c.start({ text: "Hello again", requestId: "start-request-3" });
+  assert.match(kept.key, /^agent:main:reach-/);
+  assert.equal(calls.filter((x) => x.method === "sessions.delete").length, 1);
+  assert.throws(() => c.start({ text: " ", requestId: "start-request-4" }), (e) => e.status === 400);
+});
+
+test("a stopped OpenClaw Gateway can be started from Reach; the overview says when", async (t) => {
+  const { createOpenClaw, openClawRoutes, startOpenClawGateway } = await import("../server/openclaw.mjs");
+  // Nothing answers on its port.
+  class Refused extends EventEmitter {
+    readyState = 0;
+    constructor() { super(); queueMicrotask(() => { this.emit("error", new Error("ECONNREFUSED")); this.emit("close"); }); }
+    close() {} terminate() {}
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-start-"));
+  const down = createOpenClaw({ dataDir: dir, Socket: Refused, configuration: async () => ({ url: "ws://127.0.0.1:1" }) });
+  t.after(async () => { down.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  const overview = await down.overview();
+  assert.equal(overview.connected, false);
+  assert.equal(overview.canStart, true);
+  // Not installed (or a remote profile): nothing to start here.
+  const missing = createOpenClaw({ dataDir: dir, configuration: async () => { throw Object.assign(new Error("OpenClaw was not found"), { status: 503 }); } });
+  t.after(() => missing.close());
+  assert.equal((await missing.overview()).canStart, undefined);
+  // The command is OpenClaw's own service start, with fixed arguments.
+  const ran = [];
+  await startOpenClawGateway({ configuration: async () => ({}), env: { SHELL: "/bin/zsh" }, platform: "darwin", run: async (...args) => ran.push(args) });
+  assert.deepEqual(ran.map(([cmd, args]) => [cmd, args]), [["/bin/zsh", ["-lc", "openclaw gateway start"]]]);
+  await assert.rejects(
+    startOpenClawGateway({ configuration: async () => { throw Object.assign(new Error("remote"), { status: 503 }); }, run: async (...args) => ran.push(args) }),
+    /remote/,
+  );
+  assert.equal(ran.length, 1);
+  await assert.rejects(startOpenClawGateway({ configuration: async () => ({}), run: async () => { throw new Error("no service"); } }), /openclaw gateway start/);
+  // The route answers once the Gateway is listed.
+  const routes = {};
+  let up = 0;
+  openClawRoutes(
+    { get() {}, post: (route, fn) => (routes[route] = fn) },
+    { overview: async () => ({ connected: ++up >= 3 }) },
+    { startGateway: async () => {}, settleMs: 1 },
+  );
+  let answered;
+  await routes["/api/sessions/openclaw/gateway/start"]({}, { json: (v) => (answered = v) });
+  assert.deepEqual(answered, { connected: true });
+  assert.equal(up, 3);
 });

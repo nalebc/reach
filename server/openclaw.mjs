@@ -4,6 +4,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import WebSocket from "ws";
 import JSON5 from "json5";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Admin too (the owner chose it, Oct 5): a chat moved here from another agent
@@ -149,6 +151,10 @@ export function createOpenClaw({
   // A burst of changes (a reply streaming in) is told to waiting phones at
   // most this often.
   coalesceMs = 300,
+  // How long a failed model may be followed by OpenClaw's next one (its
+  // fallbacks run under the same runId) before the run counts as failed:
+  // OpenClaw's own AGENT_RUN_ERROR_RETRY_GRACE_MS.
+  retryGraceMs = 15000,
 } = {}) {
   let socket,
     connecting,
@@ -164,6 +170,8 @@ export function createOpenClaw({
     approvals = new Map(),
     completions = new Map(),
     attempts = new Map(),
+    // New chats by the phone's requestId (start() below).
+    starts = new Map(),
     terminalRuns = new Set(),
     // Told when approvals come or go (notifications look then).
     approvalListeners = new Set();
@@ -221,8 +229,15 @@ export function createOpenClaw({
     listAt = 0;
     return true;
   };
+  // A model failed and OpenClaw may be trying the next: still running.
+  const settleRetry = (run) => {
+    clearTimeout(run.retryTimer);
+    run.retryTimer = null;
+    run.retrying = "";
+  };
   const finishRun = (key, run, status, error = "") => {
     if (runs.get(key) !== run) return;
+    settleRetry(run);
     Object.assign(run, {
       status,
       text: "",
@@ -237,10 +252,14 @@ export function createOpenClaw({
     changed();
     listAt = 0;
   };
+  // gatewayDown: nothing answers on its port; a phone may start it.
   const connectionError = () =>
-    fail(
-      503,
-      "OpenClaw Gateway is unavailable. Start OpenClaw on this computer, then retry.",
+    Object.assign(
+      fail(
+        503,
+        "OpenClaw Gateway is unavailable. Start OpenClaw on this computer, then retry.",
+      ),
+      { gatewayDown: true },
     );
   const reset = (error) => {
     const dropped = ready;
@@ -251,6 +270,7 @@ export function createOpenClaw({
     changed();
     completions.clear();
     for (const run of runs.values()) {
+      settleRetry(run);
       if (run.status === "running")
         Object.assign(run, {
           status: "unknown",
@@ -510,6 +530,11 @@ export function createOpenClaw({
     }
     run.updatedAt = now();
     if (["start", "delta"].includes(state)) {
+      // The next model took over: the failed one's words are gone.
+      if (run.retrying) {
+        settleRetry(run);
+        run.text = "";
+      }
       run.status = "running";
       run.error = "";
       if (state === "delta")
@@ -520,15 +545,19 @@ export function createOpenClaw({
               ? p.data.text
               : run.text;
     } else if (state === "error") {
-      finishRun(
-        key,
-        run,
-        "error",
-        p.errorMessage ||
-          p.data?.error ||
-          "OpenClaw could not complete the run.",
-      );
-      if (run.delivery) run.delivery.status = "failed";
+      // Not the end yet: when a model fails (no credit, unknown model…)
+      // OpenClaw tries its fallbacks under the same runId, and their events
+      // may come without the sessionKey. Failed only if none starts in time.
+      const error =
+        p.errorMessage || p.data?.error || "OpenClaw could not complete the run.";
+      clearTimeout(run.retryTimer);
+      run.retrying = redact(error);
+      run.retryTimer = setTimeout(() => {
+        if (runs.get(key) !== run || !run.retrying) return;
+        finishRun(key, run, "error", error);
+        if (run.delivery) run.delivery.status = "failed";
+      }, retryGraceMs);
+      run.retryTimer.unref?.();
     } else if (run.delivery && state !== "aborted") {
       // Generation ends before outbound delivery. Only the terminal RPC result
       // can report delivery success/failure; lifecycle alone is not a receipt.
@@ -645,7 +674,7 @@ export function createOpenClaw({
     stamp([ready, [...runs].map(([key, run]) => [key, run.status, !!run.generated]), activeApprovals().map((a) => a.id)]);
   const chatStamp = (key) => {
     const run = runs.get(key);
-    return stamp([ready, run?.runId, run?.status, run?.text, run?.error, !!run?.generated, run?.delivery?.status, activeApprovals(key).map((a) => [a.id, a.canRespond])]);
+    return stamp([ready, run?.runId, run?.status, run?.text, run?.error, run?.retrying, !!run?.generated, run?.delivery?.status, activeApprovals(key).map((a) => [a.id, a.canRespond])]);
   };
   const activeApprovals = (key) =>
     [...approvals.values()]
@@ -726,7 +755,7 @@ export function createOpenClaw({
       : runs.get(s.key)?.status || "idle",
     canStop: runs.get(s.key)?.method !== "agent",
   });
-  return {
+  const api = {
     // Approvals came or went (notifications look then, not on a beat).
     onApprovalsChange(listener) {
       approvalListeners.add(listener);
@@ -749,6 +778,8 @@ export function createOpenClaw({
           sessions: [],
           approvals: [],
           error: error.message,
+          // Installed here, its Gateway just isn't running (gatewayStart).
+          ...(error.gatewayDown ? { canStart: true } : {}),
           revision,
           version,
         };
@@ -848,9 +879,13 @@ export function createOpenClaw({
         error: run?.error || "",
         delivery: run?.delivery || null,
         phase:
-          run?.generated && run?.status === "running"
-            ? "delivery"
-            : "generation",
+          run?.status === "running" && run.retrying
+            ? "retrying"
+            : run?.generated && run?.status === "running"
+              ? "delivery"
+              : "generation",
+        // Why it's trying another model (that one's error).
+        ...(run?.status === "running" && run.retrying ? { retrying: run.retrying } : {}),
         approvals: activeApprovals(key),
         revision,
         version,
@@ -1040,6 +1075,40 @@ export function createOpenClaw({
       listAt = 0;
       return { key };
     },
+    // A new chat and its first message, once per requestId (a phone that
+    // asks again after a dropped answer gets the same chat, not a second).
+    // A message OpenClaw refused leaves no empty chat behind; one whose
+    // fate is unknown keeps its chat, which shows what happened.
+    start({ text, requestId }) {
+      if (typeof text !== "string" || !text.trim() || text.length > 100000)
+        throw fail(400, "Write what you'd like OpenClaw to do.");
+      if (typeof requestId !== "string" || !/^[\w-]{8,100}$/.test(requestId))
+        throw fail(400, "A message request ID is required.");
+      const known = starts.get(requestId);
+      if (known) {
+        if (known.text !== text)
+          throw fail(409, "This message request ID was already used for a different message.");
+        return known.promise;
+      }
+      const started = { text };
+      started.promise = (async () => {
+        const { key } = await api.create({ title: text.trim().split("\n")[0].slice(0, 60) });
+        try {
+          await api.send({ key, text, requestId: `new-${requestId}` });
+        } catch (error) {
+          if (!(error.status >= 400 && error.status < 500)) return { key };
+          await api.remove(key).catch(() => {});
+          throw error;
+        }
+        return { key };
+      })().catch((error) => {
+        starts.delete(requestId);
+        throw error;
+      });
+      starts.set(requestId, started);
+      if (starts.size > 256) starts.delete(starts.keys().next().value);
+      return started.promise;
+    },
     // Removes a chat Reach made (never one of WhatsApp's or Discord's).
     async remove(key) {
       if (!reachMade(key)) throw fail(403, "Reach removes only chats it made.");
@@ -1147,9 +1216,32 @@ export function createOpenClaw({
       reset(connectionError());
     },
   };
+  return api;
 }
 
-export function openClawRoutes(app, client) {
+// Starts this computer's own OpenClaw Gateway, the service OpenClaw set up
+// (`openclaw gateway start`: launchd, systemd or schtasks), for a phone that
+// found it stopped. Fixed arguments; never a remote profile.
+export async function startOpenClawGateway({
+  configuration = localOpenClawConfig,
+  run = promisify(execFile),
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  await configuration();
+  try {
+    if (platform === "win32")
+      await run("cmd.exe", ["/d", "/c", "openclaw gateway start"], { timeout: 30000, windowsHide: true });
+    else await run(env.SHELL || "/bin/sh", ["-lc", "openclaw gateway start"], { timeout: 30000 });
+  } catch {
+    throw fail(
+      503,
+      "OpenClaw’s Gateway didn’t start. On this computer, run: openclaw gateway start",
+    );
+  }
+}
+
+export function openClawRoutes(app, client, { startGateway = startOpenClawGateway, settleMs = 500 } = {}) {
   const base = "/api/sessions/openclaw";
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),
@@ -1172,12 +1264,28 @@ export function openClawRoutes(app, client) {
   );
   // A new chat from Reach: a webchat session of Reach's own, then its first
   // message (replies stay in Reach and OpenClaw).
-  app.post(`${base}/new`, async (req, res) => {
-    const text = typeof req.body?.text === "string" ? req.body.text : "";
-    if (!text.trim() || text.length > 100000) throw fail(400, "Write what you'd like OpenClaw to do.");
-    const { key } = await client.create({ title: text.trim().split("\n")[0].slice(0, 60) });
-    await client.send({ key, text, requestId: `new-${crypto.randomUUID()}` });
-    res.json({ key });
+  // An older phone sends no requestId: one is made for it.
+  app.post(`${base}/new`, async (req, res) =>
+    res.json(
+      await client.start({
+        text: req.body?.text,
+        requestId: req.body?.requestId ?? crypto.randomUUID(),
+      }),
+    ),
+  );
+  // Deletes a chat Reach made, in OpenClaw too.
+  app.post(`${base}/remove`, async (req, res) =>
+    res.json(await client.remove(req.body?.key)),
+  );
+  // OpenClaw's Gateway stopped: start it, then answer once it's listed.
+  app.post(`${base}/gateway/start`, async (_req, res) => {
+    await startGateway();
+    for (let i = 0; i < 20; i++) {
+      const overview = await client.overview();
+      if (overview.connected) return res.json(overview);
+      await new Promise((r) => setTimeout(r, settleMs));
+    }
+    throw fail(503, "OpenClaw’s Gateway started but isn’t answering yet. Try again in a moment.");
   });
   app.post(`${base}/stop`, async (req, res) =>
     res.json(await client.stop(req.body?.key)),

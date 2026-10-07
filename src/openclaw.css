@@ -246,3 +246,12 @@
   font-size: 13px;
   line-height: 1.4;
 }
+/* Delete asks once: the trash turns red until a second tap (or 4 s). */
+.claw-icon.claw-delete-ask {
+  color: var(--danger, #e5a18b);
+  background: color-mix(in srgb, var(--danger, #e5a18b) 14%, transparent);
+}
+.chat-create.claw-start {
+  align-self: flex-start;
+  margin: 4px 0 12px;
+}

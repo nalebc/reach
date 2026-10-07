@@ -10,6 +10,7 @@ import {
   Search,
   ShieldCheck,
   Square,
+  Trash2,
 } from "lucide-react";
 import { request, post, type Peer } from "./api";
 import { ChatAppPicker, ago, type ChatAppChoice } from "./ChatList";
@@ -46,6 +47,8 @@ type Overview = {
   sessions: Session[];
   approvals: Approval[];
   error?: string;
+  // Installed here, its Gateway just isn't running: a phone may start it.
+  canStart?: boolean;
   // What it showed, to wait on its next change (an older Mac has none).
   version?: string;
 };
@@ -58,7 +61,9 @@ type History = {
   approvals: Approval[];
   mayHaveOlder: boolean;
   version?: string;
-  phase?: "generation" | "delivery";
+  // retrying: a model failed (`retrying` says why); OpenClaw tries its next.
+  phase?: "generation" | "delivery" | "retrying";
+  retrying?: string;
   delivery?: {
     channel: string;
     status: "pending" | "sent" | "failed" | "suppressed" | "unconfirmed";
@@ -189,6 +194,13 @@ function Conversation({
   onScreen?: () => void;
 }) {
   const [moving, setMoving] = useState(false);
+  // Deleting is for good (in OpenClaw too): the first tap asks, a second deletes.
+  const [deleting, setDeleting] = useState<"" | "ask" | "busy">("");
+  useEffect(() => {
+    if (deleting !== "ask") return;
+    const timer = setTimeout(() => setDeleting(""), 4000);
+    return () => clearTimeout(timer);
+  }, [deleting]);
   const [refresh, setRefresh] = useState(0);
   const [limit, setLimit] = useState(200);
   const { data, error } = usePolling<History>(
@@ -288,6 +300,27 @@ function Conversation({
             <ShieldCheck size={18} />
           </button>
         )}
+        {current.writable === true && (
+          <button
+            className={`claw-icon${deleting ? " claw-delete-ask" : ""}`}
+            aria-label={deleting ? "Tap again to delete this chat" : "Delete chat"}
+            disabled={deleting === "busy"}
+            onClick={async () => {
+              if (!deleting) return setDeleting("ask");
+              setDeleting("busy");
+              setProblem("");
+              try {
+                await post(peer, `${base}/remove`, { key: session.key });
+                onBack();
+              } catch (e) {
+                setProblem((e as Error).message);
+                setDeleting("");
+              }
+            }}
+          >
+            {deleting === "busy" ? <Loader2 size={16} className="spin" /> : <Trash2 size={17} />}
+          </button>
+        )}
         {onOpenChat && (
           <button
             className="claw-icon"
@@ -377,9 +410,11 @@ function Conversation({
         {working && !error && (
           <p className="claw-note" role="status">
             <Loader2 size={13} className="spin" />
-            {data?.phase === "delivery"
-              ? "OpenClaw is finishing delivery…"
-              : "OpenClaw is working…"}
+            {data?.phase === "retrying"
+              ? `That model didn’t answer (${data.retrying}). OpenClaw is trying another…`
+              : data?.phase === "delivery"
+                ? "OpenClaw is finishing delivery…"
+                : "OpenClaw is working…"}
           </p>
         )}
         {data?.delivery && data.delivery.status !== "pending" && (
@@ -547,6 +582,8 @@ export default function OpenClawSpace({
     `${base}/changes`,
   );
   const [opened, setOpened] = useState<Session | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startProblem, setStartProblem] = useState("");
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("");
   const sessions = data?.sessions || [];
@@ -643,6 +680,32 @@ export default function OpenClawSpace({
         {(error || data?.error) && (
           <p className="claw-error" role="alert">
             {error || data?.error}
+          </p>
+        )}
+        {data?.canStart && !error && (
+          <button
+            className="chat-create claw-start"
+            disabled={starting}
+            onClick={async () => {
+              setStarting(true);
+              setStartProblem("");
+              try {
+                await post(peer, `${base}/gateway/start`, {});
+                setRefresh((n) => n + 1);
+              } catch (e) {
+                setStartProblem((e as Error).message);
+              } finally {
+                setStarting(false);
+              }
+            }}
+          >
+            {starting ? <Loader2 size={14} className="spin" /> : null}
+            {starting ? "Starting OpenClaw…" : `Start OpenClaw on ${peer.name}`}
+          </button>
+        )}
+        {startProblem && (
+          <p className="claw-error" role="alert">
+            {startProblem}
           </p>
         )}
         {!data && !error && (
