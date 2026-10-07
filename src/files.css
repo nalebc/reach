@@ -915,6 +915,11 @@ h1.files-title {
   min-width: 0;
   overflow: auto;
   color: #a9b8ad;
+  /* Long, unwrapped source must scroll, rather than make Safari inflate
+     only its text and leave the gutter at a different line height. Browser
+     page zoom remains available. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 .file-viewer-body.is-image {
   padding: 12px;
@@ -1184,6 +1189,9 @@ h1.files-title {
 }
 .file-code-source {
   flex: 1;
+}
+.file-code-source code {
+  font: inherit;
 }
 .file-code.is-wrapped .file-code-content {
   width: 100%;
