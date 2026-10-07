@@ -168,6 +168,9 @@ const imageTypes: Record<string, string> = {
   svg: "image/svg+xml",
 };
 export const imageType = (name: string) => imageTypes[extension(name)];
+// Archives the computer unzips in place with one tap (server/archives.mjs).
+export const isArchive = (name: string) =>
+  /.\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$/i.test(name);
 // Markdown can be shown formatted as well as as source.
 export const isMarkdown = (name: string) =>
   ["md", "markdown"].includes(extension(name));

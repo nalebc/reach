@@ -2,6 +2,8 @@
 
 An agent that works from a browser (Muse, ChatGPT agent, a Grok bot) is invited from the phone with **one choice: a preset**. Its API and UI permissions follow from that preset. The agent opens the link in its browser, the owner matches its connection code, and the page becomes the agent's workspace. Bots that automate a browser use the same session through `window.reach`.
 
+These presets require macOS. The protected file helper is macOS-only, so Linux and Windows refuse new Files invitations before issuing credentials; protected file operations with older browser credentials return HTTP 503. Owner Files and Reach terminals are separate capabilities, as is scoped command-line agent access. `GET /api/agents/browser-options` reports `protectedFilesSupported` and `desktopAvailable`; the invitation form disables unavailable presets.
+
 **Full control is trusted access to the owner's OS account.** Its commands are not sandboxed: they can read sensitive files or change Reach, even when the file API or a visible UI target refuses the same operation. Command refusals and protected-window filters are guardrails, not isolation. Apps has no shell API, but a selected terminal or IDE can run commands as the owner. Use Files or a separate account/computer when an agent needs stronger confinement.
 
 ## The four presets

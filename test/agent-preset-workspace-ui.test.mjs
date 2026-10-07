@@ -181,7 +181,7 @@ test("commands and file changes live on the same page with their results", async
   await dom.waitFor(() => button(c, "Edit notes.md"));
   await dom.waitFor(() => /Done: read notes\.md/.test(c.textContent));
   await click(button(c, "Edit notes.md"));
-  const editor = c.querySelector('[aria-label="Edit notes.md"]');
+  const editor = await dom.waitFor(() => c.querySelector('textarea[aria-label="Edit notes.md"]'));
   Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(editor, "# Notes\nmore");
   editor.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await click(button(c, "Save"));

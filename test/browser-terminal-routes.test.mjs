@@ -1,3 +1,4 @@
+import { nativeFiles, expectFileExecution } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import { approveAgentClaim } from "./helpers/agent-admission.mjs";
 import assert from "node:assert/strict";
@@ -146,7 +147,7 @@ test('Desktop terminal read commands run immediately, log outcomes and cannot es
   const f=await start(t); desktop(f);
   const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,screen:'off'});
   const access=await bot.as('/api/browser'); assert.equal(access.body.screen,'off'); assert.equal(access.body.restrictedTerminal,true);
-  const read=await command(bot,'cat notes.txt');assert.equal(read.body.status,'executed',JSON.stringify(read.body));assert.equal(read.body.output,'Only Desktop data');
+  const read=await command(bot,'cat notes.txt');expectFileExecution(read.body, body=>assert.equal(body.output,'Only Desktop data'));
   assert.equal((await f.call('/api/agents/browser-requests')).body.length,0);
   for(const cmd of ['cat ../outside.txt','cat /etc/passwd','sh -c pwd','sudo ls','ls; cat ../outside.txt','cp notes.txt ../escaped.txt','touch changed.txt']) {
     const result=await command(bot,cmd);assert.equal(result.body.status,'blocked',cmd+JSON.stringify(result.body));assert.ok(!JSON.stringify(result.body).includes('DO NOT READ OUTSIDE'));
@@ -155,7 +156,7 @@ test('Desktop terminal read commands run immediately, log outcomes and cannot es
   assert.equal((await command(bot,'pwd',{root:1})).status,403);
   assert.equal((await command(bot,'pwd',{cwd:'..'})).body.status,'failed');
   assert.equal(fs.existsSync(path.join(f.dir,'Desktop/changed.txt')),false);
-  const history=await bot.as('/api/browser/terminal/history');assert.equal(history.status,200);assert.ok(history.body.some(r=>r.id===read.body.id&&r.status==='executed'));
+  const history=await bot.as('/api/browser/terminal/history');assert.equal(history.status,200);assert.ok(history.body.some(r=>r.id===read.body.id&&r.status===(nativeFiles?'executed':'failed')));
   const other=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,screen:'off'});
   assert.deepEqual((await other.as('/api/browser/terminal/history')).body,[]);
   assert.equal((await bot.as('/api/agents/browser-terminal-history')).status,403);
@@ -168,11 +169,11 @@ test('supported Desktop changes wait for exact owner approval and never enlarge 
   assert.equal(fs.existsSync(path.join(f.dir,'Desktop/draft.txt')),false);
   assert.equal((await bot.as(`/api/agents/browser-requests/${made.body.id}`,{method:'POST',body:{decision:'approve',reviewedTerminalChange:true}})).status,403);
   assert.equal((await f.call(`/api/agents/browser-requests/${made.body.id}`,{method:'POST',body:{decision:'approve'}})).status,400);
-  const done=await approveChange(f,made.body.id);assert.equal(done.body.status,'executed',JSON.stringify(done.body));assert.equal(fs.existsSync(path.join(f.dir,'Desktop/draft.txt')),true);
+  const done=await approveChange(f,made.body.id);expectFileExecution(done.body);assert.equal(fs.existsSync(path.join(f.dir,'Desktop/draft.txt')),nativeFiles);
   assert.equal((await approveChange(f,made.body.id)).status,409);
   for(const cmd of ['touch ../escaped.txt','rm ../outside.txt','cp notes.txt /tmp/escape','python -c "print(1)"','sudo rm notes.txt'])assert.equal((await command(bot,cmd)).body.status,'blocked',cmd);
   assert.equal(fs.readFileSync(path.join(f.dir,'outside.txt'),'utf8'),'DO NOT READ OUTSIDE');
-  assert.equal((await bot.as('/api/browser/terminal/history')).body.find(r=>r.id===made.body.id).status,'executed');
+  assert.equal((await bot.as('/api/browser/terminal/history')).body.find(r=>r.id===made.body.id).status,nativeFiles?'executed':'failed');
   assert.ok((await f.call('/api/agents/browser-terminal-history')).body.some(r=>r.id===made.body.id));
   const noDirect=await bot.as('/api/browser/requests',{method:'POST',body:{type:'terminal-change',command:'sh -c pwd',root:0,reason:'escape'}});assert.equal(noDirect.status,400);
 });
@@ -188,7 +189,7 @@ test('terminal change denial and revocation prevent dispatch and log denial',{sk
 test('automatic reads do not consume approval capacity and denied terminal batches are durable',async t=>{
   const f=await start(t); desktop(f);
   const bot=await f.join({folders:[{root:0,path:'Desktop'}],restrictedTerminal:true,terminalApproval:true,screen:'off'});
-  for(let i=0;i<12;i++) assert.equal((await command(bot,'pwd')).body.status,'executed');
+  for(let i=0;i<12;i++) expectFileExecution((await command(bot,'pwd')).body);
   const change=await command(bot,'touch approved.txt');
   if(process.platform==='win32'){assert.equal(change.body.status,'failed');assert.match(change.body.error,/not supported on Windows/);assert.equal(fs.existsSync(path.join(f.dir,'Desktop/approved.txt')),false);}
   else assert.equal(change.status,202,JSON.stringify(change.body));
@@ -220,8 +221,11 @@ test('owner may remember one exact command for this invitation only; same-name n
  const bot=await f.join(grant);const first=await command(bot,'touch session.txt');const route=`/api/agents/browser-requests/${first.body.id}`;
  assert.equal((await bot.as(route,{method:'POST',body:{decision:'approve-session',reviewedTerminalChange:true}})).status,403);
  assert.equal((await f.call(route,{method:'POST',body:{decision:'approve-session'}})).status,400);
- assert.equal((await f.call(route,{method:'POST',body:{decision:'approve-session',reviewedTerminalChange:true}})).body.status,'executed');
- const repeated=await command(bot,'touch session.txt');assert.equal(repeated.body.status,'executed',JSON.stringify(repeated.body));assert.equal(repeated.body.approval,'session');
- assert.equal((await bot.as('/api/browser/terminal/history')).body.find(r=>r.id===repeated.body.id).approval,'session');
+ expectFileExecution((await f.call(route,{method:'POST',body:{decision:'approve-session',reviewedTerminalChange:true}})).body);
+ const repeated=await command(bot,'touch session.txt');
+ if(nativeFiles) expectFileExecution(repeated.body);
+ else { assert.equal(repeated.body.status,'pending','a failed operation cannot establish remembered approval');assert.equal(fs.existsSync(path.join(f.dir,'Desktop/session.txt')),false); }
+ assert.equal(repeated.body.approval,nativeFiles?'session':'owner');
+ assert.equal((await bot.as('/api/browser/terminal/history')).body.find(r=>r.id===repeated.body.id).approval,nativeFiles?'session':'owner');
  const next=await f.join(grant);const nextRequest=await command(next,'touch session.txt');assert.notEqual(nextRequest.body.clientId,first.body.clientId);assert.equal(nextRequest.body.status,'pending');assert.equal((await command(bot,'touch other.txt')).body.status,'pending');
 });

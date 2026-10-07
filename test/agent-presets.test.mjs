@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   PRESETS, presetScopes, validatePresetInvitation, presetPolicy, validPresetPolicy,
-  presetRouteAllowed, presetAccess, presetAppsFromCatalog, hostGuardedPreset,
+  presetRouteAllowed, presetAccess, presetAppsFromCatalog, hostGuardedPreset, validAppPath,
 } from "../server/agent-presets.mjs";
 
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" };
@@ -136,4 +136,11 @@ test("the agent's own view and the catalog binding", () => {
   assert.throws(() => presetAppsFromCatalog(catalog, [{ id: "/Applications/1Password.app" }]), /always protected/);
   assert.equal(presetAppsFromCatalog(catalog, [{ id: "/Applications/1Password.app" }], { allowProtected: true }).length, 1);
   assert.throws(() => presetAppsFromCatalog(null, [{ id: chrome.id }]), /unavailable/);
+});
+
+// These are Mac app identifiers, even when metadata is inspected off macOS.
+test("Mac app paths use POSIX syntax independently of the host platform", () => {
+  assert.equal(validAppPath("/Applications/Google Chrome.app"), true);
+  for (const app of ["Chrome.app", "C:\\Applications\\Chrome.app", "/Applications/../Chrome.app", "//Applications/Chrome.app", "/Applications/Chrome\\helper.app"])
+    assert.equal(validAppPath(app), false, app);
 });

@@ -1,3 +1,4 @@
+import { expectFileResponse } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -163,14 +164,10 @@ for (const kind of ["browser", "cli"])
       (await call("/api/device", { token: joined.body.token })).status,
       200,
     );
-    assert.equal(
-      (
-        await call("/api/files/text?root=0&path=brief.txt", {
-          token: joined.body.token,
-        })
-      ).body.text,
-      "Shared brief",
-    );
+    const brief = await call("/api/files/text?root=0&path=brief.txt", { token: joined.body.token });
+    // CLI grants use the ordinary file API; browser grants require the protected helper.
+    if (kind === "browser") expectFileResponse(brief, body => assert.equal(body.text, "Shared brief"));
+    else { assert.equal(brief.status, 200); assert.equal(brief.body.text, "Shared brief"); }
     assert.equal(
       (
         await call("/api/invitations/redeem", {

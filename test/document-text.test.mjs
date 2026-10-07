@@ -52,7 +52,7 @@ test("document text is read-only, shared-folder bound and never editable", async
     assert.equal((await get(owner.token, 0, "Missing.docx")).status, 404);
     assert.deepEqual(read, ["Contract.docx", "Notes.rtf"]);
   } finally {
-    reach.server.close();
+    await reach.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

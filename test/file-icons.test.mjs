@@ -67,7 +67,7 @@ test("file type icons are readable by anyone who can browse files", async () => 
     ])
       assert.equal((await get(owner.token, bad)).status, 400, bad);
   } finally {
-    reach.server.close();
+    await reach.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

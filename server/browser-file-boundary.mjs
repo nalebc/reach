@@ -16,7 +16,7 @@ const literal = value => JSON.stringify(value);
 export function fileBoundaryProfile(root, privatePaths, writable = false) {
   const namePattern = browserPrivateNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[a-z]/g, c => `[${c}${c.toUpperCase()}]`)).join('|');
   const ancestors = [];
-  for (let p = path.dirname(root); ; p = path.dirname(p)) { ancestors.push(p); if (p === '/') break; }
+  for (let p = path.dirname(root); ; p = path.dirname(p)) { ancestors.push(p); if (path.dirname(p) === p) break; }
   return `(version 1)
 (deny default)
 (deny process-fork process-exec file-link)
@@ -48,7 +48,9 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
         typeof input.root !== 'string' || !path.isAbsolute(input.root) || input.root === '/' ||
         (input.maxBytes !== undefined && (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 25 * 1024 * 1024)))
       throw fail(400, 'Choose a supported operation inside the shared folder.');
-    if (process.platform !== 'darwin') throw fail(503, 'Protected agent file access is unavailable on this computer.');
+    // A trusted injected runner can exercise this JS contract on other hosts;
+    // real file access still requires the macOS descriptor/sandbox helper.
+    if (process.platform !== 'darwin' && typeof run !== 'function') throw fail(503, 'Protected agent file access is unavailable on this computer.');
     if (validateBrowserRoot(input.root) !== input.root) throw fail(403, 'The shared folder changed.');
     const root = fs.lstatSync(input.root, { bigint: true });
     if (!root.isDirectory() || root.isSymbolicLink()) throw fail(403, 'The shared folder changed.');

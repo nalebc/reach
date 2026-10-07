@@ -99,11 +99,17 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
   if (typeof command !== "string" || !command.trim()) return "Enter a command.";
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(command)) return "Hidden control characters are not allowed in commands.";
   const lowered = command.normalize("NFKC").toLowerCase();
+  const canonicalPath = (value) => {
+    const resolved = path.resolve(value);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const roots = protectedPaths.filter((root) => typeof root === "string" && path.isAbsolute(root)).map(canonicalPath);
   const protectedPath = (value) => {
-    const expanded = value.replace(/^~(?=\/|$)/, home || "~").replace(/^\$\{?HOME\}?(?=\/|$)/, home || "~");
-    const absolute = path.isAbsolute(expanded) ? path.resolve(expanded) : null;
-    return SECRET_PATH.test(expanded) || PRIVATE_LIBRARY.test(expanded) ||
-      (absolute !== null && protectedPaths.some((root) => absolute === root || absolute.startsWith(root + path.sep)));
+    const expanded = value.replace(/^~(?=[\\/]|$)/, home || "~").replace(/^\$\{?HOME\}?(?=[\\/]|$)/, home || "~");
+    const absolute = path.isAbsolute(expanded) ? canonicalPath(expanded) : null;
+    const separators = expanded.replace(/\\/g, "/");
+    return SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) ||
+      (absolute !== null && roots.some((root) => absolute === root || absolute.startsWith(root.endsWith(path.sep) ? root : root + path.sep)));
   };
   for (const raw of segments(command)) {
     const piece = raw.replace(/\\ /g, " ");

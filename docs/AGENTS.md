@@ -4,6 +4,8 @@ Reach gives agents access to **computers the user owns or is authorized to opera
 
 ## Browser invitations and presets
 
+Browser presets currently require a macOS host. The protected browser-agent file helper is unavailable on Linux and Windows: new Files invitations are refused, and protected file operations with existing browser credentials return HTTP 503. Owner file browsing, Reach terminals and scoped command-line credentials use separate paths and remain available under their own permissions.
+
 The owner invites an agent from Reach and chooses **Full control**, **Apps**, **Files**, or **Read only**. The agent opens the whole invitation link and waits for the owner to match and approve its connection code. Claiming a link does not itself grant access. Browser automation can use the visible controls or the session-bound `window.reach` interface:
 
 ```js

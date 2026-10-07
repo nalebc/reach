@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   privacy:
-    # Remains a failing release gate, while independent platform tests still run.
+    # Keep the release privacy gate independent from platform verification.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -553,12 +553,28 @@ test("a registry record whose pid now belongs to another process is ignored", as
     assert.equal(found.get("undated").busy, true, "an older Claude Code without start times");
     // ps unavailable: nothing is hidden.
     assert.equal(readSessionRegistry({ dir, alive: () => true, started: () => null }).get("redesign").pid, 2402);
-    // The real ps agrees with Claude Code's format for this process.
-    const mine = processStarts([process.pid], { now: 1 }).get(process.pid);
-    assert.match(mine, /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("process start lookup uses the Unix contract and leaves Windows registry records visible", async () => {
+  const { processStarts } = await import("../server/agent-sessions/processes.mjs");
+  const starts = processStarts([1451, 1509], { platform: "linux", run: (command, args, options) => {
+    assert.equal(command, "ps");
+    assert.deepEqual(args, ["-o", "pid=,lstart=", "-p", "1451,1509"]);
+    assert.equal(options.env.TZ, "UTC");
+    assert.equal(options.env.LC_ALL, "C");
+    return " 1451 Tue Oct  6 16:41:40 2026\n 1509 Tue Oct  6 16:41:56 2026\n";
+  } });
+  assert.deepEqual([...starts], [[1451, "Tue Oct 6 16:41:40 2026"], [1509, "Tue Oct 6 16:41:56 2026"]]);
+  assert.equal(processStarts([1451], { platform: "win32", run: () => assert.fail("Windows must not invoke an unrelated ps") }), null);
+  assert.equal(processStarts([1451], { platform: "linux", run: () => { throw Object.assign(Error("unavailable"), { code: "ENOENT" }); } }), null);
+  assert.deepEqual([...processStarts([1451], { platform: "linux", run: () => { throw Object.assign(Error("none running"), { status: 1 }); } })], []);
+  // The actual host lookup is asserted separately from the portable parser.
+  const native = processStarts([process.pid], { now: 1 });
+  if (process.platform === "win32") assert.equal(native, null);
+  else assert.match(native?.get(process.pid), /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
 });
 
 test("a question Claude waits on is read from the transcript, with its choices, until it's answered", () => {

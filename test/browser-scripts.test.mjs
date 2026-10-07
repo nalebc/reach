@@ -100,11 +100,13 @@ test('protected descendants cannot be moved outside their exclusion and hardlink
  }
 });
 test('script runtime and protection ancestors receive explicit write denial',()=>{
- const profile=scriptProfile('/tmp/share',['/tmp/share/parent/private'],['/tmp/share/runtime/node']);
- assert.match(profile,/deny file-write\* \(literal "\/tmp\/share\/runtime\/node"\)/);
- assert.match(profile,/deny file-write-unlink file-write-mode[^\n]*"\/tmp\/share\/parent"/);
- assert.match(profile,/deny file-write-unlink file-write-mode[^\n]*"\/tmp\/share\/runtime"/);
- assert.doesNotMatch(profile,/allow file-read\* file-map-executable[^\n]*subpath "\/tmp\/share\/runtime"/);
+ const root=path.resolve('/tmp/share'),parent=path.join(root,'parent'),runtime=path.join(root,'runtime'),node=path.join(runtime,'node');
+ const profile=scriptProfile(root,[path.join(parent,'private')],[node]);
+ assert.ok(profile.includes(`(deny file-write* (literal ${JSON.stringify(node)}))`));
+ const pinned=profile.split('\n').find(line=>line.startsWith('(deny file-write-unlink file-write-mode '));
+ for(const directory of [parent,runtime])assert.ok(pinned.includes(`(literal ${JSON.stringify(directory)})`),pinned);
+ const reads=profile.split('\n').filter(line=>line.startsWith('(allow file-read* file-map-executable ')).join('\n');
+ assert.ok(!reads.includes(`(subpath ${JSON.stringify(runtime)})`),reads);
 });
 test('scripts cannot select Reach implementation as a shared execution root',{skip:process.platform!=='darwin'},t=>{
  const f=fixture(t), application=fs.realpathSync(new URL('../',import.meta.url));

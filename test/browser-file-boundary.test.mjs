@@ -26,6 +26,14 @@ test('file helper receives only bounded trusted operations and protected names',
  for(const request of [{op:'spawn',root:f.root,path:''},{op:'read',root:f.root,path:'../outside/secret.txt'},{op:'read',root:f.root,path:'/etc/passwd'},{op:'cp',root:f.root,path:'safe.txt',to:'../outside/copy'}])await assert.rejects(browserFileOperation(request,()=>true,{run}),{status:400});
  const readonly=fileBoundaryProfile(f.root,[]);assert.doesNotMatch(readonly,/allow file-write/);assert.match(readonly,/deny process-fork process-exec file-link/);
 });
+test('sandbox profile generation terminates at the host filesystem root', async()=>{
+ // A Windows drive root is its own parent, just as / is on POSIX. Keep the
+ // process bounded so a regression reports a failure instead of hanging CI.
+ const moduleURL=new URL('../server/browser-file-boundary.mjs',import.meta.url).href;
+ const source=`import {fileBoundaryProfile} from ${JSON.stringify(moduleURL)}; process.stdout.write(fileBoundaryProfile(process.cwd(),[]));`;
+ const {stdout}=await promisify(execFile)(process.execPath,['--input-type=module','-e',source],{timeout:5000,maxBuffer:65536});
+ assert.match(stdout,/deny default/);assert.match(stdout,/allow file-read-metadata/);
+});
 test('native descriptor operations reject parent symlinks, hard links, private names and private trees',{skip:!native},async t=>{
  const f=fixture(t);
  fs.symlinkSync(f.outside,path.join(f.root,'escape'));
@@ -54,7 +62,7 @@ test('racing parent swaps never disclose or change files outside the shared fold
  } finally { attacker.kill('SIGKILL');await once(attacker,'close'); }
  assert.deepEqual(fs.readdirSync(f.outside).sort(),['outside-only','secret.txt']);assert.equal(fs.readFileSync(path.join(f.outside,'secret.txt'),'utf8'),'never shared');
 });
-test('authorization must still be valid after the helper completes',{skip:process.platform!=='darwin'},async t=>{
+test('authorization must still be valid after the helper completes',async t=>{
  const f=fixture(t);let allowed=true;
  await assert.rejects(browserFileOperation({op:'read',root:f.root,path:'safe.txt'},()=>{if(!allowed)throw Object.assign(Error('revoked'),{status:403});return true;},{config:{dataDir:f.cache},run:async()=>{allowed=false;return{data:Buffer.from('hidden').toString('base64'),stat:{}};}}),/revoked/);
 });
@@ -85,11 +93,11 @@ test('kernel sandbox denies writes through a previously opened directory moved o
 test('agent roots exclude homes, executable installations and their ancestors',async t=>{
  const {validateBrowserRoot}=await import('../server/browser-private-paths.mjs');const f=fixture(t);
  const home=path.join(f.temp,'user'),runtime=path.join(home,'.runtime','bin','node');fs.mkdirSync(path.join(home,'Desktop'),{recursive:true});
- for(const root of ['/',home,f.temp,'/Applications','/Applications/Test.app','/Library','/System','/usr','/bin','/sbin','/opt','/private/etc','/etc',path.join(home,'Applications'),path.join(home,'.runtime')])assert.throws(()=>validateBrowserRoot(root,{home,runtime}),{status:403},root);
+ for(const root of ['/',path.parse(f.root).root,...(process.platform==='win32'?['Z:\\','\\\\server\\share\\']:[]),home,f.temp,'/Applications','/Applications/Test.app','/Library','/System','/usr','/bin','/sbin','/opt','/private/etc','/etc',path.join(home,'Applications'),path.join(home,'.runtime')])assert.throws(()=>validateBrowserRoot(root,{home,runtime}),{status:403},root);
  assert.equal(validateBrowserRoot(path.join(home,'Desktop'),{home,runtime}),path.join(home,'Desktop'));
  assert.equal(validateBrowserRoot(f.root,{home,runtime}),f.root);
 });
-test('file operations have global and per-session concurrency bounds without a queue',{skip:process.platform!=='darwin'},async t=>{
+test('file operations have global and per-session concurrency bounds without a queue',async t=>{
  const f=fixture(t), releases=[];let started=0;
  const run=async()=>{started++;await new Promise(resolve=>releases.push(resolve));return{items:[],truncated:false};};
  const operation=id=>browserFileOperation({op:'list',root:f.root,path:''},()=>id?{id}:undefined,{config:{dataDir:f.cache},run});
@@ -102,7 +110,7 @@ test('file operations have global and per-session concurrency bounds without a q
  await assert.rejects(operation(),{status:429});assert.equal(started,8);
  releases.splice(0).forEach(resolve=>resolve());await Promise.all(anonymous);
 });
-test('failed or revoked operations release their slots and cannot change client identity',{skip:process.platform!=='darwin'},async t=>{
+test('failed or revoked operations release their slots and cannot change client identity',async t=>{
  const f=fixture(t), request={op:'list',root:f.root,path:''},options={config:{dataDir:f.cache}};
  for(let n=0;n<5;n++)await assert.rejects(browserFileOperation(request,()=>({id:'failure'}),{...options,run:async()=>{throw Error('helper failure');}}),/helper failure/);
  for(let n=0;n<5;n++){
@@ -110,4 +118,14 @@ test('failed or revoked operations release their slots and cannot change client 
   await assert.rejects(browserFileOperation(request,()=>({id:current}),{...options,run:async(_request,check)=>{current='another';check();}}),{status:403});
  }
  assert.deepEqual(await browserFileOperation(request,()=>({id:'failure'}),{...options,run:async()=>({items:[],truncated:false})}),{items:[],truncated:false});
+});
+
+// This intentionally uses the real path (no injected runner) on unsupported hosts.
+test('non-macOS protected file access fails closed without reading or changing files', {skip:process.platform==='darwin'}, async t=>{
+ const f=fixture(t);
+ for(const [op,relative,extra] of [['stat','',{}],['list','',{}],['read','safe.txt',{}],['mkdir','new',{}],['touch','new',{}],['write','safe.txt',{data:Buffer.from('changed').toString('base64')}],['cp','safe.txt',{to:'copy.txt'}],['rm','safe.txt',{}]]) {
+  await assert.rejects(f.run(op,relative,extra), error=>error.status===503 && /Protected agent file access is unavailable/.test(error.message));
+ }
+ assert.deepEqual(fs.readdirSync(f.root),['safe.txt']);
+ assert.equal(fs.readFileSync(path.join(f.root,'safe.txt'),'utf8'),'shared text');
 });

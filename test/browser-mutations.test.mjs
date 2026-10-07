@@ -1,3 +1,4 @@
+import { nativeFiles, unavailableFiles } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -32,6 +33,14 @@ test("mutation grammar is an exact finite file-operation language", () => {
 
 test("approved changes create/copy/remove only bounded regular files within the selected folder", { skip: process.platform === "win32" && "File mutations deliberately require POSIX path guarantees" }, async (t) => {
   const { root, run } = await fixture(t);
+  if (!nativeFiles) {
+    await fs.writeFile(path.join(root, "safe.txt"), "unchanged");
+    for (const command of ["mkdir notes", "touch note.txt", "cp safe.txt copy.txt", "rm safe.txt"])
+      await assert.rejects(run(command), error => error.status === 503 && unavailableFiles.test(error.message));
+    assert.deepEqual(await fs.readdir(root), ["safe.txt"]);
+    assert.equal(await fs.readFile(path.join(root, "safe.txt"), "utf8"), "unchanged");
+    return;
+  }
   assert.match(await run("mkdir notes"), /Created folder notes/);
   assert.match(await run('touch "first note.txt"', { cwd: "notes" }), /Touched file/);
   const file = path.join(root, "notes", "first note.txt");

@@ -74,6 +74,7 @@ test("the background agent that can't start is stopped and kept aside; another f
 
 test("only on macOS, and only the three commands", () => {
   assert.throws(() => loginStart("install", { ...setup(), platform: "linux" }), /macOS/);
+  assert.throws(() => loginStart("install", { platform: "win32" }), /macOS/);
   assert.throws(() => loginStart("start", setup()), /install, uninstall or status/);
   // Paths are quoted for the shell and escaped for the plist.
   assert.ok(loginScript("/a/b'c", "/n").includes(`cd '/a/b'\\''c' || exit 1`));
@@ -84,4 +85,16 @@ test("only on macOS, and only the three commands", () => {
   assert.ok(loginScript("/src/reach", "/n/bin", { exists: (file) => true }).includes("\n./reach\n"), "a checkout keeps its launcher");
   assert.ok(!loginScript("/opt/pkg", "/n/bin", { exists: npmLayout, restart: true }).includes("uninstall"));
   assert.ok(loginPlist("/x/<y>&.command").includes("<string>/x/&lt;y&gt;&amp;.command</string>"));
+});
+
+test("unsupported sign-in startup reports its platform requirement even without getuid", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "getuid");
+  try {
+    Object.defineProperty(process, "getuid", { value: undefined, configurable: true });
+    for (const platform of ["linux", "win32"])
+      assert.throws(() => loginStart("install", { platform }), /for macOS/);
+  } finally {
+    if (descriptor) Object.defineProperty(process, "getuid", descriptor);
+    else delete process.getuid;
+  }
 });

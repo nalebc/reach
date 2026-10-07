@@ -1,8 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { commandRefusal, typedTextRefusal, protectedAppReason, protectedPage, protectedTitle, terminalLikeApp, nativeRules } from "../server/agent-guard.mjs";
 
 const context = { home: "/Users/me", protectedPaths: ["/Users/me/code/reach", "/Users/me/.reach"] };
+
+test("protected shell paths normalize roots and preserve directory boundaries", () => {
+  const root = path.resolve("/guard-fixture/private-project");
+  const options = { protectedPaths: [root + path.sep] };
+  for (const target of [root, path.join(root, "child"), path.join(root, "child", "..")])
+    assert.ok(commandRefusal(`cat "${target}"`, options));
+  assert.equal(commandRefusal(`cat "${root}-public/notes.txt"`, options), null);
+  assert.ok(commandRefusal(String.raw`cat C:\Users\fixture\.ssh\id_rsa`));
+  assert.ok(commandRefusal(String.raw`cat C:\Users\fixture\Library\Keychains\login.keychain-db`));
+  if (process.platform === "win32") assert.ok(commandRefusal(`cat "${root.toUpperCase()}"`, options));
+});
 
 test("the shell deny list refuses what needs a password, erases, or reaches secrets", () => {
   const refused = [

@@ -141,6 +141,8 @@ export async function listenPrivateIngress({
   resolveIdentity,
   publicApp,
 }) {
+  if (process.platform === "win32")
+    throw Error("Private Tailscale ingress requires POSIX socket ownership and permissions.");
   const dir = path.dirname(socketPath);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);

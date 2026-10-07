@@ -64,6 +64,7 @@ export function browserAccessRoutes(
     resolve,
     resolveAsync,
     browserFiles,
+    protectedFilesSupported = process.platform === "darwin",
     screenAvailable,
     record,
     approvals,
@@ -134,7 +135,7 @@ export function browserAccessRoutes(
     }
     owner(req);
     res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
-      desktopAvailable: !!desktop?.available?.(), presetApps, ...(presetAppsError ? { presetAppsError } : {}),
+      desktopAvailable: !!desktop?.available?.(), protectedFilesSupported, presetApps, ...(presetAppsError ? { presetAppsError } : {}),
       // The longest a preset invitation may last over the public link; the
       // form offers a day only when the server allows it.
       maxFunnelSeconds: 86400,
@@ -166,6 +167,8 @@ export function browserAccessRoutes(
   // any shared folder), apps matched to this Mac's catalog, and the host guard
   // reserved when the agent will touch the Mac.
   const createPresetInvitation = async (req, res, input) => {
+    if (input.preset === "files" && !protectedFilesSupported)
+      throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
     for (const folder of input.folders) {
       const chosen = resolve(folder.root, folder.path || "", { policy: { browser: true } });
       if (input.preset === "files") validateBrowserRoot(chosen);

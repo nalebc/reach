@@ -17,14 +17,26 @@ for (const listFile of [".reach/private-identifiers", path.join(os.homedir(), ".
 }
 if (!process.env.CI && username.length >= 4) privateWords.push(username);
 if (!privateWords.some((w) => w.length >= 4)) console.error("Note: no private identifiers configured (REACH_PRIVATE_IDENTIFIERS or .reach/private-identifiers); the scan covers only known credential formats.");
-// Every commit must carry the project identity, author and committer alike: a
-// personal email in history is published with the repository.
-const projectEmail = "contributors@example.invalid";
+// Keep personal names/emails out of published metadata without stripping the
+// owner's requested attribution or the bots' own public attribution. GitHub
+// login/ID pairs were checked through its users API; this is an explicit
+// allowlist, not acceptance of any address that resembles a noreply address.
+const publicIdentities = new Map([
+  ["contributors@example.invalid", "Reach Contributors"],
+  ["54943684+nalebc@users.noreply.github.com", "nalebc"],
+  ["49699333+dependabot[bot]@users.noreply.github.com", "dependabot[bot]"],
+  ["41898282+github-actions[bot]@users.noreply.github.com", "github-actions[bot]"],
+]);
 try {
-  const emails = execFileSync("git", ["log", "--format=%H %ae %ce"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  const stray = emails.filter((line) => line.split(" ").slice(1).some((email) => email.toLowerCase() !== projectEmail));
-  for (const line of stray.slice(0, 20)) findings.push([`commit ${line.split(" ")[0].slice(0, 12)}`, "author or committer is not the project identity"]);
-  if (stray.length > 20) findings.push([`${stray.length - 20} more commits`, "author or committer is not the project identity"]);
+  const commits = execFileSync("git", ["log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  const stray = commits.filter((line) => {
+    const [, author, authorEmail, committer, committerEmail] = line.split("\0");
+    return !authorEmail || !committerEmail ||
+      publicIdentities.get(authorEmail.toLowerCase()) !== author ||
+      publicIdentities.get(committerEmail.toLowerCase()) !== committer;
+  });
+  for (const line of stray.slice(0, 20)) findings.push([`commit ${line.split("\0")[0].slice(0, 12)}`, "author or committer is not an approved public identity"]);
+  if (stray.length > 20) findings.push([`${stray.length - 20} more commits`, "author or committer is not an approved public identity"]);
 } catch { findings.push(["git history", "could not read commit identities"]); }
 const patterns = [
   ["private key", new RegExp("-----BEGIN " + "(?:RSA |EC |OPENSSH )?PRIVATE KEY-----")],

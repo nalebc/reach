@@ -13,8 +13,8 @@ const invalid = (message, status = 400) => Object.assign(Error(message), { statu
 const plain = (value) => value !== null && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const controls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
 export const validAppPath = (value) =>
-  typeof value === "string" && value.length <= 4096 && path.isAbsolute(value) && value.endsWith(".app") &&
-  !controls(value) && path.normalize(value) === value;
+  typeof value === "string" && value.length <= 4096 && path.posix.isAbsolute(value) && value.endsWith(".app") &&
+  !controls(value) && !value.includes("\\") && path.posix.normalize(value) === value;
 
 // Full control and Apps touch the Mac: Reach then answers only the phone that
 // created the invitation (browser-host-guard.mjs), as app sessions did.

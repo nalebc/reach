@@ -84,7 +84,7 @@ test("stop shown sessions preserves invitations created after the overview snaps
 test("owner overview exposes session summaries without admission secrets or credential metadata", async t => {
   const f = await fixture(t), one = f.join("Muse"), two = f.join("Muse"), invitation = f.invite("Not joined yet");
   const created = await f.call("/api/browser/requests", { token: one.token, method: "POST",
-    body: { type: "terminal-change", root: 0, command: "touch summary.txt", reason: "Create a note" } });
+    body: { type: "terminal", root: 0, command: "pwd", reason: "Inspect the shared folder" } });
   assert.equal(created.status, 201);
   const file = path.join(f.dataDir, "clients.json"), stored = JSON.parse(fs.readFileSync(file));
   stored.find(client => client.id === one.clientId).browserBinding = "internal-browser-binding";
@@ -105,11 +105,11 @@ test("stopping one agent leaves another agent's pending approval and command his
   const f = await fixture(t), one = f.join("Muse"), two = f.join("Muse");
   const request = async (agent, command) => {
     const value = await f.call("/api/browser/requests", { token: agent.token, method: "POST",
-      body: { type: "terminal-change", root: 0, command, reason: "Create a project note" } });
+      body: { type: "terminal", root: 0, command, reason: "Inspect the shared folder" } });
     assert.equal(value.status, 201, JSON.stringify(value.body));
     return value.body;
   };
-  const first = await request(one, "touch first.txt"), second = await request(two, "touch second.txt");
+  const first = await request(one, "pwd"), second = await request(two, "ls");
   assert.equal((await f.stop([one.clientId])).status, 200);
   const ownRequests = await f.call("/api/browser/requests", { token: two.token });
   assert.equal(ownRequests.status, 200);

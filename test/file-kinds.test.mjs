@@ -19,6 +19,7 @@ const {
   previewMode,
   imageType,
   isMarkdown,
+  isArchive,
   parentPath,
   baseName,
   whenMissing,
@@ -86,6 +87,10 @@ test("the viewer only fetches what it can show or copy", () => {
   assert.equal(mode("Quarterly.PDF"), "pdf");
   assert.equal(isMarkdown("README.MD"), true);
   assert.equal(isMarkdown("notes.txt"), false);
+  assert.equal(isArchive("Photos.ZIP"), true);
+  assert.equal(isArchive("site.tar.gz"), true);
+  assert.equal(isArchive("app.dmg"), false);
+  assert.equal(isArchive(".zip"), false);
   // Everything else is a download: nothing is fetched to preview it.
   for (const name of [
     "clip.mov",

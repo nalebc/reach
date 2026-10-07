@@ -119,7 +119,7 @@ test("the icons route is owner-only and returns logos keyed by app", async () =>
     });
     assert.equal((await call(owner.token, [])).status, 400);
   } finally {
-    reach.server.close();
+    await reach.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
 });

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createAuth, validateBrowserInvitation } from "../server/core.mjs";
-import { presetFixture } from "./helpers/preset-fixture.mjs";
+import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
 
 // "Always": an agent keeps its access until the owner ends it. It joins like
 // any link, once and with the owner's approval; afterwards its browser (its
@@ -147,7 +147,7 @@ test("a timed invitation can be reopened while it has time left, never after", (
   assert.throws(() => f.auth.reopenBrowserInvitation(tailnet.clientId), { status: 404 }, "only public-link agents have a link to reopen");
 });
 
-test("only the owner reopens an agent's link", async (t) => {
+test("only the owner reopens an agent's link", privateIngressTest, async (t) => {
   const f = await presetFixture(t);
   const grant = f.reach.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "readonly", standing: true });
   const key = binding();

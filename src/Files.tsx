@@ -16,6 +16,8 @@ import { isNative, saveBlob } from "./native";
 import {
   Archive,
   Check,
+  CheckCircle2,
+  Circle,
   ChevronDown,
   ChevronLeft,
   Code2,
@@ -26,6 +28,7 @@ import {
   FileAudio,
   FileSpreadsheet,
   FileText,
+  FolderInput,
   FileVideo,
   FolderOpen,
   FolderPlus,
@@ -40,6 +43,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  SendHorizontal,
   Share2,
   Upload,
   X,
@@ -50,6 +54,7 @@ import {
   fileKind,
   friendlyDate,
   imageType,
+  isArchive,
   isMarkdown,
   kindLabel,
   baseName,
@@ -61,6 +66,13 @@ import {
 } from "./file-kinds";
 import { preparedFile, useFileShare } from "./useFileShare";
 import AgentMarkdown from "./AgentMarkdown";
+import {
+  agentLabel,
+  projectName,
+  sendMessage,
+  type AgentSession,
+} from "./agent-sessions";
+import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   backgroundDownloads,
   downloadInBackground,
@@ -200,6 +212,9 @@ export default function Files({
   device,
   peers,
   onSession,
+  agentSessions,
+  agentLogos = {},
+  openAgentSession,
   toast,
 }: {
   features?: WorkspaceCapabilities;
@@ -209,6 +224,10 @@ export default function Files({
   device: Device;
   peers: Peer[];
   onSession: (kind: string, path: string, root: number) => void;
+  // Agent sessions on this same computer, to hand files to.
+  agentSessions?: AgentSession[];
+  agentLogos?: AgentLogos;
+  openAgentSession?: (s: AgentSession) => void;
   toast: (s: string) => void;
 }) {
   const [root, setRoot] = useState(initialLocation?.root || 0),
@@ -229,6 +248,10 @@ export default function Files({
     [busy, setBusy] = useState(false),
     [dragging, setDragging] = useState(false),
     [preview, setPreview] = useState<FileEntry | null>(null),
+    // Select mode, as in the Files app: taps pick instead of opening.
+    [selecting, setSelecting] = useState(false),
+    [picked, setPicked] = useState<string[]>([]),
+    [sendingTo, setSendingTo] = useState<FileEntry[] | null>(null),
     // A folder that disappeared while open, shown once where Files landed.
     [missing, setMissing] = useState<{ name: string; shared?: boolean } | null>(
       null,
@@ -236,6 +259,7 @@ export default function Files({
   const features = suppliedFeatures || workspaceCapabilities(device);
   const sharer = useFileShare(peer, root, toast, (file) => gone(file));
   const canWrite = features.writeFiles;
+  const canExtract = features.owner && canWrite;
   const guest = device.access?.kind === "guest";
   const upload = useRef<HTMLInputElement>(null);
   const searchField = useRef<HTMLInputElement>(null);
@@ -248,6 +272,7 @@ export default function Files({
     setSearching(false);
     setExpanded("");
     setCreating(false);
+    setPicked([]);
     setPanel((p) => (p === "add" || p === "locations" ? "" : p));
   }, [root, dir]);
   useEffect(() => {
@@ -411,6 +436,39 @@ export default function Files({
   const nativeIcon = (file: FileEntry) => iconFor(iconType(file));
   const rootName =
     device.roots.find((r) => r.id === root)?.name || "Shared folder";
+  // Agents run on this computer, so they get the file's own path.
+  const rootPath = device.roots.find((r) => r.id === root)?.path || "";
+  const separator = device.platform === "win32" ? "\\" : "/";
+  const fullPath = (file: FileEntry) =>
+    [rootPath.replace(/[\\/]+$/, ""), ...file.path.split("/")].join(separator);
+  const agents = (agentSessions || []).filter((s) => !s.archived);
+  const canSendToAgent =
+    features.owner && !!rootPath && agents.some((s) => !cannotReply(s));
+  const [unzipping, setUnzipping] = useState<string[]>([]);
+  const unzip = async (files: FileEntry[]) => {
+    const list = files.filter((f) => f.type !== "directory" && isArchive(f.name));
+    if (!list.length) return;
+    let current = list[0];
+    setUnzipping((u) => [...u, ...list.map((f) => f.path)]);
+    try {
+      for (const file of list) {
+        current = file;
+        const r = await post<{ name: string }>(peer, "/api/files/extract", {
+          root,
+          path: file.path,
+        });
+        toast(`Unzipped into “${r.name}”`);
+      }
+    } catch (e) {
+      if (isGone(e)) gone(current);
+      else toast((e as Error).message);
+    } finally {
+      setUnzipping((u) => u.filter((p) => !list.some((f) => f.path === p)));
+      refresh();
+    }
+  };
+  const pickedEntries = shownPicked(entries, picked);
+  const pickedFiles = pickedEntries.filter((f) => f.type !== "directory");
   const parts = dir.split("/").filter(Boolean);
   const title = parts.at(-1) || rootName;
   const parent = parts.slice(0, -1).join("/");
@@ -421,15 +479,29 @@ export default function Files({
     setPanel((p) => (p === next ? "" : next));
 
   const hasActions = (file: FileEntry) =>
-    file.type === "directory" ? folderActions : true;
+    file.type === "directory" ? folderActions || canSendToAgent : true;
   const showActions = (file: FileEntry) => {
-    if (!hasActions(file)) return;
+    if (selecting || !hasActions(file)) return;
     if (file.type !== "directory") sharer.warm(file);
     setExpanded(file.path);
   };
+  const pick = (file: FileEntry) => {
+    if (file.type !== "directory" && !picked.includes(file.path))
+      sharer.warm(file);
+    setPicked((list) =>
+      list.includes(file.path)
+        ? list.filter((p) => p !== file.path)
+        : [...list, file.path],
+    );
+  };
+  const endSelecting = () => {
+    setSelecting(false);
+    setPicked([]);
+  };
   const open = (file: FileEntry) => {
     setExpanded("");
-    if (file.type === "directory") go(file.path);
+    if (selecting) pick(file);
+    else if (file.type === "directory") go(file.path);
     else setPreview(file);
   };
   // Grid tiles, like the iPhone Files app: tap to open, press and hold (or
@@ -484,6 +556,11 @@ export default function Files({
               <Terminal size={16} /> Terminal here
             </button>
           ),
+          canSendToAgent && (
+            <button key="a" onClick={() => setSendingTo([file])}>
+              <SendHorizontal size={16} /> Send to agent
+            </button>
+          ),
         ].filter(Boolean)
       : [
           sharer.available(file) && (
@@ -496,6 +573,25 @@ export default function Files({
           <button key="d" onClick={() => void download(file)} disabled={busy}>
             <Download size={16} /> Download
           </button>,
+          canExtract && isArchive(file.name) && (
+            <button
+              key="z"
+              onClick={() => void unzip([file])}
+              disabled={unzipping.includes(file.path)}
+            >
+              {unzipping.includes(file.path) ? (
+                <Loader2 size={16} className="spin" />
+              ) : (
+                <FolderInput size={16} />
+              )}
+              Unzip
+            </button>
+          ),
+          canSendToAgent && (
+            <button key="a" onClick={() => setSendingTo([file])}>
+              <SendHorizontal size={16} /> Send to agent
+            </button>
+          ),
         ].filter(Boolean);
 
   return (
@@ -552,35 +648,73 @@ export default function Files({
             <h1 className="files-title">{title}</h1>
           )}
           <div className="files-tools">
-            <button
-              className="files-tool"
-              aria-label="Search this folder"
-              aria-pressed={searching}
-              onClick={() => {
-                setSearching((s) => !s);
-                setQuery("");
-              }}
-            >
-              <Search size={19} />
-            </button>
-            <button
-              className="files-tool"
-              aria-label="Folder options"
-              aria-expanded={panel === "options"}
-              onClick={() => toggle("options")}
-            >
-              <MoreHorizontal size={20} />
-            </button>
-            {canWrite && (
-              <button
-                className="files-tool is-primary"
-                aria-label="Add to this folder"
-                aria-expanded={panel === "add"}
-                disabled={busy}
-                onClick={() => toggle("add")}
-              >
-                <Plus size={20} />
-              </button>
+            {selecting ? (
+              <>
+                <button
+                  className="files-text-tool"
+                  onClick={() =>
+                    setPicked(
+                      picked.length === shown.length
+                        ? []
+                        : shown.map((f) => f.path),
+                    )
+                  }
+                >
+                  {picked.length && picked.length === shown.length
+                    ? "Deselect All"
+                    : "Select All"}
+                </button>
+                <button
+                  className="files-text-tool is-strong"
+                  onClick={endSelecting}
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="files-tool"
+                  aria-label="Select files"
+                  onClick={() => {
+                    setExpanded("");
+                    setPanel("");
+                    setSelecting(true);
+                  }}
+                >
+                  <CheckCircle2 size={19} />
+                </button>
+                <button
+                  className="files-tool"
+                  aria-label="Search this folder"
+                  aria-pressed={searching}
+                  onClick={() => {
+                    setSearching((s) => !s);
+                    setQuery("");
+                  }}
+                >
+                  <Search size={19} />
+                </button>
+                <button
+                  className="files-tool"
+                  aria-label="Folder options"
+                  aria-expanded={panel === "options"}
+                  onClick={() => toggle("options")}
+                >
+                  <MoreHorizontal size={20} />
+                </button>
+                {canWrite && (
+                  <button
+                    className="files-tool is-primary"
+                    aria-label="Add to this folder"
+                    aria-expanded={panel === "add"}
+                    disabled={busy}
+                    onClick={() => toggle("add")}
+                  >
+                    <Plus size={20} />
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -750,7 +884,7 @@ export default function Files({
         </div>
       ) : (
         <div
-          className={`files-list ${view === "grid" ? "is-grid" : ""}`}
+          className={`files-list ${view === "grid" ? "is-grid" : ""} ${selecting ? "is-selecting" : ""}`}
           aria-busy={busyLoading}
         >
           {view === "list" && (
@@ -818,11 +952,19 @@ export default function Files({
                   return (
                     <button
                       key={file.path}
-                      className={`file-tile ${expanded === file.path ? "is-selected" : ""}`}
-                      aria-haspopup={hasActions(file) ? "true" : undefined}
+                      className={`file-tile ${expanded === file.path || picked.includes(file.path) ? "is-selected" : ""}`}
+                      aria-haspopup={
+                        !selecting && hasActions(file) ? "true" : undefined
+                      }
+                      aria-pressed={
+                        selecting ? picked.includes(file.path) : undefined
+                      }
                       title={file.name}
                       {...tileHandlers(file)}
                     >
+                      {selecting && (
+                        <PickMark on={picked.includes(file.path)} />
+                      )}
                       <span className="file-tile-icon">
                         <KindIcon
                           entry={file}
@@ -860,14 +1002,20 @@ export default function Files({
                       expanded === file.path ? rowActions(file) : [];
                     return (
                       <div
-                        className={`file-item ${expanded === file.path ? "is-open" : ""}`}
+                        className={`file-item ${expanded === file.path ? "is-open" : ""} ${picked.includes(file.path) ? "is-picked" : ""}`}
                         key={file.path}
                       >
                         <button
                           className="file-main"
-                          onPointerDown={() => prefetch(file)}
+                          aria-pressed={
+                            selecting ? picked.includes(file.path) : undefined
+                          }
+                          onPointerDown={() => !selecting && prefetch(file)}
                           onClick={() => open(file)}
                         >
+                          {selecting && (
+                            <PickMark on={picked.includes(file.path)} />
+                          )}
                           <KindIcon entry={file} native={nativeIcon(file)} />
                           <span className="file-text">
                             <span className="file-name">
@@ -887,7 +1035,7 @@ export default function Files({
                             {folder ? "—" : bytes(file.size)}
                           </span>
                         </button>
-                        {hasActions(file) ? (
+                        {!selecting && hasActions(file) ? (
                           <button
                             className="files-tool file-more"
                             aria-label={`Actions for ${file.name}`}
@@ -953,7 +1101,77 @@ export default function Files({
           )}
         </div>
       )}
-      {selected && (
+      {selecting && (
+        <div
+          className="files-actionbar is-selection"
+          role="toolbar"
+          aria-label="Selected items"
+        >
+          <strong>
+            {picked.length ? `${picked.length} selected` : "Select items"}
+          </strong>
+          <div className="file-actions">
+            {sharer.available(pickedFiles[0] || ({} as FileEntry)) && (
+              <ShareChip
+                state={
+                  pickedFiles.length ? sharer.manyState(pickedFiles) : "idle"
+                }
+                disabled={pickedFiles.length !== pickedEntries.length}
+                onShare={() => sharer.shareMany(pickedFiles)}
+              />
+            )}
+            <button
+              disabled={
+                !pickedFiles.length ||
+                pickedFiles.length !== pickedEntries.length
+              }
+              onClick={() => pickedFiles.forEach((f) => void download(f))}
+            >
+              <Download size={16} /> Download
+            </button>
+            {canSendToAgent && (
+              <button
+                disabled={!pickedEntries.length}
+                onClick={() => setSendingTo(pickedEntries)}
+              >
+                <SendHorizontal size={16} /> Send to agent
+              </button>
+            )}
+            {canExtract &&
+              pickedEntries.length > 0 &&
+              pickedEntries.every((f) => f.type !== "directory" && isArchive(f.name)) && (
+                <button
+                  disabled={pickedEntries.some((f) =>
+                    unzipping.includes(f.path),
+                  )}
+                  onClick={async () => {
+                    await unzip(pickedEntries);
+                    endSelecting();
+                  }}
+                >
+                  <FolderInput size={16} /> Unzip
+                </button>
+              )}
+          </div>
+        </div>
+      )}
+      {sendingTo && (
+        <SendToAgent
+          peer={peer}
+          items={sendingTo}
+          sessions={agents}
+          logos={agentLogos}
+          fullPath={fullPath}
+          close={() => setSendingTo(null)}
+          sent={(session) => {
+            setSendingTo(null);
+            endSelecting();
+            toast(`Sent to ${session.title || agentLabel(session.agent)}`);
+            openAgentSession?.(session);
+          }}
+        />
+      )}
+      {selected && !selecting && (
         <div
           className="files-actionbar"
           role="toolbar"
@@ -989,9 +1207,188 @@ export default function Files({
           sharer={sharer}
           toast={toast}
           close={() => setPreview(null)}
+          unzip={
+            canExtract && isArchive(preview.name)
+              ? async () => {
+                  setPreview(null);
+                  await unzip([preview]);
+                }
+              : undefined
+          }
+          sendToAgent={
+            canSendToAgent ? () => setSendingTo([preview]) : undefined
+          }
         />
       )}
     </div>
+  );
+}
+
+// Why Reach can't hand files to a session, if it can't. Only Claude and Codex
+// take replies through this endpoint; Gemini CLI's sessions are read-only.
+const cannotReply = (s: AgentSession) =>
+  s.agent === "claude" || s.agent === "codex"
+    ? ""
+    : s.agent === "gemini"
+      ? "Gemini CLI no longer answers personal Google accounts"
+      : `Reach can’t reply in ${agentLabel(s.agent)} chats yet`;
+
+// What's picked, in the folder's order.
+const shownPicked = (entries: FileEntry[], picked: string[]) =>
+  entries.filter((f) => picked.includes(f.path));
+
+function PickMark({ on }: { on: boolean }) {
+  return (
+    <span className={`file-pick ${on ? "is-on" : ""}`} aria-hidden="true">
+      {on ? <CheckCircle2 size={22} /> : <Circle size={22} />}
+    </span>
+  );
+}
+
+// Hands files to a writable Claude or Codex session on the same computer: the
+// agent gets their paths (it reads them itself), with an optional note.
+function SendToAgent({
+  peer,
+  items,
+  sessions,
+  logos,
+  fullPath,
+  close,
+  sent,
+}: {
+  peer: Peer;
+  items: FileEntry[];
+  sessions: AgentSession[];
+  logos: AgentLogos;
+  fullPath: (file: FileEntry) => string;
+  close: () => void;
+  sent: (session: AgentSession) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const sendingNow = useRef(false);
+  const [note, setNote] = useState(""),
+    [target, setTarget] = useState(""),
+    [error, setError] = useState(""),
+    [sending, setSending] = useState(false);
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  const recent = useMemo(
+    () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 30),
+    [sessions],
+  );
+  const send = async () => {
+    if (sendingNow.current) return;
+    const session = recent.find((s) => `${s.agent}/${s.id}` === target);
+    if (!session || cannotReply(session)) return;
+    sendingNow.current = true;
+    setError("");
+    setSending(true);
+    try {
+      const paths = items.map((f) => `- ${fullPath(f)}`).join("\n");
+      const label = items.length === 1 ? "this file" : "these files";
+      const text = note.trim()
+        ? `${note.trim()}\n\n${paths}`
+        : `Take a look at ${items.some((f) => f.type === "directory") ? (items.length === 1 ? "this folder" : "these") : label}:\n${paths}`;
+      await sendMessage(peer, session, { text, images: [] });
+      sent(session);
+    } catch (e) {
+      // The global toast sits behind a modal dialog's top layer. Keep the
+      // failure in the dialog until another attempt so it can be read.
+      setError((e as Error).message);
+      sendingNow.current = false;
+      setSending(false);
+    }
+  };
+  return (
+    <dialog
+      ref={dialog}
+      className="files-send"
+      aria-label="Send to agent"
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
+      onClick={(e) => e.target === e.currentTarget && close()}
+    >
+      <form
+        method="dialog"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
+        <header>
+          <strong>Send to agent</strong>
+          <small>
+            {items.length === 1 ? items[0].name : `${items.length} items`}
+          </small>
+          <button
+            type="button"
+            className="files-tool"
+            aria-label="Close"
+            onClick={close}
+          >
+            <X size={17} />
+          </button>
+        </header>
+        <div className="files-send-list" role="radiogroup" aria-label="Session">
+          {recent.map((s) => {
+            const key = `${s.agent}/${s.id}`;
+            const blocked = cannotReply(s);
+            return (
+              <label
+                key={key}
+                className={`${target === key ? "is-on" : ""} ${blocked ? "is-blocked" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="session"
+                  value={key}
+                  disabled={!!blocked}
+                  checked={target === key}
+                  onChange={() => setTarget(key)}
+                />
+                <AgentLogo agent={s.agent} logos={logos} size={26} />
+                <span>
+                  <strong>{s.title || agentLabel(s.agent)}</strong>
+                  <small>
+                    {blocked || (
+                      <>
+                        {agentLabel(s.agent)}
+                        {s.cwd && ` · ${projectName(s.cwd)}`}
+                        {s.status === "running" && " · Working"}
+                      </>
+                    )}
+                  </small>
+                </span>
+                {target === key && <Check size={17} />}
+              </label>
+            );
+          })}
+        </div>
+        <textarea
+          rows={2}
+          placeholder="Add a message (optional)"
+          aria-label="Message"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        {error && (
+          <p className="files-send-error" role="alert">{error}</p>
+        )}
+        <button className="button primary" disabled={!target || sending}>
+          {sending ? (
+            <Loader2 size={16} className="spin" />
+          ) : (
+            <Send size={16} />
+          )}
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </form>
+    </dialog>
   );
 }
 
@@ -1000,12 +1397,18 @@ export default function Files({
 function ShareChip({
   state,
   onShare,
+  disabled = false,
 }: {
   state: ReturnType<ReturnType<typeof useFileShare>["state"]>;
   onShare: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <button className={state === "armed" ? "is-ready" : ""} onClick={onShare}>
+    <button
+      className={state === "armed" ? "is-ready" : ""}
+      disabled={disabled}
+      onClick={onShare}
+    >
       {state === "preparing" ? (
         <Loader2 size={16} className="spin" />
       ) : (
@@ -1054,6 +1457,8 @@ function Viewer({
   sharer,
   toast,
   close,
+  unzip,
+  sendToAgent,
 }: {
   peer: Peer;
   peers: Peer[];
@@ -1065,6 +1470,8 @@ function Viewer({
   sharer: ReturnType<typeof useFileShare>;
   toast: (s: string) => void;
   close: () => void;
+  unzip?: () => void;
+  sendToAgent?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const kind = fileKind(file);
@@ -1244,6 +1651,15 @@ function Viewer({
               )}
             </button>
           )}
+          {sendToAgent && (
+            <button
+              className="files-tool"
+              aria-label={`Send ${file.name} to an agent`}
+              onClick={sendToAgent}
+            >
+              <SendHorizontal size={19} />
+            </button>
+          )}
           <button
             className="files-tool"
             aria-label={`Download ${file.name}`}
@@ -1260,8 +1676,16 @@ function Viewer({
           ) : error ? (
             <div className="file-viewer-empty">
               <KindIcon entry={file} native={icon} size={30} />
-              <p>{error}</p>
-              <button className="button primary small" onClick={download}>
+              <p>{unzip ? "Unzip it here, or download it." : error}</p>
+              {unzip && (
+                <button className="button primary small" onClick={unzip}>
+                  <FolderInput size={15} /> Unzip
+                </button>
+              )}
+              <button
+                className={`button ${unzip ? "secondary" : "primary"} small`}
+                onClick={download}
+              >
                 <Download size={15} /> Download
               </button>
             </div>

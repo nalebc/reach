@@ -53,13 +53,16 @@
     "test:ci": "node --test --test-timeout=60000 --test-concurrency=2 test/*.test.mjs"
   },
   "dependencies": {
+    "buffer-crc32": "1.0.0",
     "express": "^5.1.0",
     "json5": "^2.2.3",
     "multer": "^2.0.2",
     "node-pty": "^1.1.0",
     "prompts": "2.4.2",
     "qrcode-terminal": "0.12.0",
-    "ws": "^8.18.3"
+    "tar-stream": "3.2.2",
+    "ws": "^8.18.3",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@capacitor/app": "^8.1.2",

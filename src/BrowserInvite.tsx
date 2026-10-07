@@ -37,6 +37,7 @@ type PresetApp = { id: string; name: string; bundleId: string; running: boolean;
 type Options = {
   terminals: { id: string; name: string }[];
   desktopAvailable?: boolean;
+  protectedFilesSupported?: boolean;
   maxFunnelSeconds?: number;
   standingAllowed?: boolean;
   presetApps?: PresetApp[];
@@ -142,16 +143,22 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
   const suggested = hideableApps.filter((app) => SUGGESTED_HIDDEN.includes((catalog.find((entry) => entry.id === app.id)?.bundleId || "").toLowerCase()));
   const screenPreset = preset === "full" || preset === "apps" || preset === "readonly";
   const desktopReady = options?.desktopAvailable !== false;
+  const macHost = (device.platform || peer.platform) === "darwin";
+  const filesSupported = options?.protectedFilesSupported ?? macHost;
   const missing = !name.trim()
     ? "Name the agent."
     : !preset
       ? "Choose what it may do."
       : preset === "apps" && !apps.length
         ? "Pick at least one app."
+        : preset === "files" && !filesSupported
+          ? "Browser-agent file access requires macOS."
         : preset === "files" && !folders.length
           ? "Pick at least one folder."
           : screenPreset && options && !desktopReady
-            ? "This Mac can't share its screen with agents yet. Turn on Screen Recording and Accessibility for Reach."
+            ? macHost
+              ? "This Mac can't share its screen with agents yet. Turn on Screen Recording and Accessibility for Reach."
+              : "Browser-agent screen access requires macOS."
             : "";
   const chosenApps = catalog.filter((app) => apps.includes(app.id));
   const hiddenApps = catalog.filter((app) => hidden.includes(app.id));
@@ -265,7 +272,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           onChange={choose}
           options={(["full", "apps", "files", "readonly"] as Preset[]).map((value) => ({
             value, title: PRESET_WORDS[value].title, detail: PRESET_WORDS[value].detail,
-            disabled: value !== "files" && !!options && !desktopReady,
+            disabled: !!options && (value === "files" ? !filesSupported : !desktopReady),
           }))}
         />
 
@@ -363,7 +370,13 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           <p className={`ag-summary${missing ? " is-missing" : ""}`} aria-live="polite">{missing || summary}</p>
         </div>
         {error && <p className="ag-error" role="alert">{error}</p>}
-        {options && !desktopReady && (
+        {options && !macHost && !filesSupported && !desktopReady && (
+          <p className="ag-quiet ag-center">Browser invitations currently require macOS. Your own Files and terminals remain available. For an agent, choose Command line access.</p>
+        )}
+        {options && !filesSupported && (macHost || desktopReady) && (
+          <p className="ag-quiet ag-center">Browser-agent file access requires macOS. Your own Files and terminals remain available.</p>
+        )}
+        {options && !desktopReady && macHost && (
           <p className="ag-quiet ag-center"><Monitor size={12} /> Screen presets need this Mac's Screen Recording and Accessibility for Reach.</p>
         )}
       </div>

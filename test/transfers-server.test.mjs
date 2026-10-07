@@ -51,8 +51,8 @@ async function setup(overrides = {}) {
     owner,
     call,
     put,
-    close() {
-      reach.server.close();
+    async close() {
+      await reach.close();
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -113,7 +113,7 @@ test("a large file uploads in chunks, resumes at the right offset, and appears o
       [],
     );
   } finally {
-    t.close();
+    await t.close();
   }
 });
 
@@ -201,7 +201,7 @@ test("uploads stay private to their device and never overwrite or outlive their 
       404,
     );
   } finally {
-    t.close();
+    await t.close();
   }
 });
 
@@ -218,7 +218,7 @@ test("read-only guests can't upload", async () => {
     });
     assert.equal(response.status, 403);
   } finally {
-    t.close();
+    await t.close();
   }
 });
 
@@ -303,7 +303,7 @@ test("downloads resume with Range, and one-time links hand files to the browser 
     );
     assert.equal((await fetch(t.base + fresh.url)).status, 403);
   } finally {
-    t.close();
+    await t.close();
   }
 });
 

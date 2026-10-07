@@ -101,12 +101,15 @@ export function parseLsofCwd(text) {
 // hours): it's that session's only while the start times match. Kept a few
 // seconds; ps that can't run never hides a session.
 let startsSeen = { at: 0, key: "", starts: null };
-export function processStarts(pids, { now = Date.now() } = {}) {
+export function processStarts(pids, { now = Date.now(), platform = process.platform, run = execFileSync } = {}) {
+  // Windows does not provide the Unix ps/lstart contract used by this registry.
+  // An unrelated ps on PATH must not make live sessions look like ended ones.
+  if (platform === "win32") return null;
   const key = pids.join(",");
-  if (startsSeen.key === key && now - startsSeen.at < 5000) return startsSeen.starts;
+  if (run === execFileSync && startsSeen.key === key && now - startsSeen.at < 5000) return startsSeen.starts;
   let starts = null;
   try {
-    const out = execFileSync("ps", ["-o", "pid=,lstart=", "-p", key], {
+    const out = run("ps", ["-o", "pid=,lstart=", "-p", key], {
       env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
       encoding: "utf8",
       timeout: 2000,
@@ -120,7 +123,7 @@ export function processStarts(pids, { now = Date.now() } = {}) {
     // ps exits 1 when none of them runs: all ended.
     if (e?.status === 1) starts = new Map();
   }
-  startsSeen = { at: now, key, starts };
+  if (run === execFileSync) startsSeen = { at: now, key, starts };
   return starts;
 }
 

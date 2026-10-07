@@ -20,10 +20,13 @@ function fixture(t) {
 }
 
 test('guarded aliases deny read and write and pin their containing directories', () => {
-  const profile = scriptProfile('/tmp/project', [], [], { writes: ['(literal "/tmp/project/parent/link")'], special: ['(literal "/tmp/project/parent/pipe")'], pinned: ['/tmp/project/parent', '/tmp/project'] });
-  assert.match(profile, /deny file-read\* file-write\* \(literal "\/tmp\/project\/parent\/link"\)/);
-  assert.match(profile, /deny file-read\* file-write\* \(literal "\/tmp\/project\/parent\/pipe"\)/);
-  assert.match(profile, /deny file-write-unlink file-write-mode[^\n]*"\/tmp\/project\/parent"/);
+  const root = path.resolve('/tmp/project'), parent = path.join(root, 'parent');
+  const link = `(literal ${JSON.stringify(path.join(parent, 'link'))})`, pipe = `(literal ${JSON.stringify(path.join(parent, 'pipe'))})`;
+  const profile = scriptProfile(root, [], [], { writes: [link], special: [pipe], pinned: [parent, root] });
+  assert.ok(profile.includes(`(deny file-read* file-write* ${link})`));
+  assert.ok(profile.includes(`(deny file-read* file-write* ${pipe})`));
+  const pinned = profile.split('\n').find(line => line.startsWith('(deny file-write-unlink file-write-mode '));
+  assert.ok(pinned.includes(`(literal ${JSON.stringify(parent)})`), pinned);
 });
 
 test('a preexisting hardlink cannot reveal or modify an outside file but normal files remain usable', { skip: !native }, async t => {

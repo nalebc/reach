@@ -23,8 +23,9 @@ const shell = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // What starts Reach in `root`: a source checkout has ./reach; an npm install
 // has bin/reach.mjs and no launcher script.
 export function reachCommand(root, nodeDir, exists = fs.existsSync) {
-  if (!exists(path.join(root, "reach")) && exists(path.join(root, "bin/reach.mjs")))
-    return `${shell(path.join(nodeDir, "node"))} ${shell(path.join(root, "bin/reach.mjs"))}`;
+  // This renders a Mac shell script even when a contract test runs elsewhere.
+  if (!exists(path.posix.join(root, "reach")) && exists(path.posix.join(root, "bin/reach.mjs")))
+    return `${shell(path.posix.join(nodeDir, "node"))} ${shell(path.posix.join(root, "bin/reach.mjs"))}`;
   return "./reach";
 }
 export function loginScript(root, nodeDir, { args = "", restart = false, exists } = {}) {
@@ -32,7 +33,7 @@ export function loginScript(root, nodeDir, { args = "", restart = false, exists 
   return [
     "#!/bin/bash",
     restart ? "# Reach: opened in Terminal by ./reach restart." : "# Reach: opened in Terminal at sign-in (com.reach.login). Remove with:",
-    ...(restart ? [] : [`#   node ${shell(path.join(root, "scripts/login-start.mjs"))} uninstall`]),
+    ...(restart ? [] : [`#   node ${shell(path.posix.join(root, "scripts/login-start.mjs"))} uninstall`]),
     `export PATH=${shell(nodeDir)}:/opt/homebrew/bin:/usr/local/bin:$PATH`,
     `cd ${shell(root)} || exit 1`,
     args ? `${command} ${args}` : command,
@@ -54,7 +55,7 @@ export function loginPlist(script) {
 `;
 }
 
-export function loginStart(command, { root, home = os.homedir(), uid = process.getuid(), nodeDir = path.dirname(process.execPath), run, platform = process.platform } = {}) {
+export function loginStart(command, { root, home = os.homedir(), uid = process.getuid?.(), nodeDir = path.dirname(process.execPath), run, platform = process.platform } = {}) {
   if (platform !== "darwin") throw Error("Starting Reach at sign-in this way is for macOS.");
   const launchctl =
     run || ((args) => execFileSync("/bin/launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));

@@ -40,6 +40,6 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
   const protectedRoots = ['/Applications', path.join(home, 'Applications'), '/Library', '/System', '/usr', '/bin', '/sbin', '/opt', '/private/etc', '/etc', path.dirname(runtime)]
     .flatMap(value => [path.resolve(value), canonical(value)]);
   const userHome = canonical(home);
-  if (selected === '/' || within(userHome, selected) || protectedRoots.some(protectedRoot => within(selected, protectedRoot) || within(protectedRoot, selected))) throw error();
+  if (selected === path.parse(selected).root || within(userHome, selected) || protectedRoots.some(protectedRoot => within(selected, protectedRoot) || within(protectedRoot, selected))) throw error();
   return selected;
 }

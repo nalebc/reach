@@ -30,13 +30,15 @@ test("archiving a Claude app chat sets the app's own record, and the list follow
   const record = path.join(records, `local_${ID}.json`);
   const kept = { sessionId: `local_${ID}`, cliSessionId: ID, title: "From the app", isArchived: false, cwd: "/work/app", permissionMode: "auto" };
   await fs.writeFile(record, JSON.stringify(kept), { mode: 0o600 });
+  const originalMode = (await fs.stat(record)).mode & 0o777;
+  if (process.platform !== "win32") assert.equal(originalMode, 0o600, "POSIX fixture starts private");
   const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
   assert.equal((await claude.list()).find((s) => s.id === ID).archived, false);
 
   assert.deepEqual(await claude.archive(ID), { archived: true });
   const written = JSON.parse(await fs.readFile(record, "utf8"));
   assert.deepEqual(written, { ...kept, isArchived: true }, "only isArchived changes");
-  assert.equal((await fs.stat(record)).mode & 0o777, 0o600, "its permissions kept");
+  assert.equal((await fs.stat(record)).mode & 0o777, originalMode, "its host-supported permission bits are kept");
   assert.deepEqual((await fs.readdir(records)).sort(), [`local_${ID}.json`], "no temporary file left");
   assert.equal((await claude.list()).find((s) => s.id === ID).archived, true);
 

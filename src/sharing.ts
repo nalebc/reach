@@ -41,11 +41,11 @@ export function makeShareFile(blob: Blob, name: string) {
   return new File([blob], shareName(name), { type });
 }
 
-export function canShareFile(file: File) {
+export function canShareFile(file: File | File[]) {
   try {
     return (
       typeof navigator.share === "function" &&
-      navigator.canShare?.({ files: [file] }) === true
+      navigator.canShare?.({ files: ([] as File[]).concat(file) }) === true
     );
   } catch {
     return false;
@@ -60,6 +60,6 @@ export function shareCancelled(error: unknown) {
 }
 
 // Invoke directly from the button event, without a fetch or another await first.
-export function shareBrowserFile(file: File) {
-  return navigator.share({ files: [file] });
+export function shareBrowserFile(file: File | File[]) {
+  return navigator.share({ files: ([] as File[]).concat(file) });
 }

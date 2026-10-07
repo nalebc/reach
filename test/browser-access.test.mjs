@@ -1,3 +1,4 @@
+import { nativeFiles, expectFileResponse } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import { approveAgentClaim } from "./helpers/agent-admission.mjs";
 import assert from "node:assert/strict";
@@ -276,31 +277,28 @@ test("Apple Terminal tabs with reusable tty identities cannot be shared with bro
 test("browser file reads and recursive search stay inside grants and exclude private state", async (t) => {
   const { join } = await start(t);
   const { as } = await join();
-  assert.equal(
-    (await as("/api/files/text?root=0&path=brief.txt")).body.text,
-    "A project brief",
-  );
+  expectFileResponse(await as("/api/files/text?root=0&path=brief.txt"), body => assert.equal(body.text, "A project brief"));
   const found = await as("/api/browser/files/search?root=0&q=brief");
-  assert.equal(found.status, 200, JSON.stringify(found.body));
-  assert.deepEqual(found.body.items.map((item) => item.path).sort(), [
+  expectFileResponse(found, body => {
+  assert.deepEqual(body.items.map((item) => item.path).sort(), [
     "brief.txt",
     "nested/BRIEF-notes.txt",
   ]);
   assert.equal(found.body.truncated, false);
   assert.ok(found.body.items.every((item) => item.type === "file"));
+  });
   const folders = await as("/api/browser/files/search?root=0&q=nested");
-  assert.ok(
-    folders.body.items.some(
+  expectFileResponse(folders, body => assert.ok(
+    body.items.some(
       (item) => item.path === "nested" && item.type === "directory",
     ),
-  );
+  ));
   const listing = await as("/api/files?root=0&hidden=1");
-  assert.equal(listing.status, 200);
-  assert.ok(
-    listing.body.items.every(
+  expectFileResponse(listing, body => assert.ok(
+    body.items.every(
       (item) => ![".reach", "private-link", "outside-link"].includes(item.name),
     ),
-  );
+  ));
   for (const relative of [
     "..",
     "../Other/brief-secret.txt",
@@ -312,7 +310,8 @@ test("browser file reads and recursive search stay inside grants and exclude pri
     const response = await as(
       `/api/files/text?${new URLSearchParams({ root: "0", path: relative })}`,
     );
-    assert.equal(response.status, 403, relative);
+    if (nativeFiles || relative.startsWith("..")) assert.equal(response.status, 403, relative);
+    else expectFileResponse(response, () => assert.fail("No native helper"));
   }
   assert.equal((await as("/api/files?root=1")).status, 400);
   assert.equal(
@@ -557,8 +556,7 @@ test("agent file routes reject credentials, links and native document conversion
     }
   }
   const listing = await agent.as('/api/files?root=0&hidden=1');
-  assert.equal(listing.status, 200, JSON.stringify(listing.body));
-  assert.equal(listing.body.items.some(item => ['.aws', 'hardlink.txt', 'outside-link', 'private-link'].includes(item.name)), false);
+  expectFileResponse(listing, body => assert.equal(body.items.some(item => ['.aws', 'hardlink.txt', 'outside-link', 'private-link'].includes(item.name)), false));
   assert.equal((await agent.as('/api/files/document-text?root=0&path=document.rtf')).status, 415);
   const owner = await f.call('/api/files/text?root=0&path=Project/.aws/credentials');
   assert.equal(owner.status, 200);

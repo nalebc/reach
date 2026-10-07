@@ -1,3 +1,4 @@
+import { nativeFiles, expectFileResponse, expectFileExecution } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import { approveAgentClaim } from "./helpers/agent-admission.mjs";
 import assert from "node:assert/strict";
@@ -273,10 +274,9 @@ test("restricted terminal verifies commands, waits for owner approval, returns o
   assert.equal(f.captures(), 0);
   assert.equal((await f.decide(requested.id, "approve", { token: browser.token })).status, 403);
   const result = await f.decide(requested.id, "approve");
-  assert.equal(result.body.status, "executed", JSON.stringify(result));
-  assert.equal(result.body.output, "read-only result\n");
+  expectFileExecution(result.body, body => assert.equal(body.output, "read-only result\n"));
   assert.equal((await f.decide(requested.id, "approve")).status, 409);
-  assert.equal((await browser.as("/api/browser/requests")).body[0].output, "read-only result\n");
+  expectFileExecution((await browser.as("/api/browser/requests")).body[0], body => assert.equal(body.output, "read-only result\n"));
   assert.deepEqual(f.inputs, []);
   for (const route of ["/api/terminals", "/api/jobs", "/api/screen/input"])
     assert.equal((await browser.as(route, { method: "POST", body: { command: "rm notes.txt" } })).status, 403);
@@ -341,7 +341,7 @@ test("malicious invitation and approval payloads fail before credentials or acti
   assert.deepEqual(f.reach.jobs.list(), []);
   assert.deepEqual(f.inputs, []);
   assert.equal(f.captures(), 0);
-  assert.equal((await f.decide(requested.id, "approve")).body.status, "executed");
+  expectFileExecution((await f.decide(requested.id, "approve")).body);
 });
 
 test("cd approval returns a working folder and cannot retarget already requested reads", async (t) => {
@@ -354,20 +354,22 @@ test("cd approval returns a working folder and cannot retarget already requested
   const cd = await browser.submit({ type: "terminal", command: "cd nested", root: 0, reason: "Open nested folder" });
   assert.equal(cd.directory, undefined);
   const moved = await f.decide(cd.id, "approve");
-  assert.equal(moved.body.directory, "nested");
-  assert.equal(typeof moved.body.completedAt, "number");
-  assert.equal((await f.decide(original.id, "approve")).body.output, "root notes");
+  expectFileExecution(moved.body, body => assert.equal(body.directory, "nested"));
+  assert.equal(typeof moved.body.completedAt, nativeFiles ? "number" : "undefined");
+  expectFileExecution((await f.decide(original.id, "approve")).body, body => assert.equal(body.output, "root notes"));
   const read = await browser.submit({ type: "terminal", command: "cat notes.txt", root: 0, cwd: "nested", reason: "Read nested notes" });
   assert.equal(read.folder, path.join(f.dir, "shared/nested"));
-  assert.equal((await f.decide(read.id, "approve")).body.output, "nested notes");
+  expectFileExecution((await f.decide(read.id, "approve")).body, body => assert.equal(body.output, "nested notes"));
   const invalid = await browser.as("/api/browser/requests", { method: "POST", body: {
     type: "terminal", command: "cd ../..", root: 0, cwd: "nested", reason: "Escape",
   } });
   assert.equal(invalid.status, 403);
   const download = await f.request("/api/files/content?root=0&path=nested%2Fnotes.txt", { token: browser.token });
-  assert.equal(download.status, 200);
-  assert.match(download.headers.get("content-disposition"), /attachment/);
-  assert.equal(await download.text(), "nested notes");
+  if (nativeFiles) {
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition"), /attachment/);
+    assert.equal(await download.text(), "nested notes");
+  } else expectFileResponse({ status: download.status, body: await download.json() }, () => assert.fail("No native helper"));
   assert.equal((await browser.as("/api/files/content?root=0&path=..%2Fprivate%2Fclients.json")).status, 403);
   f.reach.auth.revoke(browser.clientId);
   assert.equal((await browser.as("/api/files/content?root=0&path=nested%2Fnotes.txt")).status, 401);

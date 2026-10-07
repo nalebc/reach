@@ -1,14 +1,15 @@
+import { expectFileResponse } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { presetFixture as fixture, apps } from "./helpers/preset-fixture.mjs";
+import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
 // Preset invitations end to end: created from a pinned phone over the
 // private listener, redeemed by the agent, and checked route by route. Native
 // screen, input and app helpers are stand-ins; nothing touches this computer.
 const { chrome, notes, onePassword, messages } = apps;
 
-test("each preset issues its fixed scopes and reports itself to the agent", async (t) => {
+test("each preset issues its fixed scopes and reports itself to the agent", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const full = await f.join({ preset: "full" });
   assert.equal(full.created.preset, "full");
@@ -47,7 +48,7 @@ test("each preset issues its fixed scopes and reports itself to the agent", asyn
   assert.equal(readonlyView.body.control, false);
 });
 
-test("the owner's picker lists every app with the protected ones marked", async (t) => {
+test("the owner's picker lists every app with the protected ones marked", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const options = await f.call("/api/agents/browser-options");
   assert.equal(options.status, 200, JSON.stringify(options.body));
@@ -64,7 +65,7 @@ test("the owner's picker lists every app with the protected ones marked", async 
   assert.ok(!options.body.presetApps.some((app) => app.identity), "signing identities stay on the computer");
 });
 
-test("what a preset refuses at creation", async (t) => {
+test("what a preset refuses at creation", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const refused = async (body, status, pattern, options) => {
     const result = await f.invite(body, options);
@@ -91,7 +92,7 @@ test("what a preset refuses at creation", async (t) => {
   assert.equal((await files.as("/api/agents/browser-invitations", { method: "POST", body: { name: "X", ttlSeconds: 600, preset: "readonly" } })).status, 403);
 });
 
-test("screen presets need the Mac's screen helpers; Files does not", async (t) => {
+test("screen presets need the Mac's screen helpers; Files does not", privateIngressTest, async (t) => {
   const f = await fixture(t, { desktopAvailable: false });
   for (const body of [{ preset: "full" }, { preset: "readonly" }, { preset: "apps", apps: [{ id: chrome.id }] }]) {
     const result = await f.invite(body);
@@ -106,7 +107,7 @@ test("screen presets need the Mac's screen helpers; Files does not", async (t) =
   assert.equal((await bare.invite({ preset: "readonly" })).status, 503);
 });
 
-test("every route outside the preset's allowlist is refused, including the earlier agent routes", async (t) => {
+test("every route outside the preset's allowlist is refused, including the earlier agent routes", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const readonly = await f.join({ preset: "readonly" });
   const files = await f.join({ preset: "files", folders: [{ root: 0, path: "Desktop/Project" }] });
@@ -136,14 +137,12 @@ test("every route outside the preset's allowlist is refused, including the earli
     await denied(files.as, method, route, { app: chrome.id });
   // What they may do: read their folders.
   const listing = await files.as("/api/files?root=0&path=");
-  assert.equal(listing.status, 200, JSON.stringify(listing.body));
-  assert.ok(listing.body.items?.some((item) => item.name === "brief.txt"));
+  expectFileResponse(listing, body => assert.ok(body.items?.some(item => item.name === "brief.txt")));
   const text = await files.as("/api/files/text?root=0&path=brief.txt");
-  assert.equal(text.status, 200);
-  assert.ok(JSON.stringify(text.body).includes("A project brief"), JSON.stringify(text.body));
+  expectFileResponse(text, body => assert.ok(JSON.stringify(body).includes("A project brief"), JSON.stringify(body)));
 });
 
-test("changing a preset later keeps the same rules and can only narrow its hold on the Mac", async (t) => {
+test("changing a preset later keeps the same rules and can only narrow its hold on the Mac", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const full = await f.join({ preset: "full" });
   const change = (id, body) => f.call(`/api/guests/${id}/access`, { method: "POST", body });
@@ -180,7 +179,7 @@ test("changing a preset later keeps the same rules and can only narrow its hold 
   assert.equal((await change(files.created.clientId, { preset: "apps", apps: [{ id: chrome.id }], folders: [] })).status, 409);
 });
 
-test("agents hold their own session only", async (t) => {
+test("agents hold their own session only", privateIngressTest, async (t) => {
   const f = await fixture(t);
   const one = await f.join({ preset: "readonly" });
   const two = await f.join({ preset: "readonly" });

@@ -109,21 +109,29 @@ export function nativeFileSharing() {
   );
 }
 
-export async function shareNativeFile(blob: Blob, name: string) {
+export const shareNativeFile = (blob: Blob, name: string) =>
+  shareNativeFiles([{ blob, name }]);
+
+export async function shareNativeFiles(files: { blob: Blob; name: string }[]) {
   if (!nativeFileSharing())
     throw Error(
       "Update the Reach app to enable file sharing, or open Reach’s HTTPS link in Safari.",
     );
   // A unique folder preserves the filename without overwriting another share.
   const folder = `reach-share-${crypto.randomUUID()}`;
-  const file = await Filesystem.writeFile({
-    path: `${folder}/${shareName(name)}`,
-    data: await toBase64(blob),
-    directory: Directory.Cache,
-    recursive: true,
-  });
+  const uris: string[] = [];
   try {
-    await Share.share({ files: [file.uri] });
+    for (const [i, { blob, name }] of files.entries()) {
+      // Two files with one name each keep it, in their own folder.
+      const written = await Filesystem.writeFile({
+        path: `${folder}/${i}/${shareName(name)}`,
+        data: await toBase64(blob),
+        directory: Directory.Cache,
+        recursive: true,
+      });
+      uris.push(written.uri);
+    }
+    await Share.share({ files: uris });
   } finally {
     // iOS completes after the activity finishes. Android can resolve as soon as
     // a target is chosen, so leave its file in the OS-managed cache for readers.

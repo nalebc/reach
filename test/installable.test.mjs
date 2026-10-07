@@ -151,6 +151,7 @@ test("the published package ships the app, never sources or private state, and r
   if (process.platform !== "win32") assert.ok(fs.statSync(bin).mode & 0o111);
   // Only what the server imports is installed on users' machines.
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
+    "buffer-crc32",
     "express",
     // OpenClaw's config files are JSON5 (server/openclaw.mjs).
     "json5",
@@ -158,7 +159,9 @@ test("the published package ships the app, never sources or private state, and r
     "node-pty",
     "prompts",
     "qrcode-terminal",
+    "tar-stream",
     "ws",
+    "yauzl",
   ]);
   const packArgs = ["pack", "--dry-run", "--json", "--ignore-scripts"];
   const npm = process.env.npm_execpath;

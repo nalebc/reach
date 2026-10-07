@@ -95,7 +95,7 @@ export function validateBrowserScript(action, authorize, { resolve, privatePaths
   return { root, cwd, executable, args: words.slice(1), client };
 }
 export function scriptProfile(root, privatePaths = [], runtime = [], guarded = { writes: [], special: [] }) {
-  const ancestors = []; for (let p = path.dirname(root); ; p = path.dirname(p)) { ancestors.push(p); if (p === '/') break; }
+  const ancestors = []; for (let p = path.dirname(root); ; p = path.dirname(p)) { ancestors.push(p); if (path.dirname(p) === p) break; }
   const blocked = [...browserPrivatePaths({}), ...privatePaths].flatMap(p => { const full = path.resolve(p); return fs.existsSync(full) ? [full, fs.realpathSync(full)] : [full]; });
   const pinnedAncestors = new Set([root, ...(guarded.pinned || []).filter(p => within(p, root))]);
   for (const p of [...blocked, ...runtime]) if (within(p, root)) {

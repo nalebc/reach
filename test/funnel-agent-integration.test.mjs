@@ -1,3 +1,4 @@
+import { nativeFiles, expectFileResponse } from "./helpers/protected-files.mjs";
 import nodeTest from "node:test";
 // This suite exercises the POSIX private ingress socket and its UID/mode checks.
 // Signed request, admission and scope suites also run on Windows.
@@ -291,13 +292,11 @@ test("Funnel HTTP dispatch reaches scoped JSON and binary APIs without creating 
   assert.equal(browser.body.roots.length, 1);
   assert.equal(browser.body.screen, "off");
   const file = await session.call("/api/files/text?root=0&path=brief.txt");
-  assert.equal(file.status, 200, JSON.stringify(file.body));
-  assert.equal(file.body.text, "Only the shared brief");
+  expectFileResponse(file, body => assert.equal(body.text, "Only the shared brief"));
   const binary = await session.call(
     "/api/files/content?root=0&path=sample.bin",
   );
-  assert.equal(binary.status, 200, JSON.stringify(binary.body));
-  assert.deepEqual([...binary.bytes], [0, 1, 254, 255, 64]);
+  expectFileResponse(binary, () => assert.deepEqual([...binary.bytes], [0, 1, 254, 255, 64]));
   const screen = await session.call("/api/browser/screen");
   assert.equal(screen.status, 403, "retired whole-desktop capture remains inaccessible through Funnel");
   assert.equal(screen.bytes.equals(f.frame), false);
@@ -320,10 +319,8 @@ test("Funnel file scope denies traversal, symlink escape and ungranted roots", a
     "/api/files/text?root=0&path=%2Fetc%2Fpasswd",
   ]) {
     const result = await session.call(route);
-    assert.ok(
-      [400, 403, 404].includes(result.status),
-      `${route}: ${result.status}`,
-    );
+    if (!nativeFiles && route.includes("path=escape.txt")) expectFileResponse(result, () => assert.fail("No native helper"));
+    else assert.ok([400, 403, 404].includes(result.status), `${route}: ${result.status}`);
     assert.equal(result.bytes.toString().includes("Outside the grant"), false);
   }
 });
@@ -413,8 +410,7 @@ test("same-origin gateway on private or local ingress still requires the signed 
     const result = await session.call("/api/files/text?root=0&path=brief.txt", {
       target,
     });
-    assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(result.body.text, "Only the shared brief");
+    expectFileResponse(result, body => assert.equal(body.text, "Only the shared brief"));
   }
   const wrongKey = await f.gateway(
     {

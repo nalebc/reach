@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fileBlob, type FileEntry, type Peer } from "./api";
-import { isNative, nativeFileSharing, shareNativeFile } from "./native";
+import {
+  isNative,
+  nativeFileSharing,
+  shareNativeFile,
+  shareNativeFiles,
+} from "./native";
 import {
   canShareFile,
   makeShareFile,
@@ -76,6 +81,13 @@ export function useFileShare(
   const [, rerender] = useState(0);
   // Files whose share sheet the browser refused after fetching: tap again.
   const [armed, setArmed] = useState<string[]>([]);
+  // Keep one prepared selection for the next tap, even if the shared cache
+  // evicts part of a selection larger than its normal 60 MB warm budget.
+  const waitingShare = useRef<{ key: string; files: File[] } | null>(null);
+  useEffect(() => {
+    waitingShare.current = null;
+    setArmed([]);
+  }, [peer.url, peer.token, root]);
   useEffect(() => {
     const update = () => rerender((n) => n + 1);
     listeners.add(update);
@@ -141,6 +153,55 @@ export function useFileShare(
             ? gone(entry)
             : toast((e as Error).message),
       );
+    },
+    // Several files in one share sheet (a selection). Same flow as one: share
+    // at once when every copy is here, else fetch, then try or ask for a tap.
+    shareMany(entries: FileEntry[]) {
+      if (!entries.length) return;
+      // A selection is all or nothing: never silently leave out a large file.
+      if (!entries.every(available) || entries.reduce((sum, entry) => sum + entry.size, 0) > MAX_SHARE_BYTES)
+        return toast("Share files totaling up to 100 MB. Use Download for larger selections.");
+      const list = entries;
+      if (list.length === 1) return this.share(list[0]);
+      const key = JSON.stringify(list.map((e) => keyOf(peer, root, e)));
+      const send = (files: File[]) => {
+        waitingShare.current = null;
+        disarm(key);
+        if (files.reduce((sum, file) => sum + file.size, 0) > MAX_SHARE_BYTES)
+          return toast("Share files totaling up to 100 MB. Use Download for larger selections.");
+        if (isNative)
+          return void shareNativeFiles(
+            files.map((f) => ({ blob: f, name: f.name })),
+          ).catch(failed);
+        if (!canShareFile(files))
+          return toast("This browser can’t share these files together.");
+        return shareBrowserFile(files);
+      };
+      if (waitingShare.current?.key === key)
+        return void send(waitingShare.current.files)?.catch(failed);
+      const copies = list.map((e) => prepare(peer, root, e));
+      if (copies.every((c) => c.file))
+        return void send(copies.map((c) => c.file!))?.catch(failed);
+      Promise.all(copies.map((c) => c.promise)).then(
+        (files) =>
+          send(files)?.catch((e) => {
+            if ((e as Error)?.name === "NotAllowedError") {
+              waitingShare.current = { key, files };
+              setArmed((a) => (a.includes(key) ? a : [...a, key]));
+            } else failed(e);
+          }),
+        (e) => toast((e as Error).message),
+      );
+    },
+    manyState(entries: FileEntry[]) {
+      const list = entries.filter(available);
+      const states = list.map(state);
+      if (states.includes("preparing")) return "preparing";
+      return armed.includes(
+        JSON.stringify(list.map((e) => keyOf(peer, root, e))),
+      )
+        ? "armed"
+        : "idle";
     },
     forget(entry: FileEntry) {
       copies.delete(keyOf(peer, root, entry));

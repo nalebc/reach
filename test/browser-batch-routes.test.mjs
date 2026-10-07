@@ -1,3 +1,4 @@
+import { nativeFiles, expectFileExecution } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import { approveAgentClaim } from "./helpers/agent-admission.mjs";
 import assert from "node:assert/strict";
@@ -144,8 +145,11 @@ test('restricted terminal batch validates every target before review and keeps c
   const r = await bot.submit(batch(actions));
   assert.equal(r.steps[1].folder, path.join(f.dir, 'shared/sub')); assert.equal(f.captures(), 0);
   const result = await f.decide(r.id, 'approve');
-  assert.equal(result.body.status, 'executed', JSON.stringify(result));
-  assert.equal(result.body.steps[0].directory, 'sub'); assert.equal(result.body.steps[1].output, 'scoped output');
+  expectFileExecution(result.body, body => {
+    assert.equal(body.steps[0].directory, 'sub'); assert.equal(body.steps[1].output, 'scoped output');
+  });
+  if (!nativeFiles) { assert.equal(result.body.steps[0].status, 'failed'); assert.equal(result.body.steps[1].status, 'skipped'); }
+  assert.equal(fs.readFileSync(path.join(f.dir, 'shared/sub/note.txt'), 'utf8'), 'scoped output');
   const invalid = await bot.as('/api/browser/requests', { method: 'POST', body: batch([actions[0], { type: 'terminal', root: 0, command: 'cat ../../private/clients.json' }]) });
   assert.ok([400, 403].includes(invalid.status));
   assert.deepEqual((await f.call('/api/agents/browser-requests')).body, []);

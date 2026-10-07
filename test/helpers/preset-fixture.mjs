@@ -10,6 +10,7 @@ import { admitAgent } from "./agent-admission.mjs";
 // Preset invitations end to end: created from a pinned phone over the
 // private listener, redeemed by the agent, and checked route by route. Native
 // screen, input and app helpers are stand-ins; nothing touches this computer.
+export const privateIngressTest = { skip: process.platform === "win32" && "Private ingress requires POSIX socket ownership and permissions" };
 export const apps = {};
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome", identity: "a".repeat(64), running: true };
 const notes = { id: "/System/Applications/Notes.app", name: "Notes", bundleId: "com.apple.Notes", identity: "b".repeat(64) };
@@ -42,6 +43,8 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
   const reach = await createReach({
     roots: [home, "/"], dataDir, port: 0, screen: true, tailscaleOwner: ownerAccount, publicOrigin: "",
     browserScreenSupported: true, browserAppSupported: false,
+    // Exercise preset admission/scopes independently of the host native file helper.
+    browserFilesSupported: true,
     agentDesktop: withDesktop ? desktop : null,
     ...(agentShellRun ? { agentShellRun } : {}),
     browserCapture: async () => assert.fail("Full desktop capture must not run"),

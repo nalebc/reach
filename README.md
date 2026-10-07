@@ -9,8 +9,8 @@ Use Reach to continue a coding conversation away from your desk, get a file from
 ## Supported platforms
 
 - **macOS host, phone in the browser (Safari on iPhone, Chrome on Android):** the primary target. Local macOS tests pass; physical-phone acceptance for this candidate is still required.
-- **Windows host:** experimental. It requires a successful candidate CI run and a physical-host test.
-- **Linux host:** files and terminals only; no desktop (screen, apps or agents on the computer).
+- **Windows host:** experimental. It requires a successful candidate CI run and a physical-host test. Browser-agent invitations are unavailable; their protected helpers require macOS.
+- **Linux host:** owner file browsing and Reach terminals; no desktop screen or app control. Browser-agent invitations are unavailable. Scoped command-line agent access uses its separate file/command permissions.
 - **Native iOS app:** optional developer build, unsigned. The browser needs no app.
 
 ## A look inside Reach
@@ -32,6 +32,8 @@ The browser connection embeds Tailscale in WebAssembly. Reach's API and WebSocke
 - Pair multiple computers with one-time, expiring codes. Switch between saved connections.
 - A responsive workspace with an interactive device constellation, animated connection paths, and cards for real Codex sessions and terminals. Pause ambient motion from the top bar; Reach remembers the setting, follows reduced-motion preferences, and pauses animation when the page is hidden.
 - Browse configured shared folders, preview text, images and PDFs, read Markdown formatted or as source, share files to phone apps, download files, upload large files (resumable, with progress), create folders, and transfer files between paired computers.
+- Select several files to share them together. **Send to agent** gives a writable Codex or Claude conversation on the same computer the selected file or folder paths, with an optional message. It sends paths rather than uploading copies; that agent needs permission to read them. Read-only conversations explain why they cannot receive a message.
+- Owners can **Unzip** ZIP, TAR and gzip-compressed TAR archives beside the original. Existing results receive a new name. Extraction is limited to 64 MiB compressed, 256 MiB expanded, 64 MiB per file, 4,096 entries and one minute. Guests and agents cannot extract archives; Bzip2/XZ archives must be downloaded and opened locally. See [the API contract](docs/API.md#files--scope-files-or-agent-filesread--fileswrite).
 - Create real PTY terminals (zsh/bash on Mac, PowerShell on Windows). Reconnect to output after closing the browser. Shells survive browser/network disconnects while the companion remains running; they do **not** survive a companion restart or reboot.
 - On Mac, **Terminals** automatically discovers existing Apple Terminal tabs and iTerm2 panes in its default **On your Mac** view. The list updates as tabs open and close; **Reach terminals** contains shells created by Reach. Select one to view its text (Apple Terminal tabs include their scrollback; iTerm2 panes show the visible screen), send text followed by Enter, show it on the Mac, or close it with confirmation. The stop button in an open terminal's header ends a Reach shell or closes a Mac tab, after confirming. You can also open a new window in either app. macOS may ask for Automation permission for the app running Reach; allow it in **System Settings → Privacy & Security → Automation**. These existing sessions stay owned by their terminal app and are not stopped when Reach shuts down. This is a text view, not a takeover of the terminal's PTY: use Screen for full-screen programs and keyboard shortcuts. VS Code, Cursor, Ghostty, and other terminal apps are not integrated yet. Only full-access paired people can use this feature; scoped agent keys cannot.
 - Launch installed Mac/Windows applications on the computer’s desktop.
@@ -39,7 +41,7 @@ The browser connection embeds Tailscale in WebAssembly. Reach's API and WebSocke
 - Remote desktop with H.264 video targeting 30 or 60 fps, display selection, trackpad/direct touch, dragging, pinch zoom and pan, a visible cursor, modifier shortcuts, explicit text clipboard transfers, and fullscreen. Mac uses VideoToolbox; Windows video needs FFmpeg with libx264. A JPEG compatibility mode supports browsers without H.264 WebCodecs. Viewing and control are separately enabled; OS permissions are required. See [Remote desktop](docs/REMOTE_DESKTOP.md).
 - Apps on your phone (Mac): tap an app and it runs on the Mac in a window shaped like your phone, on its own hidden display, full screen on the phone with touch, scrolling and the phone keyboard. Several apps can be open at once; the Mac's screen stays untouched. See [Apps on your phone](docs/APP_THREADS.md).
 - Scoped agent credentials, asynchronous command jobs, output polling, timeout/cancellation, a CLI, and a stdio MCP adapter.
-- Browser invitations for an assistant with a browser: one preset (**Full control**, **Apps**, **Files** or **Read only**) decides what it sees, touches, reads and runs. Full control is trusted access to your signed-in account; its shell is not isolated. See [AI browser invitations](#ai-browser-invitations).
+- Browser invitations for an assistant with a browser (Mac): one preset (**Full control**, **Apps**, **Files** or **Read only**) decides what it sees, touches, reads and runs. Full control is trusted access to your signed-in account; its shell is not isolated. See [AI browser invitations](#ai-browser-invitations).
 - Tag in (Mac): an agent with `apps:drive` uses apps on its own hidden displays and hands one to you when a person is needed (a code, a confirmation). It shows on your phone's Home as **Needs you**: **Open** the live app, then **Done** to hand it back or **Stop**. Clicks, typing and keys go to the agent's own app while you keep using the Mac; what needs the pointer or a menu waits until nobody has used the Mac for 15 seconds. See [the agent guide](docs/AGENTS.md).
 - Notifications: the bell panel turns them on and tells your phone when an agent hands you an app, holds a question for you, or asks for access, even with Reach closed. On iPhone, add Reach to the Home Screen first. They come from the computer whose link you opened, say only what needs you, and are encrypted for your phone.
 
@@ -48,6 +50,8 @@ Reach adapts to the connected computer and your permissions. Unsupported feature
 ## AI browser invitations
 
 Open **Invite someone → Agent → Browser link** to invite an assistant that works from a browser (Muse, ChatGPT agent, a Grok bot). Name it and make one choice, a preset:
+
+These browser presets currently require a macOS host. Files uses a protected native file helper, unavailable on Linux and Windows; those hosts refuse a new Files invitation before issuing credentials. This does not disable your own Files or terminals, or the separate **Command line** agent connection. Older browser credentials also receive HTTP 503 for protected file operations on unsupported hosts.
 
 | Preset | Sees | Touches | Files | Commands |
 | --- | --- | --- | --- | --- |

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { presetFixture, apps } from "./helpers/preset-fixture.mjs";
+import { presetFixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
 // The Mac behind the preset routes: screen, input, open, apps, shell and file
 // changes, with the native layer replaced by stand-ins that record what they
@@ -29,7 +29,7 @@ function stand() {
   return { extras, log };
 }
 
-test("screen, input, open and the app list follow the preset", async (t) => {
+test("screen, input, open and the app list follow the preset", privateIngressTest, async (t) => {
   const { extras, log } = stand();
   const runs = [];
   const f = await presetFixture(t, { desktopExtras: extras, agentShellRun: async (input) => { runs.push(input); return { output: `ran: ${input.command}\n`, exitCode: 0, timedOut: false }; } });
@@ -95,7 +95,7 @@ test("screen, input, open and the app list follow the preset", async (t) => {
   assert.ok(owner.body.some((item) => item.action.type === "shell" && item.action.command === "sudo ls" && item.status === "blocked"));
 });
 
-test("file changes: Full control writes directly inside shared folders, never into private files; Read only cannot", async (t) => {
+test("file changes: Full control writes directly inside shared folders, never into private files; Read only cannot", privateIngressTest, async (t) => {
   const f = await presetFixture(t, { desktopExtras: stand().extras });
   const full = await f.join({ preset: "full" });
   const change = (body, as = full.as) => as("/api/browser/files/change", { method: "POST", body });

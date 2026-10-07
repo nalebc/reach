@@ -1,3 +1,4 @@
+import { nativeFiles, unavailableFiles, expectFileExecution } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -14,7 +15,7 @@ import { browserToolsFor } from "../server/browser-tools.mjs";
 import { toolsFor, callTool } from "../scripts/mcp-server.mjs";
 import { createAgentClient } from "../scripts/agent-client.mjs";
 import { tailnetApi } from "../scripts/agent-remote.mjs";
-import { presetFixture, apps } from "./helpers/preset-fixture.mjs";
+import { presetFixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
 const cli = fileURLToPath(new URL("../scripts/agent-cli.mjs", import.meta.url));
 const remote = fileURLToPath(new URL("../scripts/agent-remote.mjs", import.meta.url));
@@ -37,9 +38,18 @@ async function fixture(t) {
   const owner = reach.auth.issue("Audit owner", ALL_SCOPES);
   const children = new Set();
   t.after(async () => {
+    const closing = [...children, ...reach.jobs.running.values()].map(child =>
+      child.exitCode !== null || child.signalCode !== null ? Promise.resolve()
+        : new Promise(resolve => child.once("close", resolve)));
     for (const child of children) child.kill();
     await reach.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    let timer;
+    try {
+      await Promise.race([Promise.all(closing), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error("Fixture child processes did not exit")), 10000);
+      })]);
+    } finally { clearTimeout(timer); }
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const call = async (route, { token = owner.token, method = "GET", body } = {}) => {
     const response = await fetch(url + route, { method, headers: {
@@ -122,28 +132,40 @@ test("MCP exposes every granted browser tool, including commands and selected ap
   assert.ok(!toolsFor(["browser:read"], access).some(tool => ["reach_terminal_command", "reach_request_app"].includes(tool.name)));
 });
 
-test("two stdio agents complete a shared-file task, isolate approvals and honor revocation", async t => {
+test("two stdio agents enforce file capability, isolate approvals and honor revocation", async t => {
   const f = await fixture(t);
   const [first, second] = await Promise.all([f.join(), f.join()]);
   const [one, two] = await Promise.all([f.mcp(first), f.mcp(second)]);
   assert.match((await f.remoteCli(first, ["tools"])).stdout, /reach_terminal_command/);
   const called = await f.remoteCli(first, ["call", "reach_terminal_command", JSON.stringify({ root: 0, command: "cat task.txt" })]);
-  assert.match(JSON.parse(called.stdout).output, /ORCHID-42/);
+  expectFileExecution(JSON.parse(called.stdout), body => assert.match(body.output, /ORCHID-42/));
+  const readTool = async (agent, name, args, verify) => {
+    if (nativeFiles) verify(await agent.tool(name, args));
+    else {
+      const response = await agent.request("tools/call", { name, arguments: args });
+      assert.equal(response.result.isError, true);
+      assert.match(JSON.stringify(response.result.content), unavailableFiles);
+      assert.doesNotMatch(JSON.stringify(response.result.content), /ORCHID-42/);
+    }
+  };
+  // Native hosts review writes; other hosts still exercise two independent
+  // pending owner approvals and must fail closed when the read is approved.
+  const request = (agent, name) => nativeFiles
+    ? agent.tool("reach_terminal_command", { root: 0, command: `touch ${name}` })
+    : agent.tool("reach_request_action", { action: { type: "terminal", root: 0, command: "pwd" }, reason: "Read the shared folder" });
   for (const agent of [one, two]) {
     const initialized = await agent.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "reach-audit", version: "1" } });
     assert.equal(initialized.result.serverInfo.name, "reach");
     const list = await agent.request("tools/list");
     assert.ok(list.result.tools.some(tool => tool.name === "reach_terminal_command"), JSON.stringify(list));
-    const files = await agent.tool("reach_list_files", { root: 0, path: "" });
-    assert.ok(files.items.some(file => file.name === "task.txt"));
-    assert.match((await agent.tool("reach_read_file", { root: 0, path: "task.txt" })).text, /ORCHID-42/);
+    await readTool(agent, "reach_list_files", { root: 0, path: "" }, files => assert.ok(files.items.some(file => file.name === "task.txt")));
+    await readTool(agent, "reach_read_file", { root: 0, path: "task.txt" }, body => assert.match(body.text, /ORCHID-42/));
     const command = await agent.tool("reach_terminal_command", { root: 0, command: "cat task.txt" });
-    assert.equal(command.status, "executed");
-    assert.match(command.output, /ORCHID-42/);
+    expectFileExecution(command, body => assert.match(body.output, /ORCHID-42/));
   }
   const [requestOne, requestTwo] = await Promise.all([
-    one.tool("reach_terminal_command", { root: 0, command: "touch agent-one.txt" }),
-    two.tool("reach_terminal_command", { root: 0, command: "touch agent-two.txt" }),
+    request(one, "agent-one.txt"),
+    request(two, "agent-two.txt"),
   ]);
   assert.equal(requestOne.status, "pending"); assert.equal(requestTwo.status, "pending");
   await assert.rejects(fs.access(path.join(f.shared, "agent-one.txt")));
@@ -151,24 +173,30 @@ test("two stdio agents complete a shared-file task, isolate approvals and honor 
   assert.equal(cross.result.isError, true);
   const selfApprove = await f.call(`/api/agents/browser-requests/${requestOne.id}`, { token: first.token, method: "POST", body: { decision: "approve", reviewedTerminalChange: true } });
   assert.equal(selfApprove.status, 403);
-  const approved = await f.call(`/api/agents/browser-requests/${requestOne.id}`, { method: "POST", body: { decision: "approve", reviewedTerminalChange: true } });
-  assert.equal(approved.body.status, "executed", JSON.stringify(approved));
-  await fs.access(path.join(f.shared, "agent-one.txt"));
+  const approved = await f.call(`/api/agents/browser-requests/${requestOne.id}`, { method: "POST", body: { decision: "approve", ...(nativeFiles ? { reviewedTerminalChange: true } : {}) } });
+  expectFileExecution(approved.body);
+  if (nativeFiles) await fs.access(path.join(f.shared, "agent-one.txt"));
+  else await assert.rejects(fs.access(path.join(f.shared, "agent-one.txt")));
   const firstHistory = await one.tool("reach_terminal_history");
   assert.ok(firstHistory.every(record => record.clientId === first.clientId));
-  assert.equal(firstHistory.find(record => record.id === requestOne.id).status, "executed");
+  assert.equal(firstHistory.find(record => record.id === requestOne.id).status, nativeFiles ? "executed" : "failed");
   // A write changes the reviewed filesystem: another agent must request fresh
   // approval instead of executing an action approved against stale contents.
   const stale = (await two.tool("reach_list_requests")).find(record => record.id === requestTwo.id);
-  assert.equal(stale.status, "cancelled");
-  assert.match(stale.error, /Another agent changed/);
-  const fresh = await two.tool("reach_terminal_command", { root: 0, command: "touch agent-two.txt" });
+  if (nativeFiles) {
+    assert.equal(stale.status, "cancelled");
+    assert.match(stale.error, /Another agent changed/);
+  } else {
+    assert.equal(stale.status, "pending", "a failed native read cannot change another agent's approval");
+    await two.tool("reach_cancel_request", { id: stale.id });
+  }
+  const fresh = await request(two, "agent-two.txt");
   assert.equal(fresh.status, "pending");
   const revoked = await f.call(`/api/clients/${first.clientId}`, { method: "DELETE" });
   assert.equal(revoked.status, 200);
   const ended = await one.request("tools/call", { name: "reach_access", arguments: {} });
   assert.equal(ended.result.isError, true);
-  assert.match((await two.tool("reach_read_file", { root: 0, path: "task.txt" })).text, /ORCHID-42/);
+  await readTool(two, "reach_read_file", { root: 0, path: "task.txt" }, body => assert.match(body.text, /ORCHID-42/));
   assert.equal((await two.tool("reach_list_requests")).find(record => record.id === fresh.id).status, "pending");
   await two.tool("reach_cancel_request", { id: fresh.id });
   await assert.rejects(fs.access(path.join(f.shared, "agent-two.txt")));
@@ -208,15 +236,16 @@ test("CLI execution and MCP jobs report real output and enforce per-agent owners
   const second = f.reach.auth.issue("Other job agent", ["device", "files:read", "exec"], "agent");
   const one = await f.mcp(first), two = await f.mcp(second);
   const command = path.join(f.shared, "job.sh");
-  await fs.writeFile(command, "printf 'REACH_JOB_OK'\n");
+  await fs.writeFile(command, process.platform === "win32" ? "[Console]::Write('REACH_JOB_OK')\n" : "printf 'REACH_JOB_OK'\n");
   const started = await exec(process.execPath, [cli, "exec", "--credential", one.file, "--allow-local", "--command-file", command]);
   const job = JSON.parse(started.stdout);
   let result;
-  for (let attempt = 0; attempt < 30; attempt++) {
+  const deadline = Date.now() + 10000;
+  do {
     result = await one.tool("reach_get_job", { id: job.id });
     if (result.status !== "running") break;
     await new Promise(resolve => setTimeout(resolve, 50));
-  }
+  } while (Date.now() < deadline);
   assert.equal(result.status, "completed", JSON.stringify(result));
   assert.equal(result.exitCode, 0); assert.equal(result.output, "REACH_JOB_OK");
   const cross = await two.request("tools/call", { name: "reach_get_job", arguments: { id: job.id } });
@@ -226,7 +255,7 @@ test("CLI execution and MCP jobs report real output and enforce per-agent owners
   assert.equal((await one.tool("reach_get_job", { id: running.id })).status, "cancelled");
 });
 
-test("preset remote CLI and stdio MCP discover apps, open the browser, and deliver screenshot bytes", async t => {
+test("preset remote CLI and stdio MCP discover apps, open the browser, and deliver screenshot bytes", privateIngressTest, async t => {
   const nativeCalls = [];
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]);
   const f = await presetFixture(t, { desktopExtras: {

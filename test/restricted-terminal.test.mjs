@@ -13,13 +13,25 @@ function fixture(t) {
   fs.writeFileSync(path.join(root, "notes.txt"), "hello world\nsecond line\nlast line\n");
   fs.writeFileSync(path.join(root, "file with spaces.txt"), "quoted path\n");
   fs.writeFileSync(path.join(dir, "private.txt"), "not shared");
-  fs.symlinkSync(path.join(dir, "private.txt"), path.join(root, "escape"));
+  if (process.platform !== "win32") fs.symlinkSync(path.join(dir, "private.txt"), path.join(root, "escape"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let permitted = true;
   const client = { policy: { restrictedTerminal: true }, agentRoots: [root] };
   const authorize = () => { if (!permitted) throw Object.assign(Error("Revoked"), { status: 403 }); return client; };
   const resolve = (index, p, c) => safePath(c.agentRoots, index, p);
-  const run = (command, index = 0, cwd = "") => runTerminalCommand({ type: "terminal", command, root: index, cwd }, authorize, resolve);
+  // Unsupported hosts exercise the JS parser/formatter with an explicit fake.
+  // macOS still uses the real descriptor helper; sandbox/race tests are separate.
+  const fileRun = async request => {
+    const full = path.join(request.root, request.path), stat = fs.lstatSync(full);
+    const reject = message => { throw Object.assign(Error(message), { status: 400 }); };
+    if (stat.isSymbolicLink()) throw Object.assign(Error("Symbolic link"), { status: 403 });
+    if (request.op === "stat") return { stat: { type: stat.isDirectory() ? "directory" : "file" } };
+    if (request.op === "list") return { items: fs.readdirSync(full, { withFileTypes: true }).filter(entry => !entry.isSymbolicLink()).map(entry => ({ name: entry.name, type: entry.isDirectory() ? "directory" : "file" })), truncated: false };
+    assert.equal(request.op, "read");
+    if (!stat.isFile() || stat.size > request.maxBytes) reject("Choose a bounded regular file");
+    return { data: fs.readFileSync(full).toString("base64"), stat: {} };
+  };
+  const run = (command, index = 0, cwd = "") => runTerminalCommand({ type: "terminal", command, root: index, cwd }, authorize, resolve, process.platform === "darwin" ? {} : { run: fileRun });
   return { dir, root, run, client, revoke: () => { permitted = false; } };
 }
 
@@ -41,14 +53,14 @@ test("cd and following commands stay in their explicit working folder", async (t
   const f = fixture(t);
   fs.mkdirSync(path.join(f.root, "nested"));
   fs.writeFileSync(path.join(f.root, "nested/notes.txt"), "nested content");
-  fs.symlinkSync(f.dir, path.join(f.root, "outside"));
+  if (process.platform !== "win32") fs.symlinkSync(f.dir, path.join(f.root, "outside"));
   assert.equal(await f.run("cd nested"), path.join(f.root, "nested"));
   assert.equal(await f.run("pwd", 0, "nested"), path.join(f.root, "nested"));
   assert.equal(await f.run("cat notes.txt", 0, "nested"), "nested content");
   assert.equal(await f.run("cd ..", 0, "nested"), f.root);
   await assert.rejects(f.run("cd .."), { status: 403 });
   await assert.rejects(f.run("cd ../..", 0, "nested"), { status: 403 });
-  await assert.rejects(f.run("cd outside"), { status: 403 });
+  if (process.platform !== "win32") await assert.rejects(f.run("cd outside"), { status: 403 });
   await assert.rejects(f.run("cd notes.txt"), { status: 400 });
   for (const cwd of ["../", "/tmp", {}, null, "nested\u202e"])
     await assert.rejects(f.run("pwd", 0, cwd), { status: 400 });
@@ -69,7 +81,7 @@ test("deny unlisted programs and shell bypasses, even if an owner would approve"
 
 test("deny folder escapes, missing grants, special files, oversized reads and revoked sessions", async (t) => {
   const f = fixture(t);
-  await assert.rejects(f.run("cat escape"), { status: 403 });
+  if (process.platform !== "win32") await assert.rejects(f.run("cat escape"), { status: 403 });
   await assert.rejects(f.run("pwd", 9), { status: 403 });
   await assert.rejects(f.run("cat ."), { status: 400 });
   fs.writeFileSync(path.join(f.root, "large.txt"), "x".repeat(1024 * 1024 + 1));

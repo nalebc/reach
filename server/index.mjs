@@ -33,6 +33,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileRootName } from "./file-roots.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
+import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
@@ -65,7 +66,7 @@ import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
-import { installPlan } from "./agent-install.mjs";
+import { installPlan, installTerminalCommand } from "./agent-install.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
 import {
   MacTerminalWatch,
@@ -1798,6 +1799,7 @@ export async function createReach(overrides = {}) {
   };
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
+    protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell,
     prepareFunnel: async () => {
@@ -2126,6 +2128,43 @@ export async function createReach(overrides = {}) {
     record("file", `Created folder ${name}`);
     res.json({ ok: true });
   });
+  // Unzip with one tap, like the Files app: the contents land beside it.
+  let archiveInFlight = false;
+  app.post("/api/files/extract", async (req, res) => {
+    const owner = () => {
+      const client = req.reauthorize();
+      if (client.kind !== "device" || !client.scopes.includes("admin") || client.policy?.browser ||
+          !(client.scopes.includes("files") || ["files:read", "files:write"].every(scope => client.scopes.includes(scope))))
+        throw fail(403, "Only a paired owner with file read and write access can open archives.");
+      return client;
+    };
+    owner();
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) ||
+        Object.keys(req.body).some(key => !["root", "path"].includes(key)) ||
+        !Number.isSafeInteger(req.body.root) || req.body.root < 0 || typeof req.body.path !== "string" || !req.body.path)
+      throw fail(400, "Choose an archive in a shared folder.");
+    const root = req.body.root, relative = req.body.path;
+    const file = resolve(root, relative, owner());
+    if (!archiveBase(path.basename(file))) throw fail(415, "Only ZIP, TAR and gzip-compressed TAR archives can be opened here.");
+    if (archiveInFlight) throw fail(429, "Wait for the current archive to finish opening.");
+    archiveInFlight = true;
+    const controller = new AbortController();
+    const disconnected = () => controller.abort(fail(409, "Extraction was cancelled."));
+    res.once("close", disconnected);
+    try {
+      const name = await extractArchive(file, { stagingRoot: config.dataDir, signal: controller.signal, authorize: () => {
+        notPaused();
+        if (resolve(root, relative, owner()) !== file) throw fail(409, "The archive location changed. Try again.");
+      } });
+      owner();
+      record("file", `Extracted ${path.basename(file)}`);
+      const folder = path.posix.dirname(relative);
+      res.json({ name, path: folder === "." ? name : `${folder}/${name}` });
+    } finally {
+      res.off("close", disconnected);
+      archiveInFlight = false;
+    }
+  });
   app.get("/api/jobs", (req, res) =>
     res.json(jobs.list().filter((j) => mayAccess(req.client, j))),
   );
@@ -2282,14 +2321,16 @@ export async function createReach(overrides = {}) {
   // maker's command first, to show; confirmed, run in a Reach terminal that
   // ends with it. The owner's own devices only (as every session route).
   app.post("/api/sessions/agent-install/:agent", async (req, res) => {
-    const plan = await installPlan(req.params.agent);
+    const plan = await (overrides.agentInstallPlan || installPlan)(req.params.agent);
+    const current = req.reauthorize();
     if (req.body?.confirm !== true) return res.json(plan);
+    notPaused();
     const terminal = terminals.create({
       cwd: os.homedir(),
       name: `Install ${plan.name}`,
-      clientId: req.client.id,
+      clientId: current.id,
       // A failed download fails the install too (curl … | bash).
-      command: `set -o pipefail; ${plan.command}; exit`,
+      command: installTerminalCommand(plan),
     });
     record("terminal", `Installing ${plan.name}`);
     res.json({ ...plan, terminal });

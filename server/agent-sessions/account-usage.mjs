@@ -33,20 +33,21 @@ export function claudeUsage(data, now = Date.now()) {
   return { available: true, windows, updatedAt: now, ...(data.spend ? { spend: { enabled: data.spend.enabled, used: data.spend.used, limit: data.spend.limit } } : {}) };
 }
 export function createClaudeAccountUsage({ run = exec, fetcher = fetch, read = fs.readFile, home = os.homedir(), env = process.env, platform = process.platform, now = Date.now } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
   let cached, pending, checked = 0;
   return async () => {
     if (cached && now() - checked < 60000) return cached;
     if (pending) return pending;
     pending = (async () => {
       try {
-        const dir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR || env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+        const dir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR || env.CLAUDE_CONFIG_DIR || paths.join(home, '.claude');
         let credentials;
         if (platform === 'darwin') {
           const custom = env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR;
           const suffix = custom ? `-${crypto.createHash('sha256').update(custom.normalize('NFC')).digest('hex').slice(0,8)}` : '';
           const { stdout } = await run('/usr/bin/security', ['find-generic-password', '-a', env.USER || os.userInfo().username, '-w', '-s', `Claude Code-credentials${suffix}`], { timeout: 5000, maxBuffer: 1024 * 1024 });
           credentials = JSON.parse(stdout);
-        } else credentials = JSON.parse(await read(path.join(dir, '.credentials.json'), 'utf8'));
+        } else credentials = JSON.parse(await read(paths.join(dir, '.credentials.json'), 'utf8'));
         const token = credentials.claudeAiOauth?.accessToken;
         if (!token) throw new Error('unavailable');
         const response = await fetcher('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }, redirect: 'error', signal: AbortSignal.timeout(8000) });
