@@ -100,8 +100,12 @@ function toolItem(block, result, cwd) {
         ...base,
         kind: "file-change",
         text: relative(input.file_path ?? input.notebook_path ?? "", cwd),
-        detail: block.name === "Write" ? "Wrote file" : "Edited file",
+        detail: editDiff(block.name, input, cwd) || (block.name === "Write" ? "Wrote file" : "Edited file"),
       };
+    case "TodoWrite":
+    case "TaskCreate":
+    case "TaskUpdate":
+      return { ...base, kind: "tool", text: block.name === "TaskCreate" ? `Added a task: ${String(input.subject ?? "")}`.trim() : "Updated the todo list" };
     case "Read":
       return { ...base, kind: "tool", text: `Read ${relative(input.file_path ?? "", cwd)}` };
     case "Grep":
@@ -156,9 +160,15 @@ function toolItem(block, result, cwd) {
 // whole file, an Edit's old and new text): kept per line as it is read.
 const KEEP = {
   Bash: ["command"],
-  Edit: ["file_path"],
-  MultiEdit: ["file_path"],
-  Write: ["file_path"],
+  // What an edit changed, for its diff (cut short: a transcript can hold
+  // whole files).
+  Edit: ["file_path", "old_string", "new_string"],
+  MultiEdit: ["file_path", "edits"],
+  Write: ["file_path", "content"],
+  // The todo list, as Claude keeps it.
+  TodoWrite: ["todos"],
+  TaskCreate: ["subject", "description", "activeForm"],
+  TaskUpdate: ["taskId", "status", "subject", "activeForm"],
   NotebookEdit: ["notebook_path"],
   Read: ["file_path"],
   Grep: ["pattern"],
@@ -173,7 +183,57 @@ function slimToolUse(b) {
   const input = b.input && typeof b.input === "object" ? b.input : {};
   const keep = KEEP[b.name] || (consentOf(b.name, input) ? ["apps", "reason", "path"] : null);
   if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600) };
-  return { type: "tool_use", id: b.id, name: b.name, input: Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, input[k]])) };
+  const short = (v) => (typeof v === "string" ? clip(v, EDIT_MAX) : v);
+  const kept = Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, short(input[k])]));
+  if (Array.isArray(kept.edits))
+    kept.edits = kept.edits.slice(0, 30).map((e) => ({ old_string: short(e?.old_string ?? ""), new_string: short(e?.new_string ?? "") }));
+  return { type: "tool_use", id: b.id, name: b.name, input: kept };
+}
+const EDIT_MAX = 12000;
+
+// An edit as a unified diff, as Codex reports its own (the phone draws it
+// and counts its lines).
+export function editDiff(name, input = {}, cwd = "") {
+  const file = String(input.file_path ?? input.notebook_path ?? "");
+  const shown = relative(file, cwd) || "file";
+  const lines = (text) => (String(text ?? "") === "" ? [] : String(text).replace(/\n$/, "").split("\n"));
+  const hunk = (before, after) => [`@@`, ...lines(before).map((l) => `-${l}`), ...lines(after).map((l) => `+${l}`)];
+  const body =
+    name === "Write"
+      ? hunk("", input.content)
+      : name === "MultiEdit"
+        ? (Array.isArray(input.edits) ? input.edits : []).flatMap((e) => hunk(e.old_string, e.new_string))
+        : input.old_string !== undefined || input.new_string !== undefined
+          ? hunk(input.old_string, input.new_string)
+          : [];
+  return body.length ? [`--- a/${shown}`, `+++ b/${shown}`, ...body].join("\n") : "";
+}
+
+// Claude's todo list as it stands after these calls: TodoWrite gives the
+// whole list; TaskCreate adds one (its id in the result), TaskUpdate changes
+// one. [{ id, text, status: pending|in_progress|completed }]
+export function todoList(calls) {
+  let list = [];
+  const status = (s) => (["pending", "in_progress", "completed"].includes(s) ? s : "pending");
+  for (const { name, input = {}, result } of calls) {
+    if (name === "TodoWrite" && Array.isArray(input.todos))
+      list = input.todos
+        .filter((t) => t && typeof t.content === "string")
+        .slice(0, 100)
+        .map((t, i) => ({ id: String(t.id ?? i), text: clip(t.status === "in_progress" && t.activeForm ? t.activeForm : t.content, 300), status: status(t.status) }));
+    else if (name === "TaskCreate" && typeof input.subject === "string") {
+      const id = String(String(result ?? "").match(/#?(\d+)/)?.[1] ?? list.length + 1);
+      list = [...list.filter((t) => t.id !== id), { id, text: clip(input.subject, 300), status: "pending" }];
+    } else if (name === "TaskUpdate" && input.taskId != null) {
+      const id = String(input.taskId);
+      if (input.status === "deleted") list = list.filter((t) => t.id !== id);
+      else
+        list = list.map((t) =>
+          t.id === id ? { ...t, status: input.status ? status(input.status) : t.status, text: input.status === "in_progress" && input.activeForm ? clip(input.activeForm, 300) : input.subject ? clip(input.subject, 300) : t.text } : t,
+        );
+    }
+  }
+  return list;
 }
 // Claude Code records a slash command as <command-name>/x</command-name>
 // <command-message>…</command-message><command-args>…</command-args>, and
@@ -326,6 +386,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       }
       chain.reverse();
       const items = [];
+      // Todo list calls, in order (todoList).
+      const todoCalls = [];
       let model = null; // the latest model that answered
       let firstUser = "";
       // What Claude remembers of the chat: its latest summary (written when it
@@ -424,7 +486,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           for (const b of content) {
             if (b?.type === "text" && b.text?.trim())
               items.push({ id: `${e.uuid}:${items.length}`, role: "assistant", kind: "text", text: b.text, at });
-            else if (b?.type === "tool_use") items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+            else if (b?.type === "tool_use") {
+              items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+              if (b.name === "TodoWrite" || b.name === "TaskCreate" || b.name === "TaskUpdate")
+                todoCalls.push({ name: b.name, input: b.input || {}, result: results.get(b.id)?.output });
+            }
           }
         }
       }
@@ -439,6 +505,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         usage,
         ...(memory ? { memory } : {}),
         tasks: [...tasks.values()],
+        todos: todoList(todoCalls),
         items,
       };
     },

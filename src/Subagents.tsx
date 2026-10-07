@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Bot, Check, ChevronDown, ChevronRight, CircleSlash, Loader2, Moon, X } from "lucide-react";
-import type { SessionItem, Subagent } from "./agent-sessions";
+import { Bot, Check, ChevronDown, ChevronRight, Circle, CircleSlash, ListTodo, Loader2, Moon, X } from "lucide-react";
+import type { AgentSession, SessionItem, Subagent } from "./agent-sessions";
 import AgentMarkdown from "./AgentMarkdown";
 import "./subagents.css";
 
@@ -100,6 +100,43 @@ export function SubagentStrip({ agents }: { agents: Subagent[] }) {
                 </span>
                 <StatusMark status={a.status} />
               </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Claude's todo list, pinned above the composer as the Claude app shows it:
+// how far along, the step it's on; all of it on a tap.
+export function TodoStrip({ todos }: { todos: NonNullable<AgentSession["todos"]> }) {
+  const [open, setOpen] = useState(false);
+  if (!todos.length) return null;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const now = todos.find((t) => t.status === "in_progress");
+  return (
+    <div className={`sa-strip todo ${open ? "open" : ""}`}>
+      <button className="sa-strip-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <ListTodo size={13} aria-hidden="true" />
+        <span>
+          {done}/{todos.length} done
+        </span>
+        {!open && now && <small>{now.text}</small>}
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {open && (
+        <ul className="sa-todo-list">
+          {todos.map((t) => (
+            <li key={t.id} className={t.status}>
+              {t.status === "completed" ? (
+                <Check size={14} aria-label="Done" />
+              ) : t.status === "in_progress" ? (
+                <Loader2 size={14} className="spin" aria-label="Doing now" />
+              ) : (
+                <Circle size={14} aria-label="To do" />
+              )}
+              <span>{t.text}</span>
             </li>
           ))}
         </ul>

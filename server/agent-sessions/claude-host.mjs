@@ -102,6 +102,23 @@ export function describeClaudePrompt(id, request = {}) {
       })),
     };
   }
+  // A plan ready to go: shown whole, approved into the mode to work in (as
+  // Claude Code offers it: auto when it can, accept edits, ask each edit), or
+  // sent back with what to change (verified with 2.1.291's plan card).
+  if (request.tool_name === "ExitPlanMode") {
+    const offered = (Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [])
+      .filter((p) => p?.type === "setMode" && PLAN_MODES.includes(p.mode))
+      .map((p) => p.mode);
+    const modes = PLAN_MODES.filter((m) => offered.includes(m) || (m !== "auto" && !offered.length) || (m === "default"));
+    return {
+      id,
+      kind: "plan",
+      title: "Ready to start?",
+      plan: String(input.plan ?? "").slice(0, 100000),
+      input,
+      decisions: [...new Set(modes)].map((m) => `plan:${m}`).concat("keepPlanning"),
+    };
+  }
   const name = request.display_name || request.tool_name || "a tool";
   const suggestions = !request.suppress_always_allow_rule && Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
   const shown = input.command ?? input.file_path ?? input.notebook_path ?? input.url ?? input.pattern ?? input.host;
@@ -118,8 +135,20 @@ export function describeClaudePrompt(id, request = {}) {
   };
 }
 
+// The modes a plan can be approved into, in Claude Code's order.
+const PLAN_MODES = ["auto", "acceptEdits", "default"];
+
 // The phone's answer as Claude Code expects it; only what was offered.
 export function claudeAnswer(prompt, answer, platform = process.platform) {
+  if (prompt.kind === "plan") {
+    if (!prompt.decisions.includes(answer?.decision)) throw bad("That choice is not available for this plan.");
+    if (answer.decision === "keepPlanning") {
+      const feedback = typeof answer.message === "string" ? answer.message.trim().slice(0, 4000) : "";
+      return { behavior: "deny", message: feedback || "Keep planning. The user wants changes before you start." };
+    }
+    const mode = answer.decision.slice("plan:".length);
+    return { behavior: "allow", updatedInput: prompt.input, updatedPermissions: [{ type: "setMode", mode, destination: "session" }] };
+  }
   if (prompt.kind === "elicitation") return elicitationAnswer(prompt, answer);
   if (prompt.kind === "dialog") {
     if (answer?.decision !== "cancel") throw bad(`Answer this one on your ${computerWord(platform)}.`, 409);

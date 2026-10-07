@@ -42,7 +42,7 @@ import { createDraftSync } from "./draft-sync";
 import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
-import { SubagentCard, SubagentStrip } from "./Subagents";
+import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
@@ -395,6 +395,12 @@ function ToolStep({ item }: { item: SessionItem }) {
   );
 }
 
+// Claude Code's plan approvals, in its words.
+const PLAN_CHOICES: Record<string, string> = {
+  auto: "Yes, and use auto mode",
+  acceptEdits: "Yes, auto-accept edits",
+  default: "Yes, manually approve edits",
+};
 const decisionKey = (d: Decision) =>
   typeof d === "string" ? d : Object.keys(d)[0];
 
@@ -1014,7 +1020,7 @@ function AsyncQuestions({ item, logos, word, onAnswer }: {
   </>;
 }
 
-function PromptCard({
+export function PromptCard({
   prompt,
   agent,
   logos,
@@ -1030,9 +1036,12 @@ function PromptCard({
   onAnswer: (answer: {
     decision?: string;
     answers?: Record<string, string[]>;
+    message?: string;
   }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
+  // What to change in a plan sent back (Claude's "No, keep planning").
+  const [feedback, setFeedback] = useState("");
   const answering = useRef(false);
   // Picked choices per question, and what was typed instead ("Something else").
   const [picked, setPicked] = useState<Record<string, string[]>>(initialAnswers);
@@ -1065,7 +1074,7 @@ function PromptCard({
   };
   const act = async (
     key: string,
-    answer: { decision?: string; answers?: Record<string, string[]> },
+    answer: { decision?: string; answers?: Record<string, string[]>; message?: string },
   ) => {
     if (answering.current || prompt.attempted) return;
     answering.current = true;
@@ -1099,7 +1108,48 @@ function PromptCard({
       {prompt.message && <p>{prompt.message}</p>}
       {prompt.reason && <p className="as-prompt-reason">{prompt.reason}</p>}
       {prompt.attempted && <p className="as-prompt-reason" role="status">The previous answer could not be confirmed. Check {agentLabel(agent)} on your {word} before answering again.</p>}
-      {prompt.kind === "question" ? (
+      {prompt.kind === "plan" ? (
+        <>
+          {prompt.plan && (
+            <div className="as-plan">
+              <AgentMarkdown text={prompt.plan} />
+            </div>
+          )}
+          <div className="as-prompt-actions as-plan-actions">
+            {decisions
+              .filter((key) => key.startsWith("plan:"))
+              .map((key, i) => (
+                <button
+                  key={key}
+                  className={i === 0 ? "primary" : ""}
+                  disabled={!!busy || prompt.attempted}
+                  onClick={() => void act(key, { decision: key })}
+                >
+                  {busy === key ? <Loader2 size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
+                </button>
+              ))}
+          </div>
+          {decisions.includes("keepPlanning") && (
+            <form
+              className="as-plan-feedback"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act("keepPlanning", { decision: "keepPlanning", message: feedback.trim() });
+              }}
+            >
+              <input
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="No, keep planning: tell Claude what to change"
+                aria-label="What to change in the plan"
+              />
+              <button type="submit" disabled={!!busy || prompt.attempted}>
+                {busy === "keepPlanning" ? <Loader2 size={14} className="spin" /> : "Keep planning"}
+              </button>
+            </form>
+          )}
+        </>
+      ) : prompt.kind === "question" ? (
         <>
           {questions.length > 1 && (
             <nav className="as-steps" aria-label="Questions">
@@ -2410,6 +2460,8 @@ export default function AgentSessionView({
             }}
           />
         )}
+        {/* Claude's todo list, pinned above the composer as in the Claude app. */}
+        {!!info.todos?.length && info.todos.some((t) => t.status !== "completed") && <TodoStrip todos={info.todos} />}
         {/* Right on top of the message box, as both apps put their queue. */}
         {!!queued.length && (
           <QueuedMessages

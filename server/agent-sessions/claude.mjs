@@ -354,7 +354,8 @@ export function createClaudeSessions({
         return agent ? { ...item, agentId: agent.id, agentStatus: agent.status, activity: agent.activity } : item;
       });
       return {
-        session: { ...(await summary(found, byCli.get(id))), subagents },
+        // Its todo list as Claude last left it (claude-transcript.mjs todoList).
+        session: { ...(await summary(found, byCli.get(id))), subagents, todos: parsed.todos || [] },
         items,
         before: start > 0 ? String(start) : null,
       };

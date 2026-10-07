@@ -35,6 +35,8 @@ export type AgentSession = {
   model?: string | null;
   // Its sub-agents, newest first.
   subagents?: Subagent[];
+  // Claude's todo list as it stands.
+  todos?: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[];
   effort?: string | null;
   // Codex's speed (service tier) the chat runs at, when it says.
   speed?: string | null;
@@ -141,8 +143,10 @@ export type SessionPrompt = {
   attempted?: boolean;
   // Codex: command, file-change, permissions, question, elicitation.
   // Claude Code: tool (a permission request), question, dialog (answered on the Mac).
-  kind: "command" | "file-change" | "permissions" | "question" | "elicitation" | "tool" | "dialog" | "unknown";
+  kind: "command" | "file-change" | "permissions" | "question" | "elicitation" | "tool" | "dialog" | "plan" | "unknown";
   title: string;
+  // Claude Code's plan, ready to go (kind "plan"), as markdown.
+  plan?: string;
   command?: string;
   cwd?: string;
   reason?: string;
