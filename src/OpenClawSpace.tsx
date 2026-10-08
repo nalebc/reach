@@ -29,7 +29,6 @@ import {
 import { ClawSessionSettings } from "./OpenClawControls";
 import { OpenSetup, ScheduleForm, WhatsAppLink } from "./OpenClawSetup";
 import { useViewportBox } from "./useViewportBox";
-import { useChatAppSwipe } from "./useChatAppSwipe";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
@@ -1030,7 +1029,6 @@ export default function OpenClawSpace({
     `${base}/changes`,
   );
   const [opened, setOpened] = useState<Session | null>(null);
-  const swipeApps = useChatAppSwipe(apps, "openclaw", onAppChange);
   const [starting, setStarting] = useState(false);
   const [startProblem, setStartProblem] = useState("");
   const [query, setQuery] = useState("");
@@ -1079,7 +1077,7 @@ export default function OpenClawSpace({
       />
     );
   return (
-    <div ref={swipeApps} className="chat-workspace">
+    <div className="chat-workspace">
       <div
         className={`chat-library claw-library ${searchOpen ? "search-open" : ""}`}
       >

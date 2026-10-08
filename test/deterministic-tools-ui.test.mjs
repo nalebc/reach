@@ -43,7 +43,10 @@ async function type(element, value) {
   element.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await settle();
 }
-async function fixture(t) {
+async function fixture(
+  t,
+  render = (props) => React.createElement(Component, props),
+) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tool-ui-")),
     driver = toolBrowserFixture(),
     calls = [];
@@ -82,7 +85,7 @@ async function fixture(t) {
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname,
       body = init.body ? JSON.parse(init.body) : {};
-    calls.push({ route, body });
+    calls.push({ route, body, signal: init.signal });
     let result;
     if (route === "/api/browser")
       result = {
@@ -109,9 +112,7 @@ async function fixture(t) {
       headers: { "Content-Type": "application/json" },
     });
   };
-  const view = await dom.render(
-    React.createElement(Component, { peer, ended: () => {} }),
-  );
+  const view = await dom.render(render({ peer, ended: () => {} }));
   views.add(view);
   return { root: view.container, tools, driver, calls };
 }
@@ -143,13 +144,15 @@ test("the visual protocol editor registers a new definition and its named button
   const f = await fixture(t);
   await dom.waitFor(() => button(f.root, "Create deterministic tool"));
   button(f.root, "Create deterministic tool").click();
-  await dom.waitFor(() => f.root.querySelector("textarea"));
+  await dom.waitFor(() =>
+    f.root.querySelector('[aria-label="Tool definition JSON"]'),
+  );
   assert.match(
     f.root.querySelector("details").textContent,
     /builtin_open_gmail/,
   );
   await type(
-    f.root.querySelector("textarea"),
+    f.root.querySelector('[aria-label="Tool definition JSON"]'),
     JSON.stringify(exampleTool("visual_custom")),
   );
   button(f.root, "Save deterministic tool").click();
@@ -204,4 +207,100 @@ test("an uncertain visual run retains its request ID and never creates a second 
   assert.equal(runs[0].body.requestId, runs[1].body.requestId);
   assert.equal(f.driver.counters.clicks, 1);
   assert.ok(button(f.root, "Start another run"));
+});
+
+test("a pending deterministic tool survives equivalent peer objects and parent callbacks", async (t) => {
+  let update;
+  function Parent(props) {
+    const [value, setValue] = React.useState(0);
+    update = setValue;
+    return React.createElement(Component, {
+      ...props,
+      peer: { ...props.peer, name: `Mac ${value}` },
+      ended: () => {},
+    });
+  }
+  const f = await fixture(t, (props) => React.createElement(Parent, props));
+  await dom.waitFor(() => button(f.root, "Open Gmail account"));
+  let release, entered;
+  const ready = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    blocking = new Promise((resolve) => {
+      release = resolve;
+    });
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "assert") {
+      entered();
+      await blocking;
+    }
+  };
+  button(f.root, "Open Gmail account").click();
+  await ready;
+  dom.update(() => update(1));
+  await settle();
+  assert.equal(
+    f.calls.find((call) => call.route.endsWith("/run")).signal.aborted,
+    false,
+  );
+  release();
+  await dom.waitFor(() => f.root.textContent.includes("completed · 3/3"));
+  assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
+});
+
+test("changing credentials clears private output and cannot display the previous session's late result", async (t) => {
+  let update;
+  function Parent(props) {
+    const [token, setToken] = React.useState(props.peer.token);
+    update = setToken;
+    return React.createElement(Component, {
+      ...props,
+      peer: { ...props.peer, token },
+      ended: () => {},
+    });
+  }
+  const f = await fixture(t, (props) => React.createElement(Parent, props));
+  await dom.waitFor(() => button(f.root, "Open Gmail account"));
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (new Headers(init.headers).get("authorization") === "Bearer new-agent")
+      return new Response(
+        JSON.stringify({
+          preset: "readonly",
+          expiresAt: Date.now() + 600000,
+          roots: [],
+          terminals: [],
+          screen: true,
+          control: false,
+          open: false,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    return oldFetch(url, init);
+  };
+  let release, entered;
+  const ready = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    blocking = new Promise((resolve) => {
+      release = resolve;
+    });
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "assert") {
+      entered();
+      await blocking;
+    }
+  };
+  button(f.root, "Open Gmail account").click();
+  await ready;
+  dom.update(() => update("new-agent"));
+  await settle();
+  assert.equal(
+    f.calls.find((call) => call.route.endsWith("/run")).signal.aborted,
+    true,
+  );
+  release();
+  await settle(80);
+  assert.ok(!f.root.textContent.includes("completed"));
+  assert.equal(f.root.querySelector('[aria-label="Tool result"]'), null);
 });

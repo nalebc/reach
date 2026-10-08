@@ -101,6 +101,8 @@ export type SessionItem = {
   status?: string;
   queued?: boolean;
   images?: number;
+  // Pieces sent as they are, by what they are: "Voice message", "PDF"…
+  attachments?: string[];
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
@@ -696,6 +698,19 @@ export async function uploadFile(peer: Peer, file: Blob, name = "file") {
     signal: AbortSignal.timeout(300000),
   });
   return r.id;
+}
+// A voice memo, as words to read over; or, when the Mac can't make words of
+// it, why, and the recording kept as a file to attach.
+export async function transcribeVoice(peer: Peer, memo: Blob, locale = navigator.language || "") {
+  const form = new FormData();
+  form.append("file", memo, memo.type === "audio/wav" ? "memo.wav" : "memo");
+  return request<{ text?: string; problem?: string; file?: { id: string; name: string } }>(
+    peer,
+    `/api/sessions/voice?locale=${encodeURIComponent(locale)}`,
+    // Longer than the Mac can take: building its helper once, then a first
+    // download of the language's speech model.
+    { method: "POST", body: form, signal: AbortSignal.timeout(330000) },
+  );
 }
 export async function uploadImage(peer: Peer, file: Blob, name = "image") {
   const form = new FormData();

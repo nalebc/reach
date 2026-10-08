@@ -708,3 +708,30 @@ test("generic JSON tool creation validation rejects cycles, getters and unbounde
     /bounded/,
   );
 });
+
+test("an owner's disable remains effective for the current run after a quick re-enable", async (t) => {
+  const f = setup(t);
+  await f.tools.define(f.authorize, exampleTool());
+  let release, entered;
+  const ready = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    blocking = new Promise((resolve) => {
+      release = resolve;
+    });
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "assert") {
+      entered();
+      await blocking;
+    }
+  };
+  const run = f.run("example_task");
+  await ready;
+  f.tools.update("example_task", false);
+  f.tools.update("example_task", true);
+  release();
+  const result = await run;
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "access_changed");
+  assert.equal(f.driver.counters.clicks, 0);
+});

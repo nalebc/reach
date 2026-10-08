@@ -5,6 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { partLabels } from "./message-parts.mjs";
 
 const exec = promisify(execFile);
 
@@ -113,7 +114,9 @@ export function geminiItems(messages, cwd = "") {
     if (m.type === "user") {
       const text = textOf(m.content);
       const images = picturesIn(m.content);
-      if (text || images) items.push({ id: String(m.id), role: "user", kind: "text", text, ...(images ? { images } : {}), at });
+      const attachments = partLabels(m.content);
+      if (text || images || attachments.length)
+        items.push({ id: String(m.id), role: "user", kind: "text", text, ...(images ? { images } : {}), ...(attachments.length ? { attachments } : {}), at });
     } else if (m.type === "gemini") {
       const text = textOf(m.content).trim();
       if (text) items.push({ id: `${m.id}:text`, role: "assistant", kind: "text", text, at });

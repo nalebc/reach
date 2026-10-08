@@ -2,6 +2,7 @@
 // never loads a thread or touches its file (verified); sub-agent threads are
 // not listed by the daemon and stay hidden here too.
 import { codexSubagents, subagentStatus } from "./subagents.mjs";
+import { partLabels } from "./message-parts.mjs";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -71,19 +72,22 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
   const at = startedAtMs || undefined;
   switch (item?.type) {
     case "userMessage": {
-      const only = item.content?.length === 1 && item.content[0]?.type === "text" ? item.content[0].text : null;
+      const content = Array.isArray(item.content) ? item.content : [];
+      const only = content.length === 1 && content[0]?.type === "text" ? content[0].text : null;
       const replies = only == null ? null : readQuestionReply(only);
       if (replies)
         return { id: item.id, role: "user", kind: "text", text: replies.map((r) => r.answer).join("\n\n"), replies, at, turnId };
-      const text = visibleUserText((item.content || [])
-        .filter((c) => c?.type === "text")
+      const text = visibleUserText(content
+        .filter((c) => c?.type === "text" && typeof c.text === "string")
         .map((c) => c.text)
         .join("\n"));
-      const images = (item.content || []).filter((c) => c?.type === "image" || c?.type === "localImage").length;
+      const images = content.filter((c) => c?.type === "image" || c?.type === "localImage").length;
       // Skills picked from "/" go with the message, as the Codex app shows them.
-      const skills = (item.content || []).filter((c) => c?.type === "skill" && c.name).map((c) => String(c.name));
-      return text || images || skills.length
-        ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(skills.length ? { skills } : {}), at, turnId }
+      const skills = content.filter((c) => c?.type === "skill" && c.name).map((c) => String(c.name));
+      // A voice note or file it took as is: named, never dropped.
+      const attachments = partLabels(content);
+      return text || images || skills.length || attachments.length
+        ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(skills.length ? { skills } : {}), ...(attachments.length ? { attachments } : {}), at, turnId }
         : null;
     }
     case "agentMessage": {

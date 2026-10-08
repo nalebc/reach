@@ -24,6 +24,7 @@ before(async () => {
     "/api/sessions/openclaw/history": () => ({ session: claw, items: [], approvals: [], streaming: "", error: "" }),
   } });
   dom.window.innerWidth = 393;
+  dom.window.matchMedia = (media) => ({ matches: !media.includes("prefers-reduced-motion"), addEventListener() {}, removeEventListener() {} });
   ({ default: EverythingChat } = await dom.load("/src/EverythingChat.tsx"));
 });
 after(() => dom?.close());
@@ -33,6 +34,7 @@ afterEach(async () => {
 });
 const $ = (selector) => dom.document.querySelector(selector);
 const selected = () => dom.window.localStorage.getItem("reach.chatAgent");
+const idle = () => dom.waitFor(() => !$(".chat-app-pages")?.dataset.motion);
 async function mount(app = "codex") {
   dom.window.localStorage.clear();
   dom.window.localStorage.setItem("reach.chatAgent", app);
@@ -60,21 +62,21 @@ test("page swipes follow the app menu in both directions, including OpenClaw, an
   await mount();
   assert.match($(".chat-swipe-hint").textContent, /Swipe left or right/);
   swipe(undefined, 130, 0, 100);
-  await settle();
+  await idle();
   assert.equal(selected(), "codex");
   for (const app of ["claude", "openclaw", "gemini"]) {
     const { move, end } = swipe();
     assert.equal(move.defaultPrevented, true);
     assert.equal(end.defaultPrevented, true);
-    await settle();
+    await idle();
     assert.equal(selected(), app);
   }
   swipe();
-  await settle();
+  await idle();
   assert.equal(selected(), "gemini");
   for (const app of ["openclaw", "claude", "codex"]) {
     swipe(undefined, 130, 0, 100);
-    await settle();
+    await idle();
     assert.equal(selected(), app);
   }
 });
@@ -84,6 +86,7 @@ test("vertical scrolling, short and diagonal drags, phone edges, and multitouch 
   const page = $(".chat-workspace");
   assert.equal(swipe(page, -10, 130).move.defaultPrevented, false);
   swipe(page, -55);
+  await idle();
   swipe(page, -130, 95);
   swipe(page, 130, 0, 8);
   swipe(page, -130, 0, 385);
@@ -92,6 +95,7 @@ test("vertical scrolling, short and diagonal drags, phone edges, and multitouch 
   touch(page, "touchstart", [point(250)]);
   touch(page, "touchmove", [point(210), point(200, 330, 2)]);
   touch(page, "touchend", [], [point(100)]);
+  await idle();
   touch(page, "touchstart", [point(250)]);
   touch(page, "touchcancel", []);
   touch(page, "touchend", [], [point(100)]);
@@ -110,7 +114,7 @@ test("swiping a chat row switches apps without also opening the row; a fresh tap
   const ghost = new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
   card.dispatchEvent(ghost);
   assert.equal(ghost.defaultPrevented, true);
-  await settle();
+  await idle();
   assert.equal(selected(), "claude");
   assert.ok(!$(".as-page"));
   const nextCard = $(".chat-card");
@@ -157,6 +161,102 @@ test("OpenClaw channel filters scroll separately; provider swipes return after c
   $('[aria-label="Back to OpenClaw sessions"]').click();
   await dom.waitFor(() => $(".chat-workspace"));
   swipe(undefined, 130, 0, 100);
-  await settle();
+  await idle();
   assert.equal(selected(), "claude");
+});
+
+test("the page follows the finger, reveals real adjacent chats, and promotes the same preview only after settling", async () => {
+  await mount();
+  const page = $(".chat-workspace");
+  touch(page, "touchstart", [point(250)]);
+  touch(page, "touchmove", [point(170)]);
+  await settle();
+  const pager = $(".chat-app-pages");
+  const next = $(".chat-page-pane.neighbor");
+  assert.equal(pager.dataset.motion, "dragging");
+  assert.equal(pager.style.getPropertyValue("--chat-page-x"), "-80px");
+  assert.equal(next.dataset.app, "claude");
+  assert.equal(next.getAttribute("aria-hidden"), "true");
+  assert.ok(next.hasAttribute("inert"));
+  assert.equal(next.querySelector(".chat-card strong").textContent, "claude plan");
+  assert.equal(selected(), "codex");
+  touch(page, "touchend", [], [point(120)]);
+  assert.equal(pager.dataset.motion, "settling");
+  assert.equal(pager.style.getPropertyValue("--chat-page-x"), "-393px");
+  assert.equal(selected(), "codex", "release does not replace the visible page instantly");
+  await idle();
+  assert.equal(selected(), "claude");
+  assert.equal($(".chat-page-pane.current"), next, "loaded preview is preserved when it becomes active");
+  assert.ok(!next.hasAttribute("inert"));
+  assert.equal($(".chat-page-pane.neighbor"), null);
+});
+
+test("a partial drag and a cancellation slide back, with resistance at the first and last app", async () => {
+  await mount();
+  const page = $(".chat-workspace");
+  touch(page, "touchstart", [point(250)]);
+  touch(page, "touchmove", [point(220)]);
+  await settle();
+  assert.ok($(".chat-page-pane.neighbor"));
+  touch(page, "touchend", [], [point(220)]);
+  assert.equal($(".chat-app-pages").dataset.motion, "settling");
+  assert.equal($(".chat-app-pages").style.getPropertyValue("--chat-page-x"), "0px");
+  await idle();
+  assert.equal(selected(), "codex");
+  touch(page, "touchstart", [point(100)]);
+  touch(page, "touchmove", [point(230)]);
+  await settle();
+  assert.ok(Number.parseFloat($(".chat-app-pages").style.getPropertyValue("--chat-page-x")) < 32);
+  assert.equal($(".chat-page-pane.neighbor"), null);
+  touch(page, "touchcancel", []);
+  await idle();
+  assert.equal(selected(), "codex");
+});
+
+test("reversing a drag reveals the app on the new side; slow deliberate drags still complete", async () => {
+  await mount("claude");
+  const page = $(".chat-workspace");
+  touch(page, "touchstart", [point(180)]);
+  touch(page, "touchmove", [point(100)]);
+  await settle();
+  assert.equal($(".chat-page-pane.neighbor").dataset.app, "openclaw");
+  touch(page, "touchmove", [point(280)]);
+  await settle();
+  assert.equal($(".chat-page-pane.neighbor").dataset.app, "codex");
+  assert.equal($(".chat-page-pane.neighbor .claw-library"), null);
+  await settle(850);
+  touch(page, "touchend", [], [point(280)]);
+  await idle();
+  assert.equal(selected(), "codex");
+});
+
+test("an external app change or unmount cancels a pending slide rather than navigating later", async () => {
+  await mount();
+  swipe();
+  $(".chat-app-current").click();
+  await settle();
+  $('.chat-mobile-app-menu [aria-label="OpenClaw"]').click();
+  await settle(360);
+  assert.equal(selected(), "openclaw");
+  assert.equal($(".chat-page-pane.neighbor"), null);
+  swipe(undefined, 130, 0, 100);
+  await view.unmount(); view = null;
+  await settle(360);
+  assert.equal(selected(), "openclaw");
+});
+
+test("reduced motion retains direct finger tracking and settles without an animated release", async () => {
+  await mount();
+  const media = dom.window.matchMedia;
+  dom.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  try {
+    const page = $(".chat-workspace");
+    touch(page, "touchstart", [point(250)]);
+    touch(page, "touchmove", [point(120)]);
+    await settle();
+    assert.equal($(".chat-app-pages").style.getPropertyValue("--chat-page-x"), "-130px");
+    touch(page, "touchend", [], [point(120)]);
+    assert.equal(selected(), "claude");
+    assert.equal($(".chat-app-pages").dataset.motion, undefined);
+  } finally { dom.window.matchMedia = media; }
 });

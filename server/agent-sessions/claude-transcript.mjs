@@ -9,6 +9,7 @@
 // Nothing here executes or follows paths from the transcript.
 
 import { visibleUserText } from "./message-text.mjs";
+import { partLabel, partLabels } from "./message-parts.mjs";
 
 const clip = (text, max) => {
   const value = String(text ?? "");
@@ -278,6 +279,7 @@ function slimEntry(e, results, maxOutput) {
         } else if (b.type === "tool_use") kept.push(slimToolUse(b));
         else if (b.type === "text") kept.push({ type: "text", text: b.text });
         else if (b.type === "image") kept.push({ type: "image" });
+        else if (e.type === "user" && partLabel(b)) kept.push({ type: "attachment", label: partLabel(b) });
       }
     }
     out.message = { content: kept, ...(e.message.model ? { model: e.message.model } : {}) };
@@ -423,8 +425,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             const pieces = Array.isArray(a.prompt) ? a.prompt : [{ type: "text", text: String(a.prompt) }];
             const words = visibleUserText(pieces.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n"));
             const pictures = pieces.filter((b) => b?.type === "image").length;
-            if (words || pictures)
-              items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), queued: true, at });
+            const attachments = partLabels(pieces);
+            if (words || pictures || attachments.length)
+              items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), ...(attachments.length ? { attachments } : {}), queued: true, at });
           }
         } else if (e.type === "user") {
           if (e.isCompactSummary) {
@@ -434,16 +437,20 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           }
           if (e.isMeta) continue;
           const content = e.message?.content;
-          const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
+          // Words as a string or pieces; anything else is no words at all
+          // (an object showed as "[object Object]").
+          const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
           // Without what an app put ahead of the person's words (the Claude
           // app's <system-reminder> when a chat moves into it).
           const text = visibleUserText(
             blocks
-              .filter((b) => b && b.type === "text" && b.text)
+              .filter((b) => b && b.type === "text" && typeof b.text === "string" && b.text)
               .map((b) => b.text)
               .join("\n"),
           );
           const images = blocks.filter((b) => b?.type === "image").length;
+          // A voice note or document it took as is (slimmed to its label).
+          const attachments = blocks.map((b) => (b?.type === "attachment" ? b.label : partLabel(b))).filter(Boolean);
           // A background task's notice (a watcher reporting, a task ending) is
           // written as a user turn but isn't from you: as in the Claude app,
           // only text outside the notice shows, as a quiet line.
@@ -469,7 +476,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });
             continue;
           }
-          if (!text && !images) continue;
+          if (!text && !images && !attachments.length) continue;
           if (!firstUser && text) firstUser = text;
           items.push({
             id: e.uuid,
@@ -477,6 +484,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             kind: "text",
             text: text || "",
             ...(images ? { images } : {}),
+            ...(attachments.length ? { attachments } : {}),
             at,
           });
         } else if (e.type === "assistant" && e.isApiErrorMessage) {

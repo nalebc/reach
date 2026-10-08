@@ -23,6 +23,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSCameraUsageDescription</key><string>Scan the pairing code on your Mac.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Record voice memos for your agents. Your Mac turns them into words.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

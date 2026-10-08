@@ -31,7 +31,7 @@ import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
 import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
-import { useChatAppSwipe } from "./useChatAppSwipe";
+import ChatAppPager from "./ChatAppPager";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
   useAgentLogos,
@@ -837,10 +837,35 @@ export default function EverythingChat({
     ]),
   );
   const status = health.find((h) => h.agent === current);
-  const needsSetup = picked.supported && picked.agent !== "openclaw" && !!status && (!status.installed || !status.signedIn || !!status.error);
-
-  const swipeApps = useChatAppSwipe(apps, picked.agent, setAgent);
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
+  const library = (app: ChatAppChoice, active: boolean) => {
+    if (app.agent === "openclaw")
+      return <OpenClawSpace peer={peer} apps={apps} logos={logos}
+        onScreen={onScreen}
+        openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
+        onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
+        deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
+        onNew={() => { setNewFolder(""); setSheet("new"); }} />;
+    const agent: AgentName = app.agent === "claude" || app.agent === "gemini" ? app.agent : "codex";
+    const appHealth = health.find(h => h.agent === agent);
+    const needsSetup = app.supported && !!appHealth && (!appHealth.installed || !appHealth.signedIn || !!appHealth.error);
+    const pending = allNeeds.filter(item => item.key.startsWith(app.agent + ":") || (app.supported && item.key.startsWith("mac:"))).length;
+    return (
+      <div className="chat-workspace">
+        {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
+        <ChatList peer={peer} sessions={sessions} logos={logos} apps={apps}
+          agent={app.agent} onAgentChange={setAgent} appPending={appPending}
+          onRefresh={() => { recheck(); void reload(); }} health={health}
+          onSectionMoved={() => void reload()} onArchived={() => void reload()}
+          canStart={!needsSetup && app.agent !== "gemini"}
+          setup={needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} /> : undefined}
+          errors={errors[app.agent] ? { [app.agent]: errors[app.agent] } : {}}
+          failure={failure} onOpen={openChat}
+          onNew={(cwd) => { setNewFolder(cwd || ""); setSheet("new"); }}
+          pending={pending} onReview={() => setSheet("review")} />
+      </div>
+    );
+  };
   return (
     <>
       {open ? (
@@ -881,48 +906,10 @@ export default function EverythingChat({
             }}
           />
         </SessionLinkContext.Provider>
-      ) : picked.agent === "openclaw" ? (
-        <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
-          onScreen={onScreen}
-          openKey={clawOpen} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
-          onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
-          deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
-          onNew={() => { setNewFolder(""); setSheet("new"); }} />
       ) : (
-        <div ref={swipeApps} className="chat-workspace" aria-hidden={!!sheet || undefined}>
-          {/* Messages whose chat was deleted, to send elsewhere or delete. */}
-          <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />
-          <ChatList
-            key={peer.id}
-            peer={peer}
-            sessions={sessions}
-            logos={logos}
-            apps={apps}
-            agent={picked.agent}
-            onAgentChange={setAgent}
-            appPending={appPending}
-            onRefresh={() => { recheck(); void reload(); }}
-            health={health}
-            onSectionMoved={() => void reload()}
-            onArchived={() => void reload()}
-            // Gemini CLI chats are read here (it no longer answers personal accounts): no new ones.
-            canStart={!needsSetup && picked.agent !== "gemini"}
-            setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}
-            errors={
-              errors[picked.agent]
-                ? { [picked.agent]: errors[picked.agent] }
-                : {}
-            }
-            failure={failure}
-            onOpen={openChat}
-            onNew={(cwd) => {
-              setNewFolder(cwd || "");
-              setSheet("new");
-            }}
-            pending={needs.length}
-            onReview={() => setSheet("review")}
-          />
-        </div>
+        <ChatAppPager key={peer.id} apps={apps} value={picked.agent} onChange={setAgent} hidden={!!sheet}>
+          {library}
+        </ChatAppPager>
       )}
       {sheet === "new" && (
         <ChatSheet title="New conversation" className="chat-create-sheet" leading={<BrandCourier active />} onClose={() => setSheet("")}>

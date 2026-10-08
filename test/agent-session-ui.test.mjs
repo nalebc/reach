@@ -4246,3 +4246,94 @@ test("an unlisted current Codex model never changes to the default through an ef
   assert.deepEqual($$('.ms-card[aria-label="Models"] [aria-checked="true"]').map((el) => el.className), ["ms-current-unlisted"]);
   assert.equal(mac.sent.length, 0);
 });
+
+// Voice. A message of only a voice note or a PDF vanished from the chat; now
+// it says what was sent. A memo recorded here becomes words in the box, to
+// read over before sending; when the Mac can't make words of it, the
+// recording is attached and the reason shown.
+test("a voice note or PDF sent to an agent shows on its message", async () => {
+  mac.pages[`codex:${CODEX}`].items = [
+    { id: "u-voice", role: "user", kind: "text", text: "", attachments: ["Voice message"], at: Date.now() - 60000 },
+    { id: "u-pdf", role: "user", kind: "text", text: "Summarize", attachments: ["PDF"], at: Date.now() - 30000 },
+  ];
+  await open(codexSession());
+  await dom.waitFor(() => $$(".as-attachment").length === 2);
+  assert.deepEqual($$(".as-attachment").map((t) => t.textContent.trim()), ["Voice message", "PDF"]);
+  assert.match($$(".as-user")[1].textContent, /Summarize/);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a voice memo becomes words in the box; one the Mac can't hear is attached, saying why", async (t) => {
+  const tracks = [];
+  class FakeRecorder {
+    static isTypeSupported = (type) => type === "audio/mp4";
+    constructor(stream, options) {
+      this.stream = stream;
+      this.mimeType = options?.mimeType || "";
+      this.state = "inactive";
+    }
+    start() { this.state = "recording"; }
+    stop() {
+      this.state = "inactive";
+      this.ondataavailable?.({ data: new Blob(["\0\0\0\x18ftypM4A "], { type: "audio/mp4" }) });
+      this.onstop?.();
+    }
+  }
+  const stream = { getTracks: () => [{ stop: () => tracks.push("stopped") }] };
+  globalThis.MediaRecorder = FakeRecorder;
+  Object.defineProperty(dom.window.navigator, "mediaDevices", { value: { getUserMedia: async () => stream }, configurable: true });
+  let answer = { text: "Run the tests" };
+  const sent = [];
+  routes["/api/sessions/voice"] = (init, href) => (sent.push(href.searchParams.get("locale")), answer);
+  t.after(() => {
+    delete globalThis.MediaRecorder;
+    delete dom.window.navigator.mediaDevices;
+    delete routes["/api/sessions/voice"];
+  });
+  await open(codexSession());
+  const field = await dom.waitFor(() => $("textarea"));
+  await typeInto(field, "Please");
+  await click(button("Record a voice memo"));
+  await dom.waitFor(() => button("Stop recording"));
+  await click(button("Stop recording"));
+  await dom.waitFor(() => field.value === "Please Run the tests");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(tracks, ["stopped"], "the microphone is let go");
+  // The Mac couldn't: the recording goes as a file, and the box says why.
+  answer = { problem: "Transcribing needs macOS 26 or later.", file: { id: "f/Voice memo.m4a", name: "Voice memo.m4a" } };
+  await click(button("Record a voice memo"));
+  await click(await dom.waitFor(() => button("Stop recording")));
+  await dom.waitFor(() => /attached instead/.test($(".as-hint")?.textContent || ""));
+  assert.match($(".as-hint").textContent, /macOS 26/);
+  // The Mac didn't answer at all: the recording is still kept, as a file.
+  const files = [];
+  routes["/api/sessions/files"] = () => (files.push(1), { id: "g/voice-memo.m4a", name: "voice-memo.m4a" });
+  t.after(() => delete routes["/api/sessions/files"]);
+  answer = new Response(JSON.stringify({ error: "Reach stopped." }), { status: 500 });
+  await click(button("Record a voice memo"));
+  await click(await dom.waitFor(() => button("Stop recording")));
+  await dom.waitFor(() => files.length === 1 && /Reach stopped\..*attached instead/.test($(".as-hint")?.textContent || ""));
+  // Discarded: nothing is sent to the Mac.
+  await click(button("Record a voice memo"));
+  await click(await dom.waitFor(() => button("Discard memo")));
+  await dom.waitFor(() => button("Record a voice memo"));
+  assert.equal(sent.length, 3);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("without a microphone the memo says so and nothing breaks", async (t) => {
+  globalThis.MediaRecorder = class { static isTypeSupported = () => false; };
+  Object.defineProperty(dom.window.navigator, "mediaDevices", {
+    value: { getUserMedia: async () => { throw Object.assign(new Error("denied"), { name: "NotAllowedError" }); } },
+    configurable: true,
+  });
+  t.after(() => {
+    delete globalThis.MediaRecorder;
+    delete dom.window.navigator.mediaDevices;
+  });
+  await open(codexSession());
+  await click(await dom.waitFor(() => button("Record a voice memo")));
+  await dom.waitFor(() => /microphone/.test($(".as-hint")?.textContent || ""));
+  assert.ok(button("Record a voice memo"), "ready to try again");
+  assert.deepEqual(dom.errors, []);
+});

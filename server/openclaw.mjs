@@ -6,6 +6,7 @@ import WebSocket from "ws";
 import JSON5 from "json5";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { partLabels } from "./agent-sessions/message-parts.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
@@ -1430,14 +1431,15 @@ export function createOpenClaw({
           .map((m, i) => ({
             id: String(m.id || `${m.timestamp || 0}:${i}`),
             role: typeof m.role === "string" ? m.role : "system",
+            // A voice note from a channel, named for what it is.
             text:
               textOf(m) ||
-              (Array.isArray(m.content) &&
-              m.content.some((p) =>
-                ["image", "audio", "video", "file"].includes(p?.type),
-              )
-                ? "[Attachment — view in OpenClaw]"
-                : ""),
+              (partLabels(m.content)[0]
+                ? `[${partLabels(m.content)[0]} — open it in OpenClaw]`
+                : Array.isArray(m.content) &&
+                    m.content.some((p) => p?.type === "image")
+                  ? "[Attachment — view in OpenClaw]"
+                  : ""),
             at: m.timestamp,
             tool: m.role === "toolResult" || m.role === "tool",
             ...(sentTo.has(i) ? { sentTo: sentTo.get(i) } : {}),

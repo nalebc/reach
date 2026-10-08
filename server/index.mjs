@@ -103,6 +103,7 @@ import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
+import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voice.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
@@ -2491,6 +2492,12 @@ export async function createReach(overrides = {}) {
     dir: path.join(config.dataDir, "agent-images"),
   });
   const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
+  const voice = createVoice({ config });
+  // Five minutes of the phone's 16 kHz WAV is under 10 MB.
+  const voiceUpload = multer({
+    dest: path.join(config.dataDir, "agent-files"),
+    limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
+  });
   const fileUpload = multer({
     dest: path.join(config.dataDir, "agent-files"),
     limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
@@ -2637,6 +2644,23 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/files", fileUpload.single("file"), async (req, res) => {
     if (!req.file) throw fail(400, "Choose a file.");
     res.json({ id: agentFiles.add(req.file.path, req.file.originalname), name: path.basename(req.file.originalname || "file") });
+  });
+  // A voice memo from the composer: its words to read over, or, when it
+  // can't become words, the recording itself to attach.
+  app.post("/api/sessions/voice", voiceUpload.single("file"), async (req, res) => {
+    if (!req.file) throw fail(400, "Record a memo.");
+    const kind = audioKind(readHead(req.file.path));
+    if (!kind) {
+      fs.rmSync(req.file.path, { force: true });
+      throw fail(400, "That isn't a recording.");
+    }
+    const heard = await voice.transcribe(req.file.path, { locale: req.query.locale });
+    if (heard.text) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.json({ text: heard.text });
+    }
+    const name = memoName(kind);
+    res.json({ problem: heard.problem, file: { id: agentFiles.add(req.file.path, name), name } });
   });
   // Files in a chat's folder, for "@" in its composer.
   app.get("/api/sessions/:agent/:id/files", async (req, res) =>

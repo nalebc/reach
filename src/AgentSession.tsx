@@ -25,6 +25,7 @@ import {
   Ellipsis,
   Laptop,
   Loader2,
+  Mic,
   Monitor,
   Plus,
   Share,
@@ -59,7 +60,9 @@ import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
+import { canRecord, useVoiceMemo } from "./voice-memo";
 import {
+  transcribeVoice,
   agentLabel,
   answerCodexQuestions,
   answerPrompt,
@@ -707,8 +710,9 @@ function ModelMenu({
 
 // A long message you sent folds to its first lines, as the Claude and Codex
 // apps fold it (an 8,000-character paste took eleven screens).
-function FoldedText({ text }: { text: string }) {
+function FoldedText({ text: value }: { text: string }) {
   const [open, setOpen] = useState(false);
+  const text = typeof value === "string" ? value : String(value ?? "");
   if (text.length <= 1200 && text.split("\n").length <= 20) return <AgentMarkdown text={text} />;
   return (
     <>
@@ -1771,7 +1775,7 @@ export default function AgentSessionView({
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
-      if (item.role === "user" && !item.text && !item.images && !item.skills?.length) continue;
+      if (item.role === "user" && !item.text && !item.images && !item.skills?.length && !item.attachments?.length) continue;
       const last = out[out.length - 1];
       // A sub-agent stands on its own, not folded into the steps.
       if (item.kind === "agent") out.push({ type: "agent", item });
@@ -1936,6 +1940,35 @@ export default function AgentSessionView({
       );
     }
   };
+  // A voice memo: its words join what's typed, to read over before sending.
+  // If the Mac can't make words of it, the recording is attached instead.
+  const memo = useVoiceMemo(
+    async (recording) => {
+      setProblem("");
+      let heard: Awaited<ReturnType<typeof transcribeVoice>>;
+      try {
+        heard = await transcribeVoice(peer, recording);
+      } catch (e) {
+        // The Mac didn't answer: keep the recording as a file all the same.
+        const name = `voice-memo-${Date.now()}.${recording.type === "audio/wav" ? "wav" : recording.type.includes("webm") ? "webm" : "m4a"}`;
+        const id = await uploadFile(peer, recording, name).catch(() => {
+          throw new Error(`${(e as Error).message} The memo couldn't be kept; record it again.`);
+        });
+        heard = { problem: (e as Error).message, file: { id, name } };
+      }
+      if (heard.text) {
+        setText((typed) => (typed.trim() ? `${typed.trimEnd()} ${heard.text}` : heard.text!));
+        field.current?.focus({ preventScroll: true });
+        return;
+      }
+      if (heard.file) {
+        const file = heard.file;
+        setAttachments((list) => [...list, { key: ++attachmentSeq, url: "", file: file.name, id: file.id }]);
+        setProblem(`${heard.problem || "The memo couldn't become words."} The recording is attached instead.`);
+      }
+    },
+    setProblem,
+  );
   const removeAttachment = (key: number) =>
     setAttachments((list) => {
       const gone = list.find((a) => a.key === key);
@@ -2458,6 +2491,11 @@ export default function AgentSessionView({
                 ) : null}
                 {b.item.skills?.map((name) => (
                   <span key={name} className="as-skill">{name}</span>
+                ))}
+                {b.item.attachments?.map((label, i) => (
+                  <span key={i} className="as-tag as-attachment">
+                    {label === "Voice message" ? <Mic size={13} /> : <FileText size={13} />} {label}
+                  </span>
                 ))}
                 {b.item.slash ? (
                   <code className="as-slash">{b.item.text}</code>
@@ -3002,6 +3040,30 @@ export default function AgentSessionView({
                 <span className="as-model-name">{modelLabel || "Model"}</span>{" "}
                 <span className="as-model-effort">{effortLabel(effort || selectedModel?.defaultEffort, agent)}</span>
                 <ChevronDown size={14} />
+              </button>
+            )}
+            {/* Voice: tap to record, tap again for its words in the box. */}
+            {memo.state === "recording" && (
+              <button className="as-icon" aria-label="Discard memo" onClick={memo.cancel}>
+                <X size={16} />
+              </button>
+            )}
+            {(canRecord() || memo.state !== "idle") && (
+              <button
+                className={`as-icon as-mic ${memo.state}`}
+                aria-label={memo.state === "recording" ? "Stop recording" : memo.state === "working" ? "Transcribing" : "Record a voice memo"}
+                disabled={memo.state === "working"}
+                onClick={() => void (memo.state === "recording" ? memo.stop() : memo.start())}
+              >
+                {memo.state === "working" ? (
+                  <Loader2 size={16} className="spin" />
+                ) : memo.state === "recording" ? (
+                  <span className="as-mic-time">
+                    {Math.floor(memo.seconds / 60)}:{String(memo.seconds % 60).padStart(2, "0")}
+                  </span>
+                ) : (
+                  <Mic size={17} />
+                )}
               </button>
             )}
             {/* One round button, as in both apps: send, or stop while it works
