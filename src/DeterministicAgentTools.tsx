@@ -377,7 +377,130 @@ export default function DeterministicAgentTools({
     result?.data && typeof result.data === "object"
       ? (result.data as Record<string, unknown>)
       : {};
-  const showLibrary = category !== "recorded";
+  const feedback = (
+    <>
+      {message && (
+        <p className="ap-status atl-operation" role="status">
+          {message}
+        </p>
+      )}
+      {error && (
+        <p className="ap-status is-blocked" role="alert">
+          {error}
+        </p>
+      )}
+    </>
+  );
+  const resultsView = result && (
+    <section className="atl-results" aria-label="Tool results">
+      <div className="atl-result-heading">
+        {result.status === "completed" ? (
+          <CheckCircle2 size={18} />
+        ) : (
+          <ShieldCheck size={18} />
+        )}
+        <h2>{statusName[result.status || ""] || "Tool result"}</h2>
+        <span>
+          {result.completedSteps || 0} / {result.totalSteps || 0} steps
+        </span>
+      </div>
+      <p className="atl-description">
+        {tools.find((tool) => tool.name === resultTool)?.title}
+      </p>
+      {Object.entries(resultData).map(([key, value]) => {
+        const object =
+          value && typeof value === "object"
+            ? (value as Record<string, unknown>)
+            : null;
+        const items =
+          object && Array.isArray(object.items)
+            ? (object.items as Record<string, unknown>[])
+            : object && validHandle(object.handle)
+              ? [object]
+              : [];
+        return (
+          <div key={key} className="atl-result-group">
+            <h3>{key.replaceAll("_", " ")}</h3>
+            {object?.coverage === "visible_page" && (
+              <p className="atl-description">
+                Results from the visible page
+                {object.more ? ". More items exist; narrow the search." : "."}
+              </p>
+            )}
+            {items.length ? (
+              items.map((item, index) => (
+                <article
+                  className="atl-result-item"
+                  key={`${item.handle || index}`}
+                >
+                  <FileText size={17} />
+                  <div>
+                    {Object.entries(item)
+                      .filter(
+                        ([field]) =>
+                          !["handle", "expiresAt", "mime", "bytes"].includes(
+                            field,
+                          ),
+                      )
+                      .map(([field, text]) => (
+                        <p key={field}>
+                          <span>{field}</span>
+                          <strong>{String(text)}</strong>
+                        </p>
+                      ))}
+                    <small>
+                      {Number(item.expiresAt) > Date.now()
+                        ? `Available until ${new Date(Number(item.expiresAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                        : "Result expired"}
+                    </small>
+                    <code>{String(item.handle)}</code>
+                  </div>
+                  <div className="atl-result-actions">
+                    {resultActions(key)
+                      .filter((item) =>
+                        tools.some(
+                          (tool) => tool.name === `reach_tool_${item.suffix}`,
+                        ),
+                      )
+                      .map((next) => (
+                        <button
+                          type="button"
+                          key={next.suffix}
+                          disabled={
+                            locked || Number(item.expiresAt) <= Date.now()
+                          }
+                          onClick={() =>
+                            useResult(next.suffix, next.field, item)
+                          }
+                        >
+                          {next.label}
+                          <ArrowRight size={14} />
+                        </button>
+                      ))}
+                  </div>
+                </article>
+              ))
+            ) : object && Array.isArray(object.items) ? (
+              <p className="atl-description">No results on this page.</p>
+            ) : (
+              <p className="atl-result-text">
+                {typeof value === "string" ? value : JSON.stringify(value)}
+              </p>
+            )}
+          </div>
+        );
+      })}
+      {result.data !== undefined && (
+        <details className="atl-raw">
+          <summary>Raw result for agent tools</summary>
+          <pre aria-label="Tool result">
+            {JSON.stringify(result.data, null, 2)}
+          </pre>
+        </details>
+      )}
+    </section>
+  );
+  const showLibrary = category !== "recorded" && !editor;
   return (
     <div className="ap-deterministic-tools">
       <div className="atl-browser-bar">
@@ -409,6 +532,80 @@ export default function DeterministicAgentTools({
           <Plus size={15} /> Create deterministic tool
         </button>
       </div>
+      {(!selectedTool || editor || category === "recorded") && feedback}
+      {!editor && (!selectedTool || category === "recorded") && resultsView}
+      {editor && (
+        <section
+          className="atl-editor"
+          aria-label="Create a deterministic tool"
+        >
+          <div className="aw-section-heading">
+            <h2>
+              <Code2 size={18} /> Create a deterministic tool
+            </h2>
+            <button
+              type="button"
+              aria-label="Close editor"
+              disabled={locked}
+              onClick={() => setEditor(false)}
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <p>
+            Use <code>reach.tool.v1</code>, the same format as the built-in
+            tools. Declare inputs, allowed HTTPS sites, fixed steps, and a final
+            result check.
+          </p>
+          <div className="atl-editor-grid">
+            <div>
+              <h3>1. Inspect the protocol</h3>
+              <p>
+                Use a built-in definition as the starting point. Saving creates
+                a named tool; execution stays a separate action.
+              </p>
+              <details>
+                <summary>Protocol and built-in definitions</summary>
+                <pre>{reference}</pre>
+              </details>
+            </div>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void action(async (activeBridge, active) => {
+                  const input = JSON.parse(definition);
+                  setMessage("Saving the tool definition…");
+                  await activeBridge.callTool("reach_define_tool", {
+                    definition: input,
+                  });
+                  if (active()) {
+                    setEditor(false);
+                    setResult(null);
+                    onReveal();
+                    setSelected(`reach_tool_${input.id}`);
+                    setMessage("Saved. The new named tool is now in the list.");
+                  }
+                });
+              }}
+            >
+              <label>
+                <span>2. Write the definition</span>
+                <textarea
+                  aria-label="Tool definition JSON"
+                  value={definition}
+                  maxLength={24000}
+                  rows={15}
+                  disabled={locked}
+                  onChange={(event) => setDefinition(event.target.value)}
+                />
+              </label>
+              <button className="atl-primary" disabled={locked}>
+                <Plus size={15} /> Save deterministic tool
+              </button>
+            </form>
+          </div>
+        </section>
+      )}
       {showLibrary && (
         <div className={`atl-workspace ${selectedTool ? "has-selection" : ""}`}>
           <div className="atl-list">
@@ -516,6 +713,8 @@ export default function DeterministicAgentTools({
               </div>
               <h2>{selectedTool.title}</h2>
               <p className="atl-description">{summary(selectedTool)}</p>
+              {feedback}
+              {resultTool === selectedTool.name && resultsView}
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -699,197 +898,10 @@ export default function DeterministicAgentTools({
                   </button>
                 </div>
               )}
+              {resultTool !== selectedTool.name && resultsView}
             </aside>
           )}
         </div>
-      )}
-      {message && (
-        <p className="ap-status atl-operation" role="status">
-          {message}
-        </p>
-      )}
-      {error && (
-        <p className="ap-status is-blocked" role="alert">
-          {error}
-        </p>
-      )}
-      {result && (
-        <section className="atl-results" aria-label="Tool results">
-          <div className="atl-result-heading">
-            <CheckCircle2 size={18} />
-            <h2>{statusName[result.status || ""] || "Tool result"}</h2>
-            <span>
-              {result.completedSteps || 0} / {result.totalSteps || 0} steps
-            </span>
-          </div>
-          {Object.entries(resultData).map(([key, value]) => {
-            const object =
-              value && typeof value === "object"
-                ? (value as Record<string, unknown>)
-                : null;
-            const items =
-              object && Array.isArray(object.items)
-                ? (object.items as Record<string, unknown>[])
-                : object && validHandle(object.handle)
-                  ? [object]
-                  : [];
-            return (
-              <div key={key} className="atl-result-group">
-                <h3>{key.replaceAll("_", " ")}</h3>
-                {object?.coverage === "visible_page" && (
-                  <p className="atl-description">
-                    Results from the visible page
-                    {object.more
-                      ? ". More items exist; narrow the search."
-                      : "."}
-                  </p>
-                )}
-                {items.length ? (
-                  items.map((item, index) => (
-                    <article
-                      className="atl-result-item"
-                      key={`${item.handle || index}`}
-                    >
-                      <FileText size={17} />
-                      <div>
-                        {Object.entries(item)
-                          .filter(
-                            ([field]) =>
-                              ![
-                                "handle",
-                                "expiresAt",
-                                "mime",
-                                "bytes",
-                              ].includes(field),
-                          )
-                          .map(([field, text]) => (
-                            <p key={field}>
-                              <span>{field}</span>
-                              <strong>{String(text)}</strong>
-                            </p>
-                          ))}
-                        <small>
-                          {Number(item.expiresAt) > Date.now()
-                            ? `Available until ${new Date(Number(item.expiresAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-                            : "Result expired"}
-                        </small>
-                        <code>{String(item.handle)}</code>
-                      </div>
-                      <div className="atl-result-actions">
-                        {resultActions(key)
-                          .filter((item) =>
-                            tools.some(
-                              (tool) =>
-                                tool.name === `reach_tool_${item.suffix}`,
-                            ),
-                          )
-                          .map((next) => (
-                            <button
-                              type="button"
-                              key={next.suffix}
-                              disabled={
-                                locked || Number(item.expiresAt) <= Date.now()
-                              }
-                              onClick={() =>
-                                useResult(next.suffix, next.field, item)
-                              }
-                            >
-                              {next.label}
-                              <ArrowRight size={14} />
-                            </button>
-                          ))}
-                      </div>
-                    </article>
-                  ))
-                ) : object && Array.isArray(object.items) ? (
-                  <p className="atl-description">No results on this page.</p>
-                ) : (
-                  <p className="atl-result-text">
-                    {typeof value === "string" ? value : JSON.stringify(value)}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-          {result.data !== undefined && (
-            <details className="atl-raw">
-              <summary>Raw result for agent tools</summary>
-              <pre aria-label="Tool result">
-                {JSON.stringify(result.data, null, 2)}
-              </pre>
-            </details>
-          )}
-        </section>
-      )}
-      {editor && (
-        <section
-          className="atl-editor"
-          aria-label="Create a deterministic tool"
-        >
-          <div className="aw-section-heading">
-            <h2>
-              <Code2 size={18} /> Create a deterministic tool
-            </h2>
-            <button
-              type="button"
-              aria-label="Close editor"
-              disabled={locked}
-              onClick={() => setEditor(false)}
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <p>
-            Use <code>reach.tool.v1</code>, the same format as the built-in
-            tools. Declare inputs, allowed HTTPS sites, fixed steps, and a final
-            result check.
-          </p>
-          <div className="atl-editor-grid">
-            <div>
-              <h3>1. Inspect the protocol</h3>
-              <p>
-                Use a built-in definition as the starting point. Saving creates
-                a named tool; execution stays a separate action.
-              </p>
-              <details>
-                <summary>Protocol and built-in definitions</summary>
-                <pre>{reference}</pre>
-              </details>
-            </div>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void action(async (activeBridge, active) => {
-                  const input = JSON.parse(definition);
-                  await activeBridge.callTool("reach_define_tool", {
-                    definition: input,
-                  });
-                  if (active()) {
-                    setEditor(false);
-                    onReveal();
-                    setSelected(`reach_tool_${input.id}`);
-                    setMessage("Saved. The new named tool is now in the list.");
-                  }
-                });
-              }}
-            >
-              <label>
-                <span>2. Write the definition</span>
-                <textarea
-                  aria-label="Tool definition JSON"
-                  value={definition}
-                  maxLength={24000}
-                  rows={15}
-                  disabled={locked}
-                  onChange={(event) => setDefinition(event.target.value)}
-                />
-              </label>
-              <button className="atl-primary" disabled={locked}>
-                <Plus size={15} /> Save deterministic tool
-              </button>
-            </form>
-          </div>
-        </section>
       )}
       <details className="atl-setup">
         <summary>Browser setup and execution rules</summary>

@@ -116,6 +116,8 @@ export default function AgentWorkspaceFrame({
                   buttons.current[id] = button;
                 }}
                 type="button"
+                id={`agent-nav-${id}`}
+                aria-label={label}
                 aria-current={section === id ? "page" : undefined}
                 aria-controls={`agent-section-${id}`}
                 disabled={!available}
@@ -252,6 +254,7 @@ export function AgentWorkspaceHome({
               <Search size={19} />
               <input
                 aria-label="Find a tool from workspace"
+                maxLength={160}
                 placeholder="Search a task, app, or tool name…"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -324,11 +327,14 @@ export function AgentWorkspaceHome({
       )}
       <div className="aw-route-guide">
         <span>
-          01 <strong>Check the tools</strong>
+          01 <strong>{tools ? "Check the tools" : "Open a resource"}</strong>
         </span>
         <ArrowRight size={15} />
         <span>
-          02 <strong>Provide the inputs</strong>
+          02{" "}
+          <strong>
+            {tools ? "Provide the inputs" : "Inspect its current state"}
+          </strong>
         </span>
         <ArrowRight size={15} />
         <span>

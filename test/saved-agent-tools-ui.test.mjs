@@ -40,7 +40,9 @@ const reply = (body) =>
 const views = new Set();
 const button = (root, label) =>
   [...root.querySelectorAll("button")].find(
-    (entry) => entry.textContent.trim() === label,
+    (entry) =>
+      entry.textContent.trim() === label ||
+      entry.getAttribute("aria-label") === label,
   );
 before(async () => {
   dom = await startDom();
@@ -218,6 +220,8 @@ test("a visual agent records screen actions, saves a tool and replays it without
   );
   views.add(view);
   const c = view.container;
+  button(c, "Tools").click();
+  await settle();
   const type = async (field, text) => {
     Object.getOwnPropertyDescriptor(
       dom.window.HTMLInputElement.prototype,
@@ -234,6 +238,8 @@ test("a visual agent records screen actions, saves a tool and replays it without
   await dom.waitFor(() => button(c, "Save as tool"));
   assert.equal(button(c, "Save as tool").disabled, true);
   assert.equal(shortcuts.ownerList().recordings[0].name, "Open Gmail");
+  button(c, "Screen").click();
+  await settle();
   const frame = await dom.waitFor(() =>
     c.querySelector('[aria-label="Mac screen. Click to click there."]'),
   );
@@ -274,6 +280,8 @@ test("a visual agent records screen actions, saves a tool and replays it without
     { type: "type", text: "https://mail.google.com/" },
     { type: "key", key: "enter", modifiers: [] },
   ]);
+  button(c, "Tools").click();
+  await settle();
   await dom.waitFor(() => !button(c, "Save as tool").disabled);
   button(c, "Save as tool").click();
   await dom.waitFor(() => button(c, "Open Gmail"));
@@ -341,52 +349,81 @@ test("tools with inputs require fresh values and a stopped run is never automati
 });
 
 test("relearning an owner-disabled task explains why it remains unavailable", async () => {
-  const calls = mock({ saved: [], savedEnabled: false,
-    recording: { name: "Open Gmail", stepCount: 1, error: "" } });
+  const calls = mock({
+    saved: [],
+    savedEnabled: false,
+    recording: { name: "Open Gmail", stepCount: 1, error: "" },
+  });
   const c = await render();
   await dom.waitFor(() => button(c, "Save as tool"));
   button(c, "Save as tool").click();
-  await dom.waitFor(() => calls.some(call => call.route.endsWith("/save")));
+  await dom.waitFor(() => calls.some((call) => call.route.endsWith("/save")));
   await settle();
   assert.match(c.textContent, /owner.*disabled|disabled.*owner/i);
   assert.equal(button(c, "Open Gmail"), undefined);
   assert.doesNotMatch(c.textContent, /task is now a tool in the list/);
-  assert.equal(calls.filter(call => call.route.endsWith("/save")).length, 1);
+  assert.equal(calls.filter((call) => call.route.endsWith("/save")).length, 1);
 });
 
-for (const replacement of [false, true]) test(`pending saved replay ${replacement ? "is isolated on credential change" : "survives an ordinary parent render"}`, async () => {
-  let rerender, resolveRun, oldSignal;
-  let runs = 0;
-  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
-    const route = new URL(url).pathname;
-    if (route === "/api/browser") return reply(access);
-    if (route === "/api/browser/shortcuts") return reply({ shortcuts: [shortcut], recording: null });
-    assert.equal(route, "/api/browser/shortcuts/run");
-    runs++;
-    oldSignal = init.signal;
-    return new Promise((resolve, reject) => {
-      resolveRun = () => resolve(reply({ status: "completed", completedSteps: 1, totalSteps: 1 }));
-      init.signal.addEventListener("abort", () => reject(Error("old fixture request aborted")), { once: true });
-    });
-  };
-  function Parent() {
-    const [version, setVersion] = React.useState(0);
-    rerender = () => setVersion(n => n + 1);
-    return React.createElement(SavedAgentTools, { peer: { ...peer, token: replacement && version ? "replacement-token" : peer.token }, ended: () => {} });
-  }
-  const view = await dom.render(React.createElement(Parent)); views.add(view);
-  await dom.waitFor(() => button(view.container, "Open Gmail"));
-  dom.update(() => button(view.container, "Open Gmail").click());
-  await dom.waitFor(() => !!resolveRun);
-  dom.update(rerender);
-  await settle();
-  assert.equal(oldSignal.aborted, replacement, "only changed credentials end the bridge");
-  resolveRun();
-  if (!replacement) await dom.waitFor(() => view.container.textContent.includes("Executed 1 step"));
-  else {
+for (const replacement of [false, true])
+  test(`pending saved replay ${replacement ? "is isolated on credential change" : "survives an ordinary parent render"}`, async () => {
+    let rerender, resolveRun, oldSignal;
+    let runs = 0;
+    globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+      const route = new URL(url).pathname;
+      if (route === "/api/browser") return reply(access);
+      if (route === "/api/browser/shortcuts")
+        return reply({ shortcuts: [shortcut], recording: null });
+      assert.equal(route, "/api/browser/shortcuts/run");
+      runs++;
+      oldSignal = init.signal;
+      return new Promise((resolve, reject) => {
+        resolveRun = () =>
+          resolve(
+            reply({ status: "completed", completedSteps: 1, totalSteps: 1 }),
+          );
+        init.signal.addEventListener(
+          "abort",
+          () => reject(Error("old fixture request aborted")),
+          { once: true },
+        );
+      });
+    };
+    function Parent() {
+      const [version, setVersion] = React.useState(0);
+      rerender = () => setVersion((n) => n + 1);
+      return React.createElement(SavedAgentTools, {
+        peer: {
+          ...peer,
+          token: replacement && version ? "replacement-token" : peer.token,
+        },
+        ended: () => {},
+      });
+    }
+    const view = await dom.render(React.createElement(Parent));
+    views.add(view);
+    await dom.waitFor(() => button(view.container, "Open Gmail"));
+    dom.update(() => button(view.container, "Open Gmail").click());
+    await dom.waitFor(() => !!resolveRun);
+    dom.update(rerender);
     await settle();
-    assert.doesNotMatch(view.container.textContent, /old fixture request aborted|Executed 1 step/);
-    assert.equal(button(view.container, "Open Gmail").disabled, false);
-  }
-  assert.equal(runs, 1, "rerender never repeats a dispatched action");
-});
+    assert.equal(
+      oldSignal.aborted,
+      replacement,
+      "only changed credentials end the bridge",
+    );
+    resolveRun();
+    if (!replacement)
+      await dom.waitFor(() =>
+        view.container.textContent.includes("Executed 1 step"),
+      );
+    else {
+      await settle();
+      assert.doesNotMatch(
+        view.container.textContent,
+        /old fixture request aborted|Executed 1 step/,
+      );
+      assert.equal(button(view.container, "Open Gmail").disabled, false);
+    }
+    assert.equal(runs, 1, "rerender never repeats a dispatched action");
+  });

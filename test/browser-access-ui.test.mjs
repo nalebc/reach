@@ -63,8 +63,12 @@ const button = (container, label) =>
       item.getAttribute("aria-label") === label,
   );
 const tab = (container, label) =>
-  [...container.querySelectorAll('[role="tab"]')].find(
-    (item) => item.textContent.trim() === label,
+  [
+    ...container.querySelectorAll('[aria-label="Workspace navigation"] button'),
+  ].find(
+    (item) =>
+      item.getAttribute("aria-label") ===
+      (label === "Terminal" ? "Commands" : label),
   );
 const snapshot = () =>
   new Response(new Uint8Array([255, 216, 255, 217]), {
@@ -88,14 +92,21 @@ const reply = (body, status = 200) =>
   });
 
 test("shared files download as authenticated bytes without exposing a credential link", async (t) => {
-  const calls = [], saved = [];
+  const calls = [],
+    saved = [];
   const oldClick = dom.window.HTMLAnchorElement.prototype.click;
   const oldCreate = URL.createObjectURL;
   const oldTimeout = globalThis.setTimeout;
   let payload;
-  URL.createObjectURL = (blob) => { payload = blob; return "blob:shared-download"; };
-  dom.window.HTMLAnchorElement.prototype.click = function () { saved.push({ href: this.href, name: this.download }); };
-  globalThis.setTimeout = (fn, ms, ...args) => oldTimeout(fn, ms === 60000 ? 0 : ms, ...args);
+  URL.createObjectURL = (blob) => {
+    payload = blob;
+    return "blob:shared-download";
+  };
+  dom.window.HTMLAnchorElement.prototype.click = function () {
+    saved.push({ href: this.href, name: this.download });
+  };
+  globalThis.setTimeout = (fn, ms, ...args) =>
+    oldTimeout(fn, ms === 60000 ? 0 : ms, ...args);
   t.after(() => {
     URL.createObjectURL = oldCreate;
     dom.window.HTMLAnchorElement.prototype.click = oldClick;
@@ -103,20 +114,42 @@ test("shared files download as authenticated bytes without exposing a credential
   });
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const u = new URL(url);
-    if (u.pathname === "/api/browser") return reply({ name: "Reader", expiresAt: Date.now() + 600000,
-      roots: [{ name: "Shared", path: "/Shared", index: 0 }], terminals: [], screen: "off" });
-    if (u.pathname === "/api/files") return reply({ items: [{ name: "report.pdf", path: "report.pdf", type: "file" }] });
+    if (u.pathname === "/api/browser")
+      return reply({
+        name: "Reader",
+        expiresAt: Date.now() + 600000,
+        roots: [{ name: "Shared", path: "/Shared", index: 0 }],
+        terminals: [],
+        screen: "off",
+      });
+    if (u.pathname === "/api/files")
+      return reply({
+        items: [{ name: "report.pdf", path: "report.pdf", type: "file" }],
+      });
     if (u.pathname === "/api/files/content") {
-      calls.push({ path: u.searchParams.get("path"), root: u.searchParams.get("root"), auth: new Headers(init.headers).get("Authorization") });
-      return new Response("pdf bytes", { headers: { "Content-Type": "application/pdf" } });
+      calls.push({
+        path: u.searchParams.get("path"),
+        root: u.searchParams.get("root"),
+        auth: new Headers(init.headers).get("Authorization"),
+      });
+      return new Response("pdf bytes", {
+        headers: { "Content-Type": "application/pdf" },
+      });
     }
     return reply({}, 404);
   };
-  const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
-  await settle(60);
+  const view = await render(
+    React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
+  );
+  await dom.waitFor(() => tab(view.container, "Files"));
+  await click(tab(view.container, "Files"));
   await click(button(view.container, "Download file report.pdf"));
-  assert.deepEqual(calls, [{ path: "report.pdf", root: "0", auth: "Bearer owner" }]);
-  assert.deepEqual(saved, [{ href: "blob:shared-download", name: "report.pdf" }]);
+  assert.deepEqual(calls, [
+    { path: "report.pdf", root: "0", auth: "Bearer owner" },
+  ]);
+  assert.deepEqual(saved, [
+    { href: "blob:shared-download", name: "report.pdf" },
+  ]);
   assert.equal(await payload.text(), "pdf bytes");
   assert.equal(payload.type, "application/pdf");
   await view.unmount();
@@ -161,8 +194,10 @@ test("browser workspace searches confined files and renders file and terminal ou
     }),
   );
   const c = view.container;
-  await settle(60);
-  assert.equal(tab(c, "Screen").getAttribute("aria-selected"), "true");
+  await dom.waitFor(() => tab(c, "Screen"));
+  assert.equal(tab(c, "Overview").getAttribute("aria-current"), "page");
+  await click(tab(c, "Screen"));
+  assert.equal(tab(c, "Screen").getAttribute("aria-current"), "page");
   assert.ok(c.querySelector(".browser-screen-image"));
   assert.equal(
     calls.some(
@@ -194,7 +229,8 @@ test("browser workspace searches confined files and renders file and terminal ou
     untrusted,
   );
   assert.equal(
-    c.querySelector('[aria-label="Shared terminal"] [aria-checked="true"]').dataset.value,
+    c.querySelector('[aria-label="Shared terminal"] [aria-checked="true"]')
+      .dataset.value,
     "reach:one",
   );
   await click(tab(c, "Files"));
@@ -267,7 +303,8 @@ test("screen navigation uses the scroll-only endpoint and refreshes the image", 
     React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
   );
   const c = view.container;
-  await settle(30);
+  await dom.waitFor(() => tab(c, "Screen"));
+  await click(tab(c, "Screen"));
   assert.equal(
     button(c, "Scroll down").disabled,
     true,
@@ -324,6 +361,8 @@ test("screen refresh stays serial and stops when hidden, off tab, or unmounted",
     React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
   );
   const c = view.container;
+  await dom.waitFor(() => tab(c, "Screen"));
+  await click(tab(c, "Screen"));
   await dom.waitFor(() => frames.length === 1);
   await settle(2200);
   assert.equal(frames.length, 1, "a slow capture never queues another capture");
@@ -367,7 +406,7 @@ test("screen refresh stays serial and stops when hidden, off tab, or unmounted",
   );
 });
 
-test("available permissions choose the initial tab without fetching unshared resources", async () => {
+test("navigation starts at Overview and never fetches unavailable resources", async () => {
   for (const permissions of [
     {
       roots: [{ name: "Project", path: "/Project", index: 0 }],
@@ -410,16 +449,18 @@ test("available permissions choose the initial tab without fetching unshared res
     );
     const c = view.container;
     await dom.waitFor(() => tab(c, permissions.selected));
+    assert.equal(tab(c, "Overview").getAttribute("aria-current"), "page");
+    await click(tab(c, permissions.selected));
     await dom.waitFor(() => calls.length >= 2);
     assert.deepEqual(
-      [...c.querySelectorAll('[role="tab"]')].map((item) =>
-        item.textContent.trim(),
+      [...c.querySelectorAll('[aria-label="Workspace navigation"] button')].map(
+        (item) => item.getAttribute("aria-label"),
       ),
-      ["Screen", "Files", "Terminal"],
+      ["Overview", "Tools", "Screen", "Apps", "Files", "Commands", "Access"],
     );
     assert.equal(
-      tab(c, permissions.selected).getAttribute("aria-selected"),
-      "true",
+      tab(c, permissions.selected).getAttribute("aria-current"),
+      "page",
     );
     assert.equal(tab(c, "Screen").disabled, true);
     assert.equal(tab(c, "Files").disabled, !permissions.roots.length);
@@ -441,8 +482,8 @@ test("available permissions choose the initial tab without fetching unshared res
     );
     const selected = tab(c, permissions.selected);
     assert.equal(
-      c.querySelector('[role="tabpanel"]').getAttribute("aria-labelledby"),
-      selected.id,
+      c.querySelector('[role="region"]').id,
+      selected.getAttribute("aria-controls"),
     );
     if (permissions.commandRequests) {
       assert.equal(
@@ -482,6 +523,8 @@ test("switching resource tabs aborts file and terminal reads", async () => {
     React.createElement(BrowserWorkspace, { peer, onEnd() {} }),
   );
   const c = view.container;
+  await dom.waitFor(() => tab(c, "Files"));
+  await click(tab(c, "Files"));
   await dom.waitFor(() => reads.length === 1);
   assert.equal(reads[0].route, "/api/files");
   await click(tab(c, "Terminal"));

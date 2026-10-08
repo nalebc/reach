@@ -169,6 +169,11 @@
 .aw-main {
   min-width: 0;
 }
+.aw-legacy.browser-workspace {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
 .aw-topbar {
   min-height: 76px;
   display: flex;

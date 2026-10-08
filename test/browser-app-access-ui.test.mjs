@@ -76,6 +76,7 @@ test("guest windows remain view-only even with a stale control grant; hidden app
   };
   const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
   const c = view.container;
+  await click(await dom.waitFor(() => c.querySelector("#agent-nav-screen")));
   const image = await loadImage(c);
   image.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, clientX: 70, clientY: 105 }));
   await settle(30);
@@ -115,6 +116,7 @@ test("selection change cancels pending image fetch and cannot display the old ap
   };
   const view = await render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
   const c = view.container;
+  await click(await dom.waitFor(() => c.querySelector("#agent-nav-screen")));
   await dom.waitFor(() => release);
   await value(c.querySelector('[aria-label="Shared app"]'), "notes");
   assert.equal(captureSignal.aborted, true);

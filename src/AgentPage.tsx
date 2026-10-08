@@ -139,6 +139,7 @@ export default function AgentPage({
   }, []);
   const [section, setSection] = useState<AgentSection>("home");
   const [toolQuery, setToolQuery] = useState("");
+  const [toolSearchRevision, setToolSearchRevision] = useState(0);
   const [toolCount, setToolCount] = useState<number | undefined>(undefined);
   const [activity, setActivity] = useState("");
   const [status, setStatus] = useState<{
@@ -157,6 +158,22 @@ export default function AgentPage({
     [onEnd],
   );
   const hasTools = !!access.screen && !!access.control && !!access.open;
+  const grant = JSON.stringify([
+    access.preset,
+    access.screen,
+    access.control,
+    access.open,
+    access.shell,
+    access.write,
+    access.roots.map((root) => [root.index, root.path]),
+    access.apps?.map((app) => app.id),
+    access.hidden?.map((app) => app.id),
+    access.terminals.map((terminal) => terminal.id),
+  ]);
+  useEffect(() => {
+    setActivity("");
+    setStatus({ text: "", tone: "" });
+  }, [grant]);
   const destinations: AgentDestination[] = [
     {
       id: "home",
@@ -227,6 +244,7 @@ export default function AgentPage({
   };
   const findTools = (query: string) => {
     setToolQuery(query);
+    setToolSearchRevision((value) => value + 1);
     navigate("tools");
   };
   const abilities = [
@@ -279,10 +297,12 @@ export default function AgentPage({
         {hasTools && (
           <div id="agent-section-tools" hidden={active !== "tools"}>
             <SavedAgentTools
+              key={grant}
               peer={connection}
               ended={ended}
               query={toolQuery}
               setQuery={setToolQuery}
+              searchRevision={toolSearchRevision}
               onCount={setToolCount}
               onActivity={setActivity}
               onScreen={() => navigate("screen")}
@@ -300,6 +320,7 @@ export default function AgentPage({
               </p>
             </div>
             <ScreenCard
+              key={grant}
               peer={connection}
               access={access}
               active={active === "screen"}
@@ -317,6 +338,7 @@ export default function AgentPage({
               <p>Open an app, then switch to Screen to use it.</p>
             </div>
             <AppsCard
+              key={grant}
               peer={connection}
               access={access}
               tell={tell}
@@ -341,6 +363,7 @@ export default function AgentPage({
               </p>
             </div>
             <FilesCard
+              key={grant}
               peer={connection}
               access={access}
               tell={tell}
@@ -365,6 +388,7 @@ export default function AgentPage({
                   <Terminal size={16} /> Commands on the Mac
                 </h2>
                 <AgentShell
+                  key={grant}
                   peer={connection}
                   roots={access.roots}
                   onError={(e) => {
@@ -375,7 +399,12 @@ export default function AgentPage({
               </section>
             )}
             {access.terminals.length > 0 && (
-              <TerminalsCard peer={connection} access={access} ended={ended} />
+              <TerminalsCard
+                key={grant}
+                peer={connection}
+                access={access}
+                ended={ended}
+              />
             )}
           </div>
         )}

@@ -92,6 +92,8 @@
   display: flex;
   align-items: center;
   gap: 7px;
+  flex: none;
+  white-space: nowrap;
 }
 .atl-browser-bar select {
   border: 1px solid var(--ag-border, #ffffff18);
@@ -251,6 +253,9 @@
   border: 1px solid #b9efd435;
   background: var(--aw-panel, #19211c);
   border-radius: 13px;
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .atl-runner-heading {
   display: flex;
@@ -335,6 +340,23 @@
 .atl-runner > .atl-text-button {
   justify-self: start;
 }
+.atl-runner .atl-results {
+  padding: 13px;
+  max-height: 440px;
+  overflow: auto;
+}
+.atl-runner .atl-result-item {
+  flex-wrap: wrap;
+  padding: 10px;
+}
+.atl-runner .atl-result-actions {
+  margin-left: 28px;
+  width: 100%;
+}
+.atl-runner .atl-result-item p {
+  display: grid;
+  gap: 2px;
+}
 .atl-recovery {
   padding: 12px;
   border: 1px solid #e9c89b25;
@@ -350,7 +372,7 @@
   font-size: 11px;
   margin-right: 8px;
 }
-.atl-operation {
+.ap-deterministic-tools .atl-operation {
   font:
     11px/1.6 ui-monospace,
     SFMono-Regular,
@@ -622,6 +644,8 @@
   .atl-runner {
     position: static;
     grid-row: 1;
+    max-height: none;
+    overflow: visible;
   }
   .atl-editor-grid {
     grid-template-columns: minmax(0, 1fr);

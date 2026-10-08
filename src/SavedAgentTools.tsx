@@ -26,6 +26,7 @@ export default function SavedAgentTools({
   onCount,
   onActivity,
   onScreen,
+  searchRevision = 0,
 }: {
   peer: Peer;
   ended: (error: unknown) => void;
@@ -34,11 +35,15 @@ export default function SavedAgentTools({
   onCount?: (count: number) => void;
   onActivity?: (activity: string) => void;
   onScreen?: () => void;
+  searchRevision?: number;
 }) {
   const [localQuery, setLocalQuery] = useState("");
   const query = externalQuery ?? localQuery,
     setQuery = setExternalQuery ?? setLocalQuery;
   const [category, setCategory] = useState<ToolCategory>("all");
+  useEffect(() => {
+    setCategory("all");
+  }, [searchRevision]);
   const [browserCount, setBrowserCount] = useState(0),
     [browserActivity, setBrowserActivity] = useState("");
   // Parent callbacks and equivalent peer objects can change while a replay runs.
@@ -208,6 +213,7 @@ export default function SavedAgentTools({
           <input
             type="search"
             aria-label="Search tools"
+            maxLength={160}
             placeholder="Search tools by task, app, or name…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}

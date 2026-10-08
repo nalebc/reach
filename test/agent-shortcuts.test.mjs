@@ -533,17 +533,23 @@ test("owner stop targets a run instance, and disable remains stopped after quick
   const f = fixture(t);
   const saved = await f.recordWebsite();
   let release;
+  let entered;
   f.desktop.open = () =>
     new Promise((resolve) => {
       release = () => resolve({ ok: true, bundle: chrome.bundleId });
+      entered();
     });
+  const firstDispatched = new Promise((resolve) => { entered = resolve; });
   const first = f.shortcuts.run(f.authorize, saved.id);
+  await firstDispatched;
   const firstId = f.shortcuts.ownerList().running.runId;
   assert.match(firstId, /^[a-f0-9-]{36}$/);
   f.shortcuts.cancel(firstId);
   release();
   assert.equal((await first).status, "stopped");
+  const secondDispatched = new Promise((resolve) => { entered = resolve; });
   const second = f.shortcuts.run(f.authorize, saved.id);
+  await secondDispatched;
   const secondId = f.shortcuts.ownerList().running.runId;
   assert.notEqual(secondId, firstId);
   assert.throws(() => f.shortcuts.cancel(firstId), /changed|ended|current/i);
