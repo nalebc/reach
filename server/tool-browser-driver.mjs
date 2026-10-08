@@ -10,9 +10,10 @@ const script = fileURLToPath(
 // Native stderr and page exceptions may contain URLs, fields or local paths.
 // Keep only protocol codes and fixed guidance across this trust boundary.
 const ERRORS = {
-  setup_required: [503, "Enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."],
+  setup_required: [503, "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."],
   unavailable: [503, "The browser helper could not start or stay connected. Inspect the browser before continuing."],
   browser_changed: [409, "The browser command failed or its target changed. Inspect the browser before continuing."],
+  browser_window_required: [503, "The owner needs to open a browser window in the intended profile before running this tool."],
   browser_closed: [409, "The selected browser is not running."],
   cancelled: [409, "The browser run was cancelled. Inspect any completed effects."],
   uncertain: [504, "The browser did not acknowledge this command. Inspect it before continuing."],
@@ -120,7 +121,7 @@ export function nativeToolProcess(
       const message = Buffer.concat(errors).toString().slice(0, 500);
       if (code !== 0) {
         const setup =
-          /Apple Events|JavaScript.*(disabled|allowed|enabled)|not authorized|not permitted|1743|10000/i.test(
+          /Allow JavaScript from Apple Events|JavaScript.*(disabled|turned off|not allowed|not enabled)|not authorized|not permitted|-1743\b|-1744\b/i.test(
             message,
           );
         finish(
@@ -128,7 +129,7 @@ export function nativeToolProcess(
             fail(
               setup ? 503 : 409,
               setup
-                ? "Enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."
+                ? "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."
                 : ERRORS.browser_changed[1],
             ),
             { code: setup ? "setup_required" : "browser_changed" },

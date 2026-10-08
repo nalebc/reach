@@ -131,6 +131,72 @@ test("the native driver sends only fixed interpreter source and uses stdin, incl
   assert.ok(!calls[0][1].some((arg) => arg.includes("unsafe")));
 });
 
+test("native failures redact diagnostic paths and retain useful setup or target messages", async () => {
+  const rejected = async (message) => {
+    let failure;
+    try {
+      await nativeToolProcess(
+        process.execPath,
+        [
+          "-e",
+          `process.stderr.write(${JSON.stringify(message)}); process.exitCode=1;`,
+        ],
+        "",
+      );
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure);
+    assert.doesNotMatch(
+      failure.message,
+      /\/Users\/|tool-browser\.js|execution error/,
+    );
+    return failure;
+  };
+  const generic = await rejected(
+    "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: Error: Error: (-2700)",
+  );
+  assert.equal(generic.code, "browser_changed");
+  assert.match(generic.message, /browser command failed/);
+  assert.equal(
+    (await rejected("execution error: Error: Error: (-10000)")).code,
+    "browser_changed",
+    "a general AppleEvent failure is not evidence of a disabled permission",
+  );
+  const setup = await rejected(
+    "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: JavaScript from Apple Events is disabled (-10000)",
+  );
+  assert.equal(setup.code, "setup_required");
+  assert.equal(setup.status, 503);
+  assert.match(setup.message, /owner needs to enable/);
+  const target = await rejected(
+    "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: Error: The target document changed. No action was taken. (-2700)",
+  );
+  assert.equal(
+    target.message,
+    "The browser command failed or its target changed. Inspect the browser before continuing.",
+  );
+});
+
+test("structured browser setup errors retain their code and service status", async () => {
+  const driver = createToolBrowserDriver({
+    platform: "darwin",
+    process: async () =>
+      JSON.stringify({
+        error: "Enable Allow JavaScript from Apple Events.",
+        code: "setup_required",
+        uncertain: false,
+      }),
+  });
+  await assert.rejects(
+    driver.transport("Safari", { op: "preflight" }),
+    (error) =>
+      error.status === 503 &&
+      error.code === "setup_required" &&
+      error.uncertain !== true && /owner needs to enable/.test(error.message),
+  );
+});
+
 test("native command timeout waits for process termination before freeing its caller", async () => {
   const start = Date.now();
   await assert.rejects(

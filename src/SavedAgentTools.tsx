@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Circle, Play, Search, X, Zap } from "lucide-react";
+import { ArrowRight, Circle, Play, Search, X } from "lucide-react";
 import { request, type Peer } from "./api";
+import { toolErrorMessage } from "./tool-errors";
 import DeterministicAgentTools, {
   type ToolCategory,
 } from "./DeterministicAgentTools";
@@ -108,9 +109,9 @@ export default function SavedAgentTools({
         // including uncertain or partial completion, remain until another action.
         setPollError(
           progress.status === "rejected"
-            ? progress.reason.message
+            ? toolErrorMessage(progress.reason)
             : catalog.status === "rejected"
-              ? catalog.reason.message
+              ? toolErrorMessage(catalog.reason)
               : "",
         );
         if (catalog.status === "fulfilled")
@@ -173,7 +174,7 @@ export default function SavedAgentTools({
       if (!mounted.current || bridge.current !== activeBridge) return;
       if (result.status === "stopped")
         setError(
-          `Stopped after ${result.completedSteps}/${result.totalSteps} steps. ${result.error} Completed actions stay applied. Inspect the screen before continuing.`,
+          `Stopped after ${result.completedSteps}/${result.totalSteps} steps. ${toolErrorMessage(result.error || "The task stopped.")} Completed actions stay applied. Inspect the screen before continuing.`,
         );
       setMessage(
         result.status === "completed"
@@ -192,7 +193,7 @@ export default function SavedAgentTools({
     } catch (failure) {
       if (mounted.current && bridge.current === activeBridge) {
         setMessage("");
-        setError((failure as Error).message);
+        setError(toolErrorMessage(failure));
         onEnded.current(failure);
       }
     } finally {
@@ -208,13 +209,9 @@ export default function SavedAgentTools({
       aria-labelledby="ap-saved-tools"
     >
       <div className="aw-page-heading">
-        <p className="aw-eyebrow">REUSABLE ACTIONS</p>
         <h1 id="ap-saved-tools">
-          Tool library <small>{tools.length + browserCount}</small>
+          Tools <small>{tools.length + browserCount}</small>
         </h1>
-        <p>
-          Find a task, provide its inputs, and run it in your existing browser.
-        </p>
       </div>
       <div className="atl-discovery">
         <label className="atl-search">
@@ -223,7 +220,7 @@ export default function SavedAgentTools({
             type="search"
             aria-label="Search tools"
             maxLength={160}
-            placeholder="Search tools by task, app, or name…"
+            placeholder="Search tools…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
@@ -237,26 +234,18 @@ export default function SavedAgentTools({
             </button>
           )}
         </label>
-        <div className="atl-filters" aria-label="Tool categories">
-          {(
-            [
-              ["all", "All tools"],
-              ["gmail", "Gmail"],
-              ["walmart", "Walmart"],
-              ["custom", "Custom"],
-              ["recorded", "Recorded"],
-            ] as [ToolCategory, string][]
-          ).map(([value, label]) => (
-            <button
-              type="button"
-              key={value}
-              aria-pressed={category === value}
-              onClick={() => setCategory(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <select
+          className="atl-filter"
+          aria-label="Filter tools"
+          value={category}
+          onChange={(event) => setCategory(event.target.value as ToolCategory)}
+        >
+          <option value="all">All tools</option>
+          <option value="gmail">Gmail</option>
+          <option value="walmart">Walmart</option>
+          <option value="custom">Custom</option>
+          <option value="recorded">Recorded</option>
+        </select>
       </div>
       <DeterministicAgentTools
         peer={peer}
@@ -268,20 +257,14 @@ export default function SavedAgentTools({
         onActivity={setBrowserActivity}
         blocked={pending || !!recording}
       />
-      <div
+      <details
         className="atl-recorded"
         hidden={category !== "all" && category !== "recorded"}
+        open={recording || category === "recorded" ? true : undefined}
       >
-        <div className="aw-section-heading">
-          <h2>
-            <Zap size={16} /> Recorded app tasks
-          </h2>
-          <span className="atl-tag">Checks app and window context</span>
-        </div>
-        <p className="ap-quiet">
-          Tasks learned from successful screen actions. Inspect the screen after
-          replay.
-        </p>
+        <summary>
+          Recorded tasks{tools.length ? ` (${tools.length})` : ""}
+        </summary>
         <div className="ap-saved-list">
           {matching.map((tool) => {
             const inputs = (tool.inputSchema.required || []) as string[];
@@ -308,8 +291,10 @@ export default function SavedAgentTools({
                     />
                   </label>
                 ))}
+                <strong>{tool.title}</strong>
                 <button
                   type="button"
+                  aria-label={`Run ${tool.title}`}
                   className="ag-primary ag-small"
                   disabled={
                     pending ||
@@ -323,7 +308,7 @@ export default function SavedAgentTools({
                     void call(tool.name, args);
                   }}
                 >
-                  <Play size={14} /> {tool.title}
+                  <Play size={14} /> Run
                 </button>
               </div>
             );
@@ -371,7 +356,9 @@ export default function SavedAgentTools({
               </button>
             )}
             {recording.error && (
-              <p className="ap-status is-blocked">{recording.error}</p>
+              <p className="ap-status is-blocked">
+                {toolErrorMessage(recording.error)}
+              </p>
             )}
           </div>
         ) : (
@@ -397,7 +384,7 @@ export default function SavedAgentTools({
             </button>
           </form>
         )}
-      </div>
+      </details>
       {message && (
         <p className="ap-status" role="status">
           {message}

@@ -572,6 +572,11 @@ export function createAgentTools(
         root = null;
       const data = {};
       try {
+        if (definition.steps[0].op === "navigate")
+          checkURL(
+            resolveToolValue(definition.steps[0].url, values, context),
+            definition,
+          );
         await desktop.withBrowser(
           client,
           candidates[0].id,
@@ -712,6 +717,20 @@ export function createAgentTools(
                 root = null;
               });
             };
+            // Chrome's scripting setting belongs to a profile. Check the exact
+            // window we will use, without scripting a private account page.
+            const preflight = async (window) => {
+              const readiness = await transport({
+                op: "preflight",
+                probeId: crypto.randomUUID(),
+                ...(window === undefined ? {} : { window }),
+              });
+              if (readiness?.ok !== true)
+                throw problem(
+                  "setup_required",
+                  "The browser’s scripting setup could not be verified.",
+                );
+            };
             for (const [index, step] of definition.steps.entries()) {
               current();
               const command = `${input.requestId}:${index}`;
@@ -753,6 +772,7 @@ export function createAgentTools(
                     "ambiguous",
                     "Multiple tabs match this exact site and account. Choose one before running the tool.",
                   );
+                await preflight(matches[0]?.window);
                 target =
                   matches[0] || (await transport({ op: "create", url }, true));
                 if (matches.length && target.url !== url) {
@@ -784,6 +804,7 @@ export function createAgentTools(
                   client,
                   input.browser,
                 );
+                await preflight(handle.target.window);
                 target = copy(handle.target);
                 document = handle.document;
                 root = handle.pageRef;
@@ -1018,7 +1039,8 @@ export function createAgentTools(
                   "wrong_site",
                   "browser_closed",
                   "login_required",
-                ].includes(error.code)
+                  "browser_window_required",
+                ].includes(error.code || error.kind)
               ? "needs_owner"
               : "stopped";
         entry.code = error.code || error.kind || "stopped";

@@ -100,9 +100,10 @@ test("the workspace says what the agent may do, and Go to buttons open each plac
     /File changes and scripts wait for the owner’s approval/,
   );
   assert.match(card.textContent, /You can’t invite anyone, share this link/);
+  assert.match(c.querySelector(".aw-session").textContent, /\d+ min/);
   assert.match(
-    c.querySelector(".aw-session").textContent,
-    /Connected.*min left/,
+    c.querySelector(".aw-session").title,
+    /Shared resources.*min left/,
   );
   // Files opens first (no screen); its row says so instead of offering a button.
   assert.match(card.querySelector("li").textContent, /Open below/);

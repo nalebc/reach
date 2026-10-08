@@ -195,7 +195,7 @@ test("browser workspace searches confined files and renders file and terminal ou
   );
   const c = view.container;
   await dom.waitFor(() => tab(c, "Screen"));
-  assert.equal(tab(c, "Overview").getAttribute("aria-current"), "page");
+  assert.equal(tab(c, "Screen").getAttribute("aria-current"), "page");
   await click(tab(c, "Screen"));
   assert.equal(tab(c, "Screen").getAttribute("aria-current"), "page");
   assert.ok(c.querySelector(".browser-screen-image"));
@@ -406,7 +406,7 @@ test("screen refresh stays serial and stops when hidden, off tab, or unmounted",
   );
 });
 
-test("navigation starts at Overview and never fetches unavailable resources", async () => {
+test("navigation opens the first shared resource and never fetches unavailable resources", async () => {
   for (const permissions of [
     {
       roots: [{ name: "Project", path: "/Project", index: 0 }],
@@ -449,14 +449,17 @@ test("navigation starts at Overview and never fetches unavailable resources", as
     );
     const c = view.container;
     await dom.waitFor(() => tab(c, permissions.selected));
-    assert.equal(tab(c, "Overview").getAttribute("aria-current"), "page");
+    assert.equal(
+      tab(c, permissions.selected).getAttribute("aria-current"),
+      "page",
+    );
     await click(tab(c, permissions.selected));
     await dom.waitFor(() => calls.length >= 2);
     assert.deepEqual(
       [...c.querySelectorAll('[aria-label="Workspace navigation"] button')].map(
         (item) => item.getAttribute("aria-label"),
       ),
-      ["Overview", "Tools", "Screen", "Apps", "Files", "Commands", "Access"],
+      ["Tools", "Screen", "Apps", "Files", "Commands", "Access", "Reload page"],
     );
     assert.equal(
       tab(c, permissions.selected).getAttribute("aria-current"),

@@ -4,6 +4,7 @@
 // the private address). Without the app, sign in to Tailscale right here in
 // the browser and run Reach through the page's own tailnet node.
 import { watchForApp } from "./app-watch";
+import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";
 import { observeGuestNetwork } from "./guest-network";
 import {
@@ -238,9 +239,8 @@ async function boot(
       (faceDevice() ? config.origin : ownOrigin(config)),
   );
   document.documentElement.dataset.connection = "browser";
-  view.remove();
   if (!guest) watchForApp(config);
-  await import("./main");
+  await openReach(() => import("./main"), view);
 }
 
 async function browserMode(

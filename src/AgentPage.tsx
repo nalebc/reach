@@ -28,7 +28,6 @@ import AgentShell from "./AgentShell";
 import AgentFileChanges from "./AgentFileChanges";
 import SavedAgentTools from "./SavedAgentTools";
 import AgentWorkspaceFrame, {
-  AgentWorkspaceHome,
   type AgentDestination,
   type AgentSection,
 } from "./AgentWorkspaceFrame";
@@ -137,10 +136,18 @@ export default function AgentPage({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
-  const [section, setSection] = useState<AgentSection>("home");
+  const [section, setSection] = useState<AgentSection>(() =>
+    access.screen && access.control && access.open
+      ? "tools"
+      : access.screen
+        ? "screen"
+        : access.roots.length
+          ? "files"
+          : access.shell || access.terminals.length
+            ? "commands"
+            : "access",
+  );
   const [toolQuery, setToolQuery] = useState("");
-  const [toolSearchRevision, setToolSearchRevision] = useState(0);
-  const [toolCount, setToolCount] = useState<number | undefined>(undefined);
   const [activity, setActivity] = useState("");
   const [status, setStatus] = useState<{
     text: string;
@@ -176,20 +183,10 @@ export default function AgentPage({
   }, [grant]);
   const destinations: AgentDestination[] = [
     {
-      id: "home",
-      label: "Overview",
-      detail: "Start a task and find your shared resources.",
-      available: true,
-    },
-    {
       id: "tools",
       label: "Tools",
       detail: "Find and run a named task, or create a reusable tool.",
       available: hasTools,
-      count:
-        toolCount ??
-        (access.browserTools?.tools.length || 0) +
-          (access.savedTools?.length || 0),
     },
     {
       id: "screen",
@@ -237,15 +234,10 @@ export default function AgentPage({
     (item) => item.id === section && item.available,
   )
     ? section
-    : "home";
+    : destinations.find((item) => item.available)?.id || "access";
   const navigate = (next: AgentSection) => {
     if (destinations.some((item) => item.id === next && item.available))
       setSection(next);
-  };
-  const findTools = (query: string) => {
-    setToolQuery(query);
-    setToolSearchRevision((value) => value + 1);
-    navigate("tools");
   };
   const abilities = [
     access.screen &&
@@ -283,17 +275,6 @@ export default function AgentPage({
             {status.text}
           </p>
         )}
-        <div hidden={active !== "home"}>
-          <AgentWorkspaceHome
-            name={peer.name}
-            destinations={destinations}
-            tools={hasTools}
-            query={toolQuery}
-            setQuery={setToolQuery}
-            findTools={findTools}
-            navigate={navigate}
-          />
-        </div>
         {hasTools && (
           <div id="agent-section-tools" hidden={active !== "tools"}>
             <SavedAgentTools
@@ -302,8 +283,6 @@ export default function AgentPage({
               ended={ended}
               query={toolQuery}
               setQuery={setToolQuery}
-              searchRevision={toolSearchRevision}
-              onCount={setToolCount}
               onActivity={setActivity}
               onScreen={() => navigate("screen")}
             />
@@ -312,11 +291,11 @@ export default function AgentPage({
         {access.screen && (
           <div id="agent-section-screen" hidden={active !== "screen"}>
             <div className="aw-page-heading">
-              <p className="aw-eyebrow">LAPTOP CONTROL</p>
               <h1>Live screen</h1>
               <p>
-                The screen updates automatically. Use Tools first when a saved
-                task matches.
+                {access.control
+                  ? "Click or type on the live screen."
+                  : "The live view updates automatically."}
               </p>
             </div>
             <ScreenCard
@@ -333,7 +312,6 @@ export default function AgentPage({
         {access.open && (
           <div id="agent-section-apps" hidden={active !== "apps"}>
             <div className="aw-page-heading">
-              <p className="aw-eyebrow">ON THIS COMPUTER</p>
               <h1>Apps</h1>
               <p>Open an app, then switch to Screen to use it.</p>
             </div>
@@ -356,7 +334,6 @@ export default function AgentPage({
         {access.roots.length > 0 && (
           <div id="agent-section-files" hidden={active !== "files"}>
             <div className="aw-page-heading">
-              <p className="aw-eyebrow">SHARED FOLDERS</p>
               <h1>Files</h1>
               <p>
                 Browse, search, and read the folders available to this session.
@@ -374,7 +351,6 @@ export default function AgentPage({
         {(access.shell || access.terminals.length > 0) && (
           <div id="agent-section-commands" hidden={active !== "commands"}>
             <div className="aw-page-heading">
-              <p className="aw-eyebrow">TERMINAL</p>
               <h1>Commands</h1>
               <p>
                 {access.shell
@@ -414,7 +390,6 @@ export default function AgentPage({
           aria-labelledby="aw-access-title"
         >
           <div className="aw-page-heading">
-            <p className="aw-eyebrow">YOUR INVITATION</p>
             <h1 id="aw-access-title">Access to {peer.name}</h1>
             <p>
               {access.presetName || access.preset} ·{" "}
@@ -429,7 +404,7 @@ export default function AgentPage({
           </p>
           <div className="aw-access-list">
             {destinations
-              .filter((item) => !["home", "access"].includes(item.id))
+              .filter((item) => item.id !== "access")
               .map((item) => (
                 <div className="aw-access-row" key={item.id}>
                   <div>

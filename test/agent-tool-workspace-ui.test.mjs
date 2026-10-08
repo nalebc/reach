@@ -23,14 +23,18 @@ const peer = {
 const button = (root, label) =>
   [...root.querySelectorAll("button")].find(
     (item) =>
-      item.getAttribute("aria-label") === label ||
-      item.textContent.trim() === label,
+      [label, `Run ${label}`, `Recover ${label}`].includes(
+        item.getAttribute("aria-label"),
+      ) || item.textContent.trim() === label,
   );
 const navigate = async (root, label) => {
-  button(
+  const control = button(
     root.querySelector('[aria-label="Workspace navigation"]'),
     label,
-  ).click();
+  );
+  const menu = control.closest("details");
+  if (menu && !menu.open) menu.querySelector("summary").click();
+  control.click();
   await settle();
 };
 const click = async (root, label) => {
@@ -166,33 +170,43 @@ async function fixture(t, render) {
 const runner = (root) => root.querySelector(".atl-runner");
 const runs = (f) => f.calls.filter((call) => call.route.endsWith("/tools/run"));
 
-test("Overview search opens a filtered library; categories, empty results, and missing inputs never execute a task", async (t) => {
+const filter = async (root, value) => {
+  const select = root.querySelector('[aria-label="Filter tools"]');
+  select.value = value;
+  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await settle();
+};
+
+test("Tools opens directly with compact Run controls; search, empty results, and missing inputs never execute a task", async (t) => {
   const f = await fixture(t),
     nav = f.root.querySelector('[aria-label="Workspace navigation"]');
-  assert.equal(button(nav, "Overview").getAttribute("aria-current"), "page");
-  await dom.waitFor(() => button(nav, "Tools").textContent.trim() === "Tools9");
+  assert.equal(button(nav, "Tools").getAttribute("aria-current"), "page");
+  assert.equal(button(nav, "Overview"), undefined);
+  assert.equal(f.root.querySelector(".atl-runner"), null);
+  assert.equal(f.root.querySelector(".atl-run").textContent.trim(), "Run");
   await replaceText(
-    f.root.querySelector('[aria-label="Find a tool from workspace"]'),
+    f.root.querySelector('[aria-label="Search tools"]'),
     "Gmail",
   );
-  await click(f.root, "Find tools");
-  assert.equal(button(nav, "Tools").getAttribute("aria-current"), "page");
-  assert.equal(f.root.querySelector("#agent-section-tools").hidden, false);
   assert.equal(f.root.querySelectorAll(".atl-card").length, 5);
   await replaceText(
     f.root.querySelector('[aria-label="Search tools"]'),
     "draft",
   );
   assert.equal(f.root.querySelectorAll(".atl-card").length, 1);
-  await click(f.root.querySelector(".atl-filters"), "Walmart");
+  await filter(f.root, "walmart");
   assert.equal(f.root.querySelectorAll(".atl-card").length, 0);
   assert.match(f.root.textContent, /No matching browser tools/);
   await click(f.root, "Clear tool search");
   assert.equal(f.root.querySelectorAll(".atl-card").length, 4);
-  await click(f.root.querySelector(".atl-filters"), "Gmail");
+  await filter(f.root, "gmail");
   await click(f.root, "Find Gmail message");
   assert.ok(
     runner(f.root).querySelector('[aria-label="Find Gmail message: query"]'),
+  );
+  assert.equal(
+    runner(f.root).closest(".atl-card"),
+    button(f.root, "Run Find Gmail message").closest(".atl-card"),
   );
   assert.match(
     f.root.querySelector('[role="alert"]').textContent,
@@ -200,17 +214,12 @@ test("Overview search opens a filtered library; categories, empty results, and m
   );
   assert.equal(runs(f).length, 0);
   assert.equal(f.driver.counters.clicks, 0);
-  await navigate(f.root, "Overview");
+  await click(f.root, "Close tool details");
+  assert.equal(runner(f.root), null);
+  await filter(f.root, "all");
   await replaceText(
-    f.root.querySelector('[aria-label="Find a tool from workspace"]'),
+    f.root.querySelector('[aria-label="Search tools"]'),
     "Walmart",
-  );
-  await click(f.root, "Find tools");
-  assert.equal(
-    button(f.root.querySelector(".atl-filters"), "All tools").getAttribute(
-      "aria-pressed",
-    ),
-    "true",
   );
   assert.equal(f.root.querySelectorAll(".atl-card").length, 4);
 });
@@ -227,7 +236,7 @@ test("Safari results feed exact message, attachment, and draft inputs through vi
     runner(f.root).querySelector('[aria-label="Find Gmail message: query"]'),
     "invoice",
   );
-  await click(runner(f.root), "Run tool");
+  await click(runner(f.root), "Run");
   await dom.waitFor(() => button(f.root, "Open this message"));
   assert.match(
     f.root.querySelector(".atl-results").textContent,
@@ -247,10 +256,10 @@ test("Safari results feed exact message, attachment, and draft inputs through vi
       .value,
     message,
   );
-  await click(runner(f.root), "Run tool");
+  await click(runner(f.root), "Run");
   await dom.waitFor(() => button(f.root, "Get this attachment"));
   await click(f.root, "Get this attachment");
-  await click(runner(f.root), "Run tool");
+  await click(runner(f.root), "Run");
   await dom.waitFor(() => button(f.root, "Use in a Gmail draft"));
   await click(f.root, "Use in a Gmail draft");
   const draft = runner(f.root);
@@ -271,7 +280,7 @@ test("Safari results feed exact message, attachment, and draft inputs through vi
     draft.querySelector('[aria-label="Create Gmail draft with file: body"]'),
     "Hello,\nHere is the file.",
   );
-  await click(draft, "Run tool");
+  await click(draft, "Run");
   await dom.waitFor(
     () =>
       f.root.textContent.includes("Invoice snapshot") &&
@@ -290,9 +299,25 @@ test("Safari results feed exact message, attachment, and draft inputs through vi
       (item) => item.textContent.trim() === "Send",
     ),
   );
+  await click(f.root, "Close tool details");
+  assert.equal(
+    f.root.querySelector(".atl-results"),
+    null,
+    "closing a task also hides its result panel",
+  );
+  await click(f.root, "Inspect Create Gmail draft with file");
+  assert.equal(
+    f.root.querySelector(".atl-result-heading h2").textContent,
+    "Completed",
+  );
+  assert.equal(
+    runs(f).length,
+    4,
+    "reopening details preserves the result without executing again",
+  );
 });
 
-test("a running tool stays alive across Screen, Access, and Overview navigation, retaining one request and its result", async (t) => {
+test("a running tool stays alive across Screen and Access navigation, retaining one request and its result", async (t) => {
   const f = await fixture(t);
   await navigate(f.root, "Tools");
   let release, entered;
@@ -311,9 +336,19 @@ test("a running tool stays alive across Screen, Access, and Overview navigation,
   await click(f.root, "Open Gmail account");
   await ready;
   const request = runs(f)[0];
+  assert.equal(
+    f.root.querySelector(".atl-recovery"),
+    null,
+    "an in-progress first attempt is not presented as an interrupted run",
+  );
+  assert.match(
+    f.root.querySelector(".atl-busy").textContent,
+    /Wait before running another tool/,
+  );
+  assert.equal(button(f.root, "Run Open Walmart account").disabled, true);
   await navigate(f.root, "Screen");
   await navigate(f.root, "Access");
-  await navigate(f.root, "Overview");
+  await navigate(f.root, "Screen");
   assert.equal(request.signal.aborted, false);
   assert.match(
     f.root.querySelector(".aw-activity").textContent,
@@ -322,13 +357,19 @@ test("a running tool stays alive across Screen, Access, and Overview navigation,
   await click(f.root, "View in Tools");
   assert.equal(f.root.querySelector("#agent-section-tools").hidden, false);
   release();
-  await dom.waitFor(() => f.root.textContent.includes("completed · 3/3"));
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
   assert.equal(runs(f).length, 1);
   await dom.waitFor(() => !f.root.querySelector(".aw-activity"));
-  await navigate(f.root, "Overview");
+  await navigate(f.root, "Screen");
   await navigate(f.root, "Tools");
   assert.match(
-    f.root.querySelector(".atl-operation").textContent,
+    [...runner(f.root).querySelectorAll("details")].find(
+      (item) => item.querySelector("summary").textContent === "Tool details",
+    ).textContent,
     new RegExp(request.body.requestId),
   );
 });
@@ -358,11 +399,9 @@ test("creation clears a nonmatching search and exposes the new named tool and it
   assert.equal(runs(f).length, 0);
   await dom.waitFor(
     () =>
-      button(
-        f.root.querySelector('[aria-label="Workspace navigation"]'),
-        "Tools",
-      ).textContent.trim() === "Tools10",
+      f.root.querySelector("#ap-saved-tools").textContent.trim() === "Tools 10",
   );
+  await dom.waitFor(() => dom.document.activeElement === runner(f.root));
   await click(f.root, "View definition");
   await dom.waitFor(() => f.root.querySelector(".atl-definition"));
   assert.match(
@@ -420,6 +459,120 @@ test("narrowing access while a tool awaits completion removes its controls and c
   release();
   await settle(100);
   assert.equal(f.root.querySelector('[aria-label="Tool result"]'), null);
-  assert.ok(!f.root.textContent.includes("completed ·"));
+  assert.notEqual(
+    f.root.querySelector(".atl-result-heading h2")?.textContent,
+    "Completed",
+  );
   assert.equal(!!f.root.querySelector(".aw-activity"), false);
+});
+
+test("More opens secondary resources, closes on navigation and Escape, and keeps technical details collapsed", async (t) => {
+  const f = await fixture(t);
+  const menu = f.root.querySelector(".aw-more");
+  assert.equal(menu.open, false);
+  menu.querySelector("summary").click();
+  assert.equal(menu.open, true);
+  await navigate(f.root, "Access");
+  assert.equal(menu.open, false);
+  assert.equal(f.root.querySelector("#agent-section-access").hidden, false);
+  menu.querySelector("summary").click();
+  menu.dispatchEvent(
+    new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  assert.equal(menu.open, false);
+  await navigate(f.root, "Tools");
+  await click(f.root, "Inspect Find Gmail message");
+  await replaceText(
+    runner(f.root).querySelector('[aria-label="Find Gmail message: query"]'),
+    "invoice",
+  );
+  await replaceText(
+    f.root.querySelector('[aria-label="Search tools"]'),
+    "Walmart",
+  );
+  assert.equal(
+    runner(f.root).querySelector('[aria-label="Find Gmail message: query"]')
+      .value,
+    "invoice",
+  );
+  assert.match(
+    runner(f.root).closest(".atl-card").textContent,
+    /Selected tool/,
+  );
+  assert.equal(runner(f.root).querySelector("details").open, false);
+  assert.equal(runs(f).length, 0);
+});
+
+test("owner setup errors stop before account navigation; checking status preserves the failure and Run retries with a fresh ID", async (t) => {
+  const f = await fixture(t);
+  f.driver.before = async () => {
+    throw Object.assign(
+      Error(
+        "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: Enable Allow JavaScript from Apple Events and macOS Automation",
+      ),
+      { code: "setup_required" },
+    );
+  };
+  await click(f.root, "Open Walmart account");
+  await dom.waitFor(
+    () =>
+      button(f.root, "Run Open Walmart account") &&
+      !button(f.root, "Run Open Walmart account").disabled &&
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+        "Needs the owner",
+  );
+  assert.match(
+    f.root.querySelector('[role="alert"]').textContent,
+    /Chrome needs setup by the owner/,
+  );
+  assert.doesNotMatch(
+    f.root.textContent,
+    /\/Users\/|tool-browser\.js|execution error/,
+  );
+  assert.equal(f.root.querySelector(".atl-recovery"), null);
+  assert.equal(f.driver.counters.clicks, 0);
+  assert.equal(f.driver.browsers.get("Chrome").length, 0);
+  const details = [...runner(f.root).querySelectorAll("details")].find(
+    (item) => item.querySelector("summary").textContent === "Tool details",
+  );
+  details.querySelector("summary").click();
+  await click(f.root, "Check run status");
+  assert.equal(runs(f).length, 1);
+  assert.ok(
+    f.calls.some(
+      (call) =>
+        call.route.includes("/tools/operations/") && call.method === "GET",
+    ),
+  );
+  f.driver.before = null;
+  assert.equal(
+    runs(f).length,
+    1,
+    "fixing setup does not automatically run a task",
+  );
+  await click(f.root, "Run Open Walmart account");
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
+  assert.notEqual(runs(f)[0].body.requestId, runs(f)[1].body.requestId);
+  f.driver.before = async () => {
+    throw Error(
+      "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: Error: Error: (-2700)",
+    );
+  };
+  await click(f.root, "Run Open Gmail account");
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent === "Stopped",
+  );
+  assert.match(
+    f.root.querySelector('[role="alert"]').textContent,
+    /browser command failed/,
+  );
+  assert.doesNotMatch(
+    f.root.textContent,
+    /\/Users\/|tool-browser\.js|execution error|2700/,
+  );
 });

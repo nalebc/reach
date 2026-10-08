@@ -193,14 +193,14 @@ test("the workspace starts with tools discovery and explicit navigation, and Scr
     [...nav.querySelectorAll("button")].map((button) =>
       button.getAttribute("aria-label"),
     ),
-    ["Overview", "Tools", "Screen", "Apps", "Files", "Commands", "Access"],
+    ["Tools", "Screen", "Apps", "Files", "Commands", "Access", "Reload page"],
   );
   assert.equal(
-    nav.querySelector('[aria-label="Overview"]').getAttribute("aria-current"),
+    nav.querySelector('[aria-label="Tools"]').getAttribute("aria-current"),
     "page",
   );
   assert.equal(c.querySelector("#agent-section-screen").hidden, true);
-  assert.ok(c.querySelector('[aria-label="Find a tool from workspace"]'));
+  assert.ok(c.querySelector('[aria-label="Search tools"]'));
   assert.ok(!calls.some(([, route]) => route.endsWith("/desktop/screen")));
   await click(nav.querySelector('[aria-label="Access"]'));
   assert.match(

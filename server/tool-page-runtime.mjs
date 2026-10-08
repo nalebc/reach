@@ -41,6 +41,48 @@ export function toolPageOperation(request) {
       code: "protected",
     });
   try {
+    const secure = (element) =>
+      element.closest?.(
+        "input[type=password], [autocomplete=current-password], [autocomplete=new-password], [autocomplete=one-time-code]",
+      );
+    const visible = (element) => {
+      if (secure(element)) return false;
+      for (let at = element; at && at.nodeType === 1; at = at.parentElement) {
+        const style = getComputedStyle(at);
+        if (
+          at.hidden ||
+          at.getAttribute("aria-hidden") === "true" ||
+          style.display === "none" ||
+          style.visibility === "hidden"
+        )
+          return false;
+      }
+      return !!element.getClientRects().length;
+    };
+    // Walmart keeps the purchase-history URL for its signed-out tracking form.
+    // Match its visible sign-in panel, not the account menu or a hidden template.
+    if (
+      here.hostname === "www.walmart.com" &&
+      /^\/orders(?:\/|$)/.test(here.pathname) &&
+      [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].some(
+        (element) =>
+          visible(element) &&
+          normalized(element.textContent) ===
+            "Sign in to do more with your account",
+      ) &&
+      [...document.querySelectorAll('button,[role="button"]')].some(
+        (element) =>
+          visible(element) &&
+          normalized(
+            element.getAttribute("aria-label") || element.textContent,
+          ) === "Sign in or create account",
+      )
+    )
+      return JSON.stringify({
+        error:
+          "The owner needs to sign in to Walmart in this browser, then run the tool again.",
+        code: "login_required",
+      });
     const key = "__reach_tool_protocol_v1__";
     let state = globalThis[key];
     if (request.op === "bind") {
@@ -66,24 +108,6 @@ export function toolPageOperation(request) {
     const root = request.root ? state.refs.get(request.root) : document;
     if (!root || (root !== document && !root.isConnected))
       fail("stale", "The selected item is no longer on this page.");
-    const secure = (element) =>
-      element.closest?.(
-        "input[type=password], [autocomplete=current-password], [autocomplete=new-password], [autocomplete=one-time-code]",
-      );
-    const visible = (element) => {
-      if (secure(element)) return false;
-      for (let at = element; at && at.nodeType === 1; at = at.parentElement) {
-        const style = getComputedStyle(at);
-        if (
-          at.hidden ||
-          at.getAttribute("aria-hidden") === "true" ||
-          style.display === "none" ||
-          style.visibility === "hidden"
-        )
-          return false;
-      }
-      return !!element.getClientRects().length;
-    };
     const label = (element) =>
       normalized(
         element.getAttribute("aria-label") ||

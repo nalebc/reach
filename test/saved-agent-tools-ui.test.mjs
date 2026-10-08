@@ -42,7 +42,9 @@ const button = (root, label) =>
   [...root.querySelectorAll("button")].find(
     (entry) =>
       entry.textContent.trim() === label ||
-      entry.getAttribute("aria-label") === label,
+      [label, `Run ${label}`, `Recover ${label}`].includes(
+        entry.getAttribute("aria-label"),
+      ),
   );
 before(async () => {
   dom = await startDom();
@@ -108,8 +110,10 @@ test("the agent sees task names as buttons and one click executes the saved tool
     ],
   );
   assert.ok(
-    !c.querySelector("select"),
-    "no shortcut-ID or agent picker is needed",
+    ![...c.querySelectorAll("select option")].some(
+      (option) => option.value === shortcut.id,
+    ),
+    "the run control requires no shortcut-ID or agent selection",
   );
 });
 

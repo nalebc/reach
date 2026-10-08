@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   CheckCircle2,
-  ChevronRight,
   Code2,
   FileText,
   Mail,
@@ -20,6 +19,7 @@ import {
 } from "./browser-tools";
 import type { Peer } from "./api";
 import "./deterministic-agent-tools.css";
+import { toolErrorMessage } from "./tool-errors";
 
 type Field = {
   description?: string;
@@ -33,8 +33,22 @@ type Result = {
   completedSteps?: number;
   totalSteps?: number;
   error?: string;
+  code?: string;
   data?: unknown;
 };
+// Older running servers report native setup refusals as "stopped". Both are
+// definite failures before a task step; they do not need request recovery.
+const ownerBlocked = (result: Result) =>
+  ["needs_owner", "stopped"].includes(result.status || "") &&
+  result.completedSteps === 0 &&
+  [
+    "setup_required",
+    "browser_window_required",
+    "browser_closed",
+    "login_required",
+  ].includes(result.code || "");
+const needsRecovery = (result: Result) =>
+  result.status !== "completed" && !ownerBlocked(result);
 type Attempt = {
   requestId: string;
   args: Record<string, string>;
@@ -50,6 +64,19 @@ const group = (tool: BrowserTool): ToolCategory =>
       ? "walmart"
       : "custom";
 const summary = (tool: BrowserTool) => tool.description.split(" Fixed ")[0];
+const rowDescriptions: Record<string, string> = {
+  reach_tool_builtin_open_gmail: "Open the signed-in Gmail workspace.",
+  reach_tool_builtin_open_walmart:
+    "Open purchase history in your current session.",
+  reach_tool_builtin_gmail_find: "Search for messages on the current page.",
+  reach_tool_builtin_gmail_open: "Open a message returned by search.",
+  reach_tool_builtin_gmail_attachment: "Download a selected attachment.",
+  reach_tool_builtin_walmart_find: "Find orders on the current page.",
+  reach_tool_builtin_walmart_receipt:
+    "Save the selected order as a PDF receipt.",
+  reach_tool_builtin_walmart_track: "Read tracking for the selected order.",
+  reach_tool_builtin_gmail_draft: "Create an unsent draft with a file.",
+};
 const noop = () => {};
 const validHandle = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
@@ -59,6 +86,7 @@ const statusName: Record<string, string> = {
   uncertain: "Check the browser",
   needs_owner: "Needs the owner",
   pending: "In progress",
+  running: "In progress",
 };
 
 /** The visual library calls the same named tools and protocol as MCP. */
@@ -166,7 +194,7 @@ export default function DeterministicAgentTools({
         if (active) {
           setTools([]);
           setLoaded(true);
-          setLoadError((error as Error).message);
+          setLoadError(toolErrorMessage(error));
           onEnded.current(error);
         }
       } finally {
@@ -212,7 +240,7 @@ export default function DeterministicAgentTools({
     } catch (error) {
       if (active()) {
         setMessage("");
-        setError((error as Error).message);
+        setError(toolErrorMessage(error));
         onEnded.current(error);
       }
     } finally {
@@ -226,10 +254,14 @@ export default function DeterministicAgentTools({
   const focusRunner = () =>
     setTimeout(() => {
       runner.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      runner.current
-        ?.querySelector<HTMLInputElement>("input,textarea,select")
-        ?.focus();
+      const input = runner.current?.querySelector<HTMLElement>(
+        "input:not(:disabled),textarea:not(:disabled),select:not(:disabled)",
+      );
+      (input || runner.current)?.focus({ preventScroll: true });
     }, 0);
+  useEffect(() => {
+    if (selectedTool && !editor) focusRunner();
+  }, [selectedTool?.name, editor]);
   const inspect = (tool: BrowserTool) => {
     setSelected(tool.name);
     setInspection(null);
@@ -239,6 +271,7 @@ export default function DeterministicAgentTools({
     if (busy.current || blocked) return;
     setSelected(tool.name);
     setInspection(null);
+    focusRunner();
     const missing = ((tool.inputSchema.required || []) as string[]).filter(
       (key) =>
         !["browser", "requestId"].includes(key) &&
@@ -282,14 +315,15 @@ export default function DeterministicAgentTools({
         requestId: attempt.requestId,
       })) as Result;
       if (!active()) return;
-      attempt.unresolved = response.status !== "completed";
+      attempt.unresolved = needsRecovery(response);
       setResult(response);
-      setMessage(
-        `${response.status || "stopped"} · ${response.completedSteps || 0}/${response.totalSteps || 0} steps · ${attempt.requestId}`,
-      );
+      setMessage("");
       if (response.status !== "completed")
         setError(
-          `${response.error || "This run is still in progress."} Inspect the browser before starting another run. The same request ID will not repeat completed effects.`,
+          toolErrorMessage(
+            response.error || "This run is still in progress.",
+            attempt.args.browser,
+          ),
         );
     });
   };
@@ -379,7 +413,7 @@ export default function DeterministicAgentTools({
       : {};
   const feedback = (
     <>
-      {message && (
+      {message && !pending && (
         <p className="ap-status atl-operation" role="status">
           {message}
         </p>
@@ -399,7 +433,11 @@ export default function DeterministicAgentTools({
         ) : (
           <ShieldCheck size={18} />
         )}
-        <h2>{statusName[result.status || ""] || "Tool result"}</h2>
+        <h2>
+          {statusName[
+            ownerBlocked(result) ? "needs_owner" : result.status || ""
+          ] || "Tool result"}
+        </h2>
         <span>
           {result.completedSteps || 0} / {result.totalSteps || 0} steps
         </span>
@@ -453,7 +491,6 @@ export default function DeterministicAgentTools({
                         ? `Available until ${new Date(Number(item.expiresAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
                         : "Result expired"}
                     </small>
-                    <code>{String(item.handle)}</code>
                   </div>
                   <div className="atl-result-actions">
                     {resultActions(key)
@@ -500,17 +537,233 @@ export default function DeterministicAgentTools({
       )}
     </section>
   );
+  const runnerView = selectedTool && (
+    <aside
+      className="atl-runner"
+      ref={runner}
+      tabIndex={-1}
+      aria-label={`Run ${selectedTool.title}`}
+    >
+      <div className="atl-runner-heading">
+        <span className="atl-description">Inputs &amp; result</span>
+        <button
+          type="button"
+          aria-label="Close tool details"
+          onClick={() => setSelected("")}
+        >
+          <X size={16} />
+        </button>
+      </div>
+      {feedback}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void execute(selectedTool);
+        }}
+      >
+        {Object.entries(fields(selectedTool))
+          .filter(([key]) => !["browser", "requestId"].includes(key))
+          .map(([key, field]) => (
+            <label key={key}>
+              <span>
+                {field.description || key}
+                {(
+                  (selectedTool.inputSchema.required || []) as string[]
+                ).includes(key) && <small>Required</small>}
+              </span>
+              {field.enum ? (
+                <select
+                  aria-label={`${selectedTool.title}: ${key}`}
+                  disabled={locked}
+                  value={
+                    values[selectedTool.name]?.[key] ??
+                    field.default ??
+                    field.enum[0]
+                  }
+                  onChange={(event) =>
+                    setValues((old) => ({
+                      ...old,
+                      [selectedTool.name]: {
+                        ...old[selectedTool.name],
+                        [key]: event.target.value,
+                      },
+                    }))
+                  }
+                >
+                  {field.enum.map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+              ) : !field.pattern && (field.maxLength || 2000) > 1000 ? (
+                <textarea
+                  aria-label={`${selectedTool.title}: ${key}`}
+                  disabled={locked}
+                  rows={3}
+                  value={
+                    values[selectedTool.name]?.[key] ?? field.default ?? ""
+                  }
+                  maxLength={field.maxLength || 2000}
+                  onChange={(event) =>
+                    setValues((old) => ({
+                      ...old,
+                      [selectedTool.name]: {
+                        ...old[selectedTool.name],
+                        [key]: event.target.value,
+                      },
+                    }))
+                  }
+                />
+              ) : (
+                <input
+                  aria-label={`${selectedTool.title}: ${key}`}
+                  disabled={locked}
+                  autoComplete="off"
+                  placeholder={
+                    field.pattern
+                      ? "Choose a result below, or paste its handle"
+                      : "Enter a value"
+                  }
+                  value={
+                    values[selectedTool.name]?.[key] ?? field.default ?? ""
+                  }
+                  maxLength={field.maxLength || 2000}
+                  onChange={(event) =>
+                    setValues((old) => ({
+                      ...old,
+                      [selectedTool.name]: {
+                        ...old[selectedTool.name],
+                        [key]: event.target.value,
+                      },
+                    }))
+                  }
+                />
+              )}
+            </label>
+          ))}
+        {!Object.entries(fields(selectedTool)).some(
+          ([key]) => !["browser", "requestId"].includes(key),
+        ) && <p className="atl-description">No inputs needed.</p>}
+        <button
+          className="atl-primary"
+          aria-label={`${!pending && attempts.current.get(selectedTool.name)?.unresolved ? "Recover" : "Run"} ${selectedTool.title}`}
+          disabled={locked}
+        >
+          <Play size={14} />
+          {pending
+            ? "Running…"
+            : attempts.current.get(selectedTool.name)?.unresolved
+              ? "Recover run"
+              : "Run"}
+        </button>
+      </form>
+      <p className="atl-browser-note">
+        Uses the owner’s existing{" "}
+        {attempts.current.get(selectedTool.name)?.unresolved
+          ? attempts.current.get(selectedTool.name)?.args.browser
+          : selectedBrowser}{" "}
+        session.
+      </p>
+      {!pending && attempts.current.get(selectedTool.name)?.unresolved && (
+        <div className="atl-recovery">
+          <p>
+            This attempt is saved. Recover it safely, or inspect the browser
+            before a new run.
+          </p>
+          <button
+            type="button"
+            className="atl-text-button"
+            disabled={locked}
+            onClick={() => {
+              attempts.current.delete(selectedTool.name);
+              setMessage(
+                "Ready for a new run. Inspect the browser before running again.",
+              );
+              setRevision((value) => value + 1);
+            }}
+          >
+            New run
+          </button>
+        </div>
+      )}
+      {resultsView}
+      <details className="atl-raw">
+        <summary>Tool details</summary>
+        <p className="atl-description">{summary(selectedTool)}</p>
+        <p className="atl-description">{selectedTool.name}</p>
+        {attempts.current.get(selectedTool.name) && (
+          <p className="atl-description">
+            Run ID:{" "}
+            <code>{attempts.current.get(selectedTool.name)?.requestId}</code>
+          </p>
+        )}
+        <button
+          type="button"
+          className="atl-text-button"
+          disabled={locked}
+          onClick={() =>
+            void action(async (activeBridge, active) => {
+              const catalog = (await activeBridge.callTool("reach_tools")) as {
+                tools: { id: string }[];
+              };
+              if (active())
+                setInspection(
+                  catalog.tools.find(
+                    (tool) => `reach_tool_${tool.id}` === selectedTool.name,
+                  ),
+                );
+            })
+          }
+        >
+          <Code2 size={14} /> View definition
+        </button>
+        {inspection !== null && (
+          <pre className="atl-definition">
+            {JSON.stringify(inspection, null, 2)}
+          </pre>
+        )}
+        {attempts.current.has(selectedTool.name) && (
+          <button
+            type="button"
+            className="atl-text-button"
+            disabled={locked}
+            onClick={() =>
+              void action(async (activeBridge, active) => {
+                const attempt = attempts.current.get(selectedTool.name);
+                if (!attempt) return;
+                const response = (await activeBridge.callTool(
+                  "reach_tool_operation",
+                  { requestId: attempt.requestId },
+                )) as Result;
+                if (active()) {
+                  attempt.unresolved = needsRecovery(response);
+                  setResult(response);
+                  setResultTool(selectedTool.name);
+                  setError(
+                    response.status === "completed"
+                      ? ""
+                      : toolErrorMessage(
+                          response.error || "This run is still in progress.",
+                          attempt.args.browser,
+                        ),
+                  );
+                  setMessage("");
+                }
+              })
+            }
+          >
+            Check run status
+          </button>
+        )}
+      </details>
+    </aside>
+  );
   const showLibrary = category !== "recorded" && !editor;
   return (
     <div className="ap-deterministic-tools">
       <div className="atl-browser-bar">
-        <div>
-          <ShieldCheck size={15} />
-          <span>Fixed steps · checked results</span>
-        </div>
         {browsers.length > 0 && (
           <label>
-            Run in{" "}
+            Browser{" "}
             <select
               aria-label="Tool browser"
               value={selectedBrowser}
@@ -526,14 +779,21 @@ export default function DeterministicAgentTools({
         <button
           type="button"
           className="atl-text-button"
+          aria-label="Create deterministic tool"
           disabled={locked}
           onClick={() => void openEditor()}
         >
-          <Plus size={15} /> Create deterministic tool
+          <Plus size={15} /> New tool
         </button>
       </div>
+      {locked && (
+        <p className="atl-busy" role="status">
+          {pending
+            ? `${message || "A tool is running."} · Wait before running another tool.`
+            : "Finish the recorded task before running a browser tool."}
+        </p>
+      )}
       {(!selectedTool || editor || category === "recorded") && feedback}
-      {!editor && (!selectedTool || category === "recorded") && resultsView}
       {editor && (
         <section
           className="atl-editor"
@@ -609,7 +869,11 @@ export default function DeterministicAgentTools({
       {showLibrary && (
         <div className={`atl-workspace ${selectedTool ? "has-selection" : ""}`}>
           <div className="atl-list">
-            <p className="atl-count" role="status">
+            <p
+              className="atl-count"
+              role="status"
+              hidden={loaded && !query.trim()}
+            >
               {!loaded
                 ? "Loading browser tools…"
                 : `${matching.length} ${matching.length === 1 ? "tool" : "tools"}${query.trim() ? ` matching “${query.trim()}”` : " available"}`}
@@ -620,7 +884,11 @@ export default function DeterministicAgentTools({
               </p>
             )}
             <div className="atl-grid">
-              {matching.map((tool) => {
+              {(selectedTool &&
+              !matching.some((tool) => tool.name === selectedTool.name)
+                ? [selectedTool, ...matching]
+                : matching
+              ).map((tool) => {
                 const family = group(tool),
                   Icon =
                     family === "gmail"
@@ -628,53 +896,56 @@ export default function DeterministicAgentTools({
                       : family === "walmart"
                         ? Package
                         : Zap;
-                const required = (
-                  (tool.inputSchema.required || []) as string[]
-                ).filter((key) => !["browser", "requestId"].includes(key));
+                const unresolved = attempts.current.get(tool.name)?.unresolved;
                 return (
                   <article
                     className={`atl-card ${selected === tool.name ? "is-selected" : ""}`}
                     key={tool.name}
                   >
-                    <div className="atl-card-top">
+                    <div className="atl-tool-row">
                       <span className={`atl-service ${family}`}>
-                        <Icon size={20} />
+                        <Icon size={18} />
                       </span>
-                      <span className="atl-family">
-                        {family === "gmail"
-                          ? "Gmail"
-                          : family === "walmart"
-                            ? "Walmart"
-                            : "Custom tool"}
-                      </span>
-                      <span className="atl-tag">Deterministic</span>
-                    </div>
-                    <h3>{tool.title}</h3>
-                    <p>{summary(tool)}</p>
-                    <div className="atl-card-bottom">
                       <button
                         type="button"
                         className="atl-inspect"
                         aria-label={`Inspect ${tool.title}`}
-                        onClick={() => inspect(tool)}
+                        aria-expanded={selected === tool.name}
+                        onClick={() =>
+                          selected === tool.name
+                            ? setSelected("")
+                            : inspect(tool)
+                        }
                       >
-                        <span>
-                          {required.length
-                            ? `${required.length} input${required.length === 1 ? "" : "s"}`
-                            : "Ready to run"}
+                        <span className="atl-title">{tool.title}</span>
+                        {selected === tool.name &&
+                          !matching.some((item) => item.name === tool.name) && (
+                            <span className="atl-description">
+                              Selected tool · outside this filter
+                            </span>
+                          )}
+                        <span className="atl-summary">
+                          {rowDescriptions[tool.name] || summary(tool)}
                         </span>
-                        <ChevronRight size={14} />
                       </button>
-                      <button
-                        type="button"
-                        className="atl-run"
-                        disabled={locked}
-                        onClick={() => void execute(tool)}
-                      >
-                        <Play size={12} />
-                        <span>{tool.title}</span>
-                      </button>
+                      {selected !== tool.name && (
+                        <button
+                          type="button"
+                          className="atl-run"
+                          aria-label={`${unresolved ? "Recover" : "Run"} ${tool.title}`}
+                          disabled={locked}
+                          onClick={() => void execute(tool)}
+                        >
+                          <Play size={13} />{" "}
+                          {pending && selected === tool.name
+                            ? "Running…"
+                            : unresolved
+                              ? "Recover"
+                              : "Run"}
+                        </button>
+                      )}
                     </div>
+                    {selected === tool.name && runnerView}
                   </article>
                 );
               })}
@@ -695,216 +966,10 @@ export default function DeterministicAgentTools({
               </div>
             )}
           </div>
-          {selectedTool && (
-            <aside
-              className="atl-runner"
-              ref={runner}
-              aria-label={`Run ${selectedTool.title}`}
-            >
-              <div className="atl-runner-heading">
-                <p className="aw-eyebrow">TOOL DETAILS</p>
-                <button
-                  type="button"
-                  aria-label="Close tool details"
-                  onClick={() => setSelected("")}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <h2>{selectedTool.title}</h2>
-              <p className="atl-description">{summary(selectedTool)}</p>
-              {feedback}
-              {resultTool === selectedTool.name && resultsView}
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void execute(selectedTool);
-                }}
-              >
-                {Object.entries(fields(selectedTool))
-                  .filter(([key]) => !["browser", "requestId"].includes(key))
-                  .map(([key, field]) => (
-                    <label key={key}>
-                      <span>
-                        {field.description || key}
-                        {(
-                          (selectedTool.inputSchema.required || []) as string[]
-                        ).includes(key) && <small>Required</small>}
-                      </span>
-                      {field.enum ? (
-                        <select
-                          aria-label={`${selectedTool.title}: ${key}`}
-                          disabled={locked}
-                          value={
-                            values[selectedTool.name]?.[key] ??
-                            field.default ??
-                            field.enum[0]
-                          }
-                          onChange={(event) =>
-                            setValues((old) => ({
-                              ...old,
-                              [selectedTool.name]: {
-                                ...old[selectedTool.name],
-                                [key]: event.target.value,
-                              },
-                            }))
-                          }
-                        >
-                          {field.enum.map((value) => (
-                            <option key={value}>{value}</option>
-                          ))}
-                        </select>
-                      ) : !field.pattern && (field.maxLength || 2000) > 1000 ? (
-                        <textarea
-                          aria-label={`${selectedTool.title}: ${key}`}
-                          disabled={locked}
-                          rows={3}
-                          value={
-                            values[selectedTool.name]?.[key] ??
-                            field.default ??
-                            ""
-                          }
-                          maxLength={field.maxLength || 2000}
-                          onChange={(event) =>
-                            setValues((old) => ({
-                              ...old,
-                              [selectedTool.name]: {
-                                ...old[selectedTool.name],
-                                [key]: event.target.value,
-                              },
-                            }))
-                          }
-                        />
-                      ) : (
-                        <input
-                          aria-label={`${selectedTool.title}: ${key}`}
-                          disabled={locked}
-                          autoComplete="off"
-                          placeholder={
-                            field.pattern
-                              ? "Choose a result below, or paste its handle"
-                              : "Enter a value"
-                          }
-                          value={
-                            values[selectedTool.name]?.[key] ??
-                            field.default ??
-                            ""
-                          }
-                          maxLength={field.maxLength || 2000}
-                          onChange={(event) =>
-                            setValues((old) => ({
-                              ...old,
-                              [selectedTool.name]: {
-                                ...old[selectedTool.name],
-                                [key]: event.target.value,
-                              },
-                            }))
-                          }
-                        />
-                      )}
-                    </label>
-                  ))}
-                {!Object.entries(fields(selectedTool)).some(
-                  ([key]) => !["browser", "requestId"].includes(key),
-                ) && (
-                  <p className="atl-description">This tool needs no inputs.</p>
-                )}
-                <button className="atl-primary" disabled={locked}>
-                  <Play size={14} />
-                  {pending
-                    ? "Running…"
-                    : attempts.current.get(selectedTool.name)?.unresolved
-                      ? "Recover this run"
-                      : "Run tool"}
-                </button>
-              </form>
-              <p className="atl-browser-note">
-                Uses your existing{" "}
-                {attempts.current.get(selectedTool.name)?.unresolved
-                  ? attempts.current.get(selectedTool.name)?.args.browser
-                  : selectedBrowser}{" "}
-                session. Missing or changed targets stop the run.
-              </p>
-              <button
-                type="button"
-                className="atl-text-button"
-                disabled={locked}
-                onClick={() =>
-                  void action(async (activeBridge, active) => {
-                    const catalog = (await activeBridge.callTool(
-                      "reach_tools",
-                    )) as { tools: { id: string }[] };
-                    if (active())
-                      setInspection(
-                        catalog.tools.find(
-                          (tool) =>
-                            `reach_tool_${tool.id}` === selectedTool.name,
-                        ),
-                      );
-                  })
-                }
-              >
-                <Code2 size={14} /> View definition
-              </button>
-              {inspection !== null && (
-                <pre className="atl-definition">
-                  {JSON.stringify(inspection, null, 2)}
-                </pre>
-              )}
-              {attempts.current.get(selectedTool.name)?.unresolved && (
-                <div className="atl-recovery">
-                  <p>
-                    A previous run has an unresolved result. Keep its request ID
-                    to recover it.
-                  </p>
-                  <button
-                    type="button"
-                    className="atl-text-button"
-                    disabled={locked}
-                    onClick={() =>
-                      void action(async (activeBridge, active) => {
-                        const attempt = attempts.current.get(selectedTool.name);
-                        if (!attempt) return;
-                        const response = (await activeBridge.callTool(
-                          "reach_tool_operation",
-                          { requestId: attempt.requestId },
-                        )) as Result;
-                        if (active()) {
-                          attempt.unresolved = response.status !== "completed";
-                          setResult(response);
-                          setResultTool(selectedTool.name);
-                          setMessage(
-                            `${response.status} · ${response.completedSteps || 0}/${response.totalSteps || 0} steps · ${attempt.requestId}`,
-                          );
-                        }
-                      })
-                    }
-                  >
-                    Check run status
-                  </button>
-                  <button
-                    type="button"
-                    className="atl-text-button"
-                    disabled={locked}
-                    onClick={() => {
-                      attempts.current.delete(selectedTool.name);
-                      setMessage(
-                        "A new run will use a new request ID. Check the browser before executing it.",
-                      );
-                      setRevision((value) => value + 1);
-                    }}
-                  >
-                    Start another run
-                  </button>
-                </div>
-              )}
-              {resultTool !== selectedTool.name && resultsView}
-            </aside>
-          )}
         </div>
       )}
       <details className="atl-setup">
-        <summary>Browser setup and execution rules</summary>
+        <summary>Browser setup</summary>
         <p>
           Chrome and Safari need Allow JavaScript from Apple Events enabled,
           plus macOS Automation access for Reach's Terminal. These tools use the
@@ -912,9 +977,9 @@ export default function DeterministicAgentTools({
           challenges, and blocked pages need the owner.
         </p>
         <p>
-          New operations use a unique request ID. Recover an interrupted run
-          with its existing ID to avoid repeating effects. Results expire and
-          belong to this browser and invitation.
+          Interrupted attempts are retained for safe recovery while this
+          workspace is open. Results expire and belong to this browser and
+          invitation.
         </p>
       </details>
     </div>

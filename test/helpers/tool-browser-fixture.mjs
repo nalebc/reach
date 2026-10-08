@@ -165,7 +165,8 @@ export function toolBrowserFixture() {
       calls.push({ browser, ...request });
       await this.before?.(browser, request);
       let result;
-      if (request.op === "tabs")
+      if (request.op === "preflight") result = { ok: true };
+      else if (request.op === "tabs")
         result = browsers.get(browser).map((tab) => this.info(tab));
       else if (request.op === "create")
         result = this.info(this.add(browser, request.url));

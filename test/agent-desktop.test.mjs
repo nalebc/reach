@@ -102,6 +102,21 @@ test("revoking a browser run stops its native helper before a later phase", asyn
   w.desktop.close();
 });
 
+test("missing native Automation permission refuses a tool before its work or launch callback", async () => {
+  const w = world({onSpawn: helper => {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => request.op === "browser-check"
+      ? {error: "The owner needs to enable macOS Automation for Reach’s Terminal.", kind: "setup_required"}
+      : send(request, beforeSend);
+  }});
+  const client = w.make("muse", "apps");
+  let entered = false;
+  await rejects(() => w.desktop.withBrowser(client, chrome.id, authorize(client), async () => {entered = true;}), 503, /owner needs/, "setup_required");
+  assert.equal(entered, false);
+  assert.equal(w.helpers[0].requests.filter(request => request.op === "open").length, 0);
+  w.desktop.close();
+});
+
 test("a helper per session, started with the preset's rules; a changed policy restarts it", async () => {
   const w = world();
   const full = w.make("muse", "full", { hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] });
@@ -260,7 +275,7 @@ test("one agent at a time on the Mac: a short lease, the owner's phone first, he
   w.pause(true);
   await rejects(() => w.desktop.act(muse, { type: "click", x: 0.5, y: 0.5 }, authorize(muse)), 409, /paused/);
   w.pause(false);
-  for (const [kind, status] of [["paused", 409], ["retry", 409], ["invalid", 400], ["unavailable", 503], ["blocked", 403], [undefined, 403]]) {
+  for (const [kind, status] of [["paused", 409], ["retry", 409], ["invalid", 400], ["unavailable", 503], ["setup_required", 503], ["blocked", 403], [undefined, 403]]) {
     w.setAct(() => ({ error: `helper said ${kind}`, kind }));
     await rejects(() => w.desktop.act(muse, { type: "click", x: 0.5, y: 0.5 }, authorize(muse)), status, /helper said/, kind || "blocked");
   }

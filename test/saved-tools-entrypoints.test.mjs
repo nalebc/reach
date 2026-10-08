@@ -231,7 +231,7 @@ test(
       clientInfo: { name: "synthetic-audit", version: "1" },
     });
     assert.equal(init.result.capabilities.tools.listChanged, true);
-    assert.match(init.result.instructions, /Tool library/);
+    assert.match(init.result.instructions, /open Tools.*click Run/);
     assert.equal(
       (await one.request("tools/list")).result.tools.some((tool) =>
         tool.name.startsWith("reach_saved_"),

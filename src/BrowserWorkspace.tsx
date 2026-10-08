@@ -32,7 +32,6 @@ import BrowserTerminal from "./BrowserTerminal";
 import BrowserAppScreen from "./BrowserAppScreen";
 import AgentPage, { type PresetAccess } from "./AgentPage";
 import AgentWorkspaceFrame, {
-  AgentWorkspaceHome,
   type AgentSection,
   type AgentDestination,
 } from "./AgentWorkspaceFrame";
@@ -91,8 +90,7 @@ export default function BrowserWorkspace(props: BrowserWorkspaceProps) {
 function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
   const [access, setAccess] = useState<Access | null>(null);
   const [error, setError] = useState("");
-  const [section, setSection] = useState<AgentSection>("home");
-  const [overviewQuery, setOverviewQuery] = useState("");
+  const [selectedSection, setSection] = useState<AgentSection | null>(null);
   const [selectedTab, setSelectedTab] = useState<WorkspaceTab | null>(null);
   const [visible, setVisible] = useState(() => !document.hidden);
   const [root, setRoot] = useState(0);
@@ -204,6 +202,20 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
         : hasFiles
           ? "files"
           : "terminal";
+  const section: AgentSection =
+    selectedSection &&
+    (selectedSection === "access" ||
+      (selectedSection === "screen" && hasScreen) ||
+      (selectedSection === "files" && hasFiles) ||
+      (selectedSection === "commands" && hasTerminal))
+      ? selectedSection
+      : hasScreen
+        ? "screen"
+        : hasFiles
+          ? "files"
+          : hasTerminal
+            ? "commands"
+            : "access";
   const screenActive =
     hasScreen &&
     access?.preset === undefined &&
@@ -536,12 +548,6 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
 
   const destinations: AgentDestination[] = [
     {
-      id: "home",
-      label: "Overview",
-      detail: "Find your shared resources and start a task.",
-      available: true,
-    },
-    {
       id: "tools",
       label: "Tools",
       detail: "Named tasks need a laptop-control invitation.",
@@ -587,7 +593,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
     (item) => item.id === section && item.available,
   )
     ? section
-    : "home";
+    : destinations.find((item) => item.available)?.id || "access";
   const navigate = (next: AgentSection) => {
     if (!destinations.some((item) => item.id === next && item.available))
       return;
@@ -606,17 +612,6 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
       navigate={navigate}
       reload={() => window.location.reload()}
     >
-      <div hidden={activeSection !== "home"}>
-        <AgentWorkspaceHome
-          name={peer.name}
-          destinations={destinations}
-          tools={false}
-          query={overviewQuery}
-          setQuery={setOverviewQuery}
-          findTools={() => {}}
-          navigate={navigate}
-        />
-      </div>
       <section id="agent-section-access" hidden={activeSection !== "access"}>
         <div className="aw-page-heading">
           <p className="aw-eyebrow">YOUR INVITATION</p>
@@ -667,7 +662,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
       </section>
       <div
         className="browser-workspace ag-ws aw-legacy"
-        hidden={activeSection === "home" || activeSection === "access"}
+        hidden={activeSection === "access"}
       >
         {error && (
           <p className="browser-workspace-error error" role="alert">
