@@ -615,6 +615,10 @@ function ReachWorkspace() {
     setNewSession(null);
     setMobileMenu(false);
     setQuickLaunch(false);
+    // The computer you pick wins over a link still waiting for another one
+    // (a chat opened on a computer that never answered): it doesn't pull you
+    // back there once this one loads.
+    setLinkTarget(null);
   };
   const session = (kind: string, path = "", root = 0) => {
     if (kind === "terminal" ? features.terminal : features.codex)
@@ -927,6 +931,15 @@ function ReachWorkspace() {
                     onTargetOpened={() => setChatTarget(null)}
                     showOnScreen={showOnScreen}
                     onScreen={features.screen ? () => navigate("screen") : undefined}
+                    // The All page covers every paired computer; a chat on
+                    // another opens the way a notification from it does:
+                    // that computer first, then the chat once it's connected.
+                    computers={peers}
+                    connections={connections}
+                    onOpenOn={(computer, chat) => {
+                      choose(computer.id);
+                      setLinkTarget({ page: "sessions", agent: chat.agent, id: chat.id, computer: computer.id });
+                    }}
                   />
                 )}
                 {page === "apps" && (

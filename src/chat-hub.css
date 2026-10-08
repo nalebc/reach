@@ -208,6 +208,41 @@
 .chat-hub .chat-card-preview.hub-changed {
   display: block;
 }
+/* Across computers (fleet-chats.ts): the ones whose chats aren't here, and
+   which computer a row is on when the page covers more than one. */
+.chat-hub .hub-fleet-note {
+  margin: -6px 16px 12px;
+  color: var(--chat-muted);
+  font-size: 12.5px;
+}
+.hub-computer {
+  display: inline-block;
+  max-width: 10em;
+  overflow: hidden;
+  padding: 0 7px;
+  border: 1px solid var(--chat-line);
+  border-radius: 999px;
+  color: var(--chat-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.hub-away li button > .hub-computer {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.hub-hit-copy small > .hub-computer {
+  margin-right: 6px;
+}
+.chat-hub .chat-project-group h2 > .hub-computer {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--chat-muted);
+  font-size: 11px;
+}
 /* Teams at work (Teams.tsx): the lead, its route, its helpers. */
 .hub-team {
   display: flex;

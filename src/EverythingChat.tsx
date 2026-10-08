@@ -33,6 +33,7 @@ import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
 import ChatHub from "./ChatHub";
+import type { FleetConnections } from "./useFleetConnections";
 import { relayAgents } from "./Relays";
 import { TeamPicker } from "./Teams";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
@@ -748,6 +749,9 @@ export default function EverythingChat({
   onTargetOpened,
   showOnScreen,
   onScreen,
+  computers,
+  connections,
+  onOpenOn,
 }: {
   peer: Peer;
   feed?: AgentFeed;
@@ -755,6 +759,11 @@ export default function EverythingChat({
   onTargetOpened?: () => void;
   showOnScreen?: (prompt: MacPrompt) => void;
   onScreen?: () => void;
+  // The All page covers every paired computer (ChatHub.tsx); a chat on
+  // another one opens there.
+  computers?: Peer[];
+  connections?: FleetConnections;
+  onOpenOn?: (computer: Peer, chat: { agent: string; id: string; title?: string }) => void;
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
@@ -921,6 +930,9 @@ export default function EverythingChat({
           {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
           <ChatHub
             peer={peer}
+            computers={computers}
+            connections={connections}
+            onOpenOn={onOpenOn}
             sessions={sessions}
             relays={relays}
             teams={teams}
