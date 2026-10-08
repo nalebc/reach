@@ -55,12 +55,24 @@ const routes: Record<string, (url: URL) => unknown> = {
     { id: "main", name: "Personal assistant", emoji: "🦞", isDefault: true, model: "anthropic/claude-sonnet-4-5", running: 1, waiting: 0, subagents: [], recent: [] },
     { id: "work", name: "Work", emoji: "💼", isDefault: false, model: "openai/gpt-4o", running: 0, waiting: 0, subagents: [], recent: [] },
   ] }),
-  "/api/sessions/openclaw/agents/rules": () => ({ supported: false }),
-  "/api/sessions/openclaw/skills": () => ({ supported: true, canToggle: true, skills: [
-    { name: "weather", key: "weather", emoji: "🌤️", source: "openclaw-bundled", bundled: true, state: "ready", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
-    { name: "github", key: "github", emoji: "🐙", source: "openclaw-bundled", bundled: true, state: "ready", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
-    { name: "notion", key: "notion", emoji: "📝", source: "openclaw-bundled", bundled: true, state: "setup", blocked: false, missing: { bins: [], env: ["NOTION_API_KEY"], config: [], os: [] }, install: [], keyName: "NOTION_API_KEY" },
+  "/api/sessions/openclaw/agents/rules": () => ({
+    supported: true, canEdit: true, hash: "preview",
+    all: { security: "allowlist", ask: "on-miss", allowlist: [{ pattern: "/opt/homebrew/bin/rg" }, { pattern: "/Users/sample/Projects/research/tools/summarize-documents" }] },
+    agents: {},
+  }),
+  "/api/sessions/openclaw/skills": () => ({ supported: true, canToggle: true, canInstall: true, canSetup: true, skills: [
+    { name: "weather", key: "weather", emoji: "🌤️", source: "bundled", bundled: true, state: "ready", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
+    { name: "github", key: "github", emoji: "🐙", source: "bundled", bundled: true, state: "ready", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
+    { name: "summarize", key: "summarize", emoji: "📄", source: "bundled", bundled: true, state: "off", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
+    { name: "memo", key: "memo", emoji: "📒", source: "bundled", bundled: true, state: "setup", blocked: false, missing: { bins: ["memo"], env: [], config: [], os: [] }, install: [{ id: "brew", kind: "brew", label: "Install memo" }] },
+    { name: "notion", key: "notion", emoji: "📝", source: "bundled", bundled: true, state: "setup", blocked: false, missing: { bins: [], env: ["NOTION_API_KEY"], config: [], os: [] }, install: [], keyName: "NOTION_API_KEY" },
   ] }),
+  "/api/sessions/openclaw/skills/check": () => ({
+    check: "preview-only", name: "memo", emoji: "📒", source: "bundled", bundled: true,
+    publisher: "Sample publisher", kind: "brew", package: "sample/tap/memo",
+    packageFrom: "Homebrew", command: "brew install sample/tap/memo", scripts: [],
+    access: { bins: ["memo"], env: [], config: [] }, warnings: ["internet"], level: "calm",
+  }),
   "/api/sessions/openclaw/catalog": () => ({ defaultAgentId: "main", agents: [{ id: "main", name: "Personal assistant" }, { id: "work", name: "Work" }], models: [{ id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true }], canEdit: true, errors: [] }),
   "/api/sessions/logos": () => ({ version: "demo", logos: {} }),
 };

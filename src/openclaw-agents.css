@@ -216,7 +216,11 @@
   border-radius: 999px;
   background: var(--claw-group, #ffffff0b);
   color: var(--claw-ink, #ececec);
-  font: 16px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    16px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .claw-agents-add button {
   display: grid;
@@ -233,26 +237,45 @@
   opacity: 0.4;
 }
 
-.claw-agents button { cursor: pointer; }
-.claw-agents button:disabled { cursor: default; }
-.claw-agents-add input::placeholder { color: var(--claw-muted, #a1a1a1); }
+.claw-agents button {
+  cursor: pointer;
+}
+.claw-agents button:disabled {
+  cursor: default;
+}
+.claw-agents-add input::placeholder {
+  color: var(--claw-muted, #a1a1a1);
+}
 .claw-agents-add input:focus-visible {
   outline: 2px solid var(--claw-blue, #5ea9ff);
   outline-offset: 2px;
 }
 @media (max-width: 420px) {
-  .claw-agents-row { flex-wrap: wrap; gap: 10px; }
-  .claw-agents-copy { flex-basis: calc(100% - 74px); }
-  .claw-agents-chevron { order: 1; }
+  .claw-agents-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .claw-agents-copy {
+    flex-basis: calc(100% - 74px);
+  }
+  .claw-agents-chevron {
+    order: 1;
+  }
   .claw-agents-pills {
     order: 2;
     max-width: none;
     margin-left: 46px;
     justify-content: flex-start;
   }
-  .claw-agents-pills:empty { display: none; }
-  .claw-agents-body { padding-left: 16px; }
+  .claw-agents-pills:empty {
+    display: none;
+  }
+  .claw-agents-body {
+    padding-left: 16px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .claw-agents-chevron { transition: none; }
+  .claw-agents-chevron {
+    transition: none;
+  }
 }

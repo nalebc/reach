@@ -10,6 +10,7 @@ import {
   stateFiles,
   readiness,
   restartOpenClawGateway,
+  runOpenClawMaintenance,
   DB_WARN_BYTES,
 } from "../server/openclaw-health.mjs";
 import { startDom, settle } from "./dom/harness.mjs";
@@ -368,24 +369,45 @@ test("restart: the old Gateway still answering isn't taken for the new one; answ
   assert.ok(t <= 32000);
 });
 
-test("doctor opens the fixed `openclaw doctor` in a Reach terminal", async () => {
-  const opened = [];
-  const f = fixture({ openCommand: (command, name) => (opened.push([command, name]), { id: "t9" }) });
-  assert.deepEqual(await f.hit("POST", "/health/doctor", { body: { command: "rm -rf ~" } }), { terminal: { id: "t9" } });
-  assert.deepEqual(opened, [["openclaw doctor", "OpenClaw doctor"]]);
-  await assert.rejects(f.hit("POST", "/health/doctor", { revoked: true }), /Not allowed/);
-  assert.equal(opened.length, 1);
-  const none = fixture();
-  await assert.rejects(none.hit("POST", "/health/doctor"), (e) => e.status === 409);
+test("maintenance requires confirmation, excludes duplicates and retains results", async () => {
+  let finish;
+  const called = [];
+  const f = fixture({ runMaintenance: (action) => {
+    called.push(action);
+    return new Promise((resolve) => { finish = resolve; });
+  } });
+  await assert.rejects(f.hit("POST", "/health/doctor"), /Confirm/);
+  await assert.rejects(f.hit("POST", "/health/update", { body: { confirm: true }, revoked: true }), /Not allowed/);
+  const started = await f.hit("POST", "/health/doctor", { body: { confirm: true, command: "evil" } });
+  assert.equal(started.job.status, "running");
+  await assert.rejects(f.hit("POST", "/health/update", { body: { confirm: true } }), /already running/);
+  assert.deepEqual(called, ["doctor"]);
+  finish({ status: "done", message: "Checked", lines: ["findings"] });
+  await new Promise((r) => setImmediate(r));
+  const result = await f.hit("GET", "/health/maintenance");
+  assert.equal(result.job.status, "done");
+  assert.deepEqual(result.job.lines, ["findings"]);
 });
 
-test("update opens the fixed `openclaw update` in a Reach terminal", async () => {
-  const opened = [];
-  const f = fixture({ openCommand: (command, name) => (opened.push([command, name]), { id: "t10" }) });
-  assert.deepEqual(await f.hit("POST", "/health/update", { body: { tag: "evil" } }), { terminal: { id: "t10" } });
-  assert.deepEqual(opened, [["openclaw update", "Update OpenClaw"]]);
-  await assert.rejects(f.hit("POST", "/health/update", { revoked: true }), /Not allowed/);
-  assert.equal(opened.length, 1);
+test("maintenance runs fixed noninteractive commands, scrubs output and reports failure/skips", async () => {
+  const seen = [];
+  const deps = { configuration: async () => ({}), env: { SHELL: "/bin/sh" }, platform: "darwin",
+    run: async (...args) => { seen.push(args); return { stdout: `key=${SECRETS.openai}`, stderr: "" }; } };
+  const doctor = await runOpenClawMaintenance("doctor", deps);
+  assert.equal(doctor.status, "done");
+  assert.equal(JSON.stringify(doctor).includes(SECRETS.openai), false);
+  assert.match(seen[0][1][1], /doctor --non-interactive/);
+  await runOpenClawMaintenance("repair", deps);
+  assert.match(seen[1][1][1], /--repair --non-interactive/);
+  for (const [status, expected] of [["ok", "done"], ["skipped", "skipped"], ["error", "failed"]]) {
+    const r = await runOpenClawMaintenance("update", { ...deps, run: async () => ({ stdout: JSON.stringify({ status }) }) });
+    assert.equal(r.status, expected);
+  }
+  const failed = await runOpenClawMaintenance("doctor", { ...deps, run: async () => { throw new Error("secret"); } });
+  assert.equal(failed.status, "failed");
+  assert.doesNotMatch(JSON.stringify(failed), /secret/);
+  await assert.rejects(runOpenClawMaintenance("evil", deps), /Choose/);
+  await assert.rejects(runOpenClawMaintenance("doctor", { ...deps, authorize: () => { throw new Error("revoked"); } }), /revoked/);
 });
 
 // --- UI --------------------------------------------------------------------
@@ -414,7 +436,8 @@ async function ui({ health, logs } = {}) {
             ],
       }),
       [`${base}/health/restart`]: (init) => (posted.push(["restart", JSON.parse(init.body)]), { restarted: true }),
-      [`${base}/health/doctor`]: () => (posted.push(["doctor"]), { terminal: { id: "t1" } }),
+      [`${base}/health/maintenance`]: () => ({ job: posted.some(([action]) => action === "doctor") ? { action: "doctor", status: "done", message: "Health check finished.", lines: ["All checks complete"] } : null }),
+      [`${base}/health/doctor`]: (init) => (posted.push(["doctor", JSON.parse(init.body)]), { job: { action: "doctor", status: "running", lines: [] } }),
     },
   });
   dom.window.addEventListener("reach:open-terminal", (e) => opened.push(e.detail));
@@ -448,10 +471,13 @@ test("pill opens a sheet with rows, fixes and logs", async () => {
     await u.dom.waitFor(() => u.text().includes("Restarted"));
     assert.deepEqual(u.posted, [["restart", { confirm: true }]]);
     assert.equal(u.changed.length, 1);
-    // Doctor opens its terminal.
-    await u.click(u.button("Doctor"));
-    await u.dom.waitFor(() => u.text().includes("Opened in Terminal"));
-    assert.deepEqual(u.opened, ["t1"]);
+    await u.click(u.button("Check health"));
+    assert.equal(u.posted.length, 1);
+    await u.click(u.button("Continue"));
+    await u.dom.waitFor(() => u.text().includes("Health check finished."));
+    assert.deepEqual(u.posted[1], ["doctor", { confirm: true }]);
+    assert.deepEqual(u.opened, []);
+    assert.match(u.text(), /All checks complete/);
     assert.deepEqual(u.dom.errors, []);
   } finally {
     await u.dom.close();

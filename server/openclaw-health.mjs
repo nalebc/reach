@@ -293,7 +293,7 @@ export async function runOpenClawMaintenance(action, {
   if (action === "update" && !failed) {
     try {
       const result = JSON.parse(output.stdout);
-      failed = result.status === "error" || result.status === "failed" || result.ok === false;
+      failed = !["ok", "skipped"].includes(result.status) || result.ok === false;
       skipped = result.status === "skipped";
     } catch {
       // Don't claim an update succeeded without its structured result.
@@ -332,6 +332,8 @@ export function routes(
     now = Date.now,
   } = {},
 ) {
+  let job = null;
+  let restarting = false;
   // The state files are walked at most once a minute.
   let filesAt = 0,
     filesKept = null;
@@ -412,34 +414,39 @@ export function routes(
     if (req.body?.confirm !== true) throw fail(400, "Confirm the restart.");
     const current = authorize(req);
     current();
-    const started = now();
-    await restart({ authorize: current, env });
-    current();
-    while (now() - started < waitMs) {
+    if (job?.status === "running" || restarting) throw fail(409, "An OpenClaw action is already running.");
+    restarting = true;
+    try {
+      const started = now();
+      await restart({ authorize: current, env });
       current();
-      const up = await ready();
-      current();
-      // A new Gateway: up for less time than since the restart began.
-      if (up.supported && up.uptimeMs !== undefined && up.uptimeMs <= now() - started + 1000) {
-        const overview = await client.overview();
+      while (now() - started < waitMs) {
         current();
-        if (overview.connected) return res.json({ restarted: true, back: true });
+        const up = await ready();
+        current();
+        // A new Gateway: up for less time than since the restart began.
+        if (up.supported && up.uptimeMs !== undefined && up.uptimeMs <= now() - started + 1000) {
+          const overview = await client.overview();
+          current();
+          if (overview.connected) return res.json({ restarted: true, back: true });
+        }
+        await new Promise((r) => setTimeout(r, settleMs));
       }
-      await new Promise((r) => setTimeout(r, settleMs));
+      // Still starting: the phone keeps reading /health.
+      res.json({ restarted: true, back: false });
+    } finally {
+      restarting = false;
     }
-    // Still starting: the phone keeps reading /health.
-    res.json({ restarted: true, back: false });
   });
 
   // One maintenance operation per host; polling survives closing the sheet.
-  let job = null;
   app.get(`${base}/health/maintenance`, (_req, res) => res.json({ job }));
   for (const action of ["doctor", "repair", "update"]) {
     app.post(`${base}/health/${action}`, async (req, res) => {
       const current = authorize(req);
       current();
       if (req.body?.confirm !== true) throw fail(400, "Confirm this OpenClaw action.");
-      if (job?.status === "running") throw fail(409, "An OpenClaw action is already running.");
+      if (job?.status === "running" || restarting) throw fail(409, "An OpenClaw action is already running.");
       const next = { action, status: "running", startedAt: now(), lines: [] };
       job = next;
       Promise.resolve().then(async () => {

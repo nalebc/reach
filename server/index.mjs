@@ -2665,6 +2665,7 @@ export async function createReach(overrides = {}) {
       from: { agent: String(b.from?.agent || ""), id: String(b.from?.id || "") },
       steps: b.steps,
       trigger: b.trigger ?? "reply",
+      priority: b.priority ?? null,
       now: b.now === true,
       item: typeof b.item === "string" && b.item.length <= 200 ? b.item : null,
       // From an OpenClaw chat (no folder of its own): where the work happens.
