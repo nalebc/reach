@@ -221,6 +221,17 @@ export function ChatLibraryHeader({
               <Plus size={18} /> New chat
             </button>
           )}
+          {workflows && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setActionsOpen(false);
+                workflows.onOpen();
+              }}
+            >
+              <Workflow size={18} /> Workflows
+            </button>
+          )}
           {onRefresh && (
             <button
               role="menuitem"
