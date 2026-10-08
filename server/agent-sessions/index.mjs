@@ -220,10 +220,11 @@ export function createAgentSessions({
   agentAsks: givenAsks = null,
   // Where Claude Code keeps the user's settings (Reach's hook goes there),
   // and Reach's hook script.
-  claudeSettingsPath = path.join(os.homedir(), ".claude", "settings.json"),
+  claudeSettingsPath = process.env.NODE_TEST_CONTEXT ? path.join(os.tmpdir(), "reach-no-claude-settings.json") : path.join(os.homedir(), ".claude", "settings.json"),
   hookScript = fileURLToPath(new URL("../../scripts/agent-hook.mjs", import.meta.url)),
-  // Claude Code's registry of running sessions (processes.mjs).
-  registry = readSessionRegistry,
+  // Claude Code's registry of running sessions (processes.mjs); none of this
+  // Mac's in tests.
+  registry = process.env.NODE_TEST_CONTEXT ? () => new Map() : readSessionRegistry,
   // Whether the Claude app is installed and signed in (it signs in apart
   // from the CLI Reach replies through).
   claudeApp = () => claudeAppAccess({ registry: readSessionRegistry }),
@@ -339,7 +340,8 @@ export function createAgentSessions({
       skip: (agent, id) => !!hosts[agent]?.drives(id),
       shows: async (agent, id) => {
         if (agent !== "claude") return false;
-        const where = registry().get(id)?.where;
+        liveCache = null;
+        const where = (await liveNow().catch(() => new Map())).get(id)?.where;
         return where === "claude-app" || where === "terminal";
       },
       // Claude Code's registry says at once when it stops waiting (the Mac
@@ -710,8 +712,13 @@ export function createAgentSessions({
       // One Codex chat's own file: that chat, if open, reads again. The Codex
       // app's queue or history: the open chats read again. Its saved choices
       // (a permission mode picked in the app): the open Codex chats show it.
-      if (news.kind === "rollout") touch("codex", news.id);
-      else if (news.kind === "settings") touchOpen("codex");
+      // History news says no chat's id: every open one reads again, those
+      // between two polls too (nudge woke only polls waiting that instant,
+      // and a reply the Codex app wrote then showed up to 25 s late).
+      if (news.kind === "rollout") {
+        codexWhole.delete(news.id);
+        touch("codex", news.id);
+      } else if (news.kind === "settings" || news.kind === "history") touchOpen("codex");
       else codexLive.nudge?.(news.kind);
     } else if (news.agent === "claude" && news.kind === "app") {
       // The Claude app's records (the chat on screen changed): a message
@@ -726,8 +733,10 @@ export function createAgentSessions({
       // (any session on the Mac writes it, all the time, while it works).
       liveCache = null;
       void statusNews();
-    } else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) {
-      // A Claude Code transcript: unless Reach is the one writing it.
+    } else if (news.agent === "claude" && news.id) {
+      // A Claude Code transcript, Reach's own included: its process says a
+      // reply before the file has it, and the app or a terminal can write
+      // to it while Reach's process idles (both waited for the 30 s look).
       touch("claude", news.id);
     } else if (news.agent === "gemini") {
       touchOpen("gemini");

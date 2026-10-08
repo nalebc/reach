@@ -4152,6 +4152,25 @@ test("a replaced chat credential drops a pending older page without blocking the
   assert.ok($(".as-older"), "the old page cannot replace the new pagination cursor");
 });
 
+test("after a reload, a chat comes back to the message being read, loading its earlier page again", async (t) => {
+  const route = `/api/sessions/codex/${CODEX}`;
+  const previous = routes[route];
+  t.after(() => { routes[route] = previous; dom.window.sessionStorage.clear(); });
+  const asked = [];
+  const said = (id, text, role = "assistant") => ({ id, role, kind: "text", text });
+  routes[route] = (init, url) => (asked.push(url.searchParams.get("before")), {
+    session: codexSession(),
+    items: url.searchParams.get("before") ? [said("e1", "Earlier, being read")] : [said("l1", "Latest")],
+    before: url.searchParams.get("before") ? null : "older",
+  });
+  dom.window.sessionStorage.setItem(`reach-chat-place:${peer.id}:codex:${CODEX}`, JSON.stringify({ at: "e1", offset: 0 }));
+  await open(codexSession());
+  // Not on this page: the earlier one is read again, and the message is there.
+  await dom.waitFor(() => asked.includes("older") && $$(".as-at").some((m) => m.dataset.at === "e1"));
+  assert.deepEqual($$(".as-at").map((m) => m.dataset.at), ["e1", "l1"]);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("an answered Codex question stays answered when its older page is loaded", async (t) => {
   const route = `/api/sessions/codex/${CODEX}`;
   const previous = routes[route];

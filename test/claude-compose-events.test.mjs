@@ -259,7 +259,7 @@ test("two chats with the same name: the message is typed only once the window sh
   assert.equal(typed.at(-1).session, "local_a");
 });
 
-test("drafts, Stop and modes are typed only into the chat with that id", async () => {
+test("drafts and Stop are typed only into the chat with that id", async () => {
   const typed = [];
   const compose = createClaudeCompose({
     type: async (message) => (typed.push(message), message.stop ? { stopped: true } : message.mode ? { mode: message.mode } : { drafted: true }),
@@ -270,8 +270,7 @@ test("drafts, Stop and modes are typed only into the chat with that id", async (
   });
   await compose.draft(A, { title: "Fix", text: "dra", owner: "phone" });
   await compose.stop(A, { title: "Fix" });
-  await compose.mode(A, { title: "Fix", mode: "plan" });
-  assert.deepEqual(typed.map((m) => [m.session, m.waitMs]), [["local_a", 0], ["local_a", 0], ["local_a", 0]]);
+  assert.deepEqual(typed.map((m) => [m.session, m.waitMs]), [["local_a", 0], ["local_a", 0]]);
 });
 
 test("the Claude app helper is asked for the chat by its id, and says which one it shows", async () => {

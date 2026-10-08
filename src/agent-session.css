@@ -1320,8 +1320,13 @@ button.as-mode:disabled {
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y pinch-zoom;
 }
-.as-scroll > * {
+.as-scroll > *,
+.as-scroll > .as-at > * {
   flex-shrink: 0;
+}
+/* A message's mark (AgentSession.tsx), no box of its own. */
+.as-at {
+  display: contents;
 }
 
 /* Messages */

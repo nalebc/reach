@@ -138,3 +138,28 @@ test("Gemini JSON and JSONL writes and project changes wake histories in one bur
   assert.deepEqual(news.at(-1), { agent: "gemini", kind: "projects" });
   watcher.close();
 });
+
+test("a folder that appears after Reach starts (an agent installed later) is watched once it's there", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));
+  const claudeProjects = path.join(root, "claude");
+  const watch = createAgentWatch({
+    codexHome: path.join(root, "codex"),
+    claudeProjects,
+    claudeSessions: path.join(root, "claude-sessions"),
+    claudeAppRecords: path.join(root, "claude-app-records"),
+    geminiHome: path.join(root, "gemini"),
+    debounceMs: 40,
+    retryMs: 50,
+  });
+  const news = [];
+  watch.onChange((n) => news.push(n));
+  try {
+    fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
+    await new Promise((r) => setTimeout(r, 300));
+    fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
+    assert.ok(await until(() => news.some((n) => n.agent === "claude" && n.id === ID)), "Claude news");
+  } finally {
+    watch.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

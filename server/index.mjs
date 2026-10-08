@@ -2531,6 +2531,7 @@ export async function createReach(overrides = {}) {
     );
   };
   openClawRoutes(app, openClaw, {
+    dataDir: config.dataDir,
     // What Reach doesn't set up itself (a model's key, a bot's token) opens
     // OpenClaw's own setup in a Reach terminal, typed into there.
     openSetup: (section, req) => {
@@ -2543,6 +2544,21 @@ export async function createReach(overrides = {}) {
         command: `openclaw configure --section ${section}`,
       });
       record("terminal", "Opened OpenClaw setup");
+      return terminal;
+    },
+    // A fixed OpenClaw command (each feature keeps its own list; never the
+    // phone's text) in a Reach terminal, e.g. `openclaw doctor`.
+    openCommand: (command, name, req) => {
+      const current = req.reauthorize();
+      notPaused();
+      if (!/^openclaw [a-z][a-z -]*$/.test(command)) throw Object.assign(new Error("Reach can't run that here."), { status: 400 });
+      const terminal = terminals.create({
+        cwd: os.homedir(),
+        name,
+        clientId: current.id,
+        command,
+      });
+      record("terminal", `Opened ${name}`);
       return terminal;
     },
   });

@@ -1,6 +1,9 @@
 // After Reach restarts with a new phone interface, an open page reloads itself
 // so it isn't left on the old one, but only while nothing is being typed,
-// answered or signed in, so nothing is lost. The Mac's live connection says
+// answered or signed in, so nothing is lost, and only while it isn't being
+// used: in the background (another app, the phone locked), or left untouched
+// for a few minutes. It reloaded mid-read each time an agent saved a file,
+// the chat back at its end (Oct 8). The Mac's live connection says
 // which interface it serves (presence `changes.build`). Foreground checks also
 // cover restored pages and browsers whose connection uses a different port.
 let first: string | null = null;
@@ -35,24 +38,40 @@ type UpdateOptions = {
   wait?: (f: () => void) => unknown;
   currentPage?: () => Promise<boolean | null>;
 };
+// The last touch, key, scroll or wheel on the page (its load counts).
+let touched = Date.now();
+export const IDLE_MS = 5 * 60 * 1000;
+if (typeof window !== "undefined")
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart", "scroll"])
+    window.addEventListener(type, () => (touched = Date.now()), { capture: true, passive: true });
+// Someone is looking at it and used it lately.
+export function inUse(doc: Document = document, now = Date.now()) {
+  return !doc.hidden && now - touched < IDLE_MS;
+}
 function queueUpdate({
   reload = () => location.replace(freshInterfaceUrl(location.href)),
-  busy = () => busyHere(),
+  busy = () => busyHere() || inUse(),
   wait = (f) => setTimeout(f, 5000),
 }: UpdateOptions) {
   if (waiting) return;
   waiting = true;
   const seen = generation;
+  let done = false;
   const attempt = () => {
-    if (seen !== generation) return;
+    if (seen !== generation || done) return;
     if (busy()) {
       setUpdateState("waiting");
       wait(attempt);
     } else {
+      done = true;
       setUpdateState("reloading");
       reload();
     }
   };
+  // Put away (another app, the screen locked): now, not up to 5 s later,
+  // when the page may already be frozen.
+  if (typeof document !== "undefined")
+    document.addEventListener("visibilitychange", () => document.hidden && attempt());
   attempt();
 }
 // Live screens and app windows open on this page: a reload mid-stream threw

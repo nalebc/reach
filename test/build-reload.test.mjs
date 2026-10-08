@@ -293,3 +293,12 @@ test("a stalled network check times out so later foreground checks can recover",
     false,
   );
 });
+
+test("a page in use waits for its update: until it's put away or left untouched for a few minutes", () => {
+  const { inUse, IDLE_MS } = reload;
+  dom.window.dispatchEvent(new dom.window.Event("scroll"));
+  const now = Date.now();
+  assert.equal(inUse(dom.document, now), true, "just scrolled: reading");
+  assert.equal(inUse(dom.document, now + IDLE_MS + 1000), false, "untouched for a while");
+  assert.equal(inUse({ hidden: true }, now), false, "in the background");
+});

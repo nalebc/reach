@@ -34,6 +34,11 @@ import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
 import { MoveOffer } from "./MoveChat";
 import type { AgentHealth, AgentSession } from "./agent-sessions";
 import { BrandCourier } from "./ReachIdentity";
+import { ClawChatCost, ClawSpendPill } from "./OpenClawSpend";
+import { ClawHealthPill } from "./OpenClawHealth";
+import { ClawScheduleMore } from "./OpenClawScheduleMore";
+import { ClawAgentsPanel } from "./OpenClawAgents";
+import { ClawSkills } from "./OpenClawSkills";
 import "./openclaw.css";
 
 const base = "/api/sessions/openclaw";
@@ -342,6 +347,7 @@ function Conversation({
             </div>
             <ChevronDown size={15} />
           </button>
+          <ClawChatCost peer={peer} sessionKey={current.key} />
         </div>
         {current.writable === true && (
           <button
@@ -919,6 +925,12 @@ function ClawWorkspacePanel({
                 <dd>{channelName(job.delivery)}</dd>
               </dl>
               {job.error && <p className="claw-error">{job.error}</p>}
+              <ClawScheduleMore
+                peer={peer}
+                job={job}
+                canEdit={!!data?.canEdit}
+                onChanged={() => setRevision((n) => n + 1)}
+              />
               {data?.canEdit && (
                 <button
                   className="claw-secondary"
@@ -1052,7 +1064,7 @@ export default function OpenClawSpace({
   useEffect(() => {
     if (searchOpen) searchField.current?.focus();
   }, [searchOpen]);
-  const [view, setView] = useState<"chats" | "automations" | "channels">(
+  const [view, setView] = useState<"chats" | "agents" | "automations" | "channels">(
     "chats",
   );
   const [channel, setChannel] = useState("");
@@ -1131,7 +1143,9 @@ export default function OpenClawSpace({
               placeholder={
                 view === "chats"
                   ? "Search chats"
-                  : view === "automations"
+                  : view === "agents"
+                    ? "Search agents and skills"
+                    : view === "automations"
                     ? "Search schedules"
                     : "Search channels"
               }
@@ -1149,6 +1163,7 @@ export default function OpenClawSpace({
           {(
             [
               ["chats", MessageSquare, "Chats"],
+              ["agents", Bot, "Agents"],
               ["automations", CalendarClock, "Schedules"],
               ["channels", Radio, "Channels"],
             ] as const
@@ -1172,6 +1187,12 @@ export default function OpenClawSpace({
               ? `${sessions.length} chats · Gateway connected`
               : "Gateway offline"}
           </span>
+          {data?.connected && (
+            <>
+              <ClawHealthPill peer={peer} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />
+              <ClawSpendPill peer={peer} refresh={refresh} />
+            </>
+          )}
           {!!deviceRequests && (
             <button className="chat-review-link" onClick={onReviewDevice}>
               <ShieldCheck size={13} />
@@ -1216,7 +1237,13 @@ export default function OpenClawSpace({
             Finding OpenClaw sessions on {peer.name}…
           </p>
         )}
-        {data?.connected && view !== "chats" && (
+        {data?.connected && view === "agents" && (
+          <>
+            <ClawAgentsPanel peer={peer} query={query} refresh={refresh} />
+            <ClawSkills peer={peer} query={query} refresh={refresh} />
+          </>
+        )}
+        {data?.connected && view !== "chats" && view !== "agents" && (
           <ClawWorkspacePanel
             key={view}
             peer={peer}

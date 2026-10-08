@@ -135,31 +135,22 @@ test("the helper is given the chat's title, the text and each picture, and its r
   await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.code === "AGENT_DELIVERY_UNKNOWN");
 });
 
-test("a permission mode picked on the phone is picked in the Claude app's own menu; never Bypass", async () => {
-  // On screen: picked in the app at once, by the name its menu gives it.
+// A permission mode is never picked in the Claude app's menu (that click
+// failed silently): it goes with Claude Code's next request (agent-asks.mjs),
+// and a message sent with one is only typed, nothing else.
+test("the Claude app's permission mode is never clicked, not even with a message", async () => {
   const m = mac({ onScreen: A });
-  const c = compose(m, { type: async (v) => (m.typed.push(v), v.mode ? { mode: v.mode } : {}) });
-  assert.deepEqual(await c.mode(A, { title: message.title, mode: "acceptEdits" }), { mode: "acceptEdits" });
-  assert.deepEqual(await c.mode(A, { title: message.title, mode: "default" }), { mode: "default" });
-  assert.deepEqual(m.typed.map((v) => v.mode), ["Accept edits", "Manual"]);
-  await assert.rejects(c.mode(A, { title: message.title, mode: "bypassPermissions" }), (e) => e.status === 400);
-  // Another chat on screen: never switched for a mode; it goes with the next message.
-  const away = mac({ onScreen: B });
-  await assert.rejects(compose(away).mode(A, { title: message.title, mode: "plan" }), /with your next message/);
-  assert.deepEqual(away.opened, []);
-  // That next message: the mode first, then the text, as in the app's composer.
-  const next = mac({ onScreen: A });
-  await compose(next).deliver(A, { title: message.title, text: "Go", mode: "plan" });
-  assert.deepEqual(next.typed.map((v) => v.mode || v.text), ["Plan", "Go"]);
-});
-
-test("the helper is told the mode by the name the Claude app's menu uses, with nothing else", async () => {
+  const c = compose(m);
+  assert.equal(c.mode, undefined);
+  await c.deliver(A, { title: message.title, text: "Go", mode: "plan" });
+  assert.deepEqual(m.typed.map((v) => v.mode || v.text), ["Go"]);
+  // The helper isn't told a mode either.
   const calls = [];
   await typeIntoClaude(
-    { title: "Fix the chart", mode: "Plan", images: ["/x.png"] },
-    { binary: async () => "/bin/helper", run: (file, args) => (calls.push(args), Promise.resolve({ stdout: '{"mode":"Plan"}\n' })) },
+    { title: "Fix the chart", mode: "Plan", text: "Hi" },
+    { binary: async () => "/bin/helper", run: (file, args) => (calls.push(args), Promise.resolve({ stdout: '{"sent":true}\n' })) },
   );
-  assert.deepEqual(calls, [["--title", "Fix the chart", "--mode", "Plan"]]);
+  assert.equal(calls[0].includes("--mode"), false);
 });
 
 // Oct 6: the phone couldn't change a Claude app chat's effort ("Reach can't
@@ -209,16 +200,15 @@ test("the model helper carries no text or images and rejects a native refusal", 
   await assert.rejects(typeIntoClaude({ title: "Audit", model: "Sonnet 5.5" }, { binary: async () => "/bin/helper", run: run('{"error":"unexpected model confirmation","unconfirmed":true}\n') }), /unexpected model confirmation/);
 });
 
-test("mode and effort settings follow exact visible session identity when app records lag", async () => {
+test("effort settings follow exact visible session identity when app records lag", async () => {
   const m = mac({ onScreen: A });
   const c = compose(m, { onScreen: async () => `local_${B}` });
-  await assert.rejects(c.mode(A, { title: message.title, mode: "plan" }), /when this chat is open/);
   await assert.rejects(c.effort(A, { title: message.title, effort: "high" }), /Open this chat/);
   assert.deepEqual(m.typed, []);
 });
 
 test("a setting selection that lost its session is uncertain and never automatically retried", async () => {
-  for (const setting of [{ mode: "Plan" }, { effort: "High" }]) {
+  for (const setting of [{ effort: "High" }]) {
     const output = JSON.stringify({ error: "Claude changed chats. Check the current setting.", unconfirmed: true });
     await assert.rejects(typeIntoClaude({ title: message.title, session: `local_${A}`, ...setting }, {
       binary: async () => "/bin/helper", run: async () => ({ stdout: output }),

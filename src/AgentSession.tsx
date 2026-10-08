@@ -74,6 +74,7 @@ import {
   answerCodexQuestions,
   answerPrompt,
   appCard,
+  setPhoneAnswers,
   sessionImage,
   effortLabel,
   listModels,
@@ -960,6 +961,8 @@ function AskingCard({
   onScreen,
   loadCard,
   onAnswer,
+  phoneAnswers,
+  onPhoneAnswers,
 }: {
   agent: string;
   asking: AgentAsking;
@@ -967,8 +970,12 @@ function AskingCard({
   where: string;
   word: string;
   onScreen?: () => void;
-  loadCard?: (bring?: boolean) => Promise<AppCard>;
+  loadCard?: () => Promise<AppCard>;
   onAnswer?: (label: string) => Promise<void>;
+  // Claude Code there can't be answered from the phone until Reach's hook is
+  // in its settings: one tap puts it there (for this request on).
+  phoneAnswers?: "off" | "outdated" | "unsupported";
+  onPhoneAnswers?: () => Promise<void>;
 }) {
   const id = asking.kind === "permission" ? asking.id : undefined;
   const answerable = !!id && !!loadCard && !!onAnswer;
@@ -978,11 +985,12 @@ function AskingCard({
   const [moreOpen, setMoreOpen] = useState(false);
   const answering = useRef(false);
   const loading = useRef(0);
-  const load = (bring = false) => {
+  const [enabling, setEnabling] = useState(false);
+  const load = () => {
     const turn = ++loading.current;
     setCard(null);
     setFailed("");
-    loadCard!(bring).then(
+    loadCard!().then(
       (c) => turn === loading.current && setCard(c),
       (e) => turn === loading.current && setFailed((e as Error).message),
     );
@@ -1008,6 +1016,9 @@ function AskingCard({
       answering.current = false;
     }
   };
+  // Claude Code without Reach's hook: answerable from the phone after one tap
+  // (Claude Code then asks the phone too, from its next request on).
+  const canEnable = agent === "claude" && (phoneAnswers === "off" || phoneAnswers === "outdated") && !!onPhoneAnswers && asking.kind !== "consent" && asking.kind !== "dialog";
   // Its main choice, as the apps make it: the one-time Allow.
   const primary = card?.buttons.find((b) => /^Allow once\b/.test(b)) ?? card?.buttons.find((b) => /^Allow\b/.test(b));
   const command = asking.kind === "permission" && asking.command ? asking.text : "";
@@ -1100,16 +1111,26 @@ function AskingCard({
             {failed || `This request is already open in the ${where}.`} Answer it on your {word}
             {onScreen ? " through live screen." : "."}
           </p>
-          {(onScreen || (answerable && failed)) && (
+          {(onScreen || (answerable && failed) || canEnable) && (
             <div className="as-prompt-actions">
-              {/* Looked at, the app stays on the chat you use there: brought
-                  up only on this tap. */}
-              {answerable && failed && (
-                <button className={onScreen ? undefined : "primary"} onClick={() => load(true)}>
-                  Bring it up in the {where}
+              {canEnable && (
+                <button
+                  className="primary"
+                  disabled={enabling}
+                  onClick={async () => {
+                    setEnabling(true);
+                    try {
+                      await onPhoneAnswers?.();
+                    } finally {
+                      setEnabling(false);
+                    }
+                  }}
+                >
+                  {enabling ? <Loader2 size={14} className="spin" /> : "Answer Claude from your phone"}
                 </button>
               )}
-              {onScreen && <button className="primary" onClick={onScreen}>Open screen to answer</button>}
+              {answerable && failed && <button onClick={() => load()}>Try again</button>}
+              {onScreen && <button className={canEnable ? undefined : "primary"} onClick={onScreen}>Open screen to answer</button>}
             </div>
           )}
         </>
@@ -1859,6 +1880,58 @@ export default function AgentSessionView({
       prepend.current = null;
     } else if (atBottom.current && !touchingTranscript.current) el.scrollTop = el.scrollHeight;
   }, [items, pending, live.streaming, live.prompts.length, working]);
+  // Where this chat was being read, kept for the tab: the page reloaded (a
+  // new interface, a reconnect) and the chat came back at its end, the
+  // reader scrolling up again (Oct 8). The message at the top of the screen
+  // and how far down it sits; earlier pages are loaded again to find it.
+  const placeKey = `reach-chat-place:${peer.id}:${initial.agent}:${initial.id}`;
+  const place = useRef<{ at: string; offset: number; tries: number } | null | undefined>(undefined);
+  if (place.current === undefined)
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(placeKey) || "null");
+      place.current = typeof saved?.at === "string" && typeof saved.offset === "number" ? { at: saved.at, offset: saved.offset, tries: 0 } : null;
+    } catch {
+      place.current = null;
+    }
+  const findingPlace = useRef(false);
+  useLayoutEffect(() => {
+    const want = place.current;
+    const el = scroller.current;
+    if (!want || !items || !el || findingPlace.current) return;
+    const mark = [...el.querySelectorAll<HTMLElement>(".as-at")].find((m) => m.dataset.at === want.at);
+    const box = mark?.firstElementChild;
+    if (box) {
+      el.scrollTop += box.getBoundingClientRect().top - el.getBoundingClientRect().top - want.offset;
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+      setReadingHistory(!atBottom.current);
+      place.current = null;
+    } else if (before && want.tries < 6) {
+      want.tries++;
+      findingPlace.current = true;
+      void older().finally(() => (findingPlace.current = false));
+    } else place.current = null;
+  }, [items, before]);
+  const placeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const keepPlace = () => {
+    clearTimeout(placeTimer.current);
+    placeTimer.current = setTimeout(() => {
+      const el = scroller.current;
+      // Not while coming back to it (the first scroll to the end would forget it).
+      if (!el || place.current) return;
+      try {
+        if (atBottom.current) return sessionStorage.removeItem(placeKey);
+        const top = el.getBoundingClientRect().top;
+        for (const mark of el.querySelectorAll<HTMLElement>(".as-at")) {
+          const box = mark.firstElementChild?.getBoundingClientRect();
+          if (box && box.bottom > top) {
+            sessionStorage.setItem(placeKey, JSON.stringify({ at: mark.dataset.at, offset: box.top - top }));
+            return;
+          }
+        }
+      } catch {}
+    }, 250);
+  };
+  useEffect(() => () => clearTimeout(placeTimer.current), []);
   // Follow the last message through keyboard/composer resizing only when the
   // reader was already at the end. Reading history never fights new output.
   useEffect(() => {
@@ -1943,8 +2016,9 @@ export default function AgentSessionView({
     }
     return places;
   }, [blocks, info.movedTo]);
+  // Each message marked with its id (no box of its own), so a reload can
+  // come back to the one being read (`place` below).
   const placeMoves = (nodes: ReactNode[]) => {
-    if (!movePlaces.size) return nodes;
     const out: ReactNode[] = [];
     const at = (i: number) => {
       const moves = movePlaces.get(i);
@@ -1953,7 +2027,9 @@ export default function AgentSessionView({
     };
     at(-1);
     nodes.forEach((node, i) => {
-      out.push(node);
+      const b = blocks[i];
+      const id = b.type === "tools" ? `tools-${b.items[0].id}` : b.item.id;
+      out.push(<div key={id} className="as-at" data-at={id}>{node}</div>);
       at(i);
     });
     return out;
@@ -2652,6 +2728,7 @@ export default function AgentSessionView({
           atBottom.current =
             el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
           setReadingHistory(!atBottom.current);
+          keepPlace();
         }}
       >
         {before && (
@@ -2903,39 +2980,7 @@ export default function AgentSessionView({
             )}
             {info.asking &&
               !live.prompts.length &&
-              (info.asking.kind === "question" && info.asking.id ? (
-                // Claude's question in the Claude app: its options tapped
-                // here, pressed there (no live screen needed).
-                <PromptCard
-                  prompt={{
-                    id: info.asking.id,
-                    kind: "question",
-                    title: `${agentLabel(agent)} has a question`,
-                    questions: info.asking.questions.map((q, i) => ({
-                      id: `q${i}`,
-                      header: q.header || "",
-                      question: q.question,
-                      options: q.options.map((o) => ({ label: o.label, description: o.description || "" })),
-                      other: false,
-                      secret: false,
-                      multiSelect: !!q.multiSelect,
-                    })),
-                  }}
-                  agent={agent}
-                  logos={logos}
-                  word={word}
-                  onAnswer={async ({ answers }) => {
-                    const asked = info.asking;
-                    if (asked?.kind !== "question" || !asked.id) return;
-                    try {
-                      await answerPrompt(peer, initial, asked.id, { answers });
-                      setInfo((old) => ({ ...old, asking: undefined }));
-                    } catch (e) {
-                      setProblem((e as Error).message);
-                    }
-                  }}
-                />
-              ) : info.asking.kind === "consent" && info.asking.id ? (
+              (info.asking.kind === "consent" && info.asking.id ? (
                 <ConsentCard
                   asking={info.asking}
                   peer={peer}
@@ -2964,7 +3009,16 @@ export default function AgentSessionView({
                   }
                   word={word}
                   onScreen={onScreen}
-                  loadCard={(bring) => appCard(peer, initial, bring)}
+                  loadCard={() => appCard(peer, initial)}
+                  phoneAnswers={info.phoneAnswers}
+                  onPhoneAnswers={async () => {
+                    try {
+                      await setPhoneAnswers(peer, true);
+                      setInfo((old) => ({ ...old, phoneAnswers: undefined }));
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    }
+                  }}
                   onAnswer={async (label) => {
                     const asked = info.asking;
                     if (asked?.kind !== "permission" || !asked.id) return;

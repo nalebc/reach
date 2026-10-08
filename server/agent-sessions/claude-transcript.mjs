@@ -369,7 +369,10 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (at !== null && slim.uuid && imageBlocks(slim).length)
           imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
         // A command's output can be the newest message too.
-        if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
+        // So can a message typed while it works: the app shows it at once,
+        // not when Claude next writes.
+        const queued = slim.type === "attachment" && slim.attachment?.type === "queued_command" && slim.attachment.humanTurn;
+        if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || queued || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
         if (e.type === "assistant" && e.timestamp) {

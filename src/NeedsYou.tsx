@@ -220,10 +220,9 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
 }
 
 // A chat waiting on you in another app (the Claude app, the Codex app, a
-// terminal): what it asks, said on its card, and a permission answered right
-// here. Its card is read from the app only on Review (the app's window comes
-// back to the chat it showed, and isn't switched while you use it), then its
-// own buttons are pressed there, as on the chat's page (AskingCard).
+// terminal): what it asks, said on its card. A Codex app approval is read on
+// Review through the Codex app's IPC and answered right here (AskingCard does
+// the same on the chat's page); Claude Code's come as prompts through its hook.
 function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session: AgentSession; where: string; answered?: () => void }) {
   const [asking, setAsking] = useState<AgentAsking | null>(null);
   const [card, setCard] = useState<AppCard | null>(null);
@@ -254,12 +253,12 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
     setDone(false);
   }, [peer.id, peer.url, peer.token, session.agent, session.id, askingId]);
   if (!asking) return null;
-  const load = (bring = false) => {
+  const load = () => {
     const at = ++turn.current;
     setCard(null);
     setFailed("");
     setLoading(true);
-    appCard(peer, session, bring).then(
+    appCard(peer, session).then(
       (c) => at === turn.current && setCard(c),
       (e) => at === turn.current && setFailed((e as Error).message),
     ).finally(() => at === turn.current && setLoading(false));
@@ -314,7 +313,6 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
         <>
           {failed && <small className="problem" role="alert">{failed}</small>}
           <div className="need-actions">
-            {failed && <button onClick={() => load(true)}>Bring it up in the {where}</button>}
             <button className="primary" disabled={loading} onClick={() => load()}>
               {loading ? <><Loader2 size={14} className="spin" /> Reading…</> : failed ? "Try again" : "Review"}
             </button>

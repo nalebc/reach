@@ -7,6 +7,15 @@ import JSON5 from "json5";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { partLabels } from "./agent-sessions/message-parts.mjs";
+import * as usageFeature from "./openclaw-usage.mjs";
+import * as healthFeature from "./openclaw-health.mjs";
+import * as schedulesFeature from "./openclaw-schedules.mjs";
+import * as watchFeature from "./openclaw-watch.mjs";
+import * as agentsFeature from "./openclaw-agents.mjs";
+import * as skillsFeature from "./openclaw-skills.mjs";
+
+// Features in files of their own, each adding its routes.
+export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
@@ -283,7 +292,9 @@ export function createOpenClaw({
     starts = new Map(),
     terminalRuns = new Set(),
     // Told when approvals come or go (notifications look then).
-    approvalListeners = new Set();
+    approvalListeners = new Set(),
+    // Told every Gateway event (features in openclaw-*.mjs watch these).
+    eventListeners = new Set();
   const approvalsChanged = () => {
     for (const listener of approvalListeners) listener();
     tell();
@@ -571,6 +582,11 @@ export function createOpenClaw({
             }, finish);
           } else {
             const p = frame.payload || {};
+            for (const listener of eventListeners) {
+              try {
+                listener(frame.event, p);
+              } catch {}
+            }
             if (["chat", "agent"].includes(frame.event))
               updateRun(frame.event, p);
             if (
@@ -1318,6 +1334,22 @@ export function createOpenClaw({
       changed();
       return { saved: true };
     },
+    // For features in their own files (server/openclaw-*.mjs): one Gateway
+    // method through the same live authorization and support checks.
+    call(method, params = {}, authorize = () => {}, waitMs) {
+      return rpc(method, params, undefined, authorize, waitMs);
+    },
+    // Whether the connected Gateway lists `method` (true before connecting).
+    can(method) {
+      return can(method);
+    },
+    // Every Gateway event, as (event, payload); payloads are OpenClaw's own
+    // text, so redact before anything reaches a phone.
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
+    redact: (value) => redact(value),
     // Approvals came or went (notifications look then, not on a beat).
     onApprovalsChange(listener) {
       approvalListeners.add(listener);
@@ -1981,10 +2013,12 @@ export const SETUP_SECTIONS = ["model", "channels"];
 export function openClawRoutes(
   app,
   client,
-  { startGateway = startOpenClawGateway, settleMs = 500, openSetup, addChannel = addOpenClawChannel } = {},
+  { startGateway = startOpenClawGateway, settleMs = 500, openSetup, addChannel = addOpenClawChannel, features = FEATURES, ...context } = {},
 ) {
   const base = "/api/sessions/openclaw";
   const authorize = (req) => () => req.reauthorize();
+  for (const feature of features)
+    feature.routes(app, client, { ...context, base, authorize, openSetup });
   app.post(`${base}/channels/add`, async (req, res) => {
     const added = await addChannel(req.body || {}, { authorize: authorize(req) });
     res.json(added);

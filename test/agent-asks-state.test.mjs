@@ -12,24 +12,28 @@ const until = async (check, ms = 5000) => {
   return check();
 };
 // Exercise the broker's real connection handler without opening a socket.
-// agent-asks.test.mjs separately covers the child hook and Unix permissions.
+// agent-asks.test.mjs separately covers the child hook.
 function setup(t, options = {}) {
   let server;
   const create = net.createServer;
   net.createServer = (...args) => (server = create(...args));
   let asks;
   try {
-    asks = createAgentAsks({ socketPath: "/unused-test.sock", idle: async () => 600, everyMs: 5, watchGraceMs: 30, ...options });
-  } finally { net.createServer = create; }
+    asks = createAgentAsks({ socketPath: "/unused-test.sock", everyMs: 5, unseenMs: 50, waiting: async () => true, ...options });
+  } finally {
+    net.createServer = create;
+  }
   t.after(() => asks.close());
   const socket = new EventEmitter();
   socket.setEncoding = () => {};
-  socket.end = (data) => { socket.result = JSON.parse(data); socket.emit("close"); };
+  socket.end = (data) => {
+    socket.result = JSON.parse(data);
+    socket.emit("close");
+  };
   socket.destroy = () => socket.emit("close");
   server.emit("connection", socket);
-  const send = (questions) => socket.emit("data", JSON.stringify({
-    agent: "claude", session_id: SESSION, tool_name: "AskUserQuestion", tool_input: { questions },
-  }) + "\n");
+  const send = (tool_name, tool_input) =>
+    socket.emit("data", JSON.stringify({ agent: "claude", session_id: SESSION, tool_name, tool_input }) + "\n");
   return { asks, socket, send };
 }
 const questions = [
@@ -37,44 +41,71 @@ const questions = [
   { question: "Choose several", multiSelect: true, options: [{ label: "C" }, { label: "D" }] },
 ];
 
-test("remote input and poll gaps cannot remove a question being answered on the phone", async (t) => {
-  let watching = true;
-  // The Mac is in use the whole time (idle 0 s). A grace far longer than the
-  // phone's gap keeps the outcome the same on coarse or starved timers.
-  const { asks, socket, send } = setup(t, { idle: async () => 0, watching: () => watching, watchGraceMs: 2000 });
-  send(questions);
+// Claude Code shows its dialog while the hook runs: the phone keeps the
+// question however long it's read, someone using the Mac or not.
+test("a question stays answerable on the phone while Claude Code waits on it", async (t) => {
+  const { asks, socket, send } = setup(t);
+  send("AskUserQuestion", { questions });
   assert.ok(await until(() => asks.has("claude", SESSION)));
-  watching = false;
-  await delay(60); // several poll rounds (everyMs 5) with the phone away
-  assert.equal(asks.has("claude", SESSION), true);
-  watching = true;
-  await delay(20);
+  await delay(80); // several checks, all still waiting
   const [prompt] = asks.prompts("claude", SESSION);
   assert.equal(prompt.questions.length, 2);
+  assert.equal(prompt.canAnswerOnMac, undefined);
+  assert.throws(() => asks.answer("codex", SESSION, prompt.id, { answers: {} }), { status: 409 });
+  assert.throws(() => asks.answer("claude", SESSION, prompt.id, { answers: {} }), { status: 400 });
   asks.answer("claude", SESSION, prompt.id, { answers: { "Choose one": ["B"], "Choose several": ["C", "D"] } });
   assert.deepEqual(socket.result.decision.updatedInput.answers, { "Choose one": "B", "Choose several": "C, D" });
   assert.equal(asks.has("claude", SESSION), false);
 });
 
-test("an explicit local handoff is scoped to the session and grants no approval", async (t) => {
-  const { asks, socket, send } = setup(t, { watching: () => true });
-  send(questions);
-  await delay(0);
+// Answered on the Mac: Claude Code no longer waits (its registry says so at
+// once). The ask ends with no decision, and a late tap is told why.
+test("an answer on the Mac ends the phone's request with no decision", async (t) => {
+  let waiting = true;
+  const { asks, socket, send } = setup(t, { waiting: async () => waiting });
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
   const [prompt] = asks.prompts("claude", SESSION);
-  assert.equal(prompt.canAnswerOnMac, true);
-  assert.throws(() => asks.answer("codex", SESSION, prompt.id, { decision: "answerOnMac" }), { status: 409 });
-  assert.throws(() => asks.answer("claude", SESSION, prompt.id, { answers: {} }), { status: 400 });
-  assert.equal(asks.has("claude", SESSION), true);
-  assert.deepEqual(asks.answer("claude", SESSION, prompt.id, { decision: "answerOnMac" }), { handedOff: true });
-  assert.deepEqual(socket.result, {});
-  assert.throws(() => asks.answer("claude", SESSION, prompt.id, { decision: "allow" }), { status: 409 });
-});
-
-test("leaving the phone still hands the request back when the Mac is in use", async (t) => {
-  let watching = true;
-  const { asks, socket, send } = setup(t, { idle: async () => 0, watching: () => watching });
-  send(questions);
-  watching = false;
+  waiting = false;
   assert.ok(await until(() => !asks.has("claude", SESSION)));
   assert.deepEqual(socket.result, {});
+  assert.throws(() => asks.answer("claude", SESSION, prompt.id, { decision: "allow" }), /Answered on your/);
+});
+
+// Claude Code says it waits a moment after the hook starts: not seen waiting
+// yet is not taken as answered until unseenMs has passed.
+test("a request Claude Code hasn't reported yet isn't taken as answered at once", async (t) => {
+  const { asks, socket, send } = setup(t, { waiting: async () => false, unseenMs: 200 });
+  send("Bash", { command: "ls" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  await delay(60);
+  assert.equal(asks.has("claude", SESSION), true);
+  assert.ok(await until(() => !asks.has("claude", SESSION)));
+  assert.deepEqual(socket.result, {});
+});
+
+// A mode for a chat Reach doesn't run goes in with the phone's next allow
+// there (Claude Code's setMode); a plan's own pick wins; never Bypass.
+test("a mode picked on the phone goes in with the next allow", async (t) => {
+  const { asks, socket, send } = setup(t);
+  assert.throws(() => asks.queueMode("claude", SESSION, "bypassPermissions"), { status: 400 });
+  asks.queueMode("claude", SESSION, "acceptEdits");
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  const [prompt] = asks.prompts("claude", SESSION);
+  asks.answer("claude", SESSION, prompt.id, { decision: "allow" });
+  assert.deepEqual(socket.result.decision.updatedPermissions, [{ type: "setMode", mode: "acceptEdits", destination: "session" }]);
+  assert.equal(asks.queuedMode("claude", SESSION), null);
+});
+
+test("a denied request keeps the picked mode for the next one", async (t) => {
+  const { asks, socket, send } = setup(t);
+  asks.queueMode("claude", SESSION, "plan");
+  send("Bash", { command: "rm -rf build" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  const [prompt] = asks.prompts("claude", SESSION);
+  asks.answer("claude", SESSION, prompt.id, { decision: "deny" });
+  assert.equal(socket.result.decision.behavior, "deny");
+  assert.equal(socket.result.decision.updatedPermissions, undefined);
+  assert.equal(asks.queuedMode("claude", SESSION), "plan");
 });
