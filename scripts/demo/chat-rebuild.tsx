@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { House, MessageSquare, Terminal, FolderOpen } from "lucide-react";
 import EverythingChat from "../../src/EverythingChat";
+import { NotificationCenter, type NotificationItem } from "../../src/Notifications";
 import Screen from "../../src/Screen";
 import MobileNav from "../../src/MobileNav";
 import LivingLogo from "../../src/LivingLogo";
@@ -124,6 +125,9 @@ let sessions: AgentSession[] = [
       held: "reach",
     }) as AgentSession,
 );
+// The desktop chat uses a model this connection's catalog does not list.
+if (new URLSearchParams(location.search).get("model") === "unlisted")
+  sessions[0] = { ...sessions[0], model: "gpt-6.1-sol", effort: "high", status: "idle" };
 const prompt = {
   id: "sample-request",
   kind: "command" as const,
@@ -180,6 +184,10 @@ const clawJobs = [
   { id: "morning", name: "Morning briefing", agentId: "main", enabled: true, schedule: "Daily at 08:00 · America/Vancouver", nextRunAt: Date.now() + 3600000, lastRunAt: Date.now() - 86400000, status: "ok", error: "", delivery: "telegram" },
   { id: "weekly", name: "Weekly project review", agentId: "work", enabled: false, schedule: "Every Monday at 09:00 · America/Vancouver", nextRunAt: 0, lastRunAt: Date.now() - 172800000, status: "ok", error: "", delivery: "No external delivery" },
 ];
+if (new URLSearchParams(location.search).get("chats") === "empty") {
+  sessions = [];
+  clawSessions.length = 0;
+}
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = new URL(
@@ -192,6 +200,33 @@ window.fetch = async (input, init = {}) => {
   );
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
+  if (path === "/api/notifications") {
+    const items: NotificationItem[] = sessions.filter(s => !s.archived && s.status === "waiting").flatMap(s =>
+      s.prompts?.length ? s.prompts.map(p => ({
+        id: `chat:${s.agent}:${s.id}:prompt:${p.id}`, revision: "sample-revision",
+        source: s.agent, icon: s.agent, title: p.title, detail: s.title,
+        kind: p.kind, ...(p.command ? { prompt: { command: p.command, cwd: p.cwd } } : {}),
+        actions: p.kind === "command" ? [
+          { id: "deny", label: "Deny", tone: "deny" },
+          { id: "approve", label: "Allow once", tone: "primary" },
+        ] : [],
+        target: { page: "sessions", agent: s.agent, id: s.id, prompt: p.id },
+      })) : [{
+        id: `chat:${s.agent}:${s.id}`, source: s.agent, icon: s.agent,
+        title: "Your answer is needed", detail: s.title,
+        target: { page: "sessions", agent: s.agent, id: s.id },
+      }]);
+    return Response.json({ items, unavailable: [] });
+  }
+  const notificationAction = path.match(/^\/api\/notifications\/([^/]+)\/actions$/);
+  if (notificationAction && init.method === "POST") {
+    const id = decodeURIComponent(notificationAction[1]);
+    const s = sessions.find(s => id.startsWith(`chat:${s.agent}:${s.id}:`));
+    if (s) { s.prompts = []; s.status = "idle"; }
+    window.dispatchEvent(new Event("reach-preview-refresh"));
+    return Response.json({ ok: true });
+  }
+  if (path === "/api/push") return Response.json({ key: "sample-only" });
   let data: unknown = {};
   const queue = path.match(/^\/api\/sessions\/(codex|claude)\/([^/]+)\/queue\/(.+)$/);
   if (queuePreview && queue && init.method === "POST") {
@@ -414,8 +449,9 @@ window.fetch = async (input, init = {}) => {
   return Response.json(data);
 };
 function Preview() {
-  const [, redraw] = useState(0);
+  const [version, redraw] = useState(0);
   const [screenPrompt, setScreenPrompt] = useState<MacPrompt | null>(null);
+  const [target, setTarget] = useState<{ agent: AgentSession["agent"] | "openclaw"; id: string } | null>(null);
   useEffect(() => {
     const refresh = () => redraw((n) => n + 1);
     window.addEventListener("reach-preview-refresh", refresh);
@@ -432,6 +468,9 @@ function Preview() {
     recheck: () => {},
   } as AgentFeed;
   return (
+    <NotificationCenter peer={peer} enabled changes={String(version)} onOpen={({ target }) => {
+      if (target.agent && target.id) setTarget({ agent: target.agent as AgentSession["agent"] | "openclaw", id: target.id });
+    }}>
     <div className="app-shell">
       <aside className="sidebar" aria-label="Workspace navigation">
         <LivingLogo />
@@ -453,7 +492,7 @@ function Preview() {
               toast={() => {}} onChanged={() => {}}
               ask={{ ...screenPrompt, open: macPrompts.some((p) => p.id === screenPrompt.id) }}
               onAskDone={() => setScreenPrompt(null)} />
-          </> : <EverythingChat peer={peer} feed={feed} showOnScreen={setScreenPrompt} onScreen={() => setScreenPrompt({ id: "sample-question-screen", kind: "privacy", title: "Answer in Claude", detail: "", app: "Claude" })} />}
+          </> : <EverythingChat peer={peer} feed={feed} target={target} onTargetOpened={() => setTarget(null)} showOnScreen={setScreenPrompt} onScreen={() => setScreenPrompt({ id: "sample-question-screen", kind: "privacy", title: "Answer in Claude", detail: "", app: "Claude" })} />}
         </main>
       </div>
       <MobileNav
@@ -469,6 +508,7 @@ function Preview() {
         ]}
       />
     </div>
+    </NotificationCenter>
   );
 }
 createRoot(document.getElementById("root")!).render(<Preview />);

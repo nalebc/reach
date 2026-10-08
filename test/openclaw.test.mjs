@@ -1262,6 +1262,106 @@ test("schedules describe common recurrence and retain advanced expressions", () 
   assert.equal(readableSchedule({ kind: "cron", expr: "*/15 * * * *" }), "*/15 * * * *");
 });
 
+test("a schedule made from Reach is a fixed cron job of its own; run now and delete use OpenClaw's own methods", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) =>
+    req.method === "cron.add"
+      ? { payload: { id: "job-1", ...req.params } }
+      : req.method === "cron.run"
+        ? { payload: { ok: true, enqueued: true } }
+        : req.method === "cron.remove"
+          ? { payload: { ok: true, removed: true } }
+          : undefined,
+  );
+  assert.deepEqual(
+    await c.addAutomation({ name: " Briefing ", message: "Summarize my day", expr: "0 9 * * 1-5", tz: "America/Los_Angeles" }),
+    { id: "job-1" },
+  );
+  assert.deepEqual(calls.find((x) => x.method === "cron.add").params, {
+    name: "Briefing",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * 1-5", tz: "America/Los_Angeles" },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    payload: { kind: "agentTurn", message: "Summarize my day" },
+    delivery: { mode: "none" },
+  });
+  await c.addAutomation({ name: "Weekly", message: "Report", expr: "0 8 * * 1", announce: true });
+  assert.deepEqual(calls.filter((x) => x.method === "cron.add")[1].params.delivery, { mode: "announce", channel: "last" });
+  // Only the fields Reach knows; a phone can't smuggle a webhook or a command.
+  await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * *" }), /five cron fields/);
+  await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * 1; rm" }), /five cron fields/);
+  await assert.rejects(c.addAutomation({ name: "", message: "y", expr: "0 9 * * *" }), /Name the schedule/);
+  await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * *", tz: "../etc" }), /time zone/);
+  assert.deepEqual(await c.runAutomation({ id: "job-1" }), { ran: true });
+  assert.deepEqual(calls.find((x) => x.method === "cron.run").params, { id: "job-1", mode: "force" });
+  assert.deepEqual(await c.removeAutomation({ id: "job-1" }), { removed: true });
+  handle((req) => (req.method === "cron.run" ? { payload: { ok: true, ran: false, reason: "already-running" } } : req.method === "cron.add" ? { payload: {} } : undefined));
+  await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * *" }), /did not confirm/);
+  handle((req) => (req.method === "cron.run" ? { payload: { ok: false, reason: "already-running" } } : undefined));
+  await assert.rejects(c.runAutomation({ id: "job-1" }), /already running/);
+});
+
+test("WhatsApp links by OpenClaw's QR, never over a connected account; linking again logs out first", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  const qr = "data:image/png;base64,iVBORw0KGgo=";
+  // Connected (the fixture's account): refused, nothing stopped.
+  await assert.rejects(c.linkWhatsApp(), /already connected/);
+  assert.ok(!calls.some((x) => x.method === "web.login.start"));
+  let status = { channelAccounts: { whatsapp: [{ accountId: "default", configured: false, linked: false }] } };
+  handle((req) =>
+    req.method === "channels.status"
+      ? { payload: status }
+      : req.method === "web.login.start"
+        ? { payload: { qrDataUrl: qr, message: "Scan this QR in WhatsApp → Linked Devices." } }
+        : req.method === "web.login.wait"
+          ? { payload: { connected: true, message: "✅ Linked!" } }
+          : req.method === "channels.logout"
+            ? { payload: { cleared: true } }
+            : undefined,
+  );
+  const linked = await c.linkWhatsApp();
+  assert.equal(linked.qr, qr);
+  assert.ok(!calls.some((x) => x.method === "channels.logout"));
+  assert.deepEqual(await c.waitWhatsApp(), { connected: true, message: "WhatsApp is linked." });
+  // Linked but dropped: only an explicit relink, which logs out first.
+  status = { channelAccounts: { whatsapp: [{ accountId: "default", linked: true, connected: false }] } };
+  await assert.rejects(c.linkWhatsApp(), /link it again/);
+  await c.linkWhatsApp({ relink: true });
+  const order = calls.map((x) => x.method).filter((m) => ["channels.logout", "web.login.start"].includes(m));
+  assert.deepEqual(order.slice(-2), ["channels.logout", "web.login.start"]);
+  // Anything but a PNG data URL is not shown.
+  handle((req) =>
+    req.method === "channels.status"
+      ? { payload: { channelAccounts: {} } }
+      : req.method === "web.login.start"
+        ? { payload: { qrDataUrl: "javascript:alert(1)", message: "x" } }
+        : undefined,
+  );
+  assert.equal((await c.linkWhatsApp()).qr, "");
+  await assert.rejects(c.linkWhatsApp({ accountId: "../x" }), /WhatsApp account/);
+  // Refresh asks each channel again.
+  await c.channels({ refresh: true });
+  assert.equal(calls.filter((x) => x.method === "channels.status").at(-1).params.probe, true);
+});
+
+test("OpenClaw's setup opens only its fixed sections, never the phone's text", async () => {
+  const { openClawRoutes } = await import("../server/openclaw.mjs");
+  const routes = {};
+  const opened = [];
+  openClawRoutes(
+    { get() {}, post: (route, fn) => (routes[route] = fn) },
+    {},
+    { openSetup: (section) => (opened.push(section), { id: "t1" }) },
+  );
+  const setup = routes["/api/sessions/openclaw/setup"];
+  let answered;
+  await setup({ body: { section: "model" } }, { json: (v) => (answered = v) });
+  assert.deepEqual(answered, { terminal: { id: "t1" } });
+  await assert.rejects(setup({ body: { section: "model; rm -rf ~" } }, { json() {} }), /Choose what to set up/);
+  assert.deepEqual(opened, ["model"]);
+});
+
 for (const action of ["settings", "automations"])
   test(`new ${action} route rechecks revoked request before deferred Gateway mutation`, async (t) => {
     let release, markReady;

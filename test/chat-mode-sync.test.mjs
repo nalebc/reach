@@ -49,6 +49,7 @@ const claudeWith = (session, extra = {}) => {
       mode: async (id, mode) => (modes.push(mode), !!extra.driving),
     },
     signIn: {},
+    ...(extra.claudeCompose ? { claudeCompose: extra.claudeCompose } : {}),
     claudeImports: { add: async () => {}, close() {} },
     agentAsks: { close() {} },
     processes: async () => [],
@@ -69,6 +70,20 @@ test("a mode picked on the phone for a chat Reach runs changes its Claude Code a
   assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: true });
   assert.deepEqual(modes, ["auto"]);
   sessions.close();
+});
+
+// "Changing permission no longer works in this chat": a chat in the Claude
+// app but not on its screen refused the pick, so the phone dropped it.
+test("a Claude app chat not on screen keeps the pick for its next message; a real failure still says so", async () => {
+  const session = { agent: "claude", id: ID, cwd: "/work/app", inApp: true, appTitle: "Chat", mode: "default" };
+  const waiting = Object.assign(new Error("Changes in the Claude app when this chat is open there, or with your next message."), { waiting: true, status: 409 });
+  const away = claudeWith(session, { claudeCompose: { mode: async () => { throw waiting; } } });
+  assert.deepEqual(await away.sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: false });
+  away.sessions.close();
+  const unknown = Object.assign(new Error("Claude didn't confirm the permission mode."), { status: 409, uncertain: true });
+  const broken = claudeWith(session, { claudeCompose: { mode: async () => { throw unknown; } } });
+  await assert.rejects(broken.sessions.mode("claude", ID, { mode: "auto" }), /didn't confirm/);
+  broken.sessions.close();
 });
 
 test("a Codex mode picked on the phone is kept at once: the chat's next message from Reach goes in it", async () => {

@@ -66,6 +66,7 @@ import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
+import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installPlan, installTerminalCommand } from "./agent-install.mjs";
@@ -103,6 +104,7 @@ import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
+import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voice.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
@@ -640,6 +642,8 @@ export async function createReach(overrides = {}) {
     automationControls: () => desktopAutomation.active(), onObservation: () => desktopAutomation.interrupt(), paused: () => paused, record,
   }) : null);
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
+  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
+    ...(overrides.browserToolOptions || {}) });
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
     authorize();
@@ -1706,6 +1710,7 @@ export async function createReach(overrides = {}) {
     const { client, before, after } = auth.changeAccess(id, req.body || {});
     agentDesktop?.cancelClient?.(id);
     agentShortcuts.cancelClient(id);
+    agentTools.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1746,6 +1751,7 @@ export async function createReach(overrides = {}) {
   // A session's work ends; its credential stays (Reopen link) or goes (revoke).
   const endSession = (id) => {
     agentShortcuts.cancelClient(id);
+    agentTools.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1853,11 +1859,12 @@ export async function createReach(overrides = {}) {
       ...limits, privatePaths: browserPaths() }, check, { config });
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
+  agentToolRoutes(app, { tools: agentTools });
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
-    desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts,
+    desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -2373,7 +2380,22 @@ export async function createReach(overrides = {}) {
         : { ...payload, version },
     );
   };
-  openClawRoutes(app, openClaw);
+  openClawRoutes(app, openClaw, {
+    // What Reach doesn't set up itself (a model's key, a bot's token) opens
+    // OpenClaw's own setup in a Reach terminal, typed into there.
+    openSetup: (section, req) => {
+      const current = req.reauthorize();
+      notPaused();
+      const terminal = terminals.create({
+        cwd: os.homedir(),
+        name: "OpenClaw setup",
+        clientId: current.id,
+        command: `openclaw configure --section ${section}`,
+      });
+      record("terminal", "Opened OpenClaw setup");
+      return terminal;
+    },
+  });
   // Installing Claude Code or Codex from the phone (agent-install.mjs): its
   // maker's command first, to show; confirmed, run in a Reach terminal that
   // ends with it. The owner's own devices only (as every session route).
@@ -2485,6 +2507,12 @@ export async function createReach(overrides = {}) {
     dir: path.join(config.dataDir, "agent-images"),
   });
   const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
+  const voice = (overrides.voiceFactory || createVoice)({ config });
+  // Five minutes of the phone's 16 kHz WAV is under 10 MB.
+  const voiceUpload = multer({
+    dest: path.join(config.dataDir, "agent-files"),
+    limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
+  });
   const fileUpload = multer({
     dest: path.join(config.dataDir, "agent-files"),
     limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
@@ -2632,6 +2660,28 @@ export async function createReach(overrides = {}) {
     if (!req.file) throw fail(400, "Choose a file.");
     res.json({ id: agentFiles.add(req.file.path, req.file.originalname), name: path.basename(req.file.originalname || "file") });
   });
+  // A voice memo from the composer: its words to read over, or, when it
+  // can't become words, the recording itself to attach.
+  app.post("/api/sessions/voice", voiceUpload.single("file"), async (req, res) => {
+    if (!req.file) throw fail(400, "Record a memo.");
+    let retained = false;
+    try {
+      req.reauthorize();
+      const kind = audioKind(readHead(req.file.path));
+      if (!kind) throw fail(400, "That isn't a recording.");
+      const heard = await voice.transcribe(req.file.path, { locale: req.query.locale, authorize: () => req.reauthorize() });
+      req.reauthorize();
+      if (heard.text) return res.json({ text: heard.text });
+      const name = memoName(kind);
+      const id = agentFiles.add(req.file.path, name);
+      retained = true;
+      res.json({ problem: heard.problem, file: { id, name } });
+    } finally {
+      // Only this request's temporary upload is removed. A successfully
+      // registered fallback has already moved to its own attachment path.
+      if (!retained) fs.rmSync(req.file.path, { force: true });
+    }
+  });
   // Files in a chat's folder, for "@" in its composer.
   app.get("/api/sessions/:agent/:id/files", async (req, res) =>
     res.json({ files: await agentSessions.findFiles(req.params.agent, req.params.id, typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "") }),
@@ -2693,7 +2743,7 @@ export async function createReach(overrides = {}) {
   // A permission card the Claude app or the Codex app shows, as it shows it:
   // read when the phone opens it (that chat is brought up in its app).
   app.get("/api/sessions/:agent/:id/card", async (req, res) => {
-    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id));
+    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id, { bring: req.query.bring === "1" }));
   });
   app.post("/api/sessions/:agent/:id/prompts/:prompt", async (req, res) => {
     const result = await agentSessions.respond(
@@ -4037,6 +4087,7 @@ export async function createReach(overrides = {}) {
       await browserApprovals.flushChanges();
       agentDesktop?.close?.();
       agentShortcuts.close();
+      agentTools.close();
       await browserCommandLog.close();
       browserSnapshots.clear();
       clearInterval(approvalCleanup);

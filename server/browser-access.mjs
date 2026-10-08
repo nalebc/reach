@@ -77,7 +77,7 @@ export function browserAccessRoutes(
     // Screen, input, app list and shell for preset invitations
     // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
     // can't offer them.
-    desktop = null, shell = null, shortcuts = null,
+    desktop = null, shell = null, shortcuts = null, tools = null,
   },
 ) {
   const owner = (req) => {
@@ -262,6 +262,7 @@ export function browserAccessRoutes(
         roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
         terminals: selected,
         ...presetAccess(client),
+        ...(tools && ["full", "apps"].includes(client.policy.preset) ? { browserTools: await tools.catalog(() => browser(req)) } : {}),
         ...(shortcuts && ["full", "apps"].includes(client.policy.preset) ? {
           savedToolHint: SAVED_TOOLS_HINT,
           savedTools: shortcuts.list(() => browser(req)).shortcuts.map(item => ({ ...item, tool: savedToolName(item) })),

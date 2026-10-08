@@ -1,45 +1,16 @@
 .browser-agents {
   min-width: 0;
 }
-.ba-heading,
-.ba-toolbar,
-.ba-session-heading,
-.ba-session-actions,
-.ba-stop-confirm > div,
-.ba-request {
+.ba-stop-confirm > div {
   display: flex;
   align-items: center;
   gap: 12px;
 }
-.ba-heading {
-  justify-content: space-between;
-  align-items: flex-start;
-  margin: 22px 0 16px;
-}
-.ba-heading h2 {
-  margin: 0 0 6px;
-  font-size: 21px;
-}
-.ba-heading p,
-.ba-footnote,
 .ba-stop-confirm p {
   color: var(--muted, #93a096);
   font-size: 13px;
   line-height: 1.55;
   margin: 0;
-}
-.ba-heading > button {
-  flex-shrink: 0;
-}
-.ba-toolbar {
-  justify-content: space-between;
-  padding: 0 0 12px;
-  font-size: 13px;
-  color: var(--muted, #93a096);
-}
-.ba-toolbar > div {
-  display: flex;
-  gap: 5px;
 }
 .ba-list {
   display: grid;
@@ -52,106 +23,9 @@
   background: var(--group-bg, rgb(255 255 255 / 0.025));
   min-width: 0;
 }
-.ba-avatar {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  flex: 0 0 auto;
-  background: rgb(255 255 255 / 0.06);
-  border-radius: 11px;
-  color: var(--text-strong);
-}
-.ba-identity {
-  flex: 1;
-  min-width: 0;
-}
-.ba-identity h3 {
-  font-size: 16px;
-  margin: 0 0 3px;
-  overflow-wrap: anywhere;
-  unicode-bidi: plaintext;
-}
-.ba-identity small {
-  color: var(--muted, #93a096);
-  font-size: 11px;
-}
-.ba-status {
-  font-size: 11px;
-  padding: 5px 8px;
-  border-radius: 7px;
-  color: var(--muted, #93a096);
-  background: rgb(255 255 255 / 0.04);
-  white-space: nowrap;
-}
-.ba-status.is-active {
-  color: var(--lime, #b9efd4);
-  background: rgb(185 239 212 / 0.06);
-}
-.ba-permissions {
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 16px 0 11px;
-}
-.ba-meta {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted, #93a096);
-  margin-top: 7px;
-  line-height: 1.5;
-  min-width: 0;
-}
-.ba-meta svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
 .ba-path {
   overflow-wrap: anywhere;
   unicode-bidi: plaintext;
-}
-.ba-no-folders {
-  font-size: 12px;
-  color: var(--muted, #93a096);
-  margin: 7px 0 0;
-}
-.ba-work {
-  margin: 14px 0 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgb(185 239 212 / 0.05);
-  line-height: 1.5;
-}
-.ba-pending {
-  margin-top: 16px;
-  border-top: 1px solid var(--group-edge, var(--border));
-  padding-top: 13px;
-}
-.ba-pending > strong {
-  font-size: 12px;
-  font-weight: 600;
-}
-.ba-request {
-  justify-content: space-between;
-  margin-top: 9px;
-}
-.ba-request > span {
-  overflow-wrap: anywhere;
-  unicode-bidi: plaintext;
-  font:
-    12px/1.5 ui-monospace,
-    monospace;
-}
-.ba-request button {
-  flex-shrink: 0;
-}
-.ba-session-actions {
-  margin-top: 16px;
-}
-.ba-session-actions > .danger {
-  margin-left: auto;
 }
 .ba-history {
   margin-top: 15px;
@@ -182,8 +56,7 @@
   gap: 5px;
   margin-bottom: 7px;
 }
-.ba-history time,
-.ba-log-note {
+.ba-history time {
   color: var(--muted, #93a096);
   font-size: 11px;
 }
@@ -217,26 +90,6 @@
   color: #e8aaa0;
   line-height: 1.5;
 }
-.ba-footnote {
-  margin: 17px 2px;
-  font-size: 12px;
-}
-.ba-empty {
-  text-align: center;
-  padding: 42px 20px;
-  color: var(--muted, #93a096);
-}
-.ba-empty h3 {
-  font-size: 16px;
-  color: var(--text-strong);
-  margin: 14px 0 8px;
-}
-.ba-empty p {
-  font-size: 13px;
-  max-width: 300px;
-  margin: auto;
-  line-height: 1.55;
-}
 .ba-stop-confirm {
   border: 1px solid rgb(232 170 160 / 0.35);
   border-radius: 12px;
@@ -262,41 +115,7 @@
   justify-content: flex-end;
 }
 @media (max-width: 480px) {
-  .ba-heading {
-    gap: 10px;
-  }
-  .ba-heading h2 {
-    font-size: 19px;
-  }
   .ba-session {
     padding: 15px;
   }
-  .ba-session-heading {
-    flex-wrap: wrap;
-    gap: 9px;
-  }
-  .ba-identity {
-    min-width: 170px;
-  }
-  .ba-status {
-    margin-left: auto;
-  }
-}
-
-.ba-connection {
-  margin-top: 14px;
-  padding: 11px 12px;
-  border-radius: 9px;
-  background: rgb(185 239 212 / 0.05);
-}
-.ba-connection p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.ba-connection button {
-  margin-top: 9px;
-}
-.ba-session-actions {
-  flex-wrap: wrap;
 }

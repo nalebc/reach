@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
   answerPrompt,
+  appCard,
+  readAsking,
+  type AgentAsking,
+  type AppCard,
   openMacSetting,
   pressMacButton,
   sendMacPassword,
@@ -31,6 +35,8 @@ export type NeedItem = {
   actions?: { label: string; primary?: boolean; completes?: boolean; opens?: boolean; run: () => unknown }[];
   // Shown under the strip when its card is tapped (the Mac's own dialog).
   more?: ReactNode;
+  // Shown in the card, under its words (a request read from another app).
+  body?: ReactNode;
   // A password to send instead of buttons (the Mac's password dialog).
   password?: { placeholder: string; submit: (value: string) => Promise<unknown> };
   screen?: () => void;
@@ -147,7 +153,7 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
         {items.map((item) => (
           <article
             key={item.key}
-            className={`need-card ${item.more ? "openable" : ""} ${item.screen ? "has-screen" : ""}`}
+            className={`need-card ${item.more ? "openable" : ""} ${item.screen ? "has-screen" : ""} ${item.body ? "has-body" : ""}`}
             aria-label={item.title}
             onClick={item.more ? () => setOpened((o) => (o === item.key ? null : item.key)) : undefined}
           >
@@ -161,6 +167,7 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
                 </small>
               )}
             </div>
+            {item.body && <div className="need-body">{item.body}</div>}
             {item.password ? (
               <div className="need-actions">
                 <MacPasswordField placeholder={item.password.placeholder} submit={item.password.submit}
@@ -211,6 +218,114 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
     </section>
   );
 }
+
+// A chat waiting on you in another app (the Claude app, the Codex app, a
+// terminal): what it asks, said on its card, and a permission answered right
+// here. Its card is read from the app only on Review (the app's window comes
+// back to the chat it showed, and isn't switched while you use it), then its
+// own buttons are pressed there, as on the chat's page (AskingCard).
+function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session: AgentSession; where: string; answered?: () => void }) {
+  const [asking, setAsking] = useState<AgentAsking | null>(null);
+  const [card, setCard] = useState<AppCard | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState("");
+  const [done, setDone] = useState(false);
+  const turn = useRef(0);
+  const pressing = useRef(false);
+  useEffect(() => {
+    let live = true;
+    readAsking(peer, session).then((a) => live && setAsking(a), () => {});
+    return () => {
+      live = false;
+    };
+  }, [peer.id, peer.url, peer.token, session.agent, session.id, session.updatedAt]);
+  // Another request now: the card read for the last one is gone.
+  const askingId = asking && "id" in asking ? asking.id : undefined;
+  // Invalidate the old card before the new Review button can be tapped.
+  // A deferred effect could cancel the user's first review after dispatch.
+  useLayoutEffect(() => {
+    turn.current++;
+    pressing.current = false;
+    setCard(null);
+    setFailed("");
+    setLoading(false);
+    setBusy(null);
+    setDone(false);
+  }, [peer.id, peer.url, peer.token, session.agent, session.id, askingId]);
+  if (!asking) return null;
+  const load = (bring = false) => {
+    const at = ++turn.current;
+    setCard(null);
+    setFailed("");
+    setLoading(true);
+    appCard(peer, session, bring).then(
+      (c) => at === turn.current && setCard(c),
+      (e) => at === turn.current && setFailed((e as Error).message),
+    ).finally(() => at === turn.current && setLoading(false));
+  };
+  const press = async (label: string) => {
+    if (pressing.current || !card) return;
+    pressing.current = true;
+    const at = turn.current;
+    setBusy(label);
+    setFailed("");
+    try {
+      await answerPrompt(peer, session, card.id, { label });
+      if (at !== turn.current) return;
+      setDone(true);
+      answered?.();
+    } catch (e) {
+      if (at !== turn.current) return;
+      setCard(null);
+      setFailed((e as Error).message);
+    } finally {
+      if (at === turn.current) {
+        pressing.current = false;
+        setBusy(null);
+      }
+    }
+  };
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  if (asking.kind === "question")
+    return <p className="need-asked">{asking.questions[0]?.question}</p>;
+  if (asking.kind !== "permission") return null;
+  const primary = card?.buttons.find((b) => /^Allow once\b/.test(b)) ?? card?.buttons.find((b) => /^Allow\b/.test(b));
+  return (
+    <div className="need-elsewhere" onClick={stop}>
+      {card ? (
+        card.texts.map((t, i) => (
+          <p key={i} className={t.trim() === asking.text.trim() && asking.command ? "need-command" : i === 0 ? "need-asked" : undefined}>{t}</p>
+        ))
+      ) : (
+        <p className={asking.command ? "need-command" : "need-asked"}>{asking.text}</p>
+      )}
+      {done ? (
+        <small className="said" role="status">Answered in the {where}.</small>
+      ) : !asking.id ? null : card ? (
+        <div className="need-actions">
+          {card.buttons.map((label) => (
+            <button key={label} className={label === primary ? "primary" : ""} disabled={!!busy} onClick={() => void press(label)}>
+              {busy === label ? <><Loader2 size={14} className="spin" /> Sending…</> : label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+          {failed && <small className="problem" role="alert">{failed}</small>}
+          <div className="need-actions">
+            {failed && <button onClick={() => load(true)}>Bring it up in the {where}</button>}
+            <button className="primary" disabled={loading} onClick={() => load()}>
+              {loading ? <><Loader2 size={14} className="spin" /> Reading…</> : failed ? "Try again" : "Review"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+const whereOf = (s: AgentSession) =>
+  s.agent === "codex" ? (s.held === "terminal" ? "terminal" : "Codex app") : s.agent === "claude" && s.live?.where !== "terminal" ? "Claude app" : "terminal";
 
 const keyOf = (d: unknown) => (typeof d === "string" ? d : Object.keys(d as object)[0]);
 const negative = (key: string) => /^(decline|deny|cancel|abort)/.test(key);
@@ -287,7 +402,8 @@ export function agentNeeds({
         icon: icon(s),
         title: s.title,
         detail: `${name(s)} is waiting for you`,
-        actions: [{ label: "Open", primary: true, run: () => open(s) }],
+        body: <ElsewhereNeed peer={peer} session={s} where={whereOf(s)} answered={answered} />,
+        actions: [{ label: "Open chat", run: () => open(s) }],
       });
   }
   // Keep a live-screen route visible even if the native answer fails or the

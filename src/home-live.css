@@ -76,31 +76,6 @@
   flex-direction: column;
   gap: 8px;
 }
-.home-need {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #7a5a1c;
-  border-radius: 14px;
-  background: #241d10;
-  color: #f3ead6;
-  font: 500 14px system-ui, sans-serif;
-  text-align: left;
-}
-.home-need > svg {
-  flex: 0 0 auto;
-  color: #fac775;
-}
-.home-need > span {
-  flex: 1;
-  min-width: 0;
-}
-.home-need > strong {
-  color: var(--lime, #b9efd4);
-  font-size: 13px;
-}
 .home-section > header {
   display: flex;
   align-items: center;

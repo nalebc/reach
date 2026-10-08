@@ -6,12 +6,24 @@ import WebSocket from "ws";
 import JSON5 from "json5";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { partLabels } from "./agent-sessions/message-parts.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
 // Gateway's own token. Publish fixed descriptions, never arbitrary error text.
 const unconfirmedRun =
   "OpenClaw has not confirmed completion. Check OpenClaw before sending again.";
+// WhatsApp's login steps, said in Reach's words (never OpenClaw's text).
+const whatsappNote = (value) => {
+  const text = String(value || "");
+  if (/already linked/i.test(text)) return "WhatsApp is already linked.";
+  if (/expired|No active WhatsApp login/i.test(text)) return "The QR expired. Get a new one.";
+  if (/logged out/i.test(text)) return "WhatsApp logged this link out. Get a new QR.";
+  if (/login failed|Failed to/i.test(text)) return "The WhatsApp login failed. Get a new QR.";
+  if (/Still waiting/i.test(text)) return "Still waiting for the scan.";
+  if (/linked|connected/i.test(text)) return "WhatsApp is linked.";
+  return "";
+};
 const publicGatewayError = (value) => {
   const text = String(value || "");
   if (!text) return "";
@@ -130,12 +142,19 @@ async function deviceIdentity(file) {
 // DM, or a cron job is shown and never written to: a message there runs the
 // agent inside that group's context, and on Oct 5 replies reached a friends'
 // WhatsApp group. Enforced on send, whoever asks.
-const channelOf = (s) =>
-  String(
-    s?.deliveryContext?.channel || s?.channel || s?.lastChannel || "webchat",
-  ).toLowerCase();
-export const reachMade = (key) =>
-  /^agent:[\w-]+:reach-[\w-]+$/.test(String(key || ""));
+const channelOf = (s) => String(s?.deliveryContext?.channel || s?.channel || s?.lastChannel || "webchat").toLowerCase();
+export const reachMade = (key) => /^agent:[\w-]+:reach-[\w-]+$/.test(String(key || ""));
+// OpenClaw names a chat in at most 64 characters (sessions.patch refuses
+// more), cut between characters, never inside an emoji.
+export const LABEL_MAX = 64;
+export function chatLabel(text, room = LABEL_MAX) {
+  let out = "";
+  for (const ch of String(text || "").trim().replace(/\s+/g, " ")) {
+    if (out.length + ch.length > room) break;
+    out += ch;
+  }
+  return out.trim();
+}
 export function writable(s) {
   const to = s?.deliveryContext?.to || s?.lastTo;
   return (
@@ -381,7 +400,7 @@ export function createOpenClaw({
     if (hadApprovals) approvalsChanged();
     if (dropped) keepOpen();
   };
-  const request = (method, params = {}, completion) =>
+  const request = (method, params = {}, completion, waitMs = timeoutMs) =>
     new Promise((resolve, reject) => {
       if (closed || !socket || socket.readyState !== WebSocket.OPEN)
         return reject(connectionError());
@@ -394,7 +413,7 @@ export function createOpenClaw({
             "OpenClaw did not respond in time. Check the session before retrying.",
           ),
         );
-      }, timeoutMs);
+      }, waitMs);
       pending.set(id, { resolve, reject, timer, method });
       if (completion) completions.set(id, completion);
       try {
@@ -480,6 +499,12 @@ export function createOpenClaw({
                       : redact(frame.error?.message || "Request was rejected."),
                   ),
                   {
+                    // OpenClaw keeps chat names apart (nameChat, settings).
+                    labelInUse:
+                      waiter.method === "sessions.patch" &&
+                      /label already in use/i.test(
+                        String(frame.error?.message || ""),
+                      ),
                     invalidInjectParams:
                       waiter.method === "chat.inject" &&
                       /invalid chat\.inject params/i.test(
@@ -597,7 +622,7 @@ export function createOpenClaw({
   };
   const beforeDispatchFailures = new WeakSet(),
     authorizationFailures = new WeakSet();
-  const rpc = async (method, params, completion, authorize = () => {}) => {
+  const rpc = async (method, params, completion, authorize = () => {}, waitMs) => {
     const check = () => {
       try {
         authorize();
@@ -627,8 +652,9 @@ export function createOpenClaw({
       throw error;
     }
     // No await between the final live authorization and socket dispatch.
-    return request(method, params, completion);
+    return request(method, params, completion, waitMs);
   };
+  const can = (method) => !methods || methods.has(method);
   const updateRun = (event, p) => {
     if (typeof p.runId !== "string" || !p.runId) return;
     if (terminalRuns.has(p.runId)) return;
@@ -931,6 +957,21 @@ export function createOpenClaw({
       : runs.get(s.key)?.status || "idle",
     canStop: runs.get(s.key)?.method !== "agent",
   });
+  // Names a new chat; OpenClaw keeps names apart, so a second "Login page"
+  // becomes "Login page (2)".
+  const nameChat = async (key, title, authorize) => {
+    const base = chatLabel(title);
+    if (!base) return;
+    for (let n = 1; ; n++) {
+      const suffix = n === 1 ? "" : ` (${n})`;
+      const label = chatLabel(base, LABEL_MAX - suffix.length) + suffix;
+      try {
+        return await rpc("sessions.patch", { key, label }, undefined, authorize);
+      } catch (error) {
+        if (n >= 20 || error?.labelInUse !== true) throw error;
+      }
+    }
+  };
   const api = {
     // Fixed, read-only inventories. Return only display fields: Gateway
     // account objects and agent configuration may contain credentials.
@@ -990,8 +1031,9 @@ export function createOpenClaw({
         ),
       };
     },
-    async channels() {
-      const result = await rpc("channels.status", { probe: false });
+    // `refresh` asks each channel again (OpenClaw's probe), not its last word.
+    async channels({ refresh = false } = {}) {
+      const result = await rpc("channels.status", { probe: refresh === true }, undefined, undefined, refresh === true ? 30000 : undefined);
       if (
         !result?.channelAccounts ||
         typeof result.channelAccounts !== "object"
@@ -1023,7 +1065,55 @@ export function createOpenClaw({
                 error: redact(a.lastError || ""),
               })),
         ),
+        // What Reach can set up here; the rest is OpenClaw's own setup.
+        canLinkWhatsApp: can("web.login.start") && can("web.login.wait"),
       };
+    },
+    // Links WhatsApp: OpenClaw's QR, scanned in WhatsApp → Linked devices
+    // on the phone that has WhatsApp. Never over a linked account (OpenClaw
+    // stops the channel to start a login); `relink` logs it out first.
+    async linkWhatsApp({ accountId, relink = false } = {}, authorize = () => {}) {
+      authorize();
+      if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
+        throw fail(400, "Choose a WhatsApp account.");
+      const status = await rpc("channels.status", { probe: false }, undefined, authorize);
+      const accounts = Array.isArray(status?.channelAccounts?.whatsapp) ? status.channelAccounts.whatsapp : [];
+      const id = accountId || status?.channelDefaultAccountId?.whatsapp;
+      const account = accounts.find((a) => a?.accountId === id) || (!accountId && accounts.length === 1 ? accounts[0] : null);
+      if (account?.connected === true && !relink)
+        throw fail(409, "WhatsApp is already connected in OpenClaw.");
+      if (account && (account.linked === true || account.connected === true)) {
+        if (!relink)
+          throw fail(409, "WhatsApp is linked but not connected. Refresh, or link it again with a new QR.");
+        await rpc("channels.logout", { channel: "whatsapp", ...(accountId ? { accountId } : {}) }, undefined, authorize);
+      }
+      const result = await rpc(
+        "web.login.start",
+        { timeoutMs: 30000, ...(accountId ? { accountId } : {}) },
+        undefined,
+        authorize,
+        40000,
+      );
+      const qr = typeof result?.qrDataUrl === "string" && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(result.qrDataUrl) && result.qrDataUrl.length < 300000
+        ? result.qrDataUrl
+        : "";
+      changed();
+      return { qr, message: whatsappNote(result?.message) };
+    },
+    // Waits a while for the QR to be scanned (the phone asks again).
+    async waitWhatsApp({ accountId } = {}, authorize = () => {}) {
+      authorize();
+      if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
+        throw fail(400, "Choose a WhatsApp account.");
+      const result = await rpc(
+        "web.login.wait",
+        { timeoutMs: 20000, ...(accountId ? { accountId } : {}) },
+        undefined,
+        authorize,
+        30000,
+      );
+      if (result?.connected === true) changed();
+      return { connected: result?.connected === true, message: whatsappNote(result?.message) };
     },
     async automations({ offset = 0, query = "" } = {}) {
       offset = Number(offset);
@@ -1054,6 +1144,9 @@ export function createOpenClaw({
         throw fail(502, "OpenClaw returned unsupported scheduled jobs.");
       return {
         canEdit: !methods || methods.has("cron.update"),
+        canAdd: can("cron.add"),
+        canRun: can("cron.run"),
+        canRemove: can("cron.remove"),
         hasMore: result.hasMore === true,
         nextOffset: result.nextOffset ?? offset + result.jobs.length,
         jobs: result.jobs.map((j) => ({
@@ -1103,6 +1196,59 @@ export function createOpenClaw({
         );
       return { enabled };
     },
+    // A new schedule: OpenClaw runs `message` in a chat of its own at each
+    // time; replies stay in OpenClaw (and Reach) unless `announce` sends
+    // them to the channel last used.
+    async addAutomation({ name, expr, tz, message, agentId, announce = false } = {}, authorize = () => {}) {
+      authorize();
+      if (typeof name !== "string" || !name.trim() || name.trim().length > 120)
+        throw fail(400, "Name the schedule (up to 120 characters).");
+      if (typeof message !== "string" || !message.trim() || message.length > 20000)
+        throw fail(400, "Write what OpenClaw should do each time.");
+      const fields = typeof expr === "string" ? expr.trim().split(/\s+/) : [];
+      if (fields.length !== 5 || !fields.every((f) => /^[\d*/,\-A-Za-z?]{1,40}$/.test(f)))
+        throw fail(400, "Choose when it runs (five cron fields, like 0 9 * * 1-5).");
+      if (tz !== undefined && tz !== "" && (typeof tz !== "string" || !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+\-]+)*$/.test(tz) || tz.length > 64))
+        throw fail(400, "Choose a valid time zone.");
+      if (agentId !== undefined && (typeof agentId !== "string" || !/^[\w-]{1,80}$/.test(agentId)))
+        throw fail(400, "Choose an OpenClaw agent.");
+      if (typeof announce !== "boolean") throw fail(400, "Choose where results go.");
+      const result = await rpc("cron.add", {
+        name: name.trim(),
+        ...(agentId ? { agentId } : {}),
+        enabled: true,
+        schedule: { kind: "cron", expr: fields.join(" "), ...(tz ? { tz } : {}) },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: message.trim() },
+        delivery: announce ? { mode: "announce", channel: "last" } : { mode: "none" },
+      }, undefined, authorize);
+      const id = result?.id || result?.job?.id;
+      if (typeof id !== "string" || !id)
+        throw fail(502, "OpenClaw did not confirm the new schedule. Refresh before trying again.");
+      return { id };
+    },
+    async runAutomation({ id } = {}, authorize = () => {}) {
+      authorize();
+      if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
+      const result = await rpc("cron.run", { id, mode: "force" }, undefined, authorize);
+      if (result?.ok === false || result?.runnable === false)
+        throw fail(
+          409,
+          result.reason === "already-running"
+            ? "This schedule is already running."
+            : "OpenClaw did not run this schedule. Check it in OpenClaw.",
+        );
+      return { ran: true };
+    },
+    async removeAutomation({ id } = {}, authorize = () => {}) {
+      authorize();
+      if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
+      const result = await rpc("cron.remove", { id }, undefined, authorize);
+      if (result?.ok === false || result?.removed === false)
+        throw fail(409, "OpenClaw did not remove this schedule. Refresh before trying again.");
+      return { removed: true };
+    },
     async settings(
       { key, label, model, thinkingLevel } = {},
       authorize = () => {},
@@ -1125,8 +1271,8 @@ export function createOpenClaw({
         );
       const patch = { key };
       if (label !== undefined) {
-        if (typeof label !== "string" || !label.trim() || label.length > 120)
-          throw fail(400, "Choose a chat name of up to 120 characters.");
+        if (typeof label !== "string" || !label.trim() || label.trim().length > LABEL_MAX)
+          throw fail(400, `Choose a chat name of up to ${LABEL_MAX} characters.`);
         patch.label = label.trim();
       }
       if (model !== undefined) {
@@ -1155,7 +1301,11 @@ export function createOpenClaw({
       }
       if (Object.keys(patch).length === 1)
         throw fail(400, "Choose a chat setting to change.");
-      const result = await rpc("sessions.patch", patch, undefined, authorize);
+      const result = await rpc("sessions.patch", patch, undefined, authorize).catch((error) => {
+        if (error?.labelInUse === true)
+          throw fail(409, "Another OpenClaw chat already has this name. Choose another.");
+        throw error;
+      });
       if (result?.ok !== true)
         throw fail(
           502,
@@ -1281,14 +1431,15 @@ export function createOpenClaw({
           .map((m, i) => ({
             id: String(m.id || `${m.timestamp || 0}:${i}`),
             role: typeof m.role === "string" ? m.role : "system",
+            // A voice note from a channel, named for what it is.
             text:
               textOf(m) ||
-              (Array.isArray(m.content) &&
-              m.content.some((p) =>
-                ["image", "audio", "video", "file"].includes(p?.type),
-              )
-                ? "[Attachment — view in OpenClaw]"
-                : ""),
+              (partLabels(m.content)[0]
+                ? `[${partLabels(m.content)[0]} — open it in OpenClaw]`
+                : Array.isArray(m.content) &&
+                    m.content.some((p) => p?.type === "image")
+                  ? "[Attachment — view in OpenClaw]"
+                  : ""),
             at: m.timestamp,
             tool: m.role === "toolResult" || m.role === "tool",
             ...(sentTo.has(i) ? { sentTo: sentTo.get(i) } : {}),
@@ -1525,12 +1676,7 @@ export function createOpenClaw({
         if (model !== undefined || thinkingLevel !== undefined)
           await api.settings({ key, model, thinkingLevel }, authorize);
         if (title)
-          await rpc(
-            "sessions.patch",
-            { key, label: String(title).slice(0, 120) },
-            undefined,
-            authorize,
-          ).catch((error) => {
+          await nameChat(key, title, authorize).catch((error) => {
             if (authorizationFailures.has(error)) throw error;
           });
         listAt = 0;
@@ -1571,7 +1717,7 @@ export function createOpenClaw({
       started.promise = (async () => {
         const { key } = await api.create(
           {
-            title: text.trim().split("\n")[0].slice(0, 60),
+            title: text.trim().split("\n")[0],
             agentId,
             model,
             thinkingLevel,
@@ -1626,17 +1772,11 @@ export function createOpenClaw({
       await rpc("sessions.reset", { key, reason: "new" }, undefined, authorize);
       try {
         authorize();
-        if (title)
-          await rpc(
-            "sessions.patch",
-            { key, label: String(title).slice(0, 120) },
-            undefined,
-            authorize,
-          );
+        if (title) await nameChat(key, title, authorize);
         for (const message of notes)
           await rpc(
             "chat.inject",
-            { sessionKey: key, message, label },
+            { sessionKey: key, message, label: chatLabel(label, 100) },
             undefined,
             authorize,
           );
@@ -1791,13 +1931,21 @@ export async function startOpenClawGateway({
   }
 }
 
+export const SETUP_SECTIONS = ["model", "channels"];
 export function openClawRoutes(
   app,
   client,
-  { startGateway = startOpenClawGateway, settleMs = 500 } = {},
+  { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {},
 ) {
   const base = "/api/sessions/openclaw";
   const authorize = (req) => () => req.reauthorize();
+  // Only fixed sections of `openclaw configure`, never the phone's text.
+  app.post(`${base}/setup`, async (req, res) => {
+    const section = req.body?.section;
+    if (!SETUP_SECTIONS.includes(section)) throw fail(400, "Choose what to set up in OpenClaw.");
+    if (!openSetup) throw fail(409, "Reach can't open OpenClaw's setup here.");
+    res.json({ terminal: await openSetup(section, req) });
+  });
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),
   );
@@ -1825,8 +1973,23 @@ export function openClawRoutes(
   app.get(`${base}/catalog`, async (_req, res) =>
     res.json(await client.catalog()),
   );
-  app.get(`${base}/channels`, async (_req, res) =>
-    res.json(await client.channels()),
+  app.get(`${base}/channels`, async (req, res) =>
+    res.json(await client.channels({ refresh: req.query.refresh === "1" })),
+  );
+  app.post(`${base}/channels/whatsapp/link`, async (req, res) =>
+    res.json(await client.linkWhatsApp(req.body || {}, authorize(req))),
+  );
+  app.post(`${base}/channels/whatsapp/wait`, async (req, res) =>
+    res.json(await client.waitWhatsApp(req.body || {}, authorize(req))),
+  );
+  app.post(`${base}/automations/new`, async (req, res) =>
+    res.json(await client.addAutomation(req.body || {}, authorize(req))),
+  );
+  app.post(`${base}/automations/run`, async (req, res) =>
+    res.json(await client.runAutomation(req.body || {}, authorize(req))),
+  );
+  app.post(`${base}/automations/remove`, async (req, res) =>
+    res.json(await client.removeAutomation(req.body || {}, authorize(req))),
   );
   app.get(`${base}/automations`, async (req, res) =>
     res.json(

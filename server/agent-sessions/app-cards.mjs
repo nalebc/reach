@@ -105,7 +105,8 @@ export async function answerAppQuestion(agent, answers, options) {
 }
 export async function pressAppCard(agent, label, expect, options) {
   const result = await helper(agent, ["--press", label, ...expecting(expect)], options);
-  if (result.error) throw bad(`${result.error} Answer it on your Mac.`, 409);
+  if (result.error) throw Object.assign(bad(`${result.error} Answer it on your Mac.`, 409), { retry: result.untouched === true });
+  if (result.pressed !== label) throw bad("The app didn't confirm which answer was pressed. Check it on your Mac.", 409);
   return result;
 }
 
@@ -136,6 +137,12 @@ export function createAppCards({
   markAnswered = markCodexAnswered,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Whether the Claude app is in front (true, false, or null: unknown), and
+  // seconds since the last input on the Mac (null: unknown).
+  frontmost = async () => null,
+  idle = async () => null,
+  // No input this long: nobody is using the Claude app.
+  awayMs = 60 * 1000,
 }) {
   let busy = false;
   // Each request's buttons as last read: only one of those can be pressed.
@@ -154,10 +161,19 @@ export function createAppCards({
       busy = false;
     }
   };
+  // Someone is using the Claude app now: in front, and not away.
+  const inClaude = async () => {
+    const front = await Promise.resolve(frontmost()).catch(() => null);
+    const seconds = await Promise.resolve(idle()).catch(() => null);
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return true;
+    return front !== false && seconds * 1000 < awayMs;
+  };
   // The request still waiting, with its chat brought up in its app.
-  const show = async (agent, id, promptId, guard) => {
+  // A passive look may briefly switch an idle app, then restore only the
+  // exact target it opened. An explicit bring/answer stays on the target.
+  const show = async (agent, id, promptId, guard, { look = false } = {}) => {
     if (!APP[agent]) throw bad("That chat's app can't be answered from here.", 400);
-    const asked = await pending(agent, id);
+    let asked = await pending(agent, id);
     guard();
     if (!asked || (promptId && asked.id !== promptId)) throw bad("This request was already answered.", 409);
     if (!asked.expect?.length) throw bad(`Reach can't tell this request's card apart. Answer it on your ${computerWord(platform)}.`, 409);
@@ -174,20 +190,39 @@ export function createAppCards({
       await wait(switchMs);
     } else if (shown()[0]?.id !== id) {
       if (!asked.appSessionId) throw bad(`The Claude app doesn't list this chat. Answer it on your ${computerWord(platform)}.`, 409);
+      const before = shown()[0]?.session || null;
+      if (look && (await inClaude()))
+        throw Object.assign(bad(`The Claude app on your ${computerWord(platform)} shows another chat, and you're using it or its activity is unknown.`, 409), { inApp: true });
+      guard();
+      if (look && (shown()[0]?.session || null) !== before)
+        throw bad("The Claude app changed chats. Try reading this card again.", 409);
       await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`, { background: true });
       await wait(switchMs);
+      asked = { ...asked, back: look ? before : null };
     }
     guard();
     if ((await pending(agent, id))?.id !== asked.id) throw bad("This request was already answered.", 409);
     guard();
     return asked;
   };
-  const load = async (agent, id, promptId, guard) => {
-    const asked = await show(agent, id, promptId, guard);
-    checkAttempt(agent, id, asked.id);
-    guard();
-    const card = asked.tty ? await terminal.read(asked.tty, asked.expect, guard) : await read(agent, asked.expect, guard);
-    guard();
+  const load = async (agent, id, promptId, guard, options) => {
+    const asked = await show(agent, id, promptId, guard, options);
+    let card;
+    try {
+      checkAttempt(agent, id, asked.id);
+      guard();
+      card = asked.tty ? await terminal.read(asked.tty, asked.expect, guard) : await read(agent, asked.expect, guard);
+      guard();
+    } finally {
+      // Never restore over another actor's chat or after control was taken.
+      // A failed cleanup must not replace the original read result/error.
+      if (asked.back && asked.back !== asked.appSessionId && shown()[0]?.session === asked.appSessionId) {
+        try {
+          guard();
+          await open(`claude://code/continue?session=${encodeURIComponent(asked.back)}`, { background: true });
+        } catch {}
+      }
+    }
     if (card?.error) throw bad(`${card.error} Answer it on your ${computerWord(platform)}.`, 409);
     if (!card?.found)
       throw bad(asked.tty ? "The terminal isn't showing this request. Answer it there." : `The ${APP[agent]} app isn't showing this request. Answer it on your ${computerWord(platform)}.`, 409);
@@ -255,8 +290,8 @@ export function createAppCards({
     });
   return {
     owns: (promptId) => typeof promptId === "string" && (promptId.startsWith("app-permission:") || promptId.startsWith("app-question:")),
-    // The card as the app shows it, for the phone to draw.
-    card: (agent, id) => one(async (guard) => (await load(agent, id, undefined, guard)).card),
+    // bring is an explicit request to leave this chat open in its app.
+    card: (agent, id, { bring = false } = {}) => one(async (guard) => (await load(agent, id, undefined, guard, { look: !bring })).card),
     async answer(agent, id, promptId, { label, answers } = {}) {
       if (promptId.startsWith("app-question:")) return answerQuestionNow(agent, id, promptId, answers);
       if (typeof label !== "string" || !label) throw bad("Choose one of the card's buttons.", 400);
@@ -273,7 +308,12 @@ export function createAppCards({
           if (asked.tty) await terminal.press(asked.tty, label, asked.expect, guard);
           else await press(agent, label, asked.expect, guard);
         } catch (error) {
-          if (error?.notDispatched === true) attempted.delete(`${agent}:${id}`);
+          // Retry only when dispatch never happened, or the native app helper
+          // explicitly confirms that no answer was pressed.
+          if (error?.notDispatched === true || (!asked.tty && error?.retry === true)) {
+            attempted.delete(`${agent}:${id}`);
+            read_.delete(promptId);
+          }
           throw error;
         }
         read_.delete(promptId);

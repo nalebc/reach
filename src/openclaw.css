@@ -45,19 +45,13 @@
   color: var(--text-strong);
   background: color-mix(in srgb, var(--lime) 12%, var(--panel));
 }
-.claw-note,
-.claw-footnote {
+.claw-note {
   display: flex;
   align-items: center;
   gap: 7px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
-}
-.claw-footnote {
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
 }
 .claw-error {
   color: var(--danger, #e5a18b);
@@ -222,15 +216,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-.claw-destination select {
-  width: auto;
-  max-width: 100%;
-  border: 0;
-  padding: 7px 2px;
-  color: var(--muted);
-  font-size: 12px;
-  background: var(--panel, var(--bg));
 }
 .claw-delivery-note {
   display: block;
@@ -494,8 +479,7 @@
   background: var(--panel);
 }
 .claw-settings > label,
-.claw-settings-fields > label,
-.claw-new-agent {
+.claw-settings-fields > label {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -509,8 +493,7 @@
   margin: 12px 0;
 }
 .claw-settings input,
-.claw-settings-fields select,
-.claw-new-agent select {
+.claw-settings-fields select {
   width: 100%;
   min-width: 0;
   min-height: 40px;
@@ -529,19 +512,8 @@
   gap: 8px;
   margin-top: 12px;
 }
-.claw-options-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font-size: 12px;
-}
 .claw-conversation button:focus-visible,
-.claw-library button:focus-visible,
-.claw-options-toggle:focus-visible {
+.claw-library button:focus-visible {
   outline: 2px solid var(--lime);
   outline-offset: 3px;
 }
@@ -551,7 +523,7 @@
 @media (max-width: 600px) {
   .claw-library .chat-card {
     min-height: 64px;
-    padding: 10px 4px;
+    padding: 10px 4px 10px 8px;
   }
   .claw-library .chat-entry-copy {
     gap: 3px;
@@ -574,4 +546,101 @@
   .claw-new-agent select {
     font-size: 16px;
   }
+}
+
+/* What's missing, asked for where it's missed (OpenClawSetup.tsx). */
+.claw-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claw-panel-actions:empty {
+  display: none;
+}
+.claw-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  margin: 0 0 10px;
+  border: 1px dashed var(--border);
+  border-radius: 13px;
+}
+.claw-missing p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.claw-missing code {
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.claw-missing .claw-settings-actions {
+  align-self: stretch;
+  margin-top: 0;
+}
+.claw-whatsapp img {
+  align-self: center;
+  width: min(240px, 100%);
+  height: auto;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+.claw-link {
+  align-self: flex-start;
+  padding: 4px 0 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.claw-settings.claw-schedule-form {
+  max-height: none;
+  margin: 0 0 12px;
+}
+.claw-check {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+.claw-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.claw-secondary.claw-delete-ask {
+  color: var(--danger, #e5a18b);
+  background: color-mix(in srgb, var(--danger, #e5a18b) 14%, transparent);
+}
+.claw-schedule-form textarea,
+.claw-schedule-form > label > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.claw-schedule-form > label + label {
+  margin-top: 12px;
+}
+.claw-settings .claw-check input {
+  width: auto;
+  min-height: 0;
 }

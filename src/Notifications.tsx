@@ -52,11 +52,22 @@ export type NotificationItem = {
   };
 };
 const Notifications = createContext<{
+  peer: Peer;
+  apps: Record<string, number>;
   count: number;
   setup: boolean;
   open: (bell?: HTMLElement) => void;
   expanded: boolean;
 } | null>(null);
+// Use the existing inbox scan for background apps, including OpenClaw.
+// A chat view for a different computer must never inherit these badges.
+export function useAppNotifications(peer: Peer): Record<string, number> {
+  const state = useContext(Notifications);
+  return state?.peer.id === peer.id &&
+    state.peer.url === peer.url && state.peer.token === peer.token
+    ? state.apps
+    : {};
+}
 export function NotificationBell({ compact = false }: { compact?: boolean }) {
   const state = useContext(Notifications);
   if (!state) return null;
@@ -451,11 +462,19 @@ export function NotificationCenter({
     );
     setRevision((value) => value + 1);
   };
+  const apps: Record<string, number> = {};
+  for (const item of items) {
+    const app = item.target.agent || (item.source === "handoff" ? item.icon : item.source);
+    if (app && ["codex", "claude", "gemini", "openclaw"].includes(app))
+      apps[app] = (apps[app] || 0) + 1;
+  }
   return (
     <Notifications.Provider
       value={
         enabled
           ? {
+              peer,
+              apps,
               count: items.length,
               setup:
                 !setup.loading && !setup.on && setup.support !== "unsupported",

@@ -62,6 +62,8 @@ let dom,
   settingsSent = [],
   scheduleChanges = [],
   scheduleEnabled = true,
+  setupCalls = [],
+  whatsappStatus = "connected",
   settingsFail = false,
   settingsWait = null,
   catalogWait = null,
@@ -105,12 +107,13 @@ before(async () => {
         return { saved: true };
       },
       [base + "/channels"]: () => ({
+        canLinkWhatsApp: true,
         channels: [
           {
             channel: "whatsapp",
             accountId: "personal",
             name: "Personal account",
-            status: "connected",
+            status: whatsappStatus,
             error: "",
           },
           {
@@ -145,9 +148,18 @@ before(async () => {
             },
           ],
           canEdit: true,
+          canAdd: true,
+          canRun: true,
+          canRemove: true,
           hasMore: false,
         };
       },
+      [base + "/automations/new"]: (init) => (setupCalls.push(["new", JSON.parse(init.body)]), { id: "job-2" }),
+      [base + "/automations/run"]: (init) => (setupCalls.push(["run", JSON.parse(init.body)]), { ran: true }),
+      [base + "/automations/remove"]: (init) => (setupCalls.push(["remove", JSON.parse(init.body)]), { removed: true }),
+      [base + "/setup"]: (init) => (setupCalls.push(["setup", JSON.parse(init.body)]), { terminal: { id: "term-1" } }),
+      [base + "/channels/whatsapp/link"]: (init) => (setupCalls.push(["link", JSON.parse(init.body)]), { qr: "data:image/png;base64,iVBORw0KGgo=", message: "" }),
+      [base + "/channels/whatsapp/wait"]: () => (whatsappStatus = "connected", { connected: true, message: "Linked" }),
       [base + "/overview"]: () => (overviewReads++, down ? {
         connected: false,
         sessions: [],
@@ -564,9 +576,18 @@ test("new chats expose configured agents and carry model and thinking choices wi
     el.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   };
   choose("OpenClaw agent", "work");
+  assert.ok(!dom.document.querySelector(".as-box .claw-new-agent"), "the agent belongs above the composer");
+  assert.equal(button("Model & thinking").textContent, "", "settings use an accessible icon button");
   await click("Model & thinking");
   choose("OpenClaw model", "provider/model");
   choose("OpenClaw thinking level", "high");
+  await settle();
+  assert.match(button("Model & thinking").getAttribute("aria-description"), /Test model.*high/);
+  assert.equal(button("Model & thinking").getAttribute("data-custom"), "true");
+  await click("Close model and thinking");
+  assert.equal(dom.document.querySelector('[aria-label="OpenClaw model"]'), null);
+  await click("Model & thinking");
+  assert.equal(dom.document.querySelector('[aria-label="OpenClaw model"]').value, "provider/model", "closing settings preserves the selection");
   await typeInto(
     dom.document.querySelector('textarea[aria-label="New OpenClaw chat"]'),
     "Research the trip",
@@ -613,6 +634,41 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
 });
 
+test("missing things are asked for: a schedule is added, run and deleted; a channel and a model open OpenClaw's setup; WhatsApp links by QR", async () => {
+  setupCalls = [];
+  await mount();
+  await click("Schedules");
+  await dom.waitFor(() => button("New schedule"));
+  await click("New schedule");
+  await typeInto(dom.document.querySelector('[aria-label="Schedule name"]'), "Evening recap");
+  await typeInto(dom.document.querySelector('[aria-label="What OpenClaw does each time"]'), "Recap my day");
+  await click("Add schedule");
+  await dom.waitFor(() => setupCalls.some(([k]) => k === "new"));
+  const made = setupCalls.find(([k]) => k === "new")[1];
+  assert.equal(made.expr, "0 9 * * *");
+  assert.equal(made.name, "Evening recap");
+  assert.equal(made.announce, false);
+  await dom.waitFor(() => button("Run Morning briefing now"));
+  await click("Run Morning briefing now");
+  await dom.waitFor(() => setupCalls.some(([k]) => k === "run"));
+  await click("Delete Morning briefing");
+  assert.ok(!setupCalls.some(([k]) => k === "remove"), "one tap only asks");
+  await click("Tap again to delete Morning briefing");
+  await dom.waitFor(() => setupCalls.some(([k]) => k === "remove"));
+  const opened = [];
+  dom.window.addEventListener("reach:open-terminal", (e) => opened.push(e.detail));
+  whatsappStatus = "unconfigured";
+  await click("Channels");
+  await dom.waitFor(() => button("Connect WhatsApp"));
+  await click("Add another channel");
+  await dom.waitFor(() => opened.length > 0);
+  assert.deepEqual(setupCalls.find(([k]) => k === "setup")[1], { section: "channels" });
+  assert.equal(opened[0], "term-1");
+  await click("Connect WhatsApp");
+  await dom.waitFor(() => dom.document.querySelector('img[alt="WhatsApp link QR code"]') || dom.document.body.textContent.includes("is linked"));
+  assert.deepEqual(setupCalls.find(([k]) => k === "link")[1], {});
+  await dom.waitFor(() => dom.document.body.textContent.includes("WhatsApp is linked"));
+});
 
 test("a pending save cannot close a reopened OpenClaw settings draft", async () => {
   await mount();

@@ -245,22 +245,10 @@
 .ivt-segment button[aria-checked="true"] {
   background: #4a4a4a;
 }
-.ivt-picks,
-.ivt-folders {
+.ivt-picks {
   display: grid;
   gap: 2px;
   padding: 6px 0 8px;
-}
-.ivt-folders + .ivt-folders {
-  border-top: 1px solid var(--ivt-line);
-}
-.ivt-caption {
-  padding: 4px 10px 2px;
-  color: var(--ivt-muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 .ivt-search {
   display: flex;
@@ -353,14 +341,10 @@
   background: var(--ivt-hover);
   color: var(--ivt-text) !important;
 }
-.ivt-quiet,
-.ivt-foot {
+.ivt-quiet {
   color: var(--ivt-muted);
   font-size: 12.5px;
   line-height: 1.45;
-}
-.ivt-foot {
-  margin: 4px 0 0;
 }
 .ivt-tailscale {
   display: grid;
@@ -895,8 +879,7 @@
   width: 100%;
   height: 48px;
 }
-.ivt-permission-row,
-.ivt-connection {
+.ivt-permission-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -938,19 +921,6 @@
 .ivt-meta .ivt-menu-list {
   left: auto;
   right: 0;
-}
-.ivt-connection select {
-  width: auto;
-  max-width: 65%;
-  min-height: 38px;
-  height: 38px;
-  margin: 0;
-  padding: 0 28px 0 10px;
-  border-color: var(--ivt-line);
-  border-radius: 10px;
-  background-color: var(--ivt-field);
-  color: var(--ivt-text);
-  font-size: 13px;
 }
 .ivt-send {
   display: grid;

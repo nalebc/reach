@@ -64,13 +64,6 @@
   margin: 2px;
   border-radius: 7px;
 }
-/* Something on or active: lime light. */
-.app-icon.lit {
-  color: var(--lime);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--lime) 35%, transparent),
-    0 0 22px -6px color-mix(in srgb, var(--lime) 45%, transparent);
-}
 
 /* Online / offline, on a computer's icon. */
 .app-icon-dot {
@@ -110,80 +103,6 @@
 }
 .status-text.on::before {
   background: var(--lime);
-}
-
-/* Settings and computers: an inset grouped list. */
-.list-heading {
-  margin: 22px 0 8px 4px;
-  font:
-    600 13px system-ui,
-    -apple-system,
-    sans-serif;
-  letter-spacing: 0;
-  color: var(--muted, #93a096);
-}
-.list-group {
-  overflow: hidden;
-  border-radius: 16px;
-  background: rgb(255 255 255 / 0.045);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
-}
-.list-row {
-  position: relative;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  min-height: 58px;
-  padding: 10px 14px;
-  border: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
-  -webkit-tap-highlight-color: transparent;
-}
-.list-row + .list-row::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 59px;
-  right: 0;
-  border-top: 1px solid rgb(255 255 255 / 0.07);
-}
-.list-row:active {
-  background: rgb(255 255 255 / 0.06);
-}
-.list-row-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.list-row-text strong,
-.list-row-text small {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.list-row-text strong {
-  font:
-    600 15px system-ui,
-    -apple-system,
-    sans-serif;
-  color: #eef4ef;
-}
-.list-row-text small {
-  font-size: 13px;
-  color: var(--muted, #93a096);
-}
-.list-chevron {
-  flex: 0 0 auto;
-  color: #6f7d73;
-}
-.list-check {
-  flex: 0 0 auto;
-  color: var(--lime);
 }
 
 /* Settings, in the same language: a computer card, then sections as

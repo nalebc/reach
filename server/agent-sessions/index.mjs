@@ -15,7 +15,7 @@ import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
-import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh } from "./claude-import.mjs";
+import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { answerAppQuestion, cardExpect, cardId, createAppCards, pressAppCard, probeApp, questionId, readAppCard } from "./app-cards.mjs";
 import { createTerminalCards } from "./terminal-cards.mjs";
@@ -329,6 +329,10 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? {} : { probe: (agent) => probeApp(agent, { dataDir }) }),
     terminal: terminals ? createTerminalCards({ terminals }) : null,
     open,
+    ...(process.env.NODE_TEST_CONTEXT ? {} : {
+      frontmost: () => (front === null ? claudeFrontmost() : front === CLAUDE_BUNDLE),
+      idle: () => idleSeconds(),
+    }),
     ...(claudeShown ? { shown: claudeShown } : {}),
     pending: async (agent, id) => {
       if (agent === "codex") {
@@ -1166,7 +1170,14 @@ export function createAgentSessions({
       if (agent !== "claude" || !claudeCompose?.mode) return { mode, applied: false };
       const { session } = await claude.read(id, { limit: 1 });
       if (!session.inApp || claudeHost.drives(id)) return { mode, applied: false };
-      return { ...(await claudeCompose.mode(id, { title: session.appTitle || "Untitled", mode })), applied: true };
+      try {
+        return { ...(await claudeCompose.mode(id, { title: session.appTitle || "Untitled", mode })), applied: true };
+      } catch (error) {
+        // Not on screen in the Claude app: the phone keeps the pick and it
+        // goes in with the chat's next message (claudeCompose.deliver).
+        if (error?.waiting) return { mode, applied: false };
+        throw error;
+      }
     },
     async draft(agent, id, { text, owner }) {
       adapter(agent);
@@ -1373,7 +1384,7 @@ export function createAgentSessions({
     },
     // A permission card as its app shows it (its words and buttons), for the
     // phone to draw; brings that chat up in the app (app-cards.mjs).
-    card: (agent, id) => appCards.card(agent, id),
+    card: (agent, id, options) => appCards.card(agent, id, options),
     respond: async (agent, id, promptId, answer) =>
       agent === "claude" && claudeConsent.owns(promptId)
           ? claudeConsent.answer(id, promptId, answer)

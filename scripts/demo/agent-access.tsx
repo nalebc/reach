@@ -96,7 +96,7 @@ window.fetch = async (input, init = {}) => {
     return json({ name: "Home Mac", expiresAt: now + 23 * min, roots: [{ index: 0, name: "reach", path: "/Users/sample/Projects/reach" }, { index: 1, name: "notes", path: "/Users/sample/notes" }], terminals: [{ id: "reach:1", name: "npm run dev" }], screen: "apps", commandRequests: false, restrictedTerminal: true, terminalApproval: true });
   if (p === "/api/files" && new URLSearchParams(location.search).get("view") === "workspace")
     return json({ items: u.searchParams.get("path") ? [{ name: "App.tsx", path: "src/App.tsx", type: "file" }, { name: "InviteSheet.tsx", path: "src/InviteSheet.tsx", type: "file" }] : [{ name: "src", path: "src", type: "directory" }, { name: "test", path: "test", type: "directory" }, { name: "README.md", path: "README.md", type: "file" }, { name: "package.json", path: "package.json", type: "file" }] });
-  if (p === "/api/browser/files/search") return json({ items: [{ name: "InviteSheet.tsx", path: "src/InviteSheet.tsx", type: "file" }, { name: "invite.css", path: "src/invite.css", type: "file" }] });
+  if (p === "/api/browser/files/search") return json({ items: [{ name: "InviteSheet.tsx", path: "src/InviteSheet.tsx", type: "file" }, { name: "invite-sheet.css", path: "src/invite-sheet.css", type: "file" }] });
   if (p === "/api/files/text") return json({ text: "# Reach\n\nYour devices, within reach.\n\nnpm install\nnpm run go\n" });
   if (p.startsWith("/api/browser/terminals/")) return json({ output: "> reach@0.1.0 dev\n> vite\n\n  VITE v5.4  ready in 312 ms\n  ➜  Local:   http://127.0.0.1:5178/\n" });
   if (p === "/api/browser/terminal/history")

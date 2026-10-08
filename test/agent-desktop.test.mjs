@@ -29,6 +29,7 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
         if (request.op === "shot") return { ok: true, jpeg, width: 100, height: 60, hidden: 2 };
         if (request.op === "act") return actAnswer(request.action);
         if (request.op === "open") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
+        if (request.op === "browser-check") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
         if (request.op === "catalog") return { ok: true, apps: [{ ...chrome, running: true }, { id: "/Applications/1Password.app", name: "1Password", bundleId: "com.1password.1password", running: false }] };
         return { error: "unknown", kind: "invalid" };
       },
@@ -70,6 +71,34 @@ test("saved actions carry their window expectation to the native dispatch", asyn
   assert.equal(front.path, chrome.id); assert.equal(front.layout, expected.layout);
   await w.desktop.act(client, { type: "click", x: 0.5, y: 0.5 }, authorize(client), { expected });
   assert.deepEqual(w.helpers[0].requests.find(request => request.op === "act").expected, expected);
+  w.desktop.close();
+});
+
+test("a browser protocol run holds the input lease across phases and checks the owner before each phase", async () => {
+  const w = world(), client = w.make("muse", "apps"), other = w.make("other", "apps");
+  let release, entered;
+  const ready = new Promise(resolve => { entered = resolve; }), blocked = new Promise(resolve => { release = resolve; });
+  const run = w.desktop.withBrowser(client, chrome.id, authorize(client), async guard => {
+    await guard(); entered(); await blocked;
+    await guard(); return { ok: true };
+  });
+  await ready; w.tick(10000);
+  await rejects(() => w.desktop.act(other, { type: "click", x: 0.1, y: 0.1 }, authorize(other)), 409, /using the Mac/, "busy");
+  await rejects(() => w.desktop.act(client, { type: "click", x: 0.1, y: 0.1 }, authorize(client)), 409, /using the Mac/, "busy");
+  w.phone(true); release(); await rejects(() => run, 409, /phone/, "paused");
+  w.phone(false); w.tick(10000); await w.desktop.act(other, { type: "click", x: 0.1, y: 0.1 }, authorize(other));
+  assert.equal(w.helpers[0].requests.filter(r => r.op === "browser-check").length, 2);
+  w.desktop.close();
+});
+
+test("revoking a browser run stops its native helper before a later phase", async () => {
+  const w = world(), client = w.make("muse", "apps"); let effects = 0;
+  await rejects(() => w.desktop.withBrowser(client, chrome.id, authorize(client), async guard => {
+    effects++;
+    w.clients.set(client.id, { ...client, policy: { ...client.policy, hidden: [chrome] } });
+    await guard(); effects++;
+  }), 403, /changed/);
+  assert.equal(effects, 1); assert.equal(w.helpers[0].stopped, true);
   w.desktop.close();
 });
 

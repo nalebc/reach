@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { PRESET_WORDS } from "./BrowserInvite";
 import AccessEditor, {
-  accessSummary,
   appScopedAccess,
   canEditAccess,
   type EditableAccess,

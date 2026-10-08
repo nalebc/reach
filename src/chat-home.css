@@ -26,8 +26,6 @@
 .claude-spark.spinning {
   animation: as-spin 2.4s linear infinite;
 }
-
-/* Signing an agent in on the Mac from here (AgentSignIn). */
 /* What each agent needs signed in on the Mac: one row per sign-in. */
 .access {
   display: flex;

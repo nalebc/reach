@@ -73,6 +73,26 @@ test("into OpenClaw: a new session named after the chat, its history as notes; o
   for (const d of [dir, failing.dir]) fs.rmSync(d, { recursive: true, force: true });
 });
 
+test("into OpenClaw: a long title fits OpenClaw's 64 characters, and a name already taken gets a number", async () => {
+  const taken = new Set(["I cant edit order of queued messages like i can do in Codex Desktop"].map((t) => t.slice(0, 64).trim()));
+  const { claw, calls, dir } = gateway({
+    "sessions.patch": ({ params: { label } }) => (taken.has(label) ? new Error(`label already in use: ${label}`) : (taken.add(label), { ok: true })),
+  });
+  const title = "I cant edit order of queued messages like i can do in Codex Desktop app 🙂";
+  await claw.fork({ title, notes: ["n"] });
+  const labels = calls.filter((c) => c.method === "sessions.patch").map((c) => c.params.label);
+  assert.equal(labels.length, 2);
+  assert.ok(labels.every((l) => l.length <= 64));
+  assert.match(labels[1], / \(2\)$/);
+  assert.ok(!calls.some((c) => c.method === "sessions.delete"));
+  // An emoji at the edge is left out whole, never cut in half.
+  calls.length = 0;
+  await claw.fork({ title: "a".repeat(63) + "🙂", notes: ["n"] });
+  assert.equal(calls.find((c) => c.method === "sessions.patch").params.label, "a".repeat(63));
+  claw.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("OpenClaw notes: the move said first, each side named, in pieces it takes one at a time", () => {
   const notes = openClawNotes(
     [

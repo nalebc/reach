@@ -367,13 +367,6 @@
   font-size: 14px;
   font-weight: 500;
 }
-@media (min-width: 1025px) and (pointer: fine) {
-  .chat-list-top .notification-bell,
-  .as-bar .notification-bell,
-  .claw-thread-head .notification-bell {
-    display: none;
-  }
-}
 @media (max-width: 650px) {
   .notification-bell-label {
     display: none;

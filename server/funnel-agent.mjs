@@ -102,6 +102,7 @@ function permittedPath(method, value) {
         // the apps it may open, its command history.
         "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/apps", "/api/browser/shell/history",
         "/api/browser/shortcuts",
+        "/api/browser/tools", "/api/browser/tools/protocol",
         "/api/browser/files/search",
         "/api/files",
         "/api/files/text",
@@ -110,11 +111,13 @@ function permittedPath(method, value) {
         "/api/files/icons",
       ].includes(route)) ||
     (read && /^\/api\/browser\/terminals\/[A-Za-z0-9_:.-]+$/.test(route)) ||
+    (read && /^\/api\/browser\/tools\/operations\/[a-f0-9-]{36}$/.test(route)) ||
     (method === "POST" &&
       ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
         // Preset sessions: one input action, opening an app, one command, one file change.
         "/api/browser/desktop/input", "/api/browser/desktop/open", "/api/browser/shell", "/api/browser/files/change",
-        "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run"].includes(route)) ||
+        "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
+        "/api/browser/tools/define", "/api/browser/tools/run"].includes(route)) ||
     (method === "DELETE" &&
       (route === "/api/device/access" ||
         route === "/api/browser/shortcuts/record" ||

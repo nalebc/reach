@@ -655,6 +655,16 @@ func rules(from request: [String: Any]) -> Rules {
           out(try open(request["app"] as? String ?? "", rules))
         case "front":
           out(front(rules))
+        case "browser-check":
+          guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
+          try checkOwner(Date().timeIntervalSince(lastPosted))
+          let path = request["app"] as? String ?? ""
+          guard rules.mode != "view", path.hasPrefix("/"), path.hasSuffix(".app"),
+            let bundle = Bundle(path: path), let id = bundle.bundleIdentifier,
+            ["com.google.Chrome", "com.apple.Safari"].contains(id) else { try refuse("Choose Chrome or Safari within this agent's app access.", "blocked") }
+          let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ""
+          if let reason = appReason(id, name, canonical(URL(fileURLWithPath: path)), rules) { try refuse(reason) }
+          out(["ok": true, "app": name, "bundle": id])
         default:
           try refuse("Unknown request.", "invalid")
         }

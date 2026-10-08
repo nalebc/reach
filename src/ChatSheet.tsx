@@ -8,10 +8,14 @@ export default function ChatSheet({
   title,
   onClose,
   children,
+  className = "",
+  leading,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  className?: string;
+  leading?: ReactNode;
 }) {
   const surface = useRef<HTMLElement>(null);
   // The sheet sits in the part of the screen the keyboard leaves visible (it
@@ -74,12 +78,13 @@ export default function ChatSheet({
     >
       <section
         ref={surface}
-        className="reach-chat-sheet chat-home"
+        className={`reach-chat-sheet chat-home ${className}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
         <header className="chat-sheet-heading">
+          {leading && <span className="chat-sheet-leading" aria-hidden="true">{leading}</span>}
           <h2>{title}</h2>
           <button
             className="chat-sheet-close"

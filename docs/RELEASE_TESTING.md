@@ -22,3 +22,13 @@ Also repeat ordinary owner access with the separate Tailscale app enabled. On a 
 Read [SECURITY.md](SECURITY.md). The public Funnel surface exists only while an invitation or a browser agent's session is live, and is limited to the start page's fixed files, Face ID admission and the signed agent gateway, which carries an invited browser agent's API requests under that invitation's allowlist; owner APIs and WebSockets require authenticated private ingress. A registered owner passkey is an owner credential, not a guest invitation. Tailnet grants are additive: unrelated broad rules can widen a tagged device's network access. Setup rejects detected broad policies, but limited stored credentials cannot continuously audit later policy changes.
 
 Record device results explicitly as passed, failed or not tested. Automated tests and emulated phone-width pages cannot be substituted for this gate.
+
+## Optional native voice transcription
+
+The ordinary suite uses synthetic microphone and transcription adapters. On a supported macOS host, opt into the separate native speech test with:
+
+```sh
+REACH_TEST_VOICE_NATIVE=1 node --test test/voice-messages.test.mjs
+```
+
+This synthesizes disposable speech with the system voice, converts that sample and runs the local transcription helper. It does not record the microphone. The first run may download an Apple speech model, and the native case remains skipped in CI. Record its result separately from real microphone, phone permission and provider-message acceptance.

@@ -5,11 +5,11 @@ import { startDom, settle } from "./dom/harness.mjs";
 // Settings → Notifications: only on your own devices, only from the computer
 // serving the page; on iPhone, only from the Home Screen. The switch
 // subscribes this browser and tells the computer.
-let dom, React, NotifySettings;
+let dom, React, NotificationSetup, useNotificationSetup;
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
-  ({ NotifySettings } = await dom.load("/src/NotifySettings.tsx"));
+  ({ NotificationSetup, useNotificationSetup } = await dom.load("/src/NotifySettings.tsx"));
 });
 after(async () => dom?.close());
 
@@ -163,8 +163,13 @@ const tap = async (el, ms = 60) => {
   await settle(ms);
 };
 const buttonNamed = (view, text) => [...view.container.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+function NotificationPanel({ peer }) {
+  const state = useNotificationSetup(peer);
+  return state.here && state.support !== "unsupported" && state.allowed
+    ? React.createElement(NotificationSetup, { state }) : null;
+}
 const render = async () => {
-  const view = await dom.render(React.createElement(NotifySettings, { peer }));
+  const view = await dom.render(React.createElement(NotificationPanel, { peer }));
   await settle(60);
   return view;
 };

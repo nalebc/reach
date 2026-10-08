@@ -330,14 +330,15 @@ export function createAgentDesktop(config, {
     // Owner control interrupts queued/current agent input, but receives an
     // actual process-exit barrier rather than the promptly rejected request.
     yieldForOwner() {
-      const helpers = [...new Set([...pendingInputs].map(entry => entry.helper))];
+      const pending = [...pendingInputs];
+      const helpers = [...new Set(pending.map(entry => entry.helper))];
       if (!helpers.length) return null;
-      return Promise.all(helpers.map(helper => {
+      return Promise.all([...pending.flatMap(entry => entry.finished ? [entry.finished] : []), ...helpers.map(helper => {
         try { helper.stop(); } catch { return Promise.reject(fail(503, "The previous agent input helper could not be stopped.")); }
         return helper.terminated && typeof helper.terminated.then === "function"
           ? helper.terminated
           : Promise.reject(fail(503, "The previous agent input helper termination could not be verified."));
-      }));
+      })]);
     },
     normalizeAction,
     /** Every app on this Mac, for the owner's picker: {id, name, bundleId, running}. */
@@ -429,6 +430,52 @@ export function createAgentDesktop(config, {
       observe(latest);
       note(latest, "open", result);
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
+    },
+    /** Keep the Mac's input lease for a whole declarative browser operation. */
+    async withBrowser(client, appPath, authorize, work) {
+      const latest = live(client, authorize, "browser:control");
+      live(client, authorize, "browser:open");
+      live(client, authorize, "browser:screen");
+      const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      take(latest);
+      // Browser effects run in a separate process from this policy-check
+      // helper. Owner takeover must wait for both, including a rejected run.
+      let finish;
+      const finished = new Promise(resolve => { finish = resolve; });
+      const pending = { client: latest, helper: state.helper, finished };
+      pendingInputs.add(pending);
+      const guard = async () => {
+        checkState(client, authorize, "browser:control", state);
+        checkState(client, authorize, "browser:open", state);
+        checkState(client, authorize, "browser:screen", state);
+        checkInputAllowed(latest);
+        answer(await state.helper.send({ op: "browser-check", app: appPath }, () => {
+          checkState(client, authorize, "browser:control", state);
+          checkInputAllowed(latest);
+        }));
+        checkState(client, authorize, "browser:control", state);
+        checkInputAllowed(latest);
+        extend(latest);
+      };
+      try {
+        await guard();
+        const result = await work(guard, async () => {
+          await guard();
+          answer(await state.helper.send({ op: "open", app: appPath }, () => {
+            checkState(client, authorize, "browser:open", state);
+            checkInputAllowed(latest);
+          }));
+          await guard();
+        });
+        await guard();
+        note(latest, "tool", { app: appPath.split("/").pop().replace(/\.app$/, "") });
+        return result;
+      } finally {
+        if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
+        pendingInputs.delete(pending);
+        finish();
+      }
     },
     /** Who holds the Mac and what each agent last did, for the owner. */
     activity() {

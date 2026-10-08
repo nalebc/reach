@@ -8,12 +8,12 @@ These presets require macOS. The protected file helper is macOS-only, so Linux a
 
 ## The four presets
 
-| Preset | Sees | Touches | Files | Commands |
-| --- | --- | --- | --- | --- |
-| **Full control** | The screen with known protected windows filtered | Screen input with guardrails | File API uses shared folders; shell can access other files as the owner | Unsandboxed shell as the owner |
-| **Apps** | Only the chosen apps' windows | Only those apps | None | None |
-| **Files** | Nothing | Nothing | Chosen folders; read, or read and edit | None |
-| **Read only** | The screen with known protected and hidden windows filtered | Nothing | Shared folders, subject to root validation, or the ones chosen; read | Watch chosen terminals |
+| Preset           | Sees                                                        | Touches                      | Files                                                                   | Commands                       |
+| ---------------- | ----------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------- | ------------------------------ |
+| **Full control** | The screen with known protected windows filtered            | Screen input with guardrails | File API uses shared folders; shell can access other files as the owner | Unsandboxed shell as the owner |
+| **Apps**         | Only the chosen apps' windows                               | Only those apps              | None                                                                    | None                           |
+| **Files**        | Nothing                                                     | Nothing                      | Chosen folders; read, or read and edit                                  | None                           |
+| **Read only**    | The screen with known protected and hidden windows filtered | Nothing                      | Shared folders, subject to root validation, or the ones chosen; read    | Watch chosen terminals         |
 
 **Folder selection is validated before an invitation is issued.** Full control and Read only may include the owner’s exact Home folder; Files and earlier narrow invitations still require a project or data folder, such as Desktop. Filesystem roots, ancestors of Home, and protected system or application installation directories are refused. With no folders selected, Full control and Read only use all configured shared roots: if any root is invalid, choose valid folders explicitly. Sharing Home does not remove the file API’s protected private names and paths, including credentials, Home’s Library, and Reach’s own code and data. The separate Full control shell remains unsandboxed.
 
@@ -36,25 +36,35 @@ Anything already running or signed in can be available to the agent, including o
 
 Each invitation is its own session with its own helper process, log and lease. The Mac has one pointer and one keyboard, so **one input operation runs at a time**, including calls from the same agent. Ownership lasts until the operation finishes or its stopped helper actually exits; an idle lease then keeps successive actions together briefly. Competing input is answered `409 {kind: "busy", holder, retryInMs}`. Wait, observe again, and retry the intended action only after access is available. Screenshots are reads and run side by side. Input queued behind a read rechecks authorization, owner pause and phone control immediately before native dispatch. The owner's phone control (Screen) and the owner's pause come before every agent. File edits from Files-with-editing go through the sandboxed helper; Reach's writer coordinator still serialises overlapping folders for the approval-based sessions that remain.
 
+## The visible agent workspace
+
+An admitted agent lands on **Overview**. The first action is task search: it opens **Tools** with the same query. Persistent navigation exposes **Tools**, **Screen**, **Apps**, **Files**, **Commands**, and **Access**; capabilities outside the current grant are labelled and disabled. Earlier invitations use the same frame while retaining their original controls and owner approvals.
+
+The **Tool library** has task search, service/source filters, named buttons, and a focused input panel. Ready tasks can run directly. Tasks with missing inputs open their panel before any request is sent. Results show returned items and files with expiry, visible-page coverage, and buttons to populate the next tool's inputs. Choosing a next step does not execute it; the agent still runs that tool explicitly. Raw JSON, definitions, and the shared creation protocol remain available for tool authors.
+
+Switching sections keeps pending tools, request IDs, input drafts, and results in the same session. An activity strip returns to the active tool or recording. Screen captures pause outside **Screen**; its ordinary input sequence keeps its lock until completion. A credential change remounts the workspace, and narrowed access removes the corresponding controls and discards obsolete outputs. **Access** displays the current abilities, app/folder selections, and invitation expiry.
+
 ## Tools (`window.reach`)
 
 ```js
 const tools = await window.reach.listTools();
 const access = await window.reach.callTool("reach_access", {});
 const shot = await window.reach.callTool("reach_screenshot", {}); // {image, mimeType}
-await window.reach.callTool("reach_act", { action: { type: "click", x: 0.42, y: 0.18 } });
+await window.reach.callTool("reach_act", {
+  action: { type: "click", x: 0.42, y: 0.18 },
+});
 ```
 
-| Tool | Presets | What it does |
-| --- | --- | --- |
-| `reach_access` | all | The preset, what it allows, shared folders, expiry |
-| `reach_screenshot`, `reach_front` | Full, Apps, Read only | The screen now (protected and hidden windows left out; Apps: chosen apps only); what is in front and whether it takes commands or a password |
-| `reach_act` | Full, Apps | One action: `click`, `move`, `drag`, `scroll`, `type`, `key`. Coordinates are fractions of the screenshot. Refusals carry a kind: `blocked`, `busy`, `paused`, `retry` |
-| `reach_desktop_apps`, `reach_open_app` | Full, Apps | The apps the session may use, and opening or raising one by path |
-| `reach_list_files`, `reach_search_files`, `reach_read_file` | Full, Files, Read only | Reading inside shared folders |
-| `reach_change_file` | Full, Files with editing | `write` (whole file, up to 1 MiB), `mkdir`, `rm`, `cp`, inside a shared folder, immediate |
-| `reach_read_terminal` | Full, Read only | Output of a terminal the owner chose to share |
-| `reach_shell`, `reach_shell_history` | Full | One command as the owner, from inside a shared folder, 60 s and 256 KiB, logged; the deny list refuses and logs the rest |
+| Tool                                                        | Presets                  | What it does                                                                                                                                                           |
+| ----------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reach_access`                                              | all                      | The preset, what it allows, shared folders, expiry                                                                                                                     |
+| `reach_screenshot`, `reach_front`                           | Full, Apps, Read only    | The screen now (protected and hidden windows left out; Apps: chosen apps only); what is in front and whether it takes commands or a password                           |
+| `reach_act`                                                 | Full, Apps               | One action: `click`, `move`, `drag`, `scroll`, `type`, `key`. Coordinates are fractions of the screenshot. Refusals carry a kind: `blocked`, `busy`, `paused`, `retry` |
+| `reach_desktop_apps`, `reach_open_app`                      | Full, Apps               | The apps the session may use, and opening or raising one by path                                                                                                       |
+| `reach_list_files`, `reach_search_files`, `reach_read_file` | Full, Files, Read only   | Reading inside shared folders                                                                                                                                          |
+| `reach_change_file`                                         | Full, Files with editing | `write` (whole file, up to 1 MiB), `mkdir`, `rm`, `cp`, inside a shared folder, immediate                                                                              |
+| `reach_read_terminal`                                       | Full, Read only          | Output of a terminal the owner chose to share                                                                                                                          |
+| `reach_shell`, `reach_shell_history`                        | Full                     | One command as the owner, from inside a shared folder, 60 s and 256 KiB, logged; the deny list refuses and logs the rest                                               |
 
 The shell executes for at most **60 seconds**. Its default request deadline is **70 seconds** for exact `POST /api/browser/shell`, allowing time for termination and logging; other requests retain a 35-second deadline. A transport timeout or disconnect does not prove whether a mutation finished. Observe the result or command history before deciding to submit again; clients do not automatically retry mutations.
 
@@ -70,6 +80,14 @@ The stdio MCP adapter advertises the same tools for a compatible credential. The
 - **Host guard.** While a Full control or Apps session exists, Reach answers only the approving phone (`browser-host-guard.mjs`).
 
 ## Saved agent tools
+
+Chrome and Safari also expose deterministic tools built from `reach.tool.v1`. The nine prebuilt tools and agent-created tools use the identical definition validator and runtime. `reach_tools({query})` returns their complete definitions. `reach_tool_protocol({})` explains input types, value templates, exact targets, nested identity checks and fixed operations. `reach_define_tool({definition})` validates and saves a new definition with an immutable ID and immediately adds its named button and `reach_tool_*` MCP tool; MCP emits `notifications/tools/list_changed`. An agent using the visual workspace can use **Create deterministic tool** to inspect the same protocol and definitions and submit the same JSON. [The exported protocol](agent-tool-protocol.json) includes all built-in definitions.
+
+To execute a named tool, supply `browser: "Chrome"` or `"Safari"`, its declared inputs and a fresh UUID `requestId`. The server holds the Mac's input lease and checks the invitation, selected browser, pause and owner input before every phase. It binds operations to the exact page/document and item identity. Every action requires one visible matching target; missing, ambiguous or stale targets stop it. `wait` retries only a bounded read. There is no JavaScript/shell operation or inferred recovery step. Password/code fields and protected browser pages stay closed. Definitions can operate only on their declared public HTTPS origins. Creating a tool does not increase access.
+
+Each run's request ID and payload hash are written privately before execution. Retrying the same ID returns its status without repeating effects; using the ID with different inputs is refused. `reach_tool_operation({requestId})` recovers status after a lost response. A crash leaves pending operations uncertain. Completed actions are not undone. Runs have a 30-second deadline, the transport budget is 70 seconds, definitions at most 24 steps/12 inputs/24 KiB, and the custom store at most 100 tools. Item handles expire in five minutes; private files in fifteen minutes, at most 8 MiB. Both also end at invitation expiry, revocation or restart. Handles are scoped to their invitation; selected items also to their browser and unchanged document.
+
+The Gmail/Walmart adapters check their declared English layouts and supported download links. Search coverage is the visible result page. Gmail composition creates a draft, refuses an existing dialog and never sends. A Walmart receipt is a plain-text PDF snapshot of the verified order details. These adapters are covered by controlled-page tests; live signed-in-account compatibility remains a separate check. Native browser execution requires the host's **Allow JavaScript from Apple Events** and macOS Automation permissions; missing permission or sign-in challenges stop without falling back to keyboard guesses.
 
 Full control and Apps agents can record a task through `reach_record_shortcut({name})`, perform normal app/screen actions, verify the result, then call `reach_save_shortcut({})`. `reach_discard_shortcut({})` drops an unfinished recording. `reach_shortcuts({query})` finds and inspects permitted tasks. Each enabled task also appears as a named `reach_saved_*` tool in the browser and MCP catalogs; `reach_run_shortcut({id, values})` runs the same recipe directly. MCP emits `notifications/tools/list_changed` after a successful save. Tools created in one admitted session can be reused by another only when all their apps remain permitted.
 

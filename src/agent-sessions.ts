@@ -101,6 +101,8 @@ export type SessionItem = {
   status?: string;
   queued?: boolean;
   images?: number;
+  // Pieces sent as they are, by what they are: "Voice message", "PDF"…
+  attachments?: string[];
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
@@ -634,12 +636,18 @@ export type InstallPlan = {
 export const installAgent = (peer: Peer, agent: string, confirm = false) =>
   post<InstallPlan>(peer, `/api/sessions/agent-install/${encodeURIComponent(agent)}`, { confirm });
 // A permission card the Claude app or the Codex app shows, as it shows it:
-// its words and its buttons, in order (that chat comes up in the app).
+// its words and its buttons, in order. Looked at, the app's window comes back
+// to its chat and isn't switched while someone uses the app; bring: the chat
+// comes up there and stays.
 // more: the choices in the card's menu (the Codex app's "Approval options");
 // moreInApp: a menu whose choices stay in the app.
 export type AppCard = { id: string; texts: string[]; buttons: string[]; more?: string[]; moreInApp?: boolean };
-export const appCard = (peer: Peer, s: { agent: AgentName; id: string }) =>
-  request<AppCard>(peer, `${sessionPath(s)}/card`);
+export const appCard = (peer: Peer, s: { agent: AgentName; id: string }, bring = false) =>
+  request<AppCard>(peer, `${sessionPath(s)}/card${bring ? "?bring=1" : ""}`);
+// What a chat waits on in another app, from its newest few items only (the
+// list doesn't say; Needs you asks for the chats waiting on you).
+export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>
+  request<SessionPage>(peer, `${sessionPath(s)}?limit=20`).then((page) => page.session?.asking ?? null);
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back.
 export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string) => {
@@ -680,19 +688,6 @@ export function listModels(peer: Peer, agent: AgentName, { refresh = false } = {
   return value;
 }
 
-// Slash commands the agent offers after "/", fetched once per Mac.
-export type AgentCommand = { name: string; description: string; hint: string };
-const commandCache = new Map<string, Promise<AgentCommand[]>>();
-export function listCommands(peer: Peer, agent: AgentName) {
-  const key = `${peer.url} ${agent}`;
-  if (!commandCache.has(key)) {
-    const value = request<{ commands: AgentCommand[] }>(peer, `/api/sessions/commands?agent=${agent}`).then((r) => r.commands);
-    commandCache.set(key, value);
-    value.catch(() => commandCache.delete(key));
-  }
-  return commandCache.get(key)!;
-}
-
 // Any other file for a message; it goes to the agent as its path.
 export async function uploadFile(peer: Peer, file: Blob, name = "file") {
   const form = new FormData();
@@ -703,6 +698,19 @@ export async function uploadFile(peer: Peer, file: Blob, name = "file") {
     signal: AbortSignal.timeout(300000),
   });
   return r.id;
+}
+// A voice memo, as words to read over; or, when the Mac can't make words of
+// it, why, and the recording kept as a file to attach.
+export async function transcribeVoice(peer: Peer, memo: Blob, locale = navigator.language || "") {
+  const form = new FormData();
+  form.append("file", memo, memo.type === "audio/wav" ? "memo.wav" : "memo");
+  return request<{ text?: string; problem?: string; file?: { id: string; name: string } }>(
+    peer,
+    `/api/sessions/voice?locale=${encodeURIComponent(locale)}`,
+    // Longer than the Mac can take: building its helper once, then a first
+    // download of the language's speech model.
+    { method: "POST", body: form, signal: AbortSignal.timeout(330000) },
+  );
 }
 export async function uploadImage(peer: Peer, file: Blob, name = "image") {
   const form = new FormData();

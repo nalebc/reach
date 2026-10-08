@@ -207,6 +207,7 @@ test("workspace peer switch cannot carry the previous screenshot or ask scope in
     return React.createElement(BrowserWorkspace, { peer: current, onEnd: assert.fail });
   }
   const view = await dom.render(React.createElement(Harness)); active.add(view); const c = view.container;
+  await click(await dom.waitFor(() => c.querySelector("#agent-nav-screen")));
   await dom.waitFor(() => c.querySelector(".browser-screen-image"));
   const oldSrc = c.querySelector(".browser-screen-image").getAttribute("src");
   await click(screen(c), { clientX: 300, clientY: 250 });
@@ -218,6 +219,7 @@ test("workspace peer switch cannot carry the previous screenshot or ask scope in
   assert.equal(c.querySelector('[aria-label="Screen action sequence"]'), null);
   await dom.waitFor(() => releaseNewAccess);
   releaseNewAccess();
+  await click(await dom.waitFor(() => c.querySelector("#agent-nav-screen")));
   await dom.waitFor(() => c.querySelector(".browser-screen-image"));
   assert.notEqual(c.querySelector(".browser-screen-image").getAttribute("src"), oldSrc);
   assert.equal(c.querySelector('[aria-label="Screen controls"]'), null, "replacement view-only access cannot inherit ask controls");

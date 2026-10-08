@@ -12,7 +12,7 @@ const { outputText } = ts.transpileModule(source, {
     module: ts.ModuleKind.ESNext,
   },
 });
-const { screenPoint, ripplePoint } = await import(
+const { screenPoint } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 
@@ -38,24 +38,12 @@ test("fullscreen letterboxing never turns black bars into remote clicks", () => 
   assert.equal(screenPoint(195, 80, portrait, 1600, 900), null);
   assert.equal(screenPoint(195, 740, portrait, 1600, 900), null);
 });
-test("zoom and scroll keep remote coordinates and feedback at the same location", () => {
+test("zoom and scroll keep remote coordinates at the same location", () => {
   const image = { left: -300, top: -140, width: 1800, height: 1012.5 };
   assert.deepEqual(screenPoint(1050, 113.125, image, 3200, 1800), {
     x: 0.75,
     y: 0.25,
   });
-  assert.deepEqual(
-    ripplePoint(
-      250,
-      180,
-      { left: 20, top: 60, width: 800, height: 450 },
-      320,
-      200,
-      2,
-      2,
-    ),
-    { left: 548, top: 318 },
-  );
   // Resizing changes CSS dimensions, never the normalized remote target.
   assert.deepEqual(
     screenPoint(

@@ -9,7 +9,6 @@ import {
   MoreHorizontal,
   Settings2,
   Radio,
-  SquarePen,
   X,
   GitFork,
   Loader2,
@@ -27,12 +26,14 @@ import {
   type ChatAppChoice,
 } from "./ChatList";
 import { ClawSessionSettings } from "./OpenClawControls";
+import { OpenSetup, ScheduleForm, WhatsAppLink } from "./OpenClawSetup";
 import { useViewportBox } from "./useViewportBox";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
 import { MoveOffer } from "./MoveChat";
 import type { AgentHealth, AgentSession } from "./agent-sessions";
+import { BrandCourier } from "./ReachIdentity";
 import "./openclaw.css";
 
 const base = "/api/sessions/openclaw";
@@ -678,10 +679,38 @@ function ClawWorkspacePanel({
   const [problem, setProblem] = useState("");
   const [offset, setOffset] = useState(0);
   useEffect(() => setOffset(0), [query]);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState("");
+  const [linking, setLinking] = useState<"" | "link" | "relink">("");
+  const [ran, setRan] = useState("");
+  useEffect(() => {
+    if (!removing) return;
+    const timer = setTimeout(() => setRemoving(""), 4000);
+    return () => clearTimeout(timer);
+  }, [removing]);
+  const act = async (id: string, path: string, body: object) => {
+    if (busy) return false;
+    setBusy(id);
+    setProblem("");
+    try {
+      await post(peer, `${base}/${path}`, body);
+      setRevision((n) => n + 1);
+      return true;
+    } catch (e) {
+      setProblem((e as Error).message);
+      return false;
+    } finally {
+      setBusy("");
+    }
+  };
   const { data, error } = usePolling<{
     jobs?: ScheduledJob[];
     channels?: ChannelAccount[];
     canEdit?: boolean;
+    canAdd?: boolean;
+    canRun?: boolean;
+    canRemove?: boolean;
+    canLinkWhatsApp?: boolean;
     hasMore?: boolean;
     nextOffset?: number;
     version?: string;
@@ -697,6 +726,20 @@ function ClawWorkspacePanel({
     matches(`${c.channel} ${c.name} ${c.status}`),
   );
   const jobs = data?.jobs || [];
+  const whatsapp = (data?.channels || []).find((c) => c.channel === "whatsapp");
+  const refreshChannels = async () => {
+    if (busy) return;
+    setBusy("refresh");
+    setProblem("");
+    try {
+      await request(peer, `${base}/channels?refresh=1`);
+      setRevision((n) => n + 1);
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
   return (
     <section
       className="claw-panel"
@@ -712,10 +755,46 @@ function ClawWorkspacePanel({
         </h2>
         <p>
           {view === "automations"
-            ? "See upcoming runs and pause or resume your OpenClaw schedules."
+            ? "Upcoming runs of your OpenClaw schedules. Add, run, pause or delete them here."
             : "Connection status for the messaging apps in your Gateway."}
         </p>
+        <div className="claw-panel-actions">
+          {view === "automations" && data?.canAdd && !adding && (
+            <button className="claw-secondary" onClick={() => setAdding(true)}>
+              New schedule
+            </button>
+          )}
+          {view === "channels" && (
+            <button
+              className="claw-secondary"
+              aria-label="Refresh channel status"
+              disabled={!!busy}
+              onClick={() => void refreshChannels()}
+            >
+              {busy === "refresh" ? <Loader2 size={14} className="spin" /> : null}
+              Refresh
+            </button>
+          )}
+        </div>
       </div>
+      {view === "automations" && adding && (
+        <ScheduleForm
+          peer={peer}
+          onCancel={() => setAdding(false)}
+          onAdded={() => {
+            setAdding(false);
+            setRevision((n) => n + 1);
+          }}
+        />
+      )}
+      {view === "channels" && linking && (
+        <WhatsAppLink
+          peer={peer}
+          relink={linking === "relink"}
+          onCancel={() => setLinking("")}
+          onDone={() => setRevision((n) => n + 1)}
+        />
+      )}
       {(error || problem) && (
         <p className="claw-error" role="alert">
           {error || problem}
@@ -728,13 +807,42 @@ function ClawWorkspacePanel({
         </p>
       )}
       {data && (view === "automations" ? !jobs.length : !channels.length) && (
-        <p className="claw-empty">
-          {query
-            ? "No matches. Try another search."
-            : view === "automations"
-              ? "No scheduled jobs yet. Schedules you create in OpenClaw will appear here."
-              : "No messaging channels configured yet."}
-        </p>
+        query ? (
+          <p className="claw-empty">No matches. Try another search.</p>
+        ) : view === "automations" ? (
+          !adding && (
+            <div className="claw-missing">
+              <p>No schedules yet. Have OpenClaw do something at set times: a morning briefing, a weekly report.</p>
+              {data.canAdd && (
+                <button className="claw-primary" onClick={() => setAdding(true)}>
+                  Add a schedule
+                </button>
+              )}
+            </div>
+          )
+        ) : (
+          <div className="claw-missing">
+            <p>No messaging apps connected yet. Connect one so OpenClaw can answer you there.</p>
+          </div>
+        )
+      )}
+      {view === "channels" && data && !query && !linking && (
+        <div className="claw-missing">
+          {data.canLinkWhatsApp && (!whatsapp || whatsapp.status === "unconfigured") && (
+            <>
+              <p>WhatsApp isn't linked. Link it with a QR from OpenClaw.</p>
+              <button className="claw-primary" onClick={() => setLinking("link")}>
+                Connect WhatsApp
+              </button>
+            </>
+          )}
+          <p className="claw-note">
+            Discord, Telegram, Slack and others need a bot token, typed into OpenClaw's own setup.
+          </p>
+          <OpenSetup peer={peer} section="channels">
+            Add another channel
+          </OpenSetup>
+        </div>
       )}
       {view === "channels"
         ? channels.map((c) => (
@@ -751,6 +859,11 @@ function ClawWorkspacePanel({
               </div>
               <p>{c.name}</p>
               {c.error && <p className="claw-error">{c.error}</p>}
+              {c.channel === "whatsapp" && data?.canLinkWhatsApp && ["disconnected", "unknown"].includes(c.status) && !linking && (
+                <button className="claw-secondary" onClick={() => setLinking("relink")}>
+                  Link again with a new QR
+                </button>
+              )}
             </article>
           ))
         : jobs.map((job) => (
@@ -818,6 +931,36 @@ function ClawWorkspacePanel({
                   {job.enabled ? "Pause schedule" : "Resume schedule"}
                 </button>
               )}
+              <div className="claw-job-actions">
+                {data?.canRun && (
+                  <button
+                    className="claw-secondary"
+                    aria-label={`Run ${job.name} now`}
+                    disabled={!!busy || job.status === "running"}
+                    onClick={async () => {
+                      if (await act(`run:${job.id}`, "automations/run", { id: job.id })) setRan(job.id);
+                    }}
+                  >
+                    {busy === `run:${job.id}` ? <Loader2 size={14} className="spin" /> : null}
+                    {ran === job.id ? "Started" : "Run now"}
+                  </button>
+                )}
+                {data?.canRemove && (
+                  <button
+                    className={`claw-secondary${removing === job.id ? " claw-delete-ask" : ""}`}
+                    aria-label={removing === job.id ? `Tap again to delete ${job.name}` : `Delete ${job.name}`}
+                    disabled={!!busy}
+                    onClick={async () => {
+                      if (removing !== job.id) return setRemoving(job.id);
+                      setRemoving("");
+                      await act(`remove:${job.id}`, "automations/remove", { id: job.id });
+                    }}
+                  >
+                    {busy === `remove:${job.id}` ? <Loader2 size={14} className="spin" /> : null}
+                    {removing === job.id ? "Tap again to delete" : "Delete"}
+                  </button>
+                )}
+              </div>
             </article>
           ))}
       {view === "automations" && (offset > 0 || data?.hasMore) && (
@@ -942,6 +1085,7 @@ export default function OpenClawSpace({
           apps={apps}
           logos={logos}
           value="openclaw"
+          pending={{ ...appPending, openclaw: Math.max(appPending.openclaw || 0, data?.approvals.length || 0) }}
           onChange={onAppChange}
           onNew={onNew}
           onRefresh={() => {
@@ -960,7 +1104,7 @@ export default function OpenClawSpace({
             logos={logos}
             value="openclaw"
             onChange={onAppChange}
-            pending={{ ...appPending, openclaw: data?.approvals.length || 0 }}
+            pending={{ ...appPending, openclaw: Math.max(appPending.openclaw || 0, data?.approvals.length || 0) }}
           />
           <label className="chat-list-search">
             <Search size={16} />
@@ -1083,11 +1227,15 @@ export default function OpenClawSpace({
               ))}
             </div>
             {!found.length && (
-              <p className="claw-note">
-                {sessions.length
-                  ? "No sessions match these filters."
-                  : "No sessions yet. Conversations you start with OpenClaw will appear here automatically."}
-              </p>
+              sessions.length ? (
+                <p className="claw-note">No sessions match these filters.</p>
+              ) : (
+                <div className="chat-list-empty">
+                  <span className="chat-welcome-mascot" aria-hidden="true"><BrandCourier active /></span>
+                  <strong>Room for your next idea</strong>
+                  <p>Start an OpenClaw chat. Your conversations will appear here automatically.</p>
+                </div>
+              )
             )}
             {agents.map((agent) => (
               <section className="chat-group chat-project-group" key={agent}>
@@ -1109,12 +1257,12 @@ export default function OpenClawSpace({
                         key={s.key}
                         onClick={() => setOpened(s)}
                       >
-                        <span className="chat-entry-logo">
+                        <span className="chat-entry-logo" title="OpenClaw">
                           <AgentLogo
                             agent="openclaw"
                             name="OpenClaw"
                             logos={logos}
-                            size={20}
+                            size={18}
                           />
                         </span>
                         <span className="chat-entry-copy">
@@ -1139,7 +1287,11 @@ export default function OpenClawSpace({
                               <span className="chat-state-dot" />
                             </span>
                           ) : null}
-                          <time className="chat-card-time">
+                          <time
+                            className="chat-card-time"
+                            dateTime={s.updatedAt ? new Date(s.updatedAt).toISOString() : undefined}
+                            title={s.updatedAt ? `Updated ${new Date(s.updatedAt).toLocaleString()}` : undefined}
+                          >
                             {s.updatedAt ? ago(s.updatedAt) : ""}
                           </time>
                         </span>
@@ -1156,8 +1308,8 @@ export default function OpenClawSpace({
             aria-label="New OpenClaw chat"
             onClick={onNew}
           >
-            <SquarePen size={21} />
-            <span>Ask OpenClaw anything</span>
+            <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
+            <span className="chat-quick-label">Ask OpenClaw anything</span>
             <span className="chat-quick-arrow">
               <ArrowUp size={18} />
             </span>

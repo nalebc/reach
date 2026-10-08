@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { AddModelPrompt } from "./OpenClawSetup";
 
 export const clawBase = "/api/sessions/openclaw";
 export type ClawCatalog = {
@@ -30,6 +31,7 @@ export function useClawCatalog(peer: Peer) {
 }
 
 export function ClawModelControls({
+  peer,
   catalog,
   model,
   thinking,
@@ -37,6 +39,8 @@ export function ClawModelControls({
   onModel,
   onThinking,
 }: {
+  // With it, a model that isn't offered can be added (OpenClaw's setup).
+  peer?: Peer;
   catalog: ClawCatalog;
   model: string;
   thinking: string;
@@ -73,6 +77,7 @@ export function ClawModelControls({
             </option>
           ))}
         </select>
+        {peer && <AddModelPrompt peer={peer} />}
       </label>
       <label>
         Thinking
@@ -176,7 +181,7 @@ function ClawSettingsForm({ peer, session, disabled, onSaved, onClose }: ClawSes
         Chat name
         <input
           aria-label="OpenClaw chat name"
-          maxLength={120}
+          maxLength={64}
           value={label}
           disabled={busy || disabled}
           onChange={(e) => setLabel(e.target.value)}
@@ -184,6 +189,7 @@ function ClawSettingsForm({ peer, session, disabled, onSaved, onClose }: ClawSes
       </label>
       {catalog ? (
         <ClawModelControls
+          peer={peer}
           catalog={catalog}
           model={model}
           thinking={thinking}

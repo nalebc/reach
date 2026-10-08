@@ -4,7 +4,6 @@ import {
   RefreshCw,
   FolderOpen,
   Loader2,
-  MessageSquare,
   Plus,
   Search,
   ShieldCheck,
@@ -22,9 +21,10 @@ import { agentLabel, archiveSession, projectName, type AgentHealth, type AgentSe
 import { moveChoices, MoveItems, MoveSection } from "./MoveChat";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import { computerWord } from "./pause";
+import { BrandCourier } from "./ReachIdentity";
+import { NotificationBell } from "./Notifications";
 import "./chat-list.css";
 
-const DAY = 86400000;
 export const ago = (ms: number, now = Date.now()) => {
   const s = Math.max(0, Math.round((now - ms) / 1000));
   if (s < 60) return "now";
@@ -36,17 +36,6 @@ export const ago = (ms: number, now = Date.now()) => {
     day: "numeric",
   });
 };
-export function dayGroup(ms: number, now = new Date()) {
-  const today = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  ).getTime();
-  if (ms >= today) return "Today";
-  if (ms >= today - DAY) return "Yesterday";
-  if (ms >= today - 7 * DAY) return "Previous 7 days";
-  return "Older";
-}
 export const needsYou = (s: AgentSession) =>
   s.status === "waiting" || !!s.prompts?.length || !!s.asking || !!s.consent;
 
@@ -55,6 +44,8 @@ const supportedApps: ChatAppChoice[] = [
   { agent: "codex", name: "Codex", supported: true },
   { agent: "claude", name: "Claude Code", supported: true },
 ];
+const pendingLabel = (count: number) => `${count} ${count === 1 ? "request needs" : "requests need"} you`;
+const pendingCount = (count: number) => count > 9 ? "9+" : count;
 
 // Every app uses this header, including OpenClaw. The desktop app rail is
 // hidden on phones, so its replacement must always travel with the header.
@@ -63,6 +54,7 @@ export function ChatLibraryHeader({
   apps,
   value,
   logos,
+  pending = {},
   onChange,
   onNew,
   onRefresh,
@@ -73,6 +65,7 @@ export function ChatLibraryHeader({
   apps: ChatAppChoice[];
   value: string;
   logos: AgentLogos;
+  pending?: Record<string, number>;
   onChange: (app: string) => void;
   onNew?: () => void;
   onRefresh?: () => void;
@@ -115,29 +108,34 @@ export function ChatLibraryHeader({
           <Menu size={22} />
         </button>
         <button
-          className="chat-app-current"
+          className={`chat-app-current ${pending[value] ? "has-pending" : ""}`}
           aria-label={`Choose an app, ${name} selected`}
+          aria-description={pending[value] ? pendingLabel(pending[value]) : undefined}
           aria-expanded={appMenuOpen}
           onClick={() => {
             setAppMenuOpen(!appMenuOpen);
             setActionsOpen(false);
           }}
         >
-          {name}
+          <span className="chat-current-name">{value === "claude" ? "Claude" : name}</span>
+          {!!pending[value] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[value])}</span>}
           <ChevronDown size={17} />
         </button>
-        <button
-          className="chat-mobile-round"
-          aria-label="Search chats"
-          aria-expanded={searchOpen}
-          onClick={() => {
-            onSearch();
-            setAppMenuOpen(false);
-            setActionsOpen(false);
-          }}
-        >
-          <Search size={22} />
-        </button>
+        <div className="chat-mobile-tools">
+          <button
+            className="chat-mobile-round"
+            aria-label="Search chats"
+            aria-expanded={searchOpen}
+            onClick={() => {
+              onSearch();
+              setAppMenuOpen(false);
+              setActionsOpen(false);
+            }}
+          >
+            <Search size={22} />
+          </button>
+          <NotificationBell compact />
+        </div>
       </div>
       {appMenuOpen && (
         <div
@@ -150,7 +148,9 @@ export function ChatLibraryHeader({
               key={app.agent}
               role="menuitemradio"
               aria-label={app.name}
+              aria-description={pending[app.agent] ? pendingLabel(pending[app.agent]) : undefined}
               aria-checked={app.agent === value}
+              className={pending[app.agent] ? "has-pending" : undefined}
               onClick={() => {
                 onChange(app.agent);
                 setAppMenuOpen(false);
@@ -163,6 +163,7 @@ export function ChatLibraryHeader({
                 size={19}
               />
               {app.name}
+              {!!pending[app.agent] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[app.agent])}</span>}
               {!app.supported && <small>Coming soon</small>}
             </button>
           ))}
@@ -199,10 +200,11 @@ export function ChatLibraryHeader({
         </div>
       )}
       <div className="chat-list-heading">
-        <h1>Chats</h1>
+        <h1>{name}</h1>
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
+        <NotificationBell compact />
         {onRefresh && (
           <button
             className="chat-refresh"
@@ -214,11 +216,24 @@ export function ChatLibraryHeader({
         )}
         {onNew && (
           <button className="chat-create" aria-label="New chat" onClick={onNew}>
-            <Plus size={16} />
+            <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
             <span>New chat</span>
           </button>
         )}
       </div>
+      {apps.some((app) => app.agent !== value && pending[app.agent]) && (
+        <div className="chat-app-attention" role="group" aria-label="Apps needing you">
+          <span>Needs you</span>
+          {apps.filter((app) => app.agent !== value && pending[app.agent]).map((app) => (
+            <button key={app.agent} aria-label={`${app.name}, ${pendingLabel(pending[app.agent])}`}
+              onClick={() => { onChange(app.agent); setAppMenuOpen(false); setActionsOpen(false); }}>
+              <AgentLogo agent={app.agent} name={app.name} logos={logos} size={17} />
+              <span>{app.name}</span>
+              <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[app.agent])}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </header>
   );
 }
@@ -264,12 +279,12 @@ export function ChatAppPicker({
       {apps.map((app) => (
         <button
           key={app.agent}
-          className={`chat-app-token ${app.supported ? "" : "upcoming"}`}
+          className={`chat-app-token ${app.supported ? "" : "upcoming"} ${pending[app.agent] ? "has-pending" : ""}`}
           aria-label={app.name}
           aria-description={
             app.supported
               ? pending[app.agent]
-                ? `${pending[app.agent]} requests need you`
+                ? pendingLabel(pending[app.agent])
                 : undefined
               : "Coming soon"
           }
@@ -286,7 +301,7 @@ export function ChatAppPicker({
             />
             {!!pending[app.agent] && (
               <span className="chat-app-pending" aria-hidden="true">
-                {pending[app.agent] > 9 ? "9+" : pending[app.agent]}
+                {pendingCount(pending[app.agent])}
               </span>
             )}
           </span>
@@ -502,7 +517,7 @@ export default function ChatList({
           {...hold(s)}
         >
           <span className="chat-entry-logo" title={agentLabel(s.agent)}>
-            <AgentLogo agent={s.agent} logos={logos} size={20} />
+            <AgentLogo agent={s.agent} logos={logos} size={18} />
           </span>
           <span className="chat-entry-copy">
             <strong>{plainLine(s.title || "") || "New chat"}</strong>
@@ -528,6 +543,7 @@ export default function ChatList({
             <time
               className="chat-card-time"
               dateTime={new Date(s.updatedAt).toISOString()}
+              title={`Updated ${new Date(s.updatedAt).toLocaleString()}`}
             >
               {ago(s.updatedAt)}
             </time>
@@ -545,6 +561,7 @@ export default function ChatList({
           apps={apps}
           value={filter}
           logos={logos}
+          pending={appPending}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
             setLimit(12);
@@ -624,7 +641,7 @@ export default function ChatList({
         </p>
       ) : !found.length && setup && !q ? null : !found.length ? (
         <div className="chat-list-empty">
-          <MessageSquare size={28} />
+          {q ? <Search size={28} /> : <span className="chat-welcome-mascot" aria-hidden="true"><BrandCourier active /></span>}
           <strong>
             {q ? "No conversations found" : "Room for your next idea"}
           </strong>
@@ -740,7 +757,9 @@ export default function ChatList({
         />
       )}
       {!compact && !upcoming && canStart && <button className="chat-quick-new" aria-label={`New ${picked?.name || agentLabel(filter)} chat`} onClick={() => onNew()}>
-        <Plus size={21} /><span>Ask {picked?.name || agentLabel(filter)}</span><span className="chat-quick-arrow"><ArrowUpRight size={22} /></span>
+        <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
+        <span className="chat-quick-label">Ask {picked?.name || agentLabel(filter)}</span>
+        <span className="chat-quick-arrow"><ArrowUpRight size={22} /></span>
       </button>}
       {/* On the page: the list contains its layout, which would pin it. */}
       {undo && createPortal(

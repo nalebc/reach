@@ -93,6 +93,7 @@
   white-space: nowrap;
 }
 .move-item-text small {
+  overflow-wrap: anywhere;
   color: var(--as-muted, currentColor);
   font-size: 12px;
   line-height: 1.35;

@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
-  ChevronDown,
+  Bot,
+  ChevronsUpDown,
+  ClipboardList,
   FolderOpen,
+  Gauge,
+  Laptop,
   Loader2,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   Sparkle,
   X,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
+import { modelDisplayName } from "./ModelSheet";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
@@ -23,10 +29,11 @@ import ChatList, {
 import StrandedMessages from "./StrandedMessages";
 import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
+import { BrandCourier } from "./ReachIdentity";
+import { useAppNotifications } from "./Notifications";
+import ChatAppPager from "./ChatAppPager";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
-  AgentLogo,
-  ClaudeSpark,
   useAgentLogos,
   type AgentLogos,
 } from "./agent-logos";
@@ -130,6 +137,10 @@ export function NewChat({
 
   const [images, setImages] = useState<Attachment[]>([]);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelError, setModelError] = useState("");
+  const [modelReload, setModelReload] = useState(0);
+  const modelDefaults = useRef(true);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
@@ -153,29 +164,45 @@ export function NewChat({
     setModels([]);
     setModel(null);
     setEffort(null);
+    setSpeed(null);
     setMode(agent === "codex" ? "auto" : "default");
     setPanel("");
     setModes(null);
+    modelDefaults.current = true;
+  }, [peer.url, peer.token, agent]);
+  useEffect(() => {
     let live = true;
-    listModels(peer, agent).then(
-      (r) => {
-        if (!live) return;
-        setModels(r.models);
-        if (r.modes?.length) setModes(r.modes);
-        // New chats start the way the agent's app would start them.
-        if (agent === "codex" && r.mode) setMode(r.mode);
-        const first = r.models.find((m) => m.isDefault) || r.models[0];
-        if (first) {
-          setModel(first.id);
-          setEffort(first.defaultEffort);
-        }
-      },
-      () => {},
-    );
+    setModelsLoading(true);
+    setModelError("");
+    listModels(peer, agent, { refresh: modelReload > 0 })
+      .then(
+        (r) => {
+          if (!live) return;
+          setModels(r.models);
+          if (r.modes?.length) setModes(r.modes);
+          if (!r.models.length)
+            setModelError("No models were returned. Try loading them again.");
+          if (!modelDefaults.current) return;
+          // New chats start the way the agent's app would start them.
+          if (agent === "codex" && r.mode) setMode(r.mode);
+          const first = r.models.find((m) => m.isDefault) || r.models[0];
+          if (first) {
+            modelDefaults.current = false;
+            setModel(first.id);
+            setEffort(first.defaultEffort);
+          }
+        },
+        (e) => {
+          if (live) setModelError((e as Error).message);
+        },
+      )
+      .finally(() => {
+        if (live) setModelsLoading(false);
+      });
     return () => {
       live = false;
     };
-  }, [peer.url, peer.token, agent]);
+  }, [peer.url, peer.token, agent, modelReload]);
   const current = models.find((m) => m.id === model);
   // Permission modes for the new chat, as the agent offers them now. Claude
   // Code starts in your settings' default unless you pick one.
@@ -199,9 +226,23 @@ export function NewChat({
     !uploading &&
     !!cwd &&
     (text.trim().length > 0 || images.some((i) => i.id));
-  const open = true;
   const modeName =
     modeChoices.find((m) => m.id === mode)?.label || modeLabel(agent, mode);
+  const ModeIcon =
+    mode === "plan"
+      ? ClipboardList
+      : ["full-access", "bypassPermissions", "dontAsk"].includes(mode)
+        ? ShieldAlert
+        : ShieldCheck;
+  const modelDescription = current
+    ? [current.name, effortLabel(effort, agent), speed === "fast" ? "Fast" : ""]
+        .filter(Boolean)
+        .join(" · ")
+    : model
+      ? modelDisplayName(model)
+      : modelsLoading
+        ? "Loading models…"
+        : "Choose a model";
   const addFiles = (files: File[]) => {
     for (const file of files) {
       if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name))
@@ -290,15 +331,35 @@ export function NewChat({
   );
   return (
     <section
-      className={`chat-new ${agent} ${open ? "open" : ""}`}
+      className={`chat-new ${agent}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
-      {problem && <p className="as-hint bad">{problem}</p>}
+      <button
+        className="chat-new-context chat-folder"
+        aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
+        title={cwd || "Choose a folder"}
+        aria-expanded={panel === "folder"}
+        disabled={busy}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setPanel(panel === "folder" ? "" : "folder")}
+      >
+        <FolderOpen size={18} />
+        <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
+        <ChevronsUpDown size={14} />
+      </button>
+      {problem && (
+        <p className="as-hint bad" role="alert">
+          {problem}
+        </p>
+      )}
       {panel === "folder" && (
         <>
           {choiceRow(
             [
-              ...folders.map((f) => ({ id: f, label: folderLabel(f, folders) })),
+              ...folders.map((f) => ({
+                id: f,
+                label: folderLabel(f, folders),
+              })),
               // A folder picked by browsing, until another is chosen.
               ...(cwd && !folders.includes(cwd)
                 ? [{ id: cwd, label: folderLabel(cwd, folders) }]
@@ -352,6 +413,9 @@ export function NewChat({
           model={model}
           effort={effort}
           speed={speed}
+          busy={modelsLoading || busy}
+          error={modelError}
+          onRetry={() => setModelReload((n) => n + 1)}
           onPick={(next, done) => {
             if (next.speed) return setSpeed(next.speed);
             if (next.model) setModel(next.model);
@@ -388,10 +452,11 @@ export function NewChat({
           )}
           <textarea
             ref={input}
-            rows={open ? 3 : 1}
+            rows={3}
             value={text}
             placeholder="What would you like to work on?"
             aria-label={`New ${agentLabel(agent)} chat`}
+            disabled={busy}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
               const files = [...e.clipboardData.files];
@@ -400,91 +465,75 @@ export function NewChat({
               addFiles(files);
             }}
           />
-          {!open && cwd && (
-            <span className="chat-new-where" aria-hidden="true">
-              in {folderLabel(cwd, folders)}
-            </span>
-          )}
         </div>
-        {open && (
-          <div className="as-tools">
-            <button
-              className="as-icon"
-              aria-label="Add images"
-              onClick={() => picker.current?.click()}
-            >
-              <Plus size={18} />
-            </button>
-            <input
-              ref={picker}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(e) => {
-                addFiles([...(e.target.files || [])]);
-                e.target.value = "";
-              }}
-            />
-            <button
-              className="as-model chat-folder"
-              aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
-              aria-expanded={panel === "folder"}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPanel(panel === "folder" ? "" : "folder")}
-            >
-              <FolderOpen size={14} />
-              <span>{cwd ? folderLabel(cwd, folders) : "Folder"}</span>
-            </button>
-            <button
-              className="as-model as-mode-pick"
-              aria-expanded={panel === "mode"}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPanel(panel === "mode" ? "" : "mode")}
-            >
-              {agent === "codex" && <ShieldCheck size={14} />}
-              <span>{modeName}</span>
-            </button>
-            <span className="as-spacer" />
-            {current && (
-              <button
-                className="as-model chat-model"
-                aria-expanded={panel === "model"}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setPanel(panel === "model" ? "" : "model")}
-              >
-                <span className="as-model-name">{current.name}</span>{" "}
-                <span className="as-model-effort">{effortLabel(effort, agent)}</span>
-                <ChevronDown size={14} />
-              </button>
+        <div className="as-tools chat-new-tools">
+          <button
+            className="as-icon"
+            aria-label="Add images"
+            title="Add images"
+            disabled={busy}
+            onClick={() => picker.current?.click()}
+          >
+            <Plus size={18} />
+          </button>
+          <input
+            ref={picker}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              addFiles([...(e.target.files || [])]);
+              e.target.value = "";
+            }}
+          />
+          <button
+            className="as-icon as-mode-pick"
+            aria-label={`Permissions: ${modeName}`}
+            title={`Permissions: ${modeName}`}
+            aria-expanded={panel === "mode"}
+            aria-haspopup="menu"
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setPanel(panel === "mode" ? "" : "mode")}
+          >
+            <ModeIcon size={21} />
+          </button>
+          <button
+            className="as-icon chat-model"
+            aria-label={`Model and thinking: ${modelDescription}`}
+            title={`Model and thinking: ${modelDescription}`}
+            aria-expanded={panel === "model"}
+            data-custom={
+              (!!current &&
+                (!current.isDefault ||
+                  effort !== current.defaultEffort ||
+                  speed === "fast")) ||
+              undefined
+            }
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setPanel(panel === "model" ? "" : "model")}
+          >
+            <Gauge size={21} />
+          </button>
+          <span className="as-spacer" />
+          <button
+            className={`as-send ${ready ? "ready" : ""}`}
+            aria-label="Start"
+            disabled={!ready}
+            onClick={() => void start()}
+          >
+            {busy ? (
+              <Loader2 size={16} className="spin" />
+            ) : (
+              <ArrowUp size={21} />
             )}
-            <button
-              className={`as-send ${ready ? "ready" : ""}`}
-              aria-label="Start"
-              disabled={!ready}
-              onClick={() => void start()}
-            >
-              {busy ? (
-                <Loader2 size={16} className="spin" />
-              ) : (
-                <ArrowUp size={18} />
-              )}
-            </button>
-          </div>
-        )}
+          </button>
+        </div>
       </div>
     </section>
   );
-}
-
-// The Claude app greets by the moment: a new week on Monday morning,
-// otherwise the time of day.
-export function greeting(now = new Date()) {
-  const hour = now.getHours();
-  if (now.getDay() === 1 && hour >= 5 && hour < 12) return "New week";
-  if (hour >= 5 && hour < 12) return "Good morning";
-  if (hour >= 12 && hour < 18) return "Good afternoon";
-  return "Good evening";
 }
 
 // "Install on Mac": its maker's own command, shown first and run once
@@ -667,6 +716,7 @@ export default function EverythingChat({
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
   const macPrompts = (shared || own).macPrompts || [];
+  const notificationCounts = useAppNotifications(peer);
   const logos = useAgentLogos(peer);
   const [savedAgent, setAgent] = useChatAgent();
   const apps = useMemo<ChatAppChoice[]>(() => {
@@ -780,13 +830,42 @@ export default function EverythingChat({
   const appPending = Object.fromEntries(
     apps.map((app) => [
       app.agent,
-      allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length,
+      // Both feeds describe the same requests. Keep live session updates
+      // immediate without counting the inbox's copy a second time.
+      Math.max(notificationCounts[app.agent] || 0,
+        allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length),
     ]),
   );
   const status = health.find((h) => h.agent === current);
-  const needsSetup = picked.supported && picked.agent !== "openclaw" && !!status && (!status.installed || !status.signedIn || !!status.error);
-
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
+  const library = (app: ChatAppChoice, active: boolean) => {
+    if (app.agent === "openclaw")
+      return <OpenClawSpace peer={peer} apps={apps} logos={logos}
+        onScreen={onScreen}
+        openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
+        onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
+        deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
+        onNew={() => { setNewFolder(""); setSheet("new"); }} />;
+    const agent: AgentName = app.agent === "claude" || app.agent === "gemini" ? app.agent : "codex";
+    const appHealth = health.find(h => h.agent === agent);
+    const needsSetup = app.supported && !!appHealth && (!appHealth.installed || !appHealth.signedIn || !!appHealth.error);
+    const pending = allNeeds.filter(item => item.key.startsWith(app.agent + ":") || (app.supported && item.key.startsWith("mac:"))).length;
+    return (
+      <div className="chat-workspace">
+        {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
+        <ChatList peer={peer} sessions={sessions} logos={logos} apps={apps}
+          agent={app.agent} onAgentChange={setAgent} appPending={appPending}
+          onRefresh={() => { recheck(); void reload(); }} health={health}
+          onSectionMoved={() => void reload()} onArchived={() => void reload()}
+          canStart={!needsSetup && app.agent !== "gemini"}
+          setup={needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} /> : undefined}
+          errors={errors[app.agent] ? { [app.agent]: errors[app.agent] } : {}}
+          failure={failure} onOpen={openChat}
+          onNew={(cwd) => { setNewFolder(cwd || ""); setSheet("new"); }}
+          pending={pending} onReview={() => setSheet("review")} />
+      </div>
+    );
+  };
   return (
     <>
       {open ? (
@@ -827,58 +906,25 @@ export default function EverythingChat({
             }}
           />
         </SessionLinkContext.Provider>
-      ) : picked.agent === "openclaw" ? (
-        <OpenClawSpace key={peer.id} peer={peer} apps={apps} logos={logos}
-          onScreen={onScreen}
-          openKey={clawOpen} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
-          onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
-          deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
-          onNew={() => { setNewFolder(""); setSheet("new"); }} />
       ) : (
-        <div className="chat-workspace" aria-hidden={!!sheet || undefined}>
-          {/* Messages whose chat was deleted, to send elsewhere or delete. */}
-          <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />
-          <ChatList
-            key={peer.id}
-            peer={peer}
-            sessions={sessions}
-            logos={logos}
-            apps={apps}
-            agent={picked.agent}
-            onAgentChange={setAgent}
-            appPending={appPending}
-            onRefresh={() => { recheck(); void reload(); }}
-            health={health}
-            onSectionMoved={() => void reload()}
-            onArchived={() => void reload()}
-            // Gemini CLI chats are read here (it no longer answers personal accounts): no new ones.
-            canStart={!needsSetup && picked.agent !== "gemini"}
-            setup={needsSetup ? <AgentStatus peer={peer} agent={current} health={status} logos={logos} recheck={recheck} /> : undefined}
-            errors={
-              errors[picked.agent]
-                ? { [picked.agent]: errors[picked.agent] }
-                : {}
-            }
-            failure={failure}
-            onOpen={openChat}
-            onNew={(cwd) => {
-              setNewFolder(cwd || "");
-              setSheet("new");
-            }}
-            pending={needs.length}
-            onReview={() => setSheet("review")}
-          />
-        </div>
+        <ChatAppPager key={peer.id} apps={apps} value={picked.agent} onChange={setAgent} hidden={!!sheet}>
+          {library}
+        </ChatAppPager>
       )}
       {sheet === "new" && (
-        <ChatSheet title="New conversation" onClose={() => setSheet("")}>
+        <ChatSheet title="New conversation" className="chat-create-sheet" leading={<BrandCourier active />} onClose={() => setSheet("")}>
           <div className="chat-new-app-row">
             <ChatAppPicker
               apps={apps}
               value={picked.agent}
               onChange={setAgent}
               logos={logos}
+              pending={appPending}
             />
+          </div>
+          <div className="chat-new-computer" title={peer.name}>
+            <Laptop size={16} />
+            <span>{peer.name}</span>
           </div>
           {picked.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
@@ -923,7 +969,6 @@ export default function EverythingChat({
                   autoFocus
                 />
               )}
-              <p className="chat-sheet-footnote">On {peer.name}</p>
             </>
           )}
         </ChatSheet>
@@ -948,7 +993,13 @@ export default function EverythingChat({
 
 // A new OpenClaw chat from Reach: a session of its own (never one of WhatsApp's
 // or Discord's), its first message sent as it starts (server/openclaw.mjs).
-function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string) => void }) {
+function NewClawChat({
+  peer,
+  onStarted,
+}: {
+  peer: Peer;
+  onStarted: (key: string) => void;
+}) {
   const { catalog, error: catalogError } = useClawCatalog(peer);
   const [agentId, setAgentId] = useState("");
   const [model, setModel] = useState("");
@@ -963,6 +1014,12 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
     return () => { active.current = false; };
   }, []);
   const startingNow = useRef(false);
+  const modelDescription = [
+    catalog?.models.find((m) => m.id === model)?.name ||
+      model ||
+      "Agent default",
+    thinking ? `Thinking: ${thinking}` : "Default thinking",
+  ].join(" · ");
   // Asked again (a dropped answer), the same message starts the same chat.
   const attempt = useRef<{
     intent: string;
@@ -1013,8 +1070,8 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
       }}
     >
       {catalog?.agents?.length ? (
-        <label className="claw-new-agent">
-          Agent
+        <label className="chat-new-context claw-new-agent">
+          <Bot size={18} />
           <select
             aria-label="OpenClaw agent"
             disabled={busy}
@@ -1027,50 +1084,83 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
               </option>
             ))}
           </select>
+          <ChevronsUpDown size={14} />
         </label>
       ) : null}
-      <textarea
-        aria-label="New OpenClaw chat"
-        placeholder="What would you like OpenClaw to do?"
-        rows={3}
-        value={text}
-        autoFocus
-        onChange={(e) => setText(e.target.value)}
-        disabled={busy}
-      />
-      <div className="chat-new-claw-tools">
-        <button
-          type="button"
-          className="claw-options-toggle"
-          aria-expanded={optionsOpen}
-          onClick={() => setOptionsOpen(!optionsOpen)}
-        >
-          Model & thinking
-          <ChevronDown size={14} />
-        </button>
-        <button className="as-send ready" aria-label="Start" disabled={!text.trim() || busy}>
-          {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
-        </button>
-      </div>
-      {optionsOpen &&
-        (catalog ? (
-          <ClawModelControls
-            catalog={catalog}
-            model={model}
-            thinking={thinking}
+      {optionsOpen && (
+        <div className="chat-new-settings">
+          <div className="chat-new-settings-heading">
+            <span>Model & thinking</span>
+            <button
+              type="button"
+              className="as-icon"
+              aria-label="Close model and thinking"
+              onClick={() => setOptionsOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          {catalog ? (
+            <ClawModelControls
+              peer={peer}
+              catalog={catalog}
+              model={model}
+              thinking={thinking}
+              disabled={busy}
+              onModel={setModel}
+              onThinking={setThinking}
+            />
+          ) : (
+            <p className="claw-note">{catalogError || "Loading models…"}</p>
+          )}
+          {catalog?.errors?.map((message) => (
+            <p className="claw-note" key={message}>
+              {message}
+            </p>
+          ))}
+        </div>
+      )}
+      <div className="as-box">
+        <div className="as-field">
+          <textarea
+            aria-label="New OpenClaw chat"
+            placeholder="What would you like OpenClaw to do?"
+            rows={3}
+            value={text}
+            autoFocus
+            onChange={(e) => setText(e.target.value)}
             disabled={busy}
-            onModel={setModel}
-            onThinking={setThinking}
           />
-        ) : (
-          <p className="claw-note">{catalogError || "Loading models…"}</p>
-        ))}
-      {optionsOpen &&
-        catalog?.errors?.map((message) => (
-          <p className="claw-note" key={message}>
-            {message}
-          </p>
-        ))}
+        </div>
+        <div className="as-tools chat-new-tools">
+          <button
+            type="button"
+            className="as-icon chat-model"
+            aria-label="Model & thinking"
+            aria-description={modelDescription}
+            title={`Model & thinking: ${modelDescription}`}
+            aria-expanded={optionsOpen}
+            data-custom={!!(model || thinking) || undefined}
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setOptionsOpen(!optionsOpen)}
+          >
+            <Gauge size={21} />
+          </button>
+          <span className="as-spacer" />
+          <button
+            className={`as-send ${text.trim() && !busy ? "ready" : ""}`}
+            aria-label="Start"
+            disabled={!text.trim() || busy}
+          >
+            {busy ? (
+              <Loader2 size={16} className="spin" />
+            ) : (
+              <ArrowUp size={21} />
+            )}
+          </button>
+        </div>
+      </div>
       <small className="claw-note">Replies stay in Reach and OpenClaw.</small>
       {problem && (
         <p className="chat-sheet-intro" role="alert">

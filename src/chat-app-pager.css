@@ -1,0 +1,52 @@
+.chat-app-pages {
+  position: relative;
+  overflow-x: clip;
+}
+.chat-page-pane {
+  position: relative;
+  min-width: 0;
+  background: var(--bg);
+}
+.chat-page-pane.neighbor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 100%;
+  pointer-events: none;
+  transform: translate3d(
+    calc(var(--chat-page-x, 0px) + var(--chat-page-origin, 100%)),
+    0,
+    0
+  );
+}
+.chat-app-pages[data-motion] {
+  overflow: clip;
+  isolation: isolate;
+  user-select: none;
+}
+.chat-app-pages[data-motion] .chat-page-pane {
+  will-change: transform;
+}
+.chat-app-pages[data-motion] .chat-page-pane.current {
+  transform: translate3d(var(--chat-page-x, 0px), 0, 0);
+}
+.chat-app-pages[data-motion="settling"] .chat-page-pane {
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (max-width: 600px) {
+  /* A transformed page becomes the floating composer's containing block.
+     Keep its vertical position at the visible viewport while it slides. */
+  .chat-app-pages[data-motion] .chat-quick-new {
+    position: absolute;
+    top: calc(
+      var(--chat-page-visible-bottom) - 122px - env(safe-area-inset-bottom)
+    );
+    bottom: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-app-pages[data-motion="settling"] .chat-page-pane {
+    transition: none;
+  }
+}

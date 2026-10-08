@@ -532,24 +532,28 @@ test("printable key recording refuses persistence and keeps normal navigation an
 test("owner stop targets a run instance, and disable remains stopped after quick re-enable", async (t) => {
   const f = fixture(t);
   const saved = await f.recordWebsite();
-  let release, entered;
-  const openEntered = () => new Promise((resolve) => { entered = resolve; });
-  let opening = openEntered();
+  let release;
+  let entered;
   f.desktop.open = () =>
     new Promise((resolve) => {
       release = () => resolve({ ok: true, bundle: chrome.bundleId });
       entered();
     });
+  const firstDispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   const first = f.shortcuts.run(f.authorize, saved.id);
-  await opening;
+  await firstDispatched;
   const firstId = f.shortcuts.ownerList().running.runId;
   assert.match(firstId, /^[a-f0-9-]{36}$/);
   f.shortcuts.cancel(firstId);
   release();
   assert.equal((await first).status, "stopped");
-  opening = openEntered();
+  const secondDispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   const second = f.shortcuts.run(f.authorize, saved.id);
-  await opening;
+  await secondDispatched;
   const secondId = f.shortcuts.ownerList().running.runId;
   assert.notEqual(secondId, firstId);
   assert.throws(() => f.shortcuts.cancel(firstId), /changed|ended|current/i);
@@ -566,16 +570,18 @@ test("an owner disable is sticky even when re-enabled before the awaited action 
   f.shortcuts.start(f.authorize, "Open app only");
   await f.shortcuts.open(f.client(), chrome.id, f.authorize);
   const saved = f.shortcuts.save(f.authorize);
-  let release, entered;
-  const openEntered = () => new Promise((resolve) => { entered = resolve; });
-  let opening = openEntered();
+  let release;
+  let entered;
+  const dispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   f.desktop.open = () =>
     new Promise((resolve) => {
       release = () => resolve({ ok: true, bundle: chrome.bundleId });
       entered();
     });
   const run = f.shortcuts.run(f.authorize, saved.id);
-  await opening;
+  await dispatched;
   f.shortcuts.update(saved.id, false);
   f.shortcuts.update(saved.id, true);
   release();

@@ -130,6 +130,9 @@ export function presetRouteAllowed(client, method, route) {
   if (method === "POST" && route === "/browser/shell") return has("browser:shell");
   if (read && route === "/browser/shell/history") return has("browser:shell");
   if (["full", "apps"].includes(policy.preset) && has("browser:control") && has("browser:open") && has("browser:screen")) {
+    if (read && ["/browser/tools", "/browser/tools/protocol"].includes(route)) return true;
+    if (read && /^\/browser\/tools\/operations\/[a-f0-9-]{36}$/.test(route)) return true;
+    if (method === "POST" && ["/browser/tools/define", "/browser/tools/run"].includes(route)) return true;
     if (read && route === "/browser/shortcuts") return true;
     if (method === "POST" && ["/browser/shortcuts/record", "/browser/shortcuts/save", "/browser/shortcuts/run"].includes(route)) return true;
     if (method === "DELETE" && route === "/browser/shortcuts/record") return true;

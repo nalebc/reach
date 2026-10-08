@@ -37,6 +37,51 @@
 .need-card.has-screen {
   grid-template-areas: "icon text" "icon actions" "screen screen";
 }
+.need-card.has-body {
+  grid-template-areas: "icon text" "icon body" "icon actions";
+}
+/* What a chat in another app asks, and its card's buttons once read. */
+.need-body {
+  grid-area: body;
+  min-width: 0;
+}
+.need-body:empty {
+  display: none;
+}
+.need-elsewhere {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.need-elsewhere p,
+.need-body > .need-asked {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.need-elsewhere .need-command {
+  max-height: 7.5em;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgb(0 0 0 / 0.3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.need-elsewhere .need-actions {
+  flex-wrap: wrap;
+}
+.need-elsewhere small.said {
+  color: #9fd59a;
+  font-size: 12.5px;
+}
+.need-elsewhere small.problem {
+  color: #f0a0a0;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
 .need-screen {
   grid-area: screen;
   display: flex;

@@ -25,17 +25,6 @@ export type ScreenAction = {
   keys: string;
   action: DesktopAction;
 };
-export function tabAction(previous = false): ScreenAction {
-  return {
-    label: previous ? "Previous tab" : "Next tab",
-    keys: previous ? "Ctrl Shift Tab" : "Ctrl Tab",
-    action: {
-      type: "key",
-      key: "tab",
-      modifiers: previous ? ["control", "shift"] : ["control"],
-    },
-  };
-}
 const COMMON = ["undo", "find", "escape", "switch-app", "new-tab", "close-tab"];
 export default function ScreenActions({
   platform,

@@ -92,6 +92,10 @@
 .ms-card > button:disabled {
   opacity: 0.6;
 }
+.ms-card > .ms-current-unlisted:disabled {
+  opacity: 1;
+  cursor: default;
+}
 .ms-text {
   display: flex;
   flex: 1;
