@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2, TriangleAlert } from "lucide-react";
+import { DollarSign, Loader2, TriangleAlert } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
 import { OpenSetup } from "./OpenClawSetup";
 import { ClawAddProvider } from "./OpenClawOnboard";
+import { ClawRow } from "./OpenClawRow";
 import "./openclaw-spend.css";
 
 // What OpenClaw spends: a pill per chat, a pill on the status line, and a
@@ -74,7 +75,7 @@ export function ClawChatCost({ peer, sessionKey, refresh }: { peer: Peer; sessio
 }
 
 // Spend across OpenClaw, a pill on the status line; opens budget and models.
-export function ClawSpendPill({ peer, refresh }: { peer: Peer; refresh?: number }) {
+export function ClawSpendPill({ peer, refresh, row = false }: { peer: Peer; refresh?: number; row?: boolean }) {
   const [spend, setSpend] = useState<Ready<Spend> | null>(null);
   const [open, setOpen] = useState(false);
   const asked = useRef(0);
@@ -93,19 +94,27 @@ export function ClawSpendPill({ peer, refresh }: { peer: Peer; refresh?: number 
   }, [load, refresh]);
   if (!spend) return null;
   const state = budgetState(spend.month, spend.budget);
+  const show = () => {
+    setOpen(true);
+    void load();
+  };
   return (
     <>
-      <button
-        type="button"
-        className={`claw-spend-pill ${state}`}
-        onClick={() => {
-          setOpen(true);
-          void load();
-        }}
-      >
-        {state && <TriangleAlert size={11} />}
-        {usd(spend.today)} today
-      </button>
+      {row ? (
+        <ClawRow
+          icon={<DollarSign size={19} />}
+          tint="green"
+          label="Spend"
+          value={`${usd(spend.today)} today`}
+          tone={state ? "alert" : ""}
+          onClick={show}
+        />
+      ) : (
+        <button type="button" className={`claw-spend-pill ${state}`} onClick={show}>
+          {state && <TriangleAlert size={11} />}
+          {usd(spend.today)} today
+        </button>
+      )}
       {open && (
         <ChatSheet title="Spend" className="claw-spend-sheet" onClose={() => setOpen(false)}>
           <SpendSheet peer={peer} spend={spend} onChanged={load} />
@@ -340,7 +349,7 @@ function Routing({ peer }: { peer: Peer }) {
             <span>OpenRouter</span>
             <span className="claw-spend-fixes">
               <OpenSetup peer={peer} section="model">
-                On Mac
+                Guided setup
               </OpenSetup>
               {!addRouter && (
                 <button type="button" className="claw-secondary" onClick={() => setAddRouter(true)}>

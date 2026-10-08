@@ -265,13 +265,61 @@ export async function restartOpenClawGateway({
   }
 }
 
+// Fixed commands only. No terminal, no interactive stdin, bounded runtime/output.
+export async function runOpenClawMaintenance(action, {
+  run = promisify(execFile), env = process.env, platform = process.platform,
+  authorize = () => {}, configuration = localOpenClawConfig,
+} = {}) {
+  const commands = {
+    doctor: "openclaw doctor --non-interactive --no-workspace-suggestions",
+    repair: "openclaw doctor --repair --non-interactive --no-workspace-suggestions",
+    update: "openclaw update --yes --json --timeout 600",
+  };
+  if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
+  authorize();
+  await configuration();
+  authorize();
+  let output, failed = false;
+  try {
+    output = await run(platform === "win32" ? "cmd.exe" : env.SHELL || "/bin/sh",
+      platform === "win32" ? ["/d", "/c", commands[action]] : ["-lc", commands[action]],
+      { env, timeout: action === "update" ? 1800000 : 120000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+  } catch (error) {
+    output = { stdout: error.stdout || "", stderr: error.stderr || "" };
+    failed = true;
+  }
+  // A successful process may still report a skipped or failed update.
+  let skipped = false;
+  if (action === "update" && !failed) {
+    try {
+      const result = JSON.parse(output.stdout);
+      failed = !["ok", "skipped"].includes(result.status) || result.ok === false;
+      skipped = result.status === "skipped";
+    } catch {
+      // Don't claim an update succeeded without its structured result.
+      failed = true;
+    }
+  }
+  const lines = `${output.stdout || ""}\n${output.stderr || ""}`.split(/\r?\n/)
+    .slice(-200).map(scrubLine).filter(Boolean);
+  return {
+    status: failed ? "failed" : skipped ? "skipped" : "done",
+    message: failed ? "OpenClaw couldn't finish. Review the details and try again."
+      : skipped ? "OpenClaw skipped the update. Review the details."
+      : action === "update" ? "Update finished. OpenClaw is reconnecting."
+      : action === "repair" ? "Repairs finished. Check health again."
+      : "Health check finished. Review the findings below.",
+    lines,
+  };
+}
+
 export function routes(
   app,
   client,
   {
     base,
     authorize,
-    openCommand,
+    runMaintenance = runOpenClawMaintenance,
     env = process.env,
     home = os.homedir(),
     restart = restartOpenClawGateway,
@@ -284,6 +332,8 @@ export function routes(
     now = Date.now,
   } = {},
 ) {
+  let job = null;
+  let restarting = false;
   // The state files are walked at most once a minute.
   let filesAt = 0,
     filesKept = null;
@@ -364,37 +414,49 @@ export function routes(
     if (req.body?.confirm !== true) throw fail(400, "Confirm the restart.");
     const current = authorize(req);
     current();
-    const started = now();
-    await restart({ authorize: current, env });
-    current();
-    while (now() - started < waitMs) {
+    if (job?.status === "running" || restarting) throw fail(409, "An OpenClaw action is already running.");
+    restarting = true;
+    try {
+      const started = now();
+      await restart({ authorize: current, env });
       current();
-      const up = await ready();
-      current();
-      // A new Gateway: up for less time than since the restart began.
-      if (up.supported && up.uptimeMs !== undefined && up.uptimeMs <= now() - started + 1000) {
-        const overview = await client.overview();
+      while (now() - started < waitMs) {
         current();
-        if (overview.connected) return res.json({ restarted: true, back: true });
+        const up = await ready();
+        current();
+        // A new Gateway: up for less time than since the restart began.
+        if (up.supported && up.uptimeMs !== undefined && up.uptimeMs <= now() - started + 1000) {
+          const overview = await client.overview();
+          current();
+          if (overview.connected) return res.json({ restarted: true, back: true });
+        }
+        await new Promise((r) => setTimeout(r, settleMs));
       }
-      await new Promise((r) => setTimeout(r, settleMs));
+      // Still starting: the phone keeps reading /health.
+      res.json({ restarted: true, back: false });
+    } finally {
+      restarting = false;
     }
-    // Still starting: the phone keeps reading /health.
-    res.json({ restarted: true, back: false });
   });
 
-  // `openclaw doctor` in a Reach terminal: its prompts are answered there.
-  app.post(`${base}/health/doctor`, async (req, res) => {
-    authorize(req)();
-    if (!openCommand) throw fail(409, "Reach can't open OpenClaw's doctor here.");
-    res.json({ terminal: await openCommand("openclaw doctor", "OpenClaw doctor", req) });
-  });
-  // `openclaw update` likewise: it shows its plan and asks there, then
-  // restarts the Gateway itself. Newer OpenClaw lifts limits Reach works
-  // around (skills search, sub-agent stop).
-  app.post(`${base}/health/update`, async (req, res) => {
-    authorize(req)();
-    if (!openCommand) throw fail(409, "Reach can't open OpenClaw's update here.");
-    res.json({ terminal: await openCommand("openclaw update", "Update OpenClaw", req) });
-  });
+  // One maintenance operation per host; polling survives closing the sheet.
+  app.get(`${base}/health/maintenance`, (_req, res) => res.json({ job }));
+  for (const action of ["doctor", "repair", "update"]) {
+    app.post(`${base}/health/${action}`, async (req, res) => {
+      const current = authorize(req);
+      current();
+      if (req.body?.confirm !== true) throw fail(400, "Confirm this OpenClaw action.");
+      if (job?.status === "running" || restarting) throw fail(409, "An OpenClaw action is already running.");
+      const next = { action, status: "running", startedAt: now(), lines: [] };
+      job = next;
+      Promise.resolve().then(async () => {
+        current();
+        const result = await runMaintenance(action, { env, authorize: current });
+        Object.assign(next, result, { finishedAt: now() });
+      }).catch(() => {
+        Object.assign(next, { status: "failed", message: "OpenClaw couldn't finish. Try again.", finishedAt: now() });
+      });
+      res.json({ job: next });
+    });
+  }
 }

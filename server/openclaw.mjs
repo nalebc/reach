@@ -13,10 +13,11 @@ import * as schedulesFeature from "./openclaw-schedules.mjs";
 import * as watchFeature from "./openclaw-watch.mjs";
 import * as agentsFeature from "./openclaw-agents.mjs";
 import * as skillsFeature from "./openclaw-skills.mjs";
+import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 
 // Features in files of their own, each adding its routes.
-export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature];
+export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature, wizardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
@@ -2101,12 +2102,10 @@ export function openClawRoutes(
     const added = await addChannel(req.body || {}, { authorize: authorize(req) });
     res.json(added);
   });
-  // Only fixed sections of `openclaw configure`, never the phone's text.
-  app.post(`${base}/setup`, async (req, res) => {
-    const section = req.body?.section;
-    if (!SETUP_SECTIONS.includes(section)) throw fail(400, "Choose what to set up in OpenClaw.");
-    if (!openSetup) throw fail(409, "Reach can't open OpenClaw's setup here.");
-    res.json({ terminal: await openSetup(section, req) });
+  // Older phones must not silently launch a terminal for advanced setup.
+  app.post(`${base}/setup`, async (req, _res) => {
+    authorize(req)();
+    throw fail(409, "Use guided setup in Reach. Refresh the page to get the new setup controls.");
   });
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),

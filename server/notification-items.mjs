@@ -300,26 +300,46 @@ export function admissionNotification(request) {
 // knowing what it ends.
 export function restartNotification(request, terminals = 0) {
   const asker = clean(request.app || "An agent", 80);
+  // Claude chats Reach runs that a restart would cut off mid-step.
+  const working = (Array.isArray(request.working) ? request.working : []).map((c) => clean(c?.title || "A Claude chat", 60));
+  const names = working.length > 2 ? `${working.slice(0, 2).join(", ")} and ${working.length - 2} more` : working.join(" and ");
+  const ends = `${terminals ? `Its ${terminals === 1 ? "terminal" : `${terminals} terminals`} and live screens end.` : "Live screens end."}`;
+  const waiting = request.after && working.length;
   return sealNotification(
     {
       id: `restart:${request.id}`,
       source: "restart",
       sender: asker,
       icon: "agent",
-      title: "Restart Reach?",
+      title: waiting ? "Reach restarts when chats finish" : "Restart Reach?",
       kind: "permission",
       detail: "Computer restart",
-      summary: `Reach starts again in Terminal on your computer. ${terminals ? `Its ${terminals === 1 ? "terminal" : `${terminals} terminals`} and live screens end.` : "Live screens end."}`,
+      summary: waiting
+        ? `Waiting for ${names}.`
+        : working.length
+          ? `${names} ${working.length === 1 ? "is" : "are"} still working. ${ends}`
+          : `Reach starts again in Terminal on your computer. ${ends}`,
       signature: request.id,
       createdAt: request.requestedAt,
       expiresAt: request.expiresAt,
       target: { page: "overview" },
-      actions: [
-        { id: "restart", label: "Restart", tone: "primary" },
-        { id: "deny", label: "Not now", tone: "deny" },
-      ],
+      actions: waiting
+        ? [
+            { id: "restart", label: "Restart now" },
+            { id: "deny", label: "Cancel", tone: "deny" },
+          ]
+        : working.length
+          ? [
+              { id: "after", label: "Restart when done", tone: "primary" },
+              { id: "restart", label: "Restart now" },
+              { id: "deny", label: "Not now", tone: "deny" },
+            ]
+          : [
+              { id: "restart", label: "Restart", tone: "primary" },
+              { id: "deny", label: "Not now", tone: "deny" },
+            ],
     },
-    { type: "restart", id: request.id, evidence: [request.requestedAt, terminals] },
+    { type: "restart", id: request.id, evidence: [request.requestedAt, terminals, !!request.after, ...working] },
   );
 }
 // Notification content carries the event and its context. System attribution

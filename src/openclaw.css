@@ -1,66 +1,519 @@
-.claw-icon {
+/* OpenClaw (OpenClawSpace.tsx, OpenClawPages.tsx), laid out as the ChatGPT
+   app lays out its own, in its dark colours: round buttons at the top, rows
+   with a line icon, rounded groups of tinted rows, task cards, pills, one
+   white pill for what's next. Few words, no boxes around boxes. */
+.claw-app,
+.reach-chat-sheet.claw-sheet,
+.claw-settings,
+.claw-missing {
+  --claw-ink: #ececec;
+  --claw-muted: #a1a1a1;
+  --claw-faint: #6f6f6f;
+  --claw-line: #ffffff14;
+  --claw-group: #ffffff0b;
+  --claw-field: #ffffff10;
+  --claw-press: #ffffff12;
+  --claw-white: #f3f3f3;
+  --claw-white-ink: #0d0d0d;
+  --claw-blue: #5ea9ff;
+  --claw-danger: #f28b82;
+}
+.claw-app {
+  color: var(--claw-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.claw-app button {
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.claw-app button:focus-visible,
+.claw-sheet button:focus-visible {
+  outline: 2px solid var(--claw-blue);
+  outline-offset: 2px;
+}
+
+/* ── Round buttons and page tops ── */
+.claw-round {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--claw-line);
+  border-radius: 50%;
+  background: #ffffff0d;
+  color: var(--claw-ink);
+  box-shadow: 0 6px 22px #0005;
+  cursor: pointer;
+  list-style: none;
+}
+.claw-round:active {
+  background: var(--claw-press);
+}
+.claw-round:disabled {
+  opacity: 0.55;
+}
+.claw-round-spacer {
+  flex: none;
+  width: 46px;
+}
+.claw-page-top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 6px 0 10px;
+  background: linear-gradient(var(--bg) 70%, transparent);
+}
+.claw-page-top h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--claw-ink);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-page {
+  position: relative;
+  min-height: calc(100dvh - 140px);
+  padding-bottom: 96px;
+}
+
+/* ── Home: rows with a line icon, then the chats as plain titles ── */
+.claw-nav {
+  display: grid;
+  margin: 6px -10px 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--claw-line);
+}
+.claw-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 50px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--claw-ink);
+  font-size: 17px;
+  text-align: left;
+  cursor: pointer;
+}
+.claw-nav-item:active,
+.claw-nav-item:hover {
+  background: var(--claw-press);
+}
+.claw-nav-item > svg {
+  flex: none;
+  stroke-width: 1.8;
+}
+.claw-nav-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 11px;
+  background: #d6c38f26;
+  color: #e6d39f;
+  font-size: 12px;
+  text-align: center;
+}
+.claw-label {
+  margin: 18px 2px 6px;
+  color: var(--claw-muted);
+  font-size: 14px;
+  font-weight: 500;
+}
+.claw-chats {
+  display: grid;
+  margin: 0 -10px;
+}
+.claw-chats .claw-label {
+  margin-inline: 12px;
+}
+.claw-chat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--claw-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.claw-chat:active,
+.claw-chat:hover {
+  background: var(--claw-press);
+}
+.claw-chat-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.claw-chat-text strong {
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-chat-text small {
+  color: var(--claw-muted);
+  font-size: 13px;
+}
+.claw-chat-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  color: var(--claw-faint);
+  font-size: 13px;
+}
+.claw-chat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e6d39f;
+}
+.claw-quiet {
+  justify-content: center;
+  padding: 28px 0;
+}
+.claw-library .chat-quick-new {
+  color: var(--claw-muted);
+}
+
+/* An empty list: an icon tile, one line, one line under it, one pill. */
+.claw-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 72px 24px;
+  text-align: center;
+}
+.claw-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--claw-field);
+  color: var(--claw-ink);
+}
+.claw-empty-state strong {
+  color: var(--claw-ink);
+  font-size: 18px;
+  font-weight: 500;
+}
+.claw-empty-state p {
+  max-width: 300px;
+  margin: 0 0 10px;
+  color: var(--claw-muted);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+/* ── Pills: white for what's next, grey for the rest ── */
+.claw-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 40px;
-  height: 40px;
-  padding: 0;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 18px;
   border: 0;
-  background: transparent;
-  color: var(--muted);
-  border-radius: 8px;
+  border-radius: 999px;
+  background: var(--claw-field);
+  color: var(--claw-ink);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
 }
-.claw-icon:hover {
-  background: color-mix(in srgb, var(--muted) 10%, transparent);
-  color: var(--text-strong);
+.claw-pill.strong {
+  background: var(--claw-white);
+  color: var(--claw-white-ink);
 }
-.claw-library-meta {
+.claw-pill.danger {
+  color: var(--claw-danger);
+}
+.claw-pill:disabled {
+  opacity: 0.5;
+}
+.claw-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.claw-start {
+  margin: 8px 0 14px;
+}
+.claw-segments {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 22px;
+}
+.claw-segments button {
+  min-height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--claw-faint);
+  font-size: 17px;
+  cursor: pointer;
+}
+.claw-segments button[aria-pressed="true"] {
+  background: var(--claw-field);
+  color: var(--claw-ink);
+}
+.claw-fab {
+  position: fixed;
+  z-index: 30;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  min-height: 52px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--claw-white);
+  color: var(--claw-white-ink);
+  font-size: 17px;
+  font-weight: 500;
+  box-shadow: 0 10px 30px #0008;
+  cursor: pointer;
+}
+@media (min-width: 721px) {
+  .claw-fab {
+    position: absolute;
+    bottom: 24px;
+    right: 0;
+  }
+}
+
+/* ── Scheduled: a card per task; suggestions are dashed ── */
+.claw-tasks {
+  display: grid;
+  gap: 10px;
+}
+.claw-task {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 18px 18px 18px 16px;
+  border: 1px solid var(--claw-line);
+  border-radius: 26px;
+  background: var(--claw-group);
+  color: var(--claw-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.claw-task:active {
+  background: var(--claw-press);
+}
+.claw-task.suggested {
+  border: 1.5px dashed #ffffff26;
+  background: none;
+}
+.claw-task-picture {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  font-size: 27px;
+  line-height: 1;
+}
+.claw-task-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.claw-task-text strong {
+  font-size: 17px;
+  font-weight: 400;
+}
+.claw-task-text > span {
+  color: var(--claw-muted);
+  font-size: 15px;
+  line-height: 1.4;
+}
+.claw-task-text > .claw-task-alert {
+  color: var(--claw-danger);
+  font-size: 13px;
+}
+.claw-task-text > .claw-task-live {
+  color: var(--claw-blue);
+  font-size: 13px;
+}
+
+/* ── Customize: rounded groups of tinted rows ── */
+.claw-group {
+  margin: 0 0 22px;
+  overflow: hidden;
+  border: 1px solid var(--claw-line);
+  border-radius: 26px;
+  background: var(--claw-group);
+}
+.claw-group-note {
+  padding: 14px 18px;
+  margin: 0;
+}
+.claw-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 60px;
+  padding: 10px 16px 10px 18px;
+  border: 0;
+  background: none;
+  color: var(--claw-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.claw-row:active {
+  background: var(--claw-press);
+}
+.claw-row + .claw-row::before,
+.claw-group > * + .claw-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 54px;
+  border-top: 1px solid var(--claw-line);
+}
+.claw-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  color: var(--claw-muted);
+}
+.claw-row-icon svg {
+  stroke-width: 2;
+}
+.claw-row-icon.purple { color: #b48cff; }
+.claw-row-icon.amber { color: #f5c04a; }
+.claw-row-icon.green { color: #5fd38a; }
+.claw-row-icon.teal { color: #4fd1c5; }
+.claw-row-icon.blue { color: #5ea9ff; }
+.claw-row-icon.indigo { color: #8b95ff; }
+.claw-row-icon.plum { color: #e08ad6; }
+.claw-row-icon.gray { color: var(--claw-muted); }
+.claw-row-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.claw-row-text > span {
+  font-size: 17px;
+}
+.claw-row-text small {
+  overflow: hidden;
+  color: var(--claw-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-row-value {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--claw-muted);
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-row-value.action {
+  color: var(--claw-blue);
+}
+.claw-row-value.alert {
+  color: var(--claw-danger);
+}
+.claw-row-chevron {
+  flex: none;
+  margin-left: -4px;
+  color: var(--claw-faint);
+}
+
+/* ── Sheets: facts as rows, actions as pills ── */
+.reach-chat-sheet.claw-sheet {
+  color: var(--claw-ink);
+}
+.claw-facts {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--claw-line);
+  border-radius: 20px;
+  background: var(--claw-group);
+  list-style: none;
+}
+.claw-facts li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 13px 16px;
+  font-size: 15px;
+}
+.claw-facts li + li {
+  border-top: 1px solid var(--claw-line);
+}
+.claw-facts span {
+  color: var(--claw-muted);
+}
+.claw-facts strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+  text-align: right;
+}
+.claw-facts strong.alert {
+  color: var(--claw-danger);
+}
+.claw-detail .claw-sched-more {
+  margin-top: 14px;
+}
+.claw-sheet-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 14px 0 20px;
-  color: var(--muted);
-  font-size: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--claw-line);
+  color: var(--claw-muted);
+  font-size: 14px;
 }
-.claw-channels {
-  display: flex;
-  gap: 5px;
-  overflow-x: auto;
-  margin: 0 0 20px;
-  padding: 3px 0;
-}
-.claw-channels button {
-  flex: none;
-  min-height: 36px;
-  padding: 7px 12px;
-  font-size: 12px;
+.claw-sheet .claw-missing {
+  padding: 0;
   border: 0;
-  border-radius: 20px;
-  color: var(--muted);
-  background: transparent;
 }
-.claw-channels button[aria-pressed="true"] {
-  color: var(--text-strong);
-  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
-}
-.claw-note {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.claw-error {
-  color: var(--danger, #e5a18b);
-  font-size: 12px;
-  line-height: 1.5;
-  margin: 10px 0;
-}
+
+/* ── A conversation ── */
 .claw-conversation {
-  max-width: 880px;
+  max-width: 820px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -70,92 +523,131 @@
 }
 .claw-thread-head {
   display: flex;
-  gap: 9px;
   align-items: center;
-  border-bottom: 1px solid var(--border);
-  padding: 8px 0 15px;
-}
-.claw-thread-head > div {
-  flex: 1;
-  min-width: 0;
+  gap: 10px;
+  padding: 2px 0 10px;
 }
 .claw-thread-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  text-align: left;
-}
-.claw-thread-title > div {
+  display: grid;
+  justify-items: center;
   flex: 1;
   min-width: 0;
+  gap: 1px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--claw-ink);
+  cursor: pointer;
 }
-.claw-thread-title > svg {
+.claw-conversation .claw-thread-title h1 {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-thread-title > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--claw-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.claw-thread-actions {
+  position: relative;
   flex: none;
 }
-.claw-thread-actions { position: relative; flex: none; }
-.claw-thread-actions > summary { cursor: pointer; list-style: none; }
-.claw-thread-actions > summary::-webkit-details-marker { display: none; }
-.claw-thread-menu {
-  position: absolute; z-index: 5; top: calc(100% + 6px); right: 0;
-  display: grid; gap: 2px; min-width: 230px; max-width: calc(100vw - 32px); padding: 5px;
-  border: 1px solid var(--border); border-radius: 13px; background: var(--panel); box-shadow: 0 12px 32px #0006;
+.claw-thread-actions > summary::-webkit-details-marker {
+  display: none;
 }
-.claw-thread-menu .claw-icon { justify-content: flex-start; gap: 9px; width: 100%; height: auto; min-height: 40px; padding: 8px 10px; color: var(--text-strong); font-size: 13px; text-align: left; }
-.claw-thread-menu .claw-icon > svg { flex: none; color: var(--muted); }
+.claw-thread-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  min-width: 240px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+  border: 1px solid var(--claw-line);
+  border-radius: 20px;
+  background: #2a2a2a;
+  box-shadow: 0 16px 40px #0009;
+}
+.claw-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--claw-ink);
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.claw-menu-item:active,
+.claw-menu-item:hover {
+  background: var(--claw-press);
+}
+.claw-menu-item.danger {
+  color: var(--claw-danger);
+}
+.claw-menu-item.claw-delete-ask {
+  background: color-mix(in srgb, var(--claw-danger) 16%, transparent);
+}
+.claw-menu-cost:not(:empty) {
+  margin: 4px 6px 2px;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--claw-line);
+  color: var(--claw-muted);
+  font-size: 13px;
+}
+.claw-menu-cost:not(:empty)::before {
+  content: "This chat ";
+}
 .claw-app-switch {
   flex: none;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.claw-conversation .claw-thread-head h1 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 16px;
-  font-weight: 550;
-  margin: 0 0 4px;
-  color: var(--text-strong);
-}
-.claw-thread-head span {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 0 0 12px;
 }
 .claw-transcript {
   flex: 1;
-  min-height: 0;
+  min-height: min(96px, 24%);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 20px 4px;
+  padding: 16px 2px 20px;
 }
 .claw-message {
-  margin: 0 0 26px;
   max-width: 100%;
-  font-size: 14px;
-  line-height: 1.65;
+  margin: 0 0 24px;
+  color: var(--claw-ink);
+  font-size: 16px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
-  color: var(--text-strong);
 }
 .claw-message > small {
   display: block;
-  color: var(--muted);
-  font-size: 11px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+  color: var(--claw-muted);
+  font-size: 12px;
+}
+.claw-message > small.claw-sent {
+  margin: 6px 0 0;
 }
 .claw-message.from-user {
-  margin-left: 12%;
-  padding: 12px 16px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--muted) 9%, transparent);
+  width: fit-content;
+  max-width: 82%;
+  margin-left: auto;
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: #ffffff17;
 }
 .claw-message p:first-child {
   margin-top: 0;
@@ -171,94 +663,111 @@
   font-size: 12px;
 }
 .claw-tool {
-  margin: 8px 0 20px;
-  font-size: 12px;
-  color: var(--muted);
+  margin: 0 0 18px;
+  color: var(--claw-muted);
+  font-size: 13px;
 }
 .claw-tool summary {
   cursor: pointer;
 }
-.claw-composer {
-  /* Its send and stop buttons are the chats' own (.as-send), but this space
-     sits outside a chat page: without the chat colors the button had no
-     color at all (transparent). Reach's colors, as every chat page uses. */
-  --as-text: var(--text-strong, #eef4ef);
-  --as-bg: var(--bg);
-  --as-send-ready: var(--lime);
-  --as-send-ready-ink: var(--lime-ink);
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 12px;
-  background: var(--panel, var(--bg));
+.claw-working-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--claw-ink);
+  animation: claw-breathe 1.2s ease-in-out infinite;
 }
-.claw-composer:focus-within {
-  border-color: color-mix(in srgb, var(--lime) 45%, var(--border));
+@keyframes claw-breathe {
+  50% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+}
+.claw-composer {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-height: 45%;
+  padding: 8px 8px 8px 18px;
+  border: 1px solid var(--claw-line);
+  border-radius: 28px;
+  background: #ffffff0e;
+  box-shadow: 0 8px 28px #0004;
 }
 .claw-composer textarea {
-  display: block;
-  width: 100%;
-  resize: none;
-  border: 0;
-  box-shadow: none;
-  outline: none;
-  margin: 0;
-  padding: 0 2px;
-  min-height: 46px;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
   max-height: 160px;
-  color: var(--text-strong);
+  margin: 0 0 9px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  resize: none;
   background: transparent;
+  color: var(--claw-ink);
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
+  line-height: 1.5;
 }
-.claw-compose-tools {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.claw-composer textarea::placeholder {
+  color: var(--claw-faint);
+}
+.claw-send {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--claw-white);
+  color: var(--claw-white-ink);
+  cursor: pointer;
+}
+.claw-send:disabled {
+  background: #ffffff2e;
+  color: #ffffff80;
+}
+.claw-send[aria-label="Stop OpenClaw"]:not(:disabled) {
+  background: var(--claw-white);
+  color: var(--claw-white-ink);
 }
 .claw-delivery-note {
   display: block;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-  margin-top: 8px;
+  margin: 8px 6px 0;
+  color: var(--claw-muted);
+  font-size: 12px;
+}
+/* A chat that belongs to a WhatsApp group, a Discord channel or a cron job:
+   one quiet line where the message box would be. */
+.claw-readonly {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 6px 6px 18px;
+  border-radius: 28px;
+  background: #ffffff0a;
+  color: var(--claw-muted);
+}
+.claw-readonly p {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
 }
 .claw-text-button {
+  margin-bottom: 12px;
+  padding: 8px 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 8px 0;
-  margin-bottom: 12px;
-}
-@media (max-width: 720px) {
-  .claw-conversation {
-    position: fixed;
-    z-index: 80;
-    top: var(--vv-top, 0);
-    left: var(--vv-left, 0);
-    width: var(--vv-width, 100%);
-    height: var(--vv-height, 100dvh);
-    min-height: 0;
-    max-width: none;
-    padding: calc(12px + env(safe-area-inset-top)) 14px
-      max(14px, env(safe-area-inset-bottom));
-    background: var(--bg);
-  }
-  .claw-thread-head {
-    padding-top: 2px;
-  }
-  .claw-message.from-user {
-    margin-left: 6%;
-  }
-  .claw-composer textarea {
-    font-size: 16px;
-  }
-  .claw-library-meta {
-    flex-wrap: wrap;
-    gap: 0;
-  }
+  color: var(--claw-muted);
+  font-size: 13px;
 }
 .claw-conversation .need-text small {
   white-space: pre-wrap;
@@ -271,284 +780,110 @@
   max-height: 35%;
   overflow: auto;
 }
-.claw-transcript {
-  min-height: min(96px, 24%);
-}
-.claw-composer {
-  flex: 0 1 auto;
-  max-height: 45%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-/* A chat that belongs to a WhatsApp group, a Discord channel or a cron job:
-   one quiet line where the message box would be (OpenClawSpace.tsx). */
-.claw-readonly {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.claw-readonly p {
-  flex: 1 1 auto;
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
-}
-/* Delete asks once: the trash turns red until a second tap (or 4 s). */
-.claw-icon.claw-delete-ask {
-  color: var(--danger, #e5a18b);
-  background: color-mix(in srgb, var(--danger, #e5a18b) 14%, transparent);
-}
-.chat-create.claw-start {
-  align-self: flex-start;
-  margin: 4px 0 12px;
+@media (max-width: 720px) {
+  .claw-conversation {
+    position: fixed;
+    z-index: 80;
+    top: var(--vv-top, 0);
+    left: var(--vv-left, 0);
+    width: var(--vv-width, 100%);
+    height: var(--vv-height, 100dvh);
+    min-height: 0;
+    max-width: none;
+    padding: calc(10px + env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom));
+    background: var(--bg);
+  }
 }
 
-.claw-tabs {
+/* ── Shared by OpenClaw's forms and panels (setup, settings, agents…) ── */
+.claw-note {
   display: flex;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
-}
-.claw-tabs button {
-  display: flex;
-  flex: 1;
   align-items: center;
-  justify-content: center;
   gap: 7px;
-  min-height: 38px;
-  padding: 8px;
-  border: 0;
-  border-radius: 9px;
-  background: none;
-  color: var(--muted);
+  color: var(--claw-muted, var(--muted));
   font-size: 13px;
+  line-height: 1.5;
 }
-.claw-tabs button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
-  color: var(--text-strong);
+.claw-error {
+  margin: 10px 0;
+  color: var(--claw-danger, #f28b82);
+  font-size: 13px;
+  line-height: 1.5;
 }
-.claw-sync-status {
+.claw-empty {
+  margin: 0;
+  padding: 24px 0;
+  color: var(--claw-muted, var(--muted));
+  font-size: 14px;
+}
+.claw-icon {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+.claw-icon:hover {
+  background: #ffffff10;
+  color: var(--text-strong);
 }
 .claw-status-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 50%;
   background: var(--muted);
 }
 .claw-status-dot.connected {
-  background: var(--lime);
+  background: #5fd38a;
 }
 .claw-status-dot.disconnected {
-  background: var(--danger, #e5a18b);
-}
-.claw-library .chat-project-group h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.claw-library .chat-project-group h2 > svg {
-  color: var(--muted);
-}
-.claw-library .chat-card {
-  padding-inline: 8px;
-}
-.claw-library .claw-chat-context {
-  display: block;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.claw-panel-heading {
-  margin-bottom: 20px;
-}
-.claw-panel-heading h2 {
-  margin: 0 0 6px;
-  color: var(--text-strong);
-  font-size: 16px;
-  font-weight: 550;
-}
-.claw-panel-heading p,
-.claw-empty {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-  margin: 0;
-}
-.claw-empty {
-  padding: 24px 0;
-}
-.claw-detail-card {
-  padding: 16px;
-  margin: 0 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
-}
-.claw-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-.claw-card-top > strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-strong);
-  font-size: 14px;
-  font-weight: 550;
+  background: #f28b82;
 }
 .claw-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex: none;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #ffffff10;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .claw-badge.connected,
 .claw-badge.running {
-  color: var(--lime);
+  color: #5fd38a;
 }
 .claw-badge.error,
 .claw-badge.disconnected {
-  color: var(--danger, #e5a18b);
+  color: #f28b82;
 }
-.claw-detail-card > p {
-  margin: 8px 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+.claw-panel-heading {
+  margin-bottom: 16px;
 }
-.claw-detail-card > p.claw-error {
-  color: var(--danger, #e5a18b);
+.claw-panel-heading h2 {
+  margin: 0 0 6px;
+  color: var(--text-strong);
+  font-size: 17px;
+  font-weight: 600;
 }
-.claw-job-facts {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 16px;
-  margin: 14px 0;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.claw-job-facts dt {
-  color: var(--muted);
-}
-.claw-job-facts dd {
+.claw-panel-heading p {
   margin: 0;
-  color: var(--text-strong);
-  overflow-wrap: anywhere;
-}
-.claw-secondary,
-.claw-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: transparent;
-  color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 500;
-}
-.claw-primary {
-  border-color: var(--lime);
-  background: var(--lime);
-  color: var(--lime-ink);
-}
-.claw-settings {
-  flex: 0 1 auto;
-  max-height: 48%;
-  overflow: auto;
-  padding: 14px;
-  margin: 12px 0;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
-}
-.claw-settings > label,
-.claw-settings-fields > label {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
   color: var(--muted);
-  font-size: 12px;
-}
-.claw-settings-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  margin: 12px 0;
-}
-.claw-settings input,
-.claw-settings-fields select {
-  width: 100%;
-  min-width: 0;
-  min-height: 40px;
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  box-shadow: none;
-  background: var(--bg);
-  color: var(--text-strong);
   font-size: 14px;
+  line-height: 1.5;
 }
-.claw-settings-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
+/* The page's own top already names it. */
+.claw-page .claw-skills > .claw-panel-heading {
+  display: none;
 }
-.claw-conversation button:focus-visible,
-.claw-library button:focus-visible {
-  outline: 2px solid var(--lime);
-  outline-offset: 3px;
-}
-.claw-library .chat-quick-new {
-  color: var(--muted);
-}
-@media (max-width: 600px) {
-  .claw-library .chat-card {
-    min-height: 64px;
-    padding: 10px 4px 10px 8px;
-  }
-  .claw-library .chat-entry-copy {
-    gap: 3px;
-  }
-  .claw-library .claw-chat-context {
-    font-size: 11px;
-  }
-  .claw-library .chat-card-time {
-    display: block;
-    font-size: 11px;
-  }
-  .claw-library .chat-project-group h2 {
-    font-size: 14px;
-  }
-  .claw-conversation .claw-thread-head {
-    gap: 2px;
-  }
-  .claw-settings input,
-  .claw-settings-fields select,
-  .claw-new-agent select {
-    font-size: 16px;
-  }
-}
-
-/* What's missing, asked for where it's missed (OpenClawSetup.tsx). */
 .claw-panel-actions {
   display: flex;
   gap: 8px;
@@ -557,26 +892,129 @@
 .claw-panel-actions:empty {
   display: none;
 }
+.claw-secondary,
+.claw-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #ffffff12;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 500;
+}
+.claw-primary {
+  background: #f3f3f3;
+  color: #0d0d0d;
+}
+.claw-primary:disabled,
+.claw-secondary:disabled {
+  opacity: 0.5;
+}
+.claw-secondary.claw-delete-ask,
+.claw-pill.claw-delete-ask {
+  background: color-mix(in srgb, #f28b82 18%, transparent);
+  color: #f28b82;
+}
+.claw-settings {
+  flex: 0 1 auto;
+  max-height: 48%;
+  overflow: auto;
+  margin: 8px 0 12px;
+  padding: 16px;
+  border: 1px solid var(--claw-line);
+  border-radius: 24px;
+  background: #ffffff0b;
+  color: var(--claw-ink);
+}
+.claw-settings > label,
+.claw-settings-fields > label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--claw-muted);
+  font-size: 13px;
+}
+.claw-settings-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 12px 0;
+}
+.claw-settings input,
+.claw-settings-fields select,
+.claw-schedule-form textarea,
+.claw-schedule-form > label > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 14px;
+  box-shadow: none;
+  background: var(--claw-field);
+  color: var(--claw-ink);
+  font: inherit;
+  font-size: 16px;
+}
+.claw-schedule-form textarea {
+  resize: vertical;
+}
+.claw-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.reach-chat-sheet .claw-settings.claw-schedule-form {
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.claw-settings.claw-schedule-form {
+  max-height: none;
+  margin: 0 0 12px;
+}
+.claw-schedule-form > label + label {
+  margin-top: 12px;
+}
+.claw-check {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 10px;
+}
+.claw-settings .claw-check input {
+  width: auto;
+  min-height: 0;
+}
 .claw-missing {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  padding: 16px;
-  margin: 0 0 10px;
-  border: 1px dashed var(--border);
-  border-radius: 13px;
+  margin: 0 0 12px;
+  padding: 18px;
+  border: 1.5px dashed #ffffff26;
+  border-radius: 24px;
 }
 .claw-missing p {
   margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
+  color: var(--claw-muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 .claw-missing code {
-  padding: 6px 9px;
-  border-radius: 8px;
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: #ffffff10;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -588,61 +1026,18 @@
   align-self: center;
   width: min(240px, 100%);
   height: auto;
-  border-radius: 10px;
-  background: #fff;
   padding: 8px;
+  border-radius: 16px;
+  background: #fff;
 }
 .claw-link {
   align-self: flex-start;
   padding: 4px 0 0;
   border: 0;
   background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.claw-settings.claw-schedule-form {
-  max-height: none;
-  margin: 0 0 12px;
-}
-.claw-check {
-  display: flex !important;
-  flex-direction: row !important;
-  align-items: center;
-  gap: 8px;
-}
-.claw-job-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-.claw-secondary.claw-delete-ask {
-  color: var(--danger, #e5a18b);
-  background: color-mix(in srgb, var(--danger, #e5a18b) 14%, transparent);
-}
-.claw-schedule-form textarea,
-.claw-schedule-form > label > select {
-  width: 100%;
-  min-width: 0;
-  min-height: 40px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
-  color: var(--text-strong);
+  color: var(--claw-blue, #5ea9ff);
   font: inherit;
   font-size: 14px;
-  resize: vertical;
-}
-.claw-schedule-form > label + label {
-  margin-top: 12px;
-}
-.claw-settings .claw-check input {
-  width: auto;
-  min-height: 0;
 }
 .claw-channel-form {
   align-self: stretch;
@@ -650,20 +1045,24 @@
 .claw-app-choice {
   display: flex;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .claw-app-choice button {
   flex: 1;
-  min-height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 999px;
   background: none;
-  color: var(--muted);
+  color: var(--claw-muted, var(--muted));
   font: inherit;
-  font-size: 13px;
+  font-size: 15px;
 }
 .claw-app-choice button.on {
-  border-color: var(--text-strong);
-  color: var(--text-strong);
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  background: #ffffff14;
+  color: var(--claw-ink, var(--text-strong));
+}
+@media (max-width: 600px) {
+  .claw-settings-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

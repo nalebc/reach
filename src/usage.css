@@ -139,6 +139,9 @@
 .as-usage-windows a {
   color: inherit;
 }
+.as-usage-windows .as-usage-saved {
+  color: #e9eee9;
+}
 
 /* Above the message box, from 90% until it's out. */
 .usage-near {

@@ -18,11 +18,12 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-restart-"));
   const dataDir = path.join(dir, "private");
   let restarted = 0;
+  let working = [];
   const reach = await createReach({
     dataDir,
     roots: [dir],
     restartReach: () => restarted++,
-    agentSessions: { list: async () => ({ sessions: [] }), close() {} },
+    agentSessions: { list: async () => ({ sessions: [] }), working: () => working, close() {} },
     openClaw: { overview: async () => ({ connected: false }), close() {} },
   });
   t.after(async () => {
@@ -58,6 +59,20 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   assert.equal((await call(route, owner, { revision: item.revision, action: "restart" })).status, 200);
   assert.equal(restarted, 1);
   assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
+  // Exercise the phone's actual notification/action endpoints as well as
+  // the standalone restart controller.
+  working = [{ id: "chat-a", title: "Claw UI rebuild" }];
+  askRestart(dataDir, { app: "Claude" });
+  await new Promise((r) => setTimeout(r, 400));
+  const busy = (await call("/api/notifications")).body.items.find((i) => i.source === "restart");
+  assert.match(busy.summary, /Claw UI rebuild/);
+  const busyRoute = `/api/notifications/${encodeURIComponent(busy.id)}/actions`;
+  const deferred = await call(busyRoute, owner, { revision: busy.revision, action: "after" });
+  assert.equal(deferred.status, 200);
+  assert.equal(restarted, 1);
+  working = [];
+  for (let n = 0; n < 40 && restarted === 1; n++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(restarted, 2);
   await new Promise((r) => setTimeout(r, 400)); // answered: the list refreshes
   assert.equal((await call("/api/notifications")).body.items.some((i) => i.source === "restart"), false);
   // Not now: dropped, nothing restarts.
@@ -65,7 +80,7 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   await new Promise((r) => setTimeout(r, 400)); // the new request wakes the list
   const next = (await call("/api/notifications")).body.items.find((i) => i.source === "restart");
   assert.equal((await call(`/api/notifications/${encodeURIComponent(next.id)}/actions`, owner, { revision: next.revision, action: "deny" })).status, 200);
-  assert.equal(restarted, 1);
+  assert.equal(restarted, 2);
   assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
 });
 
@@ -139,4 +154,34 @@ test("a fresh Reach drops the restart that was asked for, and its watch never ho
     r.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
+});
+
+test("a restart names the Claude chats it would cut off and can wait for them to finish", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-restart-wait-"));
+  const { restartRequests } = await import("../server/restart-requests.mjs");
+  const { restartNotification } = await import("../server/notification-items.mjs");
+  let working = [{ id: "a", title: "Claw UI rebuild" }];
+  let restarted = 0;
+  const restarts = restartRequests({ dataDir: dir, restart: () => restarted++, working: () => working, watch: () => ({ close() {} }), everyMs: 10 });
+  askRestart(dir, { app: "Claude" });
+  let [request] = restarts.list();
+  let card = restartNotification(request);
+  assert.match(card.summary, /^Claw UI rebuild is still working\./);
+  assert.deepEqual(card.actions.map((a) => a.id), ["after", "restart", "deny"]);
+  assert.deepEqual(restarts.decide(request.id, "after"), { status: "waiting" });
+  [request] = restarts.list();
+  card = restartNotification(request);
+  assert.equal(card.title, "Reach restarts when chats finish");
+  assert.deepEqual(card.actions.map((a) => a.id), ["restart", "deny"]);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(restarted, 0);
+  working = [];
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(restarted, 1);
+  assert.equal(fs.existsSync(restartRequestFile(dir)), false);
+  // Nothing working: the card is as before.
+  askRestart(dir, { app: "Claude" });
+  assert.deepEqual(restartNotification(restarts.list()[0]).actions.map((a) => a.id), ["restart", "deny"]);
+  restarts.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

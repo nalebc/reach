@@ -1423,7 +1423,7 @@ test("WhatsApp links by OpenClaw's QR, never over a connected account; linking a
   assert.equal(calls.filter((x) => x.method === "channels.status").at(-1).params.probe, true);
 });
 
-test("OpenClaw's setup opens only its fixed sections, never the phone's text", async () => {
+test("legacy OpenClaw setup never launches a terminal", async () => {
   const { openClawRoutes } = await import("../server/openclaw.mjs");
   const routes = {};
   const opened = [];
@@ -1433,11 +1433,9 @@ test("OpenClaw's setup opens only its fixed sections, never the phone's text", a
     { openSetup: (section) => (opened.push(section), { id: "t1" }) },
   );
   const setup = routes["/api/sessions/openclaw/setup"];
-  let answered;
-  await setup({ body: { section: "model" } }, { json: (v) => (answered = v) });
-  assert.deepEqual(answered, { terminal: { id: "t1" } });
-  await assert.rejects(setup({ body: { section: "model; rm -rf ~" } }, { json() {} }), /Choose what to set up/);
-  assert.deepEqual(opened, ["model"]);
+  await assert.rejects(setup({ body: { section: "model" }, reauthorize() {} }, { json() {} }), /Use guided setup/);
+  assert.deepEqual(opened, []);
+
 });
 
 for (const action of ["settings", "automations"])

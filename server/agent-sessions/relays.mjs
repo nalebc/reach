@@ -22,7 +22,7 @@ import { clipMiddle } from "./move.mjs";
 // OpenClaw joins both when Reach has its Gateway (agentChats below).
 export const RELAY_AGENTS = ["codex", "claude"];
 const SOURCES = ["codex", "claude", "gemini"];
-const KINDS = ["build", "review", "send", "back", "report", "record"];
+const KINDS = ["build", "review", "send", "back", "report", "record", "post"];
 export const MAX_STEPS = 3;
 // A relay left waiting this long stops (set it up again if still wanted).
 export const WAIT_MS = 24 * 60 * 60 * 1000;
@@ -128,8 +128,10 @@ const clean = (text, max) => String(text ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-
 
 // The steps as asked for, checked: one to three, each a known kind; "back"
 // needs a chat before the one it follows. "report" (a helper's result to its
-// team's lead, teams.mjs) and "record" (how a workflow's task ended,
-// workflows.mjs) are Reach's own: never ones the phone sets up.
+// team's lead, teams.mjs), "record" (how a workflow's task ended,
+// workflows.mjs) and "post" (the last answer back to the WhatsApp or
+// Telegram chat that asked: `postBack` on start) are Reach's own: never
+// steps the phone sets up.
 // OpenClaw may be a step's agent when Reach has its Gateway (`agents`); a
 // chat picked to send to, or sent back to, must then be one Reach made.
 export function checkSteps(steps, from, agents = RELAY_AGENTS) {
@@ -143,7 +145,7 @@ export function checkSteps(steps, from, agents = RELAY_AGENTS) {
       if (!agents.includes(step.agent)) throw bad(named);
       return { kind, agent: step.agent, ...(instructions ? { instructions } : {}) };
     }
-    if (kind === "report" || kind === "record") throw bad("Unknown step.");
+    if (kind === "report" || kind === "record" || kind === "post") throw bad("Unknown step.");
     if (kind === "send") {
       const to = { agent: step.to?.agent, id: step.to?.id };
       if (!agents.includes(to.agent) || !chatId(to.agent, to.id)) throw bad(agents.includes("openclaw") ? "Pick a Codex, Claude Code or OpenClaw chat." : "Pick a Codex or Claude Code chat.");
@@ -346,6 +348,32 @@ export function createRelays({
     const from = agentName(src.agent);
     const title = page.session?.title || src.title || "";
     const cwd = page.session?.cwd || src.cwd || "";
+    // The last answer, as it is, to the chat that asked (r.chain[0]).
+    if (step.kind === "post") {
+      const origin = r.chain[0];
+      r.state = "sending";
+      r.updatedAt = now();
+      candidates.delete(r.id);
+      save();
+      try {
+        const posted = await openClaw.post(
+          { key: origin.id, text: clipMiddle(material.answer, 20000), requestId: `relay-${r.id}-post` },
+          allowed(r.owner),
+        );
+        r.sent.push({ kind: "post", to: { agent: origin.agent, id: origin.id }, at: now() });
+        r.next++;
+        r.state = "done";
+        r.problem = "";
+        r.updatedAt = now();
+        save();
+        const app = { whatsapp: "WhatsApp", telegram: "Telegram" }[posted?.channel] || "its app";
+        void say(r, `${origin.title || "OpenClaw"} · Posted`, `${agentName(src.agent)}'s answer is on ${app}.`);
+        return origin;
+      } catch (e) {
+        stop(r, e?.message || "It couldn't be posted.");
+        throw e;
+      }
+    }
     r.state = "sending";
     r.updatedAt = now();
     candidates.delete(r.id);
@@ -520,6 +548,9 @@ export function createRelays({
     // A relay that starts at once answers with the chat it went to.
     // An OpenClaw chat isn't in a folder: a build or review from it needs
     // one picked (`cwd`, checked as a new chat's).
+    // postBack (Oct 8, the owner's choice per relay): the last answer is
+    // posted to the OpenClaw chat this started from, the one-to-one WhatsApp
+    // or Telegram chat that asked (openClaw.post: never a group or channel).
     async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "", postBack = false, trigger = "reply", priority = null }) {
       if (!sources.includes(from?.agent) || !chatId(from.agent, from?.id)) throw bad("Unknown chat.", 404);
       const ordered = priority === null ? null : checkContinuePriority(priority);
@@ -533,6 +564,11 @@ export function createRelays({
           checked[0].kind !== "build" || !RELAY_AGENTS.includes(checked[0].agent) || checked[0].agent === from.agent ||
           atOnce || item || postBack || checked[0].instructions))
         throw bad("Auto-continue needs one other provider: Codex or Claude Code.");
+      if (postBack !== false) {
+        if (postBack !== true || from.agent !== "openclaw" || !openClaw?.post)
+          throw bad("Only a WhatsApp or Telegram chat in OpenClaw can get the result back.");
+        checked.push({ kind: "post" });
+      }
       const reason = authorized(owner);
       if (reason) throw bad(reason, 403);
       const dir = from.agent === "openclaw" && cwd ? folder(cwd) : "";
