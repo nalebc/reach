@@ -166,7 +166,7 @@ test("New chat → Workflow: the planner drafts the tasks, you edit one, and Run
   });
   await look();
   await dom.waitFor(() => rows().length === 2);
-  assert.deepEqual(rows(), ["Task 1: Build sign-in, Codex · Build", "Task 2: Review it, Claude Code · Review"]);
+  assert.deepEqual(rows(), ["Task 1: Build sign-in, Codex · Make changes", "Task 2: Review it, Claude Code · Review only"]);
   assert.match(page.querySelector(".wf-planner").textContent, /Planned by Codex/);
   assert.match(page.querySelector(".wf-meta").textContent, /app·2 tasks/);
   // A tap opens a task; its name changes and is saved a moment later, ids kept.
@@ -181,7 +181,7 @@ test("New chat → Workflow: the planner drafts the tasks, you edit one, and Run
     ],
   );
   mac.answers.run = () => ({ workflow: hold({ ...mac.held[WF], state: "running", tasks: mac.held[WF].tasks.map((t, i) => ({ ...t, state: i ? "waiting" : "working" })) }) });
-  await click(button("Run", page));
+  await click(button("Run workflow", page));
   await dom.waitFor(() => sent("run").length === 1);
   await dom.waitFor(() => /Running · 0 of 2/.test(page.querySelector(".wf-meta").textContent));
   assert.deepEqual(rows(), ["Task 1: Build sign-in, Working…", "Task 2: Review sign-in, Codex · Waiting".replace("Codex", "Claude Code")]);
@@ -200,7 +200,7 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   await dom.waitFor(() => sent("create").length === 1);
   assert.deepEqual(sent("create")[0].body, { cwd: "/work/app", title: "Pagination" });
   const page = await dom.waitFor(() => $(".workflow-sheet"));
-  assert.equal(button("Run", page).disabled, true, "a task first");
+  assert.equal(button("Run workflow", page).disabled, true, "a task first");
   assert.deepEqual(
     $$(".wf-dashed strong").map((s) => s.textContent),
     ["Build, then review", "Build, review, fix", "Two reviews", "Empty task"],
@@ -210,9 +210,12 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   await typeInto($('textarea[aria-label="Task 1: what to do"]'), "Add ?page= to /api/items.");
   await click(button("Add task", page));
   // The new task opens; it's Codex's (as the one before), switched to Claude Code.
-  await click(button("Task 2: Codex. Switch agent", page));
-  await click(button("Review", page));
-  await click(button("Start task 2 with the one above", page));
+  const agent = $('select[aria-label="Task 2 agent"]');
+  agent.value = "claude";
+  agent.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await settle();
+  await click(button("Review only", page));
+  await click($('input[aria-label="Start task 2 with the one above"]'));
   await typeInto($('textarea[aria-label="Task 2: what to do"]'), "Check the paging.");
   await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[1]?.task === "Check the paging.", 3000);
   assert.deepEqual(
@@ -274,7 +277,7 @@ test("a run that paused: each row says how it stands, the stopped one offers Ret
   // Run again: a copy to edit, on this page.
   mac.answers.again = () => ({ workflow: hold(workflow({ id: "wf-2", title: "Passkeys", tasks: [task("t1", { title: "One", task: "x" })] })) });
   await click(button("Run again", page));
-  await dom.waitFor(() => /1 task/.test(page.querySelector(".wf-meta")?.textContent || "") && button("Run", $(".workflow-sheet")));
+  await dom.waitFor(() => /1 task/.test(page.querySelector(".wf-meta")?.textContent || "") && button("Run workflow", $(".workflow-sheet")));
   assert.deepEqual(dom.errors, []);
 });
 

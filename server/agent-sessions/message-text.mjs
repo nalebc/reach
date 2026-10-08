@@ -8,8 +8,9 @@ export function visibleUserText(value) {
   // Claude app's <system-reminder> (its instructions, when a chat moves into
   // it), which showed in the person's own bubble.
   // Reach's own: a chat mentioned with "@" (chat-context.mjs mentionBlock),
-  // shown by its name (mentionedChats below).
-  const envelope = /^\s*<(in-app-browser-context|external_codex_apps_open_page|environment_context|ide_context|system-reminder|reach-chat)\b[^>]*>[\s\S]*?<\/\1>\s*/;
+  // shown by its name (mentionedChats below); a picture the chat already
+  // had (image-repeats.mjs), shown as a tag (repeatedImages below).
+  const envelope = /^\s*<(in-app-browser-context|external_codex_apps_open_page|environment_context|ide_context|system-reminder|reach-chat|reach-image)\b[^>]*>[\s\S]*?<\/\1>\s*/;
   for (;;) {
     const match = text.match(envelope);
     if (!match) break;
@@ -30,4 +31,10 @@ export function mentionedChats(value) {
     found.push({ from: attr("from"), chat: attr("chat") });
   }
   return found;
+}
+
+// How many pictures a message sent as "the same as before" (image-repeats.mjs).
+export function repeatedImages(value) {
+  const match = String(value ?? "").match(/<reach-image\b[^>]*\bcount="(\d{1,2})"/);
+  return match ? Number(match[1]) : 0;
 }

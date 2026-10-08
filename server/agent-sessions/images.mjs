@@ -109,8 +109,8 @@ export function imageSize(bytes) {
 }
 
 // About how many input tokens a model spends on an image this size, in each
-// provider's published terms: Claude scales it to fit 1568px and about 1.15
-// megapixels, then counts a token per 750 pixels; OpenAI (Codex) fits it in
+// provider's published terms: Claude scales it to fit 1568px and about 1.19
+// megapixels (1092 x 1092), then counts a token per 750 pixels; OpenAI (Codex) fits it in
 // 2048px with its short side at most 768px, then counts 170 per 512px tile
 // plus 85. An estimate: the models' own counts may differ a little.
 export function imageTokens(size, agent) {
@@ -125,7 +125,7 @@ export function imageTokens(size, agent) {
     h *= short;
     return 85 + 170 * Math.ceil(w / 512) * Math.ceil(h / 512);
   }
-  const fit = Math.min(1, 1568 / Math.max(w, h), Math.sqrt(1_150_000 / (w * h)));
+  const fit = Math.min(1, 1568 / Math.max(w, h), Math.sqrt((1092 * 1092) / (w * h)));
   return Math.round((w * fit * (h * fit)) / 750);
 }
 

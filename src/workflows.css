@@ -1,8 +1,4 @@
-/* Workflows (Workflows.tsx), laid out as ChatGPT lays out its lists, in its
-   dark colours: a rounded section per step with a row per task (icon, name,
-   a word on the right, a chevron), dashed cards to add, pills for actions,
-   one white pill for what's next, few words. (Two classes: the sheet is
-   also .chat-home, whose colours come later.) */
+/* Calm task list with explicit instructions, agent selection and editing permissions. */
 .reach-chat-sheet.workflow-sheet {
   --as-bg: #212121;
   --as-text: #ececec;
@@ -11,7 +7,7 @@
   --wf-group: #2a2a2a;
   --wf-field: #303030;
   --wf-press: #ffffff0f;
-  --wf-blue: #5ea9ff;
+  --wf-blue: #ececec;
   --wf-danger: #f28b82;
   color: var(--as-text);
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
@@ -33,7 +29,7 @@
 
 /* A step: its label, then its tasks in one rounded section. */
 .wf-step {
-  margin: 0 0 14px;
+  margin: 0 0 8px;
 }
 .wf-label {
   margin: 0 6px 7px;
@@ -45,11 +41,22 @@
   margin: 0 0 14px;
   overflow: hidden;
   border: 1px solid var(--as-line);
-  border-radius: 22px;
+  border-radius: 16px;
   background: var(--wf-group);
 }
 .wf-step > .wf-group {
   margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--as-line);
+  border-radius: 0;
+  background: none;
+}
+.wf-step:has(.wf-item.open) > .wf-group {
+  border-color: transparent;
+}
+.wf-item.open {
+  border-radius: 18px;
+  background: var(--wf-group);
 }
 .wf-item + .wf-item {
   position: relative;
@@ -67,8 +74,8 @@
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 56px;
-  padding: 8px 14px;
+  min-height: 68px;
+  padding: 12px 14px;
   border: 0;
   background: none;
   color: inherit;
@@ -83,14 +90,20 @@ button.wf-item-main:not(:disabled):active {
 }
 .wf-item-copy {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
 }
 .wf-item-title {
-  overflow: hidden;
   font-size: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.wf-item-detail {
+  color: var(--as-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .wf-item-value {
   display: inline-flex;
@@ -116,8 +129,8 @@ button.wf-item-main:not(:disabled):active {
 .wf-item-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 0 14px 14px;
+  gap: 20px;
+  padding: 4px 16px 16px;
 }
 .wf-action {
   flex: 0 0 auto;
@@ -147,7 +160,7 @@ button.wf-item-main:not(:disabled):active {
   min-width: 0;
   padding: 0;
   border: 0;
-  outline: none;
+  outline-offset: 4px;
   background: none;
   color: var(--as-text);
   font: inherit;
@@ -165,13 +178,16 @@ button.wf-item-main:not(:disabled):active {
   padding: 12px 14px;
   border: 0;
   border-radius: 18px;
-  outline: none;
+  outline-offset: 4px;
   background: var(--wf-field);
   color: var(--as-text);
   font: inherit;
   font-size: 16px; /* no zoom on iPhone */
   line-height: 1.45;
-  resize: vertical;
+  font-weight: 400;
+  resize: none;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .wf-edit-title::placeholder,
 .wf-edit-text::placeholder,
@@ -188,8 +204,7 @@ button.wf-item-main:not(:disabled):active {
   display: none;
 }
 .wf-chip,
-.wf-pill,
-.wf-seg > button {
+.wf-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -212,21 +227,6 @@ button.wf-item-main:not(:disabled):active {
 .wf-icon:disabled {
   opacity: 0.4;
 }
-.wf-seg {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--as-line);
-  border-radius: 999px;
-}
-.wf-seg > button {
-  min-height: 28px;
-  border: 0;
-  color: var(--as-muted);
-}
-.wf-seg > button[aria-pressed="true"] {
-  background: var(--wf-field);
-  color: var(--as-text);
-}
 .wf-chips-end {
   display: inline-flex;
   gap: 2px;
@@ -236,8 +236,8 @@ button.wf-item-main:not(:disabled):active {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border: 0;
   border-radius: 50%;
   background: none;
@@ -282,8 +282,8 @@ button.wf-item-main:not(:disabled):active {
   min-height: 60px;
   margin: 0 0 10px;
   padding: 10px 16px;
-  border: 1.5px dashed #ffffff29;
-  border-radius: 22px;
+  border: 1px solid var(--as-line);
+  border-radius: 16px;
   background: none;
   color: inherit;
   text-align: left;
@@ -545,3 +545,126 @@ button.wf-item-main:not(:disabled):active {
   background: #f5c26b;
   color: #2b1d00;
 }
+
+/* A plan reads as one page. The heading and run action stay within reach. */
+.reach-chat-sheet.workflow-sheet {
+  padding: 0 24px 20px;
+  border-radius: 24px;
+  scrollbar-width: thin;
+  color-scheme: dark;
+}
+.reach-chat-sheet.workflow-sheet .chat-sheet-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 -2px 16px;
+  padding: 24px 0 14px;
+  background: var(--as-bg);
+}
+.reach-chat-sheet.workflow-sheet .chat-sheet-heading h2 {
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.workflow-sheet .chat-sheet-close {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--wf-field);
+}
+.wf-plan-intro {
+  margin: 0 0 20px;
+  max-width: 42ch;
+  color: var(--as-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.wf-planner.wf-group {
+  margin-bottom: 24px;
+  background: none;
+}
+.wf-planner .wf-item-main { min-height: 54px; }
+.wf-planner .wf-item-title, .wf-planner .wf-action { font-size: 13px; }
+.wf-label { margin: 14px 14px 0; font-size: 12px; font-weight: 500; }
+.wf-title-field, .wf-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  color: var(--as-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+.wf-title-field > span { font-size: 11px; }
+.wf-edit-title { padding: 3px 0; }
+.wf-agent-field, .wf-parallel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--as-text);
+  font-size: 14px;
+}
+.wf-agent-select { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wf-agent-select select {
+  min-height: 44px;
+  max-width: 180px;
+  padding: 8px 24px 8px 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px;
+}
+.wf-agent-select > svg { position: absolute; right: 0; pointer-events: none; color: var(--as-muted); }
+.wf-task-mode { min-width: 0; margin: 0; padding: 0; border: 0; }
+.wf-task-mode legend { margin-bottom: 10px; padding: 0; font-size: 13px; color: var(--as-muted); }
+.wf-mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wf-mode-options > button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 12px;
+  border: 1px solid var(--as-line);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--as-text);
+  text-align: left;
+}
+.wf-mode-options > button[aria-pressed="true"] { border-color: #ececec80; background: var(--wf-field); }
+.wf-mode-options strong { font-size: 14px; font-weight: 500; }
+.wf-mode-options span { color: var(--as-muted); font-size: 12px; line-height: 1.5; }
+.wf-mode-check { position: absolute; right: 12px; top: 14px; }
+.wf-parallel > span { display: flex; flex-direction: column; gap: 4px; }
+.wf-parallel strong { font-weight: 400; font-size: 14px; }
+.wf-parallel small { color: var(--as-muted); font-size: 12px; }
+.wf-parallel input {
+  appearance: none;
+  flex: none;
+  width: 42px;
+  height: 26px;
+  margin: 9px 0;
+  border: 1px solid #ffffff30;
+  border-radius: 99px;
+  background: #484848;
+  cursor: pointer;
+}
+.wf-parallel input::before { content: ""; display: block; width: 20px; height: 20px; margin: 2px; border-radius: 50%; background: #ececec; transition: transform .15s; }
+.wf-parallel input:checked { background: #ececec; }
+.wf-parallel input:checked::before { transform: translateX(16px); background: #212121; }
+.wf-task-tools { display: flex; align-items: center; border-top: 1px solid var(--as-line); padding-top: 8px; font-size: 12px; color: var(--as-muted); }
+.wf-task-tools .wf-icon:last-child { color: var(--wf-danger); }
+.wf-draft-actions { position: sticky; bottom: -20px; z-index: 1; padding: 12px 0 8px; background: var(--as-bg); border-top: 1px solid var(--as-line); }
+.wf-save-note { margin: 0 0 10px; color: var(--as-muted); text-align: center; font-size: 12px; }
+.workflow-sheet :is(button, input, select, textarea):focus-visible { outline: 2px solid #ececec; outline-offset: 3px; }
+.workflow-sheet button { cursor: pointer; }
+.workflow-sheet button:disabled { cursor: default; }
+@media (max-width: 600px) {
+  .reach-chat-sheet.workflow-sheet { padding: 0 16px max(16px, env(safe-area-inset-bottom)); border-radius: 24px 24px 0 0; max-height: calc(var(--sheet-height, 100dvh) - 12px); }
+  .wf-draft-actions { bottom: calc(-1 * max(16px, env(safe-area-inset-bottom))); padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) { .wf-parallel input::before { transition: none; } }

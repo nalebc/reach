@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2, RotateCw } from "lucide-react";
+import { Activity, Loader2, RotateCw } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { ClawMaintenance } from "./OpenClawMaintenance";
 import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
+import { ClawRow } from "./OpenClawRow";
 import "./openclaw-health.css";
 
 // The Gateway's health, a pill on the status line; opens logs and fixes.
@@ -43,10 +45,13 @@ export function ClawHealthPill({
   peer,
   refresh,
   onChanged,
+  row = false,
 }: {
   peer: Peer;
   refresh?: number;
   onChanged?: () => void;
+  // A row on Customize instead of a pill.
+  row?: boolean;
 }) {
   const [health, setHealth] = useState<Health | null>(null);
   const [open, setOpen] = useState(false);
@@ -72,19 +77,27 @@ export function ClawHealthPill({
     return () => clearInterval(timer);
   }, [load]);
   if (!health) return null;
+  const show = () => {
+    setOpen(true);
+    void load(true);
+  };
   return (
     <>
-      <button
-        type="button"
-        className={`claw-health-pill ${health.status}`}
-        onClick={() => {
-          setOpen(true);
-          void load(true);
-        }}
-      >
-        <span className="claw-health-dot" />
-        {WORD[health.status] || WORD.attention}
-      </button>
+      {row ? (
+        <ClawRow
+          icon={<Activity size={19} />}
+          tint="teal"
+          label="Gateway"
+          value={WORD[health.status] || WORD.attention}
+          tone={health.status === "ok" ? "" : "alert"}
+          onClick={show}
+        />
+      ) : (
+        <button type="button" className={`claw-health-pill ${health.status}`} onClick={show}>
+          <span className="claw-health-dot" />
+          {WORD[health.status] || WORD.attention}
+        </button>
+      )}
       {open && (
         <ChatSheet title="Gateway" className="claw-health-sheet" onClose={() => setOpen(false)}>
           <HealthSheet
@@ -158,8 +171,9 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
+  const [maintaining, setMaintaining] = useState(false);
   const [armed, setArmed] = useState(false);
-  const [busy, setBusy] = useState<"" | "restart" | "doctor" | "update">("");
+  const [busy, setBusy] = useState<"" | "restart">("");
   const [note, setNote] = useState("");
   const [problem, setProblem] = useState("");
   // A second tap restarts; the first only asks, for a few seconds.
@@ -193,42 +207,20 @@ function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
       setBusy("");
     }
   };
-  // Doctor and Update run in a Reach terminal, answered there.
-  const inTerminal = async (what: "doctor" | "update") => {
-    setBusy(what);
-    setNote("");
-    setProblem("");
-    try {
-      const { terminal } = await post<{ terminal: { id: string } }>(peer, `${clawBase}/health/${what}`);
-      window.dispatchEvent(new CustomEvent("reach:open-terminal", { detail: terminal.id }));
-      setNote("Opened in Terminal");
-    } catch (e) {
-      setProblem((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
   return (
     <>
       <div className="claw-health-actions">
         <button
           type="button"
           className={`claw-secondary ${armed ? "armed" : ""}`}
-          disabled={!!busy}
+          disabled={!!busy || maintaining}
           onClick={restart}
         >
           {busy === "restart" && <Loader2 size={14} className="spin" />}
           {busy === "restart" ? "Restarting…" : armed ? "Tap to restart" : "Restart"}
         </button>
-        <button type="button" className="claw-secondary" disabled={!!busy} onClick={() => inTerminal("doctor")}>
-          {busy === "doctor" && <Loader2 size={14} className="spin" />}
-          Doctor
-        </button>
-        <button type="button" className="claw-secondary" disabled={!!busy} onClick={() => inTerminal("update")}>
-          {busy === "update" && <Loader2 size={14} className="spin" />}
-          Update
-        </button>
       </div>
+      <ClawMaintenance peer={peer} onChanged={onRestarted} onBusyChange={setMaintaining} disabled={!!busy} />
       {note && <p className="claw-note claw-health-note">{note}</p>}
       {problem && (
         <p className="claw-error" role="alert">

@@ -38,7 +38,7 @@ const ASK: [string, string][] = [
   ["always", "Always"],
 ];
 
-// The Agents tab: every agent, what runs under it, approvals and rules.
+// Every agent, what runs under it, approvals and rules.
 export function ClawAgentsPanel({ peer, query, refresh }: { peer: Peer; query: string; refresh: number }) {
   const [data, setData] = useState<Agents | null>(null);
   const [error, setError] = useState("");
