@@ -487,7 +487,7 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     ["settings", "POST"],
   ];
   // Starting OpenClaw's Gateway: owners only too (it runs on this computer).
-  for (const [route, method] of [...routes, ["gateway/start", "POST"]]) {
+  for (const [route, method] of [...routes, ["gateway/start", "POST"], ["wizard", "GET"], ...["start", "answer", "refresh", "cancel"].map((action) => [`wizard/${action}`, "POST"])]) {
     assert.equal((await fetch(`${url}/${route}`, { method })).status, 401);
     for (const credential of [agent, linked])
       assert.equal(
