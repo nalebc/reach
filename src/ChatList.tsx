@@ -56,6 +56,173 @@ const supportedApps: ChatAppChoice[] = [
   { agent: "claude", name: "Claude Code", supported: true },
 ];
 
+// Every app uses this header, including OpenClaw. The desktop app rail is
+// hidden on phones, so its replacement must always travel with the header.
+export function ChatLibraryHeader({
+  peer,
+  apps,
+  value,
+  logos,
+  onChange,
+  onNew,
+  onRefresh,
+  searchOpen,
+  onSearch,
+}: {
+  peer: Peer;
+  apps: ChatAppChoice[];
+  value: string;
+  logos: AgentLogos;
+  onChange: (app: string) => void;
+  onNew?: () => void;
+  onRefresh?: () => void;
+  searchOpen: boolean;
+  onSearch: () => void;
+}) {
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  useEffect(() => {
+    if (!appMenuOpen && !actionsOpen) return;
+    const close = (event: Event) => {
+      if (event.type === "keydown") {
+        if ((event as KeyboardEvent).key !== "Escape") return;
+      } else if ((event.target as HTMLElement)?.closest(".chat-list-top"))
+        return;
+      setAppMenuOpen(false);
+      setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [appMenuOpen, actionsOpen]);
+  const name =
+    apps.find((app) => app.agent === value)?.name || agentLabel(value);
+  return (
+    <header className="chat-list-top">
+      <div className="chat-mobile-header">
+        <button
+          className="chat-mobile-round"
+          aria-label="Chat list menu"
+          aria-expanded={actionsOpen}
+          onClick={() => {
+            setActionsOpen(!actionsOpen);
+            setAppMenuOpen(false);
+          }}
+        >
+          <Menu size={22} />
+        </button>
+        <button
+          className="chat-app-current"
+          aria-label={`Choose an app, ${name} selected`}
+          aria-expanded={appMenuOpen}
+          onClick={() => {
+            setAppMenuOpen(!appMenuOpen);
+            setActionsOpen(false);
+          }}
+        >
+          {name}
+          <ChevronDown size={17} />
+        </button>
+        <button
+          className="chat-mobile-round"
+          aria-label="Search chats"
+          aria-expanded={searchOpen}
+          onClick={() => {
+            onSearch();
+            setAppMenuOpen(false);
+            setActionsOpen(false);
+          }}
+        >
+          <Search size={22} />
+        </button>
+      </div>
+      {appMenuOpen && (
+        <div
+          className="chat-mobile-menu chat-mobile-app-menu"
+          role="menu"
+          aria-label="Choose an app"
+        >
+          {apps.map((app) => (
+            <button
+              key={app.agent}
+              role="menuitemradio"
+              aria-label={app.name}
+              aria-checked={app.agent === value}
+              onClick={() => {
+                onChange(app.agent);
+                setAppMenuOpen(false);
+              }}
+            >
+              <AgentLogo
+                agent={app.agent}
+                name={app.name}
+                logos={logos}
+                size={19}
+              />
+              {app.name}
+              {!app.supported && <small>Coming soon</small>}
+            </button>
+          ))}
+        </div>
+      )}
+      {actionsOpen && (
+        <div
+          className="chat-mobile-menu chat-mobile-actions"
+          role="menu"
+          aria-label="Chat actions"
+        >
+          {onNew && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setActionsOpen(false);
+                onNew();
+              }}
+            >
+              <Plus size={18} /> New chat
+            </button>
+          )}
+          {onRefresh && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setActionsOpen(false);
+                onRefresh();
+              }}
+            >
+              <RefreshCw size={18} /> Refresh chats
+            </button>
+          )}
+        </div>
+      )}
+      <div className="chat-list-heading">
+        <h1>Chats</h1>
+        <span className="chat-list-device">{peer.name}</span>
+      </div>
+      <div className="chat-heading-actions">
+        {onRefresh && (
+          <button
+            className="chat-refresh"
+            aria-label="Refresh apps and chats"
+            onClick={onRefresh}
+          >
+            <RefreshCw size={16} />
+          </button>
+        )}
+        {onNew && (
+          <button className="chat-create" aria-label="New chat" onClick={onNew}>
+            <Plus size={16} />
+            <span>New chat</span>
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
 export function ChatAppPicker({
   apps = supportedApps,
   value,
@@ -224,21 +391,6 @@ export default function ChatList({
   const [searchOpen, setSearchOpen] = useState(false);
   const searchField = useRef<HTMLInputElement>(null);
   useEffect(() => { if (searchOpen) searchField.current?.focus(); }, [searchOpen]);
-  const [appMenuOpen, setAppMenuOpen] = useState(false);
-  const [actionsOpen, setActionsOpen] = useState(false);
-  useEffect(() => {
-    if (!appMenuOpen && !actionsOpen) return;
-    const close = (event: Event) => {
-      if (event.type === "keydown") {
-        if ((event as KeyboardEvent).key !== "Escape") return;
-      } else if ((event.target as HTMLElement)?.closest(".chat-list-top")) return;
-      setAppMenuOpen(false);
-      setActionsOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", close);
-    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", close); };
-  }, [appMenuOpen, actionsOpen]);
   const [limit, setLimit] = useState(12);
   const [gone, setGone] = useState<Set<string>>(() => new Set());
   const all = useMemo(
@@ -388,41 +540,23 @@ export default function ChatList({
   return (
     <div className={`chat-library ${compact ? "compact" : ""} ${searchOpen ? "search-open" : ""}`}>
       {!compact && (
-        <header className="chat-list-top">
-          <div className="chat-mobile-header">
-            <button className="chat-mobile-round" aria-label="Chat list menu" aria-expanded={actionsOpen} onClick={() => { setActionsOpen(!actionsOpen); setAppMenuOpen(false); }}><Menu size={22} /></button>
-            <button className="chat-app-current" aria-label={`Choose an app, ${picked?.name || agentLabel(filter)} selected`} aria-expanded={appMenuOpen} onClick={() => { setAppMenuOpen(!appMenuOpen); setActionsOpen(false); }}>
-              {picked?.name || agentLabel(filter)} <ChevronDown size={17} />
-            </button>
-            <button className="chat-mobile-round" aria-label="Search chats" aria-expanded={searchOpen} onClick={() => { if (searchOpen) setQuery(""); setSearchOpen(!searchOpen); setAppMenuOpen(false); setActionsOpen(false); }}><Search size={22} /></button>
-          </div>
-          {appMenuOpen && <div className="chat-mobile-menu chat-mobile-app-menu" role="menu" aria-label="Choose an app">
-            {apps.map((app) => <button key={app.agent} role="menuitemradio" aria-checked={app.agent === filter} onClick={() => { (onAgentChange || setLocalAgent)(app.agent); setLimit(12); setAppMenuOpen(false); }}>
-              <AgentLogo agent={app.agent} name={app.name} logos={logos} size={19} />{app.name}{!app.supported && <small>Coming soon</small>}
-            </button>)}
-          </div>}
-          {actionsOpen && <div className="chat-mobile-menu chat-mobile-actions" role="menu" aria-label="Chat actions">
-            {!upcoming && canStart && <button role="menuitem" onClick={() => { setActionsOpen(false); onNew(); }}><Plus size={18} /> New chat</button>}
-            {onRefresh && <button role="menuitem" onClick={() => { setActionsOpen(false); onRefresh(); }}><RefreshCw size={18} /> Refresh chats</button>}
-          </div>}
-          <div className="chat-list-heading">
-            <h1>Chats</h1>
-            <span className="chat-list-device">{peer.name}</span>
-          </div>
-          <div className="chat-heading-actions">
-          {onRefresh && <button className="chat-refresh" aria-label="Refresh apps and chats" onClick={onRefresh}><RefreshCw size={16} /></button>}
-          {!upcoming && canStart && (
-            <button
-              className="chat-create"
-              aria-label="New chat"
-              onClick={() => onNew()}
-            >
-              <Plus size={16} />
-              <span>New chat</span>
-            </button>
-          )}
-          </div>
-        </header>
+        <ChatLibraryHeader
+          peer={peer}
+          apps={apps}
+          value={filter}
+          logos={logos}
+          onChange={(value) => {
+            (onAgentChange || setLocalAgent)(value);
+            setLimit(12);
+          }}
+          onNew={!upcoming && canStart ? () => onNew() : undefined}
+          onRefresh={onRefresh}
+          searchOpen={searchOpen}
+          onSearch={() => {
+            if (searchOpen) setQuery("");
+            setSearchOpen(!searchOpen);
+          }}
+        />
       )}
       <div className="chat-library-tools">
         <ChatAppPicker

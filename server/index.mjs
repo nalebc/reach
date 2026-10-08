@@ -2705,7 +2705,7 @@ export async function createReach(overrides = {}) {
   // Continue a chat with the other agent, as if forked in the same app
   // (agent-sessions/move.mjs); the new chat's address comes back.
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
-    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to });
+    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize() });
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });

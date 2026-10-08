@@ -242,7 +242,8 @@ test("moving a chat is the owner's alone, like every session", async () => {
     const r = await move(owner.token);
     assert.equal(r.status, 200);
     assert.deepEqual(await r.json(), { agent: "codex", id: NEW_CODEX });
-    assert.deepEqual(calls, [["claude", CLAUDE, { to: "codex" }]]);
+    assert.equal(typeof calls[0][2].authorize, "function");
+    assert.deepEqual(calls.map(([agent, id, { to }]) => [agent, id, { to }]), [["claude", CLAUDE, { to: "codex" }]]);
   } finally {
     reach.server.close();
     await reach.close?.();

@@ -596,7 +596,7 @@
 }
 
 /* On phones, the project and its one-line conversations form a single list. */
-@media (max-width: 600px) and (pointer: coarse) {
+@media (max-width: 600px) {
   .app-shell .main-content.page-sessions { background: var(--bg); }
   .page-sessions .chat-library {
     max-width: none;

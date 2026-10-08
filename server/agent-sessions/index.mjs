@@ -972,7 +972,8 @@ export function createAgentSessions({
     // same app (move.mjs): a new chat there with what this one's agent knows
     // so far (its latest summary, then the messages since); this one stays
     // as it is. Settings are the new app's own (never more permission).
-    async move(agent, id, { to } = {}) {
+    async move(agent, id, { to, authorize = () => {} } = {}) {
+      authorize();
       if (!movable().includes(agent)) adapter(agent);
       if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
       const key = `${agent}:${id}`;
@@ -981,6 +982,7 @@ export function createAgentSessions({
       try {
         if (agent === "codex") codexWhole.delete(id);
         const source = await history(agent, id);
+        authorize();
         const { session, items, memory } = source;
         const from = agentName(agent);
         const title = session.title || "";
@@ -988,6 +990,7 @@ export function createAgentSessions({
         // into Codex brings what it continues along again (a Claude Code
         // chat holds its copy in its own transcript).
         const carried = agent === "codex" && moves.into(agent, id) ? await shown(agent, id) : memory ? items.slice(memory.from) : items;
+        authorize();
         const turns = moveTurns(carried, { summary: memory?.summary || "", from });
         const note = handoff({ from, title, cwd: session.cwd });
         let target;
@@ -996,33 +999,39 @@ export function createAgentSessions({
         // Resolve attachments before creating a target, so a missing image cannot
         // silently turn into a placeholder in an otherwise successful transfer.
         const complete = to === "codex" || to === "claude" ? (await shown(agent, id, null, new Set(), true)).map(item => ({ ...item })) : null;
+        authorize();
         if (complete) for (const item of complete) {
           if (!item.images) continue;
           const source = item.imageOrigin || { agent, id, item: item.id };
           item.imageData = [];
           for (let n = 0; n < item.images; n++) {
             const image = await adapter(source.agent).image(source.id, source.item, n);
+            authorize();
             item.imageData.push(`data:${image.type};base64,${image.data.toString("base64")}`);
           }
         }
+        authorize();
         if (to === "codex") {
           ({ threadId: target } = await codexLive.forkHistory({
             cwd: session.cwd,
             name: title,
             items: complete,
             from,
+            authorize,
           }));
           nativeHistory = true;
         } else if (to === "openclaw") {
-          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }));
+          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }, authorize));
         } else {
-          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "" }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
+          authorize();
           void claudeImports.add(target);
         }
         // A Claude Code target begins with the history written for it, which
         // Reach shows as the original chat's own messages instead.
+        authorize();
         moves.add({
           from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
           to: { agent: to, id: target, ...(nativeHistory ? { nativeHistory: true } : {}) },

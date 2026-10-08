@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createOpenClaw, localOpenClawConfig } from "../server/openclaw.mjs";
+import { createOpenClaw, localOpenClawConfig, readableSchedule } from "../server/openclaw.mjs";
 
 const rows = [
   {
@@ -404,7 +404,7 @@ test("disconnect reconnects and Gateway errors cannot echo its credentials", asy
       ? { error: { message: "invalid secret-token" } }
       : null,
   );
-  await assert.rejects(c.history(rows[0].key), /invalid \[redacted\]/);
+  await assert.rejects(c.history(rows[0].key), /authentication problem/);
 });
 
 test("reads JSON5 local config and environment substitutions; remote profiles refused", async (t) => {
@@ -436,7 +436,20 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-http-"));
   const calls = [];
   const fake = Object.fromEntries(
-    ["overview", "history", "send", "stop", "approve", "start", "remove"].map((method) => [
+    [
+      "overview",
+      "history",
+      "send",
+      "stop",
+      "approve",
+      "start",
+      "remove",
+      "catalog",
+      "channels",
+      "automations",
+      "setAutomation",
+      "settings",
+    ].map((method) => [
       method,
       async (...args) => {
         calls.push({ method, args });
@@ -467,6 +480,11 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     ["approval", "POST"],
     ["new", "POST"],
     ["remove", "POST"],
+    ["catalog", "GET"],
+    ["channels", "GET"],
+    ["automations", "GET"],
+    ["automations", "POST"],
+    ["settings", "POST"],
   ];
   // Starting OpenClaw's Gateway: owners only too (it runs on this computer).
   for (const [route, method] of [...routes, ["gateway/start", "POST"]]) {
@@ -509,7 +527,20 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     );
   assert.deepEqual(
     calls.map((c) => c.method),
-    ["overview", "history", "send", "stop", "approve", "start", "remove"],
+    [
+      "overview",
+      "history",
+      "send",
+      "stop",
+      "approve",
+      "start",
+      "remove",
+      "catalog",
+      "channels",
+      "automations",
+      "setAutomation",
+      "settings",
+    ],
   );
 });
 
@@ -911,7 +942,7 @@ test("a model that fails with nothing after it ends the run once the grace passe
   await new Promise((r) => setTimeout(r, 60));
   const h = await c.history(REACH);
   assert.equal(h.session.status, "error");
-  assert.equal(h.error, "No model could answer");
+  assert.equal(h.error, "OpenClaw reported an error. Check OpenClaw on this computer.");
   // Over: a late start can't reopen it.
   sockets[0].event("agent", { runId: "failed-run", stream: "lifecycle", data: { phase: "start" } });
   assert.equal((await c.history(REACH)).session.status, "error");
@@ -990,7 +1021,566 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
     { startGateway: async () => {}, settleMs: 1 },
   );
   let answered;
-  await routes["/api/sessions/openclaw/gateway/start"]({}, { json: (v) => (answered = v) });
+  await routes["/api/sessions/openclaw/gateway/start"]({ reauthorize() {} }, { json: (v) => (answered = v) });
   assert.deepEqual(answered, { connected: true });
   assert.equal(up, 3);
+});
+
+test("OpenClaw inventories expose display fields and redact credentials, without starting work", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) => ({
+    payload: {
+      "agents.list": {
+        defaultId: "work",
+        agents: [
+          {
+            id: "work",
+            name: "Work",
+            identity: { name: "Research" },
+            apiKey: "private",
+          },
+        ],
+      },
+      "models.list": {
+        models: [
+          {
+            id: "model",
+            provider: "provider",
+            name: "Model",
+            reasoning: true,
+            apiKey: "private",
+          },
+        ],
+      },
+      "channels.status": {
+        channelAccounts: {
+          whatsapp: [
+            { accountId: "personal", connected: true, token: "private" },
+          ],
+          discord: [
+            {
+              accountId: "bot",
+              connected: false,
+              running: true,
+              lastError: "Failed secret-token",
+            },
+          ],
+          slack: [{ accountId: "work", running: true }],
+        },
+      },
+      "cron.list": {
+        jobs: [
+          {
+            id: "daily",
+            name: "Daily briefing",
+            agentId: "work",
+            enabled: true,
+            schedule: { kind: "cron", expr: "0 8 * * *", tz: "UTC" },
+            state: {
+              nextRunAtMs: 100,
+              lastRunAtMs: 90,
+              lastRunStatus: "error",
+              lastError: "secret-token",
+            },
+            payload: { message: "private" },
+            delivery: { mode: "announce", channel: "telegram", to: "private" },
+          },
+        ],
+        hasMore: true,
+        nextOffset: 50,
+      },
+    }[req.method],
+  }));
+  const catalog = await c.catalog();
+  assert.deepEqual(catalog.agents, [{ id: "work", name: "Research" }]);
+  assert.deepEqual(catalog.models, [
+    { id: "provider/model", name: "Model", reasoning: true },
+  ]);
+  assert.equal(catalog.defaultAgentId, "work");
+  const channels = await c.channels();
+  assert.deepEqual(
+    channels.channels.map((c) => c.status),
+    ["connected", "disconnected", "running"],
+  );
+  assert.equal(channels.channels[1].error, "OpenClaw reports an authentication problem. Check OpenClaw on this computer.");
+  const jobs = await c.automations({ offset: 50, query: "Daily" });
+  assert.equal(jobs.jobs[0].delivery, "telegram");
+  assert.equal(jobs.jobs[0].error, "OpenClaw reports an authentication problem. Check OpenClaw on this computer.");
+  assert.equal(jobs.hasMore, true);
+  assert.deepEqual(calls.find((c) => c.method === "cron.list").params, {
+    includeDisabled: true,
+    limit: 50,
+    offset: 50,
+    query: "Daily",
+  });
+  assert.doesNotMatch(
+    JSON.stringify([catalog, channels, jobs]),
+    /private|secret-token/,
+  );
+  assert.equal(
+    calls.some((c) => ["chat.send", "agent", "cron.run"].includes(c.method)),
+    false,
+  );
+});
+
+test("chat settings require a Reach-created idle chat and confirmed Gateway acknowledgement", async (t) => {
+  const { c, calls, handle } = await fixture(t, { coalesceMs: 0 });
+  let acknowledged = true;
+  handle((req) =>
+    req.method === "sessions.patch"
+      ? { payload: { ok: acknowledged } }
+      : undefined,
+  );
+  const before = await c.overview();
+  await assert.rejects(
+    c.settings({ key: rows[0].key, label: "Changed" }),
+    /only chats it made/,
+  );
+  await assert.rejects(
+    c.settings({ key: REACH, thinkingLevel: "unsafe" }),
+    /thinking level/,
+  );
+  await assert.rejects(c.settings({ key: REACH, label: " " }), /chat name/);
+  assert.equal(
+    calls.some((c) => c.method === "sessions.patch"),
+    false,
+  );
+  await c.settings({
+    key: REACH,
+    label: " New name ",
+    model: "provider/model",
+    thinkingLevel: "high",
+    deliver: true,
+    elevatedLevel: "full",
+  });
+  assert.deepEqual(calls.find((c) => c.method === "sessions.patch").params, {
+    key: REACH,
+    label: "New name",
+    model: "provider/model",
+    thinkingLevel: "high",
+  });
+  assert.notEqual((await c.overview()).version, before.version);
+  await c.settings({ key: REACH, model: null, thinkingLevel: null });
+  acknowledged = false;
+  await assert.rejects(
+    c.settings({ key: REACH, label: "Not saved" }),
+    /did not confirm/,
+  );
+  await c.send({ key: REACH, text: "Working", requestId: "settings-working" });
+  await assert.rejects(
+    c.settings({ key: REACH, label: "While running" }),
+    /finish/,
+  );
+});
+
+test("selected agent, model and thinking apply before a new chat sends, with retry identity including choices", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  const made = [];
+  handle((req) => {
+    if (req.method === "agents.list")
+      return { payload: { agents: [{ id: "work" }] } };
+    if (req.method === "sessions.reset")
+      made.push({ key: req.params.key, channel: "webchat", label: "New" });
+    if (req.method === "sessions.list")
+      return { payload: { sessions: [...rows, ...made] } };
+    if (req.method === "sessions.patch") return { payload: { ok: true } };
+  });
+  const options = {
+    text: "Research",
+    requestId: "selected-agent",
+    agentId: "work",
+    model: "provider/model",
+    thinkingLevel: "high",
+  };
+  const first = await c.start(options);
+  assert.match(first.key, /^agent:work:reach-/);
+  assert.deepEqual(await c.start(options), first);
+  const settings = calls.find(
+    (c) => c.method === "sessions.patch" && c.params.model,
+  );
+  const send = calls.find((c) => c.method === "chat.send");
+  assert.ok(calls.indexOf(settings) < calls.indexOf(send));
+  assert.equal(send.params.sessionKey, first.key);
+  assert.equal(calls.filter((c) => c.method === "chat.send").length, 1);
+  assert.throws(
+    () => c.start({ ...options, model: "other" }),
+    /different message/,
+  );
+  await assert.rejects(c.create({ agentId: "missing" }), /no longer available/);
+  await assert.rejects(
+    c.create({ agentId: "work:whatsapp" }),
+    /Choose an OpenClaw agent/,
+  );
+});
+
+test("schedule pause and resume use a fixed update and require confirmation; malformed inventories fail clearly", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) =>
+    req.method === "cron.update"
+      ? { payload: { enabled: req.params.patch.enabled } }
+      : undefined,
+  );
+  assert.deepEqual(
+    await c.setAutomation({
+      id: "daily",
+      enabled: false,
+      payload: { message: "inject" },
+    }),
+    { enabled: false },
+  );
+  assert.deepEqual(await c.setAutomation({ id: "daily", enabled: true }), {
+    enabled: true,
+  });
+  assert.deepEqual(
+    calls.filter((c) => c.method === "cron.update").map((c) => c.params),
+    [
+      { id: "daily", patch: { enabled: false } },
+      { id: "daily", patch: { enabled: true } },
+    ],
+  );
+  await assert.rejects(
+    c.setAutomation({ id: "daily", enabled: "true" }),
+    /scheduled job/,
+  );
+  handle((req) => (req.method === "cron.update" ? { payload: {} } : undefined));
+  await assert.rejects(
+    c.setAutomation({ id: "daily", enabled: false }),
+    /did not confirm/,
+  );
+  await assert.rejects(c.automations(), /unsupported scheduled jobs/);
+  await assert.rejects(c.automations({ offset: -1 }), /valid schedule page/);
+  const catalog = await c.catalog();
+  assert.equal(catalog.errors.length, 2);
+});
+
+test("schedules describe common recurrence and retain advanced expressions", () => {
+  assert.equal(readableSchedule({ kind: "every", everyMs: 30000 }), "Every 30 seconds");
+  assert.equal(readableSchedule({ kind: "every", everyMs: 3600000 }), "Every 1 hour");
+  assert.equal(readableSchedule({ kind: "cron", expr: "0 8 * * *", tz: "UTC" }), "Daily at 08:00 · UTC");
+  assert.equal(readableSchedule({ kind: "cron", expr: "30 9 * * 1-5" }), "Weekdays at 09:30");
+  assert.equal(readableSchedule({ kind: "cron", expr: "0 9 * * 1" }), "Every Monday at 09:00");
+  assert.equal(readableSchedule({ kind: "cron", expr: "*/15 * * * *" }), "*/15 * * * *");
+});
+
+for (const action of ["settings", "automations"])
+  test(`new ${action} route rechecks revoked request before deferred Gateway mutation`, async (t) => {
+    let release, markReady;
+    const ready = new Promise((resolve) => {
+      markReady = resolve;
+    });
+    const f = await fixture(
+      t,
+      action === "automations"
+        ? {
+            configuration: () =>
+              new Promise((resolve) => {
+                release = () =>
+                  resolve({
+                    url: "ws://127.0.0.1:18789",
+                    token: "fixture-gateway-token",
+                  });
+                markReady();
+              }),
+          }
+        : {},
+    );
+    f.handle((req, socket) => {
+      if (action === "settings" && req.method === "sessions.list") {
+        release = () => socket.response(req.id, { sessions: rows });
+        markReady();
+        return { hold: true };
+      }
+      if (req.method === "sessions.patch") return { payload: { ok: true } };
+      if (req.method === "cron.update") return { payload: { enabled: false } };
+    });
+    const { openClawRoutes } = await import("../server/openclaw.mjs");
+    const handlers = new Map();
+    openClawRoutes(
+      {
+        get() {},
+        post(route, fn) {
+          handlers.set(route, fn);
+        },
+      },
+      f.c,
+    );
+    let revoked = false,
+      rechecks = 0;
+    const request = {
+      body:
+        action === "settings"
+          ? { key: REACH, label: "After revoke" }
+          : { id: "daily", enabled: false },
+      reauthorize() {
+        rechecks++;
+        if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    };
+    const work = handlers.get(`/api/sessions/openclaw/${action}`)(request, {
+      json() {},
+    });
+    await ready;
+    revoked = true;
+    release();
+    await assert.rejects(work, { status: 401 });
+    assert.equal(
+      f.calls.filter(
+        (req) =>
+          req.method ===
+          (action === "settings" ? "sessions.patch" : "cron.update"),
+      ).length,
+      0,
+      "the request lost authority while prerequisite work awaited",
+    );
+  });
+
+test("new channel and schedule status never disclose downstream credential strings in errors", async (t) => {
+  const f = await fixture(t);
+  const secret = "synthetic-downstream-private-key";
+  f.handle((req) => ({
+    payload:
+      req.method === "channels.status"
+        ? {
+            channelAccounts: {
+              telegram: [
+                {
+                  accountId: "default",
+                  connected: false,
+                  lastError: `Request to https://example.test/bot${secret}/send failed`,
+                },
+              ],
+            },
+          }
+        : req.method === "cron.list"
+          ? {
+              jobs: [
+                {
+                  id: "daily",
+                  name: "Daily",
+                  enabled: false,
+                  state: { lastError: `Authorization: Bearer ${secret}` },
+                },
+              ],
+            }
+          : undefined,
+  }));
+  const data = [await f.c.channels(), await f.c.automations()];
+  assert.ok(!JSON.stringify(data).includes(secret));
+});
+
+for (const action of ["send", "stop", "remove", "new"])
+  test(`existing ${action} route cannot dispatch after revocation during prerequisite read`, async (t) => {
+    let release, markReady;
+    const ready = new Promise((resolve) => {
+      markReady = resolve;
+    });
+    const f = await fixture(
+      t,
+      action === "remove"
+        ? {
+            configuration: () =>
+              new Promise((resolve) => {
+                release = () =>
+                  resolve({
+                    url: "ws://127.0.0.1:18789",
+                    token: "fixture-gateway-token",
+                  });
+                markReady();
+              }),
+          }
+        : {},
+    );
+    f.handle((req, socket) => {
+      if (
+        (action === "send" || action === "stop") &&
+        req.method === "sessions.list"
+      ) {
+        release = () => socket.response(req.id, { sessions: rows });
+        markReady();
+        return { hold: true };
+      }
+      if (action === "new" && req.method === "agents.list") {
+        release = () => socket.response(req.id, { agents: [{ id: "work" }] });
+        markReady();
+        return { hold: true };
+      }
+    });
+    const { openClawRoutes } = await import("../server/openclaw.mjs");
+    const handlers = new Map();
+    openClawRoutes(
+      {
+        get() {},
+        post(route, fn) {
+          handlers.set(route, fn);
+        },
+      },
+      f.c,
+    );
+    let revoked = false;
+    const body =
+      action === "new"
+        ? {
+            text: "Safe synthetic message",
+            requestId: "new-revocation",
+            agentId: "work",
+          }
+        : action === "send"
+          ? {
+              key: REACH,
+              text: "Safe synthetic message",
+              requestId: "send-revocation",
+            }
+          : { key: REACH };
+    const req = {
+      body,
+      reauthorize() {
+        if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    };
+    const work = handlers.get(`/api/sessions/openclaw/${action}`)(req, {
+      json() {},
+    });
+    await ready;
+    revoked = true;
+    release();
+    await assert.rejects(work, { status: 401 });
+    const mutation = {
+      send: "chat.send",
+      stop: "chat.abort",
+      remove: "sessions.delete",
+      new: "sessions.reset",
+    }[action];
+    assert.equal(f.calls.filter((req) => req.method === mutation).length, 0);
+  });
+
+test("revocation after creating a selected-agent session cleans only that session and never sends", async (t) => {
+  const f = await fixture(t);
+  let release, markReady, made;
+  const ready = new Promise((resolve) => {
+    markReady = resolve;
+  });
+  f.handle((req, socket) => {
+    if (req.method === "agents.list")
+      return { payload: { agents: [{ id: "work" }] } };
+    if (req.method === "sessions.reset") {
+      made = req.params.key;
+      release = () => socket.response(req.id, {});
+      markReady();
+      return { hold: true };
+    }
+    if (req.method === "sessions.list")
+      return {
+        payload: { sessions: [...rows, { key: made, channel: "webchat" }] },
+      };
+    if (req.method === "sessions.patch") return { payload: { ok: true } };
+  });
+  const { openClawRoutes } = await import("../server/openclaw.mjs");
+  const handlers = new Map();
+  openClawRoutes(
+    {
+      get() {},
+      post(route, fn) {
+        handlers.set(route, fn);
+      },
+    },
+    f.c,
+  );
+  let revoked = false;
+  const req = {
+    body: {
+      text: "Do not send",
+      requestId: "created-then-revoked",
+      agentId: "work",
+      model: "provider/model",
+    },
+    reauthorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+  };
+  const work = handlers.get("/api/sessions/openclaw/new")(req, { json() {} });
+  await ready;
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  assert.equal(
+    f.calls.some((req) => ["chat.send", "sessions.patch"].includes(req.method)),
+    false,
+  );
+  assert.deepEqual(
+    f.calls
+      .filter((req) => req.method === "sessions.delete")
+      .map((req) => req.params),
+    [{ key: made, deleteTranscript: true }],
+  );
+});
+
+test("gateway startup reauthorizes after configuration before spawning", async () => {
+  const { startOpenClawGateway } = await import("../server/openclaw.mjs");
+  let release,
+    revoked = false,
+    spawns = 0;
+  const work = startOpenClawGateway({
+    configuration: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    authorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+    run: async () => {
+      spawns++;
+    },
+  });
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  assert.equal(spawns, 0);
+});
+
+test("closing the client during configuration never creates a replacement socket", async (t) => {
+  let release;
+  const f = await fixture(t, {
+    configuration: () =>
+      new Promise((resolve) => {
+        release = () =>
+          resolve({ url: "ws://127.0.0.1:18789", token: "fixture" });
+      }),
+  });
+  const work = f.c.catalog();
+  f.c.close();
+  release();
+  await work.catch(() => {});
+  assert.equal(f.sockets.length, 0);
+});
+
+test("a send denied at RPC preflight can be explicitly retried with the same ID and still receives events", async (t) => {
+  const f = await fixture(t);
+  let checks = 0;
+  // Four checks cover entry, source, busy state and channel preflight;
+  // revoke on the final RPC boundary after its provisional run exists.
+  await assert.rejects(
+    f.c.send(
+      { key: REACH, text: "Synthetic retry", requestId: "retry-after-revoke" },
+      () => {
+        if (++checks >= 5)
+          throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    ),
+    { status: 401 },
+  );
+  assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 0);
+  const sent = await f.c.send(
+    { key: REACH, text: "Synthetic retry", requestId: "retry-after-revoke" },
+    () => {},
+  );
+  assert.equal(sent.status, "running");
+  f.sockets[0].event("chat", {
+    runId: "retry-after-revoke",
+    sessionKey: REACH,
+    state: "delta",
+    message: { content: "Fresh reply" },
+  });
+  const history = await f.c.history(REACH);
+  assert.equal(history.streaming, "Fresh reply");
+  assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 1);
 });

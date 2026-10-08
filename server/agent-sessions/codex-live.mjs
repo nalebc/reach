@@ -1042,23 +1042,40 @@ export function createCodexLive({
     // its history goes in as what the model has seen, a batch per call; no
     // turn runs until a message is sent. Let go of at once, so the Codex app
     // can open it; one left empty by a failure is archived.
-    async forkHistory({ cwd, name, items, from, model: picked }) {
+    async forkHistory({ cwd, name, items, from, model: picked, authorize = () => {} }) {
+      authorize();
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-history-"));
       const file = path.join(dir, "history.jsonl");
-      const archive = codexArchive({ cwd, items, from, name });
-      await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
-      // Keep the source archive: it is a recovery copy, and never overwrite a live thread.
-      const model = await withModel(picked);
-      const result = await daemon.rpc("thread/fork", { threadId: archive.id, path: file, cwd, excludeTurns: true, ...(model ? { model } : {}) });
-      const threadId = result?.thread?.id;
-      if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
-      subscribed.add(threadId);
-      await owner.claim(threadId, result);
+      let dispatched = false;
       try {
-        if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
-      } finally { release(threadId); }
-      return { threadId };
+        authorize();
+        const archive = codexArchive({ cwd, items, from, name });
+        await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
+        authorize();
+        const model = await withModel(picked);
+        authorize();
+        // Keep the recovery archive once dispatch is possible: the target
+        // may exist even if the answer or the caller's authority is lost.
+        dispatched = true;
+        const result = await daemon.rpc("thread/fork", { threadId: archive.id, path: file, cwd, excludeTurns: true, ...(model ? { model } : {}) });
+        const threadId = result?.thread?.id;
+        if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
+        subscribed.add(threadId);
+        try {
+          authorize();
+          await owner.claim(threadId, result);
+          authorize();
+          if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
+          authorize();
+        } finally { release(threadId); }
+        return { threadId };
+      } catch (error) {
+        // Only this request's unsent local archive may be removed. Never
+        // delete a possible target or discard recovery after dispatch.
+        if (!dispatched) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
     },
     async fork({ cwd, name, batches = [], developerInstructions, model: picked }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");

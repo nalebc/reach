@@ -14,6 +14,7 @@ import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
+import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import ChatList, {
   ChatAppPicker,
   ChatComingSoon,
@@ -882,6 +883,7 @@ export default function EverythingChat({
           {picked.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat
+              key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
               peer={peer}
               onStarted={(key) => {
                 setAgent("openclaw");
@@ -947,22 +949,56 @@ export default function EverythingChat({
 // A new OpenClaw chat from Reach: a session of its own (never one of WhatsApp's
 // or Discord's), its first message sent as it starts (server/openclaw.mjs).
 function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string) => void }) {
+  const { catalog, error: catalogError } = useClawCatalog(peer);
+  const [agentId, setAgentId] = useState("");
+  const [model, setModel] = useState("");
+  const [thinking, setThinking] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
   const startingNow = useRef(false);
   // Asked again (a dropped answer), the same message starts the same chat.
-  const attempt = useRef<{ text: string; id: string } | null>(null);
+  const attempt = useRef<{
+    intent: string;
+    body: { text: string; requestId: string; agentId?: string; model?: string; thinkingLevel?: string };
+  } | null>(null);
   const start = async () => {
     if (!text.trim() || busy || startingNow.current) return;
     startingNow.current = true;
-    if (attempt.current?.text !== text) attempt.current = { text, id: crypto.randomUUID() };
+    // Discovery may finish after an uncertain send. Only a changed user
+    // choice creates a new attempt; retries retain the exact original body.
+    const intent = JSON.stringify([text, agentId, model, thinking]);
+    if (attempt.current?.intent !== intent) {
+      attempt.current = {
+        intent,
+        body: {
+          text,
+          requestId: crypto.randomUUID(),
+          ...(agentId || catalog?.agents?.length ? { agentId: agentId || catalog?.defaultAgentId } : {}),
+          ...(model ? { model } : {}),
+          ...(thinking ? { thinkingLevel: thinking } : {}),
+        },
+      };
+    }
     setBusy(true);
     setProblem("");
     try {
-      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text, requestId: attempt.current.id });
-      onStarted(key);
+      const { key } = await post<{ key: string }>(
+        peer,
+        "/api/sessions/openclaw/new",
+        attempt.current.body,
+      );
+      // Closing or switching apps does not cancel the dispatched task, but
+      // its old reply must not navigate the replacement view.
+      if (active.current) onStarted(key);
     } catch (e) {
+      if (!active.current) return;
       startingNow.current = false;
       setProblem((e as Error).message);
       setBusy(false);
@@ -976,6 +1012,23 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
         void start();
       }}
     >
+      {catalog?.agents?.length ? (
+        <label className="claw-new-agent">
+          Agent
+          <select
+            aria-label="OpenClaw agent"
+            disabled={busy}
+            value={agentId || catalog.defaultAgentId}
+            onChange={(e) => setAgentId(e.target.value)}
+          >
+            {catalog.agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <textarea
         aria-label="New OpenClaw chat"
         placeholder="What would you like OpenClaw to do?"
@@ -986,11 +1039,39 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
         disabled={busy}
       />
       <div className="chat-new-claw-tools">
-        <small>Replies stay in Reach and OpenClaw.</small>
+        <button
+          type="button"
+          className="claw-options-toggle"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen(!optionsOpen)}
+        >
+          Model & thinking
+          <ChevronDown size={14} />
+        </button>
         <button className="as-send ready" aria-label="Start" disabled={!text.trim() || busy}>
           {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
         </button>
       </div>
+      {optionsOpen &&
+        (catalog ? (
+          <ClawModelControls
+            catalog={catalog}
+            model={model}
+            thinking={thinking}
+            disabled={busy}
+            onModel={setModel}
+            onThinking={setThinking}
+          />
+        ) : (
+          <p className="claw-note">{catalogError || "Loading models…"}</p>
+        ))}
+      {optionsOpen &&
+        catalog?.errors?.map((message) => (
+          <p className="claw-note" key={message}>
+            {message}
+          </p>
+        ))}
+      <small className="claw-note">Replies stay in Reach and OpenClaw.</small>
       {problem && (
         <p className="chat-sheet-intro" role="alert">
           {problem}

@@ -59,11 +59,95 @@ let dom,
   // OpenClaw's Gateway stopped; gatewayStarts: Start was tapped.
   down = false,
   gatewayStarts = 0,
+  settingsSent = [],
+  scheduleChanges = [],
+  scheduleEnabled = true,
+  settingsFail = false,
+  settingsWait = null,
+  catalogWait = null,
+  catalogFail = false,
+  newFail = false,
+  newWait = null,
   view;
 const base = "/api/sessions/openclaw";
 before(async () => {
   dom = await startDom({
     routes: {
+      [base + "/catalog"]: async () => {
+        if (catalogWait) await catalogWait;
+        if (catalogFail) return Response.json({ error: "Catalog unavailable" }, { status: 503 });
+        return ({
+        defaultAgentId: "main",
+        agents: [
+          { id: "main", name: "Personal assistant" },
+          { id: "work", name: "Work assistant" },
+        ],
+        models: [{ id: "provider/model", name: "Test model", reasoning: true }, { id: "provider/fast", name: "Fast model", reasoning: false }],
+        canEdit: true,
+        errors: [],
+      }); },
+      [base + "/settings"]: async (init) => {
+        const body = JSON.parse(init.body);
+        settingsSent.push(body);
+        if (settingsWait) await settingsWait;
+        if (settingsFail)
+          return Response.json(
+            { error: "Gateway rejected settings" },
+            { status: 409 },
+          );
+        historyExtra.session = {
+          ...sessions.find((s) => s.key === body.key),
+          ...historyExtra.session,
+          ...(body.label !== undefined ? { title: body.label } : {}),
+          ...(body.model !== undefined ? { model: body.model } : {}),
+          ...(body.thinkingLevel !== undefined ? { thinkingLevel: body.thinkingLevel } : {}),
+        };
+        return { saved: true };
+      },
+      [base + "/channels"]: () => ({
+        channels: [
+          {
+            channel: "whatsapp",
+            accountId: "personal",
+            name: "Personal account",
+            status: "connected",
+            error: "",
+          },
+          {
+            channel: "discord",
+            accountId: "work",
+            name: "Work server",
+            status: "disconnected",
+            error: "Reconnect in OpenClaw",
+          },
+        ],
+      }),
+      [base + "/automations"]: (init) => {
+        if (init.method === "POST") {
+          const body = JSON.parse(init.body);
+          scheduleChanges.push(body);
+          scheduleEnabled = body.enabled;
+          return { enabled: scheduleEnabled };
+        }
+        return {
+          jobs: [
+            {
+              id: "daily",
+              name: "Morning briefing",
+              agentId: "main",
+              enabled: scheduleEnabled,
+              schedule: "0 8 * * *",
+              nextRunAt: Date.now() + 3600000,
+              lastRunAt: Date.now() - 86400000,
+              status: "ok",
+              error: "",
+              delivery: "whatsapp",
+            },
+          ],
+          canEdit: true,
+          hasMore: false,
+        };
+      },
       [base + "/overview"]: () => (overviewReads++, down ? {
         connected: false,
         sessions: [],
@@ -119,8 +203,10 @@ before(async () => {
         approvals = [];
         return { ok: true };
       },
-      [base + "/new"]: (init) => {
+      [base + "/new"]: async (init) => {
         started.push(JSON.parse(init.body));
+        if (newWait) await newWait;
+        if (newFail) return Response.json({ error: "Response lost" }, { status: 503 });
         const made = { key: "agent:main:reach-newchat", title: "Plan the trip", agentId: "main", channel: "webchat", writable: true, updatedAt: Date.now(), model: "test", status: "running" };
         if (!sessions.some((s) => s.key === made.key)) sessions.push(made);
         return { key: made.key };
@@ -164,6 +250,15 @@ async function mount(waitFor = "Weekend plans") {
   screenOpens = 0;
   historyExtra = {};
   removed = [];
+  settingsSent = [];
+  scheduleChanges = [];
+  scheduleEnabled = true;
+  settingsFail = false;
+  settingsWait = null;
+  catalogWait = null;
+  catalogFail = false;
+  newFail = false;
+  newWait = null;
   dom.window.localStorage.clear();
   dom.window.sessionStorage.clear();
   view = await dom.render(
@@ -243,7 +338,6 @@ test("failed send retains draft and reuses id; nothing offers to post to WhatsAp
   assert.deepEqual(Object.keys(sent.at(-1)).sort(), ["key", "requestId", "text"]);
   assert.notEqual(sent.at(-1).requestId, sent[0].requestId);
 });
-
 
 test("real OpenClaw approval failures remain actionable, successful replies carry the exact pending id", async () => {
   await mount();
@@ -345,7 +439,7 @@ test("a chat Reach made is deleted, in OpenClaw too, only after a second tap; ot
   await click("Tap again to delete this chat");
   await dom.waitFor(() => removed.length === 1);
   assert.deepEqual(removed, [{ key: "agent:main:reach-1a2b3c4d" }]);
-  await dom.waitFor(() => !!button("Refresh OpenClaw sessions"));
+  await dom.waitFor(() => !!button("Refresh apps and chats"));
 });
 
 test("while OpenClaw tries another model, the chat says why and keeps working", async () => {
@@ -370,4 +464,240 @@ test("a stopped OpenClaw Gateway is started from Reach with one tap", async () =
   } finally {
     down = false;
   }
+});
+
+test("the shared mobile header switches away from OpenClaw and exposes search and new chat", async () => {
+  await mount();
+  await click("Choose an app, OpenClaw selected");
+  assert.equal(
+    dom.document
+      .querySelector("[role=menuitemradio][aria-label=OpenClaw]")
+      .getAttribute("aria-checked"),
+    "true",
+  );
+  dom.document.querySelector("[role=menuitemradio][aria-label=Codex]").click();
+  await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+  await click("Choose an app, Codex selected");
+  dom.document
+    .querySelector("[role=menuitemradio][aria-label=OpenClaw]")
+    .click();
+  await dom.waitFor(() =>
+    dom.document.body.textContent.includes("Weekend plans"),
+  );
+  await click("Search chats");
+  assert.ok(dom.document.querySelector(".claw-library.search-open"));
+  assert.equal(
+    dom.document.activeElement.getAttribute("aria-label"),
+    "Search OpenClaw sessions",
+  );
+  await click("Chat list menu");
+  assert.ok(
+    dom.document.querySelector('[role=menu][aria-label="Chat actions"]'),
+  );
+});
+
+test("a conversation can switch apps directly; channel conversations offer no settings", async () => {
+  await mount();
+  await click("Weekend plans");
+  assert.equal(button("OpenClaw chat settings"), undefined);
+  await click("Choose an app, OpenClaw selected");
+  assert.ok(dom.document.querySelector(".claw-app-switch"));
+  await click("Codex");
+  await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+});
+
+test("chat name, model and thinking settings preserve failed edits and save the selected values", async () => {
+  await mount();
+  await click("Login page");
+  await click("OpenClaw chat settings");
+  await dom.waitFor(
+    () => dom.document.querySelector('[aria-label="OpenClaw model"]'),
+  );
+  await typeInto(
+    dom.document.querySelector('[aria-label="OpenClaw chat name"]'),
+    " improved",
+  );
+  const select = (label, value) => {
+    const el = dom.document.querySelector(`[aria-label="${label}"]`);
+    el.value = value;
+    el.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  };
+  select("OpenClaw model", "provider/fast");
+  await settle();
+  assert.equal(dom.document.querySelector('[aria-label="OpenClaw thinking level"]').disabled, true);
+  assert.equal(dom.document.querySelector('[aria-label="OpenClaw thinking level"]').value, "off");
+  select("OpenClaw model", "provider/model");
+  select("OpenClaw thinking level", "high");
+  await settle();
+  settingsFail = true;
+  await click("Save changes");
+  assert.match(dom.document.body.textContent, /Gateway rejected settings/);
+  assert.equal(
+    dom.document.querySelector('[aria-label="OpenClaw chat name"]').value,
+    "Login page improved",
+  );
+  settingsFail = false;
+  await click("Save changes");
+  assert.deepEqual(settingsSent.at(-1), {
+    key: sessions[2].key,
+    label: "Login page improved",
+    model: "provider/model",
+    thinkingLevel: "high",
+  });
+  assert.equal(dom.document.querySelector(".claw-settings"), null);
+  await dom.waitFor(
+    () =>
+      dom.document.querySelector("h1").textContent === "Login page improved",
+  );
+});
+
+test("new chats expose configured agents and carry model and thinking choices with the first message", async () => {
+  await mount();
+  started = [];
+  await click("New chat");
+  await dom.waitFor(() =>
+    dom.document.querySelector('[aria-label="OpenClaw agent"]'),
+  );
+  const choose = (label, value) => {
+    const el = dom.document.querySelector(`[aria-label="${label}"]`);
+    el.value = value;
+    el.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  };
+  choose("OpenClaw agent", "work");
+  await click("Model & thinking");
+  choose("OpenClaw model", "provider/model");
+  choose("OpenClaw thinking level", "high");
+  await typeInto(
+    dom.document.querySelector('textarea[aria-label="New OpenClaw chat"]'),
+    "Research the trip",
+  );
+  assert.equal(
+    button("Start").disabled,
+    false,
+    dom.document.querySelector('[role="dialog"]').textContent,
+  );
+  await click("Start");
+  await dom.waitFor(() => started.length > 0);
+  assert.equal(started[0].agentId, "work");
+  assert.equal(started[0].model, "provider/model");
+  assert.equal(started[0].thinkingLevel, "high");
+  assert.equal(started[0].text, "Research the trip");
+});
+
+test("schedules show delivery and run timing, pause and resume; channels show connection errors", async () => {
+  await mount();
+  await click("Schedules");
+  await dom.waitFor(() => button("Pause Morning briefing"));
+  assert.match(
+    dom.document.body.textContent,
+    /Next run.*Last run.*Delivery.*WhatsApp/,
+  );
+  await click("Pause Morning briefing");
+  await dom.waitFor(() => button("Resume Morning briefing"));
+  assert.deepEqual(scheduleChanges, [{ id: "daily", enabled: false }]);
+  await click("Resume Morning briefing");
+  await dom.waitFor(() => button("Pause Morning briefing"));
+  assert.deepEqual(scheduleChanges.at(-1), { id: "daily", enabled: true });
+  await click("Channels");
+  await dom.waitFor(() =>
+    dom.document.body.textContent.includes("Personal account"),
+  );
+  assert.match(
+    dom.document.body.textContent,
+    /Connected.*Disconnected.*Reconnect in OpenClaw/,
+  );
+  assert.equal(sent.length, 0);
+  assert.equal(reads.length, 0);
+  await click("Choose an app, OpenClaw selected");
+  dom.document.querySelector("[role=menuitemradio][aria-label=Codex]").click();
+  await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+});
+
+
+test("a pending save cannot close a reopened OpenClaw settings draft", async () => {
+  await mount();
+  await click("Login page");
+  await click("OpenClaw chat settings");
+  await dom.waitFor(() => dom.document.querySelector('[aria-label="OpenClaw model"]'));
+  let finish;
+  settingsWait = new Promise((resolve) => { finish = resolve; });
+  try {
+    await typeInto(dom.document.querySelector('[aria-label="OpenClaw chat name"]'), " pending");
+    await click("Save changes");
+    await dom.waitFor(() => settingsSent.length === 1);
+    await click("Cancel");
+    await click("OpenClaw chat settings");
+    await dom.waitFor(() => dom.document.querySelector('[aria-label="OpenClaw model"]'));
+    await typeInto(dom.document.querySelector('[aria-label="OpenClaw chat name"]'), " newer draft");
+    finish();
+    await settle(80);
+    assert.ok(dom.document.querySelector(".claw-settings"), "old completion must not close the newer form");
+    assert.equal(dom.document.querySelector('[aria-label="OpenClaw chat name"]').value, "Login page newer draft");
+    assert.equal(settingsSent.length, 1, "closing and reopening does not retry a dispatched save");
+    assert.equal(dom.document.querySelector('[role="alert"]'), null);
+  } finally {
+    finish();
+    settingsWait = null;
+  }
+});
+
+
+test("late catalog arrival preserves the exact uncertain new-chat attempt until user intent changes", async () => {
+  await mount(); started = []; newFail = true;
+  let release;
+  catalogWait = new Promise(resolve => { release = resolve; });
+  try {
+    await click("New chat");
+    await typeInto(dom.document.querySelector('textarea[aria-label="New OpenClaw chat"]'), "One task only");
+    await click("Start");
+    assert.equal(started.length, 1);
+    assert.match(dom.document.body.textContent, /Response lost/);
+    assert.equal(Object.hasOwn(started[0], "agentId"), false);
+    release();
+    await dom.waitFor(() => dom.document.querySelector('[aria-label="OpenClaw agent"]'));
+    await click("Start");
+    assert.equal(started.length, 2);
+    assert.deepEqual(started[1], started[0], "catalog discovery must not create a duplicate task identity or change its body");
+    const agent = dom.document.querySelector('[aria-label="OpenClaw agent"]');
+    agent.value = "work";
+    agent.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await settle(); await click("Start");
+    assert.equal(started.length, 3);
+    assert.equal(started[2].agentId, "work");
+    assert.notEqual(started[2].requestId, started[0].requestId, "an explicit changed choice starts a distinct attempt");
+  } finally { release(); catalogWait = null; newFail = false; }
+});
+
+test("a failed model catalog does not prevent starting with Gateway defaults", async () => {
+  await mount(); started = []; catalogFail = true;
+  try {
+    await click("New chat"); await click("Model & thinking");
+    await dom.waitFor(() => dom.document.body.textContent.includes("Catalog unavailable"));
+    await typeInto(dom.document.querySelector('textarea[aria-label="New OpenClaw chat"]'), "Use the default agent");
+    await click("Start"); await dom.waitFor(() => started.length === 1);
+    assert.equal(started[0].text, "Use the default agent");
+    assert.equal(Object.hasOwn(started[0], "agentId"), false);
+    assert.equal(Object.hasOwn(started[0], "model"), false);
+  } finally { catalogFail = false; }
+});
+
+
+test("closing a pending OpenClaw start and switching apps cannot be undone by its late response", async () => {
+  await mount(); started = [];
+  let finish;
+  newWait = new Promise(resolve => { finish = resolve; });
+  try {
+    await click("New chat");
+    await typeInto(dom.document.querySelector('textarea[aria-label="New OpenClaw chat"]'), "Pending task");
+    await click("Start"); await dom.waitFor(() => started.length === 1);
+    await click("Close new conversation");
+    await click("Choose an app, OpenClaw selected");
+    dom.document.querySelector('[role="menuitemradio"][aria-label="Codex"]').click();
+    await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+    finish(); await settle(100);
+    assert.ok(dom.document.body.textContent.includes("Only Codex"), "late OpenClaw success must not change the selected provider");
+    assert.equal(dom.document.querySelector('[aria-label="OpenClaw conversation"]'), null);
+    assert.equal(dom.document.querySelector('[role="dialog"]'), null);
+    assert.equal(started.length, 1, "the already dispatched task is not retried or claimed cancelled");
+  } finally { finish(); newWait = null; }
 });

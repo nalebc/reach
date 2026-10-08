@@ -291,9 +291,11 @@ export function createClaudeSessions({
     // A new chat that continues one moved here from another agent: a
     // transcript of its own (never over an existing one), in its folder's
     // real path (the nearest that still exists), as Claude Code writes them.
-    async write({ cwd, title, turns, note, model, gitBranch = "", items, from }) {
+    async write({ cwd, title, turns, note, model, gitBranch = "", items, from, authorize = () => {} }) {
+      authorize();
       let dir = path.resolve(String(cwd || os.homedir()));
       for (;;) {
+        authorize();
         try {
           dir = await fs.realpath(dir);
           if ((await fs.stat(dir)).isDirectory()) break;
@@ -308,13 +310,17 @@ export function createClaudeSessions({
       // Nothing of it left but the disk's root: the home folder instead.
       if (dir === path.parse(dir).root) dir = os.homedir();
       const folder = path.join(projects, dir.replace(/[^a-zA-Z0-9]/g, "-"));
+      authorize();
       await fs.mkdir(folder, { recursive: true });
+      authorize();
       const ver = await version();
       for (let tries = 0; ; tries++) {
+        authorize();
         const id = randomUUID();
         const lines = items ? claudeArchive({ id, cwd: dir, title, items, from, model, gitBranch, version: ver }) : claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
         try {
           await fs.writeFile(path.join(folder, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", { flag: "wx", mode: 0o600 });
+          authorize();
           // The messages written: one item each when read back.
           return { id, cwd: dir, entries: lines.filter((l) => l.type === "user" || l.type === "assistant").length };
         } catch (e) {
