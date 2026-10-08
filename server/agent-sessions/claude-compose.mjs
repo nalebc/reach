@@ -80,8 +80,9 @@ export async function typeIntoClaude(
   // A refusal says what didn't happen ({"sent": false, "error": …}), and is
   // tried again. otherChat: the window shows another chat (it says which).
   // Anything else unclear: maybe sent, never retried.
+  // occupied: the box holds text Reach doesn't know of; nothing was typed.
   if (result[action] === false && typeof result.error === "string")
-    throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {});
+    throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {}, result.draft === true ? { occupied: true } : {});
   if (result[action] !== true || result.error) throw uncertainDelivery("claude");
   return result;
 }
@@ -149,6 +150,11 @@ export function createClaudeCompose({
     Object.entries(store?.load() || {}).filter(([, d]) => d && typeof d.text === "string"),
   );
   const keep = () => store?.save(Object.fromEntries(drafts));
+  // What the box may hold from Reach: the draft it saw land, and any it typed
+  // without seeing it land (`maybe`). One unconfirmed write otherwise left
+  // Reach's own words there taken for text typed on the Mac, and every draft
+  // and message after it waited for good.
+  const known = (draft) => [draft.text, ...(Array.isArray(draft.maybe) ? draft.maybe : [])];
   // The app's own id for a chat: what the window must show to be typed in.
   const sessionOf = (id) => shown().find((s) => s.id === id)?.session || null;
   const screen = () => Promise.resolve(onScreen()).catch(() => null);
@@ -166,7 +172,18 @@ export function createClaudeCompose({
         const previous = drafts.get(id);
         if (previous && previous.owner !== owner) throw waiting("Another device is editing this draft.");
         if (!previous && drafts.size >= 128) throw waiting("Too many drafts are open.");
-        const result = await type({ title, session: sessionOf(id), waitMs: 0, text, draft: true, expected: previous?.text ?? "" });
+        let result;
+        try {
+          result = await type({ title, session: sessionOf(id), waitMs: 0, text, draft: true, expected: previous ? known(previous) : [""] });
+        } catch (e) {
+          // Any failure but a box holding someone else's text: it may be in.
+          if (!e?.occupied && (text || previous)) {
+            const maybe = [...new Set([...(previous?.maybe || []), text])].slice(-8);
+            drafts.set(id, { owner, text: previous?.text ?? "", maybe });
+            keep();
+          }
+          throw e;
+        }
         if (result?.drafted !== true) throw waiting("Claude didn't confirm the draft update.");
         if (text) drafts.set(id, { owner, text });
         else drafts.delete(id);
@@ -266,7 +283,7 @@ export function createClaudeCompose({
         // switched to, it's given switchMs to get there.
         const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}) };
         if (APP_MODES[mode]) await type({ ...into, mode: APP_MODES[mode] });
-        await type({ ...into, text, images, ...(draft ? { expected: draft.text } : {}) });
+        await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) });
         if (drafts.delete(id)) keep();
       } catch (e) {
         // Switched to, but the window never showed it: back, and again later.

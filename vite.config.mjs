@@ -37,6 +37,12 @@ export default defineConfig({
       // start.html: the public start page (server/public-start.mjs).
       input: { index: "index.html", start: "start.html", agent: "agent.html" },
       output: {
+        // Previous delivery failures could be cached as immutable 404s. Keep a
+        // stable new URL generation for the entire import graph so affected
+        // phones recover without clearing their paired-device storage.
+        entryFileNames: "assets/r2-[name]-[hash].js",
+        chunkFileNames: "assets/r2-[name]-[hash].js",
+        assetFileNames: "assets/r2-[name]-[hash][extname]",
         // xterm loads only with a terminal. Other libraries (React, icons) get
         // their own chunk, which stays cached across Reach updates. Capacitor's
         // web shims are loaded on demand, so they stay out of it.

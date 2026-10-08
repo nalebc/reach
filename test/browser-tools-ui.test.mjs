@@ -76,3 +76,30 @@ test("Full-control shell results can arrive after the ordinary request deadline"
     assert.ok(timers.every(timer => timer.ms > 60000));
   } finally { session.dispose(); }
 });
+
+
+test("desktop screenshot and input preserve unavailable diagnostics without retrying or turning them into permission errors", async () => {
+  const full = { ...access, preset: "full", screen: true, control: true };
+  let calls = 0;
+  globalThis.fetch = dom.window.fetch = async url => {
+    const route = new URL(url).pathname;
+    if (route === "/api/browser") return reply(full);
+    calls++;
+    return reply({ error: "Completion is unknown. Check the screen before trying again.", kind: "unavailable", helperReason: "process_exit", helperOperation: route.endsWith("screen") ? "shot" : "act", helperDispatch: "completion_unknown" }, 503);
+  };
+  const session = installBrowserTools(peer);
+  try {
+    for (const [name, args, op] of [["reach_screenshot", {}, "shot"], ["reach_act", { action: { type: "key", key: "enter" } }, "act"]]) {
+      await assert.rejects(session.bridge.callTool(name, args), error => {
+        assert.equal(error.status, 503);
+        assert.equal(error.body.kind, "unavailable");
+        assert.equal(error.body.helperReason, "process_exit");
+        assert.equal(error.body.helperOperation, op);
+        assert.equal(error.body.helperDispatch, "completion_unknown");
+        assert.match(error.message, /Check the screen before trying again/);
+        return true;
+      });
+    }
+    assert.equal(calls, 2, "one request per tool; neither is retried");
+  } finally { session.dispose(); }
+});

@@ -20,8 +20,9 @@ function claudeApp({ onScreen = A, idle = 0 } = {}) {
   const app = { box: "", sent: [], onScreen, idle, opened: [] };
   app.type = async ({ text = "", draft, expected }) => {
     const current = app.box;
-    if (!(current === (expected ?? "") || (text && current === text)))
-      throw Object.assign(new Error("This chat's box in the Claude app has text typed on your Mac."), { waiting: true });
+    const known = Array.isArray(expected) ? expected : [expected ?? ""];
+    if (!(known.includes(current) || (text && current === text)))
+      throw Object.assign(new Error("This chat's box in the Claude app has text typed on your Mac."), { waiting: true, occupied: true });
     if (draft) {
       app.box = text;
       return { drafted: true };
@@ -71,6 +72,56 @@ test("a message whose draft Reach synced before a restart still goes in after it
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a draft typed into the box but never confirmed doesn't hold the message back as text typed on the Mac", async () => {
+  const app = claudeApp();
+  const type = app.type;
+  const chat = compose(app, { type: async (call) => {
+    // The box takes it, but the app doesn't show it in time to confirm.
+    if (call.draft && call.text === "Continue if not done ") {
+      await type(call);
+      throw Object.assign(new Error("Claude couldn't update this draft."), { waiting: true });
+    }
+    return type(call);
+  } });
+  await assert.rejects(chat.draft(A, { title: "Fix", text: "Continue if not done ", owner: "phone" }), /couldn't update/);
+  assert.equal(app.box, "Continue if not done ");
+  // Typing goes on, and the finished message goes in.
+  assert.deepEqual(await chat.draft(A, { title: "Fix", text: "Continue if not done already", owner: "phone" }), { synced: true });
+  assert.deepEqual(await chat.deliver(A, { title: "Fix", text: "Continue if not done already, in Codex", owner: "phone" }), { delivered: true });
+  assert.deepEqual(app.sent, ["Continue if not done already, in Codex"]);
+});
+
+test("a draft that may or may not have landed: either text in the box counts as Reach's, nothing else does", async () => {
+  for (const landed of [false, true]) {
+    const app = claudeApp();
+    const type = app.type;
+    let fail = true;
+    const chat = compose(app, { type: async (call) => {
+      if (call.draft && call.text === "Hello" && fail) {
+        fail = false;
+        if (landed) await type(call);
+        throw Object.assign(new Error("Claude didn't answer."), { status: 502 });
+      }
+      return type(call);
+    } });
+    await chat.draft(A, { title: "Fix", text: "Hel", owner: "phone" });
+    await assert.rejects(chat.draft(A, { title: "Fix", text: "Hello", owner: "phone" }));
+    assert.equal(app.box, landed ? "Hello" : "Hel");
+    assert.deepEqual(await chat.deliver(A, { title: "Fix", text: "Hello there", owner: "phone" }), { delivered: true });
+    assert.deepEqual(app.sent, ["Hello there"]);
+  }
+  // Text from the Mac after an unconfirmed draft is still never overwritten.
+  const app = claudeApp();
+  const chat = compose(app, { type: async (call) => {
+    if (call.draft) throw Object.assign(new Error("Claude didn't answer."), { status: 502 });
+    return app.type(call);
+  } });
+  await assert.rejects(chat.draft(A, { title: "Fix", text: "Hel", owner: "phone" }));
+  app.box = "my own note";
+  await assert.rejects(chat.deliver(A, { title: "Fix", text: "Hello", owner: "phone" }), /typed on your Mac/);
+  assert.equal(app.box, "my own note");
 });
 
 test("text typed on the Mac is never overwritten: the message waits and says why", async () => {

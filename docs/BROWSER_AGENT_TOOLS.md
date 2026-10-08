@@ -13,7 +13,9 @@ These presets require macOS. The protected file helper is macOS-only, so Linux a
 | **Full control** | The screen with known protected windows filtered | Screen input with guardrails | File API uses shared folders; shell can access other files as the owner | Unsandboxed shell as the owner |
 | **Apps** | Only the chosen apps' windows | Only those apps | None | None |
 | **Files** | Nothing | Nothing | Chosen folders; read, or read and edit | None |
-| **Read only** | The screen with known protected and hidden windows filtered | Nothing | Every shared folder, or the ones chosen; read | Watch chosen terminals |
+| **Read only** | The screen with known protected and hidden windows filtered | Nothing | Shared folders, subject to root validation, or the ones chosen; read | Watch chosen terminals |
+
+**Folder selection is validated before an invitation is issued.** Full control and Read only may include the owner’s exact Home folder; Files and earlier narrow invitations still require a project or data folder, such as Desktop. Filesystem roots, ancestors of Home, and protected system or application installation directories are refused. With no folders selected, Full control and Read only use all configured shared roots: if any root is invalid, choose valid folders explicitly. Sharing Home does not remove the file API’s protected private names and paths, including credentials, Home’s Library, and Reach’s own code and data. The separate Full control shell remains unsandboxed.
 
 The preset is one field on the invitation (`policy.preset`). Its scopes, its route allowlist, its tools and the rules the native checker applies are derived from it on every request (`server/agent-presets.mjs`). A stored credential can't grow. Full control and Apps bind the phone that created the invitation (the host guard, as app sessions did): while one exists, ordinary Reach APIs answer only that phone. Lowering a preset later is always allowed; raising Files or Read only into Full control or Apps needs a new invitation from the phone.
 
@@ -55,6 +57,8 @@ await window.reach.callTool("reach_act", { action: { type: "click", x: 0.42, y: 
 | `reach_shell`, `reach_shell_history` | Full | One command as the owner, from inside a shared folder, 60 s and 256 KiB, logged; the deny list refuses and logs the rest |
 
 The shell executes for at most **60 seconds**. Its default request deadline is **70 seconds** for exact `POST /api/browser/shell`, allowing time for termination and logging; other requests retain a 35-second deadline. A transport timeout or disconnect does not prove whether a mutation finished. Observe the result or command history before deciding to submit again; clients do not automatically retry mutations.
+
+Native helper failures return HTTP 503 with `kind: "unavailable"` and a fixed `helperReason`, `helperOperation` and `helperDispatch` tuple. `completion_unknown` means a request write was attempted; it does not prove the action finished. `not_dispatched` means that request was never written to the helper. Raw stderr, request payloads and arbitrary exit details are excluded from this tuple. Actions are not automatically retried: inspect the screen before deciding whether to submit again. A failure category describes what the helper observed, not necessarily its underlying cause.
 
 The stdio MCP adapter advertises the same tools for a compatible credential. There is no invitation, owner-approval or generic HTTP tool, and no tool reaches another agent's session.
 

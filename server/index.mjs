@@ -1802,7 +1802,7 @@ export async function createReach(overrides = {}) {
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
       throw fail(403, "Stay inside the selected shared folder.");
     const root = client.agentRoots[index];
-    if (validateBrowserRoot(root) !== root)
+    if (validateBrowserRoot(root, { policy: client.policy }) !== root)
       throw fail(403, "The shared folder changed. Create a new invitation.");
     const scope = JSON.stringify([client.id, client.expiresAt, client.policy, client.agentRoots]);
     const check = () => {
@@ -1914,7 +1914,8 @@ export async function createReach(overrides = {}) {
       "Access-Control-Expose-Headers",
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
-    res.download(file, path.basename(file));
+    const sharedRoot = (current.agentRoots || config.roots)[Number(req.query.root ?? 0)];
+    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
   });
   // A short-lived link to one file, for the browser's own download manager.
   app.get("/api/files/download-link", async (req, res) => {
@@ -3340,7 +3341,8 @@ export async function createReach(overrides = {}) {
     const cleanup = () => { clearInterval(timer); identityCleanup(); };
     res.once("close", cleanup); res.once("finish", cleanup);
     res.setHeader("Cache-Control", "no-store");
-    res.download(file, path.basename(file));
+    const sharedRoot = (client.agentRoots || config.roots)[Number(link.root ?? 0)];
+    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
   });
   serveBuild(app, express, dist);
   // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,

@@ -51,7 +51,7 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     // A trusted injected runner can exercise this JS contract on other hosts;
     // real file access still requires the macOS descriptor/sandbox helper.
     if (process.platform !== 'darwin' && typeof run !== 'function') throw fail(503, 'Protected agent file access is unavailable on this computer.');
-    if (validateBrowserRoot(input.root) !== input.root) throw fail(403, 'The shared folder changed.');
+    if (validateBrowserRoot(input.root, { policy: client?.policy }) !== input.root) throw fail(403, 'The shared folder changed.');
     const root = fs.lstatSync(input.root, { bigint: true });
     if (!root.isDirectory() || root.isSymbolicLink()) throw fail(403, 'The shared folder changed.');
     const request = { op: input.op, root: input.root, rootDev: String(root.dev), rootIno: String(root.ino), path: input.path ?? '',

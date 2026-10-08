@@ -29,10 +29,14 @@ export function isBrowserPrivatePath(target, privatePaths) {
     privatePaths.some(p => absolute === p || absolute.startsWith(p + path.sep));
 }
 
-// A file grant is for data/project folders, never a host home or executable
-// installation. Known secret names alone cannot cover every startup mechanism.
-export function validateBrowserRoot(root, { home = os.homedir(), runtime = process.execPath } = {}) {
-  const error = () => Object.assign(new Error('Choose a project folder or Desktop. Home, system, and application installation folders cannot be shared with agents.'), { status: 403 });
+// Narrow file grants stay in data/project folders. The owner-issued Full and
+// Read only presets also permit the exact Home they advertise; their operations
+// still enforce private-name/path exclusions and the native descriptor boundary.
+export function validateBrowserRoot(root, { home = os.homedir(), runtime = process.execPath, policy } = {}) {
+  const homePreset = policy?.browser === true && ['full', 'readonly'].includes(policy.preset);
+  const error = () => Object.assign(new Error(homePreset
+    ? 'Choose Home, a project folder or Desktop. System and application installation folders cannot be shared with agents.'
+    : 'Choose a project folder or Desktop. Home, system, and application installation folders cannot be shared with agents.'), { status: 403 });
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw error();
   const canonical = value => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
   const selected = canonical(root);
@@ -40,6 +44,9 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
   const protectedRoots = ['/Applications', path.join(home, 'Applications'), '/Library', '/System', '/usr', '/bin', '/sbin', '/opt', '/private/etc', '/etc', path.dirname(runtime)]
     .flatMap(value => [path.resolve(value), canonical(value)]);
   const userHome = canonical(home);
+  // This context comes from the validated invitation/current credential, never
+  // from a file request. No ancestor of Home or filesystem root is exempt.
+  if (homePreset && selected !== path.parse(selected).root && selected === userHome) return selected;
   if (selected === path.parse(selected).root || within(userHome, selected) || protectedRoots.some(protectedRoot => within(selected, protectedRoot) || within(protectedRoot, selected))) throw error();
   return selected;
 }

@@ -73,6 +73,24 @@ export function normalizeAction(value) {
   }
 }
 
+const HELPER_FAILURES = {
+  timeout: "did not answer in time", process_exit: "exited", process_error: "could not stay connected",
+  stdin_error: "lost its input connection", write_error: "could not send the request",
+  invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
+  unexpected_reply: "returned an unexpected reply", stopped: "stopped",
+};
+const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open"]);
+const helperFailure = (reason, request, dispatched = false) => {
+  const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
+  const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
+  const helperDispatch = dispatched ? "completion_unknown" : "not_dispatched";
+  const guidance = dispatched
+    ? "Completion is unknown. Check the screen before trying again."
+    : "This request was not sent. Check the screen before trying again.";
+  return Object.assign(fail(503, `The Mac's agent helper ${HELPER_FAILURES[helperReason]} during ${helperOperation}. ${guidance}`),
+    { kind: "unavailable", helperReason, helperOperation, helperDispatch });
+};
+
 // One helper process: JSON lines in, JSON lines out, one request at a time.
 export class AgentDesktopHelper {
   constructor(child, { timeoutMs = 15000 } = {}) {
@@ -89,27 +107,31 @@ export class AgentDesktopHelper {
     this.timeoutMs = timeoutMs;
     let buffer = "";
     child.stderr?.on("data", () => {});
-    child.stdin.on("error", () => this.stop());
-    child.on("error", () => this.stop());
-    child.on("exit", () => this.stop());
+    child.stdin.on("error", () => this.stop("stdin_error"));
+    child.on("error", () => this.stop("process_error"));
+    child.on("exit", () => this.stop("process_exit"));
     child.stdout.on("data", (chunk) => {
       buffer += chunk.toString();
-      if (buffer.length > 12 * 1024 * 1024) return this.stop();
+      if (buffer.length > 12 * 1024 * 1024) return this.stop("oversized_reply");
       let at;
       while ((at = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, at);
         buffer = buffer.slice(at + 1);
         const pending = this.current;
-        if (!pending) return this.stop();
+        if (!pending) return this.stop("unexpected_reply");
+        let value;
+        try { value = JSON.parse(line); } catch { return this.stop("invalid_reply"); }
+        if (!plain(value) || (value.ok !== true && !(typeof value.error === "string" && Object.hasOwn(KINDS, value.kind))))
+          return this.stop("invalid_reply");
         this.current = null;
         clearTimeout(pending.timer);
-        try { pending.resolve(JSON.parse(line)); } catch { pending.reject(fail(503, "The Mac's agent helper answered badly.")); this.stop(); }
+        pending.resolve(value);
         this.next();
       }
     });
   }
   send(request, beforeSend) {
-    if (this.stopped) return Promise.reject(fail(503, "The Mac's agent helper is not running. Try again."));
+    if (this.stopped) return Promise.reject(helperFailure(this.stopReason, request));
     return new Promise((resolve, reject) => { this.queue.push({ request, beforeSend, resolve, reject }); this.next(); });
   }
   next() {
@@ -120,19 +142,26 @@ export class AgentDesktopHelper {
       // synchronously at its actual dispatch, not only when it was enqueued.
       try { item.beforeSend?.(); }
       catch (error) { item.reject(error); continue; }
-      item.timer = setTimeout(() => { this.stop(); }, this.timeoutMs);
+      item.timer = setTimeout(() => { this.stop("timeout"); }, this.timeoutMs);
       this.current = item;
-      try { this.child.stdin.write(JSON.stringify(item.request) + "\n"); }
-      catch { this.stop(); }
+      let line;
+      try { line = JSON.stringify(item.request) + "\n"; }
+      catch { this.stop("write_error"); return; }
+      // Mark before write: even a synchronous write failure cannot prove that
+      // no bytes reached the native process. Never retry the action here.
+      item.dispatched = true;
+      try { this.child.stdin.write(line); }
+      catch { this.stop("write_error"); }
       return;
     }
   }
-  stop() {
+  stop(reason = "stopped") {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopReason = reason;
     const waiting = [this.current, ...this.queue].filter(Boolean);
     this.current = null; this.queue = [];
-    for (const item of waiting) { clearTimeout(item.timer); item.reject(fail(503, "The Mac's agent helper stopped. Try again.")); }
+    for (const item of waiting) { clearTimeout(item.timer); item.reject(helperFailure(reason, item.request, item.dispatched)); }
     try { this.child.stdin.end(); } catch { /* already closed */ }
     const child = this.child;
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
