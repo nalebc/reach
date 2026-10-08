@@ -1,5 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
 // Queued messages as the agents' own apps show them: one line each, the
@@ -68,6 +69,22 @@ test("Claude: a stack of one line each, opened with a tap; a message opens whole
     await view.unmount();
   }
   assert.deepEqual(dom.errors, []);
+});
+
+test("the message and edit controls keep their full widths in the queue styles", async () => {
+  const style = dom.document.createElement("style");
+  style.textContent = readFileSync(new URL("../src/queued-messages.css", import.meta.url), "utf8");
+  dom.document.head.append(style);
+  const { view } = await render({ agent: "codex", messages: [three[0]] });
+  try {
+    assert.equal(dom.window.getComputedStyle($$(".qm-open")[0]).width, "100%");
+    button("Edit queued message")[0].click();
+    await settle(10);
+    assert.equal(dom.window.getComputedStyle($$(".qm-edit-actions button")[0]).width, "auto");
+  } finally {
+    await view.unmount();
+    style.remove();
+  }
 });
 
 test("Claude: Send now and a new order, by the handle and the arrow keys", async () => {

@@ -145,7 +145,11 @@
   line-height: 20px;
   text-align: left;
   white-space: nowrap;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 28px),
+    transparent
+  );
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 .qm-open:focus-visible,
