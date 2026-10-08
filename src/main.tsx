@@ -6,10 +6,16 @@ import TransferTray from "./TransferTray";
 import { request, setGuestPeers, type Device, type Peer } from "./api";
 import {
   forgetGuestSession,
+  guestInvitationId,
   savedGuestSession,
   GuestBar,
   type GuestSession,
 } from "./guest-session";
+import { parseGuestLink } from "./start-flow";
+import { homeOrigin } from "./home-origin";
+// Capture the new link before the lazy redemption component removes its hash.
+const incomingGuestInvites = location.pathname === "/guest"
+  ? parseGuestLink(location.hash, homeOrigin()).invites : [];
 // Only invited guests open /guest; everyone else never downloads it.
 const GuestAccess = lazy(() => import("./GuestAccess"));
 const BrowserWorkspace = lazy(() => import("./BrowserWorkspace"));
@@ -63,17 +69,59 @@ function GuestWorkspace({ peer, onEnd }: { peer: Peer; onEnd: () => void }) {
 // A guest gets Reach itself, limited by what they were given on each computer.
 function GuestRoot() {
   const [session, setSession] = useState<GuestSession | null>(() => {
-    const saved = savedGuestSession();
+    const saved = incomingGuestInvites.length ? null : savedGuestSession();
     setGuestPeers(saved?.peers);
     return saved;
   });
+  const [checking, setChecking] = useState(incomingGuestInvites.length > 0);
+  const [bootError, setBootError] = useState("");
   const [ended, setEnded] = useState(false);
+  useEffect(() => {
+    let reloading = false;
+    const changed = () => {
+      if (reloading || !parseGuestLink(location.hash, homeOrigin()).invites.length) return;
+      // A same-document link does not rerun the entry module. Reload only for
+      // a valid invitation so the provenance check owns the new transition.
+      reloading = true;
+      location.reload();
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  useEffect(() => {
+    if (!incomingGuestInvites.length) return;
+    let live = true;
+    void guestInvitationId(incomingGuestInvites).then(invitationId => {
+      if (!live) return;
+      const saved = savedGuestSession();
+      if (saved && saved.invitationId === invitationId) {
+        // The one-use link was already redeemed in this tab; resume its exact
+        // saved grant, then remove the consumed link from browser history.
+        history.replaceState(null, "", "/guest");
+        setGuestPeers(saved.peers);
+        setSession(saved);
+      } else {
+        // Keep the older saved session as recovery if this replacement fails,
+        // but never send its credentials while opening the new invitation.
+        setGuestPeers(undefined);
+        setSession(null);
+      }
+      setChecking(false);
+    }).catch(() => {
+      if (live) setBootError("This invitation could not be checked. Reload the page to try again.");
+    });
+    return () => { live = false; };
+  }, []);
   const end = () => {
     forgetGuestSession();
     setGuestPeers(undefined);
     setSession(null);
     setEnded(true);
   };
+  if (checking)
+    return <main className="guest-workspace"><p role={bootError ? "alert" : "status"}>
+      {bootError || "Opening your invitation…"}
+    </p></main>;
   if (!session)
     return (
       <Suspense fallback={null}>
@@ -99,7 +147,8 @@ import "./workspace.css";
 import "./identity.css";
 import "./workspace-pages.css";
 import "./app-style.css";
-createRoot(document.getElementById("root")!).render(
+export const appRoot = createRoot(document.getElementById("root")!);
+appRoot.render(
   <React.StrictMode>
     <ScreenBoundary>
       {location.pathname === "/guest" ? <GuestRoot /> : <App />}

@@ -3,7 +3,7 @@ import { type Peer } from "./api";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
 import { parseGuestLink } from "./start-flow";
-import { storageKey, type GuestSession } from "./guest-session";
+import { guestInvitationId, storageKey, type GuestSession } from "./guest-session";
 import MascotIntro from "./MascotIntro";
 import "./agent-admissions.css";
 
@@ -77,6 +77,11 @@ if (link.invites.length && window.location.pathname === "/guest") {
     sessionStorage.setItem(claimStorageKey, JSON.stringify(matching));
   else sessionStorage.removeItem(claimStorageKey);
 }
+const invitationSource = link.invites.length ? link.invites : readReceipts().flatMap(receipt =>
+  receipt.sourceInvitation ? [{ origin: receipt.origin, secret: receipt.sourceInvitation }] : []);
+let identityPromise: Promise<string | undefined> | undefined;
+const invitationIdentity = () => identityPromise ||= guestInvitationId(invitationSource);
+
 function saveReceipt(receipt: ClaimReceipt) {
   sessionStorage.setItem(
     claimStorageKey,
@@ -103,12 +108,16 @@ const requestError = (response: Response, body: { error?: string }) =>
 // StrictMode can replay effects while a one-use redemption or token delivery is
 // in flight. Share that request; only UI timers are cancelled on unmount.
 const redemptions = new Map<string, Promise<Redemption>>();
+// Only deliveries from this page's invitation belong together. Persist each
+// before a component can unmount or another invited computer can stall.
+const deliveredPeople = new Map<string, Accepted>();
 const claims = new Map<string, Promise<ClaimStatus>>();
 function redeem(origin: string, secret: string): Promise<Redemption> {
   const key = `${origin}:${secret}`;
   const existing = redemptions.get(key);
   if (existing) return existing;
   const promise = (async (): Promise<Redemption> => {
+    const invitationId = await invitationIdentity();
     const response = await fetch(`${origin}/api/guest/redeem`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -149,12 +158,18 @@ function redeem(origin: string, secret: string): Promise<Redemption> {
       !Number.isFinite(result.expiresAt)
     )
       throw Error("This invitation did not grant access.");
-    return {
-      accepted: {
-        peer: { ...result.device, url: origin, token: result.token },
-        expiresAt: result.expiresAt,
-      },
+    const accepted: Accepted = {
+      peer: { ...result.device, url: origin, token: result.token },
+      expiresAt: result.expiresAt,
     };
+    deliveredPeople.set(key, accepted);
+    const delivered = [...deliveredPeople.values()];
+    sessionStorage.setItem(storageKey, JSON.stringify({
+      peers: delivered.map(item => item.peer),
+      expiresAt: Math.min(...delivered.map(item => item.expiresAt)),
+      ...(invitationId ? { invitationId } : {}),
+    } satisfies GuestSession));
+    return { accepted };
   })();
   redemptions.set(key, promise);
   void promise
@@ -169,6 +184,7 @@ function pollClaim(receipt: ClaimReceipt): Promise<ClaimStatus> {
   const existing = claims.get(key);
   if (existing) return existing;
   const promise = (async (): Promise<ClaimStatus> => {
+    const invitationId = await invitationIdentity();
     const response = await fetch(
       `${receipt.origin}/api/invitations/claims/${encodeURIComponent(receipt.requestId)}/status`,
       {
@@ -191,6 +207,7 @@ function pollClaim(receipt: ClaimReceipt): Promise<ClaimStatus> {
       const session: GuestSession = {
         peers: [{ ...result.device, url: receipt.origin, token: result.token }],
         expiresAt: result.expiresAt!,
+        ...(invitationId ? { invitationId } : {}),
       };
       sessionStorage.setItem(storageKey, JSON.stringify(session));
       removeReceipt(receipt);
@@ -331,9 +348,12 @@ export default function GuestAccess({
         );
         if (!live()) return;
         if (accepted.length) {
+          const invitationId = await invitationIdentity();
+          if (!live()) return;
           const session: GuestSession = {
             peers: accepted.map((r) => r.peer),
             expiresAt: Math.min(...accepted.map((r) => r.expiresAt)),
+            ...(invitationId ? { invitationId } : {}),
           };
           sessionStorage.setItem(storageKey, JSON.stringify(session));
           ready.current(session);

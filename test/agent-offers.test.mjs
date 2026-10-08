@@ -120,6 +120,7 @@ test("Claude Code's modes come from its own --help, in its order and words; Auto
       ["haiku", "Haiku 4.5", [], false, false],
     ],
   );
+  assert.deepEqual(offered.models.map(m => m.resolvedModel), ["claude-opus-5-5", "claude-haiku-4-5-20251001"], "native session IDs must map to their catalog alias and effort options");
   assert.deepEqual(offered.modes, claudeModes(HELP));
   sessions.close();
 });

@@ -32,7 +32,7 @@ in a local capture directory:
 6. `settings.png` — More → Settings → General.
 7. `agents.png` — Home → Invite someone → Agent → Browser link (no invitation created).
 
-The October 7 recording uses the current interface at 390 × 844 and includes agent presets. Its GIF is about 24 seconds and its 30 fps MP4 about 25 seconds. Both are captioned sequences of screenshots; neither is a recording of live screen control, a physical phone, or real model responses.
+The October 7 recording uses the current interface at 390 × 844 and includes agent presets. The refreshed combined-candidate GIF is 22.9 seconds and its 30 fps MP4 is 23.7 seconds. Both are captioned sequences of screenshots; neither is a recording of live screen control, a physical phone, or real model responses.
 
 Keep capture files outside the repository. Compose the GIF and poster using
 Python 3 and Pillow (a demo authoring dependency, not a Reach runtime dependency):
@@ -77,3 +77,7 @@ and ZIP files. Check Files in list and grid views at 320, 390, and 430 px wide,
 then landscape and desktop. Wide tables and code blocks must scroll internally
 while prose stays at phone width. This fixture simulates unzip by adding sample
 folders in memory; it never extracts files on the computer.
+
+Open `/scripts/demo/chat-rebuild.html?queue=1` for synthetic queue editing,
+expansion, ordering, Send now and cancellation. Changes affect only in-memory
+sample entries; no native provider receives or executes those messages.

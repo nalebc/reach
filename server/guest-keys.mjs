@@ -334,19 +334,31 @@ export function createGuestKeys({
   }
 
   // A key for one invitation; the guest's device will be named `hostname`.
-  async function createInvite({ ttlSeconds, keySeconds, clientIds = [] }) {
+  async function createInvite({ ttlSeconds, keySeconds, clientIds = [], authorize = () => {} }) {
+    authorize();
     const id = newId();
     const expiresAt = now() + ttlSeconds * 1000;
     const created = await createKey(
       Math.max(300, Math.min(keySeconds ?? ttlSeconds, 90 * 86400)),
       `Reach guest ${id}`,
+      undefined,
+      authorize,
     );
-    if (!created?.key) throw fail(502, "Tailscale didn't return a key.");
-    saveRecords([
-      ...records().filter((r) => r.expiresAt > now() - 86400000),
-      { id, expiresAt, clientIds, keyId: created.id || "" },
-    ]);
-    return { key: created.key, hostname: `${prefix}${id}`, expiresAt };
+    try {
+      if (!created?.key) throw fail(502, "Tailscale didn't return a key.");
+      authorize();
+      saveRecords([
+        ...records().filter((r) => r.expiresAt > now() - 86400000),
+        { id, expiresAt, clientIds, keyId: created.id || "" },
+      ]);
+      return { key: created.key, hostname: `${prefix}${id}`, expiresAt };
+    } catch (error) {
+      // This exact newly minted key must not survive a cancelled issuance.
+      // Cleanup is allowed after the initiating owner's access has ended.
+      if (created?.id)
+        await call("DELETE", `/tailnet/-/keys/${encodeURIComponent(created.id)}`).catch(() => {});
+      throw error;
+    }
   }
 
   // Revoking a guest on this computer ends its invite here: its device goes.

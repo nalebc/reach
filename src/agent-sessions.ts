@@ -198,6 +198,8 @@ export type OutboxMessage = {
 };
 export type AgentModel = {
   id: string;
+  // Claude catalog aliases resolve to the ID saved in native sessions.
+  resolvedModel?: string;
   name: string;
   description?: string;
   efforts: string[];

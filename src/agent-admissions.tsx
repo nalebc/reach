@@ -23,6 +23,10 @@ export type AgentAdmission = {
   scopes: string[];
   roots: string[];
   browser: boolean;
+  preset?: "full" | "apps" | "files" | "readonly";
+  apps?: { id: string; name?: string }[];
+  hidden?: { id: string; name?: string }[];
+  write?: boolean;
   screen?: "off" | "view" | "scroll" | "ask" | "apps";
   appAccess?: { id: string; name?: string; mode: "view" | "control" }[];
   terminalIds?: string[];
@@ -49,6 +53,17 @@ const labels: Record<string, string> = {
   "browser:read": "Read selected browser resources",
   "browser:scroll": "Scroll the shared screen",
   "browser:request": "Send requests to the owner",
+  "browser:write": "Edit shared files",
+  "browser:screen": "View allowed app windows",
+  "browser:control": "Control allowed app windows",
+  "browser:open": "Open allowed apps",
+  "browser:shell": "Run shell commands as your user",
+};
+const presetNames = {
+  full: "Full control",
+  apps: "Apps",
+  files: "Files",
+  readonly: "Read only",
 };
 const readable = (value: string) => exact(value).slice(1, -1);
 
@@ -203,9 +218,18 @@ export function AgentAdmissionReview({
     ask: "Every screen input needs your approval",
     apps: "Only selected app windows. Other apps stay hidden.",
   };
-  const canRun = admission.scopes.some((scope) =>
-    ["exec", "terminal", "apps:drive"].includes(scope),
+  const preset = admission.browser ? admission.preset : undefined;
+  const canEditFiles = admission.scopes.some((scope) =>
+    (admission.browser ? ["browser:write"] : ["files", "files:write"]).includes(
+      scope,
+    ),
   );
+  const canRun = admission.scopes.some((scope) =>
+    ["exec", "terminal", "apps:drive", "browser:shell"].includes(scope),
+  );
+  const canViewScreen = admission.scopes.includes("browser:screen");
+  const canControlScreen = admission.scopes.includes("browser:control");
+  const canOpenApps = admission.scopes.includes("browser:open");
   const seconds = Math.max(0, Math.ceil((admission.expiresAt - now) / 1000));
   const countdown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const ends = Number.isFinite(admission.accessExpiresAt)
@@ -272,18 +296,14 @@ export function AgentAdmissionReview({
             <h4>Access you’re allowing</h4>
             <span>{until}</span>
           </div>
+          {preset && <p>Preset: {presetNames[preset]}</p>}
           <ul className="admission-access-list">
             {admission.roots.length > 0 && (
               <li>
                 <Folder size={18} aria-hidden="true" />
                 <div>
                   <strong>
-                    {admission.browser ||
-                    !admission.scopes.some((s) =>
-                      ["files", "files:write"].includes(s),
-                    )
-                      ? "Read files"
-                      : "Read and edit files"}
+                    {canEditFiles ? "Read and edit files" : "Read files"}
                   </strong>
                   <ul
                     className="agent-admission-resources"
@@ -297,34 +317,155 @@ export function AgentAdmissionReview({
                   </ul>
                 </div>
                 <span className="admission-permission-tag">
-                  {admission.browser ||
-                  !admission.scopes.some((s) =>
-                    ["files", "files:write"].includes(s),
-                  )
-                    ? "Read only"
-                    : "Read & write"}
+                  {canEditFiles ? "Read & write" : "Read only"}
                 </span>
               </li>
             )}
             {admission.browser ? (
               <>
+                {preset && (canViewScreen || canControlScreen) && (
+                  <li>
+                    <Monitor size={18} aria-hidden="true" />
+                    <div>
+                      <strong>
+                        {canControlScreen ? "Screen control" : "Screen"}
+                      </strong>
+                      <small>
+                        {canControlScreen
+                          ? "View and control allowed app windows"
+                          : "View only"}
+                      </small>
+                      {preset === "apps" ? (
+                        <>
+                          <small>
+                            Only selected app windows. Control includes actions
+                            in their signed-in accounts.
+                          </small>
+                          <ul
+                            className="agent-admission-resources"
+                            aria-label="Shared apps"
+                          >
+                            {(admission.apps || []).map((app) => (
+                              <li key={app.id} className="admission-app">
+                                <span className="admission-app-logo">
+                                  <AppLogo
+                                    peer={peer}
+                                    appId={app.id}
+                                    name={app.name || app.id}
+                                  />
+                                </span>
+                                <bdi>{readable(app.name || app.id)}</bdi>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : (
+                        <small>
+                          Protected and hidden windows are excluded from the
+                          shared screen.
+                        </small>
+                      )}
+                      {!!admission.hidden?.length && (
+                        <ul
+                          className="agent-admission-resources"
+                          aria-label="Hidden apps"
+                        >
+                          {admission.hidden.map((app) => (
+                            <li key={app.id}>
+                              Hidden: <bdi>{readable(app.name || app.id)}</bdi>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </li>
+                )}
+                {preset && canOpenApps && (
+                  <li>
+                    <Monitor size={18} aria-hidden="true" />
+                    <div>
+                      <strong>
+                        {preset === "apps" ? "Open selected apps" : "Open apps"}
+                      </strong>
+                    </div>
+                  </li>
+                )}
+                {preset && admission.scopes.includes("browser:shell") && (
+                  <li>
+                    <Terminal size={18} aria-hidden="true" />
+                    <div>
+                      <strong>Shell commands</strong>
+                      <small>
+                        Runs with your operating-system permissions.
+                      </small>
+                    </div>
+                  </li>
+                )}
                 {admission.screen && admission.screen !== "off" && (
                   <li>
                     <Monitor size={18} aria-hidden="true" />
                     <div>
                       <strong>
-                        {admission.screen === "apps" ? "App access" : admission.screen === "ask"
-                          ? "Screen control"
-                          : "Screen"}
+                        {admission.screen === "apps"
+                          ? "App access"
+                          : admission.screen === "ask"
+                            ? "Screen control"
+                            : "Screen"}
                       </strong>
                       <small>{screen[admission.screen]}</small>
-                      {admission.screen === "apps" && <>
-                        {!!admission.appAccess?.length ? <ul className="agent-admission-resources" aria-label="Shared apps">
-                          {admission.appAccess.map((app) => <li key={app.id} className="admission-app"><span className="admission-app-logo"><AppLogo peer={peer} appId={app.id} name={app.name || app.id} /></span><bdi>{readable(app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id)}</bdi> · {app.mode === "control" ? "View & control" : "View only"}</li>)}
-                        </ul> : <small>No apps shared yet. The agent can ask for access.</small>}
-                        {admission.appAccess?.some((app) => app.mode === "control") && <small>Control allows actions inside that app, including its signed-in accounts.</small>}
-        <small>Approve more apps on your phone or another verified device; Reach on this Mac is locked during this invitation.</small>
-                      </>}
+                      {admission.screen === "apps" && (
+                        <>
+                          {!!admission.appAccess?.length ? (
+                            <ul
+                              className="agent-admission-resources"
+                              aria-label="Shared apps"
+                            >
+                              {admission.appAccess.map((app) => (
+                                <li key={app.id} className="admission-app">
+                                  <span className="admission-app-logo">
+                                    <AppLogo
+                                      peer={peer}
+                                      appId={app.id}
+                                      name={app.name || app.id}
+                                    />
+                                  </span>
+                                  <bdi>
+                                    {readable(
+                                      app.name ||
+                                        app.id
+                                          .split("/")
+                                          .at(-1)
+                                          ?.replace(/\.app$/, "") ||
+                                        app.id,
+                                    )}
+                                  </bdi>{" "}
+                                  ·{" "}
+                                  {app.mode === "control"
+                                    ? "View & control"
+                                    : "View only"}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <small>
+                              No apps shared yet. The agent can ask for access.
+                            </small>
+                          )}
+                          {admission.appAccess?.some(
+                            (app) => app.mode === "control",
+                          ) && (
+                            <small>
+                              Control allows actions inside that app, including
+                              its signed-in accounts.
+                            </small>
+                          )}
+                          <small>
+                            Approve more apps on your phone or another verified
+                            device; Reach on this Mac is locked during this
+                            invitation.
+                          </small>
+                        </>
+                      )}
                     </div>
                   </li>
                 )}
@@ -352,8 +493,8 @@ export function AgentAdmissionReview({
                         {admission.scriptApproval
                           ? "Read commands run directly. Approve each other command or script once, inside the shared folder. No network, sudo or helper processes. All commands are logged."
                           : admission.terminalApproval
-                          ? "Read commands run directly. Supported file changes need your approval. Every command stays inside the shared folders and is logged. Scripts and sudo are blocked."
-                          : "Read-only commands run directly inside shared folders and are logged. Scripts, sudo and file changes are blocked."}
+                            ? "Read commands run directly. Supported file changes need your approval. Every command stays inside the shared folders and is logged. Scripts and sudo are blocked."
+                            : "Read-only commands run directly inside shared folders and are logged. Scripts, sudo and file changes are blocked."}
                       </small>
                     </div>
                   </li>
@@ -387,6 +528,7 @@ export function AgentAdmissionReview({
             )}
           </ul>
           {admission.browser &&
+            !preset &&
             !admission.roots.length &&
             (!admission.screen || admission.screen === "off") &&
             !admission.terminalIds?.length &&
@@ -398,8 +540,11 @@ export function AgentAdmissionReview({
             )}
           {canRun && (
             <p className="agent-admission-warning">
-              Commands can act as your user beyond shared folders. This
-              connection does not require separate approval for each command.
+              Commands can act as your user beyond shared folders, including
+              sensitive files. This connection does not require separate
+              approval for each command.
+              {admission.scopes.includes("browser:shell") &&
+                " Protected screen and file-tool checks are guardrails, not a sandbox for shell commands."}
             </p>
           )}
         </section>

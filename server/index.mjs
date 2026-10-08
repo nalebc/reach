@@ -1502,12 +1502,14 @@ export async function createReach(overrides = {}) {
   });
   // One-time setup from your phone: the credential is checked with Tailscale
   // and kept on this computer only; it's never sent back.
+  const invitationOwner = (req) => {
+    const client = req.reauthorize();
+    if (client.kind !== "device" || !client.scopes.includes("admin"))
+      throw fail(403, "Only a paired owner device can create or set up invitations.");
+    return client;
+  };
   app.post("/api/guests/keys", async (req, res) => {
-    const authorize = () => {
-      const client = req.reauthorize();
-      if (client.kind !== "device" || !client.scopes.includes("admin"))
-        throw fail(403, "Only a paired owner device can set up invite links.");
-    };
+    const authorize = () => invitationOwner(req);
     authorize();
     if (!guestKeys)
       throw fail(404, "Invite links need Tailscale device approval here.");
@@ -1546,6 +1548,8 @@ export async function createReach(overrides = {}) {
   // the computer holding the OAuth client. `clientIds`: its invitations here
   // (revoking one of them ends the key and the guest's device).
   app.post("/api/guests/key", async (req, res) => {
+    const authorize = () => invitationOwner(req);
+    authorize();
     if (!guestKeys?.configured())
       throw fail(
         409,
@@ -1570,6 +1574,7 @@ export async function createReach(overrides = {}) {
     const key = await guestKeys.createInvite({
       ttlSeconds: ttl,
       keySeconds,
+      authorize,
       clientIds: (Array.isArray(req.body.clientIds) ? req.body.clientIds : [])
         .filter((id) => typeof id === "string" && guests.has(id))
         .slice(0, 10),
@@ -1605,6 +1610,8 @@ export async function createReach(overrides = {}) {
     res.status(201).json(grant);
   });
   app.post("/api/guests", async (req, res) => {
+    const authorize = () => invitationOwner(req);
+    authorize();
     const grant = auth.inviteGuest(req.body);
     // With an invite key, the guest needs no Tailscale account or app.
     let key;
@@ -1618,6 +1625,7 @@ export async function createReach(overrides = {}) {
         key = await guestKeys.createInvite({
           ttlSeconds: req.body.ttlSeconds,
           clientIds: [grant.clientId],
+          authorize,
         });
       } catch (error) {
         auth.revoke(grant.clientId);

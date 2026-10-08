@@ -1134,7 +1134,9 @@ export function createAgentSessions({
             if (result?.model !== name || result.unconfirmed)
               throw Object.assign(new Error("Claude didn't confirm the model change. Check the model in Claude before trying again."), { status: 409 });
           }
-          if (effort && effort !== session.effort) {
+          // Selecting a model may reset its effort. Reapply the requested
+          // level even when it matched the previous model's saved setting.
+          if (effort && (model && model !== session.model || effort !== session.effort)) {
             if (!claudeCompose.effort)
               throw Object.assign(new Error("Reach can't change the thinking level in this Claude app. Check its current settings."), { status: 409 });
             const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
@@ -1443,6 +1445,7 @@ export function createAgentSessions({
       return {
         models: list.map((m) => ({
           id: m.value,
+          ...(typeof m.resolvedModel === "string" ? { resolvedModel: m.resolvedModel } : {}),
           name: m.value === "default" ? m.displayName : claudeModelName(m.resolvedModel) || m.displayName || m.value,
           description: m.description || "",
           efforts: m.supportsEffort ? m.supportedEffortLevels || [] : [],

@@ -85,14 +85,41 @@ test("Claude: Send now and a new order, by the handle and the arrow keys", async
   }
 });
 
-test("Edit changes a queued message where it waits, one with pictures too", async () => {
+test("dragging a handle crosses a row midpoint and keeps the new order visible while it syncs", async () => {
+  const { view, calls } = await render({ agent: "codex", messages: three });
+  try {
+    for (const el of $$(".qm-row")) {
+      el.getBoundingClientRect = () => {
+        const top = $$(".qm-row").indexOf(el) * 40;
+        return { top, bottom: top + 40, height: 40 };
+      };
+    }
+    const grip = button("Reorder queued message 1 of 3")[0];
+    grip.setPointerCapture = () => {};
+    const pointer = (type, clientY) => {
+      const event = new dom.window.MouseEvent(type, { bubbles: true, button: 0, clientY });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      dom.update(() => grip.dispatchEvent(event));
+    };
+    pointer("pointerdown", 20);
+    pointer("pointermove", 23);
+    pointer("pointerup", 23);
+    assert.deepEqual(calls.order, [], "a tap does not reorder");
+    pointer("pointerdown", 20);
+    pointer("pointermove", 70);
+    pointer("pointerup", 70);
+    await settle(10);
+    assert.deepEqual(calls.order, [["m2", "m1", "m3"]]);
+    assert.deepEqual($$(".qm-open").map((el) => el.textContent), ["second", long, "third"]);
+  } finally {
+    await view.unmount();
+  }
+});
+
+test("Edit is directly available and changes a queued message where it waits, one with pictures too", async () => {
   const { view, calls } = await render({ agent: "claude", messages: [three[0]] });
   try {
-    button("Queued message actions")[0].click();
-    await settle(10);
-    const edit = $$('[role="menuitem"]')[0];
-    assert.match(edit.textContent, /Edit message/);
-    edit.click();
+    button("Edit queued message")[0].click();
     await settle(10);
     const box = $$('textarea[aria-label="Edit queued message"]')[0];
     assert.equal(box.value, long);
@@ -110,7 +137,7 @@ test("Edit changes a queued message where it waits, one with pictures too", asyn
   }
 });
 
-test("Codex: a plain list with Send now (its Steer), no reordering (the Codex app keeps its order)", async () => {
+test("Codex: a plain list with Send now (its Steer) and direct edit", async () => {
   const { view, calls } = await render({
     agent: "codex",
     messages: three.map(({ via, ...m }) => m),
@@ -120,6 +147,7 @@ test("Codex: a plain list with Send now (its Steer), no reordering (the Codex ap
     assert.equal($$(".qm-row").length, 3, "all shown, no stack");
     assert.equal($$(".qm-head").length, 0);
     assert.equal(button("Send now").length, 3);
+    assert.equal(button("Edit queued message").length, 3);
     button("Send now")[0].click();
     assert.deepEqual(calls.now, ["m1"]);
     assert.equal($$(".qm-grip").length, 0);
@@ -128,4 +156,49 @@ test("Codex: a plain list with Send now (its Steer), no reordering (the Codex ap
   } finally {
     await view.unmount();
   }
+});
+
+
+test("an in-flight queue action blocks competing mutations but keeps text expandable", async () => {
+  const { view } = await render({ agent: "codex", messages: three, busy: "order" });
+  try {
+    for (const selector of [".qm-grip", ".qm-action", ".qm-now", '[aria-label="Remove queued message"]'])
+      assert.ok($$(selector).every(el => el.disabled), selector);
+    assert.ok($$(".qm-open").every(el => !el.disabled));
+  } finally { await view.unmount(); }
+});
+
+test("a different authoritative native order replaces a pending optimistic order", async () => {
+  let setMessages;
+  const orders = [];
+  function Fixture() {
+    const [messages, update] = React.useState(three); setMessages = update;
+    return React.createElement(QueuedMessages, { agent: "codex", messages, busy: null, canEdit: true,
+      onEdit: async () => {}, onRemove() {}, onReorder: ids => { orders.push(ids); } });
+  }
+  const view = await dom.render(React.createElement(Fixture));
+  try {
+    dom.update(() => button("Reorder queued message 1 of 3")[0].dispatchEvent(
+      new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle(10);
+    assert.deepEqual(orders, [["m2", "m1", "m3"]]);
+    dom.update(() => setMessages([three[2], three[0], three[1]]));
+    await settle(10);
+    assert.deepEqual($$(".qm-open").map(el => el.textContent), ["third", long, "second"]);
+  } finally { await view.unmount(); }
+});
+
+test("a rejected queue reorder rolls back without another request", async () => {
+  let reject, calls = 0;
+  const pending = new Promise((_resolve, fail) => { reject = fail; });
+  const { view } = await render({ agent: "codex", messages: three,
+    onReorder: () => { calls++; return pending; } });
+  try {
+    dom.update(() => button("Reorder queued message 1 of 3")[0].dispatchEvent(
+      new dom.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    assert.deepEqual($$(".qm-open").map(el => el.textContent), ["second", long, "third"]);
+    reject(Error("Native queue changed")); await settle(10);
+    assert.deepEqual($$(".qm-open").map(el => el.textContent), [long, "second", "third"]);
+    assert.equal(calls, 1);
+  } finally { await view.unmount(); }
 });

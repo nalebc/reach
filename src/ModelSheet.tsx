@@ -29,7 +29,9 @@ type Props = {
 };
 
 export const currentModel = (models: AgentModel[], model: string | null) =>
-  models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
+  model
+    ? models.find((m) => m.id === model) || models.find((m) => m.resolvedModel === model && !m.isDefault) || models.find((m) => m.resolvedModel === model)
+    : models.find((m) => m.isDefault) || models[0];
 // Keeps the effort when the new model has it, else the model's own default.
 export const effortFor = (m: AgentModel, effort: string | null) =>
   effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined;
@@ -202,7 +204,7 @@ export function CodexEffortStrip({ agent, models, model, effort, busy, onPick, o
   return (
     <div className={`ms-strip ${agent}`} role="group" aria-label="Model and effort">
       <button className="ms-strip-label" onClick={onConfigure}>
-        <strong>{current?.name || "Model"}</strong> {level && <span>{levelName(level, agent)}</span>}
+        <strong>{current?.name || model || "Model"}</strong> {level && <span>{levelName(level, agent)}</span>}
         <ChevronRight size={18} />
       </button>
       {efforts.length > 1 && (

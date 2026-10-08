@@ -19,7 +19,7 @@ Use Reach to continue a coding conversation away from your desk, get a file from
 
 [Watch or download the MP4](docs/media/reach-demo.mp4) · [Still preview](docs/media/reach-demo-poster.png)
 
-*An updated October 7 interface walkthrough captured from the actual app at phone width, using sample devices, files, conversations and the current agent presets. It is a captioned sequence of browser captures, not a recording of live remote control or provider responses. Codex and Claude require their own installation and sign-in. Computer access uses Tailscale connectivity; the browser can run its own Tailscale node without a separate phone app.*
+*A refreshed October 7 interface walkthrough (23.7-second MP4) captured from the actual app at phone width, using sample devices, files, conversations and the current agent presets. It is a captioned sequence of browser captures, not a recording of live remote control or provider responses. Codex and Claude require their own installation and sign-in. Computer access uses Tailscale connectivity; the browser can run its own Tailscale node without a separate phone app.*
 
 The isolated [demo fixture and capture instructions](scripts/demo/README.md) let contributors reproduce the same interface without connecting to a computer or exposing personal data.
 

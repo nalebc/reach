@@ -169,6 +169,13 @@ const clawSessions = [
 ];
 const clawMessages: Record<string, any[]> = {};
 let moveNumber = 0;
+const queuePreview = new URLSearchParams(location.search).get("queue") === "1";
+let queueVersion = 1;
+let sampleQueue = [
+  { id: "queue-one", text: "Review the whole queued message. ".repeat(9), images: 0, via: "app" },
+  { id: "queue-two", text: "Then check the Files preview", images: 0, via: "app" },
+  { id: "queue-three", text: "Finally summarize the test results", images: 0, via: "app" },
+];
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = new URL(
@@ -182,6 +189,19 @@ window.fetch = async (input, init = {}) => {
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
   let data: unknown = {};
+  const queue = path.match(/^\/api\/sessions\/(codex|claude)\/([^/]+)\/queue\/(.+)$/);
+  if (queuePreview && queue && init.method === "POST") {
+    const body = JSON.parse(String(init.body || "{}"));
+    if (queue[3] === "order") {
+      sampleQueue = body.order.map((id: string) => sampleQueue.find(row => row.id === id)).filter(Boolean);
+    } else {
+      const [id, action] = queue[3].split("/");
+      if (action === "edit") sampleQueue = sampleQueue.map(row => row.id === id ? { ...row, text: body.text } : row);
+      if (action === "cancel" || action === "now") sampleQueue = sampleQueue.filter(row => row.id !== id);
+    }
+    queueVersion++;
+    return Response.json({ edited: true, reordered: true, deleted: true, hurried: true });
+  }
   const move = path.match(/^\/api\/sessions\/(codex|claude|openclaw)\/([^/]+)\/move$/);
   if (move && init.method === "POST") {
     const from = move[1], sourceId = decodeURIComponent(move[2]);
@@ -321,7 +341,8 @@ window.fetch = async (input, init = {}) => {
       if (path.endsWith("/live")) {
         await new Promise((r) => setTimeout(r, 800));
         data = {
-          version: 1,
+          version: queueVersion,
+          ...(queuePreview && s.id === "sample-0" ? { outbox: sampleQueue } : {}),
           status: s.status,
           prompts: s.prompts || [],
           streaming: "",

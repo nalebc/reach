@@ -20,7 +20,7 @@ const POLICY = `// my policy
 `;
 
 function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, etag = '"v1"' } = {}) {
-  const api = { policy, etag, writes: 0, clients: [], deleted: [], calls: [], authKeys: 0 };
+  const api = { policy, etag, writes: 0, clients: [], deleted: [], calls: [], authKeys: 0, deletedAuthKeys: [] };
   api.request = async (url, init = {}) => {
     const route = new URL(url).pathname.replace("/api/v2", "");
     const method = init.method || "GET";
@@ -45,7 +45,7 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, eta
       if (route === "/tailnet/-/devices") return reply(200, { devices: [] });
       if (route === "/tailnet/-/keys" && method === "POST")
         return reply(200, { id: `a${++api.authKeys}`, key: `tskey-auth-a${api.authKeys}-x` });
-      if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") return reply(200, {});
+      if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") { api.deletedAuthKeys.push(route.split("/").pop()); return reply(200, {}); }
       return reply(404, {});
     }
     if (auth !== `Bearer ${TOKEN}`) return reply(401, { message: "unauthorized" });
@@ -218,12 +218,12 @@ async function routeFixture(t, { api = fakeTailscale(), beforeStatus } = {}) {
     const phone = reach.auth.issue("My iPhone", ALL_SCOPES, "device", {
       tailscale: { userId: "42", nodeId: "nPhone" },
     });
-    const post = (token, body) =>
+    const post = (token, body, route = "/api/guests/keys") =>
       new Promise((resolve, reject) => {
         const req = http.request(
           {
             socketPath,
-            path: "/api/guests/keys",
+            path: route,
             method: "POST",
             headers: {
               Host: "localhost",
@@ -394,4 +394,47 @@ test("an unchanged policy needs no version precondition because no policy write 
   await keys.setupFromAccessToken({ accessToken: TOKEN, ...where });
   assert.equal(api.writes, 0); assert.equal(api.clients.length, 1);
   assert.equal(keys.configured(), true);
+});
+
+
+for (const route of ["/api/guests/key", "/api/guests"]) {
+  for (const phase of ["oauth", "mint"]) {
+    test(`person invitation ${route} revoked during ${phase} leaves no new network key or record`, routeTest, async t => {
+      const pause = gate(), api = fakeTailscale();
+      api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+      const request = api.request;
+      api.request = async (url, init) => {
+        const response = await request(url, init), pathname = new URL(url).pathname;
+        if ((phase === "oauth" && pathname.endsWith("/oauth/token")) ||
+            (phase === "mint" && pathname.endsWith("/keys") && init.method === "POST" && init.headers.Authorization.startsWith("Bearer oauth-"))) await pause.wait();
+        return response;
+      };
+      const f = await routeFixture(t, { api });
+      t.after(() => pause.release());
+      fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
+        version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+      }), { mode: 0o600 });
+      const body = route === "/api/guests" ? { name: "Synthetic visitor", ttlSeconds: 600, roots: [0], key: true } : { ttlSeconds: 600 };
+      const pending = f.post(f.phone.token, body, route);
+      await pause.entered; f.reach.auth.revoke(f.phone.clientId); pause.release();
+      assert.equal((await pending).status, 401);
+      assert.equal(api.authKeys, phase === "mint" ? 1 : 0);
+      assert.deepEqual(api.deletedAuthKeys, phase === "mint" ? ["a1"] : []);
+      assert.equal(fs.existsSync(path.join(f.dir, "private", "guest-keys.json")), false, "revoked creation is never recorded");
+      assert.equal(f.reach.auth.list().filter(c => c.kind === "guest").length, 0, "combined creation rolls back its local guest too");
+    });
+  }
+}
+
+test("person invitation issuance requires an owner device before creating local grants or network keys", routeTest, async t => {
+  const f = await routeFixture(t);
+  const other = f.reach.auth.issue("Synthetic service", ["admin"], "service", {
+    tailscale: { userId: "42", nodeId: "nPhone" },
+  });
+  for (const [route, body] of [
+    ["/api/guests/key", { ttlSeconds: 600 }],
+    ["/api/guests", { name: "Synthetic visitor", ttlSeconds: 600, roots: [0] }],
+  ]) assert.equal((await f.post(other.token, body, route)).status, 403);
+  assert.equal(f.api.calls.length, 0);
+  assert.equal(f.reach.auth.list().filter(c => c.kind === "guest").length, 0);
 });
