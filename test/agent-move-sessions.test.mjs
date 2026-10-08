@@ -250,3 +250,24 @@ test("moving a chat is the owner's alone, like every session", async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a move asked to keep going tells the new agent to continue, and a failed message leaves the move done", async () => {
+  const { root, daemon, sessions } = setup({
+    "thread/resume": ({ threadId }) => ({ thread: { id: threadId, turns: [] } }),
+    "turn/start": () => ({ turn: { id: "turn-9", status: "inProgress", items: [] } }),
+  });
+  const moved = await sessions.move("claude", CLAUDE, { to: "codex", resume: true, owner: "phone" });
+  assert.deepEqual([moved.agent, moved.id, moved.resumed], ["codex", NEW_CODEX, true]);
+  const started = daemon.calls.find(([method]) => method === "turn/start");
+  assert.ok(started, "a turn started in the new chat");
+  assert.equal(started[1].threadId, NEW_CODEX);
+  assert.match(JSON.stringify(started[1].input), /Continue where Claude Code left off/);
+  fs.rmSync(root, { recursive: true, force: true });
+
+  // The message can't go: the move stands, and says why.
+  const failing = setup({ "turn/start": new Error("Codex is busy.") });
+  const kept = await failing.sessions.move("claude", CLAUDE, { to: "codex", resume: true });
+  assert.deepEqual([kept.agent, kept.id, kept.resumed], ["codex", NEW_CODEX, false]);
+  assert.match(kept.resumeError, /busy/);
+  fs.rmSync(failing.root, { recursive: true, force: true });
+});

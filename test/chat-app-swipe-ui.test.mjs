@@ -249,7 +249,14 @@ test("the release position can cross halfway or reveal the app on the opposite s
 
 test("page swipes follow the app menu in both directions, including OpenClaw, and stop at each end", async () => {
   await mount();
+  // Every agent's chats together (All) come before the first app.
   swipe(undefined, 130, 0, 100);
+  await idle();
+  assert.equal(selected(), "all");
+  swipe(undefined, 130, 0, 100);
+  await idle();
+  assert.equal(selected(), "all");
+  swipe();
   await idle();
   assert.equal(selected(), "codex");
   for (const app of ["claude", "openclaw", "gemini"]) {
@@ -262,7 +269,7 @@ test("page swipes follow the app menu in both directions, including OpenClaw, an
   swipe();
   await idle();
   assert.equal(selected(), "gemini");
-  for (const app of ["openclaw", "claude", "codex"]) {
+  for (const app of ["openclaw", "claude", "codex", "all"]) {
     swipe(undefined, 130, 0, 100);
     await idle();
     assert.equal(selected(), app);
@@ -397,7 +404,8 @@ test("the page follows the finger, reveals real adjacent chats, and promotes the
 });
 
 test("a partial drag and a cancellation slide back, with resistance at the first and last app", async () => {
-  await mount();
+  // The first page: every agent's chats together (All).
+  await mount("all");
   const page = $(".chat-workspace");
   touch(page, "touchstart", [point(250)]);
   touch(page, "touchmove", [point(220)]);
@@ -410,7 +418,7 @@ test("a partial drag and a cancellation slide back, with resistance at the first
     "0px",
   );
   await idle();
-  assert.equal(selected(), "codex");
+  assert.equal(selected(), "all");
   touch(page, "touchstart", [point(100)]);
   touch(page, "touchmove", [point(230)]);
   await settle();
@@ -422,7 +430,7 @@ test("a partial drag and a cancellation slide back, with resistance at the first
   assert.equal($(".chat-page-pane.neighbor"), null);
   touch(page, "touchcancel", []);
   await idle();
-  assert.equal(selected(), "codex");
+  assert.equal(selected(), "all");
 });
 
 test("reversing a drag reveals the app on the new side; slow deliberate drags still complete", async () => {

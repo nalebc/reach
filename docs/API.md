@@ -217,6 +217,22 @@ HTTP desktop refusals include `{error,kind,holder?,retryInMs?}` where `kind` can
 
 The browser bridge, `window.reach.listTools()` and `window.reach.callTool(name,args)`, and the stdio MCP catalog describe the same available tools. MCP encodes screenshot bytes as image content. `node scripts/agent-remote.mjs tools` and `call TOOL '{...}'` refresh current access before selecting a route. The generic `reach-agent` file/job CLI is a separate scoped-credential interface; see [AGENTS.md](AGENTS.md).
 
+## Working across agents
+
+Owner devices only, like every `/api/sessions` route. What each feature does, and its rules, is in [Working across agents](ACROSS_AGENTS.md).
+
+- `POST /api/sessions/:agent/:id/move` accepts `resume: true` as well as `to`: the new chat is also told to keep going. The answer adds `resumed`, and `resumeError` when the move worked but that message couldn't be sent. Refused while Reach is paused.
+- `POST /api/sessions/:agent/:id/messages` accepts `chats: [{agent, id}]` (at most three Codex, Claude Code or Gemini CLI chats, never the chat itself). Each one's latest exchange goes ahead of the message in a `<reach-chat>` block, followed by `## My request:`. The phone shows the message's own words and the chats' names.
+- `GET /api/sessions/relays` lists relays: those waiting or sending, and those that ended in the last day. `GET /api/sessions` carries the same list as `relays`, and the presence socket's `sessions` revision changes with them.
+- `POST /api/sessions/relays` sets one up: `{from: {agent, id}, steps, now, item}`. `steps` holds one to three of `{kind: "build" | "review", agent: "codex" | "claude", instructions?}`, `{kind: "send", to: {agent, id}, instructions?}` and `{kind: "back"}`; `back` needs a step before it. With `now: true` the first step sends at once from the chat's reply (`item`: one further up) and the answer includes `opened: {agent, id}`. Otherwise it waits for the chat's next reply. One waiting relay per chat. Refused while Reach is paused.
+- `POST /api/sessions/relays/:id/cancel` cancels a waiting relay (`{cancelled}`; 409 while a step is sending).
+- `POST /api/sessions/teams` starts a team chat: `{lead: "codex" | "claude", helpers, cwd, text, images, model, effort, speed, mode}`. `helpers` holds one or more of `codex` and `claude`, each once; the lead's agent can be a helper too. The lead starts as `POST /api/sessions` starts a chat (same folder, model and mode checks) and gets Reach's team tools. The answer is `{team, threadId}`. Refused while Reach is paused.
+- `GET /api/sessions/teams` lists teams: active ones, and those stopped in the last day. Each has `{id, state, lead, helpers, cwd, title, left, tasks}`, and each task has `{id, helper, kind, title, chat, state, problem?}`. `GET /api/sessions` carries the same list as `teams`. `POST /api/sessions/teams/:id/stop` stops a team (`{stopped}`).
+- A team's tools (`team_delegate`, `team_message`, `team_stop`, `team_roster`, defined in `server/agent-sessions/team-tools.mjs`) aren't HTTP routes. The lead's agent runs `scripts/team-mcp.mjs`, which reaches Reach on a Unix socket in its data folder (`team.sock`, mode 0600), sending the team's key from its key file (`teams/<id>.json`, mode 0600).
+- `GET /api/sessions/activity` returns `{chats, overlaps, windowMs}`. `chats` holds Codex and Claude Code chats at work or written in the last 30 minutes (at most 12), each with the full paths of the files it changed in that time, newest first. `overlaps` holds each file more than one chat changed, with the chats and when.
+- `GET /api/sessions/journal?since=<ms>` returns `{events, waiting, now}`. `events` lists ended turns (`finished` with `files` changed, `failed`, `usage`, `stopped`) and relay steps (`relayed`, `relay-stopped`) after `since`, newest first, kept seven days. `waiting` lists the chats waiting on you now.
+- `GET /api/sessions/search?q=` returns `{results, partial}`: messages from Codex and Claude Code history files containing every word, newest first, three per chat at most, each `{agent, id, role, at, snippet, title, cwd, listed}`. `partial` means older files were still being read; they finish in the background.
+
 ## Other route families
 
 Routes the sections above do not describe, one line each; the named source file is the reference. Every route keeps its own scope, ownership and identity checks.

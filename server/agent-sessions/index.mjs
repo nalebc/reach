@@ -26,7 +26,7 @@ import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
-import { agentName, createMoves, handoff, moveTurns, openClawNotes } from "./move.mjs";
+import { agentName, createMoves, handoff, moveTurns, openClawNotes, resumeText } from "./move.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
 import { createAgentWatch } from "./agent-watch.mjs";
 import { createCodexMethods, createSlashCommands } from "./commands.mjs";
@@ -104,9 +104,13 @@ const claudeModelName = (id) => {
 };
 
 export function createAgentSessions({
+  // A team's lead chat (teams.mjs): kept out of the Claude app (its process
+  // wouldn't have the team's tools), and what it's launched or resumed with.
+  keepOut = () => false,
+  teamExtras = () => null,
   daemon = createCodexDaemon(),
   codex = createCodexSessions({ daemon }),
-  codexLive = createCodexLive({ daemon }),
+  codexLive = createCodexLive({ daemon, resumeExtras: (id) => teamExtras("codex", id) }),
   claude = createClaudeSessions({ locateCli: () => locateClaude() }),
   // Gemini CLI's sessions, read from its own files (gemini.mjs); none of
   // this Mac's in tests.
@@ -126,7 +130,14 @@ export function createAgentSessions({
     daemon,
   }),
   // Replies to Claude Code sessions (claude-host.mjs).
-  claudeHost = createClaudeHost({ locate: () => locateClaude(), rewindFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-rewinds.json") }),
+  claudeHost = createClaudeHost({
+    locate: () => locateClaude(),
+    rewindFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-rewinds.json"),
+    extraArgs: (id) => {
+      const team = teamExtras("claude", id);
+      return team === false ? false : team?.extra || null;
+    },
+  }),
   // How long one look at the running claude processes is shared.
   liveMs = 2500,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
@@ -602,6 +613,8 @@ export function createAgentSessions({
   claudeHost.onRelease?.((id, { wrote } = {}) => {
     letGo.set(id, Date.now());
     if (letGo.size > 200) letGo.delete(letGo.keys().next().value);
+    // A team's lead stays Reach's (the Claude app's process wouldn't have its tools).
+    if (keepOut("claude", id)) return;
     // One waiting to join the app's list goes now; one the app lists and
     // Reach wrote to gets its window reloaded.
     if (claudeImports.pending?.().includes(id)) void claudeImports.check?.();
@@ -976,7 +989,21 @@ export function createAgentSessions({
     // same app (move.mjs): a new chat there with what this one's agent knows
     // so far (its latest summary, then the messages since); this one stays
     // as it is. Settings are the new app's own (never more permission).
-    async move(agent, id, { to, authorize = () => {} } = {}) {
+    // resume: the new agent is also told to keep going (an agent out of
+    // usage, continued in another with one tap); a move that worked stays
+    // done if that message can't go, and says why.
+    async move(agent, id, { to, authorize = () => {}, resume = false, owner } = {}) {
+      const moved = await this.moveOnly(agent, id, { to, authorize });
+      if (!resume || (to !== "codex" && to !== "claude")) return moved;
+      try {
+        authorize();
+        await this.send(to, moved.id, { text: resumeText(agentName(agent)), images: [], ...(owner ? { owner } : {}) });
+        return { ...moved, resumed: true };
+      } catch (e) {
+        return { ...moved, resumed: false, resumeError: e?.message || "The message to continue couldn't be sent." };
+      }
+    },
+    async moveOnly(agent, id, { to, authorize = () => {} } = {}) {
       authorize();
       if (!movable().includes(agent)) adapter(agent);
       if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
@@ -1040,6 +1067,7 @@ export function createAgentSessions({
           from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
           to: { agent: to, id: target, ...(nativeHistory ? { nativeHistory: true } : {}) },
         });
+        listChanged();
         return { agent: to, id: target };
       } finally {
         moving.delete(key);
@@ -1091,8 +1119,9 @@ export function createAgentSessions({
         return { queued: true, delivered: false, messageId: queued.id };
       }
       // A chat the Claude app doesn't list (Reach's, or one from a
-      // terminal): it joins the app's list once Reach lets go of it.
-      if (!session.inApp) void claudeImports.add(id);
+      // terminal): it joins the app's list once Reach lets go of it; never
+      // a team's lead.
+      if (!session.inApp && !keepOut(agent, id)) void claudeImports.add(id);
       return claudeHost.send(id, message);
     },
     async start(agent, body) {
@@ -1104,7 +1133,7 @@ export function createAgentSessions({
       }
       await signedIn();
       const started = await claudeHost.start(body);
-      void claudeImports.add(started.threadId);
+      if (!body.keepOut) void claudeImports.add(started.threadId);
       return started;
     },
     // A permission mode picked on the phone for a chat the Claude app holds:
@@ -1684,6 +1713,8 @@ export function createAgentSessions({
     },
     // Brings the session up in its own app on the Mac.
     async openInApp(agent, id) {
+      if (keepOut(agent, id))
+        throw blocked("This chat is part of a team at work, and the team works only in Reach. Stop the team to open it in its app.");
       const { session } = await adapter(agent).read(id, { limit: 1 });
       // One writer at a time: Reach lets go before the Claude app takes it.
       if (agent === "claude") claudeHost.release(id);

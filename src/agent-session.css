@@ -2020,3 +2020,34 @@ button.as-mode:disabled {
 .as-rewound {
   margin: 6px 12px;
 }
+
+/* Chats mentioned with "@" (MentionMenu.tsx): their names above the box,
+   each with its own ×; the menu lists them above the files. */
+.as-mentioned {
+  padding-bottom: 2px;
+}
+.as-file-chip.as-mention-chip {
+  flex: 0 0 auto;
+  height: 32px;
+  max-width: 220px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--as-line);
+  border-radius: 999px;
+}
+.as-mention-chip button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--as-muted);
+}
+.as-mentions .as-mention-chat .as-mention-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

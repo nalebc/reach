@@ -1994,7 +1994,9 @@ test("the phone chat list groups working and idle chats under their project", as
 test("the phone list's app menu and search icon keep app switching and search available", async () => {
   await home([codexSession(), claudeSession()]);
   await click(button("Choose an app, Codex selected"));
-  await click($('[role=menuitemradio][aria-checked=false]'));
+  // All (every agent's chats) comes first, then each app.
+  assert.deepEqual($$("[role=menuitemradio]").map((b) => b.getAttribute("aria-label")), ["All", "Codex", "Claude Code"]);
+  await click($('[role=menuitemradio][aria-label="Claude Code"]'));
   assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "claude");
   assert.equal($(".chat-card strong").textContent, "Refactor auth");
   await click(button("Search chats"));

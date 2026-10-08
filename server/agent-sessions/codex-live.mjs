@@ -216,6 +216,9 @@ export function createCodexLive({
   queues = !process.env.NODE_TEST_CONTEXT,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // What a thread is resumed with besides itself (a team's lead: its tools
+  // and standing instructions, teams.mjs).
+  resumeExtras = () => null,
 }) {
   const threads = new Map();
   const subscribed = new Set();
@@ -477,7 +480,14 @@ export function createCodexLive({
     authorize();
     if (subscribed.has(threadId)) return;
     // No approval/sandbox overrides: the thread keeps its own settings.
-    const resumed = await daemon.rpc("thread/resume", { threadId, excludeTurns: true });
+    const extra = resumeExtras(threadId) || {};
+    // (false: a stopped team's lead, resumed as an ordinary thread.)
+    const resumed = await daemon.rpc("thread/resume", {
+      threadId,
+      excludeTurns: true,
+      ...(extra.config ? { config: extra.config } : {}),
+      ...(extra.developerInstructions ? { developerInstructions: extra.developerInstructions } : {}),
+    });
     authorize();
     subscribed.add(threadId);
     await owner.claim(threadId, resumed);
@@ -1006,7 +1016,7 @@ export function createCodexLive({
         if (t.questionReplies.get(itemId) === "sending") t.questionReplies.delete(itemId);
       }
     },
-    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name }) {
+    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name, developerInstructions, config }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
       const model = await withModel(picked);
@@ -1018,6 +1028,8 @@ export function createCodexLive({
         ...(approvalPolicy ? { approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
         ...(approvalsReviewer ? { approvalsReviewer } : {}),
+        ...(typeof developerInstructions === "string" && developerInstructions ? { developerInstructions } : {}),
+        ...(config && typeof config === "object" ? { config } : {}),
       });
       const threadId = started.thread.id;
       subscribed.add(threadId);

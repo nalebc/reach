@@ -13,6 +13,45 @@ const sessions = [
   { agent: "codex", id: "demo-codex", title: "Build a better workspace", preview: "The mobile workspace is ready to review.", status: "idle" },
   { agent: "claude", id: "demo-claude", title: "Review the sign-in flow", preview: "Checking the connection and permissions flow.", status: "idle" },
 ].map((session) => ({ ...session, cwd: "/Projects/Reach", branch: "main", origin: "reach", inApp: false, held: "reach", archived: false, model: "sample", effort: "medium", mode: "auto", updatedAt: Date.now(), createdAt: Date.now() }));
+// The All page's sample: a relay waiting on Codex, two chats that changed the
+// same file, and what happened while you were away.
+const demoRelays = [
+  {
+    id: "demo-relay",
+    state: "waiting",
+    problem: "",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    next: 0,
+    steps: [{ kind: "review", agent: "claude" }, { kind: "back" }],
+    chain: [{ agent: "codex", id: "demo-codex", title: "Build a better workspace" }],
+    sent: [],
+  },
+];
+const demoActivity = () => ({
+  windowMs: 1800000,
+  chats: [
+    { agent: "codex", id: "demo-codex", title: "Build a better workspace", cwd: "/Projects/Reach", files: [{ file: "/Projects/Reach/src/App.tsx", at: Date.now() - 60000 }, { file: "/Projects/Reach/src/styles.css", at: Date.now() - 50000 }] },
+    { agent: "claude", id: "demo-claude", title: "Review the sign-in flow", cwd: "/Projects/Reach", files: [{ file: "/Projects/Reach/src/App.tsx", at: Date.now() - 30000 }] },
+  ],
+  overlaps: [
+    {
+      file: "/Projects/Reach/src/App.tsx",
+      chats: [
+        { agent: "codex", id: "demo-codex", title: "Build a better workspace", at: Date.now() - 60000 },
+        { agent: "claude", id: "demo-claude", title: "Review the sign-in flow", at: Date.now() - 30000 },
+      ],
+    },
+  ],
+});
+const demoJournal = () => ({
+  now: Date.now(),
+  waiting: [],
+  events: [
+    { id: "demo-e1", kind: "finished", agent: "codex", chat: "demo-codex", title: "Build a better workspace", files: 4, at: Date.now() - 300000 },
+    { id: "demo-e2", kind: "finished", agent: "claude", chat: "demo-claude", title: "Review the sign-in flow", files: 1, at: Date.now() - 200000 },
+  ],
+});
 const device = {
   ...peer,
   arch: "arm64",
@@ -85,7 +124,17 @@ window.fetch = async (input, init) => {
   let data: unknown = [];
   if (url.pathname === "/api/terminals/desktop") data = { sessions: [] };
   if (url.pathname === "/api/terminals/agents") data = { agents: ["codex", "claude"] };
-  if (url.pathname === "/api/sessions") data = { sessions, macPrompts: [], errors: {}, version: "demo-v2" };
+  if (url.pathname === "/api/sessions") data = { sessions, macPrompts: [], errors: {}, relays: demoRelays, version: "demo-v2" };
+  // Working across agents (docs/ACROSS_AGENTS.md), with sample data.
+  if (url.pathname === "/api/sessions/activity") data = demoActivity();
+  if (url.pathname === "/api/sessions/journal") data = demoJournal();
+  if (url.pathname === "/api/sessions/search")
+    data = {
+      partial: false,
+      results: /sign/i.test(url.searchParams.get("q") || "")
+        ? [{ agent: "claude", id: "demo-claude", role: "assistant", at: Date.now() - 90000, snippet: "…the sign-in flow now asks once and remembers this phone…", title: "Review the sign-in flow", cwd: "/Projects/Reach", listed: true }]
+        : [],
+    };
   if (url.pathname === "/api/sessions/health") data = { agents: ["codex", "claude"].map(agent => ({ agent, name: agent === "codex" ? "Codex" : "Claude Code", supported: true, installed: true, signedIn: true, usable: true })) };
   if (url.pathname === "/api/sessions/logos") data = { logos: {}, version: "demo-v2" };
   if (url.pathname === "/api/sessions/stranded") data = { messages: [] };

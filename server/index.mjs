@@ -86,7 +86,7 @@ import { AgentApps } from "./agent-apps.mjs";
 import { AgentInputHelper } from "./agent-input.mjs";
 import { createPush } from "./push.mjs";
 import { createNotifications, readAttention } from "./notifications.mjs";
-import { createNotificationActions, notificationPush, admissionNotification, pushLine } from "./notification-items.mjs";
+import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
@@ -100,6 +100,14 @@ import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
+import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
+import { createRelays } from "./agent-sessions/relays.mjs";
+import { createTeams } from "./agent-sessions/teams.mjs";
+import { createTeamBridge } from "./agent-sessions/team-bridge.mjs";
+import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
+import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
+import { createOverlaps } from "./agent-sessions/overlaps.mjs";
+import { createSearch } from "./agent-sessions/search.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
 import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
@@ -330,11 +338,16 @@ export async function createReach(overrides = {}) {
   // Every Codex and Claude Code session on this computer (Chat tab).
   const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
   // Chats move to and from OpenClaw too (agent-sessions/move.mjs).
+  // Team chats (agent-sessions/teams.mjs, made below): their leads stay
+  // Reach's and keep their tools on every launch and resume.
+  let teams = null;
   const agentSessions =
     overrides.agentSessions ||
     createAgentSessions({
       dataDir: config.dataDir,
       openClaw,
+      keepOut: (agent, id) => !!teams?.inTeam(agent, id),
+      teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
       // A terminal's menu answered in its tab (read and typed into through
       // Reach's Mac terminals, made just below).
       terminals: {
@@ -469,6 +482,104 @@ export async function createReach(overrides = {}) {
   });
   // On every change of the chat list (its timer is only the slow fallback).
   agentSessions.onListChange?.(() => void doneWatch.look());
+  // A turn's end, confirmed by reading the chat (agent-sessions/turn-watch.mjs).
+  // One that stopped on a used-up limit says so on your phone, with the way
+  // on: the chat offers to continue in another agent. It shares the chat's
+  // "finished" tag, so it takes that notification's place.
+  // What every agent did while you were away (agent-sessions/journal.mjs).
+  const journal =
+    overrides.journal ||
+    createJournal({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(config.dataDir, "agent-journal.json") });
+  const turnWatch = createTurnWatch({
+    list: () => agentSessions.list(),
+    read: (agent, id) =>
+      Promise.race([
+        agentSessions.read(agent, id, { limit: 60 }),
+        new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 5000).unref?.()),
+      ]),
+    onEnded: ({ session: s, outcome }) => {
+      journal.add(turnEvent({ session: s, outcome }));
+      if (outcome.kind !== "error" || !usageLimited(s.agent, outcome.item)) return;
+      const app = agentName(s.agent);
+      return notify({
+        category: "done",
+        title: chatEventTitle(s.title, s.agent, "Out of usage"),
+        body: `${app} stopped: it's out of usage. Open the chat to continue it with another agent.`,
+        icon: s.agent,
+        actions: [{ action: "open", title: "Open conversation" }],
+        tag: `done-${s.agent}-${String(s.id).slice(0, 12)}`,
+        url: `/?page=sessions&agent=${encodeURIComponent(s.agent)}&id=${encodeURIComponent(s.id)}`,
+      });
+    },
+  });
+  agentSessions.onListChange?.(() => void turnWatch.look());
+  // Relays and second opinions (agent-sessions/relays.mjs): what one agent
+  // did goes on to another, as set up from the phone. When a step sends, the
+  // phone that set it up must still be one of your approved devices, and
+  // Reach not paused; a new chat's folder is checked as one started here.
+  const relays =
+    overrides.relays ||
+    createRelays({
+      sessions: agentSessions,
+      file: process.env.NODE_TEST_CONTEXT && !overrides.relayFile ? null : overrides.relayFile || path.join(config.dataDir, "agent-relays.json"),
+      authorized: (owner) =>
+        paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that set this up no longer has access.",
+      folder: (cwd) => sessionFolder(cwd),
+      modes: async (agent) => ((await agentSessions.models(agent))?.modes || []).map((m) => m.id),
+      notify: ({ relay, title, body }) => {
+        const to = relay.chain.at(-1);
+        journal.add({
+          kind: relay.state === "stopped" ? "relay-stopped" : "relayed",
+          agent: to?.agent || "",
+          chat: to?.id || "",
+          title: String(to?.title || relay.chain[0]?.title || "").slice(0, 200),
+          text: pushLine(body, 200),
+          at: Date.now(),
+        });
+        return notify({
+          category: "done",
+          title: pushLine(title, 90),
+          body: pushLine(body, 180),
+          icon: to?.agent || "agent",
+          actions: [{ action: "open", title: "Open conversation" }],
+          tag: `relay-${relay.id.slice(0, 8)}`,
+          ...(to && { url: `/?page=sessions&agent=${encodeURIComponent(to.agent)}&id=${encodeURIComponent(to.id)}` }),
+        });
+      },
+    });
+  agentSessions.onListChange?.(() => void relays.check());
+  // Team chats: a lead hands work to helpers through its tools, which reach
+  // Reach on a private socket with the team's own key (team-bridge.mjs).
+  const teamSocket = overrides.teamSocket || path.join(config.dataDir, "team.sock");
+  teams =
+    overrides.teams ||
+    createTeams({
+      sessions: agentSessions,
+      relays,
+      file: process.env.NODE_TEST_CONTEXT && !overrides.teamFile ? null : overrides.teamFile || path.join(config.dataDir, "agent-teams.json"),
+      keysDir: path.join(config.dataDir, "teams"),
+      socketPath: teamSocket,
+      script: fileURLToPath(new URL("../scripts/team-mcp.mjs", import.meta.url)),
+      authorized: (owner) =>
+        paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that started this team no longer has access.",
+      folder: (cwd) => sessionFolder(cwd),
+      modes: async (agent) => ((await agentSessions.models(agent))?.modes || []).map((m) => m.id),
+      ready: () => teamBridgeOpen,
+    });
+  let teamBridgeOpen = false;
+  const teamBridge = createTeamBridge({ socketPath: teamSocket, call: (token, tool, args) => teams.call(token, tool, args) });
+  if (!process.env.NODE_TEST_CONTEXT || overrides.teamSocket)
+    void teamBridge
+      .listen()
+      .then((open) => (teamBridgeOpen = open))
+      .catch(() => {});
+  teams.onChange?.(() => {
+    for (const nudge of presenceNudges) nudge();
+  });
+  // Phones hear of a relay's progress as they hear of the chat list's.
+  relays.onChange?.(() => {
+    for (const nudge of presenceNudges) nudge();
+  });
   // Tag in: agents use apps on their own hidden displays and hand them to
   // you on the phone (server/agent-apps.mjs).
   const agentApps = new AgentApps({
@@ -2400,7 +2511,7 @@ export async function createReach(overrides = {}) {
     res.json({ ...plan, terminal });
   });
   app.get("/api/sessions", async (req, res) =>
-    versioned(req, res, await agentSessions.list({ fresh: req.query.fresh === "1" })),
+    versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list() }),
   );
   app.get("/api/sessions/health", async (req, res) =>
     res.json({ agents: await agentSessions.health({ fresh: req.query.fresh === "1" }) }),
@@ -2446,6 +2557,95 @@ export async function createReach(overrides = {}) {
         "X-Content-Type-Options": "nosniff",
       })
       .sendFile(file);
+  });
+  // The All page (docs/ACROSS_AGENTS.md): the files each chat changed lately
+  // and the ones two chats changed at once; what happened since the phone
+  // last looked; one search across every agent's conversations.
+  const overlaps = overrides.overlaps || createOverlaps({ list: () => agentSessions.list(), read: (agent, id) => agentSessions.read(agent, id, { limit: 200 }) });
+  const search = overrides.search || createSearch();
+  app.get("/api/sessions/activity", async (req, res) => res.json(await overlaps.scan()));
+  app.get("/api/sessions/journal", async (req, res) => {
+    const since = Number(req.query.since);
+    const { sessions = [] } = await agentSessions.list();
+    res.json({
+      events: journal.since(Number.isFinite(since) ? since : Date.now() - 24 * 60 * 60 * 1000),
+      // Waiting on you right now, wherever it is.
+      waiting: sessions
+        .filter((s) => !s.archived && (s.status === "waiting" || s.prompts?.length))
+        .map((s) => ({ agent: s.agent, id: s.id, title: s.title || "" })),
+      now: Date.now(),
+    });
+  });
+  app.get("/api/sessions/search", async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "";
+    const found = await search.search(q);
+    const { sessions = [] } = await agentSessions.list();
+    const named = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    res.json({
+      partial: found.partial,
+      results: found.results.map((r) => {
+        const s = named.get(`${r.agent}:${r.id}`);
+        return { ...r, title: s?.title || "", cwd: s?.cwd || "", listed: !!s && !s.archived };
+      }),
+    });
+  });
+  // Relays and second opinions: set up from the owner's own devices, and
+  // cancelled while they wait (agent-sessions/relays.mjs).
+  app.get("/api/sessions/relays", (req, res) => res.json({ relays: relays.list() }));
+  app.post("/api/sessions/relays", async (req, res) => {
+    macOwner(req);
+    notPaused();
+    const b = req.body || {};
+    const result = await relays.start({
+      owner: req.client.id,
+      from: { agent: String(b.from?.agent || ""), id: String(b.from?.id || "") },
+      steps: b.steps,
+      now: b.now === true,
+      item: typeof b.item === "string" && b.item.length <= 200 ? b.item : null,
+    });
+    record("session", b.now === true ? "Started a second opinion or relay" : "Set up a relay for when a chat finishes");
+    res.json(result);
+  });
+  app.post("/api/sessions/relays/:id/cancel", (req, res) => {
+    macOwner(req);
+    res.json(relays.cancel(req.params.id));
+  });
+  // Team chats: started, listed and stopped from the owner's own devices.
+  // The lead starts as a new chat does (its folder, model and mode checked
+  // the same way); its helpers are its to start (agent-sessions/teams.mjs).
+  app.get("/api/sessions/teams", (req, res) => res.json({ teams: teams.list() }));
+  app.post("/api/sessions/teams", async (req, res) => {
+    macOwner(req);
+    notPaused();
+    const body = req.body || {};
+    const lead = String(body.lead || "");
+    const modes =
+      lead === "codex"
+        ? CODEX_MODES
+        : Object.fromEntries(["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map((mode) => [mode, { mode }]));
+    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode)) throw fail(400, "Unknown permission mode.");
+    const options = turnOptions(body);
+    const result = await teams.create({
+      owner: req.client.id,
+      lead,
+      helpers: Array.isArray(body.helpers) ? body.helpers.map(String).slice(0, 4) : [],
+      cwd: body.cwd,
+      text: options.text,
+      start: {
+        images: options.images,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.effort ? { effort: options.effort } : {}),
+        ...(options.speed ? { speed: options.speed } : {}),
+        ...(body.mode ? modes[body.mode] : {}),
+        ...(lead === "codex" && body.mode ? { modeName: body.mode } : {}),
+      },
+    });
+    record("session", `Started a team led by ${agentLabel(lead)}`);
+    res.json(result);
+  });
+  app.post("/api/sessions/teams/:id/stop", async (req, res) => {
+    macOwner(req);
+    res.json(await teams.stop(req.params.id));
   });
   app.get("/api/sessions/:agent/:id", async (req, res) => {
     const before =
@@ -2700,12 +2900,31 @@ export async function createReach(overrides = {}) {
     record("session", `Started a ${agentLabel(agent)} session from Reach`);
     res.json(result);
   });
+  // Chats mentioned with "@" (at most three, from any agent here): each one's
+  // latest exchange goes ahead of the message (agent-sessions/chat-context.mjs).
+  const mentioned = async (value, here) => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > MAX_MENTIONS) throw fail(400, `Mention up to ${MAX_MENTIONS} chats.`);
+    const blocks = [];
+    for (const chat of value) {
+      const agent = String(chat?.agent || "");
+      const id = String(chat?.id || "");
+      if (!["codex", "claude", "gemini"].includes(agent) || !/^[\w-]{1,80}$/.test(id) || (agent === here.agent && id === here.id))
+        throw fail(400, "Unknown chat.");
+      const page = await agentSessions.read(agent, id, { limit: 200 });
+      blocks.push(mentionBlock({ from: agentName(agent), title: page.session?.title || "", cwd: page.session?.cwd || "", items: page.items || [] }));
+    }
+    return blocks;
+  };
   app.post("/api/sessions/:agent/:id/messages", async (req, res) => {
+    const options = turnOptions(req.body || {}, req.params.agent);
+    const chats = await mentioned(req.body?.chats, req.params);
+    if (chats.length) options.text = withMentions(options.text, chats);
     const result = await agentSessions.send(
       req.params.agent,
       req.params.id,
       {
-        ...turnOptions(req.body || {}, req.params.agent),
+        ...options,
         // A Codex skill picked from "/", by name (its path is Codex's own).
         ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body.skill)
           ? { skill: req.body.skill }
@@ -2748,9 +2967,12 @@ export async function createReach(overrides = {}) {
     res.json(await agentSessions.stop(req.params.agent, req.params.id)),
   );
   // Continue a chat with the other agent, as if forked in the same app
-  // (agent-sessions/move.mjs); the new chat's address comes back.
+  // (agent-sessions/move.mjs); the new chat's address comes back. resume:
+  // the new agent is told to keep going too (one tap when out of usage).
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
-    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize() });
+    const resume = req.body?.resume === true;
+    if (resume) notPaused();
+    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize(), resume, owner: req.client.id });
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
@@ -3569,7 +3791,7 @@ export async function createReach(overrides = {}) {
             // when this changes, instead of asking every few seconds.
             ...(scopes.includes("admin") &&
               client.kind !== "guest" &&
-              agentSessions.listRevision && { sessions: String(agentSessions.listRevision()) }),
+              agentSessions.listRevision && { sessions: String(agentSessions.listRevision() + (relays.revision?.() ?? 0) + (teams.revision?.() ?? 0)) }),
             ...(scopes.includes("admin") && {
               activity: digest(events[0]?.id ?? ""), // newest first
               requests: digest(
@@ -4095,6 +4317,11 @@ export async function createReach(overrides = {}) {
       agentSessions.close?.();
       openClaw.close?.();
       doneWatch.stop();
+      turnWatch.stop();
+      relays.stop?.();
+      teamBridge.close();
+      search.stop?.();
+      journal.flush?.();
       const terminalExit = terminals.dispose();
       codex.dispose();
       jobs.dispose();

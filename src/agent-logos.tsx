@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import {
   Asterisk,
   Bot,
+  Layers,
   Monitor,
   MousePointer2,
   Orbit,
@@ -94,6 +95,8 @@ const GLYPHS: Record<string, LucideIcon> = {
   antigravity: Orbit,
   terminal: Terminal,
   macos: Monitor,
+  // The All page: every agent's chats (ChatHub.tsx).
+  all: Layers,
 };
 
 // An agent's app icon; its line icon when the app's icon isn't on the computer.

@@ -141,6 +141,12 @@ export function handoff({ from, title = "", cwd = "" }) {
   );
 }
 
+// The message that sets a moved chat going again, when the move was asked
+// to keep going (one tap from an agent out of usage).
+export const resumeText = (from) =>
+  `Continue where ${from} left off: everything above happened there. ` +
+  `Pick the work up from where it stopped, and look at the files again before relying on details from earlier messages.`;
+
 // Codex: the turns as Responses API messages, in batches for inject_items.
 export function codexHistoryItems(turns) {
   return turns.map((t) => ({
