@@ -9,7 +9,8 @@ import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_FRAME = 16 * 1024 * 1024;
+// Match the native IPC limit: legacy threads arrive as a complete history.
+const MAX_FRAME = 256 * 1024 * 1024;
 export const CODEX_OWNER_METHODS = {
   "thread-owner-discovery": 1,
   "thread-follower-load-complete-history": 1,
@@ -67,7 +68,7 @@ export async function codexOwnerSnapshot(
   requests = [],
   complete = false,
 ) {
-  const { thread } = await daemon.rpc("thread/read", {
+  let { thread } = await daemon.rpc("thread/read", {
     threadId: id,
     includeTurns: false,
   });
@@ -75,7 +76,18 @@ export async function codexOwnerSnapshot(
   let cursor = null,
     olderCursor;
   const seenCursors = new Set();
-  do {
+  if (thread.historyMode === "legacy") {
+    // Legacy threads have no paginated turn store. Reading that store can
+    // fail (or return no history), leaving the native follower waiting for
+    // a snapshot while Reach still holds the writer. Use Codex's own full
+    // thread read, just as Reach's conversation reader does.
+    ({ thread } = await daemon.rpc("thread/read", {
+      threadId: id,
+      includeTurns: true,
+    }));
+    turns.push(...[...(thread.turns || [])].reverse());
+    olderCursor = null;
+  } else do {
     const page = await daemon.rpc("thread/turns/list", {
       threadId: id,
       limit: complete ? 100 : 20,

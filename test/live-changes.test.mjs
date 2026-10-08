@@ -68,6 +68,7 @@ test("devices learn that their lists changed without polling, and only lists the
       "control",
       "handoffs",
       "requests",
+      "serviceAccess",
       "sessions",
       "terminals",
     ]);

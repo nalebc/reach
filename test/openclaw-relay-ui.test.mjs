@@ -92,17 +92,17 @@ test("no Codex or Claude Code: no row", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
-test("the newest reply shows the row with Relay; an older one shows Second opinion and Relay once tapped", async () => {
+test("the newest reply shows the row with Hand off; an older one shows Review reply and Hand off once tapped", async () => {
   await mount();
   const [older, newest] = $$(".claw-relay");
   assert.ok(newest.classList.contains("on"));
-  assert.ok(button("Relay", newest));
+  assert.ok(button("Hand off", newest));
   assert.ok(!older.classList.contains("on"));
   await click(older.closest("article").querySelector("p"));
   assert.ok(older.classList.contains("on"));
-  assert.ok(button("Second opinion", older));
+  assert.ok(button("Review reply", older));
   // An older reply relays from itself (RelaySheet's item).
-  assert.ok(button("Relay", older));
+  assert.ok(button("Hand off", older));
   assert.deepEqual(dom.errors, []);
 });
 
@@ -111,7 +111,7 @@ test("a second opinion asks for a folder first, remembers it, and opens the new 
   const opened = [];
   await mount({ opened });
   const older = $$(".claw-relay")[0];
-  await click(button("Second opinion", older));
+  await click(button("Review reply", older));
   // The folder pills come from the Mac's chats.
   const site = await dom.waitFor(() => button("site", older));
   assert.ok(button("app", older));
@@ -134,7 +134,7 @@ test("a remembered folder goes straight to the relay sheet; no chat back says St
   await mount();
   const newest = $$(".claw-relay")[1];
   assert.ok(button("Folder: /Users/me/app", newest));
-  await click(button("Relay", newest));
+  await click(button("Hand off", newest));
   const go = await dom.waitFor(() => $(".relay-go"));
   assert.equal($(".claw-relay-folders"), null);
   await click(go);
@@ -153,7 +153,7 @@ test("an older reply relays from itself, now", async () => {
   await mount();
   const older = $$(".claw-relay")[0];
   await click(older.closest("article").querySelector("p"));
-  await click(button("Relay", older));
+  await click(button("Hand off", older));
   const go = await dom.waitFor(() => $(".relay-go"));
   // No "when": it's that reply, now.
   assert.equal($(".relay-when"), null);
@@ -168,7 +168,7 @@ test("the Mac's error shows in the sheet", async () => {
   dom.window.localStorage.setItem("reach-claw-relay-folder:mac", "/Users/me/app");
   mac.answer = () => new Response(JSON.stringify({ error: "Pick the folder to work in." }), { status: 400, headers: { "Content-Type": "application/json" } });
   await mount();
-  await click(button("Second opinion", $$(".claw-relay")[1]));
+  await click(button("Review reply", $$(".claw-relay")[1]));
   await click(await dom.waitFor(() => $(".relay-go")));
   const alert = await dom.waitFor(() => $(".relay-problem"));
   assert.equal(alert.textContent, "Pick the folder to work in.");
@@ -178,7 +178,7 @@ test("the Mac's error shows in the sheet", async () => {
 test("a WhatsApp chat offers to post the answer back, off until chosen", async () => {
   dom.window.localStorage.setItem("reach-claw-relay-folder:mac", "/Users/me/app");
   await mount();
-  await click(button("Second opinion", $$(".claw-relay")[1]));
+  await click(button("Review reply", $$(".claw-relay")[1]));
   await dom.waitFor(() => $(".relay-go"));
   const toggle = [...dom.document.querySelectorAll(".relay-switch")].find((l) => /Post the answer on WhatsApp/.test(l.textContent));
   assert.ok(toggle);

@@ -31,6 +31,7 @@ import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
 import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
 import { useBrowserApprovals } from "./browser-approvals";
 import { useAgentAdmissions } from "./agent-admissions";
+import { useServiceAccess } from "./service-access";
 import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
@@ -374,9 +375,11 @@ export default function HomeLive({
     features.owner && visible,
     connections[active]?.changes,
   );
+  const serviceAccess = useServiceAccess(peer, features.owner && visible, connections[active]?.changes);
   const needItems: NeedItem[] = [
     ...agentAdmissions.items,
     ...browserApprovals.items,
+    ...serviceAccess.items,
     ...handed,
     ...pending.map(
       (r): NeedItem => ({

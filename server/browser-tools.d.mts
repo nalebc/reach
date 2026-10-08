@@ -16,10 +16,27 @@ export type BrowserAccess = {
   savedTools?: { id: string; name: string; tool?: string; stepCount: number; inputs: string[]; apps: string[] }[];
   savedToolHint?: string;
   browserTools?: { protocol: string; browsers: ("Chrome" | "Safari")[]; hint?: string; tools: DeterministicTool[] };
+  services?: { connectors: ServiceConnector[] };
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
   terminalApproval?: boolean;
   scriptApproval?: boolean;
+};
+export type ServiceAccess = {
+  id: string; clientId: string; agentName: string; connectorId: string;
+  serviceName: string; transport?: "browser"; account: string; scopes: string[];
+  permissions: string[]; reason: string;
+  status: "pending" | "approved" | "denied" | "revoked" | "expired";
+  createdAt: number; expiresAt: number; accessExpiresAt: number;
+};
+export type ServiceConnector = {
+  id: string; name: string; description: string; transport?: "browser"; account: string;
+  unavailable?: string | null;
+  access: ServiceAccess | null;
+  actions: { id: string; title: string; scope: string; permission: string; readOnly: true;
+    fromResult?: string;
+    inputSchema: { properties: Record<string, { description?: string; maxLength?: number; pattern?: string; enum?: string[] }>; required?: string[] };
+    example: Record<string, string> }[];
 };
 export type DeterministicTool = { protocol: string; id: string; title: string; description: string; origins: string[]; inputs: Record<string, { type: "string" | "handle" | "file"; label: string; maxLength?: number; enum?: string[]; default?: string; required?: boolean }>; steps: Record<string, unknown>[]; builtIn?: boolean };
 export type BrowserTool = {

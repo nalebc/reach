@@ -72,9 +72,9 @@ export function relayLine(relay: Relay, here: ChatRef) {
       : relay.sent.at(-1)?.queued
         ? `In line for ${agentLabel(at.agent)} in “${at.title || "a chat"}”: it goes in when that chat is free${then ? `. Then ${then}` : ""}`
         : `${agentLabel(at.agent)} is on it in “${at.title || "a new chat"}”${then ? `. Then ${then}` : ""}`;
-  if (relay.state === "sending") return `Relaying to ${agentLabel(relay.steps[relay.next]?.agent || relay.steps[relay.next]?.to?.agent || "")}…`;
-  if (relay.state === "done") return `Relayed: ${relay.steps.map((s, i) => stepWords(s, relay.chain, i, relay.steps)).join(", then ")}`;
-  return relay.problem || "This relay stopped.";
+  if (relay.state === "sending") return `Handing off to ${agentLabel(relay.steps[relay.next]?.agent || relay.steps[relay.next]?.to?.agent || "")}…`;
+  if (relay.state === "done") return `Handed off: ${relay.steps.map((s, i) => stepWords(s, relay.chain, i, relay.steps)).join(", then ")}`;
+  return relay.problem || "This handoff stopped.";
 }
 
 // The relays a chat is part of: waiting or sending, and the ones that ended
@@ -124,7 +124,7 @@ export function RelayStrip({
     }
   };
   return (
-    <div className="relay-strip" role="group" aria-label="Relays">
+    <div className="relay-strip" role="group" aria-label="Handoffs">
       {mine.map((r) => {
         const at = r.chain.at(-1)!;
         const elsewhere = !(at.agent === here.agent && at.id === here.id);
@@ -147,7 +147,7 @@ export function RelayStrip({
               </button>
             )}
             {r.state === "waiting" && (
-              <button className="relay-row-action" disabled={busy === r.id} aria-label="Cancel relay" onClick={() => void cancel(r)}>
+              <button className="relay-row-action" disabled={busy === r.id} aria-label="Cancel handoff" onClick={() => void cancel(r)}>
                 {busy === r.id ? <Loader2 size={14} className="spin" /> : "Cancel"}
               </button>
             )}
@@ -290,7 +290,7 @@ export function SecondOpinionSheet({
     ...(reviewer && back ? [{ key: "back", agent: session.agent, label: "gets it back" }] : []),
   ];
   return (
-    <ChatSheet title="Second opinion" className="relay-sheet reach-native" onClose={onClose}>
+    <ChatSheet title="Review reply" className="relay-sheet reach-native" onClose={onClose}>
       {agents.length ? (
         <>
           <Route
@@ -301,8 +301,7 @@ export function SecondOpinionSheet({
             onSelect={(i) => i === 1 && agents.length > 1 && setReviewer(agents[(agents.indexOf(reviewer) + 1) % agents.length])}
           />
           <p className="relay-say">
-            {reviewer === session.agent ? `A new ${from} chat` : agentLabel(reviewer)} reads what {from} was asked, its reply and the files it
-            changed. It reads only, and asks you before anything more.
+            {reviewer === session.agent ? `A new ${from} chat` : agentLabel(reviewer)} checks {from}’s reply and changed files for mistakes. The reviewer asks before making changes.
           </p>
           {agents.length > 1 && <p className="relay-hint">Tap the reviewer to switch.</p>}
           {canReturn && (
@@ -330,7 +329,6 @@ export function SecondOpinionSheet({
 }
 
 // What each kind of step does, as its tile says it.
-const VERB: Record<RelayStep["kind"], string> = { build: "builds", review: "reviews", back: "fixes", send: "gets it", post: "posts it" };
 // The step that naturally comes next: a review of what was built, then the fixes.
 function nextStep(steps: RelayStep[], from: string, agents: string[]): RelayStep | null {
   const last = steps.at(-1);
@@ -345,24 +343,7 @@ const stepAgent = (steps: RelayStep[], i: number, from: string): string => {
   if (step.kind !== "back") return step.agent || step.to?.agent || from;
   return i >= 2 ? stepAgent(steps, i - 2, from) : from;
 };
-// The relay in one sentence.
-export function relaySentence(steps: RelayStep[], from: string, to?: AgentSession | null) {
-  const name = (a: string) => agentLabel(a);
-  return (
-    steps
-      .map((s, i) => {
-        const who = name(stepAgent(steps, i, from));
-        if (s.kind === "build") return i === 0 ? `${who} builds what ${name(from)} wrote, in a new chat here` : `${who} builds it`;
-        if (s.kind === "review") return i === 0 ? `${who} reviews it, changing nothing` : `then ${who} reviews the work`;
-        if (s.kind === "back") return i === 1 ? `and the review comes back here` : `then ${who} fixes what the review found`;
-        return `it goes into “${to?.title || "the chat you pick"}”`;
-      })
-      .join(", ") + "."
-  );
-}
-
-// "Relay": what happens when this chat's agent finishes (or, when it already
-// has, to its reply now). The route shows it; one sentence says it.
+// Hand off a reply now or when it finishes, with optional follow-up steps.
 export function RelaySheet({
   peer,
   session,
@@ -397,9 +378,8 @@ export function RelaySheet({
   const from = session.agent;
   const first = othersFirst(from, agents)[0];
   const [steps, setSteps] = useState<RelayStep[]>(first ? [{ kind: "build", agent: first }] : []);
-  const [picked, setPicked] = useState(-1);
   const [to, setTo] = useState<AgentSession | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState("");
   const [when, setWhen] = useState<"now" | "next">(item ? "now" : working || !hasReply ? "next" : "now");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -415,7 +395,6 @@ export function RelaySheet({
   const suggestion = nextStep(steps, from, agents);
   const change = (i: number, step: RelayStep | null) => {
     setSteps((list) => (step ? list.map((s, n) => (n === i ? step : s)) : list.slice(0, i)));
-    if (!step) setPicked(-1);
   };
   const sending = steps[0]?.kind === "send";
   const ready = steps.length > 0 && (!sending || !!to);
@@ -438,59 +417,45 @@ export function RelaySheet({
       setBusy(false);
     }
   };
-  const nodes: RouteNode[] = [
-    { key: "from", agent: from, label: working ? "now" : "this chat", dim: true },
-    ...steps.map((s, i) => ({
-      key: `${i}:${s.kind}`,
-      agent: s.kind === "send" ? to?.agent || from : stepAgent(steps, i, from),
-      label: VERB[s.kind],
-      ...(s.kind === "send" && !to ? { icon: "chat" as const } : {}),
-    })),
-  ];
-  const step = picked > 0 ? steps[picked - 1] : null;
   return (
-    <ChatSheet title="Relay" className="relay-sheet reach-native" onClose={onClose}>
-      <p className="relay-when-line">{working ? `When ${agentLabel(from)} finishes` : hasReply ? `${agentLabel(from)}’s reply` : `When ${agentLabel(from)} next replies`}</p>
+    <ChatSheet title="Hand off" className="relay-sheet reach-native" onClose={onClose}>
+      <p className="relay-hint">Share this reply and its context with another agent.</p>
+      <p className="relay-when-line">{item ? "Uses the selected reply" : working ? `When ${agentLabel(from)} finishes` : hasReply ? `${agentLabel(from)}’s reply` : `When ${agentLabel(from)} next replies`}</p>
       {agents.length ? (
         <>
-          <Route
-            nodes={nodes}
-            logos={logos}
-            selected={picked}
-            onSelect={(i) => setPicked(picked === i ? -1 : i)}
-            {...(suggestion ? { add: { label: `Add: ${agentLabel(stepAgent([...steps, suggestion], steps.length, from))} ${VERB[suggestion.kind]}`, onAdd: () => setSteps([...steps, suggestion]) } } : {})}
-          />
-          {step && (
-            // The picked tile: who does it and what, or gone.
-            <div className="relay-edit" role="group" aria-label="Change this step">
-              {step.kind !== "back" &&
-                step.kind !== "send" &&
-                agents.map((a) => (
-                  <button key={a} aria-pressed={step.agent === a} onClick={() => change(picked - 1, { ...step, agent: a })}>
-                    <AgentLogo agent={a} logos={logos} size={16} /> {agentLabel(a)}
-                  </button>
-                ))}
-              {(picked === 1 ? ["build", "review", "send"] : steps[picked - 2]?.kind === "review" ? ["back", "build", "review"] : ["build", "review"]).map((kind) => (
-                <button
-                  key={kind}
-                  aria-pressed={step.kind === kind}
-                  onClick={() =>
-                    change(
-                      picked - 1,
-                      kind === "back" || kind === "send" ? { kind: kind as RelayStep["kind"] } : { kind: kind as RelayStep["kind"], agent: step.agent || first },
-                    )
-                  }
-                >
-                  {kind === "send" ? "to a chat…" : VERB[kind as RelayStep["kind"]]}
-                </button>
-              ))}
-              <button className="relay-remove" onClick={() => change(picked - 1, null)}>
-                Remove
-              </button>
-            </div>
+          <label className="handoff-field">
+            <span>Where should the work go?</span>
+            <select aria-label="Where should the work go?" value={sending ? "existing" : "new"} disabled={busy}
+              onChange={(e) => setSteps([e.target.value === "existing" ? { kind: "send" } : { kind: "build", agent: first }])}>
+              <option value="new">Start a new chat</option>
+              <option value="existing">Use an existing chat</option>
+            </select>
+          </label>
+          {!sending && (
+            <>
+              <label className="handoff-field">
+                <span>Agent</span>
+                <select aria-label="Agent for the new chat" value={steps[0]?.agent || first} disabled={busy}
+                  onChange={(e) => setSteps([{ ...steps[0], agent: e.target.value }])}>
+                  {agents.map((agent) => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}
+                </select>
+              </label>
+              <label className="handoff-field">
+                <span>What should it do?</span>
+                <select aria-label="What should it do?" value={steps[0]?.kind || "build"} disabled={busy}
+                  onChange={(e) => setSteps([{ kind: e.target.value as "build" | "review", agent: steps[0]?.agent || first }])}>
+                  <option value="build">Continue the work</option>
+                  <option value="review">Review for mistakes</option>
+                </select>
+              </label>
+              <p className="handoff-help">{steps[0]?.kind === "review"
+                ? "Checks the reply and changed files. Asks before making changes."
+                : "Starts a new chat with this work and can edit files to carry it out."}</p>
+            </>
           )}
+          {sending && <p className="handoff-help">Choose a conversation below. The reply is sent as a new message in that chat. Add instructions below if you want the agent to do something specific. If it’s busy, the message waits.</p>}
           {sending && (
-            <div className="relay-chats" role="listbox" aria-label="Chats">
+            <div className="relay-chats" role="listbox" aria-label="Choose an existing chat">
               {chats.length ? (
                 chats.map((s) => (
                   <button
@@ -503,7 +468,7 @@ export function RelaySheet({
                   >
                     <AgentLogo agent={s.agent} logos={logos} size={18} />
                     <span>{s.title || "Untitled"}</span>
-                    <small>{projectName(s.cwd)}</small>
+                    <small>{agentLabel(s.agent)} · {projectName(s.cwd)}</small>
                   </button>
                 ))
               ) : (
@@ -511,32 +476,46 @@ export function RelaySheet({
               )}
             </div>
           )}
-          {steps.length > 0 && <p className="relay-say">{relaySentence(steps, from, to)}</p>}
-          <div className="relay-extras">
-            {note === null ? (
-              <button onClick={() => setNote("")}>
-                <Plus size={13} /> Note
-              </button>
-            ) : (
-              <input
-                className="relay-instructions"
-                aria-label="Note for the next agent"
-                placeholder={sending ? "A note with it" : `What ${agentLabel(stepAgent(steps, 0, from))} should build`}
-                value={note}
-                maxLength={2000}
-                disabled={busy}
-                autoFocus
-                onChange={(e) => setNote(e.target.value)}
-              />
-            )}
-          </div>
+          {(sending || steps[0]?.kind === "build") && (
+            <label className="handoff-field">
+              <span>Instructions <small>(optional)</small></span>
+              <input className="relay-instructions" aria-label="Instructions for the next agent"
+                placeholder="e.g. Implement this plan and run the tests"
+                value={note} maxLength={2000} disabled={busy} onChange={(e) => setNote(e.target.value)} />
+            </label>
+          )}
+          {!sending && (
+            <details className="handoff-followups">
+              <summary>After that… <span>{steps.length > 1 ? `${steps.length - 1} added` : "optional"}</span></summary>
+              {steps.slice(1).map((step, offset) => {
+                const i = offset + 1;
+                return <div className="handoff-followup" key={i}>
+                  {step.kind === "back" ? (
+                    <p>Send the review back to {agentLabel(stepAgent(steps, i, from))} to address the findings.</p>
+                  ) : (
+                    <label className="handoff-field">
+                      <span>Review the finished work with</span>
+                      <select aria-label="Review the finished work with" value={step.agent} disabled={busy}
+                        onChange={(e) => change(i, { ...step, agent: e.target.value })}>
+                        {agents.map((agent) => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <button type="button" disabled={busy} onClick={() => change(i, null)} aria-label={`Remove follow-up ${i}`}>Remove</button>
+                </div>;
+              })}
+              {suggestion && <button type="button" className="handoff-add" disabled={busy} onClick={() => setSteps([...steps, suggestion])}>
+                <Plus size={15} /> {suggestion.kind === "review" ? "Add a review of the finished work" : "Send the review back for fixes"}
+              </button>}
+            </details>
+          )}
           {!working && hasReply && !item && (
             <div className="relay-when" role="radiogroup" aria-label="When">
               <button role="radio" aria-checked={when === "now"} disabled={busy} onClick={() => setWhen("now")}>
-                Its reply now
+                Now — latest reply
               </button>
               <button role="radio" aria-checked={when === "next"} disabled={busy} onClick={() => setWhen("next")}>
-                After its next reply
+                After the next reply
               </button>
             </div>
           )}
@@ -549,11 +528,11 @@ export function RelaySheet({
           )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={!ready || busy} onClick={() => void go()}>
-            {busy ? <Loader2 size={16} className="spin" /> : when === "now" && !working && hasReply ? "Relay now" : "Start relay"}
+            {busy ? <Loader2 size={16} className="spin" /> : item || (when === "now" && !working && hasReply) ? "Hand off now" : "Hand off after reply"}
           </button>
         </>
       ) : (
-        <p className="relay-say">Sign in to Codex or Claude Code on your computer to relay this chat.</p>
+        <p className="relay-say">Sign in to Codex or Claude Code on your computer to hand off this chat.</p>
       )}
     </ChatSheet>
   );
@@ -562,11 +541,11 @@ export function RelaySheet({
 // The button by a reply that asks for a second opinion.
 export function SecondOpinionButton({ onClick, labelled = false }: { onClick: () => void; labelled?: boolean }) {
   return labelled ? (
-    <button className="relay-opinion" aria-label="Second opinion" onClick={onClick}>
-      <SearchCheck size={17} /> <span>Second opinion</span>
+    <button className="relay-opinion" aria-label="Review reply" onClick={onClick}>
+      <SearchCheck size={17} /> <span>Review reply</span>
     </button>
   ) : (
-    <button className="as-icon" aria-label="Second opinion" onClick={onClick}>
+    <button className="as-icon" aria-label="Review reply" onClick={onClick}>
       <SearchCheck size={15} />
     </button>
   );

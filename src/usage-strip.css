@@ -87,3 +87,7 @@
   font-weight: 700;
   line-height: 15px;
 }
+/* Notify me when it's back (notify-back.ts): asked, it keeps a ringing bell. */
+.usage-notify.on {
+  color: var(--as-muted);
+}

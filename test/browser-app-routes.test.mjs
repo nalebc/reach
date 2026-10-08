@@ -51,6 +51,7 @@ async function fixture(t, hooks = {}) {
   const reach = await createReach({ roots: [dir], dataDir, port: 0, screen: true,
     tailscaleOwner: ownerAccount, publicOrigin: hooks.funnel ? ORIGIN : "", browserScreenSupported: true, browserAppSupported: true,
     browserAppNative: native,
+    ...(hooks.publicName ? { publicName: hooks.publicName } : {}),
     browserCapture: async () => assert.fail("Full desktop capture must not run"),
     browserInput: async () => assert.fail("Global desktop input must not run"),
     desktopTerminals: { platform: "linux", run: async () => assert.fail("Native terminal access is forbidden") },
@@ -267,6 +268,24 @@ test("changed app signature prevents an already displayed owner request from gra
   f.applications.find((app) => app.id === notes).identity = "d".repeat(64);
   assert.equal((await f.call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 409);
   assert.equal((await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(notes)}`)).status, 403);
+});
+
+test("a Funnel invite whose public name Tailscale hasn't published still issues, and says so", platform, async (t) => {
+  const asked = [];
+  const f = await fixture(t, { funnel: true, publicName: async (host) => { asked.push(host); return "missing"; } });
+  const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: textEdit, mode: "view" }], transport: "funnel" } });
+  assert.equal(created.status, 201, JSON.stringify(created));
+  assert.equal(created.body.publicName, "missing");
+  assert.deepEqual(asked, [new URL(ORIGIN).hostname]);
+});
+
+test("a published or unknown public name adds nothing to the invite", platform, async (t) => {
+  for (const state of ["published", "unknown"]) {
+    const f = await fixture(t, { funnel: true, publicName: async () => state });
+    const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: textEdit, mode: "view" }], transport: "funnel" } });
+    assert.equal(created.status, 201, JSON.stringify(created));
+    assert.equal("publicName" in created.body, false);
+  }
 });
 
 test("signed Funnel app requests retain the validated inner API route through dispatch", platform, async (t) => {

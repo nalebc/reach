@@ -162,3 +162,7 @@
   background: color-mix(in srgb, var(--usage-out) 10%, transparent);
   color: var(--usage-out);
 }
+
+.chat-mobile-app-menu .chat-menu-usage { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chat-mobile-app-menu .chat-menu-usage.out, .chat-mobile-app-menu .chat-menu-usage.critical { color: var(--danger, #e5a18b); }
+.chat-mobile-app-menu .chat-menu-usage.warning { color: #d6b25e; }

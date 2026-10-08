@@ -28,6 +28,7 @@ import {
 import { ErrorLine, Spinner } from "./ui";
 import { AgentAvatar, AppStack, appName } from "./agent-ui";
 import AgentShortcuts from "./AgentShortcuts";
+import { ServiceAccessPanel } from "./service-access";
 import "./browser-agents.css";
 import "./agent-list.css";
 
@@ -697,6 +698,7 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       <ErrorLine error={actionError} />
       <ErrorLine error={historyError} />
       <AgentShortcuts peer={peer} toast={toast} />
+      <ServiceAccessPanel peer={peer} />
       {stopSnapshot && (
         <div
           className="ba-stop-confirm ag-confirm"

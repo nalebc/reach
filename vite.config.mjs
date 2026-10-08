@@ -33,6 +33,9 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    // Open phones may still request lazy chunks from the previous build.
+    // Full builds must retain them, just like the live interface watcher.
+    emptyOutDir: false,
     rollupOptions: {
       // start.html: the public start page (server/public-start.mjs).
       input: { index: "index.html", start: "start.html", agent: "agent.html" },

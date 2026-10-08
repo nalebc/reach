@@ -91,21 +91,21 @@
 /* ── Home: rows with a line icon, then the chats as plain titles ── */
 .claw-nav {
   display: grid;
-  margin: 6px -10px 10px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--claw-line);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 20px;
 }
 .claw-nav-item {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px;
   min-height: 50px;
   padding: 0 12px;
-  border: 0;
+  border: 1px solid var(--claw-line);
   border-radius: 14px;
   background: none;
   color: var(--claw-ink);
-  font-size: 17px;
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
 }

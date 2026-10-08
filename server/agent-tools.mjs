@@ -438,7 +438,8 @@ export function createAgentTools(
         throw fail(403, "Access changed since this tool run.");
       return copy(results.get(key) || summary(entry));
     },
-    async run(authorize, input) {
+    async run(authorize, input, { signal } = {}) {
+      signal?.throwIfAborted();
       const client = check(authorize);
       if (
         !isPlainRecord(input) ||
@@ -509,7 +510,7 @@ export function createAgentTools(
         throw fail(400, "Supply one recipient email address.");
       const apps = await browserApps(authorize),
         candidates = apps.filter((app) => app.name === input.browser);
-      if (ledger.has(key)) return api.run(authorize, input);
+      if (ledger.has(key)) return api.run(authorize, input, { signal });
       if (running)
         throw Object.assign(fail(409, "Another tool is running on this Mac."), {
           kind: "busy",
@@ -534,6 +535,9 @@ export function createAgentTools(
         totalSteps: definition.steps.length,
       };
       const controller = new AbortController();
+      const cancel = () => controller.abort();
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) controller.abort();
       const deadline = setTimeout(() => controller.abort(), runMs);
       deadline.unref();
       running = {
@@ -1059,6 +1063,7 @@ export function createAgentTools(
         record("agent", `${client.name}'s tool ${definition.title} stopped`);
       } finally {
         clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancel);
         persistLedger();
         running = null;
       }

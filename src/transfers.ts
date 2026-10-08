@@ -99,6 +99,7 @@ function track(
     transfer,
     signal: controller.signal,
     progress(done: number) {
+      if (controller.signal.aborted) return;
       const now = performance.now();
       if (now - last.at >= 500) {
         // Smoothed speed, for "2.1 MB/s · 30 s left".
@@ -111,12 +112,14 @@ function track(
       changed();
     },
     waiting() {
+      if (controller.signal.aborted) return;
       transfer.state = "waiting";
       transfer.rate = 0;
       changed();
     },
     // Finished items leave on their own, unless they still offer an action.
     finish(leave = true) {
+      if (controller.signal.aborted) return;
       transfer.done = transfer.total;
       transfer.state = "done";
       changed();
@@ -133,7 +136,22 @@ function track(
     },
   };
 }
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const checkCanceled = (signal: AbortSignal) => {
+  if (signal.aborted) throw signal.reason || new DOMException("Canceled", "AbortError");
+};
+const pause = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  checkCanceled(signal);
+  const abort = () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+    reject(signal.reason || new DOMException("Canceled", "AbortError"));
+  };
+  const timer = setTimeout(() => {
+    signal.removeEventListener("abort", abort);
+    resolve();
+  }, ms);
+  signal.addEventListener("abort", abort);
+});
 // A computer running an older Reach that doesn't have this endpoint (as
 // opposed to a 404 for a file or folder that's gone).
 const olderReach = (e: unknown) =>
@@ -151,6 +169,7 @@ function putChunk(
   onLoaded: (loaded: number) => void,
   signal: AbortSignal,
 ) {
+  checkCanceled(signal);
   if (tailnetBrowser())
     return putChunkThroughTailnet(peer, id, offset, chunk, onLoaded, signal);
   return new Promise<{ offset: number }>((resolve, reject) => {
@@ -259,6 +278,7 @@ function legacyUpload(
   signal: AbortSignal,
 ) {
   return new Promise<void>((resolve, reject) => {
+    checkCanceled(signal);
     const xhr = new XMLHttpRequest();
     const form = new FormData();
     form.append("file", file);
@@ -268,14 +288,19 @@ function legacyUpload(
     );
     xhr.setRequestHeader("Authorization", `Bearer ${peer.token}`);
     let idle = setTimeout(() => xhr.abort(), IDLE_MS);
-    signal.addEventListener("abort", () => xhr.abort());
+    const abort = () => xhr.abort();
+    const settle = () => {
+      clearTimeout(idle);
+      signal.removeEventListener("abort", abort);
+    };
+    signal.addEventListener("abort", abort);
     xhr.upload.onprogress = (e) => {
       clearTimeout(idle);
       idle = setTimeout(() => xhr.abort(), IDLE_MS);
       onLoaded(e.loaded);
     };
     xhr.onload = () => {
-      clearTimeout(idle);
+      settle();
       let body: { error?: string } = {};
       try {
         body = JSON.parse(xhr.responseText);
@@ -289,7 +314,7 @@ function legacyUpload(
         );
     };
     xhr.onerror = xhr.onabort = () => {
-      clearTimeout(idle);
+      settle();
       reject(Error("The connection dropped. Try again."));
     };
     xhr.send(form);
@@ -306,6 +331,7 @@ async function sendFile(
   progress: (done: number) => void,
   waiting: () => void,
 ) {
+  checkCanceled(signal);
   const begin = () =>
     post<{ id: string; offset: number; chunk: number }>(
       peer,
@@ -316,6 +342,7 @@ async function sendFile(
   try {
     session = await begin();
   } catch (e) {
+    checkCanceled(signal);
     if (!olderReach(e)) throw e;
     return legacyUpload(
       peer,
@@ -335,7 +362,10 @@ async function sendFile(
     }).catch(() => {});
   signal.addEventListener("abort", cancel);
   try {
+    if (signal.aborted) cancel();
+    checkCanceled(signal);
     while (offset < file.size) {
+      checkCanceled(signal);
       const end = Math.min(file.size, offset + session.chunk);
       try {
         ({ offset } = await putChunk(
@@ -358,23 +388,30 @@ async function sendFile(
         }
         if (!retryable(e) || ++failures > 8) throw e;
         waiting();
-        await whenReachable();
-        await pause(Math.min(15000, 1000 * 2 ** (failures - 1)));
+        await whenReachable(signal);
+        await pause(Math.min(15000, 1000 * 2 ** (failures - 1)), signal);
         // Ask where to continue; the computer may have restarted.
         try {
           ({ offset } = await request<{ offset: number }>(
             peer,
             `/api/files/uploads/${session.id}`,
+            { signal },
           ));
         } catch (lost) {
+          checkCanceled(signal);
           if ((lost as { status?: number }).status !== 404 || ++restarts > 2)
             throw lost;
           session = await begin();
+          if (signal.aborted) cancel();
+          checkCanceled(signal);
           offset = 0;
         }
       }
     }
-    await post(peer, `/api/files/uploads/${session.id}/complete`).catch((e) => {
+    checkCanceled(signal);
+    await request(peer, `/api/files/uploads/${session.id}/complete`, {
+      method: "POST", body: JSON.stringify({}), signal,
+    }).catch((e) => {
       if ((e as { status?: number }).status === 404)
         throw Error(
           `The folder you were uploading to no longer exists on ${peer.name}.`,
@@ -410,6 +447,7 @@ export function uploadFiles(
         job.progress,
         job.waiting,
       );
+      checkCanceled(job.signal);
       job.finish();
       onEach(file.name);
     } catch (e) {

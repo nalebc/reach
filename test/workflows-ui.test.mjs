@@ -207,6 +207,7 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
     "starting points, then a blank task",
   );
   await click(button("Empty task", page));
+  await click(button("Edit task 1 instructions"));
   await typeInto($('textarea[aria-label="Task 1: what to do"]'), "Add ?page= to /api/items.");
   await click(button("Add task", page));
   // The new task opens; it's Codex's (as the one before), switched to Claude Code.
@@ -216,6 +217,7 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   await settle();
   await click(button("Review only", page));
   await click($('input[aria-label="Start task 2 with the one above"]'));
+  await click(button("Edit task 2 instructions"));
   await typeInto($('textarea[aria-label="Task 2: what to do"]'), "Check the paging.");
   await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[1]?.task === "Check the paging.", 3000);
   assert.deepEqual(
@@ -333,7 +335,14 @@ test("every agent's list has the icon too; with none yet, its page says how to s
   await click(icon);
   const page = await dom.waitFor(() => $(".workflows-page"));
   assert.match(page.textContent, /Start your first workflow/);
-  await click(button("New workflow", page));
+  await click(button("New chat", page));
+  const conversation = await dom.waitFor(() => $(".chat-create-sheet"));
+  assert.equal(button("Solo", conversation).getAttribute("aria-pressed"), "true");
+  assert.equal($(".workflows-page"), null);
+  await click(button("Close new conversation", conversation));
+  await click(button("Workflows"));
+  await dom.waitFor(() => $(".workflows-page"));
+  await click(button("New workflow", $(".workflows-page")));
   const newChat = await dom.waitFor(() => $(".chat-create-sheet"));
   assert.equal(button("Workflow", newChat).getAttribute("aria-pressed"), "true");
   // Only the icon: the ≡ menu doesn't repeat it.
@@ -354,6 +363,7 @@ test("an empty draft starts from a starting point: the agents placed, what to bu
   const page = await dom.waitFor(() => $(".workflow-sheet"));
   await click(button("Build, then reviewCodex builds · Claude Code reviews", page) || [...page.querySelectorAll(".wf-dashed")][0]);
   // The build is open for its words; the review says what to check already.
+  await click(button("Edit task 1 instructions"));
   const text = await dom.waitFor(() => $('textarea[aria-label="Task 1: what to do"]'));
   await typeInto(text, "Add dark mode to the settings page.");
   await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[0]?.task === "Add dark mode to the settings page.", 3000);
@@ -365,5 +375,28 @@ test("an empty draft starts from a starting point: the agents placed, what to bu
     ],
   );
   assert.equal($$(".wf-dashed strong").map((s) => s.textContent).join(), "Add task", "starting points only while it's empty");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("long instructions come last, preview by default, and retain edits when hidden", async () => {
+  const instructions = "Review the release.\n".repeat(80);
+  hold(workflow({ tasks: [task("t1", { title: "Review", task: instructions })] }));
+  await mount(React.createElement(WorkflowSheet, { peer, id: WF, logos: {}, onOpenChat() {}, onClose() {} }));
+  await click(await dom.waitFor(() => $('.wf-item > button.wf-item-main')));
+  const body = $('.wf-item-body');
+  assert.equal(body.lastElementChild.className, 'wf-instructions');
+  assert.match(body.querySelector('legend').textContent, /Agent should/);
+  assert.equal(body.querySelector('textarea'), null);
+  assert.equal(button('Show task 1 instructions').getAttribute('aria-expanded'), 'false');
+  await click(button('Edit task 1 instructions'));
+  const editor = body.querySelector('textarea');
+  assert.equal(editor.value, instructions);
+  await replaceText(editor, 'Updated instructions');
+  await click(button('Hide task 1 instructions'));
+  assert.equal(body.querySelector('textarea'), null);
+  assert.equal(body.querySelector('.wf-instructions-preview').textContent, 'Updated instructions');
+  await click(button('Show task 1 instructions'));
+  assert.equal(body.querySelector('textarea').value, 'Updated instructions');
+  await dom.waitFor(() => sent('edit').at(-1)?.body.tasks[0]?.task === 'Updated instructions', 3000);
   assert.deepEqual(dom.errors, []);
 });

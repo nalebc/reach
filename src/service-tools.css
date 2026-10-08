@@ -1,0 +1,117 @@
+.service-tools,
+.service-access {
+  margin: 18px 0;
+  min-width: 0;
+}
+.service-tools h2,
+.service-access h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+.service-tools > p,
+.service-access > p {
+  font-size: 13px;
+  opacity: 0.72;
+  line-height: 1.5;
+}
+.service-card {
+  border: 1px solid var(--ag-border, #8884);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.service-card p {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+.service-card small {
+  display: block;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.service-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.service-badge {
+  font-size: 11px;
+  border-radius: 20px;
+  padding: 4px 8px;
+  background: #66887725;
+}
+.service-card form {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.service-card label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 160px;
+  font-size: 12px;
+  min-width: 0;
+}
+.service-card input,
+.service-card select {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  border: 1px solid var(--ag-border, #8885);
+  background: transparent;
+  border-radius: 7px;
+  padding: 11px;
+  font: inherit;
+  color: inherit;
+}
+.service-card button {
+  min-height: 42px;
+  border-radius: 7px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--ag-border, #8885);
+}
+.service-card button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.service-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.service-result {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ag-border, #8884);
+}
+.service-result strong {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.service-wait {
+  margin-top: 12px;
+}
+.service-item {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ag-border, #8884);
+}
+.service-summary {
+  white-space: pre-wrap;
+}
+.service-tools[hidden] {
+  display: none;
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { usePageVisible } from "./page-visible";
 import {
   ArrowUpRight,
+  Globe2,
   Sparkles,
   Check,
   ChevronDown,
@@ -12,6 +13,7 @@ import {
   Clock3,
   Monitor,
   ShieldCheck,
+  Terminal,
   UserRound,
   UserRoundPlus,
   X,
@@ -25,7 +27,6 @@ import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
 import BrowserInvite from "./BrowserInvite";
-import { Segments } from "./agent-ui";
 import AccessEditor, { appScopedAccess, canEditAccess, type EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
@@ -832,13 +833,21 @@ export function InviteSheet({
   };
 
   return (
-    <div className="ivt">
+    <div className={`ivt${kind !== "person" ? " ivt-agent" : ""}`}>
       <header className="ivt-heading">
         <span className="ivt-heading-icon">
-          <UserRoundPlus size={24} strokeWidth={1.5} />
+          {kind === "person" ? (
+            <UserRoundPlus size={24} strokeWidth={1.5} aria-hidden="true" />
+          ) : (
+            <Sparkles size={24} strokeWidth={1.5} aria-hidden="true" />
+          )}
         </span>
-        <h1>Better together.</h1>
-        <p>Invite someone into your workspace. You choose how much to share.</p>
+        <h1>{kind === "person" ? "Invite someone" : "Invite an agent"}</h1>
+        <p>
+          {kind === "person"
+            ? "Share your workspace. You choose the access."
+            : "Give your agent a place to help. You’re in control."}
+        </p>
       </header>
       <div className="ivt-composer">
         <div className="ivt-kind" role="group" aria-label="Invite">
@@ -865,32 +874,32 @@ export function InviteSheet({
             <Sparkles size={18} /> Agent
           </button>
         </div>
-        <div className="ivt-form-heading">
-          <h2>
-            {kind === "person" ? "Invite someone" : "Connect an agent"}
-          </h2>
-          {kind === "person" && <p>A name, a little access, and a link to share.</p>}
-        </div>
         {kind !== "person" && (
           <div className="ag-connect">
-            <Segments
-              label="Assistant connection"
-              value={kind}
-              disabled={busy}
-              options={[
-                { value: "browser", label: "Browser link" },
-                { value: "agent", label: "Command line" },
-              ]}
-              onChange={(next) => {
-                setKind(next);
-                setError("");
-                if (next === "agent") setComputers([agentPeer.id]);
-              }}
-            />
+            <div className="ag-connect-tabs" role="group" aria-label="Assistant connection">
+              {([
+                { value: "browser", label: "Browser link", icon: Globe2 },
+                { value: "agent", label: "Command line", icon: Terminal },
+              ] as const).map(({ value, label, icon: Icon }) => (
+                <button
+                  type="button"
+                  key={value}
+                  aria-pressed={kind === value}
+                  disabled={busy}
+                  onClick={() => {
+                    setKind(value);
+                    setError("");
+                    if (value === "agent") setComputers([agentPeer.id]);
+                  }}
+                >
+                  <Icon size={17} strokeWidth={1.7} aria-hidden="true" />{label}
+                </button>
+              ))}
+            </div>
             <p className="ag-quiet">
               {kind === "browser"
-                ? "For agents with a browser, like Muse or ChatGPT agent. Nothing to install."
-                : "For agents on a computer you control (Claude Code, Codex). Advanced."}
+                ? "For ChatGPT agent, Muse, and other browser agents. No install needed."
+                : "For Claude Code or Codex on a computer you control."}
             </p>
           </div>
         )}

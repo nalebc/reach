@@ -175,12 +175,14 @@ export function ChatLibraryHeader({
           role="menu"
           aria-label="Choose an app"
         >
-          {apps.map((app) => (
+          {apps.map((app) => {
+            const usage = usageOf(health.find((h) => h.agent === app.agent));
+            return (
             <button
               key={app.agent}
               role="menuitemradio"
               aria-label={app.name}
-              aria-description={pending[app.agent] ? pendingLabel(pending[app.agent]) : undefined}
+              aria-description={[pending[app.agent] && pendingLabel(pending[app.agent]), usage && usageSentence(app.name, usage)].filter(Boolean).join(". ") || undefined}
               aria-checked={app.agent === value}
               className={pending[app.agent] ? "has-pending" : undefined}
               onClick={() => {
@@ -195,13 +197,14 @@ export function ChatLibraryHeader({
                   logos={logos}
                   size={19}
                 />
-                <UsageRing usage={usageOf(health.find((h) => h.agent === app.agent))} />
+                <UsageRing usage={usage} />
               </span>
               {app.name}
+              {usage && <small className={`chat-menu-usage ${usage.level}`}>{usage.level === "out" ? "Out" : `${usage.percent}%`}{usage.stale ? " · Last read" : ""}</small>}
               {!!pending[app.agent] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[app.agent])}</span>}
               {!app.supported && <small>Coming soon</small>}
             </button>
-          ))}
+          ); })}
         </div>
       )}
       {actionsOpen && (
@@ -239,6 +242,9 @@ export function ChatLibraryHeader({
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
+        <button className="chat-refresh" aria-label="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
+          <Search size={16} />
+        </button>
         <UsageButton health={usageHere} logos={logos} />
         <NotificationBell compact />
         {workflows && (
@@ -465,7 +471,7 @@ export default function ChatList({
   const [searchOpen, setSearchOpen] = useState(false);
   const searchField = useRef<HTMLInputElement>(null);
   useEffect(() => { if (searchOpen) searchField.current?.focus(); }, [searchOpen]);
-  const [limit, setLimit] = useState(12);
+  const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
   const [gone, setGone] = useState<Set<string>>(() => new Set());
   const all = useMemo(
     () =>
@@ -490,9 +496,8 @@ export default function ChatList({
       Number(needsYou(b) || b.status === "running") -
       Number(needsYou(a) || a.status === "running"),
   );
-  const shown = found.slice(0, limit);
   const projects = new Map<string, AgentSession[]>();
-  for (const s of shown) {
+  for (const s of found) {
     const key = s.cwd || "";
     projects.set(key, [...(projects.get(key) || []), s]);
   }
@@ -623,7 +628,7 @@ export default function ChatList({
           pending={appPending}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
-            setLimit(12);
+            setExpandedFolders([]);
           }}
           onNew={!upcoming && canStart ? () => onNew() : undefined}
           onRefresh={onRefresh}
@@ -645,7 +650,7 @@ export default function ChatList({
           health={health}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
-            setLimit(12);
+            setExpandedFolders([]);
           }}
         />
         {!upcoming && (
@@ -659,7 +664,7 @@ export default function ChatList({
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setLimit(12);
+                setExpandedFolders([]);
               }}
             />
             {query && (
@@ -733,7 +738,7 @@ export default function ChatList({
               </span>
             </button>
           )}
-          {shown.length > 0 && (
+          {projects.size > 0 && (
             <section
               className="chat-projects"
               aria-label="Projects"
@@ -774,24 +779,27 @@ export default function ChatList({
                         onMoved={(to) => {
                           (onAgentChange || setLocalAgent)(to);
                           setQuery("");
-                          setLimit(12);
+                          setExpandedFolders([]);
                           onSectionMoved?.(to);
                         }}
                       />
                     )}
                   </div>
-                  {cards(list)}
+                  {cards(expandedFolders.includes(cwd) ? list : list.slice(0, 4))}
+                  {list.length > 4 && (
+                    <button
+                      className="chat-list-more"
+                      aria-expanded={expandedFolders.includes(cwd)}
+                      onClick={() => setExpandedFolders((folders) => folders.includes(cwd)
+                        ? folders.filter((folder) => folder !== cwd)
+                        : [...folders, cwd])}
+                    >
+                      {expandedFolders.includes(cwd) ? "Show fewer" : `Show all ${list.length}`}
+                    </button>
+                  )}
                 </section>
               ))}
             </section>
-          )}
-          {found.length > limit && (
-            <button
-              className="chat-list-more"
-              onClick={() => setLimit((n) => n + 12)}
-            >
-              Show more conversations
-            </button>
           )}
         </>
       )}

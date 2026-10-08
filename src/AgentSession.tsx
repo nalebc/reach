@@ -234,8 +234,8 @@ function ReplyActions({
         )}
         {onSecondOpinion && <SecondOpinionButton labelled onClick={onSecondOpinion} />}
         {onRelay && (
-          <button className="relay-opinion" aria-label="Relay this reply" onClick={onRelay}>
-            <Workflow size={17} /> <span>Relay</span>
+          <button className="relay-opinion" aria-label="Hand off this reply" onClick={onRelay}>
+            <Workflow size={17} /> <span>Hand off</span>
           </button>
         )}
       </div>
@@ -2672,8 +2672,8 @@ export default function AgentSessionView({
             >
               <Workflow size={18} />
               <span className="move-item-text">
-                <span>Relay when done</span>
-                <small>Another agent builds or reviews this</small>
+                <span>Hand off</span>
+                <small>Pass the work to another agent</small>
               </span>
             </button>
             {!!lastReply && (
@@ -2687,7 +2687,7 @@ export default function AgentSessionView({
               >
                 <SearchCheck size={18} />
                 <span className="move-item-text">
-                  <span>Second opinion</span>
+                  <span>Review reply</span>
                   <small>Another agent reviews the last reply</small>
                 </span>
               </button>
@@ -3128,7 +3128,11 @@ export default function AgentSessionView({
             from={agentLabel(agent)}
             continueIn={continueIn}
             onContinue={continueElsewhere}
+            onAutoContinue={info.agent === "claude" || info.agent === "codex" ? () => setRelaySheet({ mode: "auto-continue" }) : undefined}
             logos={logos}
+            peer={peer}
+            session={info.id}
+            notifyAsked={!!health.find((h) => h.agent === agent)?.notifyWhenBack}
           />
         )}
         {nearShown && !(outOfUsage || claudeLimit || stoppedOnLimit) && (
@@ -3256,8 +3260,8 @@ export default function AgentSessionView({
         {working &&
           (agent === "codex" || agent === "claude") &&
           !shownRelays.some((r) => r.state === "waiting" && r.chain.at(-1)?.agent === agent && r.chain.at(-1)?.id === initial.id) && (
-            <button className="relay-when-chip" aria-label="Relay when done" onClick={() => setRelaySheet({ mode: "relay" })}>
-              <Workflow size={14} /> When done, relay…
+            <button className="relay-when-chip" aria-label="Hand off when done" onClick={() => setRelaySheet({ mode: "relay" })}>
+              <Workflow size={14} /> When done, hand off…
             </button>
           )}
         {/* The team this chat leads (Teams.tsx). */}

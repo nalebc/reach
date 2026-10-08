@@ -1,10 +1,5 @@
 /* The All page (ChatHub.tsx): every agent's chats at once, in the chat
    list's own look (chat-list.css), with its few cards of its own. */
-.chat-hub .hub-lead {
-  margin: 2px 16px 12px;
-  color: var(--chat-muted);
-  font-size: 13.5px;
-}
 .chat-hub .hub-search {
   margin: 0 16px 12px;
 }
@@ -269,4 +264,19 @@
   border: 0;
   background: none;
   cursor: pointer;
+}
+
+.hub-file-activity {
+  margin: 0 0 6px;
+  color: var(--chat-muted);
+  font-size: 12.5px;
+}
+.hub-file-activity > summary {
+  padding: 8px 4px;
+  cursor: pointer;
+}
+.hub-file-activity .hub-overlap {
+  background: none;
+  border-left: 2px solid var(--chat-line);
+  border-radius: 0;
 }

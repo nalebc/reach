@@ -1,0 +1,138 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { startDom, settle } from "./dom/harness.mjs";
+
+test("the active Chat tab returns directly to the selected provider's list from nested views", async () => {
+  const peer = {
+    id: "mac",
+    name: "Mac",
+    url: "https://reach.test",
+    token: "fixture",
+    platform: "darwin",
+  };
+  const session = {
+    key: "agent:main:reach-1234",
+    title: "Weekend plans",
+    agentId: "main",
+    channel: "webchat",
+    writable: true,
+    updatedAt: Date.now(),
+    model: "test",
+    status: "idle",
+  };
+  const base = "/api/sessions/openclaw";
+  const dom = await startDom({
+    mobile: true,
+    routes: {
+      "/api/device": () => ({
+        id: "mac",
+        name: "Mac",
+        platform: "darwin",
+        roots: [],
+        memory: { total: 1, free: 1 },
+        network: { connected: true, peers: [] },
+        capabilities: { files: true, terminal: true, apps: true, screen: true },
+      }),
+      "/api/terminals": () => ({ sessions: [] }),
+      "/api/codex": () => ({ sessions: [] }),
+      "/api/activity": () => ({ activities: [] }),
+      "/api/sessions": () => ({ sessions: [], errors: {} }),
+      "/api/sessions/health": () => ({
+        agents: [
+          {
+            agent: "openclaw",
+            name: "OpenClaw",
+            installed: true,
+            signedIn: true,
+            supported: true,
+          },
+        ],
+      }),
+      "/api/sessions/logos": () => ({ version: "1", logos: {} }),
+      [base + "/overview"]: () => ({
+        connected: true,
+        sessions: [session],
+        approvals: [],
+      }),
+      [base + "/history"]: () => ({
+        session,
+        items: [],
+        streaming: "",
+        error: "",
+        approvals: [],
+      }),
+      [base + "/channels"]: () => ({ channels: [] }),
+      [base + "/agents"]: () => ({ supported: true, agents: [] }),
+      [base + "/automations"]: () => ({ jobs: [] }),
+    },
+  });
+  const socket = globalThis.WebSocket;
+  globalThis.WebSocket = class {
+    close() {}
+    send() {}
+  };
+  let view;
+  const button = (label) =>
+    [...dom.document.querySelectorAll("button")].find(
+      (b) =>
+        b.getAttribute("aria-label") === label ||
+        (b.querySelector("strong")?.textContent || b.textContent).trim() ===
+          label,
+    );
+  const click = async (label) => {
+    const b = button(label);
+    assert.ok(b, label);
+    b.click();
+    await settle();
+  };
+  const chatTab = () =>
+    dom.document.querySelector('.mobile-nav [aria-label="Chat"]');
+  try {
+    localStorage.setItem("reach.devices", JSON.stringify([peer]));
+    localStorage.setItem("reach.active", peer.id);
+    localStorage.setItem("reach.chatAgent", "openclaw");
+    sessionStorage.setItem(
+      "reach.place",
+      JSON.stringify({ peer: peer.id, page: "sessions" }),
+    );
+    const { default: App } = await dom.load("/src/App.tsx");
+    view = await dom.render(dom.React.createElement(App));
+    await dom.waitFor(() => button("Customize"));
+    assert.ok(
+      dom.document.querySelector(
+        ".claw-library .chat-companion .brand-courier",
+      ),
+    );
+    for (const nested of [null, "Agents", "Scheduled", "Weekend plans"]) {
+      if (nested === "Scheduled") await click("Scheduled");
+      else if (nested === "Weekend plans") await click("Weekend plans");
+      else {
+        await click("Customize");
+        assert.ok(
+          dom.document.querySelector(
+            '[aria-label="Customize OpenClaw"] .chat-companion .brand-courier',
+          ),
+        );
+        if (nested) await click(nested);
+      }
+      assert.equal(button("Customize"), undefined);
+      chatTab().click();
+      await dom.waitFor(() => button("Customize") && button("Weekend plans"));
+      assert.equal(
+        localStorage.getItem("reach.chatAgent"),
+        "openclaw",
+        "keeps the chosen provider",
+      );
+      assert.equal(dom.document.querySelector(".claw-conversation"), null);
+      assert.equal(dom.document.querySelector(".claw-page"), null);
+    }
+    chatTab().click();
+    await dom.waitFor(() => button("Customize"));
+    assert.equal(localStorage.getItem("reach.chatAgent"), "openclaw");
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await view?.unmount();
+    globalThis.WebSocket = socket;
+    await dom.close();
+  }
+});

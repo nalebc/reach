@@ -47,6 +47,7 @@ export default function QueuedMessages({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingNow = useRef(false);
   // While a row is dragged: the order shown, sent once the finger lifts.
   const [order, setOrder] = useState<string[] | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -117,7 +118,7 @@ export default function QueuedMessages({
           aria-label={`Reorder queued message ${index + 1} of ${shown.length}`}
           title="Drag or use the arrow keys to reorder"
           onPointerDown={(e) => {
-            if (busy || saving || e.button !== 0) return;
+            if (busy || savingNow.current || e.button !== 0) return;
             e.currentTarget.setPointerCapture?.(e.pointerId);
             drag.current = { id: m.id, pointerId: e.pointerId, startY: e.clientY, active: false };
           }}
@@ -158,7 +159,7 @@ export default function QueuedMessages({
             setOrder(null);
           }}
           onKeyDown={(e) => {
-            if (busy || saving || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+            if (busy || savingNow.current || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
             e.preventDefault();
             const ids = orderRef.current || messages.map((x) => x.id);
             void finish(move(m.id, ids.indexOf(m.id) + (e.key === "ArrowUp" ? -1 : 1), ids));
@@ -182,7 +183,8 @@ export default function QueuedMessages({
             className="qm-edit"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (saving) return;
+              if (savingNow.current || busy || !canEdit || m.sending || (!editing.text.trim() && !m.images)) return;
+              savingNow.current = true;
               setSaving(true);
               try {
                 await onEdit(m, editing.text);
@@ -190,6 +192,7 @@ export default function QueuedMessages({
               } catch {
                 // Keep the draft open; the parent shows the server's error.
               } finally {
+                savingNow.current = false;
                 setSaving(false);
               }
             }}
@@ -198,6 +201,7 @@ export default function QueuedMessages({
               autoFocus
               aria-label="Edit queued message"
               value={editing.text}
+              disabled={saving || !!busy || !canEdit || !!m.sending}
               rows={Math.min(8, Math.max(2, editing.text.split("\n").length))}
               onChange={(e) => setEditing({ id: m.id, text: e.target.value })}
             />
@@ -205,7 +209,7 @@ export default function QueuedMessages({
               <button type="button" onClick={() => setEditing(null)} disabled={saving}>
                 Cancel
               </button>
-              <button type="submit" className="primary" disabled={saving || (!editing.text.trim() && !m.images)}>
+              <button type="submit" className="primary" disabled={saving || !!busy || !canEdit || !!m.sending || (!editing.text.trim() && !m.images)}>
                 Save
               </button>
             </span>
@@ -233,8 +237,8 @@ export default function QueuedMessages({
           className="qm-now"
           aria-label="Send now"
           title="Send now"
-          disabled={!!busy}
-          onClick={() => onSendNow(m)}
+          disabled={!!busy || saving}
+          onClick={() => { if (!savingNow.current && !busy) onSendNow(m); }}
         >
           <ArrowUp size={15} />
         </button>
@@ -256,8 +260,8 @@ export default function QueuedMessages({
       <button
         aria-label="Remove queued message"
         title="Remove"
-        disabled={!!busy}
-        onClick={() => onRemove(m)}
+        disabled={!!busy || saving}
+        onClick={() => { if (!savingNow.current && !busy) onRemove(m); }}
       >
         <X size={15} />
       </button>

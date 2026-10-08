@@ -1,3 +1,4 @@
+import { ChatCompanion } from "./ChatCompanion";
 import { useEffect, useState } from "react";
 import {
   AtSign,
@@ -465,6 +466,7 @@ export function ClawCustomize({
           </button>
         }
       />
+      <ChatCompanion title="Make OpenClaw yours">Set up your agents, skills and connections.</ChatCompanion>
       {(error || problem) && (
         <p className="claw-error" role="alert">
           {error || problem}

@@ -27,6 +27,7 @@ import { OptionButtons } from "./agent-ui";
 import AgentShell from "./AgentShell";
 import AgentFileChanges from "./AgentFileChanges";
 import SavedAgentTools from "./SavedAgentTools";
+import ServiceAgentTools from "./ServiceAgentTools";
 import AgentWorkspaceFrame, {
   type AgentDestination,
   type AgentSection,
@@ -54,6 +55,7 @@ export type PresetAccess = {
   standing?: boolean;
   browserTools?: BrowserAccess["browserTools"];
   savedTools?: BrowserAccess["savedTools"];
+  services?: BrowserAccess["services"];
 };
 type DesktopApp = {
   id: string;
@@ -164,7 +166,8 @@ export default function AgentPage({
     },
     [onEnd],
   );
-  const hasTools = !!access.screen && !!access.control && !!access.open;
+  const hasBrowserTools = !!access.screen && !!access.control && !!access.open;
+  const hasTools = hasBrowserTools || !!access.services;
   const grant = JSON.stringify([
     access.preset,
     access.screen,
@@ -281,6 +284,8 @@ export default function AgentPage({
               key={grant}
               peer={connection}
               ended={ended}
+              browserEnabled={hasBrowserTools}
+              servicesEnabled={!!access.services}
               query={toolQuery}
               setQuery={setToolQuery}
               onActivity={setActivity}
@@ -402,6 +407,7 @@ export default function AgentPage({
             You may {abilities.join(", ") || "do nothing yet"}. Everything else
             is closed.
           </p>
+          {access.services && active === "access" && <ServiceAgentTools key={grant} peer={connection} accessOnly ended={ended} />}
           <div className="aw-access-list">
             {destinations
               .filter((item) => item.id !== "access")

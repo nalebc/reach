@@ -40,10 +40,12 @@ function fixture(options = {}) {
 
 test("only trusted local status supplies the host's stable node ID", () => {
   assert.equal(browserHostNode(status()), "nHost");
+  // Tailscale reports its own running node as offline; that must not lock access.
+  assert.equal(browserHostNode({ ...status(), Self: { ID: "nHost", Online: false } }), "nHost");
   for (const value of [null, {}, { BackendState: "Stopped", Self: { ID: "nHost" } },
     { BackendState: "Running", Self: { DNSName: "nHost", ID: 123 } },
-    { ...status(), Self: { ID: "nHost", Online: false } },
     { ...status(), Self: { ID: "nHost", Expired: true } },
+    { ...status(), Self: { ID: "nHost", KeyExpiry: "2001-01-01T00:00:00Z" } },
     { ...status(), Self: { ID: "nHost\n" } }])
     assert.throws(() => browserHostNode(value), { status: 503 });
 });

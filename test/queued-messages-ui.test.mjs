@@ -219,3 +219,35 @@ test("a rejected queue reorder rolls back without another request", async () => 
     assert.equal(calls, 1);
   } finally { await view.unmount(); }
 });
+
+test("saving a queued edit freezes its text and competing actions until the server replies", async () => {
+  let finish;
+  const { view } = await render({ agent: "codex", messages: three,
+    onEdit: () => new Promise((resolve) => { finish = resolve; }) });
+  try {
+    button("Edit queued message")[0].click();
+    await settle();
+    $$(".qm-edit button.primary")[0].click();
+    await settle();
+    assert.equal($$(".qm-edit textarea")[0].disabled, true, "typing during save would otherwise be discarded");
+    assert.ok(button("Remove queued message").every((el) => el.disabled));
+    assert.ok(button("Send now").every((el) => el.disabled));
+  } finally { finish?.(); await settle(); await view.unmount(); }
+});
+
+test("two submit events in one render send a queued edit only once", async () => {
+  let finish, calls = 0;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  const { view } = await render({ agent: "codex", messages: three,
+    onEdit: () => { calls++; return pending; } });
+  try {
+    button("Edit queued message")[0].click();
+    await settle();
+    const form = $$(".qm-edit")[0];
+    dom.update(() => {
+      form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+    });
+    assert.equal(calls, 1);
+  } finally { finish(); await settle(); await view.unmount(); }
+});

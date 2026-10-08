@@ -54,7 +54,7 @@ type Attempt = {
   args: Record<string, string>;
   unresolved: boolean;
 };
-export type ToolCategory = "all" | "gmail" | "walmart" | "custom" | "recorded";
+export type ToolCategory = "all" | "gmail" | "walmart" | "custom" | "recorded" | "services";
 const group = (tool: BrowserTool): ToolCategory =>
   tool.name.startsWith("reach_tool_builtin_gmail_") ||
   tool.name === "reach_tool_builtin_open_gmail"

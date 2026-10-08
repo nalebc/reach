@@ -7,6 +7,8 @@ import {
   FolderOpen,
   Gauge,
   Laptop,
+  Bell,
+  BellRing,
   Loader2,
   Plus,
   ShieldAlert,
@@ -14,6 +16,7 @@ import {
   Sparkle,
   X,
 } from "lucide-react";
+import { useNotifyBack } from "./notify-back";
 import { post, request, type Peer } from "./api";
 import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
 import { modelDisplayName } from "./ModelSheet";
@@ -186,6 +189,18 @@ export function NewChat({
   const picker = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
   const input = useRef<HTMLTextAreaElement>(null);
+  // Closed while a start was on its way: its answer must not clear a newer
+  // draft or open the chat over whatever is shown now.
+  const mounted = useRef(true);
+  const shownImages = useRef(images);
+  shownImages.current = images;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const i of shownImages.current) URL.revokeObjectURL(i.url);
+    };
+  }, []);
   useEffect(() => {
     if (autoFocus) input.current?.focus();
   }, []);
@@ -295,6 +310,12 @@ export function NewChat({
       );
     }
   };
+  // Sent: its saved draft goes, unless a newer draft has replaced it.
+  const clearSent = (sent: string) => {
+    try {
+      if (sessionStorage.getItem(draftKey) === sent) sessionStorage.removeItem(draftKey);
+    } catch {}
+  };
   const start = async () => {
     if (!ready || startingNow.current) return;
     startingNow.current = true;
@@ -324,24 +345,22 @@ export function NewChat({
           ...(effort ? { effort } : {}),
           ...(speed ? { speed } : {}),
         });
+        clearSent(text);
+        if (!mounted.current) return;
         for (const i of images) URL.revokeObjectURL(i.url);
         setText("");
         setImages([]);
-        try {
-          sessionStorage.removeItem(draftKey);
-        } catch {}
         onWorkflow?.(planned.workflow);
         return;
       }
       const r = team
         ? await startTeam(peer, { ...body, lead: agent, helpers })
         : await startSession(peer, { ...body, agent });
+      clearSent(text);
+      if (!mounted.current) return;
       for (const i of images) URL.revokeObjectURL(i.url);
       setText("");
       setImages([]);
-      try {
-        sessionStorage.removeItem(draftKey);
-      } catch {}
       onStarted({
         agent,
         id: r.threadId,
@@ -357,10 +376,10 @@ export function NewChat({
         archived: false,
       });
     } catch (e) {
-      setProblem((e as Error).message);
+      if (mounted.current) setProblem((e as Error).message);
     } finally {
       startingNow.current = false;
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
   const choiceRow = (
@@ -416,19 +435,38 @@ export function NewChat({
           onHelpers={setHelpers}
         />
       )}
-      <button
-        className="chat-new-context chat-folder"
-        aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
-        title={cwd || "Choose a folder"}
-        aria-expanded={panel === "folder"}
-        disabled={busy}
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setPanel(panel === "folder" ? "" : "folder")}
-      >
-        <FolderOpen size={18} />
-        <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
-        <ChevronsUpDown size={14} />
-      </button>
+      <div className="chat-new-folder-controls">
+        <button
+          className="chat-new-context chat-folder"
+          aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
+          title={cwd || "Choose a folder"}
+          aria-expanded={panel === "folder"}
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setPanel(panel === "folder" ? "" : "folder")}
+        >
+          <FolderOpen size={18} />
+          <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
+          <ChevronsUpDown size={14} />
+        </button>
+        <button
+          type="button"
+          className="chat-folder-browse"
+          aria-expanded={panel === "folder" && otherFolder}
+          disabled={busy}
+          onClick={() => {
+            // Wait for a folder tap instead of reusing the previous selection.
+            setCwd("");
+            setOtherFolder(true);
+            setPanel("folder");
+          }}
+        >
+          Browse folders…
+        </button>
+      </div>
+      {otherFolder && !cwd && (
+        <p className="as-hint">Tap a folder to choose where this chat works.</p>
+      )}
       {problem && (
         <p className="as-hint bad" role="alert">
           {problem}
@@ -446,16 +484,12 @@ export function NewChat({
               ...(cwd && !folders.includes(cwd)
                 ? [{ id: cwd, label: folderLabel(cwd, folders) }]
                 : []),
-              { id: "\u0000other", label: "Browse…" },
             ],
-            otherFolder ? "\u0000other" : cwd,
+            cwd,
             (id) => {
-              if (id === "\u0000other") setOtherFolder(!otherFolder);
-              else {
-                setOtherFolder(false);
-                setCwd(id);
-                setPanel("");
-              }
+              setOtherFolder(false);
+              setCwd(id);
+              setPanel("");
             },
             "Folder",
           )}
@@ -463,6 +497,7 @@ export function NewChat({
             <div className={agent}>
               <FolderPicker
                 peer={peer}
+                onNavigate={setCwd}
                 onPick={(full) => {
                   setOtherFolder(false);
                   setCwd(full);
@@ -752,14 +787,31 @@ function AgentStatus({
         onSignedIn={recheck}
       />
     );
-  if (health.usable === false)
-    return (
+  if (health.usable === false) return <OutOfUsage peer={peer} agent={agent} name={name} health={health} />;
+  return null;
+}
+
+// Out of usage: one quiet line, Notify me (when it's back) and Upgrade.
+function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentName; name: string; health: AgentHealth }) {
+  const back = useNotifyBack(peer, agent, undefined, !!health.notifyWhenBack);
+  return (
       <div className="chat-status out-of-usage">
         <span>
+          {back.problem || <>
           You’re out of {name} usage
           {health.resetsAt ? ` until ${resetTime(health.resetsAt, false)}` : ""}
-          .
+          .</>}
         </span>
+        <button
+          className={`as-banner-btn usage-notify${back.on ? " on" : ""}`}
+          aria-pressed={back.on}
+          aria-label={back.on ? "Notifying when it’s back. Tap to stop." : "Notify me when it’s back"}
+          disabled={back.busy}
+          onClick={() => void back.toggle()}
+        >
+          {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
+          {back.on ? "Notifying" : "Notify me"}
+        </button>
         <a
           className="as-banner-btn primary"
           href={
@@ -774,8 +826,7 @@ function AgentStatus({
           <Sparkle size={14} fill="currentColor" /> Upgrade
         </a>
       </div>
-    );
-  return null;
+  );
 }
 
 type Target = { agent: AgentName | "openclaw"; id: string };
@@ -1172,6 +1223,12 @@ export default function EverythingChat({
             setFlowsOpen(false);
             setNewFolder("");
             setNewKind("workflow");
+            setSheet("new");
+          }}
+          onNewChat={() => {
+            setFlowsOpen(false);
+            setNewFolder("");
+            setNewKind("");
             setSheet("new");
           }}
           onClose={() => setFlowsOpen(false)}

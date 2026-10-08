@@ -163,6 +163,25 @@ function transport(t, respond = () => ({}), options = {}) {
   t.after(() => daemon.close());
   return { daemon, calls, sockets };
 }
+test("daemon readiness restores subscribers after every handshake without deadlocking RPC", async (t) => {
+  const { daemon, calls, sockets } = transport(t, () => ({ result: { data: [] } }));
+  const recoveries = [];
+  const off = daemon.onReady(() => {
+    assert.equal(calls.at(-1).method, "initialized");
+    recoveries.push(daemon.rpc("thread/loaded/list"));
+  });
+  await daemon.rpc("thread/list");
+  await Promise.all(recoveries);
+  assert.equal(recoveries.length, 1);
+  sockets[0].terminate();
+  await daemon.rpc("thread/list");
+  await Promise.all(recoveries);
+  assert.equal(recoveries.length, 2);
+  off();
+  sockets[1].terminate();
+  await daemon.rpc("thread/list");
+  assert.equal(recoveries.length, 2);
+});
 test("a changed method is disabled without disabling independent Codex methods", async (t) => {
   const { daemon, calls } = transport(t, (m) =>
     m.method === "thread/list"

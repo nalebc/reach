@@ -42,6 +42,7 @@ import { channelName, usePolling } from "./openclaw-polling";
 import { ClawCustomize, ClawScheduled } from "./OpenClawPages";
 import { ClawPageTop } from "./OpenClawRow";
 import "./openclaw.css";
+import { ChatCompanion } from "./ChatCompanion";
 
 const base = "/api/sessions/openclaw";
 type Session = {
@@ -385,7 +386,7 @@ function Conversation({
       </header>
       {appMenuOpen && (
         <div className="claw-app-switch">
-          <ChatAppPicker apps={apps} logos={logos} value="openclaw" onChange={onAppChange} />
+          <ChatAppPicker health={health} apps={apps} logos={logos} value="openclaw" onChange={onAppChange} />
         </div>
       )}
       {settingsOpen && current.writable === true && (
@@ -665,6 +666,7 @@ export default function OpenClawSpace({
         ) : (
           <>
             <ChatLibraryHeader
+              health={health}
               peer={peer}
               apps={apps}
               logos={logos}
@@ -683,7 +685,7 @@ export default function OpenClawSpace({
               }}
             />
             <div className="chat-library-tools">
-              <ChatAppPicker apps={apps} logos={logos} value="openclaw" onChange={onAppChange} pending={pending} />
+              <ChatAppPicker health={health} apps={apps} logos={logos} value="openclaw" onChange={onAppChange} pending={pending} />
               <label className="chat-list-search">
                 <Search size={16} />
                 <input
@@ -702,9 +704,10 @@ export default function OpenClawSpace({
               </label>
             </div>
             {(error || data?.error) && (
-              <p className="claw-error" role="alert">
-                {error || data?.error}
-              </p>
+              <div className="claw-connection-error" role="alert">
+                <p className="claw-error">{error || data?.error}</p>
+                <button className="claw-button" onClick={reload}>Retry connection</button>
+              </div>
             )}
             {data?.canStart && !error && (
               <button
@@ -739,9 +742,10 @@ export default function OpenClawSpace({
                 Finding OpenClaw on {peer.name}…
               </p>
             )}
-            {data?.connected && !words && (
+            {data?.connected && !words && <ChatCompanion title="Your OpenClaw workspace">Chats, schedules and connected apps.</ChatCompanion>}
+            {data && !words && (
               <nav className="claw-nav" aria-label="OpenClaw">
-                <button type="button" className="claw-nav-item" onClick={() => setPage("scheduled")}>
+                <button type="button" className="claw-nav-item" disabled={!data.connected} onClick={() => setPage("scheduled")}>
                   <Clock size={21} />
                   Scheduled
                 </button>
@@ -760,7 +764,7 @@ export default function OpenClawSpace({
               (found.length ? (
                 agents.map((agent) => (
                   <section className="claw-chats" key={agent} aria-label={agent === "main" ? "Main agent" : agent}>
-                    {agents.length > 1 && <h2 className="claw-label">{agent === "main" ? "Main" : agent}</h2>}
+                    <h2 className="claw-label">{agents.length > 1 ? (agent === "main" ? "Main" : agent) : words ? "Search results" : "Chats"}</h2>
                     {found
                       .filter((s) => s.agentId === agent)
                       .map((s) => (

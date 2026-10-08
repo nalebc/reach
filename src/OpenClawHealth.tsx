@@ -1,8 +1,23 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Activity, Loader2, RotateCw } from "lucide-react";
-import { post, request, type Peer } from "./api";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Activity,
+  ChevronRight,
+  CircleAlert,
+  FileText,
+  Loader2,
+  RefreshCw,
+  Server,
+} from "lucide-react";
+import { request, type Peer } from "./api";
 import { ClawMaintenance } from "./OpenClawMaintenance";
-import ChatSheet from "./ChatSheet";
+import { ClawDialog } from "./OpenClawDialog";
+import { ClawLogViewer } from "./OpenClawLogViewer";
 import { clawBase } from "./OpenClawControls";
 import { ClawRow } from "./OpenClawRow";
 import "./openclaw-health.css";
@@ -18,7 +33,6 @@ type Health = {
   memory: Part<{ bytes: number }>;
   storage: Part<{ dbBytes: number; walBytes: number; warn: boolean }>;
 };
-type Line = { time: number; level: string; source: string; text: string };
 
 const WORD = { ok: "Healthy", slow: "Slow", attention: "Needs attention" };
 // Read at most this often, whatever else changes.
@@ -36,11 +50,6 @@ const since = (ms: number) => {
   const h = Math.floor(m / 60);
   return h < 48 ? `${h} h ${m % 60} min` : `${Math.floor(h / 24)} days`;
 };
-const clock = (t: number) =>
-  t
-    ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : "";
-
 export function ClawHealthPill({
   peer,
   refresh,
@@ -56,15 +65,33 @@ export function ClawHealthPill({
   const [health, setHealth] = useState<Health | null>(null);
   const [open, setOpen] = useState(false);
   const readAt = useRef(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [problem, setProblem] = useState("");
+  const [checked, setChecked] = useState("");
+  const fetching = useRef(false);
   const load = useCallback(
     async (force = false) => {
+      if (fetching.current) return;
       if (!force && Date.now() - readAt.current < EVERY_MS) return;
       readAt.current = Date.now();
+      fetching.current = true;
+      setRefreshing(true);
+      setProblem("");
       try {
         setHealth(await request<Health>(peer, `${clawBase}/health`));
+        setChecked(
+          new Date().toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          }),
+        );
       } catch (e) {
         // A Reach without this route: no pill. A blip keeps what was read.
         if ((e as { status?: number }).status === 404) setHealth(null);
+        else setProblem((e as Error).message);
+      } finally {
+        fetching.current = false;
+        setRefreshing(false);
       }
     },
     [peer],
@@ -93,22 +120,44 @@ export function ClawHealthPill({
           onClick={show}
         />
       ) : (
-        <button type="button" className={`claw-health-pill ${health.status}`} onClick={show}>
+        <button
+          type="button"
+          className={`claw-health-pill ${health.status}`}
+          onClick={show}
+        >
           <span className="claw-health-dot" />
           {WORD[health.status] || WORD.attention}
         </button>
       )}
       {open && (
-        <ChatSheet title="Gateway" className="claw-health-sheet" onClose={() => setOpen(false)}>
+        <ClawDialog
+          title="Gateway"
+          subtitle={`OpenClaw · ${peer.name || "This computer"}`}
+          className="claw-gateway"
+          onClose={() => setOpen(false)}
+          tools={
+            <button
+              className="files-tool"
+              aria-label="Refresh health"
+              disabled={refreshing}
+              onClick={() => void load(true)}
+            >
+              <RefreshCw size={19} className={refreshing ? "spin" : ""} />
+            </button>
+          }
+        >
           <HealthSheet
             peer={peer}
             health={health}
-            onRestarted={() => {
-              void load(true);
+            refreshing={refreshing}
+            checked={checked}
+            problem={problem}
+            onChanged={async () => {
+              await load(true);
               onChanged?.();
             }}
           />
-        </ChatSheet>
+        </ClawDialog>
       )}
     </>
   );
@@ -117,192 +166,133 @@ export function ClawHealthPill({
 function HealthSheet({
   peer,
   health,
-  onRestarted,
+  refreshing,
+  checked,
+  problem,
+  onChanged,
 }: {
   peer: Peer;
   health: Health;
-  onRestarted: () => void;
+  refreshing: boolean;
+  checked: string;
+  problem: string;
+  onChanged: () => Promise<void>;
 }) {
   const { gateway, uptime, memory, storage, channels } = health;
-  return (
-    <div className="claw-health">
-      <ul className="claw-health-rows">
-        <Row label="Status">
-          <span className={`claw-health-word ${health.status}`}>{WORD[health.status]}</span>
-        </Row>
-        {gateway.supported && gateway.version && <Row label="Version">{gateway.version}</Row>}
-        {gateway.supported && gateway.answered && (
-          <Row label="Response">{gateway.ms < 1000 ? `${gateway.ms} ms` : `${(gateway.ms / 1000).toFixed(1)} s`}</Row>
-        )}
-        {uptime.supported && <Row label="Up">{since(uptime.ms)}</Row>}
-        {memory.supported && <Row label="Memory">{size(memory.bytes)}</Row>}
-        {storage.supported && (
-          <Row label="Database">
-            {storage.warn && <span className="claw-badge error">Large</span>}
-            {size(storage.dbBytes)}
-          </Row>
-        )}
-        {storage.supported && storage.walBytes > 100e6 && (
-          <Row label="Of which WAL">{size(storage.walBytes)}</Row>
-        )}
-        {channels.supported && (
-          <Row label="Channels">
-            {channels.failing.length ? (
-              <span className="claw-health-word attention">{channels.failing.join(", ")}</span>
-            ) : (
-              "All fine"
-            )}
-          </Row>
-        )}
-      </ul>
-      <Fixes peer={peer} onRestarted={onRestarted} />
-      <Logs peer={peer} />
-    </div>
-  );
-}
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <li className="claw-health-row">
-      <span>{label}</span>
-      <strong>{children}</strong>
-    </li>
-  );
-}
-
-function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
-  const [maintaining, setMaintaining] = useState(false);
-  const [armed, setArmed] = useState(false);
-  const [busy, setBusy] = useState<"" | "restart">("");
-  const [note, setNote] = useState("");
-  const [problem, setProblem] = useState("");
-  // A second tap restarts; the first only asks, for a few seconds.
-  useEffect(() => {
-    if (!armed) return;
-    const timer = setTimeout(() => setArmed(false), 4000);
-    return () => clearTimeout(timer);
-  }, [armed]);
-  const restart = async () => {
-    if (!armed) return setArmed(true);
-    setArmed(false);
-    setBusy("restart");
-    setNote("");
-    setProblem("");
-    try {
-      const { back } = await post<{ back?: boolean }>(peer, `${clawBase}/health/restart`, { confirm: true });
-      // Not back yet: read health until the Gateway answers again.
-      let up = back !== false;
-      for (let i = 0; !up && i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        up = await request<Health>(peer, `${clawBase}/health`).then(
-          (h) => h.gateway.supported && h.gateway.answered,
-          () => false,
-        );
-      }
-      setNote(up ? "Restarted" : "Still starting");
-      onRestarted();
-    } catch (e) {
-      setProblem((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
+  const [preview, setPreview] = useState<
+    { title: string; lines: string[] } | "logs" | null
+  >(null);
+  const issues = [
+    gateway.supported && !gateway.answered ? "Gateway is not responding." : "",
+    channels.supported && channels.failing.length
+      ? `${channels.failing.join(", ")} ${channels.failing.length === 1 ? "needs" : "need"} attention.`
+      : "",
+    storage.supported && storage.warn ? "The database is unusually large." : "",
+    health.status === "slow" ? "Gateway is responding slowly." : "",
+  ].filter(Boolean);
   return (
     <>
-      <div className="claw-health-actions">
-        <button
-          type="button"
-          className={`claw-secondary ${armed ? "armed" : ""}`}
-          disabled={!!busy || maintaining}
-          onClick={restart}
+      <div className="claw-gateway-body">
+        <section
+          className={`claw-gateway-status ${health.status}`}
+          aria-label="Gateway status"
         >
-          {busy === "restart" && <Loader2 size={14} className="spin" />}
-          {busy === "restart" ? "Restarting…" : armed ? "Tap to restart" : "Restart"}
-        </button>
+          <div className="claw-status-icon">
+            {health.status === "attention" ? (
+              <CircleAlert size={26} />
+            ) : (
+              <Server size={26} />
+            )}
+          </div>
+          <div>
+            <span className="claw-eyebrow">OPENCLAW GATEWAY</span>
+            <h1>{WORD[health.status]}</h1>
+            <p>
+              {issues.join(" ") ||
+                (gateway.supported && gateway.answered
+                  ? "Connected and ready for conversations."
+                  : "No issues reported by available checks.")}
+            </p>
+          </div>
+        </section>
+        <div className="claw-check-time" role="status">
+          {refreshing ? (
+            <>
+              <Loader2 size={13} className="spin" /> Refreshing status…
+            </>
+          ) : (
+            `Checked ${checked}`
+          )}
+        </div>
+        {problem && (
+          <p className="claw-maintenance-problem" role="alert">
+            Couldn’t refresh: {problem}. Showing the last result.
+          </p>
+        )}
+        <dl className="claw-gateway-metrics">
+          {gateway.supported && gateway.version && (
+            <Metric label="Version">{gateway.version}</Metric>
+          )}
+          {uptime.supported && (
+            <Metric label="Uptime">{since(uptime.ms)}</Metric>
+          )}
+          {gateway.supported && gateway.answered && (
+            <Metric label="Response">
+              {gateway.ms < 1000
+                ? `${gateway.ms} ms`
+                : `${(gateway.ms / 1000).toFixed(1)} s`}
+            </Metric>
+          )}
+          {storage.supported && (
+            <Metric label="Database">
+              {size(storage.dbBytes)}
+              {storage.warn && <small>Large</small>}
+            </Metric>
+          )}
+          {memory.supported && (
+            <Metric label="Memory">{size(memory.bytes)}</Metric>
+          )}
+          {storage.supported && storage.walBytes > 100e6 && (
+            <Metric label="Database journal">{size(storage.walBytes)}</Metric>
+          )}
+        </dl>
+        <ClawMaintenance
+          peer={peer}
+          onChanged={onChanged}
+          onViewOutput={(title, lines) => setPreview({ title, lines })}
+          onOpenLogs={() => setPreview("logs")}
+        />
+        <section className="claw-diagnostics">
+          <h2 className="claw-section-title">Diagnostics</h2>
+          <button
+            className="claw-log-entry"
+            onClick={() => setPreview("logs")}
+            aria-label="Open logs"
+          >
+            <FileText size={22} />
+            <span>
+              <strong>Gateway logs</strong>
+              <small>Read, search and copy recent activity</small>
+            </span>
+            <ChevronRight size={18} />
+          </button>
+        </section>
       </div>
-      <ClawMaintenance peer={peer} onChanged={onRestarted} onBusyChange={setMaintaining} disabled={!!busy} />
-      {note && <p className="claw-note claw-health-note">{note}</p>}
-      {problem && (
-        <p className="claw-error" role="alert">
-          {problem}
-        </p>
+      {preview && (
+        <ClawLogViewer
+          peer={peer}
+          output={preview === "logs" ? undefined : preview}
+          onClose={() => setPreview(null)}
+        />
       )}
     </>
   );
 }
-
-function Logs({ peer }: { peer: Peer }) {
-  const [errors, setErrors] = useState(false);
-  const [lines, setLines] = useState<Line[] | null>(null);
-  const [supported, setSupported] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState("");
-  const asked = useRef(0);
-  const load = useCallback(async () => {
-    const ask = ++asked.current;
-    setBusy(true);
-    setProblem("");
-    try {
-      const got = await request<{ supported: boolean; lines?: Line[] }>(
-        peer,
-        `${clawBase}/health/logs${errors ? "?errors=1" : ""}`,
-      );
-      if (ask !== asked.current) return;
-      setSupported(got.supported);
-      setLines(got.lines || []);
-    } catch (e) {
-      if (ask === asked.current) setProblem((e as Error).message);
-    } finally {
-      if (ask === asked.current) setBusy(false);
-    }
-  }, [peer, errors]);
-  useEffect(() => {
-    void load();
-  }, [load]);
-  // The newest line in view.
-  const list = useRef<HTMLOListElement>(null);
-  useEffect(() => {
-    if (list.current) list.current.scrollTop = list.current.scrollHeight;
-  }, [lines]);
-  if (!supported) return null;
+function Metric({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <section className="claw-health-logs" aria-label="Logs">
-      <header>
-        <h3>Logs</h3>
-        <div className="claw-health-filter" role="group" aria-label="Log filter">
-          <button type="button" aria-pressed={!errors} onClick={() => setErrors(false)}>
-            All
-          </button>
-          <button type="button" aria-pressed={errors} onClick={() => setErrors(true)}>
-            Errors
-          </button>
-        </div>
-        <button
-          type="button"
-          className="claw-health-refresh"
-          aria-label="Refresh logs"
-          disabled={busy}
-          onClick={() => void load()}
-        >
-          <RotateCw size={14} className={busy ? "spin" : ""} />
-        </button>
-      </header>
-      {problem && (
-        <p className="claw-error" role="alert">
-          {problem}
-        </p>
-      )}
-      {lines && !lines.length && <p className="claw-empty">{errors ? "No errors" : "No lines"}</p>}
-      {!!lines?.length && (
-        <ol ref={list} className="claw-health-lines">
-          {lines.map((line, i) => (
-            <li key={i} className={line.level}>
-              <time>{clock(line.time)}</time>
-              {line.text}
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
+    <div>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
   );
 }

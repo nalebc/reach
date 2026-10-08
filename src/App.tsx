@@ -162,6 +162,7 @@ function ReachWorkspace() {
       () => localStorage.getItem(activeKey()) || readPeers()[0]?.id || "",
     ),
     [page, setPage] = useState("overview"),
+    [chatHomeRevision, setChatHomeRevision] = useState(0),
     [pairing, setPairing] = useState(false),
     [quickLaunch, setQuickLaunch] = useState(false),
     [deviceState, setDeviceState] = useState<{
@@ -514,6 +515,13 @@ function ReachWorkspace() {
   const navigate = (id: string) => {
     if (id === "invite") setInviteKind("person");
     if (!pageAccessible(id, features)) return;
+    // Re-selecting Chat is a shortcut to its root, from any nested view.
+    // Keep the chosen provider and shared feed; discard only local navigation.
+    if (id === "sessions" && page === "sessions") {
+      setChatTarget(null);
+      setLinkTarget(null);
+      setChatHomeRevision((n) => n + 1);
+    }
     if (id === "terminal")
       setTerminalSource(features.desktopTerminals ? "mac" : "reach");
     setPage(id);
@@ -925,6 +933,7 @@ function ReachWorkspace() {
                 )}
                 {page === "sessions" && (
                   <EverythingChat
+                    key={`${peer.id}:${chatHomeRevision}`}
                     peer={peer}
                     feed={agentFeed}
                     target={chatTarget}

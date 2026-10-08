@@ -42,6 +42,18 @@ const desktopActions = [
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
+  if (access.services) {
+    tools.push(
+      definition("reach_services", "Services", "Discover available service tools and this agent's service access. Service consent is separate from laptop permissions.", object(), {}),
+      definition("reach_service_request", "Request service access", "Request read-only service access from the owner once for this agent session. Repeated calls reuse an open request. Poll reach_services; never approve your own access.", object({ connectorId: string(48), reason: string(300) }, ["connectorId", "reason"]), access.services.connectors?.[0] ? { connectorId: access.services.connectors[0].id, reason: "Read the requested information." } : {}, { approvalRequired: true }),
+    );
+    for (const connector of access.services.connectors || []) for (const action of connector.unavailable ? [] : connector.actions) {
+      tools.push(definition(`reach_service_${connector.id}_${action.id}`, `${action.title} · ${connector.name}`,
+        `${connector.description} ${action.permission}. First request service access with reach_service_request if not approved; after approval reuse it for this session.`,
+        { ...action.inputSchema, properties: { ...action.inputSchema.properties, requestId }, required: [...(action.inputSchema.required || []), "requestId"] },
+        { ...action.example, requestId: "00000000-0000-4000-8000-000000000001" }));
+    }
+  }
   if (access.screen) tools.push(
     definition("reach_screenshot", "Screenshot", "The Mac's screen now, as {image: base64 JPEG, mimeType}, at the display's own resolution up to maxWidth pixels (default 2560; use up to 3840 to read small controls). Reach's own windows, password apps and apps the owner hid are left out; in the Apps preset only the chosen apps appear. Coordinates for actions are fractions of this image.", object({ maxWidth: integer(320, 3840) }), { maxWidth: 2560 }),
     definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
@@ -207,6 +219,12 @@ export function browserToolRequest(name, args, access) {
   validate(tool.inputSchema, args);
   // Copy before the asynchronous request; later mutations cannot change approval content.
   const input = JSON.parse(JSON.stringify(args));
+  for (const connector of access.services?.connectors || []) for (const action of connector.actions) {
+    if (name === `reach_service_${connector.id}_${action.id}`) {
+      const { requestId, ...values } = input;
+      return { route: "/api/browser/services/run", method: "POST", body: { connectorId: connector.id, action: action.id, values, requestId }, response: "json" };
+    }
+  }
   if (name === "reach_define_tool" && new TextEncoder().encode(JSON.stringify(input.definition)).length > 24000) invalid("The definition exceeds 24 KiB.");
   const deterministic = (access.browserTools?.tools || []).find(item => deterministicToolName(item) === name);
   if (deterministic) {
@@ -231,6 +249,8 @@ export function browserToolRequest(name, args, access) {
   }
   if (name === "reach_shell") { rootAllowed(access, input.root); pathAllowed(input.cwd); }
   switch (name) {
+    case "reach_services": return get("/api/browser/services");
+    case "reach_service_request": return { route: "/api/browser/services/request", method: "POST", body: input, response: "json" };
     case "reach_tools": return get(`/api/browser/tools${input.query ? `?${new URLSearchParams({ query: input.query })}` : ""}`);
     case "reach_tool_protocol": return get("/api/browser/tools/protocol");
     case "reach_define_tool": return { route: "/api/browser/tools/define", method: "POST", body: input, response: "json" };

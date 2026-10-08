@@ -7,10 +7,12 @@
 // Only numbers and Reach's own labels leave the host; log lines are scrubbed.
 import fs from "node:fs/promises";
 import os from "node:os";
+import crypto from "node:crypto";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { localOpenClawConfig } from "./openclaw.mjs";
+import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
@@ -268,47 +270,89 @@ export async function restartOpenClawGateway({
 // Fixed commands only. No terminal, no interactive stdin, bounded runtime/output.
 export async function runOpenClawMaintenance(action, {
   run = promisify(execFile), env = process.env, platform = process.platform,
-  authorize = () => {}, configuration = localOpenClawConfig,
+  authorize = () => {}, configuration = localOpenClawConfig, runtime,
 } = {}) {
   const commands = {
     doctor: "openclaw doctor --non-interactive --no-workspace-suggestions",
     repair: "openclaw doctor --repair --non-interactive --no-workspace-suggestions",
     update: "openclaw update --yes --json --timeout 600",
+    "finish-update": "openclaw update repair --yes --json --timeout 600",
+    "verify-update": "openclaw gateway status --json --require-rpc",
+    "repair-service": "openclaw gateway install --force --runtime node --json",
   };
   if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
   authorize();
   await configuration();
   authorize();
-  let output, failed = false;
+  runtime ??= await availableUpdateRuntime({ platform });
+  const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  let command = commands[action];
+  if (runtime && platform !== "win32") {
+    command = `export PATH=${quote(path.dirname(runtime))}:"$PATH"; ${command}`;
+    if (action === "repair-service") command += ` --runtime-path ${quote(runtime)}`;
+  }
+  let output, failed = false, failureReason = "", updateResult;
   try {
     output = await run(platform === "win32" ? "cmd.exe" : env.SHELL || "/bin/sh",
-      platform === "win32" ? ["/d", "/c", commands[action]] : ["-lc", commands[action]],
-      { env, timeout: action === "update" ? 1800000 : 120000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+      platform === "win32" ? ["/d", "/c", command] : ["-lc", command],
+      { env, timeout: ["update", "finish-update"].includes(action) ? 1800000 : 120000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
   } catch (error) {
     output = { stdout: error.stdout || "", stderr: error.stderr || "" };
     failed = true;
+    failureReason = error.killed ? "The command exceeded its time limit."
+      : error.code === "ENOENT" ? "The command could not start: its executable was not found."
+      : error.code === "EACCES" ? "Permission denied while starting the command."
+      : Number.isInteger(error.code) ? `The command exited with code ${error.code}.`
+      : error.signal ? `The command stopped (${scrubLine(error.signal, 30)}).`
+      : "The command could not complete.";
   }
+  authorize();
   // A successful process may still report a skipped or failed update.
   let skipped = false;
-  if (action === "update" && !failed) {
+  if (["update", "finish-update"].includes(action)) {
     try {
-      const result = JSON.parse(output.stdout);
-      failed = !["ok", "skipped"].includes(result.status) || result.ok === false;
+      // Plugin and service messages can surround the CLI's JSON result.
+      const stdout = String(output.stdout || "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+      const candidates = [stdout, ...(stdout.match(/^\{[^\n]*\}$|^\{\s*\n[\s\S]*?^\}/gm) || [])];
+      const results = candidates.flatMap((text) => {
+        try { return [JSON.parse(text)]; } catch { return []; }
+      });
+      const result = results.find((value) => value && ["ok", "skipped", "error", "warning"].includes(value.status));
+      if (!result) throw new Error("Missing update result");
+      updateResult = result;
+      failed = failed || !["ok", "skipped", "warning"].includes(result.status) || result.ok === false;
       skipped = result.status === "skipped";
     } catch {
       // Don't claim an update succeeded without its structured result.
       failed = true;
+      failureReason ||= "OpenClaw did not return a valid update result. Check the output before retrying.";
     }
   }
   const lines = `${output.stdout || ""}\n${output.stderr || ""}`.split(/\r?\n/)
-    .slice(-200).map(scrubLine).filter(Boolean);
+    .slice(-200).map((line) => scrubLine(line)).filter(Boolean);
+  const failedStep = Array.isArray(updateResult?.steps)
+    ? updateResult.steps.find((step) => step && Number.isInteger(step.exitCode) && step.exitCode !== 0) : null;
+  const detail = [updateResult?.reason, updateResult?.error?.message, updateResult?.error,
+    failedStep?.stderrTail, output.stderr].find((value) => typeof value === "string" && value.trim());
+  const stepError = typeof failedStep?.stderrTail === "string" ? failedStep.stderrTail.trim() : "";
+  const reason = detail ? scrubLine([detail, stepError && stepError !== detail ? stepError : ""].filter(Boolean).join(": ")) : failureReason;
+  if (failedStep) {
+    lines.push(scrubLine(`Failed step: ${failedStep.name || "Update"} (exit ${failedStep.exitCode})`));
+    lines.push(...stepError.split(/\r?\n/).slice(-30).map((line) => scrubLine(line)).filter(Boolean));
+  }
+  if (failureReason) lines.push(failureReason);
+  const recovery = failed && ["update", "finish-update"].includes(action)
+    ? await updateRecovery(`${output.stdout || ""}\n${output.stderr || ""}`, { platform }) : null;
   return {
+    ...(recovery ? { recovery } : {}),
+    ...(updateResult?.status === "warning" ? { warnings: true } : {}),
     status: failed ? "failed" : skipped ? "skipped" : "done",
-    message: failed ? "OpenClaw couldn't finish. Review the details and try again."
-      : skipped ? "OpenClaw skipped the update. Review the details."
+    message: failed ? `${action === "update" ? "Update failed" : "OpenClaw couldn't finish"}: ${reason || "OpenClaw reported an error. Open the output for details."}`
+      : skipped ? `Update skipped: ${reason || "OpenClaw did not apply an update. Open the output for details."}`
+      : updateResult?.status === "warning" ? "OpenClaw completed with warnings. Review the output for remaining issues."
       : action === "update" ? "Update finished. OpenClaw is reconnecting."
       : action === "repair" ? "Repairs finished. Check health again."
-      : "Health check finished. Review the findings below.",
+      : "Health check finished. Open the output to review findings.",
     lines,
   };
 }
@@ -320,6 +364,8 @@ export function routes(
     base,
     authorize,
     runMaintenance = runOpenClawMaintenance,
+    authorizeMaintenance = authorize,
+    installRuntime = installUpdateRuntime,
     env = process.env,
     home = os.homedir(),
     restart = restartOpenClawGateway,
@@ -333,6 +379,7 @@ export function routes(
   } = {},
 ) {
   let job = null;
+  let pendingRecovery = null;
   let restarting = false;
   // The state files are walked at most once a minute.
   let filesAt = 0,
@@ -441,20 +488,85 @@ export function routes(
 
   // One maintenance operation per host; polling survives closing the sheet.
   app.get(`${base}/health/maintenance`, (_req, res) => res.json({ job }));
+  const finish = (next, result) => {
+    const { recovery, ...fields } = result;
+    pendingRecovery = recovery || null;
+    Object.assign(next, fields, { finishedAt: now() });
+    if (recovery) {
+      next.recovery = publicRecovery(recovery);
+      if (recovery.available) next.status = "awaiting_approval";
+    }
+  };
+  const rejected = (next, error) => {
+    const reason = scrubLine(error?.message || "The maintenance command could not start.");
+    Object.assign(next, { status: "failed", message: reason, lines: [...next.lines, reason].slice(-200), finishedAt: now() });
+  };
+  app.post(`${base}/health/maintenance/continue`, async (req, res) => {
+    authorize(req)();
+    if (req.body?.confirm !== true) throw fail(400, "Approve the required changes first.");
+    if (!job || job.id !== req.body.jobId || job.status !== "awaiting_approval" || !pendingRecovery?.available)
+      throw fail(409, "This update changed. Refresh its details before approving.");
+    const recipe = pendingRecovery;
+    const check = authorizeMaintenance(req);
+    const current = () => {
+      check();
+      if (recipe.kind === "node" && (req.client?.kind !== "device" || !req.client?.scopes?.includes("admin")))
+        throw fail(403, "Only this computer’s owner can approve dependency installation.");
+    };
+    current();
+    const next = { id: crypto.randomUUID(), action: "update", status: "running", startedAt: now(), lines: [], phase: "Preparing approved changes…" };
+    job = next;
+    pendingRecovery = null;
+    Promise.resolve().then(async () => {
+      const phase = (text) => { current(); next.phase = text; next.lines.push(text); };
+      let runtime;
+      if (recipe.kind === "node") {
+        phase("Installing Node 24 and its dependencies…");
+        runtime = await installRuntime(recipe, { env, authorize: current });
+        phase("Retrying the OpenClaw update…");
+        const updated = await runMaintenance("update", { env, authorize: current, runtime });
+        next.lines.push(...updated.lines);
+        if (updated.warnings) next.warnings = true;
+        if (updated.status !== "done" && updated.recovery?.kind !== "repair") {
+          finish(next, { ...updated, lines: next.lines.slice(-200) });
+          return;
+        }
+      }
+      for (const [action, label] of [
+        ["repair-service", "Repairing the Gateway service…"],
+        ["finish-update", "Migrating settings and plugins…"],
+        ["verify-update", "Verifying the Gateway connection…"],
+      ]) {
+        phase(label);
+        const result = await runMaintenance(action, { env, authorize: current, runtime });
+        next.lines.push(...result.lines);
+        if (result.warnings) next.warnings = true;
+        if (result.status !== "done") {
+          finish(next, { ...result, lines: next.lines.slice(-200) });
+          return;
+        }
+      }
+      finish(next, { status: "done", message: next.warnings ? "The Gateway is connected. OpenClaw reported warnings; review the output for remaining issues." : "OpenClaw updated. Required repairs are complete and the Gateway is connected.", lines: next.lines.slice(-200) });
+    }).catch(error => rejected(next, error));
+    res.json({ job: next });
+  });
   for (const action of ["doctor", "repair", "update"]) {
     app.post(`${base}/health/${action}`, async (req, res) => {
-      const current = authorize(req);
+      authorize(req)();
+      const current = authorizeMaintenance(req);
       current();
       if (req.body?.confirm !== true) throw fail(400, "Confirm this OpenClaw action.");
       if (job?.status === "running" || restarting) throw fail(409, "An OpenClaw action is already running.");
-      const next = { action, status: "running", startedAt: now(), lines: [] };
+      const next = { id: crypto.randomUUID(), action, status: "running", startedAt: now(), lines: [] };
       job = next;
+      pendingRecovery = null;
       Promise.resolve().then(async () => {
         current();
         const result = await runMaintenance(action, { env, authorize: current });
-        Object.assign(next, result, { finishedAt: now() });
-      }).catch(() => {
-        Object.assign(next, { status: "failed", message: "OpenClaw couldn't finish. Try again.", finishedAt: now() });
+        finish(next, result);
+      }).catch((error) => {
+        const reason = scrubLine(error?.message || "The maintenance command could not start.");
+        Object.assign(next, { status: "failed", message: `Could not start ${action}: ${reason}`, lines: [reason], finishedAt: now() });
       });
       res.json({ job: next });
     });

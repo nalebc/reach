@@ -40,6 +40,8 @@ const publicGatewayError = (value) => {
   if (!text) return "";
   // This exact local status is safe even if echoed by a Gateway.
   if (text === unconfirmedRun) return unconfirmedRun;
+  if (/protocol mismatch/i.test(text))
+    return "Reach and OpenClaw use incompatible connection versions. Update Reach to reconnect.";
   if (/credit balance|quota|billing|rate.?limit|429/i.test(text))
     return "OpenClaw reports a credit balance or usage limit. Check OpenClaw on this computer.";
   if (/auth|credential|api.?key|token|password|401|403/i.test(text))
@@ -552,8 +554,10 @@ export function createOpenClaw({
               "",
             ].join("|");
             request("connect", {
+              // 2026.9 moved to protocol 4; older installed Gateways use 3.
+              // Both retain this signed handshake and the RPCs used by Reach.
               minProtocol: 3,
-              maxProtocol: 3,
+              maxProtocol: 4,
               client: {
                 id: "gateway-client",
                 displayName: "Reach",

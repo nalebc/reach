@@ -167,10 +167,10 @@ export function ClawRelayAction({
     <div ref={row} className={`claw-relay${latest || tapped || picking || sheet ? " on" : ""}`}>
       <div className="claw-relay-pills" role="group" aria-label="Hand off">
         <button className="claw-relay-pill" onClick={() => ask("opinion")}>
-          <SearchCheck size={14} /> Second opinion
+          <SearchCheck size={14} /> Review reply
         </button>
         <button className="claw-relay-pill" onClick={() => ask("relay")}>
-          <Workflow size={14} /> Relay
+          <Workflow size={14} /> Hand off
         </button>
         {cwd && (
           <button

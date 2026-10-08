@@ -166,13 +166,23 @@ test("an agent that is also out of usage isn't offered, and an old limit with us
   mac.pages[`codex:${CODEX}`].items = [limitError()];
   await open(codexSession(), both({ usable: false }, { usable: false }));
   await dom.waitFor(() => $(".usage-strip"));
-  assert.equal($(".usage-continue"), null, "Claude Code is out too");
+  assert.deepEqual($$(".usage-continue-offer").map((b) => b.textContent.trim()), ["Auto-continue"], "Claude Code is out too");
   await views.splice(0)[0].unmount();
   // A day-old limit, Codex usable again: no strip at all.
   mac.pages[`codex:${CODEX}`].items = [limitError(Date.now() - 86400000)];
   await open(codexSession(), both());
   await dom.waitFor(() => $(".as-error.codex"));
   assert.equal($(".usage-strip"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("out of usage, the line opens Auto-continue's provider order", async () => {
+  mac.pages[`codex:${CODEX}`].items = [limitError()];
+  await open(codexSession(), both({ usable: false }));
+  await click(await dom.waitFor(() => $(".usage-auto-continue")));
+  await dom.waitFor(() => $(".continue-priority"));
+  assert.deepEqual($$(".continue-priority strong").map((n) => n.textContent), ["Codex", "Claude Code", "Gemini CLI", "OpenClaw"]);
+  assert.deepEqual(mac.sent, []);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -223,7 +233,7 @@ test("a second opinion from a reply starts a review in the other agent, sent bac
   assert.ok(sheet.classList.contains("reach-native"), "Reach's own look, not either app's");
   // The route: Codex replied, Claude Code reviews, Codex gets it back.
   assert.deepEqual(routeLabels(sheet), ["replied", "reviews", "gets it back"]);
-  assert.match(sheet.querySelector(".relay-say").textContent, /Claude Code reads what Codex was asked.*reads only, and asks you before anything more/);
+  assert.match(sheet.querySelector(".relay-say").textContent, /Claude Code checks Codex’s reply and changed files for mistakes.*asks before making changes/);
   // The reviewer's tile switches reviewer; back to Claude Code.
   await click(sheet.querySelector('.relay-node[aria-label="Claude Code reviews"]'));
   assert.equal(sheet.querySelector(".relay-go").textContent, "Ask a new Codex chat");
@@ -244,7 +254,7 @@ test("a second opinion from a reply starts a review in the other agent, sent bac
   assert.deepEqual(dom.errors, []);
 });
 
-test("while the agent works, a relay is drawn as a route, grows a step at a time, and can be cancelled", async (t) => {
+test("while the agent works, a handoff has clear choices, optional follow-ups, and can be cancelled", async (t) => {
   mac.pages[`codex:${CODEX}`].items = [{ id: "u1", role: "user", kind: "text", text: "Plan the login" }];
   mac.live = { ...mac.live, status: "running" };
   routes["/api/sessions/relays"] = record("/api/sessions/relays");
@@ -258,26 +268,22 @@ test("while the agent works, a relay is drawn as a route, grows a step at a time
   mac.pages[`codex:${CODEX}`].session = codexSession({ status: "running" });
   await open(codexSession({ status: "running" }), both());
   await dom.waitFor(() => $(".as-working"));
-  await click(button("Relay when done"));
+  await click(button("Hand off when done"));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
-  assert.equal(sheet.querySelector("h2").textContent, "Relay");
+  assert.equal(sheet.querySelector("h2").textContent, "Hand off");
   assert.equal(sheet.querySelector(".relay-when-line").textContent, "When Codex finishes");
   assert.equal($(".relay-when"), null, "only when it finishes: nothing to send yet");
-  // One route, one sentence: Claude Code builds it.
-  assert.deepEqual(routeLabels(sheet).slice(0, 2), ["now", "builds"]);
-  assert.equal(sheet.querySelector(".relay-say").textContent, "Claude Code builds what Codex wrote, in a new chat here.");
-  // The next step is offered where the route ends: a review, then the fixes.
-  await click(sheet.querySelector('.relay-node.add[aria-label="Add: Codex reviews"]'));
-  await click(sheet.querySelector('.relay-node.add[aria-label="Add: Claude Code fixes"]'));
-  assert.deepEqual(routeLabels(sheet), ["now", "builds", "reviews", "fixes"]);
-  assert.equal(sheet.querySelector(".relay-node.add"), null, "three steps at most");
-  assert.equal(
-    sheet.querySelector(".relay-say").textContent,
-    "Claude Code builds what Codex wrote, in a new chat here, then Codex reviews the work, then Claude Code fixes what the review found.",
-  );
-  await click([...sheet.querySelectorAll(".relay-extras button")].find((b) => /Note/.test(b.textContent)));
+  assert.equal(sheet.querySelector('select[aria-label="Agent for the new chat"]').value, "claude");
+  assert.equal(sheet.querySelector('select[aria-label="What should it do?"]').value, "build");
+  assert.equal(sheet.querySelector(".handoff-followups").open, false);
+  await click(sheet.querySelector(".handoff-followups summary"));
+  await click(button("Add a review of the finished work"));
+  await click(button("Send the review back for fixes"));
+  assert.equal(sheet.querySelectorAll(".handoff-followup").length, 2);
+  assert.equal(sheet.querySelector(".handoff-add"), null, "three steps at most");
+  assert.match(sheet.textContent, /Send the review back to Claude Code to address the findings/);
   await typeInto(sheet.querySelector(".relay-instructions"), "Add tests too");
-  await click(button("Start relay"));
+  await click(button("Hand off after reply"));
   await dom.waitFor(() => !$(".relay-sheet"));
   assert.deepEqual(mac.sent[0], {
     route: "/api/sessions/relays",
@@ -289,7 +295,7 @@ test("while the agent works, a relay is drawn as a route, grows a step at a time
   });
   const row = await dom.waitFor(() => $(".relay-row"));
   assert.match(row.textContent, /When Codex finishes: Claude Code builds it, then Codex reviews it, then the review goes back to Claude Code/);
-  await click(button("Cancel relay"));
+  await click(button("Cancel handoff"));
   assert.equal(mac.sent[1].route, "/api/sessions/relays/r1/cancel");
   await dom.waitFor(() => !$(".relay-row"));
   assert.deepEqual(dom.errors, []);
@@ -301,21 +307,54 @@ test("an idle chat's reply can go now into a chat you pick", async (t) => {
   t.after(() => delete routes["/api/sessions/relays"]);
   mac.answers["/api/sessions/relays"] = { relay: relayOf({ state: "done", next: 1, steps: [{ kind: "send", to: { agent: "claude", id: CLAUDE, title: "Refactor auth" } }] }), opened: { agent: "claude", id: CLAUDE } };
   await open(codexSession(), both(), { everyone: [codexSession(), claudeSession(), claudeSession({ id: NEW, title: "Old", archived: true })] });
-  assert.equal(button("Relay when done"), undefined, "idle: no chip above the box");
-  await click(await dom.waitFor(() => button("Relay this reply")));
+  assert.equal(button("Hand off when done"), undefined, "idle: no chip above the box");
+  await click(await dom.waitFor(() => button("Hand off this reply")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
-  assert.equal(sheet.querySelector('.relay-when [aria-checked="true"]').textContent, "Its reply now");
-  // The step's tile opens what it can be instead: a chat you pick.
-  await click(sheet.querySelector('.relay-node[aria-label="Claude Code builds"]'));
-  await click([...sheet.querySelectorAll(".relay-edit button")].find((b) => b.textContent === "to a chat…"));
-  assert.equal(button("Relay now").disabled, true, "a chat first");
+  assert.equal(sheet.querySelector('.relay-when [aria-checked="true"]').textContent, "Now — latest reply");
+  const destination = sheet.querySelector('select[aria-label="Where should the work go?"]');
+  destination.value = "existing";
+  destination.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await settle();
+  assert.match(sheet.querySelector(".handoff-help").textContent, /sent as a new message/);
+  assert.equal(sheet.querySelector(".handoff-followups"), null);
+  assert.equal(button("Hand off now").disabled, true, "a chat first");
   const chats = [...sheet.querySelectorAll(".relay-chat")];
   assert.deepEqual(chats.map((c) => c.querySelector("span").textContent), ["Refactor auth"], "not this chat, not archived ones");
   await click(chats[0]);
-  assert.equal(sheet.querySelector(".relay-say").textContent, "It goes into “Refactor auth”.".replace("It", "it"));
-  await click(button("Relay now"));
+  assert.equal(chats[0].getAttribute("aria-selected"), "true");
+  await click(button("Hand off now"));
   await dom.waitFor(() => mac.sent.length === 1);
   assert.deepEqual(mac.sent[0].body, { from: { agent: "codex", id: CODEX }, steps: [{ kind: "send", to: { agent: "claude", id: CLAUDE } }], now: true });
+  assert.deepEqual(dom.errors, []);
+});
+
+test("handoff review uses a new chat and clears follow-ups when switching destinations", async (t) => {
+  mac.pages[`codex:${CODEX}`].items = turn();
+  routes["/api/sessions/relays"] = record("/api/sessions/relays");
+  t.after(() => delete routes["/api/sessions/relays"]);
+  mac.answers["/api/sessions/relays"] = { relay: relayOf({ steps: [{ kind: "review", agent: "claude" }] }) };
+  await open(codexSession(), both());
+  await click(await dom.waitFor(() => button("Hand off this reply")));
+  const sheet = await dom.waitFor(() => $(".relay-sheet"));
+  await click(sheet.querySelector(".handoff-followups summary"));
+  await click(button("Add a review of the finished work"));
+  const select = async (label, value) => {
+    const el = sheet.querySelector(`select[aria-label="${label}"]`);
+    el.value = value;
+    el.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await settle();
+  };
+  await select("Where should the work go?", "existing");
+  await select("Where should the work go?", "new");
+  assert.equal(sheet.querySelectorAll(".handoff-followup").length, 0);
+  await select("What should it do?", "review");
+  assert.equal(sheet.querySelector(".relay-instructions"), null, "no instructions field that a review would ignore");
+  assert.match(sheet.querySelector(".handoff-help").textContent, /Checks the reply/);
+  await click(button("Hand off now"));
+  await dom.waitFor(() => mac.sent.length === 1);
+  assert.deepEqual(mac.sent[0].body, {
+    from: { agent: "codex", id: CODEX }, steps: [{ kind: "review", agent: "claude" }], now: true,
+  });
   assert.deepEqual(dom.errors, []);
 });
 
@@ -419,6 +458,7 @@ test("the All page groups every agent's chats by project, warns of files two cha
   assert.deepEqual([...projects[0].querySelectorAll(".chat-card strong")].map((e) => e.textContent), ["Fix login", "Refactor auth"]);
   assert.match(projects[0].textContent, /Changed auth\.ts, login\.ts/);
   const warning = await dom.waitFor(() => $(".hub-overlap"));
+  assert.equal(warning.closest("details").open, false, "shared edits are collapsed by default");
   assert.match(warning.textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\) in the last half hour/);
   // No "while you were away" card, and nothing asked for one.
   assert.equal($(".hub-away"), null);
@@ -426,6 +466,7 @@ test("the All page groups every agent's chats by project, warns of files two cha
   // Relays under way, with Cancel.
   assert.match($(".hub-relays").textContent, /Fix login.*When Codex finishes: Claude Code builds it/);
   // One search: names at once, what was said from the Mac.
+  await click($('.chat-hub .chat-mobile-tools [aria-label="Search chats"]'));
   await typeInto($('input[aria-label="Search all chats"]'), "token");
   const hit = await dom.waitFor(() => $$(".hub-hit").find((h) => /compared as a number/.test(h.textContent)));
   assert.match(hit.textContent, /Refactor auth.*Claude Code: …the token was compared as a number…/);
@@ -537,27 +578,24 @@ test("the lead's chat shows its team at work, a helper's chat the way back, and 
   assert.deepEqual(dom.errors, []);
 });
 
-test("usage on the All page: a ring at the top, one row when an agent is close, its limits a tap away, and an agent with room to start in", async () => {
+test("usage on All stays in the header, with limits and new chat a tap away", async () => {
   const soon = Date.now() + 3 * 3600 * 1000;
   const usage = (percent) => ({ available: true, updatedAt: Date.now(), windows: [{ id: "w", label: "Weekly", usedPercent: percent, resetsAt: soon, severity: "normal" }] });
   dom.window.localStorage.setItem("reach.chatAgent", "all");
   await home([codexSession(), claudeSession()], both({ usage: usage(30) }, { usage: usage(92) }));
   await dom.waitFor(() => $(".chat-hub"));
-  // Below 80% an agent says nothing; Claude at 92% gets the row.
-  const row = await dom.waitFor(() => $(".usage-row"));
-  assert.ok(row.classList.contains("warning"));
-  assert.match(row.textContent, /Claude Code 92% · resets/);
+  assert.equal($(".usage-row"), null, "no duplicate usage banner");
   // The ring at the top is the agent closest to its limit, said in words to a screen reader.
   const ring = $$(".usage-button").find((b) => b.closest(".chat-mobile-tools"));
   assert.match(ring.getAttribute("aria-description"), /^Claude, 92% of Weekly used, resets/);
   assert.ok(ring.classList.contains("warning"));
-  // The row opens each agent's limits.
-  await click(row.querySelector(".usage-row-main"));
+  // The ring opens each agent's limits.
+  await click(ring);
   const sheet = await dom.waitFor(() => $(".usage-sheet"));
   assert.deepEqual([...sheet.querySelectorAll(".usage-sheet-agent h3")].map((h) => h.textContent), ["Codex", "Claude"]);
   await click(sheet.querySelector(".chat-sheet-close"));
   // Use Codex: a new chat, in Codex.
-  await click([...row.querySelectorAll("button")].find((b) => /Use Codex/.test(b.textContent)));
+  await click($(".chat-hub .chat-quick-new"));
   const create = await dom.waitFor(() => $(".chat-create-sheet"));
   const tokens = [...create.querySelectorAll(".chat-app-token")];
   assert.equal(tokens.find((b) => b.getAttribute("aria-pressed") === "true")?.getAttribute("aria-label"), "Codex");
@@ -691,7 +729,7 @@ test("the All page covers every paired computer: one search and one projects lis
   // Who isn't here, and why; the page names the computers it covers.
   const note = await dom.waitFor(() => $(".hub-fleet-note"));
   await dom.waitFor(() => note.textContent === "Attic didn’t answer. Office needs this phone paired again. Lab doesn’t share its chats with this phone.");
-  assert.equal($(".hub-lead").textContent, "Every agent’s chats on Mac, Studio, Attic and Office, together.");
+  assert.equal($(".chat-hub .chat-companion-copy"), null, "no introductory block above the chats");
   // One projects list: the same folder on two computers is two projects.
   const projects = await dom.waitFor(() => ($$(".hub-project").length === 3 ? $$(".hub-project") : null));
   assert.deepEqual(
@@ -705,6 +743,7 @@ test("the All page covers every paired computer: one search and one projects lis
   assert.match(projects[1].querySelector(".hub-overlap").textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\)/);
   assert.equal(projects[0].querySelector(".hub-overlap"), null);
   // One search: every computer's chats, newest first, each on its computer.
+  await click($('.chat-hub .chat-mobile-tools [aria-label="Search chats"]'));
   await typeInto($('input[aria-label="Search all chats"]'), "cache");
   const hits = await dom.waitFor(() => ($$(".hub-hit").length === 2 && $(".hub-results .hub-note.bad") ? $$(".hub-hit") : null));
   assert.deepEqual(hits.map((h) => h.querySelector(".hub-computer").textContent), ["Studio", "Mac"]);
@@ -857,6 +896,7 @@ test("two chats with the same name changing one file read as two chats, not one 
   t.after(() => delete routes["/api/sessions/activity"]);
   await home([claudeSession(), claudeSession({ id: NEW }), codexSession()]);
   const warning = await dom.waitFor(() => $(".hub-overlap"));
+  assert.equal(warning.closest("details").open, false, "shared edits are collapsed by default");
   assert.equal(warning.textContent, "docs/notes.md changed by two Claude Code chats named “Refactor auth” in the last half hour.");
   assert.deepEqual(dom.errors, []);
 });
@@ -885,7 +925,7 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   } });
   assert.match($(".relay-strip").textContent, /Auto-continue: Codex → Claude Code → Gemini CLI → OpenClaw/);
   assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex", "gemini", "openclaw"]);
-  await click(button("Cancel relay"));
+  await click(button("Cancel handoff"));
   await dom.waitFor(() => !$(".relay-row"));
   assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
   assert.deepEqual(dom.errors, []);

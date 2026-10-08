@@ -48,7 +48,7 @@ const open = async (options) => {
   const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated: (...args) => { made = args; } }));
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[aria-label="Access preset"]'));
-  await dom.waitFor(() => c.textContent.includes("Choose what it may do"));
+  await dom.waitFor(() => c.querySelector('[aria-label="Access duration"]'));
   return { c, made: () => made, ...options };
 };
 const issued = (calls) => calls.find(([, route]) => route === "/api/agents/browser-invitations")?.[2];
@@ -60,7 +60,7 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   const name = c.querySelector('[aria-label="AI browser name"]').value;
   assert.match(name, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
   assert.equal(button(c, "Create invite link").disabled, true);
-  assert.match(c.textContent, /Choose what it may do/);
+  assert.match(c.textContent, /What can it access\?/);
   const titles = [...c.querySelectorAll('[aria-label="Access preset"] input')].map((input) => input.getAttribute("aria-label"));
   assert.deepEqual(titles, ["Full control", "Apps", "Files", "Read only"]);
   await choose(c, "Full control");
@@ -73,6 +73,7 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   await dom.waitFor(() => issued(calls));
   assert.deepEqual(issued(calls), { name, transport: "funnel", ttlSeconds: 1800, preset: "full" });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
+  assert.equal(dom.document.activeElement.textContent, "Your invite is ready", "focus moves to the result after creation");
   const text = message(c);
   assert.match(text, /^Open this temporary Reach link in your browser/);
   assert.match(text, /Preset: Full control\./);

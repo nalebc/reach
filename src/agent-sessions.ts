@@ -149,6 +149,8 @@ export type AgentHealth = {
   app?: { installed: boolean; signedIn: boolean };
   // Claude, while out of usage: the limit it hit, in Claude Code's own words.
   limit?: string;
+  // Out of usage: you asked to be notified when it's back (usage-watch.mjs).
+  notifyWhenBack?: boolean;
   // OpenClaw: whether its Gateway can take a chat moved from another agent.
   canTakeMoves?: boolean;
   // OpenClaw: its Gateway answers (it has no sign-in of its own).

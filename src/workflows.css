@@ -19,7 +19,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: -12px 0 16px;
+  margin: 0 0 8px;
   color: var(--as-muted);
   font-size: 14px;
 }
@@ -74,8 +74,8 @@
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 68px;
-  padding: 12px 14px;
+  min-height: 56px;
+  padding: 8px 12px;
   border: 0;
   background: none;
   color: inherit;
@@ -129,8 +129,8 @@ button.wf-item-main:not(:disabled):active {
 .wf-item-body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 4px 16px 16px;
+  gap: 10px;
+  padding: 0 12px 12px;
 }
 .wf-action {
   flex: 0 0 auto;
@@ -186,7 +186,9 @@ button.wf-item-main:not(:disabled):active {
   line-height: 1.45;
   font-weight: 400;
   resize: none;
-  overflow: hidden;
+  height: clamp(120px, calc(var(--sheet-height, 100dvh) * .35), 280px);
+  overflow-y: auto;
+  scroll-margin-block: 90px 20px;
   box-sizing: border-box;
 }
 .wf-edit-title::placeholder,
@@ -548,6 +550,8 @@ button.wf-item-main:not(:disabled):active {
 
 /* A plan reads as one page. The heading and run action stay within reach. */
 .reach-chat-sheet.workflow-sheet {
+  min-width: 0;
+  max-width: 100%;
   padding: 0 24px 20px;
   border-radius: 24px;
   scrollbar-width: thin;
@@ -557,8 +561,8 @@ button.wf-item-main:not(:disabled):active {
   position: sticky;
   top: 0;
   z-index: 2;
-  margin: 0 -2px 16px;
-  padding: 24px 0 14px;
+  margin: 0 -2px 8px;
+  padding: 12px 0 8px;
   background: var(--as-bg);
 }
 .reach-chat-sheet.workflow-sheet .chat-sheet-heading h2 {
@@ -568,25 +572,28 @@ button.wf-item-main:not(:disabled):active {
   overflow-wrap: anywhere;
 }
 .workflow-sheet .chat-sheet-close {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: var(--wf-field);
 }
 .wf-plan-intro {
-  margin: 0 0 20px;
+  margin: 0 0 8px;
   max-width: 42ch;
   color: var(--as-muted);
   font-size: 14px;
   line-height: 1.55;
 }
 .wf-planner.wf-group {
-  margin-bottom: 24px;
+  margin-bottom: 8px;
+  border: 0;
+  border-radius: 0;
   background: none;
 }
-.wf-planner .wf-item-main { min-height: 54px; }
+.wf-planner .wf-item-main { min-height: 44px; padding: 0; }
+.wf-planner .wf-action { min-height: 44px; }
 .wf-planner .wf-item-title, .wf-planner .wf-action { font-size: 13px; }
-.wf-label { margin: 14px 14px 0; font-size: 12px; font-weight: 500; }
+.wf-label { margin: 8px 12px 4px; font-size: 12px; font-weight: 500; }
 .wf-title-field, .wf-field-label {
   display: flex;
   flex-direction: column;
@@ -597,7 +604,8 @@ button.wf-item-main:not(:disabled):active {
   font-weight: 400;
 }
 .wf-title-field > span { font-size: 11px; }
-.wf-edit-title { padding: 3px 0; }
+.wf-title-field { gap: 2px; }
+.wf-edit-title { min-height: 44px; margin: 0; padding: 3px 0; }
 .wf-agent-field, .wf-parallel {
   display: flex;
   align-items: center;
@@ -620,15 +628,16 @@ button.wf-item-main:not(:disabled):active {
 }
 .wf-agent-select > svg { position: absolute; right: 0; pointer-events: none; color: var(--as-muted); }
 .wf-task-mode { min-width: 0; margin: 0; padding: 0; border: 0; }
-.wf-task-mode legend { margin-bottom: 10px; padding: 0; font-size: 13px; color: var(--as-muted); }
-.wf-mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wf-task-mode legend { margin-bottom: 6px; padding: 0; font-size: 13px; color: var(--as-muted); }
+.wf-mode-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .wf-mode-options > button {
   position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 14px 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px;
   border: 1px solid var(--as-line);
   border-radius: 14px;
   background: transparent;
@@ -637,8 +646,9 @@ button.wf-item-main:not(:disabled):active {
 }
 .wf-mode-options > button[aria-pressed="true"] { border-color: #ececec80; background: var(--wf-field); }
 .wf-mode-options strong { font-size: 14px; font-weight: 500; }
-.wf-mode-options span { color: var(--as-muted); font-size: 12px; line-height: 1.5; }
-.wf-mode-check { position: absolute; right: 12px; top: 14px; }
+.wf-mode-options svg { flex-shrink: 0; }
+.wf-mode-help { margin: 6px 0 0; color: var(--as-muted); font-size: 12px; line-height: 1.4; }
+.wf-mode-check { flex-shrink: 0; }
 .wf-parallel > span { display: flex; flex-direction: column; gap: 4px; }
 .wf-parallel strong { font-weight: 400; font-size: 14px; }
 .wf-parallel small { color: var(--as-muted); font-size: 12px; }
@@ -658,13 +668,48 @@ button.wf-item-main:not(:disabled):active {
 .wf-parallel input:checked::before { transform: translateX(16px); background: #212121; }
 .wf-task-tools { display: flex; align-items: center; border-top: 1px solid var(--as-line); padding-top: 8px; font-size: 12px; color: var(--as-muted); }
 .wf-task-tools .wf-icon:last-child { color: var(--wf-danger); }
-.wf-draft-actions { position: sticky; bottom: -20px; z-index: 1; padding: 12px 0 8px; background: var(--as-bg); border-top: 1px solid var(--as-line); }
+.wf-draft-actions { position: static; padding: 12px 0 8px; background: var(--as-bg); border-top: 1px solid var(--as-line); }
 .wf-save-note { margin: 0 0 10px; color: var(--as-muted); text-align: center; font-size: 12px; }
 .workflow-sheet :is(button, input, select, textarea):focus-visible { outline: 2px solid #ececec; outline-offset: 3px; }
 .workflow-sheet button { cursor: pointer; }
 .workflow-sheet button:disabled { cursor: default; }
 @media (max-width: 600px) {
   .reach-chat-sheet.workflow-sheet { padding: 0 16px max(16px, env(safe-area-inset-bottom)); border-radius: 24px 24px 0 0; max-height: calc(var(--sheet-height, 100dvh) - 12px); }
-  .wf-draft-actions { bottom: calc(-1 * max(16px, env(safe-area-inset-bottom))); padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .wf-draft-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion: reduce) { .wf-parallel input::before { transition: none; } }
+
+.wf-instructions { min-width: 0; }
+.wf-instructions-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; min-height: 44px; padding: 0; border: 0;
+  background: none; color: var(--as-muted); text-align: left;
+}
+.wf-instructions-toggle > span:last-child { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.wf-instructions-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.wf-instructions-preview {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap;
+  width: 100%; padding: 0; border: 0; background: none;
+  color: var(--as-text); text-align: left; line-height: 1.5;
+}
+
+.wf-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.wf-create-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+}
+.wf-create-actions .wf-new-chat {
+  background: var(--wf-field);
+  color: var(--as-text);
+  border: 1px solid var(--as-line);
+}

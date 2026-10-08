@@ -120,7 +120,7 @@ window.fetch = async (input, init = {}) => {
   if (p === "/api/device") return json(device);
   if (p === "/api/files") return json({ items: (files[`${u.searchParams.get("root")}:${u.searchParams.get("path")}`] || []).map((name) => ({ name, path: name, type: "directory" })) });
   if (p === "/api/agents/browser-options")
-    return json({ terminals: [{ id: "reach:1", name: "npm run dev" }, { id: "desktop:2", name: "Build logs" }], screenAvailable: true, appAccessAvailable: true, apps });
+    return json({ terminals: [{ id: "reach:1", name: "npm run dev" }, { id: "desktop:2", name: "Build logs" }], desktopAvailable: true, protectedFilesSupported: true, maxFunnelSeconds: 86400, standingAllowed: true, presetApps: apps.map((app) => ({ ...app, bundleId: `demo.${app.name.toLowerCase().replaceAll(" ", "")}`, running: false })), screenAvailable: true, appAccessAvailable: true, apps });
   if (p === "/api/agents/browser-invitations") {
     const secret = "s".repeat(43);
     return json({ invitation: secret, clientId: "new", expiresAt: now + 15 * min, joinBy: now + 10 * min, url: `https://home-mac.example.ts.net/agent-browser#invite=${secret}` });

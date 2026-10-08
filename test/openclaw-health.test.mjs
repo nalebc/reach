@@ -236,9 +236,10 @@ function fixture({ methods = ["health", "logs.tail"], health, tail, ready, files
     settleMs: 0,
     ...extra,
   });
-  const hit = async (verb, route, { body, query = {}, revoked = false } = {}) => {
+  const hit = async (verb, route, { body, query = {}, revoked = false, client = { kind: "device", scopes: ["admin"] } } = {}) => {
     let answered;
     const req = {
+      client,
       body,
       query,
       reauthorize: () => {
@@ -406,19 +407,27 @@ test("maintenance runs fixed noninteractive commands, scrubs output and reports 
   const failed = await runOpenClawMaintenance("doctor", { ...deps, run: async () => { throw new Error("secret"); } });
   assert.equal(failed.status, "failed");
   assert.doesNotMatch(JSON.stringify(failed), /secret/);
+  const readable = await runOpenClawMaintenance("doctor", { ...deps, run: async () => ({ stdout: "Health check findings\nGateway connection failed\nTry restarting the Gateway" }) });
+  assert.deepEqual(readable.lines, ["Health check findings", "Gateway connection failed", "Try restarting the Gateway"]);
+  for (const status of ["ok", "skipped", "error"]) {
+    const mixed = await runOpenClawMaintenance("update", { ...deps, run: async () => ({ stdout: `Plugin loaded\n${JSON.stringify({ status, steps: [] }, null, 2)}\nService message` }) });
+    assert.equal(mixed.status, status === "ok" ? "done" : status === "error" ? "failed" : "skipped");
+  }
+  const invalid = await runOpenClawMaintenance("update", { ...deps, run: async () => ({ stdout: "Update started" }) });
+  assert.equal(invalid.status, "failed");
   await assert.rejects(runOpenClawMaintenance("evil", deps), /Choose/);
   await assert.rejects(runOpenClawMaintenance("doctor", { ...deps, authorize: () => { throw new Error("revoked"); } }), /revoked/);
 });
 
 // --- UI --------------------------------------------------------------------
 const peer = { id: "fixture", url: "https://reach.test", token: "inert" };
-async function ui({ health, logs } = {}) {
+async function ui({ health, logs, job, maintenance, healthRead, continuation } = {}) {
   const posted = [],
     reads = [];
   const opened = [];
   const dom = await startDom({
     routes: {
-      [`${base}/health`]: () => (reads.push("health"), health || {
+      [`${base}/health`]: () => (reads.push("health"), healthRead ? healthRead() : health || {
         status: "attention",
         gateway: { supported: true, answered: true, ms: 40 },
         uptime: { supported: true, ms: 3 * 3600000 + 5 * 60000 },
@@ -436,15 +445,18 @@ async function ui({ health, logs } = {}) {
             ],
       }),
       [`${base}/health/restart`]: (init) => (posted.push(["restart", JSON.parse(init.body)]), { restarted: true }),
-      [`${base}/health/maintenance`]: () => ({ job: posted.some(([action]) => action === "doctor") ? { action: "doctor", status: "done", message: "Health check finished.", lines: ["All checks complete"] } : null }),
-      [`${base}/health/doctor`]: (init) => (posted.push(["doctor", JSON.parse(init.body)]), { job: { action: "doctor", status: "running", lines: [] } }),
+      [`${base}/health/maintenance`]: () => ({ job: job || (posted.some(([action]) => action === "doctor") ? { action: "doctor", status: "done", message: "Health check finished.", lines: ["All checks complete"] } : null) }),
+      [`${base}/health/maintenance/continue`]: async (init) => (posted.push(["continue", JSON.parse(init.body)]), continuation ? await continuation() : { job: { action: "update", status: "running", lines: [] } }),
+      [`${base}/health/doctor`]: async (init) => (posted.push(["doctor", JSON.parse(init.body)]), maintenance ? await maintenance() : { job: { action: "doctor", status: "running", lines: [] } }),
     },
   });
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   dom.window.addEventListener("reach:open-terminal", (e) => opened.push(e.detail));
   const { ClawHealthPill } = await dom.load("/src/OpenClawHealth.tsx");
   const changed = [];
   await dom.render(dom.React.createElement(ClawHealthPill, { peer, refresh: 0, onChanged: () => changed.push(1) }));
-  const button = (text) => [...dom.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  const button = (text) => [...dom.document.querySelectorAll("button")].reverse().find((b) => b.getAttribute("aria-label") === text || (b.querySelector("strong")?.textContent || b.textContent).trim() === text);
   const click = async (el) => {
     el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     await settle();
@@ -457,26 +469,33 @@ test("pill opens a sheet with rows, fixes and logs", async () => {
   try {
     await u.dom.waitFor(() => u.button("Needs attention"));
     await u.click(u.button("Needs attention"));
-    await u.dom.waitFor(() => u.text().includes("all fine here"));
+    assert.equal(u.dom.document.querySelector(".claw-health-lines"), null);
+    assert.equal(u.reads.includes(""), false, "logs are fetched only when opened");
     for (const word of ["3 h 5 min", "820 MB", "Large", "600 MB", "Telegram"]) assert.match(u.text(), new RegExp(word));
+    await u.click(u.button("Open logs"));
+    await u.dom.waitFor(() => u.text().includes("all fine here"));
     assert.equal(u.text().includes("Memory"), false);
     // Errors only.
     await u.click(u.button("Errors"));
     await u.dom.waitFor(() => !u.text().includes("all fine here"));
     assert.ok(u.reads.includes("?errors=1"));
+    await u.click(u.button("Close gateway logs"));
     // Restart takes two taps.
     await u.click(u.button("Restart"));
     assert.equal(u.posted.length, 0);
-    await u.click(u.button("Tap to restart"));
-    await u.dom.waitFor(() => u.text().includes("Restarted"));
+    await u.click(u.button("Restart"));
+    await u.dom.waitFor(() => u.text().includes("Gateway restarted"));
     assert.deepEqual(u.posted, [["restart", { confirm: true }]]);
     assert.equal(u.changed.length, 1);
     await u.click(u.button("Check health"));
     assert.equal(u.posted.length, 1);
-    await u.click(u.button("Continue"));
+    await u.click(u.button("Check health"));
     await u.dom.waitFor(() => u.text().includes("Health check finished."));
     assert.deepEqual(u.posted[1], ["doctor", { confirm: true }]);
+    await u.dom.waitFor(() => u.changed.length === 2);
     assert.deepEqual(u.opened, []);
+    assert.doesNotMatch(u.text(), /All checks complete/);
+    await u.click(u.button("View output"));
     assert.match(u.text(), /All checks complete/);
     assert.deepEqual(u.dom.errors, []);
   } finally {
@@ -499,11 +518,184 @@ test("pill words and hidden parts", async () => {
   try {
     await u.dom.waitFor(() => u.button("Healthy"));
     await u.click(u.button("Healthy"));
-    await u.dom.waitFor(() => u.reads.includes(""));
     await settle(50);
-    for (const word of ["Up", "Database", "Channels", "Logs"]) assert.equal(new RegExp(`\\b${word}\\b`).test(u.text()), false, word);
+    for (const word of ["Uptime", "Database", "Channels"]) assert.equal(new RegExp(`\\b${word}\\b`).test(u.text()), false, word);
     assert.ok(u.button("Restart"));
   } finally {
     await u.dom.close();
   }
+});
+
+
+test("maintenance reports structured reasons, process failures, timeouts and malformed output", async () => {
+  const deps = { configuration: async () => ({}), env: { SHELL: "/bin/sh" }, platform: "darwin" };
+  const structured = await runOpenClawMaintenance("update", { ...deps, run: async () => ({
+    stdout: JSON.stringify({ status: "error", reason: "npm install failed", steps: [{ exitCode: 1, stderrTail: "EACCES" }] }),
+  }) });
+  assert.match(structured.message, /npm install failed/);
+  const exit = await runOpenClawMaintenance("update", { ...deps, run: async () => {
+    throw Object.assign(new Error("failed"), { code: 1, stderr: "EACCES: permission denied" });
+  } });
+  assert.match(exit.message, /EACCES: permission denied/);
+  assert.ok(exit.lines.includes("The command exited with code 1."));
+  const timeout = await runOpenClawMaintenance("update", { ...deps, run: async () => {
+    throw Object.assign(new Error("failed"), { killed: true });
+  } });
+  assert.match(timeout.message, /time limit/);
+  const missing = await runOpenClawMaintenance("update", { ...deps, run: async () => ({ stdout: "" }) });
+  assert.match(missing.message, /valid update result/);
+  const skipped = await runOpenClawMaintenance("update", { ...deps, run: async () => ({ stdout: JSON.stringify({ status: "skipped", reason: "dirty working tree" }) }) });
+  assert.match(skipped.message, /dirty working tree/);
+});
+
+
+test("actions open focused confirmation and show immediate progress without duplicate submissions", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const u = await ui({ maintenance: () => pending });
+  try {
+    await u.dom.waitFor(() => u.button("Needs attention"));
+    await u.click(u.button("Needs attention"));
+    await u.dom.waitFor(() => !u.button("Check health").disabled);
+    await u.click(u.button("Check health"));
+    assert.ok(u.dom.document.querySelector('dialog[aria-label="Check health"]'));
+    assert.equal(u.posted.length, 0);
+    const confirm = u.button("Check health");
+    confirm.click(); confirm.click();
+    await settle();
+    assert.equal(u.posted.length, 1);
+    assert.match(u.text(), /Checking health…/);
+    assert.equal(u.dom.document.querySelector('dialog[aria-label="Check health"]'), null);
+    assert.ok(u.button("Restart").disabled);
+    release({ job: { action: "doctor", status: "failed", message: "Permission denied", lines: ["EACCES"] } });
+    await u.dom.waitFor(() => u.text().includes("Permission denied"));
+    assert.ok(u.button("Try again"));
+    await u.click(u.button("View output"));
+    await u.dom.waitFor(() => u.dom.document.querySelector(".file-code"));
+    assert.match(u.dom.document.querySelector(".file-code-source").textContent, /EACCES/);
+    await u.click(u.button("Close check health output"));
+    assert.match(u.text(), /Permission denied/);
+    assert.deepEqual(u.dom.errors, []);
+  } finally { release({ job: null }); await u.dom.close(); }
+});
+
+test("old failures without details offer logs and retry, and logs use the Files preview", async () => {
+  const u = await ui({ job: { action: "doctor", status: "failed", message: "OpenClaw couldn't finish. Try again.", lines: [] } });
+  try {
+    await u.dom.waitFor(() => u.button("Needs attention"));
+    await u.click(u.button("Needs attention"));
+    await u.dom.waitFor(() => u.text().includes("No error details were returned"));
+    assert.doesNotMatch(u.text(), /couldn't finish/);
+    await u.click(u.button("Open logs"));
+    await u.dom.waitFor(() => u.dom.document.querySelector(".file-code-source"));
+    assert.ok(u.dom.document.querySelector('dialog.file-viewer[aria-label="Gateway logs"]'));
+    assert.ok(u.button("Copy text"));
+    await u.click(u.button("Wrap lines"));
+    assert.ok(u.dom.document.querySelector(".file-code.is-wrapped"));
+    await u.click(u.button("All"));
+    assert.match(u.dom.document.querySelector(".file-code-source").textContent, /all fine here/);
+    await u.click(u.button("Errors"));
+    await u.dom.waitFor(() => u.dom.document.querySelector(".file-code-source")?.textContent.includes("only the error"));
+    assert.doesNotMatch(u.dom.document.querySelector(".file-code-source").textContent, /all fine here/);
+    await u.click(u.button("Close gateway logs"));
+    assert.ok(u.button("Try again"));
+    assert.deepEqual(u.dom.errors, []);
+  } finally { await u.dom.close(); }
+});
+
+test("failed updates explain an unsupported Node runtime without opening output", async () => {
+  const stderr = "npm error code 1\nnpm error [openclaw] error: this OpenClaw release requires Node >=24.16.0 <25 || >=26.1.0.\nnpm error [openclaw] detected Node 23.7.0 (exec: /opt/homebrew/bin/node).";
+  const u = await ui({ job: {
+    action: "update", status: "failed", message: "Update failed: global update",
+    lines: JSON.stringify({ status: "error", steps: [{ name: "global update", exitCode: 1, stderrTail: stderr }] }, null, 2).split("\n"),
+  } });
+  try {
+    await u.dom.waitFor(() => u.button("Needs attention"));
+    await u.click(u.button("Needs attention"));
+    await u.dom.waitFor(() => u.button("View output"));
+    assert.match(u.text(), /OpenClaw requires Node >=24\.16\.0 <25 \|\| >=26\.1\.0\./);
+    assert.match(u.text(), /This computer used Node 23\.7\.0/);
+    await u.click(u.button("View output"));
+    assert.ok(u.dom.document.querySelector('.file-code-source'));
+    assert.match(u.dom.document.querySelector('.file-code-source').textContent, /npm error code 1/);
+    await u.click(u.button("Close update openclaw output"));
+    await u.click(u.button("Open logs"));
+    await u.dom.waitFor(() => u.dom.document.querySelector('.file-code-source'));
+    assert.match(u.dom.document.querySelector('.file-code-source').textContent, /all fine here/);
+    assert.deepEqual(u.dom.errors, []);
+  } finally { await u.dom.close(); }
+});
+
+
+test("dependency recovery requires approval for the exact attempt and retains phase progress", async () => {
+  const recipe = { kind: "node", available: true, brew: "/opt/homebrew/bin/brew", minimum: [24, 16, 0], title: "Upgrade Node", description: "Install Node", steps: ["Install", "Verify"] };
+  let installDone;
+  const calls = [];
+  const f = fixture({
+    installRuntime: async (_recipe, { authorize }) => {
+      authorize(); calls.push("install");
+      await new Promise(resolve => { installDone = resolve; });
+      authorize(); return "/opt/homebrew/opt/node@24/bin/node";
+    },
+    runMaintenance: async (action, { authorize, runtime }) => {
+      authorize(); calls.push(action);
+      if (action === "update" && !runtime) return { status: "failed", recovery: recipe, message: "Node too old", lines: [] };
+      return { status: "done", lines: [action] };
+    },
+  });
+  await f.hit("POST", "/health/update", { body: { confirm: true } });
+  await settle();
+  const { job } = await f.hit("GET", "/health/maintenance");
+  assert.equal(job.status, "awaiting_approval");
+  assert.equal(job.recovery.brew, undefined, "private execution paths do not go to the phone");
+  assert.deepEqual(calls, ["update"], "failure never installs dependencies automatically");
+  await assert.rejects(f.hit("POST", "/health/maintenance/continue", { body: { jobId: job.id } }), /Approve/);
+  await assert.rejects(f.hit("POST", "/health/maintenance/continue", { body: { jobId: "stale", confirm: true } }), /changed/);
+  await assert.rejects(f.hit("POST", "/health/maintenance/continue", { body: { jobId: job.id, confirm: true }, client: { kind: "agent", scopes: ["admin"] } }), /owner/);
+  await assert.rejects(f.hit("POST", "/health/maintenance/continue", { body: { jobId: job.id, confirm: true }, revoked: true }), /Not allowed/);
+  const started = await f.hit("POST", "/health/maintenance/continue", { body: { jobId: job.id, confirm: true, command: "ignored" } });
+  assert.equal(started.job.status, "running");
+  await settle();
+  assert.match((await f.hit("GET", "/health/maintenance")).job.phase, /Installing Node/);
+  await assert.rejects(f.hit("POST", "/health/maintenance/continue", { body: { jobId: job.id, confirm: true } }), /changed/);
+  installDone(); await settle();
+  const finished = (await f.hit("GET", "/health/maintenance")).job;
+  assert.equal(finished.status, "done");
+  assert.deepEqual(calls, ["update", "install", "update", "repair-service", "finish-update", "verify-update"]);
+  assert.match(finished.message, /Gateway is connected/);
+});
+
+test("required changes are reviewable in Reach and only confirmation resumes the update", async () => {
+  const job = { id: "attempt-1", action: "update", status: "awaiting_approval", lines: [], recovery: {
+    kind: "node", title: "Upgrade Node to continue", description: "Node 23 is too old.", available: true,
+    steps: ["Install Node 24 and its Homebrew dependencies", "Migrate settings and plugins", "Verify the Gateway"],
+  } };
+  const u = await ui({ job });
+  try {
+    await u.dom.waitFor(() => u.button("Needs attention"));
+    await u.click(u.button("Needs attention"));
+    await u.dom.waitFor(() => u.button("Review required changes"));
+    assert.match(u.text(), /needs approval/);
+    await u.click(u.button("Review required changes"));
+    assert.match(u.text(), /Install Node 24 and its Homebrew dependencies/);
+    assert.equal(u.posted.length, 0);
+    await u.click(u.button("Not now"));
+    assert.equal(u.posted.length, 0);
+    await u.click(u.button("Review required changes"));
+    const approve = u.button("Approve and continue");
+    approve.click(); approve.click(); await settle();
+    assert.deepEqual(u.posted, [["continue", { confirm: true, jobId: "attempt-1" }]]);
+    assert.deepEqual(u.dom.errors, []);
+  } finally { await u.dom.close(); }
+});
+
+
+test("post-update warnings remain visible without being misreported as a failed command", async () => {
+  const result = await runOpenClawMaintenance("finish-update", {
+    platform: "darwin", env: { SHELL: "/bin/sh" }, configuration: async () => ({}),
+    run: async () => ({ stdout: JSON.stringify({ status: "warning", message: "Plugin still needs attention" }) }),
+  });
+  assert.equal(result.status, "done");
+  assert.equal(result.warnings, true);
+  assert.match(result.message, /warnings/);
 });

@@ -456,6 +456,9 @@ test("a public request can reach only explicitly granted browser APIs, with no a
   const presetToken = admitted.body.token;
   assert.equal((await f.call(f.request(token, "/api/browser/desktop/screen"))).status, 403, "the earlier form's invitation never gets the screen");
   for (const [presetRoute, method, body] of [
+    ["/api/browser/services", "GET", null],
+    ["/api/browser/services/request", "POST", { connectorId: "sample_store", reason: "Read sample order" }],
+    ["/api/browser/services/run", "POST", { connectorId: "sample_store", action: "order_status", requestId: crypto.randomUUID(), values: { orderId: "DEMO-1001" } }],
     ["/api/browser/desktop/screen?maxWidth=1440", "GET", null],
     ["/api/browser/desktop/front", "GET", null],
     ["/api/browser/shortcuts", "GET", null],

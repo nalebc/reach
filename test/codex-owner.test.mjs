@@ -297,6 +297,41 @@ test("complete native history drains all pages, while initial snapshots stay bou
   assert.deepEqual(cursors, [null, null, "older"]);
 });
 
+test("legacy tasks publish native history without accessing the paginated store", async (t) => {
+  const f = fixture(t);
+  const original = f.daemon.rpc;
+  const reads = [];
+  f.daemon.rpc = async (method, params) => {
+    if (method === "thread/turns/list") throw Error("Legacy history is not paginated");
+    if (method !== "thread/read") return original(method, params);
+    reads.push(params);
+    return { thread: { ...thread, historyMode: "legacy", ...(params.includeTurns ? {
+      turns: [
+        { id: "old", status: "completed", items: [nativeItem] },
+        { id: "active", status: "inProgress", items: [{ ...nativeItem, text: "Working" }] },
+      ],
+    } : {}) } };
+  };
+  await f.owner.claim(id);
+  f.send({ type: "broadcast", method: "thread-stream-following-changed", sourceClientId: "codex-window",
+    params: { conversationId: id, hostId: "local", following: true } });
+  await until(() => f.packets.some(m => m.method === "thread-stream-state-changed"));
+  const state = f.packets.find(m => m.method === "thread-stream-state-changed").params.change.conversationState;
+  assert.equal(state.id, id);
+  assert.equal(state.historyMode, "legacy");
+  assert.deepEqual(state.turns.map(t => t.turnId), ["old", "active"]);
+  assert.deepEqual(state.turns[0].items, [nativeItem]);
+  assert.equal(state.turns[1].status, "inProgress");
+  assert.deepEqual(state.turnsPagination, {
+    olderCursor: null, oldestLoadedTurnId: "old", isLoadingOlder: false, hasLoadedOldest: true,
+  });
+  assert.deepEqual(reads, [{ threadId: id, includeTurns: false }, { threadId: id, includeTurns: true }]);
+  f.send({ type: "request", requestId: "legacy-history", sourceClientId: "codex-window",
+    method: "thread-follower-load-complete-history", version: 1, params: { conversationId: id } });
+  await until(() => f.packets.some(m => m.requestId === "legacy-history"));
+  assert.equal(f.packets.find(m => m.requestId === "legacy-history").resultType, "success");
+});
+
 test("closing while the endpoint check waits never connects afterward", async () => {
   let finishCheck, connects = 0;
   const owner = createCodexOwner({

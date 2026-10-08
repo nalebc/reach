@@ -183,6 +183,27 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.chat-new-folder-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.chat-new-folder-controls .chat-folder {
+  flex: 1;
+  margin-bottom: 0;
+}
+.chat-folder-browse {
+  flex: none;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+}
 .chat-new-context {
   display: flex;
   align-items: center;

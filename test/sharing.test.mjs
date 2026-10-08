@@ -29,7 +29,7 @@ const {
   shareCancelled,
   shareName,
 } = await sourceModule("../src/sharing.ts");
-const { fileBlob } = await sourceModule("../src/api.ts");
+const { fileBlob, whenReachable } = await sourceModule("../src/api.ts");
 const peer = { url: "https://fixture.invalid", token: "fixture-only" };
 function mockNavigator(t, value) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
@@ -101,7 +101,7 @@ test("file preparation keeps auth on the request and disallows redirects", async
     assert.equal(new URL(url).searchParams.get("path"), "Documents/a & b.txt");
     assert.equal(options.headers.Authorization, "Bearer fixture-only");
     assert.equal(options.redirect, "error");
-    assert.equal(options.signal, controller.signal);
+    assert.equal(options.signal.aborted, false);
     return new Response("fixture", {
       headers: { "content-type": "text/plain" },
     });
@@ -149,4 +149,62 @@ test("denied file access never becomes a shareable payload", async (t) => {
     fileBlob(peer, "fixture.txt", 0, { maxBytes: 100 }),
     /Access revoked/,
   );
+});
+
+test("an idle stream without Content-Length never succeeds with partial bytes", async (t) => {
+  let idle, firstChunk;
+  const read = new Promise((resolve) => { firstChunk = resolve; });
+  const realTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 45000) { idle = callback; return realTimeout(() => {}, 0); }
+    return realTimeout(callback, 0, ...args);
+  });
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    if (requests > 1) return new Response("complete file");
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("partial")); },
+    }));
+  });
+  const pending = fileBlob(peer, "file.txt", 0, { onProgress: () => firstChunk() });
+  await read;
+  idle();
+  const blob = await pending;
+  assert.equal(await blob.text(), "complete file");
+  assert.equal(requests, 2);
+});
+
+test("the download idle timeout still aborts fetch when the caller supplies a cancel signal", async (t) => {
+  let idle, requestSignal, started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const realTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 45000) { idle = callback; return realTimeout(() => {}, 0); }
+    return realTimeout(callback, 0, ...args);
+  });
+  const controller = new AbortController();
+  t.mock.method(globalThis, "fetch", (_url, { signal }) => {
+    requestSignal = signal;
+    started();
+    return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  });
+  const pending = fileBlob(peer, "file.txt", 0, { signal: controller.signal }).catch(() => {});
+  await ready;
+  idle();
+  const abortedByTimeout = requestSignal.aborted;
+  controller.abort();
+  await pending;
+  assert.equal(abortedByTimeout, true);
+});
+
+test("waiting for a connection can be canceled while the phone is offline", async (t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
+  t.after(() => descriptor ? Object.defineProperty(globalThis, "window", descriptor) : delete globalThis.window);
+  mockNavigator(t, { onLine: false });
+  const controller = new AbortController();
+  const pending = whenReachable(controller.signal);
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
 });

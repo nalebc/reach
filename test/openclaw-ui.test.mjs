@@ -255,7 +255,7 @@ const click = async (name) => {
   b.click();
   await settle();
 };
-async function mount(waitFor = "Weekend plans") {
+async function mount(waitFor = "Weekend plans", accountHealth = []) {
   sent = [];
   reads = [];
   fail = false;
@@ -290,7 +290,8 @@ async function mount(waitFor = "Weekend plans") {
             status: "idle",
           },
         ],
-        health: [{ agent: "openclaw", name: "OpenClaw", installed: true, signedIn: false, supported: true }],
+        health: [{ agent: "openclaw", name: "OpenClaw", installed: true, signedIn: false, supported: true },
+          ...accountHealth],
         errors: {},
         failure: "",
         macPrompts: [],
@@ -300,6 +301,7 @@ async function mount(waitFor = "Weekend plans") {
     }),
   );
   await settle(80);
+  if (!button("OpenClaw")) await click("Choose an app, All selected");
   await click("OpenClaw");
   await dom.waitFor(() =>
     dom.document.body.textContent.includes(waitFor),
@@ -799,4 +801,40 @@ test("a messaging app is added in Reach by its bot token, not in a terminal", as
   assert.deepEqual(setupCalls.find(([k]) => k === "add")[1], { channel: "discord", token: "MTA-secret-token" });
   await dom.waitFor(() => dom.document.body.textContent.includes("Discord is added"));
   assert.ok(!dom.document.body.textContent.includes("MTA-secret-token"));
+});
+
+
+test("OpenClaw keeps account limits visible in the provider dropdown and conversation rail", async () => {
+  await mount("Weekend plans", [
+    { agent: "claude", name: "Claude Code", installed: true, signedIn: true, supported: true, usable: false },
+    { agent: "codex", name: "Codex", installed: true, signedIn: true, supported: true, usage: { available: true, windows: [{ label: "Weekly", usedPercent: 42 }] } },
+  ]);
+  await click("Choose an app, OpenClaw selected");
+  const claude = dom.document.querySelector('.chat-mobile-app-menu [aria-label="Claude Code"]');
+  assert.ok(claude.querySelector(".usage-ring.out"));
+  assert.equal(claude.querySelector(".chat-menu-usage").textContent, "Out");
+  assert.match(claude.getAttribute("aria-description"), /out of usage/);
+  const codex = dom.document.querySelector('.chat-mobile-app-menu [aria-label="Codex"]');
+  assert.equal(codex.querySelector(".chat-menu-usage").textContent, "42%");
+  await click("Choose an app, OpenClaw selected");
+  await click("Login page");
+  await click("Choose an app, OpenClaw selected");
+  await dom.waitFor(() => dom.document.querySelector(".chat-app-rail"));
+  assert.ok(dom.document.querySelector('.chat-app-rail [aria-label="Claude Code"] .usage-ring.out'));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a connection failure keeps retry and Customize available", async () => {
+  down = true;
+  try {
+    await mount("Start OpenClaw on Home Mac");
+    const before = overviewReads;
+    assert.ok(button("Retry connection"));
+    assert.equal(button("Scheduled").disabled, true);
+    await click("Retry connection");
+    await dom.waitFor(() => overviewReads > before);
+    await click("Customize");
+    assert.ok(button("Agents"));
+    assert.ok(button("Back to OpenClaw"));
+  } finally { down = false; }
 });

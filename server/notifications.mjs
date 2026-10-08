@@ -22,6 +22,7 @@ export async function readAttention({
   openClaw,
   handoffs,
   browserRequests,
+  serviceRequests = () => [],
   admissions,
   accessRequests,
   restartRequests = () => [],
@@ -111,6 +112,12 @@ export async function readAttention({
   ))
     items.push(browserNotification(r));
   for (const r of admissions()) items.push(admissionNotification(r));
+  for (const r of serviceRequests().filter((r) => r.status === "pending"))
+    items.push({ id: `service:${r.id}`, source: "service", sender: r.agentName,
+      icon: "agent", kind: "connection", push: false,
+      title: "Review service access", detail: `${r.serviceName} · ${r.permissions.join(", ")}`,
+      summary: "Read-only service access",
+      target: { page: "overview", needs: `service:${r.id}` } });
   for (const r of accessRequests().filter((r) => r.status === "pending"))
     items.push(
       sealNotification(

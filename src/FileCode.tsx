@@ -1,8 +1,8 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo } from "react";
 import hljs from "highlight.js/lib/common";
 import dart from "highlight.js/lib/languages/dart";
 import powershell from "highlight.js/lib/languages/powershell";
-import { WrapText } from "lucide-react";
+import FileTextPreview from "./FileTextPreview";
 import { extension } from "./file-kinds";
 
 hljs.registerLanguage("dart", dart);
@@ -76,44 +76,9 @@ export default function FileCode({
   text: string;
   name: string;
 }) {
-  const [wrap, setWrap] = useState(false);
-  const language = codeLanguage(name);
-  const lines = useMemo(() => text.split("\n").length, [text]);
-  const numbers = useMemo(
-    () => Array.from({ length: lines }, (_, i) => String(i + 1)).join("\n"),
-    [lines],
-  );
   return (
-    <div className={`file-code ${wrap ? "is-wrapped" : ""}`}>
-      <div className="file-code-toolbar">
-        <span>
-          {language === "plaintext" ? "Plain text" : language} · {lines}{" "}
-          {lines === 1 ? "line" : "lines"}
-        </span>
-        <button
-          aria-label="Wrap lines"
-          aria-pressed={wrap}
-          onClick={() => setWrap((w) => !w)}
-        >
-          <WrapText size={16} /> Wrap
-        </button>
-      </div>
-      <div className="file-code-scroll">
-        <div className="file-code-content">
-          {!wrap && (
-            <pre className="file-code-gutter" aria-hidden="true">
-              {numbers}
-            </pre>
-          )}
-          <pre
-            className="file-code-source"
-            tabIndex={0}
-            aria-label={`${name} source`}
-          >
-            <CodeText text={text} language={language} />
-          </pre>
-        </div>
-      </div>
-    </div>
+    <FileTextPreview text={text} name={name} language={codeLanguage(name)}>
+      <CodeText text={text} language={codeLanguage(name)} />
+    </FileTextPreview>
   );
 }

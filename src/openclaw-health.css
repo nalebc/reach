@@ -31,148 +31,411 @@
   background: var(--danger, #e5a18b);
 }
 
-.claw-health {
+/* Gateway uses Files' fixed preview frame, with only the content scrolling. */
+.claw-dialog {
+  font-family: inherit;
+}
+.claw-dialog button {
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    background 0.12s,
+    transform 0.12s,
+    opacity 0.12s;
+}
+.claw-dialog button:active:not(:disabled) {
+  transform: scale(0.97);
+  background-color: #b9efd426;
+}
+.claw-dialog button:focus-visible {
+  outline: 2px solid #b9efd4;
+  outline-offset: -2px;
+}
+.claw-dialog button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.claw-dialog .files-tool {
+  width: 44px;
+  height: 44px;
+}
+.claw-gateway-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 20px calc(env(safe-area-inset-bottom) + 28px);
+}
+.claw-gateway-status {
   display: flex;
-  flex-direction: column;
   gap: 14px;
-  min-width: 0;
+  align-items: flex-start;
 }
-.claw-health-rows {
+.claw-status-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  color: #b9efd4;
+  background: #b9efd411;
+}
+.claw-gateway-status.attention .claw-status-icon {
+  color: #e5a18b;
+  background: #e5a18b12;
+}
+.claw-gateway-status.slow .claw-status-icon {
+  color: #d6b25e;
+  background: #d6b25e12;
+}
+.claw-eyebrow {
+  color: #91a097;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.claw-gateway-status h1 {
+  margin: 4px 0 7px;
+  font-size: 25px;
+  line-height: 1.15;
+  font-weight: 550;
+  letter-spacing: -0.6px;
+  color: #eef1e5;
+}
+.claw-gateway-status p {
   margin: 0;
-  padding: 0;
-  list-style: none;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
+  color: #a4b1a8;
+  font-size: 13px;
+  line-height: 1.6;
 }
-.claw-health-row {
+.claw-check-time {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 44px;
-  padding: 0 14px;
-  font-size: 13px;
+  gap: 6px;
+  margin: 14px 0 20px;
+  color: #86978c;
+  font-size: 11px;
 }
-.claw-health-row + .claw-health-row {
-  border-top: 1px solid var(--border);
+.claw-gateway-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px 12px;
+  margin: 0 0 24px;
+  padding: 20px 0;
+  border-top: 1px solid #d3ead21a;
+  border-bottom: 1px solid #d3ead21a;
 }
-.claw-health-row > span {
-  color: var(--muted);
+.claw-gateway-metrics dt {
+  font-size: 11px;
+  color: #91a097;
+  margin-bottom: 7px;
 }
-.claw-health-row > strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--text-strong);
+.claw-gateway-metrics dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  color: #e4ece6;
+  font-size: 14px;
   font-weight: 500;
-  text-align: right;
   overflow-wrap: anywhere;
 }
-.claw-health-word.ok {
-  color: var(--lime);
+.claw-gateway-metrics dd small {
+  color: #e5a18b;
+  font-size: 11px;
 }
-.claw-health-word.slow {
-  color: #d6b25e;
+.claw-section-title {
+  margin: 0 0 12px;
+  color: #91a097;
+  font-size: 12px;
+  font-weight: 500;
 }
-.claw-health-word.attention {
-  color: var(--danger, #e5a18b);
+.claw-action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
-
-.claw-health-actions {
+.claw-action {
   display: flex;
-  gap: 8px;
-}
-.claw-health-actions > button {
-  flex: 1;
-  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 14px;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 40px;
-}
-.claw-health-actions > button.armed {
-  color: var(--danger, #e5a18b);
-  border-color: currentColor;
-}
-.claw-health-note {
-  margin: 0;
-}
-
-.claw-health-logs {
   min-width: 0;
+  padding: 16px 14px;
+  text-align: left;
+  border: 1px solid #d3ead21a;
+  border-radius: 12px;
+  background: #151c18;
+  color: #bbcec2;
+  font: inherit;
 }
-.claw-health-logs > header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+.claw-action > span {
+  flex: 1 0 100%;
+  order: 2;
+  display: grid;
+  gap: 6px;
 }
-.claw-health-logs h3 {
-  flex: 1;
-  margin: 0;
-  color: var(--text-strong);
+.claw-action > svg:last-child {
+  margin-left: auto;
+  color: #718679;
+}
+.claw-action strong {
+  color: #e2eae5;
   font-size: 13px;
   font-weight: 550;
 }
-.claw-health-filter {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+.claw-action small {
+  color: #91a097;
+  font-size: 11px;
+  line-height: 1.4;
 }
-.claw-health-filter > button {
-  min-height: 26px;
-  padding: 2px 10px;
+.claw-action:hover:not(:disabled),
+.claw-log-entry:hover {
+  background: #1d2821;
+  border-color: #d3ead23a;
+}
+.claw-operation {
+  margin-bottom: 24px;
+  padding: 16px;
+  border: 1px solid #d3ead226;
+  border-radius: 12px;
+  background: #151c18;
+}
+.claw-operation.failed {
+  border-color: #e5a18b55;
+  background: #e5a18b08;
+}
+.claw-operation-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #b9efd4;
+}
+.claw-operation.failed .claw-operation-heading,
+.claw-operation.skipped .claw-operation-heading {
+  color: #e5a18b;
+}
+.claw-operation-heading > svg {
+  flex: none;
+  margin-top: 1px;
+}
+.claw-operation-heading strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.claw-operation-heading small {
+  display: block;
+  margin-top: 3px;
+  color: #91a097;
+  font-size: 11px;
+}
+.claw-operation p,
+.claw-maintenance-problem {
+  margin: 12px 0 0;
+  color: #b3c0b7;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.claw-operation-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.claw-operation-tools:has(button) {
+  margin-top: 14px;
+}
+.claw-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 1px solid #d3ead226;
+  border-radius: 9px;
+  background: #d3ead20a;
+  color: #dbe6dd;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+.claw-button.primary {
+  background: #b9efd4;
+  color: #10251a;
+  border-color: transparent;
+}
+.claw-maintenance-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  color: #91a097;
+  font-size: 12px;
+}
+.claw-maintenance-problem {
+  margin-bottom: 18px;
+  color: #e5a18b;
+}
+.claw-diagnostics {
+  margin-top: 26px;
+}
+.claw-log-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 16px;
+  border: 1px solid #d3ead21a;
+  border-radius: 12px;
+  background: #151c18;
+  color: #bbcec2;
+  text-align: left;
+  font: inherit;
+}
+.claw-log-entry span {
+  display: grid;
+  gap: 5px;
+  flex: 1;
+}
+.claw-log-entry strong {
+  font-size: 14px;
+  font-weight: 500;
+  color: #e2eae5;
+}
+.claw-log-entry small {
+  font-size: 11px;
+  color: #91a097;
+}
+.claw-confirm-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 24px;
+}
+.claw-confirm-symbol {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: #b9efd411;
+  color: #b9efd4;
+  margin-bottom: 24px;
+}
+.claw-confirm-body h2 {
+  font-size: 24px;
+  font-weight: 550;
+  letter-spacing: -0.5px;
+  margin: 0 0 16px;
+}
+.claw-confirm-body p {
+  font-size: 15px;
+  line-height: 1.7;
+  color: #a4b1a8;
+  margin: 0;
+}
+.claw-confirm-actions {
+  display: flex;
+  gap: 10px;
+  padding: 16px 24px calc(env(safe-area-inset-bottom) + 20px);
+  border-top: 1px solid #d3ead21a;
+}
+.claw-confirm-actions button {
+  flex: 1;
+  min-height: 48px;
+}
+.claw-log-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #101619;
+  border-bottom: 1px solid #d3ead21a;
+}
+.claw-log-filter {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 3px;
+  border-radius: 8px;
+  background: #d3ead20a;
+}
+.claw-log-filter button {
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 6px;
   border: 0;
-  border-radius: 999px;
   background: none;
-  color: var(--muted);
+  color: #91a097;
   font: inherit;
   font-size: 12px;
 }
-.claw-health-filter > button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
-  color: var(--text-strong);
+.claw-log-filter button[aria-pressed="true"] {
+  background: #b9efd421;
+  color: #dbf6e7;
 }
-.claw-health-refresh {
+.claw-log-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 120px;
+  color: #91a097;
+}
+.claw-log-search input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  border: 0;
+  outline-offset: -2px;
+  background: transparent;
+  color: #dbe6dd;
+  font: inherit;
+  font-size: 16px;
+}
+.claw-viewer-empty {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 50%;
-  background: none;
-  color: var(--muted);
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  font-size: 14px;
 }
-.claw-health-lines {
-  max-height: 46vh;
+.claw-viewer-empty p {
   margin: 0;
-  padding: 8px 10px;
-  overflow: auto;
-  list-style: none;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  overscroll-behavior: contain;
 }
-.claw-health-lines > li {
-  padding: 2px 0;
-  color: var(--muted);
-  overflow-wrap: anywhere;
+.claw-viewer-notice {
+  margin: 0;
+  padding: 10px 16px;
+  background: #e5a18b12;
+  color: #e5a18b;
+  font-size: 12px;
 }
-.claw-health-lines > li.warn {
-  color: #d6b25e;
+.claw-log-preview .file-code-toolbar button {
+  min-height: 44px;
 }
-.claw-health-lines > li.error,
-.claw-health-lines > li.fatal {
-  color: var(--danger, #e5a18b);
+@media (min-width: 760px) {
+  .claw-gateway {
+    width: min(600px, 92vw);
+  }
+  .claw-gateway-body {
+    padding: 28px;
+  }
+  .claw-action-dialog {
+    width: min(480px, 92vw);
+    height: auto;
+  }
 }
-.claw-health-lines time {
-  margin-right: 8px;
-  opacity: 0.6;
+@media (prefers-reduced-motion: reduce) {
+  .claw-dialog button {
+    transition: none;
+  }
 }
+
+.claw-upgrade-steps { margin: 18px 0; padding-left: 22px; }
+.claw-upgrade-steps li { padding: 5px 0 5px 4px; line-height: 1.5; }
+.claw-operation.awaiting_approval { border-color: var(--accent); }

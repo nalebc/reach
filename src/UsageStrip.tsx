@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Bell, BellRing, Loader2, Workflow } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import type { UsageLink } from "./agent-sessions";
+import type { Peer } from "./api";
+import { useNotifyBack } from "./notify-back";
 import "./usage-strip.css";
 
 // Out of usage: one slim line above the message box, not cards. What's out
@@ -9,6 +11,8 @@ import "./usage-strip.css";
 // (a first tap says what it does, the next one does it). Under it, the way
 // on without waiting: Continue in another agent that has usage, which picks
 // the chat up where it stopped and keeps working (the same two taps).
+// Or wait: Notify me sends one notification when the limit is back.
+// Auto-continue opens the provider order for switching on every limit.
 export default function UsageStrip({
   text,
   upgrade,
@@ -18,7 +22,11 @@ export default function UsageStrip({
   from = "",
   continueIn = [],
   onContinue,
+  onAutoContinue,
   logos = {},
+  peer,
+  session,
+  notifyAsked = false,
 }: {
   text: string;
   upgrade: UsageLink | null;
@@ -29,7 +37,12 @@ export default function UsageStrip({
   from?: string;
   continueIn?: { agent: string; name: string }[];
   onContinue?: (to: string) => Promise<void>;
+  onAutoContinue?: () => void;
   logos?: AgentLogos;
+  // Where to ask for "Notify me when it's back", and whether it's asked.
+  peer?: Peer;
+  session?: string;
+  notifyAsked?: boolean;
 }) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -37,6 +50,7 @@ export default function UsageStrip({
   const [going, setGoing] = useState("");
   const [moving, setMoving] = useState(false);
   const [problem, setProblem] = useState("");
+  const back = useNotifyBack(peer as Peer, agent, session, notifyAsked);
   const reset = async () => {
     setBusy(true);
     try {
@@ -61,7 +75,7 @@ export default function UsageStrip({
     <>
       <div className="usage-strip" role="status">
         <span className="usage-strip-text">
-          {asking ? "Use a rate limit reset now? It can’t be undone." : text}
+          {asking ? "Use a rate limit reset now? It can’t be undone." : back.problem || text}
         </span>
         <span className="usage-strip-actions">
           {asking ? (
@@ -75,6 +89,18 @@ export default function UsageStrip({
             </>
           ) : (
             <>
+              {peer && (
+                <button
+                  className={back.on ? "usage-notify on" : "usage-notify"}
+                  aria-pressed={back.on}
+                  aria-label={back.on ? "Notifying when it’s back. Tap to stop." : "Notify me when it’s back"}
+                  disabled={back.busy}
+                  onClick={() => void back.toggle()}
+                >
+                  {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
+                  {back.on ? "Notifying" : "Notify me"}
+                </button>
+              )}
               {!!resets && onReset && (
                 <button onClick={() => setAsking(true)}>Reset</button>
               )}
@@ -87,7 +113,7 @@ export default function UsageStrip({
           )}
         </span>
       </div>
-      {onContinue && continueIn.length > 0 && (
+      {((onContinue && continueIn.length > 0) || onAutoContinue) && (
         <div className="usage-continue" role="group" aria-label="Continue in another agent">
           {target ? (
             <>
@@ -107,13 +133,21 @@ export default function UsageStrip({
               </span>
             </>
           ) : (
-            continueIn.map((c) => (
-              <button key={c.agent} className="usage-continue-offer" onClick={() => setGoing(c.agent)}>
-                <AgentLogo agent={c.agent} name={c.name} logos={logos} size={18} />
-                <span>Continue in {c.name}</span>
-                <ArrowRight size={14} />
-              </button>
-            ))
+            <>
+              {onContinue && continueIn.map((c) => (
+                <button key={c.agent} className="usage-continue-offer" onClick={() => setGoing(c.agent)}>
+                  <AgentLogo agent={c.agent} name={c.name} logos={logos} size={18} />
+                  <span>Continue in {c.name}</span>
+                  <ArrowRight size={14} />
+                </button>
+              ))}
+              {onAutoContinue && (
+                <button className="usage-continue-offer usage-auto-continue" onClick={onAutoContinue}>
+                  <Workflow size={16} />
+                  <span>Auto-continue</span>
+                </button>
+              )}
+            </>
           )}
         </div>
       )}

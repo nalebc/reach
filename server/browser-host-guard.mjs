@@ -22,9 +22,13 @@ export function browserAppSessionActive(client, now = Date.now()) {
 
 // status is read from the local Tailscale daemon, never request headers or the
 // origin's DNS name. Self.ID is the same stable node ID as whois Node.StableID.
-export function browserHostNode(status) {
-  if (status?.BackendState !== "Running" || status.Self?.Online === false ||
-      status.Self?.Expired === true || typeof status.Self?.ID !== "string" ||
+// Self.Online is not checked: Tailscale 1.102 reports the local node offline
+// while it runs and serves, which locked app access on a working Mac (Oct 8).
+// BackendState and the node key's expiry are the local daemon's real answer.
+export function browserHostNode(status, now = Date.now()) {
+  const keyExpiry = Date.parse(status?.Self?.KeyExpiry);
+  if (status?.BackendState !== "Running" || status.Self?.Expired === true ||
+      (keyExpiry > 0 && keyExpiry <= now) || typeof status.Self?.ID !== "string" ||
       !/^[A-Za-z0-9_-]{1,200}$/.test(status.Self.ID))
     throw fail(503, "Reach cannot verify this Mac's Tailscale identity. App access stays locked.");
   return status.Self.ID;
@@ -103,7 +107,7 @@ export function createBrowserHostGuard({
     }
     const revision = generation, started = now();
     const operation = Promise.resolve().then(lookup).then((status) => {
-      const node = browserHostNode(status);
+      const node = browserHostNode(status, now());
       if (revision !== generation || started + maxAgeMs <= now())
         throw fail(503, "Reach's host identity changed or could not be verified in time.");
       self = node;

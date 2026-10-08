@@ -1,10 +1,9 @@
-import { useMemo, useRef, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, TriangleAlert, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, SquarePen, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
-import { UsageSheet } from "./UsageRing";
-import { mergeHealth, shortReset, usageOf } from "./usage";
+import { mergeHealth } from "./usage";
 import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
 import { relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
@@ -230,6 +229,10 @@ export default function ChatHub({
   health?: AgentHealth[];
 }) {
   const field = useRef<HTMLInputElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    if (searchOpen) field.current?.focus();
+  }, [searchOpen]);
   // This computer first, then the others (when a chat there can be opened).
   const fleet = useMemo(() => (onOpenOn ? chatComputers(peer, computers) : [peer]), [peer, computers, !!onOpenOn]);
   const others = fleet.slice(1);
@@ -255,16 +258,6 @@ export default function ChatHub({
     () => mergeHealth([health, ...others.map((c) => (Array.isArray(healths[c.id]?.value?.agents) ? healths[c.id].value!.agents! : []))]),
     [health, healths],
   );
-  const [usageOpen, setUsageOpen] = useState(false);
-  // An agent close to its limit (80% and up), the fullest first; and one
-  // with room to start in instead.
-  const near = usage
-    .map((h) => ({ h, u: usageOf(h) }))
-    .filter((x) => x.u && x.u.level !== "rest" && apps.some((a) => a.agent === x.h.agent))
-    .sort((a, b) => (b.u!.level === "out" ? 1000 : b.u!.percent) - (a.u!.level === "out" ? 1000 : a.u!.percent))[0];
-  const roomy = near
-    ? apps.find((a) => a.agent !== near.h.agent && a.agent !== "all" && a.supported && usage.some((h) => h.agent === a.agent && h.signedIn && h.usable !== false && usageOf(h)?.level === "rest"))
-    : undefined;
   // The computers whose chats aren't here, and why (one still being asked
   // isn't said: its chats usually follow in a moment).
   const absent = others.flatMap((computer) => {
@@ -280,7 +273,6 @@ export default function ChatHub({
   const names = computerNames(covered.map((computer) => computer.name));
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
   const [opened, setOpened] = useState<string[]>([]);
-  const [more, setMore] = useState(false);
   const [cancelling, setCancelling] = useState("");
   const all = useMemo(() => (sessions || []).filter((s) => !s.archived), [sessions]);
   const chatLists = useMemo<ComputerChats[]>(
@@ -344,16 +336,17 @@ export default function ChatHub({
         onRefresh={onRefresh}
         workflows={workflows}
         health={usage}
-        searchOpen={false}
-        onSearch={() => field.current?.focus()}
+        searchOpen={searchOpen}
+        onSearch={() => setSearchOpen((open) => !open)}
       />
-      <p className="hub-lead">Every agent’s chats on {names}, together.</p>
       {absent.length > 0 && (
         <p className="hub-fleet-note" role="status">
           {sayAbsent(absent.map(({ computer, absence }) => ({ name: computer.name, absence })))}
         </p>
       )}
-      <SearchAll computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
+      <div hidden={!searchOpen}>
+        <SearchAll computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
+      </div>
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>
           <ShieldCheck size={16} />
@@ -365,23 +358,6 @@ export default function ChatHub({
           </span>
         </button>
       )}
-      {near && (
-        <div className={`chat-needs-row usage-row ${near.u!.level}`}>
-          <button className="usage-row-main" onClick={() => setUsageOpen(true)}>
-            <AgentLogo agent={near.h.agent} logos={logos} size={18} />
-            <span>
-              {agentLabel(near.h.agent)} {near.u!.level === "out" ? "is out" : `${near.u!.percent}%`}
-              {near.u!.resetsAt ? ` · resets ${shortReset(near.u!.resetsAt)}` : ""}
-            </span>
-          </button>
-          {roomy && onNew && (
-            <button className="chat-needs-row-go" onClick={() => (onAgentChange(roomy.agent), onNew())}>
-              Use {roomy.name} <ArrowUpRight size={14} />
-            </button>
-          )}
-        </div>
-      )}
-      {usageOpen && <UsageSheet health={usage.filter((h) => usageOf(h))} logos={logos} onClose={() => setUsageOpen(false)} />}
       {crews.length > 0 && (
         <section className="hub-card hub-teams" aria-label="Teams">
           <header>
@@ -411,9 +387,9 @@ export default function ChatHub({
         </section>
       )}
       {live.length > 0 && (
-        <section className="hub-card hub-relays" aria-label="Relays">
+        <section className="hub-card hub-relays" aria-label="Handoffs">
           <header>
-            <h2>Relays</h2>
+            <h2>Handoffs</h2>
           </header>
           {live.map((r) => {
             const at = r.chain.at(-1)!;
@@ -425,7 +401,7 @@ export default function ChatHub({
                   <span>{relayLine(r, r.chain[0])}</span>
                 </button>
                 {r.state === "waiting" && (
-                  <button className="relay-row-action" disabled={cancelling === r.id} aria-label="Cancel relay" onClick={() => void cancel(r)}>
+                  <button className="relay-row-action" disabled={cancelling === r.id} aria-label="Cancel handoff" onClick={() => void cancel(r)}>
                     {cancelling === r.id ? <Loader2 size={14} className="spin" /> : "Cancel"}
                   </button>
                 )}
@@ -440,8 +416,7 @@ export default function ChatHub({
         </p>
       ) : (
         <section className="chat-projects" aria-label="Projects">
-          <h2 className="chat-projects-title">Projects</h2>
-          {(more ? projects : projects.slice(0, 8)).map(({ key, computer, root, list }) => {
+          {projects.map(({ key, computer, root, list }) => {
             const open = opened.includes(key);
             // Two chats changing one file: on the same computer only.
             const overlaps = activityOf(computer)?.overlaps;
@@ -465,15 +440,20 @@ export default function ChatHub({
                     {labelled && <Where computer={computer} />}
                   </h2>
                 </div>
-                {warn.map((o) => (
-                  <p key={o.file} className="hub-overlap" role="note">
-                    <TriangleAlert size={14} />
-                    <span>
-                      <strong>{o.file.slice(root.replace(/[\\/]$/, "").length + 1) || base(o.file)}</strong> changed by{" "}
-                      {whoChanged(o.chats)} in the last half hour.
-                    </span>
-                  </p>
-                ))}
+                {warn.length > 0 && (
+                  <details className="hub-file-activity">
+                    <summary>{warn.length} shared {warn.length === 1 ? "file" : "files"} edited recently</summary>
+                    <p className="hub-note">Multiple chats edited these files. This does not necessarily mean their changes conflict.</p>
+                    {warn.map((o) => (
+                      <p key={o.file} className="hub-overlap" role="note">
+                        <span>
+                          <strong>{o.file.slice(root.replace(/[\\/]$/, "").length + 1) || base(o.file)}</strong> changed by{" "}
+                          {whoChanged(o.chats)} in the last half hour.
+                        </span>
+                      </p>
+                    ))}
+                  </details>
+                )}
                 <div className="chat-entries">
                   {(open ? list : list.slice(0, 4)).map((s) => {
                     const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
@@ -515,21 +495,20 @@ export default function ChatHub({
                   })}
                 </div>
                 {list.length > 4 && (
-                  <button className="chat-list-more" onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}>
+                  <button className="chat-list-more" aria-expanded={open} onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}>
                     {open ? "Show fewer" : `Show all ${list.length}`}
                   </button>
                 )}
               </section>
             );
           })}
-          {projects.length > 8 && !more && (
-            <button className="chat-list-more" onClick={() => setMore(true)}>
-              Show {projects.length - 8} more projects
-            </button>
-          )}
           {!projects.length && <p className="chat-list-note">No conversations yet on {names}.</p>}
         </section>
       )}
+      {onNew && <button className="chat-quick-new" aria-label="New chat" onClick={() => onNew()}>
+        <SquarePen size={21} />
+        <span className="chat-quick-label">New chat</span>
+      </button>}
     </div>
   );
 }

@@ -1,15 +1,15 @@
-/* Invitation composer. Calm green surfaces with progressive disclosure. */
+/* Invitation composer. Neutral surfaces and a single clear primary action. */
 .ivt {
-  --ivt-text: #e9eee9;
-  --ivt-muted: #9aa89f;
-  --ivt-line: #d2eedb1a;
-  --ivt-field: #111a15;
-  --ivt-raised: #202c24;
+  --ivt-text: #f3f3f3;
+  --ivt-muted: #a5a5a5;
+  --ivt-line: #ffffff1f;
+  --ivt-field: #262626;
+  --ivt-raised: #303030;
   --ivt-hover: #ffffff0f;
   display: grid;
   gap: 14px;
   width: 100%;
-  max-width: 580px;
+  max-width: 520px;
   margin: 0 auto 12px;
   color: var(--ivt-text);
   font-size: 15px;
@@ -57,7 +57,7 @@
 }
 .ivt-primary {
   border: 0;
-  background: #b9efd4;
+  background: #ededed;
   color: #0d0d0d !important;
 }
 .ivt-primary.small {
@@ -788,25 +788,25 @@
   padding-bottom: 100px;
 }
 .ivt-heading {
-  text-align: center;
-  margin: 0 auto 18px;
-  max-width: 370px;
+  text-align: left;
+  margin: 0 0 12px;
+  max-width: none;
 }
 .ivt-heading-icon {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 18px;
-  color: #b9efd4;
-  border: 1px solid #b9efd429;
-  border-radius: 18px;
-  background: linear-gradient(145deg, #b9efd417, #b9efd404);
+  width: 46px;
+  height: 46px;
+  margin: 0 0 18px;
+  color: #ececec;
+  border: 1px solid var(--ivt-line);
+  border-radius: 14px;
+  background: #ffffff05;
 }
 .ivt-heading h1 {
-  margin: 0 0 10px;
-  font-size: clamp(28px, 4vw, 34px);
-  letter-spacing: -1.2px;
+  margin: 0 0 8px;
+  font-size: clamp(26px, 4vw, 30px);
+  letter-spacing: -0.9px;
   font-weight: 550;
   line-height: 1.15;
 }
@@ -818,21 +818,20 @@
 }
 .ivt-composer {
   display: grid;
-  gap: 18px;
+  gap: 24px;
   min-width: 0;
-  padding: 26px;
+  padding: 28px;
   border: 1px solid var(--ivt-line);
-  border-radius: 24px;
-  background: linear-gradient(150deg, #1b261f, #161e19 65%);
-  box-shadow: 0 16px 48px #00000018;
+  border-radius: 20px;
+  background: #212121;
 }
 .ivt-kind {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
   padding: 4px;
-  border-radius: 13px;
-  background: #0c130f;
+  border-radius: 11px;
+  background: #171717;
 }
 .ivt-kind button {
   display: flex;
@@ -848,22 +847,9 @@
   font-weight: 500;
 }
 .ivt-kind button[aria-pressed="true"] {
-  background: #26352c;
-  color: #d7f5e4;
-  border-color: #b9efd426;
-  box-shadow: 0 2px 6px #0002;
-}
-.ivt-form-heading h2 {
-  margin: 6px 0;
-  font-size: 19px;
-  font-weight: 550;
-  letter-spacing: -0.4px;
-}
-.ivt-form-heading p {
-  margin: 0;
-  color: var(--ivt-muted);
-  font-size: 13px;
-  line-height: 1.5;
+  background: #343434;
+  color: #f3f3f3;
+  border-color: #ffffff0a;
 }
 .ivt-composer .ivt-add {
   display: grid;
@@ -871,7 +857,7 @@
 }
 .ivt-field-label {
   margin: 0;
-  color: #bac7bf;
+  color: var(--ivt-muted);
   font-size: 12px;
   font-weight: 500;
 }
@@ -941,11 +927,11 @@
   border-radius: 12px;
   font-size: 14px !important;
   font-weight: 600 !important;
-  color: #153626 !important;
+  color: #202020 !important;
   transition: background 0.15s;
 }
 .ivt-submit:not(:disabled):hover {
-  background: #cff7e2;
+  background: #fff;
 }
 .ivt-submit:disabled {
   opacity: 0.45;
@@ -1019,7 +1005,7 @@
   width: 14px;
 }
 .ivt :is(button, summary, select, input):focus-visible {
-  outline: 2px solid #b9efd4;
+  outline: 2px solid #ededed;
   outline-offset: 3px;
 }
 .ivt summary::-webkit-details-marker {
@@ -1036,7 +1022,7 @@
   }
   .ivt-heading {
     margin-bottom: 12px;
-    max-width: 290px;
+    max-width: none;
   }
   .ivt-heading-icon {
     margin-bottom: 14px;
@@ -1044,9 +1030,9 @@
     height: 46px;
   }
   .ivt-composer {
-    padding: 20px 18px;
-    border-radius: 20px;
-    gap: 16px;
+    padding: 20px;
+    border-radius: 16px;
+    gap: 22px;
   }
   .ivt-permission-row .ivt-role {
     flex: none;

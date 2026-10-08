@@ -73,11 +73,13 @@ export function browserAccessRoutes(
     commandLog,
     snapshots,
     prepareFunnel,
+    // Whether the internet can find the public name (server/public-dns.mjs).
+    publicName = null,
     appAccess, appAccessAvailable = false, hostGuard,
     // Screen, input, app list and shell for preset invitations
     // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
     // can't offer them.
-    desktop = null, shell = null, shortcuts = null, tools = null,
+    desktop = null, shell = null, shortcuts = null, tools = null, services = null,
   },
 ) {
   const owner = (req) => {
@@ -161,8 +163,11 @@ export function browserAccessRoutes(
         throw error;
       }
     }
+    // The link is issued either way; a name Tailscale hasn't published is
+    // reported so the owner knows why the agent can't open it.
+    const name = url && publicName ? await publicName(new URL(url).hostname).catch(() => "unknown") : null;
     record("agent", `Invited ${input.name} through a browser`);
-    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}) });
+    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}), ...(name === "missing" ? { publicName: "missing" } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing
   // access, including Full/Read only defaults. Only those presets may include
@@ -262,6 +267,7 @@ export function browserAccessRoutes(
         roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
         terminals: selected,
         ...presetAccess(client),
+        ...(services ? { services: services.catalog(() => browser(req)) } : {}),
         ...(tools && ["full", "apps"].includes(client.policy.preset) ? { browserTools: await tools.catalog(() => browser(req)) } : {}),
         ...(shortcuts && ["full", "apps"].includes(client.policy.preset) ? {
           savedToolHint: SAVED_TOOLS_HINT,

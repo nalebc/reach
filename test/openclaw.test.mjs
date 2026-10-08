@@ -1781,3 +1781,31 @@ test("a messaging app is added through OpenClaw's own command, its token an argu
   await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run, authorize: () => { if (++checks > 1) throw new Error("revoked"); } }), /revoked/);
   assert.equal(ran.length, 2, "a revoked phone adds nothing");
 });
+
+test("Reach negotiates both Gateway protocol 3 and 4 with the same signed device identity", async (t) => {
+  for (const protocol of [3, 4]) {
+    const { c, calls, handle } = await fixture(t);
+    handle(req => {
+      if (req.method !== "connect") return;
+      if (req.params.minProtocol > protocol || req.params.maxProtocol < protocol)
+        return { error: { code: "INVALID_REQUEST", message: "protocol mismatch" } };
+      return { payload: { type: "hello-ok", protocol, server: { version: protocol === 4 ? "2026.9.9" : "2026.3.13" } } };
+    });
+    const list = await c.overview();
+    assert.equal(list.connected, true, `protocol ${protocol} connects`);
+    assert.equal(list.sessions.length, rows.length);
+    assert.ok((await c.history(REACH)).items.length);
+    assert.equal(calls[0].params.minProtocol, 3);
+    assert.equal(calls[0].params.maxProtocol, 4);
+    assert.ok(calls[0].params.device.signature);
+  }
+});
+
+test("a future protocol mismatch explains the compatibility problem without echoing Gateway text", async (t) => {
+  const { c, handle } = await fixture(t);
+  handle(req => req.method === "connect" ? { error: { code: "INVALID_REQUEST", message: "protocol mismatch: private downstream details" } } : undefined);
+  const result = await c.overview();
+  assert.equal(result.connected, false);
+  assert.match(result.error, /incompatible connection versions/);
+  assert.doesNotMatch(result.error, /private downstream/);
+});

@@ -19,13 +19,22 @@ const homeFolder = (folder: string) =>
   /^\/(Users|home)\/[^/]+\/?$|^[A-Za-z]:\\Users\\[^\\]+\\?$/.test(folder);
 
 // One folder for a new chat: start in Home, go into any folder, use the one
-// you're in. New chats start only inside Home (server/index.mjs sessionFolder).
-export function FolderPicker({
+// you're in. onNavigate selects each opened folder immediately for new chats;
+// other callers can keep the explicit Use action. New chats start only inside
+// Home (server/index.mjs sessionFolder).
+export function FolderPicker(props: Parameters<typeof FolderPickerSession>[0]) {
+  const { peer } = props;
+  return <FolderPickerSession key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])} {...props} />;
+}
+
+function FolderPickerSession({
   peer,
   onPick,
+  onNavigate,
 }: {
   peer: Peer;
   onPick: (full: string) => void;
+  onNavigate?: (full: string) => void;
 }) {
   const [home, setHome] = useState<{ id: number; path: string } | null>(null);
   const [path, setPath] = useState("");
@@ -84,13 +93,17 @@ export function FolderPicker({
   }, [peer.url, peer.token, home?.id, path]);
   const parts = path.split("/").filter(Boolean);
   const here = parts.at(-1) || "Home";
+  const navigate = (next: string) => {
+    setPath(next);
+    if (home) onNavigate?.(join(home.path, next));
+  };
   return (
     <div className="folder-pick">
       <nav className="folder-pick-crumbs" aria-label="Path">
         <button
           type="button"
           aria-current={!parts.length ? "location" : undefined}
-          onClick={() => setPath("")}
+          onClick={() => navigate("")}
         >
           Home
         </button>
@@ -100,7 +113,7 @@ export function FolderPicker({
             <button
               type="button"
               aria-current={i === parts.length - 1 ? "location" : undefined}
-              onClick={() => setPath(parts.slice(0, i + 1).join("/"))}
+              onClick={() => navigate(parts.slice(0, i + 1).join("/"))}
             >
               {part}
             </button>
@@ -110,7 +123,7 @@ export function FolderPicker({
       <div className="folder-pick-list" role="list" aria-busy={loading}>
         {error ? (
           <p className="folder-pick-empty">{error}</p>
-        ) : loading && !items.length ? (
+        ) : loading ? (
           <p className="folder-pick-empty">Loading…</p>
         ) : !items.length ? (
           <p className="folder-pick-empty">No folders inside.</p>
@@ -121,7 +134,7 @@ export function FolderPicker({
               role="listitem"
               key={i.path}
               aria-label={`Open ${i.name}`}
-              onClick={() => setPath(i.path)}
+              onClick={() => navigate(i.path)}
             >
               <Folder size={15} />
               <span>{i.name}</span>
@@ -130,14 +143,14 @@ export function FolderPicker({
           ))
         )}
       </div>
-      <button
+      {!onNavigate && <button
         type="button"
         className="folder-pick-use"
-        disabled={!home}
+        disabled={!home || loading || !!error}
         onClick={() => home && onPick(join(home.path, path))}
       >
         <Check size={14} /> Use “{here}”
-      </button>
+      </button>}
     </div>
   );
 }
@@ -331,7 +344,7 @@ export function FolderBrowser({
           )
         ) : error ? (
           <p className="fb-empty">{error}</p>
-        ) : loading && !items.length ? (
+        ) : loading ? (
           <p className="fb-empty">Loading…</p>
         ) : !items.length ? (
           <p className="fb-empty">No folders inside.</p>

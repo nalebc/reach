@@ -329,23 +329,39 @@ export const post = <T = any>(peer: Peer, route: string, data: unknown = {}) =>
 const IDLE_MS = 45000;
 const pause = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    if (signal?.aborted) return reject(signal.reason);
+    const abort = () => {
       clearTimeout(timer);
-      reject(signal.reason);
-    });
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort);
   });
 // Wait for a network before retrying. (A phone pauses the whole app while
 // it's in the background, so retries resume by themselves when it's back; a
 // computer keeps transferring in a background tab.)
-export const whenReachable = () =>
-  new Promise<void>((resolve) => {
+export const whenReachable = (signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
     if (typeof window === "undefined") return resolve();
+    const cleanup = () => {
+      window.removeEventListener("online", check);
+      signal?.removeEventListener("abort", abort);
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal?.reason);
+    };
     const check = () => {
       if (navigator.onLine === false) return;
-      window.removeEventListener("online", check);
+      cleanup();
       resolve();
     };
+    signal?.addEventListener("abort", abort);
     window.addEventListener("online", check);
     check();
   });
@@ -384,18 +400,20 @@ export async function fileBlob(
     failures = 0;
   while (true) {
     // The caller's signal cancels the request. Nothing arriving for a while
-    // aborts it too: before the response through our own signal (when the
-    // caller didn't pass one), while reading by cancelling the stream.
+    // aborts it too, both before headers and while reading the stream.
     const idle = new AbortController();
     let reader:
       ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined;
     const cancel = () => {
-      idle.abort();
+      idle.abort(options.signal?.aborted ? options.signal.reason : undefined);
       void reader?.cancel().catch(() => {});
     };
     let timer = setTimeout(cancel, IDLE_MS);
-    const signal = options.signal || idle.signal;
+    options.signal?.addEventListener("abort", cancel);
+    const signal = idle.signal;
     try {
+      if (options.signal?.aborted) cancel();
+      if (signal.aborted) throw signal.reason;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${peer.token}`,
       };
@@ -447,11 +465,13 @@ export async function fileBlob(
         reader.releaseLock();
       }
       clearTimeout(timer);
+      if (signal.aborted) throw signal.reason;
       // The connection closed early (or stalled): carry on from here.
       if (total && received < total) throw Error("The download was cut short.");
       return new Blob(parts, { type });
     } catch (e) {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
       if (options.signal?.aborted || !retryable(e) || ++failures > 6) {
         if (failures > 6)
           throw Error(
@@ -459,8 +479,11 @@ export async function fileBlob(
           );
         throw e;
       }
-      await whenReachable();
+      await whenReachable(options.signal);
       await pause(Math.min(15000, 1000 * 2 ** (failures - 1)), options.signal);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
     }
   }
 }

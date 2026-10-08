@@ -28,6 +28,7 @@ export function createCodexDaemon({
   const listeners = new Set();
   const deprecations = new Set();
   const closeListeners = new Set();
+  const readyListeners = new Set();
   let requestHandler = null;
   // Set when Reach quits; nothing reconnects after that.
   let closed = false;
@@ -158,6 +159,9 @@ export function createCodexDaemon({
       capabilities: { experimentalApi: true },
     });
     ws.send(JSON.stringify({ method: "initialized" }));
+    for (const listener of readyListeners) {
+      try { listener(); } catch {}
+    }
   }
   function send(method, params) {
     return new Promise((resolve, reject) => {
@@ -199,6 +203,10 @@ export function createCodexDaemon({
     onClose(listener) {
       closeListeners.add(listener);
       return () => closeListeners.delete(listener);
+    },
+    onReady(listener) {
+      readyListeners.add(listener);
+      return () => readyListeners.delete(listener);
     },
     // handler(message, resolve(result), reject(error))
     onRequest(handler) {

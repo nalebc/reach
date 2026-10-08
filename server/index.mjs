@@ -67,6 +67,8 @@ import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
 import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
+import { createAgentServices, agentServiceRoutes } from "./agent-services.mjs";
+import { createServiceConnectors } from "./service-connectors.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installPlan, installTerminalCommand } from "./agent-install.mjs";
@@ -102,6 +104,7 @@ import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
+import { createUsageWatch } from "./agent-sessions/usage-watch.mjs";
 import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
@@ -120,6 +123,7 @@ import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voi
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
+import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
 import { createBrowserApprovals, browserRequestActions } from "./browser-approvals.mjs";
 import { runTerminalCommand } from "./restricted-terminal.mjs";
@@ -491,6 +495,14 @@ export async function createReach(overrides = {}) {
   });
   // On every change of the chat list (its timer is only the slow fallback).
   agentSessions.onListChange?.(() => void doneWatch.look());
+  // "Notify me when it's back", for an agent out of usage (usage-watch.mjs).
+  const usageWatch = createUsageWatch({
+    health: () => agentSessions.health({ fresh: true }),
+    notify,
+    file: process.env.NODE_TEST_CONTEXT ? null : path.join(config.dataDir, "usage-watch.json"),
+    ...overrides.usageWatch,
+  });
+  usageWatch.start();
   // A turn's end, confirmed by reading the chat (agent-sessions/turn-watch.mjs).
   // One that stopped on a used-up limit says so on your phone, with the way
   // on: the chat offers to continue in another agent. It shares the chat's
@@ -799,6 +811,16 @@ export async function createReach(overrides = {}) {
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
   const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
     ...(overrides.browserToolOptions || {}) });
+  const agentServices = createAgentServices({ record, notify,
+    connectors: createServiceConnectors(agentTools),
+    verifyClient: (id) => {
+      const client = auth.list().find((entry) => entry.id === id);
+      return client ? applyAgentPolicy(client, config) : null;
+    },
+    available: () => !paused && transportAvailable,
+    paused: (id) => agentDesktop?.isPaused?.(id) === true,
+    ...(overrides.serviceOptions || {}),
+  });
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
     authorize();
@@ -1494,13 +1516,18 @@ export async function createReach(overrides = {}) {
       });
     req.client = client;
     const credential = req.headers.authorization?.replace(/^Bearer /, "");
-    req.reauthorize = () => {
+    const reauthorize = (allowFinishedResponse = false) => {
       const current = verify(req, credential);
-      if (!allowed(current) || res.destroyed)
+      if (!allowed(current) || (res.destroyed && !(allowFinishedResponse && res.writableFinished)))
         throw fail(401, "Access expired or was revoked.");
       req.client = current;
       return current;
     };
+    req.reauthorize = () => reauthorize();
+    // Accepted background maintenance outlives a successfully sent response.
+    // Keep checking the original credential and route access before each step;
+    // a prematurely disconnected response never grants background access.
+    req.reauthorizeJob = () => reauthorize(true);
     if (client.policy?.browser && (req.path.startsWith("/files") ||
         req.path.startsWith("/browser/files/") || req.path === "/browser/apps/screen")) {
       const active = browserResponses.get(client.id) || 0;
@@ -1592,6 +1619,7 @@ export async function createReach(overrides = {}) {
   });
   app.delete("/api/device/access", (req, res) => {
     auth.revoke(req.client.id);
+    agentServices.cancelClient(req.client.id);
     browserApprovals.cancelClient(req.client.id);
     browserAppAccess.cancelClient(req.client.id);
     browserOperations.cancelClient(req.client.id);
@@ -1866,6 +1894,7 @@ export async function createReach(overrides = {}) {
     agentDesktop?.cancelClient?.(id);
     agentShortcuts.cancelClient(id);
     agentTools.cancelClient(id);
+    agentServices.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1907,6 +1936,7 @@ export async function createReach(overrides = {}) {
   const endSession = (id) => {
     agentShortcuts.cancelClient(id);
     agentTools.cancelClient(id);
+    agentServices.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -2015,17 +2045,19 @@ export async function createReach(overrides = {}) {
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
   agentToolRoutes(app, { tools: agentTools });
+  agentServiceRoutes(app, agentServices);
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
-    desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools,
+    desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
       await prepareFunnel();
       return new URL(config.publicOrigin).origin.replace(/:\d+$/, "");
     },
+    publicName: overrides.publicName ?? (process.env.NODE_TEST_CONTEXT ? null : publicNameState),
     approvals: browserApprovals, commandLog: browserCommandLog, snapshots: browserSnapshots,
     screenAvailable: browserScreenAvailable,
     capture: browserCapture,
@@ -2536,6 +2568,9 @@ export async function createReach(overrides = {}) {
     );
   };
   openClawRoutes(app, openClaw, {
+    authorizeMaintenance: (req) => () => req.reauthorizeJob(),
+    runMaintenance: overrides.openClawMaintenance,
+    installRuntime: overrides.openClawRuntimeInstall,
     dataDir: config.dataDir,
     // What Reach doesn't set up itself (a model's key, a bot's token) opens
     // OpenClaw's own setup in a Reach terminal, typed into there.
@@ -2590,11 +2625,28 @@ export async function createReach(overrides = {}) {
   );
   app.get("/api/sessions/health", async (req, res) =>
     res.json({
-      agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) =>
-        savings.totals(a.agent).tokens ? { ...a, savings: savings.totals(a.agent) } : a,
-      ),
+      agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
+        ...a,
+        ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
+        ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
+      })),
     }),
   );
+  // Ask (or stop asking) for one notification when an agent's limit is back.
+  app.post("/api/sessions/usage-watch", async (req, res) => {
+    const agent = req.body?.agent;
+    if (!["claude", "codex", "gemini"].includes(agent)) throw fail(400, "Choose an agent.");
+    if (req.body?.on === false) {
+      usageWatch.remove(agent);
+      return res.json({ watching: false });
+    }
+    const current = (await agentSessions.health({ fresh: true })).find((h) => h.agent === agent);
+    if (!current?.signedIn) throw fail(409, "Sign in to this agent first.");
+    usageWatch.add(agent, { session: req.body?.session, resetsAt: current.resetsAt });
+    // Already back on the Mac: the look sends it now.
+    void usageWatch.look();
+    res.json({ watching: true });
+  });
   // The Claude app's own typefaces from the app on this Mac (none without
   // it), ahead of the session routes below that would take /fonts/<name>.
   app.get("/api/sessions/fonts", (req, res) => res.json(agentFonts.list()));
@@ -3566,6 +3618,7 @@ export async function createReach(overrides = {}) {
     background: () => openClawWatch.items(),
     handoffs: () => agentApps.pending(),
     browserRequests: () => browserApprovals.listOwner(),
+    serviceRequests: () => agentServices.inspect(),
     admissions: () => auth.listAgentAdmissions(),
     accessRequests: pendingRequests,
     restartRequests: () => restarts.list(),
@@ -3992,6 +4045,7 @@ export async function createReach(overrides = {}) {
               client.kind !== "guest" && {
                 handoffs: digest(agentApps.pending().map((h) => h.id)),
                 browserRequests: digest(browserApprovals.listOwner().map((r) => r.id)),
+                serviceAccess: digest(agentServices.inspect().map((r) => [r.id, r.status])),
                 ...(client.kind === "device" && {
                   agentAdmissions: digest(auth.listAgentAdmissions().map((r) => r.requestId)),
                 }),
@@ -4502,6 +4556,7 @@ export async function createReach(overrides = {}) {
       agentDesktop?.close?.();
       agentShortcuts.close();
       agentTools.close();
+      agentServices.close();
       await browserCommandLog.close();
       browserSnapshots.clear();
       clearInterval(approvalCleanup);

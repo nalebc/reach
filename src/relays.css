@@ -408,3 +408,16 @@
 .continue-priority small { opacity: .65; margin-top: 3px; }
 .continue-priority button { display: grid; place-items: center; min-width: 40px; min-height: 40px; }
 .continue-priority button:disabled { opacity: .3; }
+
+/* Plain, always-visible choices for a handoff; extra steps are optional. */
+.handoff-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 13px; color: var(--reach-ink); }
+.handoff-field small, .handoff-help { color: var(--reach-muted); }
+.handoff-field > select, .handoff-field > input { width: 100%; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid var(--reach-line); border-radius: 10px; background: var(--reach-panel); color: var(--reach-ink); font-size: 16px; }
+.handoff-help { margin: 0 0 10px; font-size: 13px; line-height: 1.45; }
+.handoff-followups { margin: 0 0 10px; border-block: 1px solid var(--reach-line); font-size: 13px; }
+.handoff-followups summary { min-height: 44px; padding: 12px 0; cursor: pointer; }
+.handoff-followups summary span { color: var(--reach-muted); }
+.handoff-followup { display: flex; align-items: center; gap: 8px; }
+.handoff-followup > :first-child { flex: 1; min-width: 0; }
+.handoff-followup button, .handoff-add { min-height: 44px; border: 0; background: none; color: var(--reach-ink); font: inherit; }
+.handoff-add { display: flex; align-items: center; gap: 6px; text-align: left; }

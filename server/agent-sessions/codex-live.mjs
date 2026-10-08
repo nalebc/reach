@@ -222,6 +222,8 @@ export function createCodexLive({
 }) {
   const threads = new Map();
   const subscribed = new Set();
+  const reconnecting = new Set();
+  let closed = false, connectionGeneration = 0;
   const state = (id) => {
     if (!threads.has(id))
       threads.set(id, {
@@ -280,6 +282,8 @@ export function createCodexLive({
     }
   };
   daemon.onClose?.(() => {
+    connectionGeneration++;
+    for (const id of subscribed) reconnecting.add(id);
     subscribed.clear();
     owner.reset?.();
     for (const [id, t] of threads)
@@ -291,6 +295,45 @@ export function createCodexLive({
         changed(id);
       }
   });
+  // The daemon outlives Reach. Restore the native owner bridge for its
+  // still-loaded Reach tasks after startup or a connection loss; otherwise
+  // the desktop sees a writer lock with nobody advertising its history.
+  daemon.onReady?.(() => { void recoverOwners().catch(() => {}); });
+  async function recoverOwners() {
+    const generation = connectionGeneration;
+    const current = () => !closed && generation === connectionGeneration;
+    let cursor = null;
+    const visited = new Set();
+    do {
+      if (!current()) return;
+      const page = await daemon.rpc("thread/loaded/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+      for (const id of page.data || []) {
+        if (!current()) return;
+        if (subscribed.has(id)) continue;
+        try {
+          const { thread } = await daemon.rpc("thread/read", { threadId: id, includeTurns: false });
+          if (!current()) return;
+          if (!reconnecting.has(id) && thread.originator !== "reach") continue;
+          await attach(id, () => { if (!current()) throw Error("Codex connection changed."); });
+          reconnecting.delete(id);
+          const t = state(id);
+          const active = thread.status?.type === "active";
+          t.status = active
+            ? thread.status.activeFlags?.length ? "waiting" : "running"
+            : "idle";
+          t.error = null;
+          changed(id);
+          if (!active) release(id);
+        } catch {
+          // A task may close or change owners during enumeration. Never
+          // create a replacement thread or replay a message to recover it.
+        }
+      }
+      cursor = page.nextCursor || null;
+      if (visited.has(cursor)) break;
+      visited.add(cursor);
+    } while (cursor);
+  }
   // Codex's queue changed: its own notice for a thread, or a write to its
   // queue database (which doesn't say whose). What waits on that is woken.
   const queueWaiters = new Set();
@@ -731,7 +774,7 @@ export function createCodexLive({
     }
   }
   return api = {
-    close: () => owner.close(),
+    close: () => { closed = true; connectionGeneration++; owner.close(); },
     drives: (threadId) => subscribed.has(threadId),
     currentMode: (threadId) => threads.get(threadId)?.mode || null,
     onChange(listener) {

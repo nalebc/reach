@@ -142,6 +142,7 @@ function fakeDaemon(replies = {}) {
   let notify;
   let request;
   let closed;
+  let ready;
   return {
     calls,
     methods: () => calls.map(([method]) => method),
@@ -155,6 +156,8 @@ function fakeDaemon(replies = {}) {
     onNotification: (listener) => (notify = listener),
     onRequest: (handler) => (request = handler),
     onClose: (listener) => (closed = listener),
+    onReady: (listener) => (ready = listener),
+    ready: () => ready?.(),
     emit: (method, params) => notify({ method, params }),
     ask: (id, method, params) =>
       new Promise((resolve) => request({ id, method, params }, resolve, (error) => resolve({ error }))),
@@ -947,6 +950,60 @@ function nativeOwnerFixture(daemon, options = {}) {
   } });
   return { live, request: (...args) => request(...args), rawRequests: (...args) => rawRequests(...args), settings };
 }
+
+test("reconnecting restores sharing for loaded Reach tasks without replaying their turn", async () => {
+  const foreign = "0199aaaa-bbbb-7ccc-8ddd-ffffffffffff";
+  const daemon = fakeDaemon({
+    "thread/loaded/list": p => p.cursor ? { data: [foreign], nextCursor: null } : { data: [T], nextCursor: "next" },
+    "thread/read": p => ({ thread: { id: p.threadId, originator: p.threadId === T ? "reach" : "codex_cli", status: { type: "active", activeFlags: [] } } }),
+  });
+  const f = nativeOwnerFixture(daemon);
+  daemon.ready();
+  await settled();
+  assert.equal(f.live.drives(T), true);
+  assert.equal(f.live.view(T).status, "running");
+  assert.equal(f.live.drives(foreign), false);
+  assert.deepEqual(daemon.calls.filter(([m]) => m === "thread/resume").map(([, p]) => p.threadId), [T]);
+  assert.equal(daemon.methods().some(m => /turn\/start|thread\/(start|fork)|queue\/add/.test(m)), false);
+  daemon.close();
+  assert.equal(f.live.drives(T), false);
+  daemon.ready();
+  await settled();
+  assert.equal(f.live.drives(T), true);
+  assert.equal(f.live.view(T).error, null);
+  f.live.close();
+});
+
+test("recovery never resumes a task after Reach closes during its read", async () => {
+  let finish;
+  const daemon = fakeDaemon({
+    "thread/loaded/list": { data: [T], nextCursor: null },
+    "thread/read": () => new Promise(resolve => { finish = resolve; }),
+  });
+  const f = nativeOwnerFixture(daemon);
+  daemon.ready();
+  await settled();
+  f.live.close();
+  finish({ thread: { id: T, originator: "reach", status: { type: "active" } } });
+  await settled();
+  assert.equal(daemon.methods().includes("thread/resume"), false);
+});
+
+test("a previously shared native-origin task recovers on the same daemon connection", async () => {
+  const daemon = fakeDaemon({
+    "turn/start": { turn: { id: "existing" } },
+    "thread/loaded/list": { data: [T], nextCursor: null },
+    "thread/read": { thread: { id: T, originator: "codex_desktop", status: { type: "active", activeFlags: [] } } },
+  });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "first" });
+  daemon.close();
+  daemon.ready();
+  await settled();
+  assert.equal(f.live.drives(T), true);
+  assert.equal(daemon.methods().filter(m => m === "turn/start").length, 1);
+  f.live.close();
+});
 
 test("Codex desktop starts the next turn on Reach's same writer between completed turns", async () => {
   const daemon = fakeDaemon({ "turn/start": { turn: { id: "native-turn" } } });

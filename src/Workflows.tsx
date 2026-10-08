@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, Loader2, Pause, Plus, RotateCcw, Search, SkipForward, Trash2, Workflow as WorkflowIcon, Wrench } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
@@ -272,29 +272,24 @@ function Steps<T extends { together: boolean }>({ tasks, row }: { tasks: T[]; ro
   );
 }
 
-// Keep the full instructions in the sheet's scroll area, including on reopen.
+// Instructions stay behind a preview until explicitly opened.
 function TaskInstructions({ value, n, review, onChange }: { value: string; n: number; review: boolean; onChange: (text: string) => void }) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const field = ref.current;
-    if (!field) return;
-    const resize = () => {
-      field.style.height = "0px";
-      field.style.height = `${Math.max(136, field.scrollHeight)}px`;
-    };
-    resize();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
-      if (field.clientWidth !== width) { width = field.clientWidth; resize(); }
-    });
-    let width = field.clientWidth;
-    observer?.observe(field);
-    return () => observer?.disconnect();
-  }, [value]);
-  return <label className="wf-field-label">Instructions
-    <textarea ref={ref} className="wf-edit-text" rows={4} value={value}
+  const [expanded, setExpanded] = useState(false);
+  const fieldId = `workflow-instructions-${n}`;
+  return <div className="wf-instructions">
+    <button type="button" className="wf-instructions-toggle" aria-expanded={expanded}
+      aria-controls={fieldId} aria-label={`${expanded ? "Hide" : "Show"} task ${n} instructions`}
+      onClick={() => setExpanded(!expanded)}>
+      <span>Instructions</span><span>{expanded ? "Hide" : "Edit"} <ChevronDown size={16} aria-hidden="true" /></span>
+    </button>
+    {expanded ? <textarea id={fieldId} className="wf-edit-text" rows={6} value={value}
       placeholder={review ? "What should the agent check?" : "What should the agent do?"}
       aria-label={`Task ${n}: what to do`} onChange={(e) => onChange(e.target.value)} />
-  </label>;
+      : <button id={fieldId} type="button" className="wf-instructions-preview"
+        aria-label={`Edit task ${n} instructions`} onClick={() => setExpanded(true)}>
+        {value || "Add instructions…"}
+      </button>}
+  </div>;
 }
 
 // Editing: the tasks still to start, with instructions, an agent picker,
@@ -330,6 +325,7 @@ function Editor({
   // The workflow as this editor's own last save left it.
   const ours = useRef(0);
   const [saving, setSaving] = useState(false);
+  const pendingSave = useRef<Promise<boolean> | null>(null);
   const [problem, setProblem] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // The Mac's copy, when nothing here waits to be saved: a planner's plan
@@ -346,6 +342,10 @@ function Editor({
   }, [workflow.updatedAt, workflow.state]);
   const save = async (): Promise<boolean> => {
     clearTimeout(timer.current);
+    if (pendingSave.current) {
+      if (!(await pendingSave.current)) return false;
+      return save();
+    }
     const mark = edits.current;
     if (mark === saved.current) return true;
     const { title, tasks, workflow: w } = latest.current;
@@ -357,20 +357,25 @@ function Editor({
     const lockedNow = w.tasks.slice(0, lockedCount(w));
     const gone = new Set(lockedNow.map((t) => t.id));
     setSaving(true);
-    try {
-      const r = await editWorkflow(peer, w.id, { title, tasks: [...lockedNow.map(toDraft), ...tasks.filter((t) => !t.id || !gone.has(t.id))] });
-      saved.current = mark;
-      setProblem("");
-      ours.current = r.workflow.updatedAt;
-      onSaved(r.workflow);
-      if (mark !== edits.current) schedule();
-      return mark === edits.current;
-    } catch (e) {
-      setProblem((e as Error).message);
-      return false;
-    } finally {
-      setSaving(false);
-    }
+    const pending = (async () => {
+      try {
+        const r = await editWorkflow(peer, w.id, { title, tasks: [...lockedNow.map(toDraft), ...tasks.filter((t) => !t.id || !gone.has(t.id))] });
+        saved.current = mark;
+        setProblem("");
+        ours.current = r.workflow.updatedAt;
+        onSaved(r.workflow);
+        return true;
+      } catch (e) {
+        setProblem((e as Error).message);
+        return false;
+      }
+    })();
+    pendingSave.current = pending;
+    const ok = await pending;
+    pendingSave.current = null;
+    setSaving(false);
+    if (ok && mark !== edits.current) schedule();
+    return ok && mark === edits.current;
   };
   const schedule = () => {
     clearTimeout(timer.current);
@@ -449,7 +454,6 @@ function Editor({
                 /></label>
               }
             >
-              <TaskInstructions value={draft.task} n={n} review={draft.kind === "review"} onChange={(task) => change(i, { task })} />
               <label className="wf-agent-field">
                 <span>Agent</span>
                 <span className="wf-agent-select">
@@ -462,21 +466,22 @@ function Editor({
                 </span>
               </label>
               <fieldset className="wf-task-mode">
-                <legend>What can this agent do?</legend>
+                <legend>Agent should…</legend>
                 <div className="wf-mode-options">
                   <button type="button" aria-label="Make changes" aria-pressed={draft.kind === "build"} onClick={() => change(i, { kind: "build" })}>
                     <Hammer size={18} aria-hidden="true" />
                     <strong>Make changes</strong>
-                    <span>{draft.agent === "openclaw" ? "Carry out the task using its tools." : "Do the task and edit files as needed."}</span>
                     {draft.kind === "build" && <Check size={15} className="wf-mode-check" aria-hidden="true" />}
                   </button>
                   <button type="button" aria-label="Review only" aria-pressed={draft.kind === "review"} onClick={() => change(i, { kind: "review" })}>
                     <Eye size={18} aria-hidden="true" />
                     <strong>Review only</strong>
-                    <span>Inspect and report. No changes requested.</span>
                     {draft.kind === "review" && <Check size={15} className="wf-mode-check" aria-hidden="true" />}
                   </button>
                 </div>
+                <p className="wf-mode-help">{draft.kind === "review"
+                  ? "Inspect and report. No changes requested."
+                  : draft.agent === "openclaw" ? "Carry out the task using its tools." : "Do the task and edit files as needed."}</p>
               </fieldset>
               {n > 1 && (
                 <label className="wf-parallel">
@@ -498,6 +503,7 @@ function Editor({
                   </button>
                 </span>
               </div>
+              <TaskInstructions value={draft.task} n={n} review={draft.kind === "review"} onChange={(task) => change(i, { task })} />
             </Row>
           );
         }}
@@ -623,7 +629,7 @@ export function WorkflowSheet({
         <span aria-hidden="true">·</span>
         <span>{workflowLine(w)}</span>
       </p>
-      {draft && <p className="wf-plan-intro">Review your plan, then run it. Tasks pass their results to the next step.</p>}
+      {draft && <p className="wf-plan-intro">Review, then run. Each step uses the previous results.</p>}
       {draft && planner && (
         <div className="wf-group wf-planner">
           <div className="wf-item-main">
@@ -802,12 +808,14 @@ export function WorkflowsPage({
   logos,
   onOpen,
   onNew,
+  onNewChat,
   onClose,
 }: {
   workflows: Workflow[];
   logos: AgentLogos;
   onOpen: (w: Workflow) => void;
   onNew: () => void;
+  onNewChat?: () => void;
   onClose: () => void;
 }) {
   const groups = {
@@ -820,6 +828,10 @@ export function WorkflowsPage({
   const shown = [...groups[tab]].sort((a, b) => Number(b.state === "paused") - Number(a.state === "paused") || b.updatedAt - a.updatedAt);
   return (
     <ChatSheet title="Workflows" className="workflow-sheet workflows-page" onClose={onClose}>
+      <div className="wf-create-actions">
+        {onNewChat && <button className="wf-primary wf-new-chat" onClick={onNewChat}><Plus size={18} /> New chat</button>}
+        <button className="wf-primary" onClick={onNew}><Plus size={18} /> New workflow</button>
+      </div>
       {workflows.length ? (
         <>
           <div className="wf-tabs" role="tablist" aria-label="Workflows to show">
@@ -870,9 +882,6 @@ export function WorkflowsPage({
           ) : (
             <p className="wf-none">{{ active: "Nothing running", draft: "No drafts", done: "Nothing finished yet" }[tab]}</p>
           )}
-          <button className="wf-fab" onClick={onNew}>
-            <Plus size={18} /> New workflow
-          </button>
         </>
       ) : (
         <div className="wf-empty">
@@ -881,9 +890,6 @@ export function WorkflowsPage({
           </span>
           <strong>Start your first workflow</strong>
           <p>Agents take turns on a plan you approve.</p>
-          <button className="wf-primary" onClick={onNew}>
-            New workflow
-          </button>
         </div>
       )}
     </ChatSheet>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Circle, Play, Search, X } from "lucide-react";
 import { request, type Peer } from "./api";
 import { toolErrorMessage } from "./tool-errors";
+import ServiceAgentTools from "./ServiceAgentTools";
 import DeterministicAgentTools, {
   type ToolCategory,
 } from "./DeterministicAgentTools";
@@ -28,6 +29,8 @@ export default function SavedAgentTools({
   onActivity,
   onScreen,
   searchRevision = 0,
+  browserEnabled = true,
+  servicesEnabled = false,
 }: {
   peer: Peer;
   ended: (error: unknown) => void;
@@ -37,6 +40,8 @@ export default function SavedAgentTools({
   onActivity?: (activity: string) => void;
   onScreen?: () => void;
   searchRevision?: number;
+  browserEnabled?: boolean;
+  servicesEnabled?: boolean;
 }) {
   const [localQuery, setLocalQuery] = useState("");
   const query = externalQuery ?? localQuery,
@@ -47,6 +52,8 @@ export default function SavedAgentTools({
   }, [searchRevision]);
   const [browserCount, setBrowserCount] = useState(0),
     [browserActivity, setBrowserActivity] = useState("");
+  const [serviceCount, setServiceCount] = useState(0);
+  const [serviceActivity, setServiceActivity] = useState("");
   // Parent callbacks and equivalent peer objects can change while a replay runs.
   // Only a changed connection must cancel it; current callbacks still receive failures.
   const connection = useMemo(
@@ -91,6 +98,7 @@ export default function SavedAgentTools({
   }, [connection]);
   useEffect(() => {
     const controller = new AbortController();
+    if (!browserEnabled) return () => controller.abort();
     let reading = false;
     const refresh = async () => {
       if (reading || !bridge.current) return;
@@ -139,20 +147,28 @@ export default function SavedAgentTools({
       controller.abort();
       clearInterval(timer);
     };
-  }, [connection, revision]);
+  }, [connection, revision, browserEnabled]);
   useEffect(() => {
-    onCount?.(tools.length + browserCount);
-  }, [tools.length, browserCount, onCount]);
+    onCount?.(tools.length + browserCount + serviceCount);
+  }, [tools.length, browserCount, serviceCount, onCount]);
   useEffect(() => {
     onActivity?.(
-      browserActivity ||
+      serviceActivity ||
+        browserActivity ||
         (pending
           ? message || "Running a recorded task…"
           : recording
             ? `Recording “${recording.name}” · ${recording.stepCount} steps`
             : ""),
     );
-  }, [browserActivity, pending, message, recording, onActivity]);
+  }, [
+    serviceActivity,
+    browserActivity,
+    pending,
+    message,
+    recording,
+    onActivity,
+  ]);
   const matching = tools.filter((tool) =>
     `${tool.title} ${tool.description}`
       .toLowerCase()
@@ -210,7 +226,7 @@ export default function SavedAgentTools({
     >
       <div className="aw-page-heading">
         <h1 id="ap-saved-tools">
-          Tools <small>{tools.length + browserCount}</small>
+          Tools <small>{tools.length + browserCount + serviceCount}</small>
         </h1>
       </div>
       <div className="atl-discovery">
@@ -241,25 +257,46 @@ export default function SavedAgentTools({
           onChange={(event) => setCategory(event.target.value as ToolCategory)}
         >
           <option value="all">All tools</option>
-          <option value="gmail">Gmail</option>
-          <option value="walmart">Walmart</option>
-          <option value="custom">Custom</option>
-          <option value="recorded">Recorded</option>
+          {servicesEnabled && <option value="services">Services</option>}
+          {browserEnabled && (
+            <>
+              <option value="gmail">Gmail</option>
+              <option value="walmart">Walmart</option>
+              <option value="custom">Custom</option>
+              <option value="recorded">Recorded</option>
+            </>
+          )}
         </select>
       </div>
-      <DeterministicAgentTools
-        peer={peer}
-        ended={ended}
-        query={query}
-        category={category}
-        onReveal={reveal}
-        onCount={setBrowserCount}
-        onActivity={setBrowserActivity}
-        blocked={pending || !!recording}
-      />
+      {servicesEnabled && (
+        <ServiceAgentTools
+          peer={peer}
+          ended={ended}
+          query={query}
+          onCount={setServiceCount}
+          onActivity={setServiceActivity}
+          hidden={category !== "all" && category !== "services"}
+        />
+      )}
+      {browserEnabled && (
+        <div hidden={category === "services"}>
+          <DeterministicAgentTools
+            peer={peer}
+            ended={ended}
+            query={query}
+            category={category}
+            onReveal={reveal}
+            onCount={setBrowserCount}
+            onActivity={setBrowserActivity}
+            blocked={pending || !!recording}
+          />
+        </div>
+      )}
       <details
         className="atl-recorded"
-        hidden={category !== "all" && category !== "recorded"}
+        hidden={
+          !browserEnabled || (category !== "all" && category !== "recorded")
+        }
         open={recording || category === "recorded" ? true : undefined}
       >
         <summary>

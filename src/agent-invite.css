@@ -1,130 +1,413 @@
-/* Inviting an agent (BrowserInvite.tsx): who, what it can use, for how long,
-   then one clear "send this" card. Pieces come from agent-ui.css. */
-.ag-invite {
-  display: grid;
-  gap: 18px;
-  color: var(--ag-text);
+/* Invitation-specific styling. Shared access and approval screens keep their
+   own palette; the invite uses neutral surfaces and a single white action. */
+.ag-invite,
+.ivt-agent {
+  --ag-text: #f3f3f3;
+  --ag-muted: #a5a5a5;
+  --ag-faint: #858585;
+  --ag-line: #ffffff1f;
+  --ag-surface: #ffffff03;
+  --ag-raised: #303030;
+  --ag-field: #262626;
+  --lime: #ededed;
 }
+.ag-invite,
 .ag-invite-form {
   display: grid;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 24px;
+  color: var(--ag-text);
 }
 .ag-invite-form[hidden] {
   display: none;
 }
+.ag-lines {
+  display: grid;
+}
+.ag-invite-section {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+.ag-invite-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--ag-text);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.ag-invite-label svg {
+  color: var(--ag-muted);
+}
 .ag-identity {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 14px 10px 10px;
+  gap: 12px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 4px 7px 4px 15px;
   border: 1px solid var(--ag-line);
-  border-radius: 18px;
-  background: var(--ag-surface);
+  border-radius: 12px;
+  background: var(--ag-field);
+  color: var(--ag-muted);
+}
+.ag-identity:focus-within {
+  border-color: #ffffff73;
+}
+.ag-identity > svg {
+  flex: none;
 }
 .ag-identity-name {
   flex: 1;
+  width: 100%;
   min-width: 0;
-  padding: 2px 0;
+  padding: 8px 0;
   border: 0;
   background: none;
   color: var(--ag-text);
   font: inherit;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
+  font-size: 16px;
   outline: none;
 }
 .ag-identity-name::placeholder {
   color: var(--ag-faint);
 }
-/* Roll another silly name. */
 .ag-roll {
   display: grid;
   flex: none;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border: 0;
-  border-radius: 50%;
-  background: #ffffff0d;
+  border-radius: 9px;
+  background: transparent;
   color: var(--ag-muted);
   cursor: pointer;
-  transition: transform 0.25s ease;
 }
-.ag-roll:active {
-  transform: rotate(-30deg) scale(0.92);
+.ag-roll:hover {
+  background: #ffffff0a;
 }
-/* A grant: the row opens its choices; the switch turns it on or off. */
-.ag-lines {
+.ag-preset-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
-/* The folder browser and choices sit flush inside an open row. */
+.ag-preset {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--ag-line);
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.ag-preset input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.ag-preset:not(.is-disabled):hover {
+  background: #ffffff06;
+  border-color: #ffffff40;
+}
+.ag-preset.is-on,
+.ag-preset.is-on:hover {
+  background: #ffffff09;
+  border-color: #e4e4e4;
+}
+.ag-preset:has(input:focus-visible) {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+.ag-preset.is-disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ag-preset-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: #d2d2d2;
+}
+.ag-preset-check {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid #ffffff40;
+  border-radius: 50%;
+}
+.ag-preset.is-on .ag-preset-check {
+  background: #ededed;
+  border-color: #ededed;
+  color: #242424;
+}
+.ag-preset strong {
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+.ag-preset small {
+  color: var(--ag-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ag-invite .ag-rows {
+  border-radius: 12px;
+}
+.ag-invite .ag-row-head {
+  gap: 9px;
+  padding: 10px 12px;
+}
+.ag-invite .ag-row-label {
+  min-width: 0;
+  font-size: 13px;
+}
+.ag-invite .ag-row-icon {
+  flex: none;
+  color: var(--ag-muted);
+}
+.ag-invite .ag-row-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.ag-invite .ag-row-value {
+  max-width: 45%;
+  font-size: 12px;
+}
+.ag-invite .ag-row-body {
+  padding: 0 12px 14px;
+}
 .ag-row-body .fb {
   margin: 0;
 }
+.ag-invite .ag-note {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #ffffff05;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ag-invite .ag-segments {
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #ffffff06;
+}
+.ag-invite .ag-segments button {
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ag-invite .ag-segments button[aria-pressed="true"] {
+  background: #434343;
+  box-shadow: 0 1px 3px #0002;
+  color: #fff;
+}
 .ag-send {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ag-line);
 }
 .ag-summary {
   margin: 0;
-  font-size: 14.5px;
-  line-height: 1.5;
-  color: #cfdad2;
+  color: #b9b9b9;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .ag-summary.is-missing {
   color: var(--ag-muted);
 }
+.ag-invite .ag-primary,
+.ag-invite .ag-secondary {
+  min-height: 48px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 550;
+}
+.ag-invite .ag-primary {
+  background: #ededed;
+  color: #202020;
+}
+.ag-invite .ag-primary:not(:disabled):hover {
+  background: #fff;
+}
+.ag-invite .ag-primary:disabled {
+  background: #ffffff12;
+  color: #888;
+}
 .ag-wide {
   width: 100%;
+}
+.ag-send-arrow {
+  margin-left: auto;
+}
+.ag-send .ag-primary {
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 16px;
+}
+.ag-invite-footnote {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ag-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+.ag-invite-footnote svg {
+  flex: none;
 }
 .ag-error {
   margin: 0;
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: 10px;
   background: color-mix(in srgb, var(--ag-danger) 10%, transparent);
   color: var(--ag-danger);
-  font-size: 13.5px;
+  font-size: 13px;
+}
+.ag-invite :is(button, summary, textarea):focus-visible {
+  outline: 2px solid #ededed;
+  outline-offset: 3px;
 }
 
-/* ---- The link is ready ------------------------------------------------- */
+/* The generated invite: a quiet receipt with the next two steps. */
 .ag-done {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   gap: 12px;
-  padding: 26px 18px 18px;
-  border: 1px solid color-mix(in srgb, var(--lime) 20%, transparent);
-  border-radius: 24px;
-  background:
-    radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--lime) 9%, transparent), transparent 70%),
-    var(--ag-surface);
+  min-width: 0;
+  padding: 12px 0 0;
   text-align: center;
-  animation: ag-in 0.25s ease-out;
+}
+.ag-done-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 0 4px;
+  border: 1px solid var(--ag-line);
+  border-radius: 50%;
+  background: #ffffff06;
 }
 .ag-done h3 {
-  margin: 4px 0 0;
-  font-size: 20px;
-  letter-spacing: -0.3px;
+  margin: 0;
+  font-size: 24px;
+  font-weight: 550;
+  letter-spacing: -0.7px;
+  outline: none;
+}
+.ag-done-for {
+  margin: 0;
+  color: var(--ag-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ag-done-for strong {
+  color: var(--ag-text);
+  font-weight: 500;
+}
+.ag-invite-receipt {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 14px;
+  border: 1px solid var(--ag-line);
+  border-radius: 12px;
+  text-align: left;
+}
+.ag-invite-receipt > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ag-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ag-invite-receipt svg {
+  flex: none;
 }
 .ag-done-actions {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   gap: 8px;
   width: 100%;
-  margin-top: 6px;
+}
+.ag-done-actions button {
+  min-width: 0;
+  padding: 0 12px;
+}
+.ag-invite-next {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.ag-invite-next li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ag-invite-next li > span {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff0b;
+  color: var(--ag-muted);
+  font-size: 11px;
+}
+.ag-invite-next strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.ag-invite-next p {
+  margin: 3px 0 0;
+  color: var(--ag-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .ag-message {
   width: 100%;
+  border-top: 1px solid var(--ag-line);
   text-align: left;
 }
 .ag-message summary {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 36px;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
   color: var(--ag-muted);
-  font-size: 13.5px;
+  font-size: 12px;
   list-style: none;
   cursor: pointer;
 }
@@ -139,50 +422,106 @@
   width: 100%;
   padding: 12px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--ag-field);
-  color: #cfdad2;
-  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #ccc;
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   resize: vertical;
 }
 .ag-done .ag-link {
   justify-self: center;
+  color: var(--ag-muted);
+  font-size: 12px;
 }
-/* How the agent connects, above the form in the share sheet. */
+
+/* Browser / command line connection switch. */
 .ag-connect {
   display: grid;
+  gap: 10px;
+}
+.ag-connect-tabs {
+  display: flex;
+  gap: 20px;
+  border-bottom: 1px solid var(--ag-line);
+}
+.ag-connect-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
+  min-height: 44px;
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ag-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ag-connect-tabs button[aria-pressed="true"] {
+  border-bottom-color: #ededed;
+  color: #f3f3f3;
+}
+.ag-connect-tabs button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 .ag-connect .ag-quiet {
-  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1.6;
 }
-/* The share sheet colours every button with its text colour (.ivt button);
-   agent buttons keep their own. */
 .ivt .ag-invite button.ag-primary {
-  color: #0c1510;
+  color: #202020;
 }
 .ivt .ag-invite button.ag-primary:disabled {
-  color: var(--ag-faint);
-}
-.ivt .ag-invite button.ag-danger {
-  color: var(--ag-danger);
+  color: #888;
 }
 .ivt .ag-invite button.ag-link {
-  color: var(--lime);
+  color: var(--ag-muted);
 }
-.ag-invite,
-.ag-invite-form {
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
+.ivt .ag-connect-tabs button {
+  font-size: 13px;
+  color: var(--ag-muted);
 }
-.ag-done {
-  box-sizing: border-box;
-  min-width: 0;
+.ivt .ag-connect-tabs button[aria-pressed="true"] {
+  color: var(--ag-text);
 }
-.ag-done-actions {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+.ivt .ag-roll {
+  color: var(--ag-muted);
 }
-.ag-done-actions button {
-  min-width: 0;
-  padding: 0 12px;
+.ivt .ag-invite .ag-segments button {
+  font-size: 12px;
+}
+.ivt .ag-invite .ag-primary,
+.ivt .ag-invite .ag-secondary {
+  font-size: 14px;
+  font-weight: 550;
+}
+.ivt .ag-invite .fb-chip,
+.ivt .ag-invite .fb-share.on,
+.ivt .ag-invite .fb-pick.on {
+  background: #ededed;
+}
+@media (max-width: 360px) {
+  .ag-preset {
+    padding: 13px;
+  }
+  .ag-invite .ag-segments {
+    gap: 2px;
+  }
+  .ag-invite .ag-segments button {
+    padding: 0 5px;
+  }
+  .ag-invite-footnote {
+    font-size: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ag-preset {
+    transition: none;
+  }
 }

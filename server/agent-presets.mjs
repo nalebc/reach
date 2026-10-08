@@ -121,6 +121,10 @@ export function presetRouteAllowed(client, method, route) {
   const read = ["GET", "HEAD"].includes(method);
   if (method === "DELETE" && route === "/device/access") return true;
   if (read && ["/device", "/browser"].includes(route)) return has("browser:read");
+  // Discovery/requesting is available to every admitted preset. Execution also
+  // requires separate, owner-approved service consent in agent-services.mjs.
+  if (read && route === "/browser/services") return has("browser:read");
+  if (method === "POST" && ["/browser/services/request", "/browser/services/run"].includes(route)) return has("browser:read");
   if (read && fileReads.includes(route)) return has("files:read") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/files/change") return has("browser:write") && policy.roots.length > 0;
   if (read && ["/browser/desktop/screen", "/browser/desktop/front"].includes(route)) return has("browser:screen");

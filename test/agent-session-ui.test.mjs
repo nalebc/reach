@@ -2186,8 +2186,9 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
   await click($(".chat-folder"));
   assert.deepEqual(
     $$(".as-picker[aria-label=Folder] button").map((b) => b.textContent),
-    ["app", "site", "Browse…"],
+    ["app", "site"],
   );
+  assert.ok(button("Browse folders…"), "folder browsing stays directly available beside recent folders");
   await click(
     $$(".as-picker[aria-label=Folder] button").find(
       (b) => b.textContent === "app",
