@@ -8,10 +8,43 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
+// Gateway errors can embed downstream provider credentials, not just the
+// Gateway's own token. Publish fixed descriptions, never arbitrary error text.
+const unconfirmedRun =
+  "OpenClaw has not confirmed completion. Check OpenClaw before sending again.";
+// WhatsApp's login steps, said in Reach's words (never OpenClaw's text).
+const whatsappNote = (value) => {
+  const text = String(value || "");
+  if (/already linked/i.test(text)) return "WhatsApp is already linked.";
+  if (/expired|No active WhatsApp login/i.test(text)) return "The QR expired. Get a new one.";
+  if (/logged out/i.test(text)) return "WhatsApp logged this link out. Get a new QR.";
+  if (/login failed|Failed to/i.test(text)) return "The WhatsApp login failed. Get a new QR.";
+  if (/Still waiting/i.test(text)) return "Still waiting for the scan.";
+  if (/linked|connected/i.test(text)) return "WhatsApp is linked.";
+  return "";
+};
+const publicGatewayError = (value) => {
+  const text = String(value || "");
+  if (!text) return "";
+  // This exact local status is safe even if echoed by a Gateway.
+  if (text === unconfirmedRun) return unconfirmedRun;
+  if (/credit balance|quota|billing|rate.?limit|429/i.test(text))
+    return "OpenClaw reports a credit balance or usage limit. Check OpenClaw on this computer.";
+  if (/auth|credential|api.?key|token|password|401|403/i.test(text))
+    return "OpenClaw reports an authentication problem. Check OpenClaw on this computer.";
+  if (/timeout|timed out/i.test(text))
+    return "OpenClaw reports a timeout. Check the session before retrying.";
+  return "OpenClaw reported an error. Check OpenClaw on this computer.";
+};
 // Admin too (the owner chose it, Oct 5): a chat moved here from another agent
 // gets a session of its own with its history added as notes (sessions.reset,
 // sessions.patch, chat.inject), shown in OpenClaw's own app.
-const scopes = ["operator.read", "operator.write", "operator.approvals", "operator.admin"];
+const scopes = [
+  "operator.read",
+  "operator.write",
+  "operator.approvals",
+  "operator.admin",
+];
 const textOf = (message) =>
   typeof message?.content === "string"
     ? message.content
@@ -123,15 +156,30 @@ export function chatLabel(text, room = LABEL_MAX) {
 }
 export function writable(s) {
   const to = s?.deliveryContext?.to || s?.lastTo;
-  return reachMade(s?.key) && ["webchat", "internal"].includes(channelOf(s)) && !(typeof to === "string" && to.trim());
+  return (
+    reachMade(s?.key) &&
+    ["webchat", "internal"].includes(channelOf(s)) &&
+    !(typeof to === "string" && to.trim())
+  );
 }
 // What a chat is, for people: "WhatsApp group", "Discord · #general",
 // "Alex on Discord", never OpenClaw's raw ids ("whatsapp:g-1203…@g.us").
-const APPS = { whatsapp: "WhatsApp", discord: "Discord", telegram: "Telegram", slack: "Slack", signal: "Signal", imessage: "iMessage" };
+const APPS = {
+  whatsapp: "WhatsApp",
+  discord: "Discord",
+  telegram: "Telegram",
+  slack: "Slack",
+  signal: "Signal",
+  imessage: "iMessage",
+};
 export function readableName(s) {
   const raw = String(s?.label || s?.displayName || "").trim();
   const channel = channelOf(s);
-  const app = APPS[channel] || (channel && !["webchat", "internal"].includes(channel) ? channel[0].toUpperCase() + channel.slice(1) : "");
+  const app =
+    APPS[channel] ||
+    (channel && !["webchat", "internal"].includes(channel)
+      ? channel[0].toUpperCase() + channel.slice(1)
+      : "");
   const key = String(s?.key || "");
   const person = /^(.{1,60}?) user id:\d+$/.exec(raw)?.[1];
   if (person) return app ? `${person} on ${app}` : person;
@@ -224,7 +272,7 @@ export function createOpenClaw({
     listAt = 0,
     listing,
     methods,
-    redact = (value) => String(value || "").slice(0, 500);
+    redact = publicGatewayError;
   const pending = new Map(),
     runs = new Map(),
     approvals = new Map(),
@@ -353,7 +401,7 @@ export function createOpenClaw({
   };
   const request = (method, params = {}, completion, waitMs = timeoutMs) =>
     new Promise((resolve, reject) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN)
+      if (closed || !socket || socket.readyState !== WebSocket.OPEN)
         return reject(connectionError());
       const id = crypto.randomUUID();
       const timer = setTimeout(() => {
@@ -365,7 +413,7 @@ export function createOpenClaw({
           ),
         );
       }, waitMs);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { resolve, reject, timer, method });
       if (completion) completions.set(id, completion);
       try {
         socket.send(JSON.stringify({ type: "req", id, method, params }));
@@ -377,21 +425,16 @@ export function createOpenClaw({
       }
     });
   const connect = () => {
+    if (closed) return Promise.reject(connectionError());
     if (ready) return Promise.resolve();
     if (connecting) return connecting;
     connecting = (async () => {
       const config = await configuration();
-      redact = (value) =>
-        [config.token, config.password]
-          .filter(Boolean)
-          .reduce(
-            (message, secret) => message.split(secret).join("[redacted]"),
-            String(value || ""),
-          )
-          .slice(0, 500);
+      if (closed) throw connectionError();
       const identity = await deviceIdentity(
         path.join(dataDir, "openclaw-device.json"),
       );
+      if (closed) throw connectionError();
       await new Promise((resolve, reject) => {
         const ws = new Socket(config.url, { maxPayload: 16 * 1024 * 1024 });
         socket = ws;
@@ -419,8 +462,15 @@ export function createOpenClaw({
           let frame;
           try {
             frame = JSON.parse(String(buffer));
-          } catch { return finish(connectionError()); }
-          if (!frame || typeof frame !== "object" || Array.isArray(frame) || typeof frame.type !== "string")
+          } catch {
+            return finish(connectionError());
+          }
+          if (
+            !frame ||
+            typeof frame !== "object" ||
+            Array.isArray(frame) ||
+            typeof frame.type !== "string"
+          )
             return finish(connectionError());
           if (frame.type === "res") {
             // `agent` has two responses with the SAME RPC id: accepted, then
@@ -440,11 +490,26 @@ export function createOpenClaw({
             if (frame.ok) waiter.resolve(frame.payload);
             else
               waiter.reject(
-                fail(
-                  409,
-                  /pairing/i.test(frame.error?.message || "")
-                    ? "OpenClaw requires device pairing. Approve the Reach device in OpenClaw, then retry."
-                    : `OpenClaw: ${redact(frame.error?.message || "Request was rejected.")}`,
+                Object.assign(
+                  fail(
+                    409,
+                    /pairing/i.test(frame.error?.message || "")
+                      ? "OpenClaw requires device pairing. Approve the Reach device in OpenClaw, then retry."
+                      : redact(frame.error?.message || "Request was rejected."),
+                  ),
+                  {
+                    // OpenClaw keeps chat names apart (nameChat, settings).
+                    labelInUse:
+                      waiter.method === "sessions.patch" &&
+                      /label already in use/i.test(
+                        String(frame.error?.message || ""),
+                      ),
+                    invalidInjectParams:
+                      waiter.method === "chat.inject" &&
+                      /invalid chat\.inject params/i.test(
+                        String(frame.error?.message || ""),
+                      ),
+                  },
                 ),
               );
           }
@@ -507,17 +572,28 @@ export function createOpenClaw({
             const p = frame.payload || {};
             if (["chat", "agent"].includes(frame.event))
               updateRun(frame.event, p);
-            if (frame.event === "exec.approval.requested" &&
-                typeof p.id === "string" && p.id &&
-                typeof p.request?.command === "string" && p.request.command.trim() &&
-                Number.isFinite(p.expiresAtMs) && p.expiresAtMs > Date.now() &&
-                !approvals.has(p.id)) {
+            if (
+              frame.event === "exec.approval.requested" &&
+              typeof p.id === "string" &&
+              p.id &&
+              typeof p.request?.command === "string" &&
+              p.request.command.trim() &&
+              Number.isFinite(p.expiresAtMs) &&
+              p.expiresAtMs > Date.now() &&
+              !approvals.has(p.id)
+            ) {
               approvals.set(p.id, { ...p, socket: ws });
               approvalsChanged();
               // Gone when it expires, though nothing says so.
-              setTimeout(approvalsChanged, Math.min(2 ** 31 - 1, p.expiresAtMs - Date.now() + 50)).unref?.();
+              setTimeout(
+                approvalsChanged,
+                Math.min(2 ** 31 - 1, p.expiresAtMs - Date.now() + 50),
+              ).unref?.();
             }
-            if (frame.event === "exec.approval.resolved" && approvals.delete(p.id))
+            if (
+              frame.event === "exec.approval.resolved" &&
+              approvals.delete(p.id)
+            )
               approvalsChanged();
             changed();
           }
@@ -540,17 +616,41 @@ export function createOpenClaw({
     if (!methods || methods.has("chat.inject")) return;
     injectProbe = request("chat.inject", {}).then(
       () => (injectable = true),
-      (e) => (injectable = /invalid chat\.inject params/i.test(String(e?.message || ""))),
+      (e) => (injectable = e?.invalidInjectParams === true),
     );
   };
-  const rpc = async (method, params, completion, waitMs) => {
-    await connect();
-    if (method === "chat.inject") await injectProbe;
-    if (methods && !methods.has(method) && !(method === "chat.inject" && injectable === true))
-      throw fail(
-        409,
-        `This OpenClaw Gateway does not support ${method}. Update OpenClaw on this computer.`,
-      );
+  const beforeDispatchFailures = new WeakSet(),
+    authorizationFailures = new WeakSet();
+  const rpc = async (method, params, completion, authorize = () => {}, waitMs) => {
+    const check = () => {
+      try {
+        authorize();
+      } catch (error) {
+        if (error && typeof error === "object")
+          authorizationFailures.add(error);
+        throw error;
+      }
+    };
+    try {
+      check();
+      await connect();
+      check();
+      if (method === "chat.inject") await injectProbe;
+      check();
+      if (
+        methods &&
+        !methods.has(method) &&
+        !(method === "chat.inject" && injectable === true)
+      )
+        throw fail(
+          409,
+          `This OpenClaw Gateway does not support ${method}. Update OpenClaw on this computer.`,
+        );
+    } catch (error) {
+      if (error && typeof error === "object") beforeDispatchFailures.add(error);
+      throw error;
+    }
+    // No await between the final live authorization and socket dispatch.
     return request(method, params, completion, waitMs);
   };
   const can = (method) => !methods || methods.has(method);
@@ -611,7 +711,9 @@ export function createOpenClaw({
       // OpenClaw tries its fallbacks under the same runId, and their events
       // may come without the sessionKey. Failed only if none starts in time.
       const error =
-        p.errorMessage || p.data?.error || "OpenClaw could not complete the run.";
+        p.errorMessage ||
+        p.data?.error ||
+        "OpenClaw could not complete the run.";
       clearTimeout(run.retryTimer);
       run.retrying = redact(error);
       run.retryTimer = setTimeout(() => {
@@ -673,12 +775,7 @@ export function createOpenClaw({
         ["running", "unknown"].includes(run.status) &&
         now() - run.updatedAt >= staleMs
       ) {
-        finishRun(
-          key,
-          run,
-          "unknown",
-          "OpenClaw has not confirmed completion. Check OpenClaw before sending again.",
-        );
+        finishRun(key, run, "unknown", unconfirmedRun);
         if (run.delivery) run.delivery.status = "unconfirmed";
       }
     })().finally(() => {
@@ -694,11 +791,26 @@ export function createOpenClaw({
       includeUnknown: true,
     })
       .then((result) => {
-        if (!Array.isArray(result?.sessions) || result.sessions.some(row =>
-          !row || typeof row !== "object" || typeof row.key !== "string" || !row.key ||
-          ["label", "displayName", "agentId", "channel", "lastChannel", "model"].some(k => row[k] != null && typeof row[k] !== "string") ||
-          (row.deliveryContext?.channel != null && typeof row.deliveryContext.channel !== "string")
-        ))
+        if (
+          !Array.isArray(result?.sessions) ||
+          result.sessions.some(
+            (row) =>
+              !row ||
+              typeof row !== "object" ||
+              typeof row.key !== "string" ||
+              !row.key ||
+              [
+                "label",
+                "displayName",
+                "agentId",
+                "channel",
+                "lastChannel",
+                "model",
+              ].some((k) => row[k] != null && typeof row[k] !== "string") ||
+              (row.deliveryContext?.channel != null &&
+                typeof row.deliveryContext.channel !== "string"),
+          )
+        )
           throw fail(502, "OpenClaw returned an unsupported session list.");
         lastList = result.sessions;
         listAt = Date.now();
@@ -731,7 +843,12 @@ export function createOpenClaw({
   };
   // What a phone shows, as a short stamp: the list (who's connected, each
   // chat's run, the approvals), or one chat (its run and reply so far).
-  const stamp = (value) => crypto.createHash("sha1").update(JSON.stringify(value)).digest("base64url").slice(0, 12);
+  const stamp = (value) =>
+    crypto
+      .createHash("sha1")
+      .update(JSON.stringify(value))
+      .digest("base64url")
+      .slice(0, 12);
   const listStamp = () =>
     stamp([
       ready,
@@ -766,7 +883,11 @@ export function createOpenClaw({
         command: a.request?.command || "OpenClaw needs permission",
         cwd: a.request?.cwd || "",
         expiresAt: a.expiresAtMs,
-        canRespond: !a.attempted && ready && socket === a.socket && (!methods || methods.has("exec.approval.resolve")),
+        canRespond:
+          !a.attempted &&
+          ready &&
+          socket === a.socket &&
+          (!methods || methods.has("exec.approval.resolve")),
       }));
   const destination = (s) => {
     const context = s.deliveryContext || {};
@@ -837,16 +958,16 @@ export function createOpenClaw({
   });
   // Names a new chat; OpenClaw keeps names apart, so a second "Login page"
   // becomes "Login page (2)".
-  const nameChat = async (key, title) => {
+  const nameChat = async (key, title, authorize) => {
     const base = chatLabel(title);
     if (!base) return;
     for (let n = 1; ; n++) {
       const suffix = n === 1 ? "" : ` (${n})`;
       const label = chatLabel(base, LABEL_MAX - suffix.length) + suffix;
       try {
-        return await rpc("sessions.patch", { key, label });
+        return await rpc("sessions.patch", { key, label }, undefined, authorize);
       } catch (error) {
-        if (n >= 20 || !/label already in use/.test(error.message)) throw error;
+        if (n >= 20 || error?.labelInUse !== true) throw error;
       }
     }
   };
@@ -911,7 +1032,7 @@ export function createOpenClaw({
     },
     // `refresh` asks each channel again (OpenClaw's probe), not its last word.
     async channels({ refresh = false } = {}) {
-      const result = await rpc("channels.status", { probe: refresh === true }, undefined, refresh === true ? 30000 : undefined);
+      const result = await rpc("channels.status", { probe: refresh === true }, undefined, undefined, refresh === true ? 30000 : undefined);
       if (
         !result?.channelAccounts ||
         typeof result.channelAccounts !== "object"
@@ -950,10 +1071,11 @@ export function createOpenClaw({
     // Links WhatsApp: OpenClaw's QR, scanned in WhatsApp → Linked devices
     // on the phone that has WhatsApp. Never over a linked account (OpenClaw
     // stops the channel to start a login); `relink` logs it out first.
-    async linkWhatsApp({ accountId, relink = false } = {}) {
+    async linkWhatsApp({ accountId, relink = false } = {}, authorize = () => {}) {
+      authorize();
       if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
         throw fail(400, "Choose a WhatsApp account.");
-      const status = await rpc("channels.status", { probe: false });
+      const status = await rpc("channels.status", { probe: false }, undefined, authorize);
       const accounts = Array.isArray(status?.channelAccounts?.whatsapp) ? status.channelAccounts.whatsapp : [];
       const id = accountId || status?.channelDefaultAccountId?.whatsapp;
       const account = accounts.find((a) => a?.accountId === id) || (!accountId && accounts.length === 1 ? accounts[0] : null);
@@ -962,32 +1084,35 @@ export function createOpenClaw({
       if (account && (account.linked === true || account.connected === true)) {
         if (!relink)
           throw fail(409, "WhatsApp is linked but not connected. Refresh, or link it again with a new QR.");
-        await rpc("channels.logout", { channel: "whatsapp", ...(accountId ? { accountId } : {}) });
+        await rpc("channels.logout", { channel: "whatsapp", ...(accountId ? { accountId } : {}) }, undefined, authorize);
       }
       const result = await rpc(
         "web.login.start",
         { timeoutMs: 30000, ...(accountId ? { accountId } : {}) },
         undefined,
+        authorize,
         40000,
       );
       const qr = typeof result?.qrDataUrl === "string" && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(result.qrDataUrl) && result.qrDataUrl.length < 300000
         ? result.qrDataUrl
         : "";
       changed();
-      return { qr, message: redact(String(result?.message || "")).slice(0, 300) };
+      return { qr, message: whatsappNote(result?.message) };
     },
     // Waits a while for the QR to be scanned (the phone asks again).
-    async waitWhatsApp({ accountId } = {}) {
+    async waitWhatsApp({ accountId } = {}, authorize = () => {}) {
+      authorize();
       if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
         throw fail(400, "Choose a WhatsApp account.");
       const result = await rpc(
         "web.login.wait",
         { timeoutMs: 20000, ...(accountId ? { accountId } : {}) },
         undefined,
+        authorize,
         30000,
       );
       if (result?.connected === true) changed();
-      return { connected: result?.connected === true, message: redact(String(result?.message || "")).slice(0, 300) };
+      return { connected: result?.connected === true, message: whatsappNote(result?.message) };
     },
     async automations({ offset = 0, query = "" } = {}) {
       offset = Number(offset);
@@ -1048,7 +1173,8 @@ export function createOpenClaw({
         })),
       };
     },
-    async setAutomation({ id, enabled } = {}) {
+    async setAutomation({ id, enabled } = {}, authorize = () => {}) {
+      authorize();
       if (
         typeof id !== "string" ||
         !id ||
@@ -1056,7 +1182,12 @@ export function createOpenClaw({
         typeof enabled !== "boolean"
       )
         throw fail(400, "Choose a scheduled job and whether it is enabled.");
-      const result = await rpc("cron.update", { id, patch: { enabled } });
+      const result = await rpc(
+        "cron.update",
+        { id, patch: { enabled } },
+        undefined,
+        authorize,
+      );
       if (result?.enabled !== enabled)
         throw fail(
           502,
@@ -1067,7 +1198,8 @@ export function createOpenClaw({
     // A new schedule: OpenClaw runs `message` in a chat of its own at each
     // time; replies stay in OpenClaw (and Reach) unless `announce` sends
     // them to the channel last used.
-    async addAutomation({ name, expr, tz, message, agentId, announce = false } = {}) {
+    async addAutomation({ name, expr, tz, message, agentId, announce = false } = {}, authorize = () => {}) {
+      authorize();
       if (typeof name !== "string" || !name.trim() || name.trim().length > 120)
         throw fail(400, "Name the schedule (up to 120 characters).");
       if (typeof message !== "string" || !message.trim() || message.length > 20000)
@@ -1089,33 +1221,40 @@ export function createOpenClaw({
         wakeMode: "now",
         payload: { kind: "agentTurn", message: message.trim() },
         delivery: announce ? { mode: "announce", channel: "last" } : { mode: "none" },
-      });
+      }, undefined, authorize);
       const id = result?.id || result?.job?.id;
       if (typeof id !== "string" || !id)
         throw fail(502, "OpenClaw did not confirm the new schedule. Refresh before trying again.");
       return { id };
     },
-    async runAutomation({ id } = {}) {
+    async runAutomation({ id } = {}, authorize = () => {}) {
+      authorize();
       if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
-      const result = await rpc("cron.run", { id, mode: "force" });
+      const result = await rpc("cron.run", { id, mode: "force" }, undefined, authorize);
       if (result?.ok === false || result?.runnable === false)
         throw fail(
           409,
           result.reason === "already-running"
             ? "This schedule is already running."
-            : `OpenClaw did not run this schedule${result.reason ? ` (${redact(String(result.reason)).slice(0, 80)})` : ""}.`,
+            : "OpenClaw did not run this schedule. Check it in OpenClaw.",
         );
       return { ran: true };
     },
-    async removeAutomation({ id } = {}) {
+    async removeAutomation({ id } = {}, authorize = () => {}) {
+      authorize();
       if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
-      const result = await rpc("cron.remove", { id });
+      const result = await rpc("cron.remove", { id }, undefined, authorize);
       if (result?.ok === false || result?.removed === false)
         throw fail(409, "OpenClaw did not remove this schedule. Refresh before trying again.");
       return { removed: true };
     },
-    async settings({ key, label, model, thinkingLevel } = {}) {
+    async settings(
+      { key, label, model, thinkingLevel } = {},
+      authorize = () => {},
+    ) {
+      authorize();
       const row = await known(key);
+      authorize();
       if (!writable(row))
         throw fail(
           403,
@@ -1161,8 +1300,8 @@ export function createOpenClaw({
       }
       if (Object.keys(patch).length === 1)
         throw fail(400, "Choose a chat setting to change.");
-      const result = await rpc("sessions.patch", patch).catch((error) => {
-        if (/label already in use/.test(error.message))
+      const result = await rpc("sessions.patch", patch, undefined, authorize).catch((error) => {
+        if (error?.labelInUse === true)
           throw fail(409, "Another OpenClaw chat already has this name. Choose another.");
         throw error;
       });
@@ -1214,13 +1353,17 @@ export function createOpenClaw({
       const kept = histories.get(key);
       const turn = turnOf(key);
       const result =
-        kept && kept.turn === turn && kept.limit === limit && Date.now() - kept.at < 10000
+        kept &&
+        kept.turn === turn &&
+        kept.limit === limit &&
+        Date.now() - kept.at < 10000
           ? kept.result
           : await rpc("chat.history", { sessionKey: key, limit });
       if (result !== kept?.result) {
         histories.delete(key);
         histories.set(key, { turn, limit, at: Date.now(), result });
-        if (histories.size > 16) histories.delete(histories.keys().next().value);
+        if (histories.size > 16)
+          histories.delete(histories.keys().next().value);
       }
       if (!Array.isArray(result?.messages))
         throw fail(502, "OpenClaw returned unsupported conversation history.");
@@ -1273,7 +1416,10 @@ export function createOpenClaw({
             hidden.add(i);
             sentTo.set(
               reply,
-              row.deliveryContext?.channel || row.lastChannel || row.channel || "",
+              row.deliveryContext?.channel ||
+                row.lastChannel ||
+                row.channel ||
+                "",
             );
           } else reply = i;
         }
@@ -1307,7 +1453,9 @@ export function createOpenClaw({
               ? "delivery"
               : "generation",
         // Why it's trying another model (that one's error).
-        ...(run?.status === "running" && run.retrying ? { retrying: run.retrying } : {}),
+        ...(run?.status === "running" && run.retrying
+          ? { retrying: run.retrying }
+          : {}),
         approvals: activeApprovals(key),
         revision,
         version,
@@ -1315,7 +1463,11 @@ export function createOpenClaw({
         mayHaveOlder: messages.length >= limit,
       };
     },
-    async send({ key, text, deliver = false, requestId }) {
+    async send(
+      { key, text, deliver = false, requestId },
+      authorize = () => {},
+    ) {
+      authorize();
       validKey(key);
       // Reach never asks OpenClaw to post outside Reach: a "reply via
       // WhatsApp" in a group session went to the whole group (Oct 5). Refused
@@ -1350,6 +1502,7 @@ export function createOpenClaw({
       const attempt = { signature };
       attempt.promise = (async () => {
         const row = await known(key);
+        authorize();
         if (!writable(row)) {
           attempt.safeToRetry = true;
           throw fail(
@@ -1364,6 +1517,7 @@ export function createOpenClaw({
             "This session has no external reply destination. Choose Reply in Reach.",
           );
         await reconcile(key);
+        authorize();
         if (
           ["running", "unknown"].includes(runs.get(key)?.status) ||
           activeApprovals(key).length
@@ -1373,6 +1527,7 @@ export function createOpenClaw({
             "This OpenClaw session already has an active or unconfirmed run. Check it before sending another message.",
           );
         if (target) await checkChannel(target);
+        authorize();
         // Recheck after asynchronous channel validation: another phone may send.
         if (["running", "unknown"].includes(runs.get(key)?.status))
           throw fail(409, "OpenClaw is already working in this session.");
@@ -1443,6 +1598,7 @@ export function createOpenClaw({
                 : {}),
             },
             target ? complete : undefined,
+            authorize,
           );
           if (
             typeof result?.runId !== "string" ||
@@ -1468,10 +1624,18 @@ export function createOpenClaw({
             finishRun(
               key,
               run,
-              error.status === 409 ? "error" : "unknown",
+              error.status === 409 || beforeDispatchFailures.has(error)
+                ? "error"
+                : "unknown",
               error.message,
             );
-          if (error.status === 409) attempt.safeToRetry = true;
+          if (beforeDispatchFailures.has(error)) {
+            // No Gateway run exists yet: a later explicit retry of this ID
+            // must be able to receive its own streaming/terminal events.
+            terminalRuns.delete(requestId);
+          }
+          if (error.status === 409 || beforeDispatchFailures.has(error))
+            attempt.safeToRetry = true;
           throw error;
         }
       })().catch((error) => {
@@ -1490,37 +1654,49 @@ export function createOpenClaw({
     // A new chat started from Reach: a webchat session of Reach's own (no
     // WhatsApp or Discord behind it), the only kind Reach writes in. Works
     // on Gateways too old to move chats (no chat.inject).
-    async create({ title = "", agentId, model, thinkingLevel } = {}) {
+    async create(
+      { title = "", agentId, model, thinkingLevel } = {},
+      authorize = () => {},
+    ) {
+      authorize();
       if (agentId !== undefined) {
         if (typeof agentId !== "string" || !/^[\w-]{1,80}$/.test(agentId))
           throw fail(400, "Choose an OpenClaw agent.");
-        const roster = await rpc("agents.list", {});
+        const roster = await rpc("agents.list", {}, undefined, authorize);
         if (!roster?.agents?.some((a) => a.id === agentId))
           throw fail(400, "This OpenClaw agent is no longer available.");
       }
       const key = `agent:${agentId || "main"}:reach-${crypto.randomUUID().slice(0, 8)}`;
-      await rpc("sessions.reset", { key, reason: "new" });
+      await rpc("sessions.reset", { key, reason: "new" }, undefined, authorize);
       listAt = 0;
-      if (model !== undefined || thinkingLevel !== undefined) {
-        try {
-          await api.settings({ key, model, thinkingLevel });
-        } catch (error) {
-          await rpc("sessions.delete", { key, deleteTranscript: true }).catch(
-            () => {},
-          );
-          listAt = 0;
-          throw error;
-        }
+      try {
+        authorize();
+        if (model !== undefined || thinkingLevel !== undefined)
+          await api.settings({ key, model, thinkingLevel }, authorize);
+        if (title)
+          await nameChat(key, title, authorize).catch((error) => {
+            if (authorizationFailures.has(error)) throw error;
+          });
+        listAt = 0;
+        return { key };
+      } catch (error) {
+        // Cleanup only this newly created session, even after access ends.
+        await rpc("sessions.delete", { key, deleteTranscript: true }).catch(
+          () => {},
+        );
+        listAt = 0;
+        throw error;
       }
-      if (title) await nameChat(key, title).catch(() => {});
-      listAt = 0;
-      return { key };
     },
     // A new chat and its first message, once per requestId (a phone that
     // asks again after a dropped answer gets the same chat, not a second).
     // A message OpenClaw refused leaves no empty chat behind; one whose
     // fate is unknown keeps its chat, which shows what happened.
-    start({ text, requestId, agentId, model, thinkingLevel }) {
+    start(
+      { text, requestId, agentId, model, thinkingLevel },
+      authorize = () => {},
+    ) {
+      authorize();
       if (typeof text !== "string" || !text.trim() || text.length > 100000)
         throw fail(400, "Write what you'd like OpenClaw to do.");
       if (typeof requestId !== "string" || !/^[\w-]{8,100}$/.test(requestId))
@@ -1529,19 +1705,28 @@ export function createOpenClaw({
       const choices = JSON.stringify([agentId, model, thinkingLevel]);
       if (known) {
         if (known.text !== text || known.choices !== choices)
-          throw fail(409, "This message request ID was already used for a different message.");
+          throw fail(
+            409,
+            "This message request ID was already used for a different message.",
+          );
         return known.promise;
       }
       const started = { text, choices };
       started.promise = (async () => {
-        const { key } = await api.create({
-          title: text.trim().split("\n")[0],
-          agentId,
-          model,
-          thinkingLevel,
-        });
+        const { key } = await api.create(
+          {
+            title: text.trim().split("\n")[0],
+            agentId,
+            model,
+            thinkingLevel,
+          },
+          authorize,
+        );
         try {
-          await api.send({ key, text, requestId: `new-${requestId}` });
+          await api.send(
+            { key, text, requestId: `new-${requestId}` },
+            authorize,
+          );
         } catch (error) {
           if (!(error.status >= 400 && error.status < 500)) return { key };
           await api.remove(key).catch(() => {});
@@ -1557,34 +1742,61 @@ export function createOpenClaw({
       return started.promise;
     },
     // Removes a chat Reach made (never one of WhatsApp's or Discord's).
-    async remove(key) {
+    async remove(key, authorize = () => {}) {
+      authorize();
       if (!reachMade(key)) throw fail(403, "Reach removes only chats it made.");
-      await rpc("sessions.delete", { key, deleteTranscript: true });
+      await rpc(
+        "sessions.delete",
+        { key, deleteTranscript: true },
+        undefined,
+        authorize,
+      );
       listAt = 0;
       return { removed: true };
     },
     // Whether this Gateway can take a chat moved from another agent.
-    canMove: () => !methods || methods.has("chat.inject") || injectable === true,
+    canMove: () =>
+      !methods || methods.has("chat.inject") || injectable === true,
     // A chat moved here from another agent (agent-sessions/move.mjs): a new
     // session named after it, its history added as notes (OpenClaw's app
     // shows them and its agent reads them; nothing runs until a message).
     // One that fails half-way is removed again.
-    async fork({ title = "", notes = [], label = "Moved" } = {}) {
+    async fork(
+      { title = "", notes = [], label = "Moved" } = {},
+      authorize = () => {},
+    ) {
+      authorize();
       const key = `agent:main:reach-${crypto.randomUUID().slice(0, 8)}`;
-      await rpc("sessions.reset", { key, reason: "new" });
+      await rpc("sessions.reset", { key, reason: "new" }, undefined, authorize);
       try {
-        if (title) await nameChat(key, title);
-        for (const message of notes) await rpc("chat.inject", { sessionKey: key, message, label: chatLabel(label, 100) });
+        authorize();
+        if (title) await nameChat(key, title, authorize);
+        for (const message of notes)
+          await rpc(
+            "chat.inject",
+            { sessionKey: key, message, label: chatLabel(label, 100) },
+            undefined,
+            authorize,
+          );
+        authorize();
       } catch (error) {
-        await rpc("sessions.delete", { key, deleteTranscript: true }).catch(() => {});
+        await rpc("sessions.delete", { key, deleteTranscript: true }).catch(
+          () => {},
+        );
         throw error;
       }
       listAt = 0;
       return { key };
     },
-    async stop(key) {
+    async stop(key, authorize = () => {}) {
+      authorize();
       await known(key);
-      const result = await rpc("chat.abort", { sessionKey: key });
+      const result = await rpc(
+        "chat.abort",
+        { sessionKey: key },
+        undefined,
+        authorize,
+      );
       if (result?.aborted !== true) {
         await reconcile(key);
         if (["running", "unknown"].includes(runs.get(key)?.status))
@@ -1598,7 +1810,8 @@ export function createOpenClaw({
       if (run) finishRun(key, run, "idle");
       return result;
     },
-    async approve(id, decision) {
+    async approve(id, decision, authorize = () => {}) {
+      authorize();
       const prompt = approvals.get(id);
       if (!prompt || prompt.expiresAtMs <= Date.now())
         throw fail(
@@ -1607,12 +1820,25 @@ export function createOpenClaw({
         );
       if (!["allow-once", "allow-always", "deny"].includes(decision))
         throw fail(400, "Choose Allow once, Always allow or Deny.");
-      if (prompt.replying) throw fail(409, "This answer is already being sent.");
-      if (prompt.attempted) throw fail(409, "This answer was already attempted. Check OpenClaw before answering again.");
-      if (!ready || socket !== prompt.socket || socket?.readyState !== WebSocket.OPEN)
+      if (prompt.replying)
+        throw fail(409, "This answer is already being sent.");
+      if (prompt.attempted)
+        throw fail(
+          409,
+          "This answer was already attempted. Check OpenClaw before answering again.",
+        );
+      if (
+        !ready ||
+        socket !== prompt.socket ||
+        socket?.readyState !== WebSocket.OPEN
+      )
         throw connectionError();
       if (methods && !methods.has("exec.approval.resolve"))
-        throw fail(409, "This OpenClaw Gateway cannot accept approvals. Answer in OpenClaw on your computer.");
+        throw fail(
+          409,
+          "This OpenClaw Gateway cannot accept approvals. Answer in OpenClaw on your computer.",
+        );
+      authorize();
       prompt.replying = true;
       prompt.attempted = true;
       try {
@@ -1620,7 +1846,10 @@ export function createOpenClaw({
         // and send an old answer into a different Gateway session.
         const result = await request("exec.approval.resolve", { id, decision });
         if (result?.ok !== true)
-          throw fail(409, "OpenClaw did not confirm the answer. Check the request before retrying.");
+          throw fail(
+            409,
+            "OpenClaw did not confirm the answer. Check the request before retrying.",
+          );
         if (approvals.get(id) === prompt) {
           approvals.delete(id);
           approvalsChanged();
@@ -1646,7 +1875,10 @@ export function createOpenClaw({
             resolve({ version: version() });
           },
         };
-        const timer = setTimeout(waiter.done, Math.max(0, Math.min(Number(ms) || 0, 60000)));
+        const timer = setTimeout(
+          waiter.done,
+          Math.max(0, Math.min(Number(ms) || 0, 60000)),
+        );
         waiters.add(waiter);
         signal?.addEventListener?.("abort", waiter.done);
         waiter.check();
@@ -1674,12 +1906,21 @@ export async function startOpenClawGateway({
   run = promisify(execFile),
   env = process.env,
   platform = process.platform,
+  authorize = () => {},
 } = {}) {
+  authorize();
   await configuration();
+  authorize();
   try {
     if (platform === "win32")
-      await run("cmd.exe", ["/d", "/c", "openclaw gateway start"], { timeout: 30000, windowsHide: true });
-    else await run(env.SHELL || "/bin/sh", ["-lc", "openclaw gateway start"], { timeout: 30000 });
+      await run("cmd.exe", ["/d", "/c", "openclaw gateway start"], {
+        timeout: 30000,
+        windowsHide: true,
+      });
+    else
+      await run(env.SHELL || "/bin/sh", ["-lc", "openclaw gateway start"], {
+        timeout: 30000,
+      });
   } catch {
     throw fail(
       503,
@@ -1689,8 +1930,13 @@ export async function startOpenClawGateway({
 }
 
 export const SETUP_SECTIONS = ["model", "channels"];
-export function openClawRoutes(app, client, { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {}) {
+export function openClawRoutes(
+  app,
+  client,
+  { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {},
+) {
   const base = "/api/sessions/openclaw";
+  const authorize = (req) => () => req.reauthorize();
   // Only fixed sections of `openclaw configure`, never the phone's text.
   app.post(`${base}/setup`, async (req, res) => {
     const section = req.body?.section;
@@ -1706,9 +1952,17 @@ export function openClawRoutes(app, client, { startGateway = startOpenClawGatewa
   app.get(`${base}/changes`, async (req, res) => {
     const gone = new AbortController();
     res.on("close", () => gone.abort());
-    const key = typeof req.query.key === "string" && req.query.key ? req.query.key : undefined;
+    const key =
+      typeof req.query.key === "string" && req.query.key
+        ? req.query.key
+        : undefined;
     res.json(
-      await client.changes({ key, after: String(req.query.after ?? ""), ms: key ? 10000 : 25000, signal: gone.signal }),
+      await client.changes({
+        key,
+        after: String(req.query.after ?? ""),
+        ms: key ? 10000 : 25000,
+        signal: gone.signal,
+      }),
     );
   });
   app.get(`${base}/history`, async (req, res) =>
@@ -1721,19 +1975,19 @@ export function openClawRoutes(app, client, { startGateway = startOpenClawGatewa
     res.json(await client.channels({ refresh: req.query.refresh === "1" })),
   );
   app.post(`${base}/channels/whatsapp/link`, async (req, res) =>
-    res.json(await client.linkWhatsApp(req.body || {})),
+    res.json(await client.linkWhatsApp(req.body || {}, authorize(req))),
   );
   app.post(`${base}/channels/whatsapp/wait`, async (req, res) =>
-    res.json(await client.waitWhatsApp(req.body || {})),
+    res.json(await client.waitWhatsApp(req.body || {}, authorize(req))),
   );
   app.post(`${base}/automations/new`, async (req, res) =>
-    res.json(await client.addAutomation(req.body || {})),
+    res.json(await client.addAutomation(req.body || {}, authorize(req))),
   );
   app.post(`${base}/automations/run`, async (req, res) =>
-    res.json(await client.runAutomation(req.body || {})),
+    res.json(await client.runAutomation(req.body || {}, authorize(req))),
   );
   app.post(`${base}/automations/remove`, async (req, res) =>
-    res.json(await client.removeAutomation(req.body || {})),
+    res.json(await client.removeAutomation(req.body || {}, authorize(req))),
   );
   app.get(`${base}/automations`, async (req, res) =>
     res.json(
@@ -1744,46 +1998,58 @@ export function openClawRoutes(app, client, { startGateway = startOpenClawGatewa
     ),
   );
   app.post(`${base}/automations`, async (req, res) =>
-    res.json(await client.setAutomation(req.body || {})),
+    res.json(await client.setAutomation(req.body || {}, authorize(req))),
   );
   app.post(`${base}/settings`, async (req, res) =>
-    res.json(await client.settings(req.body || {})),
+    res.json(await client.settings(req.body || {}, authorize(req))),
   );
   app.post(`${base}/send`, async (req, res) =>
-    res.json(await client.send(req.body || {})),
+    res.json(await client.send(req.body || {}, authorize(req))),
   );
   // A new chat from Reach: a webchat session of Reach's own, then its first
   // message (replies stay in Reach and OpenClaw).
   // An older phone sends no requestId: one is made for it.
   app.post(`${base}/new`, async (req, res) =>
     res.json(
-      await client.start({
-        text: req.body?.text,
-        requestId: req.body?.requestId ?? crypto.randomUUID(),
-        agentId: req.body?.agentId,
-        model: req.body?.model,
-        thinkingLevel: req.body?.thinkingLevel,
-      }),
+      await client.start(
+        {
+          text: req.body?.text,
+          requestId: req.body?.requestId ?? crypto.randomUUID(),
+          agentId: req.body?.agentId,
+          model: req.body?.model,
+          thinkingLevel: req.body?.thinkingLevel,
+        },
+        authorize(req),
+      ),
     ),
   );
   // Deletes a chat Reach made, in OpenClaw too.
   app.post(`${base}/remove`, async (req, res) =>
-    res.json(await client.remove(req.body?.key)),
+    res.json(await client.remove(req.body?.key, authorize(req))),
   );
   // OpenClaw's Gateway stopped: start it, then answer once it's listed.
-  app.post(`${base}/gateway/start`, async (_req, res) => {
-    await startGateway();
+  app.post(`${base}/gateway/start`, async (req, res) => {
+    const current = authorize(req);
+    current();
+    await startGateway({ authorize: current });
     for (let i = 0; i < 20; i++) {
+      current();
       const overview = await client.overview();
+      current();
       if (overview.connected) return res.json(overview);
       await new Promise((r) => setTimeout(r, settleMs));
     }
-    throw fail(503, "OpenClaw’s Gateway started but isn’t answering yet. Try again in a moment.");
+    throw fail(
+      503,
+      "OpenClaw’s Gateway started but isn’t answering yet. Try again in a moment.",
+    );
   });
   app.post(`${base}/stop`, async (req, res) =>
-    res.json(await client.stop(req.body?.key)),
+    res.json(await client.stop(req.body?.key, authorize(req))),
   );
   app.post(`${base}/approval`, async (req, res) =>
-    res.json(await client.approve(req.body?.id, req.body?.decision)),
+    res.json(
+      await client.approve(req.body?.id, req.body?.decision, authorize(req)),
+    ),
   );
 }

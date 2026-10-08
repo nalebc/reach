@@ -20,9 +20,9 @@ test("preset credentials advertise the preset's tools over MCP", () => {
 
 test("hints say what touches the Mac and what can't be undone", () => {
   const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "full" }), access("full")).map((tool) => [tool.name, tool.annotations]));
-  for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history"]) assert.equal(tools[name].readOnlyHint, true, name);
-  for (const name of ["reach_act", "reach_open_app", "reach_change_file", "reach_shell"]) assert.equal(tools[name].readOnlyHint, false, name);
-  for (const name of ["reach_change_file", "reach_shell"]) assert.equal(tools[name].destructiveHint, true, name);
+  for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);
+  for (const name of ["reach_act", "reach_open_app", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
+  for (const name of ["reach_change_file", "reach_shell", "reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
   assert.equal(tools.reach_act.destructiveHint, false);
   assert.ok(Object.values(tools).every((annotations) => annotations.openWorldHint === false));
   assert.ok(Object.values(tools).every((annotations) => !("example" in annotations)));
@@ -31,4 +31,18 @@ test("hints say what touches the Mac and what can't be undone", () => {
 test("a credential whose scopes were narrowed loses the matching tools", () => {
   const lowered = presetScopes({ preset: "readonly" });
   assert.ok(!toolsFor(lowered, access("full")).some((tool) => ["reach_act", "reach_shell", "reach_change_file", "reach_open_app"].includes(tool.name)));
+});
+
+
+test("Read only and Files never advertise saved tasks, including stale cached catalog entries", () => {
+  const savedTools = [{ id: "11111111-1111-4111-8111-111111111111", name: "Open sample", stepCount: 1, inputs: [] }];
+  const shortcut = (name) => name === "reach_shortcuts" || name.endsWith("_shortcut") || name.startsWith("reach_saved_");
+  const available = names("full", { savedTools });
+  assert.equal(available.filter(shortcut).length, 6, "the same catalog fixture exposes five shortcut tools and one named task with Full control");
+  for (const preset of ["readonly", "files"]) {
+    assert.deepEqual(names(preset, { savedTools }), names(preset), `${preset} ignores saved task metadata`);
+    assert.deepEqual(names(preset, { write: true, savedTools }).filter(shortcut), [], `${preset} never gains desktop shortcuts from file write access`);
+    const narrowed = toolsFor(presetScopes({ preset }), access("full", { savedTools })).map((tool) => tool.name);
+    assert.deepEqual(narrowed.filter(shortcut), [], `${preset} scopes remove shortcut tools even when access metadata is stale`);
+  }
 });

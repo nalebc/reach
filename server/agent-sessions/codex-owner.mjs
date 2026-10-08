@@ -237,12 +237,14 @@ export function createCodexOwner({
   },
 } = {}) {
   const owned = new Map(),
+    ownerships = new Map(),
     followers = new Map(),
     revisions = new Map(),
     timers = new Map(),
     publishing = new Map(),
     serial = new Map(),
-    queueBaselines = new Map();
+    queueBaselines = new Map(),
+    knownQueueIds = new Map();
   let socket = null,
     clientId = null,
     buffer = Buffer.alloc(0),
@@ -301,6 +303,7 @@ export function createCodexOwner({
         );
         revisions.set(id, revision);
         const queue = await daemon.rpc("thread/queue/list", { threadId: id });
+        if (!Array.isArray(queue?.data)) throw Error("Codex queue is unavailable.");
         if (!owned.has(id) || connection !== socket) return null;
         broadcast(
           "thread-queued-followups-changed",
@@ -314,6 +317,14 @@ export function createCodexOwner({
           2,
           targets,
         );
+        // Keep cancelled/consumed IDs for this ownership lifetime too: a
+        // delayed desktop snapshot must not turn them into fresh messages.
+        const known = knownQueueIds.get(id) || new Set();
+        for (const q of queue.data) {
+          known.add(q.id);
+          if (q.clientUserMessageId) known.add(q.clientUserMessageId);
+        }
+        knownQueueIds.set(id, known);
         for (const client of targets)
           queueBaselines.set(
             `${id}:${client}`,
@@ -340,7 +351,7 @@ export function createCodexOwner({
   const canHandle = (request) => {
     const id = request.params?.conversationId;
     return (
-      UUID.test(id || "") &&
+      !closed && UUID.test(id || "") &&
       owned.has(id) &&
       (request.params?.hostId || request.hostId || "local") === "local" &&
       (request.version === CODEX_OWNER_METHODS[request.method] ||
@@ -348,7 +359,8 @@ export function createCodexOwner({
           request.version === 3))
     );
   };
-  async function receive(message) {
+  async function receive(message, connection = socket) {
+    if (closed || connection !== socket) return;
     if (message.type === "client-discovery-request") {
       write({
         type: "client-discovery-response",
@@ -378,15 +390,20 @@ export function createCodexOwner({
       }
     } else if (message.type === "request") {
       if (!canHandle(message))
-        return reply(message, null, "Reach no longer owns this task.");
+        return reply(message, null, "Reach no longer owns this task.", connection);
       const id = message.params.conversationId;
       if (message.method === "thread-owner-discovery")
-        return reply(message, { supportsUntrustedAppInput: false });
+        return reply(message, { supportsUntrustedAppInput: false }, null, connection);
+      const ownership = ownerships.get(id);
+      const authorize = () => {
+        if (closed || connection !== socket || !connection?.writable || connection.destroyed || !owned.has(id) || ownerships.get(id) !== ownership)
+          throw Error("Reach no longer owns this task on the original connection.");
+      };
       const previous = serial.get(id) || Promise.resolve();
       const work = previous
         .catch(() => {})
         .then(async () => {
-          if (!owned.has(id)) throw Error("Reach no longer owns this task.");
+          authorize();
           if (message.method === "thread-follower-load-complete-history") {
             const clients = followers.get(id) || new Set();
             clients.add(message.sourceClientId);
@@ -396,24 +413,26 @@ export function createCodexOwner({
             return { revision };
           }
           return handleRequest(message.method, message.params, {
+            authorize,
             sourceClientId: message.sourceClientId,
+            knownQueueIds: [...(knownQueueIds.get(id) || [])],
             queueIds:
               queueBaselines.get(`${id}:${message.sourceClientId}`) || [],
           });
         });
       serial.set(id, work);
       try {
-        reply(message, await work);
+        reply(message, await work, null, connection);
         update(id);
       } catch (error) {
-        reply(message, null, error.message);
+        reply(message, null, error.message, connection);
       } finally {
         if (serial.get(id) === work) serial.delete(id);
       }
     }
   }
-  function reply(request, result, error) {
-    if (!clientId || !socket?.writable) return;
+  function reply(request, result, error, connection = socket) {
+    if (closed || connection !== socket || !clientId || !socket?.writable) return;
     write({
       type: "response",
       requestId: request.requestId,
@@ -444,6 +463,7 @@ export function createCodexOwner({
     if (opening) return opening;
     opening = (async () => {
       await checkEndpoint();
+      if (closed || !owned.size) return;
       const ws = connect(endpoint);
       socket = ws;
       await new Promise((resolve, reject) => {
@@ -452,7 +472,8 @@ export function createCodexOwner({
           reject(Error("Codex IPC did not initialize."));
         }, 8000);
         timer.unref?.();
-        ws.once("connect", () =>
+        ws.once("connect", () => {
+          if (closed || socket !== ws) return;
           write({
             type: "request",
             sourceClientId: "initializing-client",
@@ -460,9 +481,10 @@ export function createCodexOwner({
             method: "initialize",
             version: 0,
             params: { clientType: "reach" },
-          }),
-        );
+          });
+        });
         ws.on("data", (chunk) => {
+          if (closed || socket !== ws) return;
           try {
             buffer = Buffer.concat([buffer, chunk]);
             while (buffer.length >= 4) {
@@ -487,7 +509,7 @@ export function createCodexOwner({
                     { conversationId: id, hostId: "local" },
                     1,
                   );
-              } else void receive(message).catch(() => {});
+              } else void receive(message, ws).catch(() => {});
             }
           } catch (error) {
             clearTimeout(timer);
@@ -524,8 +546,9 @@ export function createCodexOwner({
   }
   return {
     async claim(id, settings = {}) {
-      if (!UUID.test(id || "")) return;
+      if (closed || !UUID.test(id || "")) return;
       const { thread, ...values } = settings;
+      if (!owned.has(id)) ownerships.set(id, Symbol(id));
       owned.set(id, { ...(owned.get(id) || {}), ...values });
       await open().catch(() => {});
       if (clientId)
@@ -547,8 +570,10 @@ export function createCodexOwner({
     update,
     forget(id) {
       owned.delete(id);
+      ownerships.delete(id);
       followers.delete(id);
       revisions.delete(id);
+      knownQueueIds.delete(id);
       for (const key of queueBaselines.keys())
         if (key.startsWith(`${id}:`)) queueBaselines.delete(key);
       clearTimeout(timers.get(id));
@@ -556,9 +581,11 @@ export function createCodexOwner({
     },
     reset() {
       owned.clear();
+      ownerships.clear();
       followers.clear();
       revisions.clear();
       queueBaselines.clear();
+      knownQueueIds.clear();
       for (const t of timers.values()) clearTimeout(t);
       timers.clear();
     },
@@ -568,7 +595,10 @@ export function createCodexOwner({
       for (const t of timers.values()) clearTimeout(t);
       timers.clear();
       owned.clear();
+      ownerships.clear();
       followers.clear();
+      queueBaselines.clear();
+      knownQueueIds.clear();
       socket?.destroy();
     },
   };

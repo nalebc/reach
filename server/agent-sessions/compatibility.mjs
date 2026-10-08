@@ -11,27 +11,56 @@ import { computerWord } from "../computer-word.mjs";
 // through, cut mid-line, and the flags past the cut read as missing
 // ("Claude's CLI interface is incompatible with Reach", Oct 7). Writes to
 // a file complete before the process can exit.
-export async function runToFile(file, args, { timeout = 5000, maxBuffer = 256 * 1024, env } = {}) {
+export async function runToFile(file, args, { timeout = 5000, maxBuffer = 256 * 1024, env, spawn: launch = spawn } = {}) {
+  if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 16 * 1024 * 1024)
+    throw Error("Invalid probe output limit.");
   const tmp = path.join(os.tmpdir(), `reach-probe-${process.pid}-${crypto.randomUUID()}`);
-  const fd = fs.openSync(tmp, "w", 0o600);
+  const fd = fs.openSync(tmp, "wx+", 0o600);
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn(file, args, { env, stdio: ["ignore", fd, "ignore"], windowsHide: true });
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(Error("Timed out."));
-      }, timeout);
-      child.once("error", (e) => {
-        clearTimeout(timer);
-        reject(e);
+      const child = launch(file, args, { env, stdio: ["ignore", fd, "ignore"], windowsHide: true });
+      let failure = null, force = null, finished = false;
+      const stop = error => {
+        if (failure || finished) return;
+        failure = error;
+        // Keep the output file until observed exit. A slow or TERM-resistant
+        // child must not continue writing an unlinked file after we return.
+        try { child.kill("SIGTERM"); } catch { /* force termination below */ }
+        if (finished) return;
+        force = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 1000);
+        force.unref?.();
+      };
+      const timer = setTimeout(() => stop(Error("Probe timed out.")), timeout);
+      // This limits ordinary runaway output promptly, with bounded reads
+      // below. It is not a filesystem quota or a sandbox for a hostile CLI.
+      const output = setInterval(() => {
+        try { if (fs.fstatSync(fd).size > maxBuffer) stop(Error("Probe output exceeded its limit.")); }
+        catch { stop(Error("Probe output could not be read.")); }
+      }, 25);
+      output.unref?.();
+      const done = (error = null) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer); clearTimeout(force); clearInterval(output);
+        if (failure || error) reject(failure || error); else resolve();
+      };
+      child.once("error", error => {
+        if (!child.pid) done(error); // failed to spawn: there is no writer
+        else stop(Error("Probe process failed."));
       });
-      child.once("exit", (code) => {
-        clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(Error(`Exited with ${code}.`));
-      });
+      child.once("exit", code => done(code === 0 ? null : Error("Probe process failed.")));
     });
-    return { stdout: fs.readFileSync(tmp, "utf8").slice(0, maxBuffer) };
+    // Never allocate/read the entire output and truncate it afterwards.
+    if (fs.fstatSync(fd).size > maxBuffer) throw Error("Probe output exceeded its limit.");
+    const data = Buffer.alloc(maxBuffer + 1);
+    let length = 0;
+    while (length < data.length) {
+      const read = fs.readSync(fd, data, length, data.length - length, length);
+      if (!read) break;
+      length += read;
+    }
+    if (length > maxBuffer) throw Error("Probe output exceeded its limit.");
+    return { stdout: data.subarray(0, length).toString("utf8") };
   } finally {
     fs.closeSync(fd);
     fs.rmSync(tmp, { force: true });

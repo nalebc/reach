@@ -460,3 +460,52 @@ test("late events from a stopped or replaced helper cannot restart terminal disc
   helpers[1].emit("event", { type: "opened" });
   await until(() => lists === 3);
 });
+
+
+test("ending a crashed terminal watch cancels its pending helper restart", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const helpers = [];
+  const watch = new MacTerminalWatch({
+    terminals: { list: async () => ({ sessions: [], providers: [] }) },
+    start: async () => {
+      const helper = new EventEmitter(); helper.stop = () => {}; helper.send = () => {};
+      helpers.push(helper); return helper;
+    },
+  });
+  try {
+    watch.retain(); await watch.starting;
+    helpers[0].emit("exit");
+    watch.end();
+    t.mock.timers.tick(10000); await Promise.resolve();
+    assert.equal(helpers.length, 1, "shutdown must not resurrect the watcher while users still unwind");
+    assert.equal(watch.helper, null);
+  } finally { watch.end(); }
+});
+
+test("terminal watch crash recovery survives an old pending initial read and keeps bounded backoff", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const helpers = [];
+  let finishRead;
+  const firstRead = new Promise(resolve => { finishRead = resolve; });
+  const watch = new MacTerminalWatch({
+    terminals: { list: async () => firstRead },
+    start: async () => {
+      const helper = new EventEmitter(); helper.stop = () => {}; helper.send = () => {};
+      helpers.push(helper); return helper;
+    },
+  });
+  try {
+    watch.retain(); await Promise.resolve();
+    const old = watch.starting;
+    helpers[0].emit("exit");
+    t.mock.timers.tick(999); await Promise.resolve(); assert.equal(helpers.length, 1);
+    t.mock.timers.tick(1); await Promise.resolve(); assert.equal(helpers.length, 2);
+    const replacement = watch.starting;
+    finishRead({ sessions: [], providers: [] }); await old; await replacement;
+    assert.equal(watch.helper, helpers[1]);
+    helpers[1].emit("exit");
+    t.mock.timers.tick(1999); await Promise.resolve(); assert.equal(helpers.length, 2);
+    t.mock.timers.tick(1); await Promise.resolve(); assert.equal(helpers.length, 3);
+    await watch.starting;
+  } finally { finishRead({ sessions: [], providers: [] }); watch.end(); }
+});

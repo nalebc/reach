@@ -130,6 +130,47 @@ test("Codex async questions show during work and send choices and free text with
   assert.deepEqual(dom.errors, []);
 });
 
+test("Codex async question refusal preserves answers and draft, and retry never becomes a queued message", async (t) => {
+  const route = `/api/sessions/codex/${CODEX}/questions/async-q`;
+  const original = routes[route];
+  let refuse = true;
+  routes[route] = (init) => {
+    mac.sent.push({ route, body: JSON.parse(init.body) });
+    return refuse
+      ? new Response(JSON.stringify({ error: "Codex could not accept this answer. Try again." }), { status: 409, headers: { "Content-Type": "application/json" } })
+      : { answered: true };
+  };
+  t.after(() => { routes[route] = original; });
+  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [
+    { title: "Which target?", options: ["Mac", "Phone"] }, { title: "Anything else?", options: [] },
+  ] }];
+  mac.live = { ...idleLive(), status: "running", turnId: "turn-1" };
+  await open(codexSession({ status: "running" }));
+  await dom.waitFor(() => $(".as-async-questions .as-choices button"));
+  await typeInto($(".as-composer textarea"), "Keep this independent draft");
+  await click($$(".as-async-questions .as-choices button")[1]);
+  await typeInto($(".as-async-questions input"), "Zoë — offline support");
+  await click($(".as-async-questions .as-prompt-actions .primary"));
+  await dom.waitFor(() => $(".as-async-questions [role=alert]"));
+  assert.match($(".as-async-questions [role=alert]").textContent, /could not accept this answer/);
+  assert.equal($(".as-async-questions input").value, "Zoë — offline support");
+  await click($$(".as-async-questions .as-steps button")[0]);
+  assert.equal($$(".as-async-questions .as-choices button")[1].getAttribute("aria-pressed"), "true");
+  await click($$(".as-async-questions .as-steps button")[1]);
+  assert.equal($(".as-composer textarea").value, "Keep this independent draft");
+  assert.equal($$(".as-user.pending").length, 0);
+  assert.deepEqual(mac.sent, [{ route, body: { turnId: "turn-1", answers: [{ index: 0, answer: "Phone" }, { index: 1, answer: "Zoë — offline support" }] } }], "a refused answer has no /messages or queue fallback");
+  refuse = false;
+  await click($(".as-async-questions .as-prompt-actions .primary"));
+  await dom.waitFor(() => $$(".as-async-questions .as-answered").length === 2);
+  assert.equal(mac.sent.length, 2);
+  assert.deepEqual(mac.sent[1], mac.sent[0], "retry uses the same dedicated question route and answers");
+  assert.equal($(".as-async-questions [role=alert]"), null);
+  assert.equal($(".as-composer textarea").value, "Keep this independent draft");
+  assert.equal($$(".as-user.pending").length, 0);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("Codex async questions retain native answers after reload without message bubbles", async () => {
   mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [
     { title: "Which target?", options: ["Mac", "Phone"], answer: "Phone" },
@@ -4081,4 +4122,127 @@ test("a replaced chat credential drops a pending older page without blocking the
   assert.match(dom.document.body.textContent, /Fresh pairing content/);
   assert.doesNotMatch(dom.document.body.textContent, /Old pairing history/);
   assert.ok($(".as-older"), "the old page cannot replace the new pagination cursor");
+});
+
+test("an answered Codex question stays answered when its older page is loaded", async (t) => {
+  const route = `/api/sessions/codex/${CODEX}`;
+  const previous = routes[route];
+  t.after(() => { routes[route] = previous; });
+  const question = { id: "paged-question", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [{ title: "Which target?", options: ["Mac", "Phone"] }] };
+  const reply = { id: "paged-answer", turnId: "turn-1", role: "user", kind: "text", text: "Phone", replies: [{ questionItemId: '["request_user_input_async","paged-question",0]', question: "Which target?", answer: "Phone" }] };
+  routes[route] = (init, url) => ({ session: codexSession({ status: "running" }), items: url.searchParams.get("before") ? [question] : [reply], before: url.searchParams.get("before") ? null : "older" });
+  mac.live = { ...idleLive(), status: "running", turnId: "turn-1" };
+  await open(codexSession({ status: "running" }));
+  await click(await dom.waitFor(() => $(".as-older")));
+  await dom.waitFor(() => $(".as-async-questions .as-answered"));
+  assert.equal($(".as-answered").textContent, "Phone");
+  assert.equal($$(".as-async-questions button").length, 0);
+  assert.equal($$(".as-user").length, 0, "no duplicate answer bubble remains");
+  assert.deepEqual(dom.errors, []);
+});
+
+for (const [context, label, text] of [
+  [{ used: 200001, window: null }, "200,001 tokens reported; context capacity unknown", "200,001 tokens"],
+  [{ used: 64000, window: 258000 }, "25% of context used", "25%"],
+]) test(`the context display reports ${label}`, async () => {
+  mac.pages[`claude:${CLAUDE}`].session.context = context;
+  await open(claudeSession({ context }));
+  const meter = await dom.waitFor(() => $(".as-context"));
+  assert.equal(meter.getAttribute("aria-label"), label);
+  assert.equal(meter.textContent, text);
+  assert.equal(!!meter.querySelector("svg"), context.window !== null);
+  assert.deepEqual(dom.errors, []);
+});
+
+for (const agent of ["codex", "claude"]) test(`${agent}: cancelling an acknowledged queue entry elsewhere removes its optimistic copy`, async (t) => {
+  const session = agent === "codex" ? codexSession({ status: "running" }) : claudeSession({ status: "running" });
+  mac.pages[`${agent}:${session.id}`].session = session;
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/${agent}/${session.id}/messages`, previous = routes[route];
+  let sends = 0;
+  routes[route] = () => {
+    sends++;
+    mac.bump({ outbox: [{ id: "native-queued", text: "Cancel me in the app", images: 0 }] });
+    return { queued: true, delivered: false, messageId: "native-queued" };
+  };
+  t.after(() => { routes[route] = previous; });
+  await open(session);
+  await dom.waitFor(() => $(".as-composer textarea"));
+  await typeInto($(".as-composer textarea"), "Cancel me in the app");
+  await click(button("Send"));
+  await dom.waitFor(() => $(".qm-row") || $(".qm-head"));
+  assert.equal(sends, 1);
+  mac.bump({ outbox: [] }); // authoritative external cancellation, no transcript message
+  await dom.waitFor(() => !$(".qm-row") && !$(".qm-head"));
+  assert.equal($$(".as-user.pending").length, 0, "the acknowledged queue owns the message; no ghost bubble survives cancellation");
+  assert.equal(mac.pages[`${agent}:${session.id}`].items.length, 0);
+  assert.equal(sends, 1, "cancellation must never resend");
+  assert.deepEqual(dom.errors, []);
+});
+
+for (const agent of ["codex", "claude"]) test(`${agent}: a transcript read begun before effort confirmation cannot restore the old effort`, async (t) => {
+  const session = agent === "codex" ? codexSession({ effort: "medium" }) : claudeSession({ effort: "medium" });
+  mac.pages[`${agent}:${session.id}`].session = session;
+  const readRoute = `/api/sessions/${agent}/${session.id}`, previousRead = routes[readRoute];
+  const offers = CLAUDE_OFFERS.models;
+  if (agent === "claude") CLAUDE_OFFERS.models = [{ id: session.model, name: "Opus 5.5", efforts: ["low", "medium", "high"], defaultEffort: "medium", isDefault: true }];
+  t.after(() => { routes[readRoute] = previousRead; CLAUDE_OFFERS.models = offers; });
+  await open(session, signedIn, { ...peer, url: `https://${agent}-effort-read-race.test` });
+  await dom.waitFor(() => $(".as-model-effort")?.textContent === "Medium");
+  let finish;
+  const stale = { session: { ...session }, items: [{ id: "during-pick", role: "assistant", kind: "text", text: "Arrived while choosing effort" }] };
+  routes[readRoute] = () => new Promise(resolve => { finish = resolve; });
+  dom.window.dispatchEvent(new dom.window.Event("online"));
+  await dom.waitFor(() => finish);
+  await click($(".as-model"));
+  if (agent === "claude") await click($$(".ms-row").find(el => el.textContent.includes("Effort")));
+  const high = agent === "codex" ? $('.ms-dots [aria-label="High"]') : $$('.ms-card[aria-label="Effort"] button').find(el => el.textContent.trim() === "High");
+  await click(high);
+  await dom.waitFor(() => $(".as-model-effort")?.textContent === "High");
+  let finishFresh;
+  routes[readRoute] = () => new Promise(resolve => { finishFresh = resolve; });
+  finish(stale);
+  await dom.waitFor(() => $(".as-scroll")?.textContent.includes("Arrived while choosing effort"));
+  assert.equal($(".as-model-effort").textContent, "High", "a stale read must not undo the acknowledged selection before any fresh read finishes");
+  await dom.waitFor(() => finishFresh);
+  routes[readRoute] = previousRead;
+  finishFresh(mac.pages[`${agent}:${session.id}`]);
+  mac.pages[`${agent}:${session.id}`].session.effort = "low";
+  mac.bump();
+  await dom.waitFor(() => $(".as-model-effort")?.textContent === "Low");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Claude's resolved native model uses that catalog alias's effort options", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "default", resolvedModel: "claude-opus-5-5", name: "Default", efforts: ["low", "medium", "high", "max"], defaultEffort: "medium", isDefault: true },
+    { id: "sonnet", resolvedModel: "claude-sonnet-5-5", name: "Sonnet 5.5", efforts: ["low", "high"], defaultEffort: "low" },
+  ];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ model: "claude-sonnet-5-5", effort: "low" });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-resolved-effort.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Sonnet"));
+  await click($(".as-model"));
+  assert.equal(checkedModel(), "Sonnet 5.5");
+  await click($$(".ms-row").find(el => el.textContent.includes("Effort")));
+  assert.deepEqual($$('.ms-card[aria-label="Effort"] button').map(el=>el.textContent.trim()), ["Low", "High"]);
+  await click($$('.ms-card[aria-label="Effort"] button').find(el=>el.textContent.trim()==="High"));
+  await dom.waitFor(() => mac.sent.some(m=>m.route.endsWith("/model")));
+  assert.deepEqual(mac.sent.find(m=>m.route.endsWith("/model")).body, { effort: "high" });
+});
+
+test("an unlisted current Codex model never changes to the default through an effort dot", async () => {
+  const session = codexSession({ model: "unlisted-native-model", effort: "high" });
+  mac.pages[`codex:${CODEX}`].session = session;
+  await open(session);
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("unlisted-native-model"));
+  await click($(".as-model"));
+  assert.equal($$(".ms-dots button").length, 0, "no effort control for a different fallback model");
+  assert.match($(".ms-strip-label").textContent, /unlisted-native-model/i);
+  await click($(".ms-strip-label"));
+  // Only the chat's own model is checked (shown as not in the list), never a listed one.
+  assert.deepEqual($$('.ms-card[aria-label="Models"] [aria-checked="true"]').map((el) => el.className), ["ms-current-unlisted"]);
+  assert.equal(mac.sent.length, 0);
 });

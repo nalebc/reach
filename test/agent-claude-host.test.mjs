@@ -538,7 +538,52 @@ const queuedReply = ({ messageId, ...reply }) => {
   return reply;
 };
 
-test("one Claude session everywhere: Reach continues it, waits its turn when the app is busy, never makes a copy", async () => {
+test("session fixtures never read or write the host Claude import stores unless an importer is injected", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-import-isolation-"));
+  const file = path.join(dir, "claude-imports.json");
+  const records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
+  const touched = [];
+  // Trap the old constructor/read and add/save paths before they can touch
+  // anything. In particular, the host's app records are never actually read.
+  for (const name of ["readFileSync", "writeFileSync", "renameSync", "readdirSync"]) {
+    const original = fs[name];
+    t.mock.method(fs, name, (...args) => {
+      const target = String(args[0]);
+      if (target === file || target.startsWith(`${file}.`) || target === records || target.startsWith(`${records}${path.sep}`)) {
+        touched.push(name);
+        if (name === "readFileSync") return "{}";
+        if (name === "readdirSync") return [];
+        return undefined;
+      }
+      return original(...args);
+    });
+  }
+  const claude = fakeClaude(), h = host(claude);
+  const sessions = createAgentSessions({
+    dataDir: dir,
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}) },
+    claude: {
+      health: async () => ({ signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [] }),
+    },
+    claudeHost: h,
+    live: async () => new Map(),
+    signIn: {},
+    open: async () => assert.fail("a fixture opened the host Claude app"),
+  });
+  t.after(() => { sessions.close(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const { threadId } = await sessions.start("claude", { cwd: "/work/site", text: "new fixture" });
+  claude.last().print({ type: "result", is_error: false });
+  h.release(threadId);
+  await sessions.send("claude", ID, { text: "existing fixture" });
+  claude.last().print({ type: "result", is_error: false });
+  h.release(ID);
+  await settle();
+  assert.deepEqual(touched, [], "the test default must be inert, including constructor, add and release");
+});
+
+test("one Claude session everywhere: Reach continues it, waits its turn when the app is busy, never makes a copy", async (t) => {
   const claude = fakeClaude();
   const claudeHost = host(claude);
   let signedIn = false;
@@ -552,11 +597,14 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   let idle = 5;
   // Sessions whose Claude app window is to be reloaded (claude-import.mjs).
   const refreshed = [];
+  const importDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-"));
   const imports = createClaudeImports({
-    file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-")), "claude-imports.json"),
+    file: path.join(importDir, "claude-imports.json"),
     open: openLink,
     idle: async () => idle,
     appRunning: async () => true,
+    startedAt: async () => null,
+    shown: () => [], // Link-only fixture; window restoration is tested with synthetic records.
     // The chat the Claude app holds is in its list; others aren't.
     imported: (id) => id === ID,
     write: null,
@@ -587,6 +635,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     claudeImports: imports,
     claudeRefresh: { add: async (id) => refreshed.push(id), close() {} },
   });
+  t.after(() => { sessions.close(); fs.rmSync(importDir, { recursive: true, force: true }); });
   await assert.rejects(sessions.send("claude", ID, { text: "hi" }), /signed out/);
   signedIn = true;
   where = "terminal";
@@ -1545,4 +1594,88 @@ test("rewind, as Claude Code's own: what would change, the code back, and the co
   assert.deepEqual(next.args.slice(at, at + 2), ["--resume-session-at", BEFORE]);
   assert.equal(h.rewoundTo(ID), null, "done once the next message goes");
   await assert.rejects(h.rewindFiles(ID, { messageId: "../x" }), (e) => e.status === 404);
+});
+
+test("a pending conversation rewind persists across restart and preview launches", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-persist-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json");
+  const BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const first = host(fakeClaude(), { rewindFile });
+  first.rewindConversation(ID, BEFORE);
+  first.close();
+  const fake = fakeClaude(), restored = host(fake, { rewindFile });
+  t.after(() => restored.close());
+  assert.equal(restored.rewoundTo(ID), BEFORE, "the accepted rewind survives restarting Reach");
+  await restored.rewindFiles(ID, { messageId: MSG, cwd: "/work/app", dryRun: true });
+  await restored.send(ID, { text: "continue from the chosen entry", cwd: "/work/app" });
+  const args = fake.last().args, at = args.indexOf("--resume-session-at");
+  assert.deepEqual(args.slice(at, at + 2), ["--resume-session-at", BEFORE], "preview launch cannot consume the pending target");
+  assert.equal(restored.rewoundTo(ID), null);
+  const after = host(fakeClaude(), { rewindFile });
+  t.after(() => after.close());
+  assert.equal(after.rewoundTo(ID), null, "accepted continuation consumes its pending target");
+});
+
+test("an uncertain rewind continuation stays blocked after restart instead of replaying", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-uncertain-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json"), BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const fake = fakeClaude();
+  const spawn = (...args) => {
+    const proc = fake.spawn(...args), write = proc.stdin.write.bind(proc.stdin);
+    proc.stdin.write = (line, done) => {
+      if (JSON.parse(line).type === "user") { done?.(Error("lost acknowledgement")); return; }
+      return write(line, done);
+    };
+    return proc;
+  };
+  const first = host(fake, { rewindFile, spawn });
+  first.rewindConversation(ID, BEFORE);
+  await assert.rejects(first.send(ID, { text: "change the implementation", cwd: "/work/app" }), e => e.uncertain === true);
+  first.close();
+  const secondFake = fakeClaude(), restored = host(secondFake, { rewindFile });
+  t.after(() => restored.close());
+  await assert.rejects(restored.send(ID, { text: "change the implementation", cwd: "/work/app" }), e => e.uncertain === true);
+  assert.equal(secondFake.runs.length, 0, "uncertain work is never relaunched after restart");
+});
+
+test("an unreadable pending rewind record refuses to resume without silently forgetting it", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-invalid-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json");
+  fs.writeFileSync(rewindFile, "{truncated");
+  const fake = fakeClaude(), h = host(fake, { rewindFile });
+  t.after(() => h.close());
+  await assert.rejects(h.send(ID, { text: "continue", cwd: "/work/app" }), e => e.status === 503);
+  assert.equal(fake.runs.length, 0);
+  assert.equal(fs.readFileSync(rewindFile, "utf8"), "{truncated");
+});
+
+
+test("a rewind cannot race an accepted send while its provider is still starting", async (t) => {
+  let locate;
+  const ready = new Promise(resolve => { locate = resolve; });
+  const fake = fakeClaude(), h = host(fake, { locate: () => ready });
+  t.after(() => h.close());
+  const send = h.send(ID, { text: "send in progress", cwd: "/work/app" });
+  const BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assert.throws(() => h.rewindConversation(ID, BEFORE), { status: 409 });
+  await assert.rejects(h.rewindFiles(ID, { messageId: MSG }), { status: 409 });
+  locate("/usr/local/bin/claude");
+  await send;
+  assert.equal(h.rewoundTo(ID), null);
+});
+
+test("a send cannot overlap a file rewind while its provider starts", async (t) => {
+  let locate;
+  const ready = new Promise(resolve => { locate = resolve; });
+  const fake = fakeClaude(), h = host(fake, { locate: () => ready });
+  t.after(() => h.close());
+  const MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const rewind = h.rewindFiles(ID, { messageId: MSG, cwd: "/work/app" });
+  await assert.rejects(h.send(ID, { text: "must not start" }), { status: 409 });
+  locate("/usr/local/bin/claude");
+  await rewind;
+  assert.equal(fake.last().lines.filter(row => row.type === "user").length, 0);
 });

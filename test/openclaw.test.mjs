@@ -404,7 +404,7 @@ test("disconnect reconnects and Gateway errors cannot echo its credentials", asy
       ? { error: { message: "invalid secret-token" } }
       : null,
   );
-  await assert.rejects(c.history(rows[0].key), /invalid \[redacted\]/);
+  await assert.rejects(c.history(rows[0].key), /authentication problem/);
 });
 
 test("reads JSON5 local config and environment substitutions; remote profiles refused", async (t) => {
@@ -942,7 +942,7 @@ test("a model that fails with nothing after it ends the run once the grace passe
   await new Promise((r) => setTimeout(r, 60));
   const h = await c.history(REACH);
   assert.equal(h.session.status, "error");
-  assert.equal(h.error, "No model could answer");
+  assert.equal(h.error, "OpenClaw reported an error. Check OpenClaw on this computer.");
   // Over: a late start can't reopen it.
   sockets[0].event("agent", { runId: "failed-run", stream: "lifecycle", data: { phase: "start" } });
   assert.equal((await c.history(REACH)).session.status, "error");
@@ -1021,7 +1021,7 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
     { startGateway: async () => {}, settleMs: 1 },
   );
   let answered;
-  await routes["/api/sessions/openclaw/gateway/start"]({}, { json: (v) => (answered = v) });
+  await routes["/api/sessions/openclaw/gateway/start"]({ reauthorize() {} }, { json: (v) => (answered = v) });
   assert.deepEqual(answered, { connected: true });
   assert.equal(up, 3);
 });
@@ -1102,10 +1102,10 @@ test("OpenClaw inventories expose display fields and redact credentials, without
     channels.channels.map((c) => c.status),
     ["connected", "disconnected", "running"],
   );
-  assert.equal(channels.channels[1].error, "Failed [redacted]");
+  assert.equal(channels.channels[1].error, "OpenClaw reports an authentication problem. Check OpenClaw on this computer.");
   const jobs = await c.automations({ offset: 50, query: "Daily" });
   assert.equal(jobs.jobs[0].delivery, "telegram");
-  assert.equal(jobs.jobs[0].error, "[redacted]");
+  assert.equal(jobs.jobs[0].error, "OpenClaw reports an authentication problem. Check OpenClaw on this computer.");
   assert.equal(jobs.hasMore, true);
   assert.deepEqual(calls.find((c) => c.method === "cron.list").params, {
     includeDisabled: true,
@@ -1323,7 +1323,7 @@ test("WhatsApp links by OpenClaw's QR, never over a connected account; linking a
   const linked = await c.linkWhatsApp();
   assert.equal(linked.qr, qr);
   assert.ok(!calls.some((x) => x.method === "channels.logout"));
-  assert.deepEqual(await c.waitWhatsApp(), { connected: true, message: "✅ Linked!" });
+  assert.deepEqual(await c.waitWhatsApp(), { connected: true, message: "WhatsApp is linked." });
   // Linked but dropped: only an explicit relink, which logs out first.
   status = { channelAccounts: { whatsapp: [{ accountId: "default", linked: true, connected: false }] } };
   await assert.rejects(c.linkWhatsApp(), /link it again/);
@@ -1360,4 +1360,327 @@ test("OpenClaw's setup opens only its fixed sections, never the phone's text", a
   assert.deepEqual(answered, { terminal: { id: "t1" } });
   await assert.rejects(setup({ body: { section: "model; rm -rf ~" } }, { json() {} }), /Choose what to set up/);
   assert.deepEqual(opened, ["model"]);
+});
+
+for (const action of ["settings", "automations"])
+  test(`new ${action} route rechecks revoked request before deferred Gateway mutation`, async (t) => {
+    let release, markReady;
+    const ready = new Promise((resolve) => {
+      markReady = resolve;
+    });
+    const f = await fixture(
+      t,
+      action === "automations"
+        ? {
+            configuration: () =>
+              new Promise((resolve) => {
+                release = () =>
+                  resolve({
+                    url: "ws://127.0.0.1:18789",
+                    token: "fixture-gateway-token",
+                  });
+                markReady();
+              }),
+          }
+        : {},
+    );
+    f.handle((req, socket) => {
+      if (action === "settings" && req.method === "sessions.list") {
+        release = () => socket.response(req.id, { sessions: rows });
+        markReady();
+        return { hold: true };
+      }
+      if (req.method === "sessions.patch") return { payload: { ok: true } };
+      if (req.method === "cron.update") return { payload: { enabled: false } };
+    });
+    const { openClawRoutes } = await import("../server/openclaw.mjs");
+    const handlers = new Map();
+    openClawRoutes(
+      {
+        get() {},
+        post(route, fn) {
+          handlers.set(route, fn);
+        },
+      },
+      f.c,
+    );
+    let revoked = false,
+      rechecks = 0;
+    const request = {
+      body:
+        action === "settings"
+          ? { key: REACH, label: "After revoke" }
+          : { id: "daily", enabled: false },
+      reauthorize() {
+        rechecks++;
+        if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    };
+    const work = handlers.get(`/api/sessions/openclaw/${action}`)(request, {
+      json() {},
+    });
+    await ready;
+    revoked = true;
+    release();
+    await assert.rejects(work, { status: 401 });
+    assert.equal(
+      f.calls.filter(
+        (req) =>
+          req.method ===
+          (action === "settings" ? "sessions.patch" : "cron.update"),
+      ).length,
+      0,
+      "the request lost authority while prerequisite work awaited",
+    );
+  });
+
+test("new channel and schedule status never disclose downstream credential strings in errors", async (t) => {
+  const f = await fixture(t);
+  const secret = "synthetic-downstream-private-key";
+  f.handle((req) => ({
+    payload:
+      req.method === "channels.status"
+        ? {
+            channelAccounts: {
+              telegram: [
+                {
+                  accountId: "default",
+                  connected: false,
+                  lastError: `Request to https://example.test/bot${secret}/send failed`,
+                },
+              ],
+            },
+          }
+        : req.method === "cron.list"
+          ? {
+              jobs: [
+                {
+                  id: "daily",
+                  name: "Daily",
+                  enabled: false,
+                  state: { lastError: `Authorization: Bearer ${secret}` },
+                },
+              ],
+            }
+          : undefined,
+  }));
+  const data = [await f.c.channels(), await f.c.automations()];
+  assert.ok(!JSON.stringify(data).includes(secret));
+});
+
+for (const action of ["send", "stop", "remove", "new"])
+  test(`existing ${action} route cannot dispatch after revocation during prerequisite read`, async (t) => {
+    let release, markReady;
+    const ready = new Promise((resolve) => {
+      markReady = resolve;
+    });
+    const f = await fixture(
+      t,
+      action === "remove"
+        ? {
+            configuration: () =>
+              new Promise((resolve) => {
+                release = () =>
+                  resolve({
+                    url: "ws://127.0.0.1:18789",
+                    token: "fixture-gateway-token",
+                  });
+                markReady();
+              }),
+          }
+        : {},
+    );
+    f.handle((req, socket) => {
+      if (
+        (action === "send" || action === "stop") &&
+        req.method === "sessions.list"
+      ) {
+        release = () => socket.response(req.id, { sessions: rows });
+        markReady();
+        return { hold: true };
+      }
+      if (action === "new" && req.method === "agents.list") {
+        release = () => socket.response(req.id, { agents: [{ id: "work" }] });
+        markReady();
+        return { hold: true };
+      }
+    });
+    const { openClawRoutes } = await import("../server/openclaw.mjs");
+    const handlers = new Map();
+    openClawRoutes(
+      {
+        get() {},
+        post(route, fn) {
+          handlers.set(route, fn);
+        },
+      },
+      f.c,
+    );
+    let revoked = false;
+    const body =
+      action === "new"
+        ? {
+            text: "Safe synthetic message",
+            requestId: "new-revocation",
+            agentId: "work",
+          }
+        : action === "send"
+          ? {
+              key: REACH,
+              text: "Safe synthetic message",
+              requestId: "send-revocation",
+            }
+          : { key: REACH };
+    const req = {
+      body,
+      reauthorize() {
+        if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    };
+    const work = handlers.get(`/api/sessions/openclaw/${action}`)(req, {
+      json() {},
+    });
+    await ready;
+    revoked = true;
+    release();
+    await assert.rejects(work, { status: 401 });
+    const mutation = {
+      send: "chat.send",
+      stop: "chat.abort",
+      remove: "sessions.delete",
+      new: "sessions.reset",
+    }[action];
+    assert.equal(f.calls.filter((req) => req.method === mutation).length, 0);
+  });
+
+test("revocation after creating a selected-agent session cleans only that session and never sends", async (t) => {
+  const f = await fixture(t);
+  let release, markReady, made;
+  const ready = new Promise((resolve) => {
+    markReady = resolve;
+  });
+  f.handle((req, socket) => {
+    if (req.method === "agents.list")
+      return { payload: { agents: [{ id: "work" }] } };
+    if (req.method === "sessions.reset") {
+      made = req.params.key;
+      release = () => socket.response(req.id, {});
+      markReady();
+      return { hold: true };
+    }
+    if (req.method === "sessions.list")
+      return {
+        payload: { sessions: [...rows, { key: made, channel: "webchat" }] },
+      };
+    if (req.method === "sessions.patch") return { payload: { ok: true } };
+  });
+  const { openClawRoutes } = await import("../server/openclaw.mjs");
+  const handlers = new Map();
+  openClawRoutes(
+    {
+      get() {},
+      post(route, fn) {
+        handlers.set(route, fn);
+      },
+    },
+    f.c,
+  );
+  let revoked = false;
+  const req = {
+    body: {
+      text: "Do not send",
+      requestId: "created-then-revoked",
+      agentId: "work",
+      model: "provider/model",
+    },
+    reauthorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+  };
+  const work = handlers.get("/api/sessions/openclaw/new")(req, { json() {} });
+  await ready;
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  assert.equal(
+    f.calls.some((req) => ["chat.send", "sessions.patch"].includes(req.method)),
+    false,
+  );
+  assert.deepEqual(
+    f.calls
+      .filter((req) => req.method === "sessions.delete")
+      .map((req) => req.params),
+    [{ key: made, deleteTranscript: true }],
+  );
+});
+
+test("gateway startup reauthorizes after configuration before spawning", async () => {
+  const { startOpenClawGateway } = await import("../server/openclaw.mjs");
+  let release,
+    revoked = false,
+    spawns = 0;
+  const work = startOpenClawGateway({
+    configuration: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    authorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+    run: async () => {
+      spawns++;
+    },
+  });
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  assert.equal(spawns, 0);
+});
+
+test("closing the client during configuration never creates a replacement socket", async (t) => {
+  let release;
+  const f = await fixture(t, {
+    configuration: () =>
+      new Promise((resolve) => {
+        release = () =>
+          resolve({ url: "ws://127.0.0.1:18789", token: "fixture" });
+      }),
+  });
+  const work = f.c.catalog();
+  f.c.close();
+  release();
+  await work.catch(() => {});
+  assert.equal(f.sockets.length, 0);
+});
+
+test("a send denied at RPC preflight can be explicitly retried with the same ID and still receives events", async (t) => {
+  const f = await fixture(t);
+  let checks = 0;
+  // Four checks cover entry, source, busy state and channel preflight;
+  // revoke on the final RPC boundary after its provisional run exists.
+  await assert.rejects(
+    f.c.send(
+      { key: REACH, text: "Synthetic retry", requestId: "retry-after-revoke" },
+      () => {
+        if (++checks >= 5)
+          throw Object.assign(Error("Revoked"), { status: 401 });
+      },
+    ),
+    { status: 401 },
+  );
+  assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 0);
+  const sent = await f.c.send(
+    { key: REACH, text: "Synthetic retry", requestId: "retry-after-revoke" },
+    () => {},
+  );
+  assert.equal(sent.status, "running");
+  f.sockets[0].event("chat", {
+    runId: "retry-after-revoke",
+    sessionKey: REACH,
+    state: "delta",
+    message: { content: "Fresh reply" },
+  });
+  const history = await f.c.history(REACH);
+  assert.equal(history.streaming, "Fresh reply");
+  assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 1);
 });

@@ -199,3 +199,25 @@ test("speed changes mid-chat, as in the Codex app: the thread's own setting, the
   await held.model(T, { model: "gpt-5.5", speed: "fast" });
   assert.deepEqual(JSON.parse(JSON.stringify(settings)), [{ model: "gpt-5.5", serviceTier: "fast" }]);
 });
+
+for (const uncertain of [false, true]) test(`Send now after ${uncertain ? "uncertain delivery" : "definite rejection"} ${uncertain ? "never queues a duplicate" : "restores the waiting input"}`, async () => {
+  let queue = [...queued];
+  const failure = Object.assign(new Error(uncertain ? "Codex did not confirm delivery" : "Turn already completed"), uncertain ? { uncertain: true } : {});
+  const daemon = fakeDaemon({
+    "turn/start": { turn: { id: "turn-1", status: "inProgress" } },
+    "thread/turns/list": running,
+    "thread/queue/list": () => ({ data: queue }),
+    "thread/queue/delete": () => (queue = [], { deleted: true }),
+    "turn/steer": failure,
+    "thread/queue/add": ({ input }) => (queue = [{ id: "restored", input }], { queuedSubmission: { id: "restored" } }),
+  });
+  const live = createCodexLive({ daemon });
+  await live.send(T, { text: "Start the disposable turn" });
+  await assert.rejects(live.sendQueuedNow(T, "q1"), error => error === failure);
+  assert.equal(daemon.calls.filter(([method]) => method === "turn/steer").length, 1);
+  assert.equal(daemon.calls.filter(([method]) => method === "thread/queue/add").length, uncertain ? 0 : 1);
+  if (uncertain) {
+    assert.equal(live.view(T).outbox, undefined);
+    assert.match(live.view(T).error, /confirm|uncertain|check/i);
+  } else assert.equal(live.view(T).outbox[0].text, queued[0].input[0].text);
+});

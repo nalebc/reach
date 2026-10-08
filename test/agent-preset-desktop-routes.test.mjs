@@ -152,3 +152,36 @@ test("Files with editing changes files through the sandboxed helper", { skip: pr
   const read = await editor.as("/api/files/text?root=0&path=notes/draft.md");
   assert.equal(read.status, 200);
 });
+
+
+test("desktop helper failures preserve 503 and bounded diagnostics across every desktop route", privateIngressTest, async t => {
+  const extras = stand().extras;
+  let failure = null, calls = 0;
+  // All OS calls stay inert. Admission and HTTP authorization use the real server.
+  extras.catalog = async authorize => { authorize(); return Object.values(apps); };
+  for (const method of ["screenshot", "front", "catalog", "act", "open"]) {
+    const original = extras[method];
+    extras[method] = async (...args) => {
+      if (failure) { calls++; throw failure; }
+      return original(...args);
+    };
+  }
+  const f = await presetFixture(t, { desktopExtras: extras });
+  const full = await f.join({ preset: "full" });
+  const routes = [
+    ["screenshot", "shot", "/api/browser/desktop/screen", {}],
+    ["front", "front", "/api/browser/desktop/front", {}],
+    ["catalog", "catalog", "/api/browser/desktop/apps", {}],
+    ["act", "act", "/api/browser/desktop/input", { method: "POST", body: { action: { type: "key", key: "enter" } } }],
+    ["open", "open", "/api/browser/desktop/open", { method: "POST", body: { app: chrome.id } }],
+  ];
+  for (const [, helperOperation, route, options] of routes) {
+    const message = "The Mac's agent helper exited. Completion is unknown. Check the screen before trying again.";
+    const expected = { error: message, kind: "unavailable", helperReason: "process_exit", helperOperation, helperDispatch: "completion_unknown" };
+    failure = Object.assign(Error(message), expected, { status: 503, stderr: "PRIVATE-stderr", request: "PRIVATE-text", path: "/PRIVATE", exitCode: 99 });
+    const result = await full.as(route, options);
+    assert.equal(result.status, 503, route);
+    assert.deepEqual(result.body, expected, route);
+  }
+  assert.equal(calls, routes.length, "no native mutation retries");
+});

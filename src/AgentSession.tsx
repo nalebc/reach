@@ -1,3 +1,4 @@
+import { withQuestionReplies } from "../server/agent-sessions/codex-questions.mjs";
 import { useWantedPrompt } from "./notification-focus";
 import { AccountUsage } from "./AccountUsage";
 import {
@@ -48,7 +49,7 @@ import AgentAccess from "./AgentAccess";
 import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
-import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, modelDisplayName } from "./ModelSheet";
+import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
@@ -290,7 +291,12 @@ function Copyable({
 }
 
 // How full the chat's context is, as both apps show it: a ring and the share.
-function ContextMeter({ used, window: size }: { used: number; window: number }) {
+function ContextMeter({ used, window: size }: { used: number; window: number | null }) {
+  if (!Number.isFinite(used) || used < 0) return null;
+  if (size === null || !Number.isFinite(size) || size <= 0) {
+    const label = `${used.toLocaleString()} tokens reported; context capacity unknown`;
+    return <span className="as-context unknown" title={label} aria-label={label}>{used.toLocaleString()} tokens</span>;
+  }
   const share = Math.min(1, used / size);
   const percent = Math.round(share * 100);
   const r = 7;
@@ -1489,7 +1495,7 @@ export default function AgentSessionView({
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelError, setModelError] = useState("");
   const [modelSaving, setModelSaving] = useState(false);
-  const savingModel = useRef(false);
+  const savingModel = useRef<object | null>(null);
   const [modelReload, setModelReload] = useState(0);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [choice, setChoice] = useState<{
@@ -1566,10 +1572,12 @@ export default function AgentSessionView({
   // credential invalidates pending replies before they can update this view,
   // retry, or drain a queued reread. A generation also separates effect
   // re-activation (Strict Mode) from the previous setup's pending requests.
-  const readLife = useMemo(() => ({ active: false, generation: 0 }), [peer.url, peer.token, initial.agent, initial.id]);
+  const readLife = useMemo(() => ({ active: false, generation: 0, settingsGeneration: 0, settingsReadPending: false }), [peer.url, peer.token, initial.agent, initial.id]);
   useLayoutEffect(() => {
     readLife.active = true;
     readLife.generation++;
+    savingModel.current = null;
+    setModelSaving(false);
     known.current = "";
     reading.current = null;
     failed.current = 0;
@@ -1584,6 +1592,7 @@ export default function AgentSessionView({
   const load = useCallback(
     async (first: boolean) => {
       const generation = readLife.generation;
+      const settingsGeneration = readLife.settingsGeneration;
       const current = () => readLife.active && readLife.generation === generation;
       if (!current() || (document.hidden && !first)) return;
       if (!first && reading.current) {
@@ -1607,14 +1616,28 @@ export default function AgentSessionView({
           setLoadError("");
           return;
         }
+        // A read started before/during a settings write can arrive after
+        // its acknowledgement. Keep its transcript, but never let those old
+        // settings undo the selected effort; a fresh read still follows
+        // later changes made in the native app or another device.
+        const staleSettings = settingsGeneration !== readLife.settingsGeneration || !!savingModel.current;
+        const session = { ...r.session };
+        if (staleSettings) {
+          delete session.model;
+          delete session.effort;
+          delete session.speed;
+          if (savingModel.current) readLife.settingsReadPending = true;
+          else if (first) void again.current(false);
+          else turn.again = true;
+        }
         // A question answered elsewhere is simply gone from the new read.
-        setInfo((old) => ({ ...old, asking: undefined, ...r.session }));
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ...session }));
         setItems((current) => {
-          if (!current || first) return r.items;
+          if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
           const oldest = r.items[0]?.id;
           const at = oldest ? current.findIndex((i) => i.id === oldest) : -1;
-          return [...(at >= 0 ? current.slice(0, at) : []), ...r.items];
+          return withQuestionReplies([...(at >= 0 ? current.slice(0, at) : []), ...r.items]);
         });
         if (first) setBefore(r.before);
         setLoadError("");
@@ -1729,7 +1752,7 @@ export default function AgentSessionView({
       setReadingHistory(true);
       const el = scroller.current;
       if (el) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
-      setItems((current) => [...r.items, ...(current || [])]);
+      setItems((current) => withQuestionReplies([...r.items, ...(current || [])]));
       setBefore(r.before);
     } catch (e) {
       if (current()) setLoadError((e as Error).message);
@@ -1873,8 +1896,9 @@ export default function AgentSessionView({
 
   const modelId = choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
+  const selectedModel = currentModel(models, modelId);
   const modelLabel =
-    models.find((m) => m.id === modelId)?.name ||
+    selectedModel?.name ||
     (agent === "codex"
       ? modelId
         ? modelDisplayName(modelId)
@@ -1945,7 +1969,7 @@ export default function AgentSessionView({
             id,
             label: modeLabel("claude", id),
           }))),
-    models.find((m) => m.id === modelId),
+    selectedModel,
   );
   // The Claude app's own names (Claude Code says "Default" where the app
   // says "Manual"); otherwise the agent's word for it.
@@ -1996,13 +2020,10 @@ export default function AgentSessionView({
       });
       if (skill) slashMenu.clearSkill();
       sentUrls.current.push(...ready.map((a) => a.url));
-      // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
-      if (r.messageId)
-        setPending((list) =>
-          list.map((p) =>
-            p === message ? { ...p, messageId: r.messageId } : p,
-          ),
-        );
+      // The acknowledged queue now owns this message. Keep no optimistic
+      // copy: cancelling it in the native app does not create a transcript
+      // message, so a copy waiting for that transcript would survive forever.
+      if (r.messageId) setPending((list) => list.filter((p) => p !== message));
       setChoice({});
       setNote("");
       void load(false);
@@ -2764,11 +2785,16 @@ export default function AgentSessionView({
               // Codex app (thread settings; the app's when it holds the chat).
               if (next.speed && !next.model) next = { ...next, model: modelId || info.model || undefined };
               if (savingModel.current) return;
-              savingModel.current = true;
+              const operation = {};
+              const generation = readLife.generation;
+              const current = () => readLife.active && readLife.generation === generation && savingModel.current === operation;
+              savingModel.current = operation;
+              readLife.settingsGeneration++;
               setModelSaving(true);
               setModelError("");
               try {
                 const result = await setAgentModel(peer, initial, next);
+                if (!current()) return;
                 if (result.applied) {
                   // Once native settings are confirmed, follow subsequent
                   // desktop/device changes instead of pinning this old pick.
@@ -2781,10 +2807,17 @@ export default function AgentSessionView({
                 } else setChoice((previous) => ({ ...previous, ...next }));
                 if (!stay) setPicking(false);
               } catch (e) {
-                setModelError((e as Error).message);
+                if (current()) setModelError((e as Error).message);
               } finally {
-                savingModel.current = false;
-                setModelSaving(false);
+                if (current()) {
+                  readLife.settingsGeneration++;
+                  savingModel.current = null;
+                  setModelSaving(false);
+                  if (readLife.settingsReadPending) {
+                    readLife.settingsReadPending = false;
+                    void load(false);
+                  }
+                }
               }
             }}
           />
@@ -2955,7 +2988,7 @@ export default function AgentSessionView({
               </button>
             )}
             <span className="as-spacer" />
-            {info.context && info.context.window > 0 && <ContextMeter used={info.context.used} window={info.context.window} />}
+            {info.context && <ContextMeter used={info.context.used} window={info.context.window} />}
             {/* Always in sight, as both apps keep their model by the box. */}
             {(agent === "codex" || agent === "claude") && (
               <button
@@ -2967,7 +3000,7 @@ export default function AgentSessionView({
                 }}
               >
                 <span className="as-model-name">{modelLabel || "Model"}</span>{" "}
-                <span className="as-model-effort">{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
+                <span className="as-model-effort">{effortLabel(effort || selectedModel?.defaultEffort, agent)}</span>
                 <ChevronDown size={14} />
               </button>
             )}

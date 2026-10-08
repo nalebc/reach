@@ -1,5 +1,6 @@
 import { validateBrowserScript } from "./browser-scripts.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
+import { agentErrorDetails } from "./agent-transport.mjs";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -163,16 +164,18 @@ export function browserAccessRoutes(
     record("agent", `Invited ${input.name} through a browser`);
     res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}) });
   };
-  // A preset invitation: folders checked the way the preset needs (Files
-  // stays out of Home and system folders; Full control and Read only may see
-  // any shared folder), apps matched to this Mac's catalog, and the host guard
-  // reserved when the agent will touch the Mac.
+  // Validate the same effective roots used by file operations before issuing
+  // access, including Full/Read only defaults. Only those presets may include
+  // the exact owner Home; system/application roots remain unavailable.
   const createPresetInvitation = async (req, res, input) => {
     if (input.preset === "files" && !protectedFilesSupported)
       throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
-    for (const folder of input.folders) {
-      const chosen = resolve(folder.root, folder.path || "", { policy: { browser: true } });
-      if (input.preset === "files") validateBrowserRoot(chosen);
+    const filePolicy = { browser: true, preset: input.preset };
+    const folders = input.folders.length || !["full", "readonly"].includes(input.preset)
+      ? input.folders : config.roots.map((_, root) => ({ root, path: "" }));
+    for (const folder of folders) {
+      const chosen = resolve(folder.root, folder.path || "", { policy: filePolicy });
+      validateBrowserRoot(chosen, { policy: filePolicy });
     }
     if (["full", "apps", "readonly"].includes(input.preset) && !desktop?.available?.())
       throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
@@ -568,25 +571,28 @@ export function browserAccessRoutes(
   // Refusals carry their kind (busy, paused, retry, blocked) so an agent knows
   // whether to wait or to stop.
   const answer = async (res, work) => {
-    try { res.json(await work()); }
+    try { const value = await work(); if (!res.headersSent) res.json(value); }
     catch (error) {
-      if (!error?.status || error.status >= 500 || !error.kind) throw error;
-      res.status(error.status).json({ error: error.message, kind: error.kind, ...(error.holder ? { holder: error.holder } : {}), ...(error.retryInMs ? { retryInMs: error.retryInMs } : {}) });
+      const { status, ...details } = agentErrorDetails(error);
+      if (res.headersSent || !status || !details.kind || (status >= 500 && !details.helperReason)) throw error;
+      res.status(status).json(details);
     }
   };
   app.get("/api/browser/desktop/screen", async (req, res) => {
     const client = presetClient(req, "browser:screen");
     needDesktop();
     if (Object.keys(req.query).some((key) => key !== "maxWidth")) throw fail(400, "Choose only the image width.");
-    const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 2560 });
-    res.set("Cache-Control", "no-store");
-    res.set("X-Reach-Screen", JSON.stringify({ width: shot.width, height: shot.height, hidden: shot.hidden }));
-    res.type("image/jpeg").send(shot.jpeg);
+    await answer(res, async () => {
+      const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 2560 });
+      res.set("Cache-Control", "no-store");
+      res.set("X-Reach-Screen", JSON.stringify({ width: shot.width, height: shot.height, hidden: shot.hidden }));
+      res.type("image/jpeg").send(shot.jpeg);
+    });
   });
   app.get("/api/browser/desktop/front", async (req, res) => {
     const client = presetClient(req, "browser:screen");
     needDesktop();
-    res.json(await desktop.front(client, () => presetClient(req, "browser:screen")));
+    await answer(res, () => desktop.front(client, () => presetClient(req, "browser:screen")));
   });
   app.post("/api/browser/desktop/input", async (req, res) => {
     const client = presetClient(req, "browser:control");
@@ -598,14 +604,16 @@ export function browserAccessRoutes(
   app.get("/api/browser/desktop/apps", async (req, res) => {
     const client = presetClient(req, "browser:open");
     needDesktop();
-    const catalog = await desktop.catalog(() => presetClient(req, "browser:open"));
-    const latest = presetClient(req, "browser:open");
-    const hidden = latest.policy.hidden || [];
-    const apps = latest.policy.preset === "apps"
-      ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
-      : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
-        .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
-    res.json({ apps });
+    await answer(res, async () => {
+      const catalog = await desktop.catalog(() => presetClient(req, "browser:open"));
+      const latest = presetClient(req, "browser:open");
+      const hidden = latest.policy.hidden || [];
+      const apps = latest.policy.preset === "apps"
+        ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
+        : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
+          .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
+      return { apps };
+    });
   });
   app.post("/api/browser/desktop/open", async (req, res) => {
     const client = presetClient(req, "browser:open");

@@ -17,9 +17,10 @@ type Step = {
     x?: number;
     y?: number;
   };
-  context?: { bundle: string; title: string };
+  context?: { bundle: string; fingerprint?: string; title?: string };
 };
 type Shortcut = { id: string; name: string; enabled: boolean; steps: Step[] };
+type Running = { runId: string; name: string; completedSteps: number; totalSteps: number; cancelled?: boolean };
 const appName = (value?: string) =>
   value
     ?.split("/")
@@ -28,7 +29,7 @@ const appName = (value?: string) =>
 function stepWords(step: Step) {
   if (step.type === "open") return `Open ${appName(step.app)}`;
   if (step.type === "website")
-    return `Open ${step.url} in ${appName(step.app)}`;
+    return step.input ? `Open website from ${step.input} in ${appName(step.app)}` : `Open ${step.url} in ${appName(step.app)}`;
   if (step.type === "input")
     return `Type ${step.input} (supplied by the agent when run)`;
   const action = step.action!;
@@ -45,6 +46,8 @@ export default function AgentShortcuts({
   toast: (message: string) => void;
 }) {
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [running, setRunning] = useState<Running | null>(null);
+  const [stopRequested, setStopRequested] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -67,7 +70,7 @@ export default function AgentShortcuts({
       if (reading) return;
       reading = true;
       try {
-        const next = await request<{ shortcuts: Shortcut[] }>(
+        const next = await request<{ shortcuts: Shortcut[]; running?: Running | null }>(
           peer,
           "/api/agents/shortcuts",
           { signal: controller.signal },
@@ -76,6 +79,7 @@ export default function AgentShortcuts({
           throw Error("Saved shortcuts could not be loaded.");
         if (!controller.signal.aborted) {
           setShortcuts(next.shortcuts);
+          setRunning(next.running || null);
           setError("");
         }
       } catch (failure) {
@@ -135,6 +139,33 @@ export default function AgentShortcuts({
       if (alive.current) setPending(false);
     }
   };
+  const stop = async () => {
+    if (!running || running.cancelled || stopRequested === running.runId || busy.current) return;
+    const runId = running.runId;
+    busy.current = true;
+    setPending(true);
+    setError("");
+    const controller = new AbortController();
+    controllers.current.add(controller);
+    const timeout = setTimeout(() => controller.abort(), 35000);
+    try {
+      await request(peer, "/api/agents/shortcuts/cancel", {
+        method: "POST", body: JSON.stringify({ runId }), signal: controller.signal,
+      });
+      if (!alive.current || controller.signal.aborted) return;
+      setStopRequested(runId);
+      setRunning((current) => current?.runId === runId ? { ...current, cancelled: true } : current);
+      setRevision((value) => value + 1);
+    } catch (failure) {
+      if (alive.current && !controller.signal.aborted) setError((failure as Error).message);
+    } finally {
+      clearTimeout(timeout);
+      controllers.current.delete(controller);
+      busy.current = false;
+      if (alive.current) setPending(false);
+    }
+  };
+  const stopping = !!running && (running.cancelled || stopRequested === running.runId);
   return (
     <details className="as-shortcuts">
       <summary>
@@ -148,12 +179,24 @@ export default function AgentShortcuts({
           replay stays within the agent’s current access.
         </p>
         <ErrorLine error={error} />
+        {running && (
+          <div className="as-card as-card-body" aria-live="polite">
+            <strong>{running.name} · {running.completedSteps}/{running.totalSteps} steps</strong>
+            <p className="ag-quiet">
+              {stopping ? "Stop requested. Waiting for the current action to finish; no further steps will start."
+                : "This shortcut is running. Stopping prevents further steps; completed actions stay applied."}
+            </p>
+            <button className="ag-secondary ag-small" disabled={pending || stopping} onClick={() => void stop()}>
+              {stopping ? "Stopping…" : "Stop shortcut"}
+            </button>
+          </div>
+        )}
         {shortcuts.map((item) => (
           <details className="as-card" key={item.id}>
             <summary>
               <strong>{item.name}</strong>
               <span>
-                {item.steps.length} steps ·{" "}
+                {item.steps.length} {item.steps.length === 1 ? "step" : "steps"} ·{" "}
                 {item.enabled ? "Available to agents" : "Disabled"}
               </span>
             </summary>
@@ -162,8 +205,8 @@ export default function AgentShortcuts({
                 {item.steps.map((step, index) => (
                   <li key={index}>
                     {stepWords(step)}
-                    {step.context?.title && (
-                      <small>In “{step.context.title}”</small>
+                    {step.context?.fingerprint && (
+                      <small>Recorded window and focus fingerprint</small>
                     )}
                   </li>
                 ))}
@@ -197,7 +240,7 @@ export default function AgentShortcuts({
         <p className="ag-quiet">
           Website steps use your browser’s existing sign-in session. Password
           fields stop for you to sign in. Other typed text is supplied by the
-          agent for each run and is never saved.
+          agent for each run. Saved steps use a window and focus fingerprint; window titles and form values are not stored.
         </p>
       </div>
     </details>

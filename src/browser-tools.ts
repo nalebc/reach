@@ -1,5 +1,5 @@
 import { peerFetch, request, type Peer } from "./api";
-import { agentRequestTimeout } from "../server/agent-transport.mjs";
+import { agentRequestTimeout, agentRequestError } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest, type BrowserAccess, type BrowserTool } from "../server/browser-tools.mjs";
 export type { BrowserAccess, BrowserTool } from "../server/browser-tools.mjs";
 
@@ -80,7 +80,7 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
       const response = await peerFetch(peer, plan.route, { ...options, cache: "no-store" });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw Object.assign(Error(body.error || "The shared screen could not be read."), { status: response.status });
+        throw agentRequestError(response.status, body);
       }
       return screenResult(response);
     }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : name.startsWith("reach_tool_") ? "/api/browser/tools/run" : name.startsWith("reach_saved_") || name === "reach_run_shortcut" ? "/api/browser/shortcuts/run" : "", "POST")),

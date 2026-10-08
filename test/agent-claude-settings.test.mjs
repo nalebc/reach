@@ -76,3 +76,17 @@ test("missing or mismatched native effort acknowledgements fail unless the actua
     assert.equal(native.effort, "medium");
   }
 });
+
+test("a desktop model switch reapplies the requested effort even when it matched the previous model", async (t) => {
+  let native;
+  const picked = [];
+  const result = await fixture(t, {
+    model: async (id, { model }) => { native.model = "claude-sonnet-5-5"; native.effort = "low"; return { model }; },
+    effort: async (id, { effort }) => { picked.push(effort); native.effort = effort; return { effort }; },
+  });
+  native = result.native;
+  assert.equal(native.effort, "medium");
+  assert.deepEqual(await result.sessions.model("claude", ID, { model: "sonnet", effort: "medium" }), { model: "sonnet", effort: "medium", applied: true });
+  assert.equal(native.effort, "medium", "model selection must not leave the new model's reset effort behind");
+  assert.deepEqual(picked, ["medium"]);
+});

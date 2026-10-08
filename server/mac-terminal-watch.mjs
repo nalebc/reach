@@ -125,11 +125,16 @@ export class MacTerminalWatch {
         if (!this.users) return;
         const delay = Math.min(60000, 1000 * 2 ** (this.restarts || 0));
         this.restarts = (this.restarts || 0) + 1;
-        clearTimeout(this.restartTimer);
-        this.restartTimer = setTimeout(() => {
-          if (this.users && !this.helper && !this.starting) this.starting = this.begin();
+        clearTimeout(this.timers.restart);
+        const timer = setTimeout(() => {
+          // end() also cancels a crash restart. A queued stale callback must
+          // not resurrect the watch after shutdown or replace a newer timer.
+          if (this.timers.restart !== timer) return;
+          delete this.timers.restart;
+          if (this.users && !this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
         }, delay);
-        this.restartTimer.unref?.();
+        this.timers.restart = timer;
+        timer.unref?.();
       });
       await this.refresh();
       if (this.helper !== helper) return;

@@ -61,7 +61,7 @@ before(async () => {
     };
     routes[`/api/sessions/${agent}/${id}/move`] = (init) => {
       mac.moves.push({ from: `${agent}:${id}`, body: JSON.parse(init.body) });
-      return { agent: JSON.parse(init.body).to, id: NEW };
+      return mac.moveReply !== undefined ? mac.moveReply : { agent: JSON.parse(init.body).to, id: NEW };
     };
   }
   dom = await startDom({ mobile: true, routes });
@@ -73,6 +73,7 @@ after(() => dom?.close());
 beforeEach(() => {
   dom.errors.length = 0;
   mac.moves = [];
+  mac.moveReply = undefined;
   mac.archives = [];
   // The hint has been seen enough unless a test says otherwise.
   dom.window.localStorage.setItem("reach.moveHint", "99");
@@ -430,3 +431,42 @@ test("a Claude chat the app doesn't have can't be archived, and says why", async
   assert.ok(row.disabled);
   assert.match(row.textContent, /Open it in the Claude app to archive it/);
 });
+
+
+for (const [label, reply] of [
+  ["a transcript instead of a destination", { session: codexChat(), items: said }],
+  ["a different destination app", { agent: "claude", id: NEW }],
+  ["an empty destination id", { agent: "codex", id: "" }],
+  ["a whitespace destination id", { agent: "codex", id: "   " }],
+  ["a non-string destination id", { agent: "codex", id: 42 }],
+]) {
+  test(`malformed move success (${label}) keeps the source chat visible without retry`, async () => {
+    mac.moveReply = reply;
+    const source = claudeChat(), selected = [];
+    mac.pages[`claude:${CLAUDE}`] = { session: source, items: said, before: null };
+    function NavigatingChat() {
+      const [session, select] = React.useState(source);
+      return React.createElement(AgentSessionView, {
+        peer, session, siblings: [], health: both(), logos: {}, onBack() {},
+        onSelect(next) { selected.push(next); select(next); },
+      });
+    }
+    views.push(await dom.render(React.createElement(NavigatingChat)));
+    await dom.waitFor(() => $(".as-user"));
+    await click(button("More"));
+    const item = await dom.waitFor(() => $(".as-details .move-item"));
+    await click(item); await click(item);
+    await dom.waitFor(() => mac.moves.length === 1);
+    await settle(100);
+    assert.deepEqual(selected, [], "invalid destination never reaches navigation");
+    assert.match(item.textContent, /could not confirm.*continued chat/i);
+    assert.match($(".as-scroll").textContent, /Build the login page[\s\S]*Added them/);
+    assert.ok($(".as-composer"), "source composer remains rendered");
+    assert.equal(item.disabled, false, "error leaves an explicit user action available");
+    await click($(".as-details-scrim"));
+    assert.equal($(".as-details"), null);
+    await settle(100);
+    assert.equal(mac.moves.length, 1, "a possibly completed mutation is never automatically retried");
+    assert.deepEqual(dom.errors, []);
+  });
+}

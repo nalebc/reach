@@ -1,8 +1,9 @@
 // Reach's two lines in your Tailscale policy, added for you. The policy file
 // is HuJSON (JSON with comments and trailing commas); Reach reads it without
-// losing a character, and only ever inserts: its guest tag in tagOwners and
+// losing comments or formatting. It inserts its guest tag in tagOwners and
 // one grant (guest devices reach Reach's port on your computers, nothing
-// else). Your rules, comments and formatting stay exactly as they were.
+// else). Explicit approval can also narrow one exact default wildcard grant
+// to tailnet members; other existing rules remain unchanged.
 
 const PUNCT = new Set(["{", "}", "[", "]", ":", ","]);
 

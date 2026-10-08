@@ -5,6 +5,9 @@ export function agentErrorDetails(error: unknown): {
   kind?: string;
   holder?: string;
   retryInMs?: number;
+  helperReason?: "timeout" | "process_exit" | "process_error" | "stdin_error" | "write_error" | "invalid_reply" | "oversized_reply" | "unexpected_reply" | "stopped";
+  helperOperation?: "rules" | "catalog" | "shot" | "front" | "act" | "open" | "unknown";
+  helperDispatch?: "completion_unknown" | "not_dispatched";
 };
 export function agentRequestError(
   status: number | undefined,
@@ -14,5 +17,8 @@ export function agentRequestError(
   kind?: string;
   holder?: string;
   retryInMs?: number;
+  helperReason?: "timeout" | "process_exit" | "process_error" | "stdin_error" | "write_error" | "invalid_reply" | "oversized_reply" | "unexpected_reply" | "stopped";
+  helperOperation?: "rules" | "catalog" | "shot" | "front" | "act" | "open" | "unknown";
+  helperDispatch?: "completion_unknown" | "not_dispatched";
   body: Record<string, unknown>;
 };

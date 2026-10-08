@@ -863,7 +863,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     roots: [...(client.policy?.roots || [])],
     browser: client.policy?.browser === true,
     ...(client.policy?.browser ? {
-      ...(client.policy.preset ? { preset: client.policy.preset, apps: (client.policy.apps || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })), ...(client.policy.write ? { write: true } : {}) } : {}),
+      ...(client.policy.preset ? { preset: client.policy.preset, apps: (client.policy.apps || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })), hidden: (client.policy.hidden || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })), ...(client.policy.write ? { write: true } : {}) } : {}),
       screen: client.policy.screen,
       terminalIds: [...(client.policy.terminalIds || [])],
       commandRequests: client.policy.commandRequests === true,

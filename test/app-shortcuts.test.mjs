@@ -333,3 +333,22 @@ test("an unavailable native icon falls back without breaking shortcuts", async (
   assert.deepEqual(await shortcuts.icon(installed[0].id), { icon: null });
   assert.equal((await shortcuts.list()).length, 3);
 });
+
+
+test("a renamed Codex app is identified by bundle id while a same-name unrelated app is not", async () => {
+  const launches = [];
+  const shortcuts = createAppShortcuts({
+    listApps: async () => [
+      { id: "/fixture/Renamed.app", name: "Renamed", bundleId: "com.openai.codex" },
+      { id: "/fixture/Codex.app", name: "Codex", bundleId: "example.unrelated" },
+    ],
+    launch: async id => launches.push(id), openCodex: async () => launches.push("new"),
+  });
+  const listed = await shortcuts.list();
+  assert.ok(listed.some(item => item.id === "codex-new"));
+  await shortcuts.run("codex-new");
+  await shortcuts.run("app:/fixture/Renamed.app");
+  assert.deepEqual(launches, ["new", "/fixture/Renamed.app"]);
+  const unrelated = createAppShortcuts({ listApps: async () => [{ id: "/fixture/Codex.app", name: "Codex", bundleId: "example.unrelated" }] });
+  assert.equal((await unrelated.list()).some(item => item.id === "codex-new"), false);
+});

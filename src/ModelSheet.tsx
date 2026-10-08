@@ -31,7 +31,9 @@ type Props = {
 // A chat may use a model the connection's picker no longer lists. Its real
 // selection must never turn into the catalog's default just by opening it.
 export const currentModel = (models: AgentModel[], model: string | null) =>
-  model ? models.find((m) => m.id === model) : models.find((m) => m.isDefault) || models[0];
+  model
+    ? models.find((m) => m.id === model) || models.find((m) => m.resolvedModel === model && !m.isDefault) || models.find((m) => m.resolvedModel === model)
+    : models.find((m) => m.isDefault) || models[0];
 export const modelDisplayName = (model: string) => {
   const parts = /^gpt-([\d.]+)-(.+)$/i.exec(model);
   return parts
@@ -88,7 +90,7 @@ function Mark({ checked, pending }: { checked: boolean; pending: boolean }) {
 }
 function ModelRows({ models, model, current, busy, onPick }: { models: AgentModel[]; model: string | null; current?: AgentModel; busy?: boolean; onPick: (m: AgentModel) => void }) {
   const [tapped, setTapped] = useState("");
-  const unlisted = model && !models.some((m) => m.id === model) ? model : null;
+  const unlisted = model && !models.some((m) => m.id === model || m.resolvedModel === model) ? model : null;
   return (
     <div className="ms-card" role="radiogroup" aria-label="Models">
       {unlisted && (

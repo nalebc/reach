@@ -21,7 +21,8 @@ import { codexArchive } from "./portable-history.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
 import { createCodexOwner, codexQueuedMessage } from "./codex-owner.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
-import { codexMode, questionKey, questionReply } from "./codex.mjs";
+import { codexMode } from "./codex.mjs";
+import { questionKey, questionReply, readQuestionReply } from "./codex-questions.mjs";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 import { computerWord } from "../computer-word.mjs";
@@ -311,11 +312,20 @@ export function createCodexLive({
   // text and a count of pictures, as the phone shows it.
   const readQueue = (id) => {
     const t = state(id);
+    if (t.queueReading) {
+      // Native cancellation can arrive while an older snapshot is on its
+      // way. Read again after it; never publish that known-stale result.
+      t.queueAgain = true;
+      return t.queueReading;
+    }
+    t.queueAgain = false;
     t.queueAt = now();
-    t.queueReading ||= daemon
+    t.queueReading = daemon
       .rpc("thread/queue/list", { threadId: id })
       .then((r) => {
-        const next = (r?.data || []).map((q) => ({
+        if (!Array.isArray(r?.data)) throw compatibilityError("codex", "queued messages");
+        if (t.queueAgain) return;
+        const next = r.data.map((q) => ({
           id: String(q.id),
           text: visibleUserText((q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
           images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length,
@@ -328,6 +338,7 @@ export function createCodexLive({
       .catch(() => {})
       .finally(() => {
         t.queueReading = null;
+        if (t.queueAgain) return readQueue(id);
       });
     return t.queueReading;
   };
@@ -462,12 +473,15 @@ export function createCodexLive({
     t.status = "waiting";
     changed(prompt.threadId);
   });
-  async function attach(threadId) {
+  async function attach(threadId, authorize = () => {}) {
+    authorize();
     if (subscribed.has(threadId)) return;
     // No approval/sandbox overrides: the thread keeps its own settings.
     const resumed = await daemon.rpc("thread/resume", { threadId, excludeTurns: true });
+    authorize();
     subscribed.add(threadId);
     await owner.claim(threadId, resumed);
+    authorize();
   }
   async function runningOnDisk(threadId) {
     const r = await daemon
@@ -553,82 +567,99 @@ export function createCodexLive({
     }
     changed(threadId);
   };
+  async function nativeQueue(id) {
+    const result = await daemon.rpc("thread/queue/list", { threadId: id });
+    if (!Array.isArray(result?.data)) throw compatibilityError("codex", "queued messages");
+    return result.data;
+  }
   async function nativeRequest(method, p, context = {}) {
     const id = p.conversationId, t = state(id);
-    if (!owner.has(id)) throw bad("Reach no longer owns this task.", 409);
+    // A request can lose its original connection/ownership while a native
+    // read is in flight. Check again immediately before every dispatch.
+    const authorize = () => {
+      context.authorize?.();
+      if (!owner.has(id)) throw bad("Reach no longer owns this task.", 409);
+    };
+    const write = (method, params) => { authorize(); return daemon.rpc(method, params); };
+    authorize();
     switch (method) {
       case "thread-follower-start-turn": {
         if (p.turnStart?.context?.responseItems?.length)
           throw bad("This context needs the Codex app's own writer.", 409);
         const request = p.turnStart?.request;
         if (!Array.isArray(request?.input) || !request.input.length) throw bad("Write a message.");
-        await attach(id);
-        const result = await daemon.rpc("turn/start", { ...request, threadId: id, clientUserMessageId: request.clientUserMessageId || randomUUID() });
+        await attach(id, authorize);
+        const result = await write("turn/start", { ...request, threadId: id, clientUserMessageId: request.clientUserMessageId || randomUUID() });
+        authorize();
         owner.settings(id, request);
         begin(id, result.turn);
         const queued = p.turnStart.context?.serverQueuedMessageId;
-        if (queued) await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
+        if (queued) await write("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
         return { result };
       }
       case "thread-follower-steer-turn": {
-        const latest = (await daemon.rpc("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
+        const latest = (await write("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
         if (!latest || finished(latest)) throw bad("No active turn to steer.", 409);
-        const result = await daemon.rpc("turn/steer", { threadId: id, expectedTurnId: latest.id, input: p.input, clientUserMessageId: p.clientUserMessageId || randomUUID(), ...(p.additionalContext ? { additionalContext: p.additionalContext } : {}) });
+        const result = await write("turn/steer", { threadId: id, expectedTurnId: latest.id, input: p.input, clientUserMessageId: p.clientUserMessageId || randomUUID(), ...(p.additionalContext ? { additionalContext: p.additionalContext } : {}) });
         const queued = p.restoreMessage?.serverQueuedMessageId;
-        if (queued) await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
+        if (queued) await write("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
         changed(id);
         return { result };
       }
       case "thread-follower-update-thread-settings": {
-        await attach(id);
+        await attach(id, authorize);
         const settings = p.threadSettings || {};
         if (p.activeTurnId) {
-          const active = (await daemon.rpc("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
+          const active = (await write("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
           if (!active || finished(active) || active.id !== p.activeTurnId) throw bad("That turn has finished.", 409);
           const selected = Object.fromEntries(["model", "effort", "serviceTier", "summary", "approvalsReviewer"].filter(k => k in settings).map(k => [k, settings[k]]));
-          await daemon.rpc("turn/settings/update", { ...selected, threadId: id, turnId: p.activeTurnId });
-        } else await daemon.rpc("thread/settings/update", { ...settings, threadId: id });
+          await write("turn/settings/update", { ...selected, threadId: id, turnId: p.activeTurnId });
+        } else await write("thread/settings/update", { ...settings, threadId: id });
+        authorize();
         owner.settings(id, settings); changed(id);
         return { applied: true };
       }
       case "thread-follower-update-daybreak":
-        await daemon.rpc("thread/metadata/update", { threadId: id, daybreakEnabled: p.daybreakEnabled });
+        await write("thread/metadata/update", { threadId: id, daybreakEnabled: p.daybreakEnabled });
         return { ok: true };
       case "thread-follower-edit-last-user-turn":
-        await api.editLast(id, { turnId: p.turnId, text: p.message });
+        await api.editLast(id, { turnId: p.turnId, text: p.message }, authorize);
         return { ok: true };
       case "thread-follower-compact-thread":
-        await api.call(id, "thread/compact/start");
+        await api.call(id, "thread/compact/start", {}, authorize);
         return { ok: true };
       case "thread-follower-interrupt-turn":
         if (p.expectedTurnId && t.turnId && p.expectedTurnId !== t.turnId) throw bad("That turn has finished.", 409);
-        await api.stop(id);
+        await api.stop(id, authorize);
         return { ok: true, interruptedTurnId: p.expectedTurnId || t.turnId || null };
       case "thread-follower-remove-queued-message": {
-        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const list = await nativeQueue(id);
         const q = list.find(q => q.id === p.messageId || q.clientUserMessageId === p.messageId);
         if (!q) return { removed: null };
-        await api.cancelQueued(id, q.id);
-        const cwd = (await daemon.rpc("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
+        await api.cancelQueued(id, q.id, authorize);
+        const cwd = (await write("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
         return { removed: codexQueuedMessage(q, cwd) };
       }
       case "thread-follower-clear-queued-messages": {
-        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
-        for (const q of list) await api.cancelQueued(id, q.id);
-        const cwd = (await daemon.rpc("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
+        const list = await nativeQueue(id);
+        for (const q of list) await api.cancelQueued(id, q.id, authorize);
+        const cwd = (await write("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
         return { messages: list.map(q => codexQueuedMessage(q, cwd)) };
       }
       case "thread-follower-set-queued-follow-ups-state": {
         const messages = p.state?.[id];
         if (!Array.isArray(messages) || messages.length > 100) throw bad("Invalid queued messages.");
-        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const list = await nativeQueue(id);
         const included = new Set(messages.map(m => m.id)), discarded = new Set(p.discardedMessageIds || []);
         if (included.size !== messages.length) throw bad("Queued messages must have unique ids.");
         // Validate the entire edit before deleting anything. A reorder keeps
         // the original input, including skills and attached model context.
+        const known = new Set([...(context.queueIds || []), ...(context.knownQueueIds || [])]);
         const prepared = messages.map(message => {
           if (typeof message.id !== "string" || !message.id) throw bad("Invalid queued message.");
           const existing = list.find(q => q.id === message.id || q.clientUserMessageId === message.id);
+          if (!existing && (known.has(message.id) || known.has(message.clientUserMessageId)))
+            throw bad("That message is no longer in the queue. Refresh the chat before editing it.", 409);
           const text = String(message.text ?? message.context?.prompt ?? "");
           if (text.length > 50000) throw bad("Messages can be up to 50,000 characters.");
           const attachments = message.context?.imageAttachments || [];
@@ -647,22 +678,22 @@ export function createCodexLive({
         const baseline = new Set(context.queueIds || []);
         for (const q of list) {
           if (discarded.has(q.id) || baseline.has(q.id) && !included.has(q.id))
-            await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: q.id });
+            await write("thread/queue/delete", { threadId: id, queuedSubmissionId: q.id });
         }
         const order = [];
         for (const { message, existing, input, unchanged } of prepared) {
           if (discarded.has(message.id)) continue;
           if (existing) {
-            if (!unchanged) await daemon.rpc("thread/queue/update", { threadId: id, queuedSubmissionId: existing.id, input });
+            if (!unchanged) await write("thread/queue/update", { threadId: id, queuedSubmissionId: existing.id, input });
             order.push(existing.id);
           } else {
-            const added = await daemon.rpc("thread/queue/add", { threadId: id, input, clientUserMessageId: message.clientUserMessageId || message.id || randomUUID() });
+            const added = await write("thread/queue/add", { threadId: id, input, clientUserMessageId: message.clientUserMessageId || message.id || randomUUID() });
             order.push(added.queuedSubmission.id);
           }
         }
-        const current = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const current = await nativeQueue(id);
         const liveIds = new Set(current.map(q => q.id));
-        await daemon.rpc("thread/queue/reorder", { threadId: id, queuedSubmissionIds: [...order.filter(q => liveIds.has(q)), ...current.map(q => q.id).filter(q => !order.includes(q))] });
+        await write("thread/queue/reorder", { threadId: id, queuedSubmissionIds: [...order.filter(q => liveIds.has(q)), ...current.map(q => q.id).filter(q => !order.includes(q))] });
         await readQueue(id); changed(id);
         return { ok: true };
       }
@@ -679,6 +710,7 @@ export function createCodexLive({
         if (prompt.attempted) throw bad("This answer was already attempted. Check Codex.", 409);
         const response = "decision" in p ? answerFor(prompt, { decision: p.decision }) : p.response;
         if (!object(response)) throw bad("Invalid answer.");
+        authorize();
         prompt.attempted = true;
         await prompt.resolve(response);
         t.prompts.delete(key); t.nativeRequests.delete(key);
@@ -715,16 +747,18 @@ export function createCodexLive({
     },
     // A command from "/" that works in the chat (compact, review): the thread
     // is taken up here as for a message, and what it starts shows as a turn.
-    async call(threadId, method, params = {}) {
+    async call(threadId, method, params = {}, authorize = () => {}) {
+      authorize();
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const t = state(threadId);
       if (subscribed.has(threadId) && t.status !== "idle") throw bad("Codex is working in this chat. Try again when it's done.", 409);
       try {
-        await attach(threadId);
+        await attach(threadId, authorize);
       } catch (e) {
         if (WRITER_HELD.test(e.message)) {
           // Compacting goes through the Codex app itself, as its /compact.
           if (method === "thread/compact/start") {
+            authorize();
             const done = await desktop.compact(threadId);
             state(threadId).items++;
             changed(threadId);
@@ -737,17 +771,20 @@ export function createCodexLive({
       t.error = null;
       let r;
       try {
+        authorize();
         r = await daemon.rpc(method, { threadId, ...params });
       } catch (e) {
-        release(threadId);
+        try { authorize(); release(threadId); } catch {}
         throw e;
       }
+      authorize();
       if (r?.turn) begin(threadId, r.turn);
       else {
         // Compact answers before its turn starts; let go if none comes.
         t.status = "running";
         changed(threadId);
         const timer = setTimeout(() => {
+          try { authorize(); } catch { return; }
           if (t.status === "running" && !t.turnId) {
             t.status = "idle";
             release(threadId);
@@ -909,8 +946,14 @@ export function createCodexLive({
       const moved = () => bad("Codex has moved on from this question. Send your answer as a message.", 409);
       let asked, cursor = null;
       const cursors = new Set();
+      const answered = new Set();
       do {
         const r = await daemon.rpc("thread/items/list", { threadId, limit: 100, sortDirection: "desc", ...(cursor ? { cursor } : {}) });
+        for (const entry of r?.data || []) {
+          const item = entry?.item;
+          if (item?.type !== "userMessage" || item.content?.length !== 1 || item.content[0]?.type !== "text") continue;
+          for (const reply of readQuestionReply(item.content[0].text) || []) answered.add(reply.questionItemId);
+        }
         asked = (r?.data || []).find((entry) => entry?.item?.id === itemId && entry.item.type === "agentMessage");
         cursor = r?.nextCursor;
         if (cursors.has(cursor)) break;
@@ -918,6 +961,7 @@ export function createCodexLive({
       } while (!asked && cursor);
       const questions = Array.isArray(asked?.item?.questions) ? asked.item.questions : [];
       if (!questions.length) throw bad("Unknown question.", 404);
+      if (questions.some((_, index) => answered.has(questionKey(itemId, index)))) throw bad("This question was already answered. Refresh the chat.", 409);
       if (asked.turnId !== turnId) throw moved();
       const replies = [];
       const indices = new Set();
@@ -933,7 +977,7 @@ export function createCodexLive({
       const t = state(threadId);
       t.questionReplies ||= new Map();
       const previous = t.questionReplies.get(itemId);
-      if (previous) throw bad(previous === "sending" ? "This answer is already being sent." : "Codex didn't confirm this answer. Check the Codex app before answering again.", 409);
+      if (previous) throw bad(previous === "sending" ? "This answer is already being sent." : previous === "answered" ? "This question was already answered. Refresh the chat." : "Codex didn't confirm this answer. Check the Codex app before answering again.", 409);
       t.questionReplies.set(itemId, "sending");
       try {
         if (subscribed.has(threadId) && t.turnId) {
@@ -951,6 +995,7 @@ export function createCodexLive({
             throw bad(`Codex couldn't take the answer now. Try again, or answer in the Codex app on your ${computerWord(platform)}.`, 409);
           }
         }
+        t.questionReplies.set(itemId, "answered");
         t.items++;
         changed(threadId);
         return { answered: true };
@@ -997,23 +1042,40 @@ export function createCodexLive({
     // its history goes in as what the model has seen, a batch per call; no
     // turn runs until a message is sent. Let go of at once, so the Codex app
     // can open it; one left empty by a failure is archived.
-    async forkHistory({ cwd, name, items, from, model: picked }) {
+    async forkHistory({ cwd, name, items, from, model: picked, authorize = () => {} }) {
+      authorize();
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-history-"));
       const file = path.join(dir, "history.jsonl");
-      const archive = codexArchive({ cwd, items, from, name });
-      await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
-      // Keep the source archive: it is a recovery copy, and never overwrite a live thread.
-      const model = await withModel(picked);
-      const result = await daemon.rpc("thread/fork", { threadId: archive.id, path: file, cwd, excludeTurns: true, ...(model ? { model } : {}) });
-      const threadId = result?.thread?.id;
-      if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
-      subscribed.add(threadId);
-      await owner.claim(threadId, result);
+      let dispatched = false;
       try {
-        if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
-      } finally { release(threadId); }
-      return { threadId };
+        authorize();
+        const archive = codexArchive({ cwd, items, from, name });
+        await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
+        authorize();
+        const model = await withModel(picked);
+        authorize();
+        // Keep the recovery archive once dispatch is possible: the target
+        // may exist even if the answer or the caller's authority is lost.
+        dispatched = true;
+        const result = await daemon.rpc("thread/fork", { threadId: archive.id, path: file, cwd, excludeTurns: true, ...(model ? { model } : {}) });
+        const threadId = result?.thread?.id;
+        if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
+        subscribed.add(threadId);
+        try {
+          authorize();
+          await owner.claim(threadId, result);
+          authorize();
+          if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
+          authorize();
+        } finally { release(threadId); }
+        return { threadId };
+      } catch (error) {
+        // Only this request's unsent local archive may be removed. Never
+        // delete a possible target or discard recovery after dispatch.
+        if (!dispatched) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
     },
     async fork({ cwd, name, batches = [], developerInstructions, model: picked }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
@@ -1038,7 +1100,8 @@ export function createCodexLive({
       release(threadId);
       return { threadId };
     },
-    async stop(threadId) {
+    async stop(threadId, authorize = () => {}) {
+      authorize();
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const t = state(threadId);
       let turnId = subscribed.has(threadId) ? t.turnId : null;
@@ -1049,6 +1112,7 @@ export function createCodexLive({
       }
       if (!turnId) throw bad("There is no running turn to stop.", 409);
       // Same request as the app. Never take over the thread or kill its process.
+      authorize();
       await daemon.rpc("turn/interrupt", { threadId, turnId });
       return { stopped: true };
     },
@@ -1065,8 +1129,15 @@ export function createCodexLive({
           try {
             await daemon.rpc("turn/steer", { threadId, expectedTurnId: t.turnId, input: q.input });
           } catch (e) {
-            // Not taken: back in line, so nothing is lost.
-            await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input: q.input }).catch(() => {});
+            if (e.uncertain) {
+              // The steer may already have run. Re-adding it would submit it
+              // a second time after this turn; leave the outcome for review.
+              t.error = uncertainDelivery("codex").message;
+              changed(threadId);
+            } else {
+              // Definitely refused: back in line, so nothing is lost.
+              await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input: q.input }).catch(() => {});
+            }
             await readQueue(threadId);
             throw e;
           }
@@ -1084,16 +1155,18 @@ export function createCodexLive({
     // The last message edited and sent again, as the Codex app's Edit: only
     // the most recent one, never while Codex works; its pictures kept. When
     // the Codex app holds the chat, the app does it.
-    async editLast(threadId, { turnId, text } = {}) {
+    async editLast(threadId, { turnId, text } = {}, authorize = () => {}) {
+      authorize();
       if (!UUID.test(threadId) || typeof turnId !== "string" || !turnId || turnId.length > 128) throw bad("Unknown message.", 404);
       const words = String(text ?? "");
       if (!words.trim()) throw bad("Write the message.");
       if (words.length > 50000) throw bad("Messages can be up to 50,000 characters.");
       if (await runningOnDisk(threadId)) throw bad("Codex is working. Stop it first to edit your last message.", 409);
       try {
-        await attach(threadId);
+        await attach(threadId, authorize);
       } catch (e) {
         if (!WRITER_HELD.test(e.message)) throw e;
+        authorize();
         const done = await desktop.editLast(threadId, { turnId, message: words });
         state(threadId).items++;
         changed(threadId);
@@ -1109,12 +1182,15 @@ export function createCodexLive({
           at < 0
             ? [{ type: "text", text: words, text_elements: [] }, ...content]
             : content.map((c, i) => (i === at ? { ...c, text: words, text_elements: [] } : c));
+        authorize();
         await daemon.rpc("thread/revert", { threadId, beforeTurnId: turnId });
+        authorize();
         const started = await daemon.rpc("turn/start", { threadId, input, clientUserMessageId: randomUUID() });
+        authorize();
         begin(threadId, started.turn);
         return { edited: true, turnId: started.turn?.id || null };
       } catch (e) {
-        release(threadId);
+        try { authorize(); release(threadId); } catch {}
         throw e;
       }
     },
@@ -1137,7 +1213,8 @@ export function createCodexLive({
       await readQueue(threadId);
       return { edited: true };
     },
-    async cancelQueued(threadId, messageId) {
+    async cancelQueued(threadId, messageId, authorize = () => {}) {
+      authorize();
       if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
         throw bad("Unknown queued message.", 404);
       // One Reach took back: dismissed here.
@@ -1147,6 +1224,7 @@ export function createCodexLive({
         changed(threadId);
         return { deleted: true };
       }
+      authorize();
       const result = await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId });
       if (result?.deleted !== true) throw bad("That message already left the queue.", 409);
       await readQueue(threadId);

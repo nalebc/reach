@@ -126,7 +126,7 @@ export function createAgentSessions({
     daemon,
   }),
   // Replies to Claude Code sessions (claude-host.mjs).
-  claudeHost = createClaudeHost({ locate: () => locateClaude() }),
+  claudeHost = createClaudeHost({ locate: () => locateClaude(), rewindFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-rewinds.json") }),
   // How long one look at the running claude processes is shared.
   liveMs = 2500,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
@@ -248,25 +248,26 @@ export function createAgentSessions({
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
   // never this Mac's app in tests.
-  claudeImports ??= createClaudeImports({
-    file: path.join(dataDir, "claude-imports.json"),
-    open,
-    resume: !process.env.NODE_TEST_CONTEXT,
-    held: (id) => claudeHost.drives(id),
-    frontmost: () => claudeFrontmost(),
-    describe: async (id) => {
-      const { session } = await claude.read(id, { limit: 1 });
-      return {
-        cwd: session.cwd,
-        title: session.title,
-        model: session.model,
-        mode: claudeHost.modeOf?.(id) || session.mode,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-      };
-    },
-    ...(process.env.NODE_TEST_CONTEXT ? { write: null, appRunning: async () => false } : {}),
-  });
+  claudeImports ??= process.env.NODE_TEST_CONTEXT
+    ? { add: async () => {}, close() {} }
+    : createClaudeImports({
+        file: path.join(dataDir, "claude-imports.json"),
+        open,
+        resume: true,
+        held: (id) => claudeHost.drives(id),
+        frontmost: () => claudeFrontmost(),
+        describe: async (id) => {
+          const { session } = await claude.read(id, { limit: 1 });
+          return {
+            cwd: session.cwd,
+            title: session.title,
+            model: session.model,
+            mode: claudeHost.modeOf?.(id) || session.mode,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+          };
+        },
+      });
   const adapters = { codex, claude, gemini };
   const fileSearch = createFileSearch();
   const adapter = (agent) => {
@@ -975,7 +976,8 @@ export function createAgentSessions({
     // same app (move.mjs): a new chat there with what this one's agent knows
     // so far (its latest summary, then the messages since); this one stays
     // as it is. Settings are the new app's own (never more permission).
-    async move(agent, id, { to } = {}) {
+    async move(agent, id, { to, authorize = () => {} } = {}) {
+      authorize();
       if (!movable().includes(agent)) adapter(agent);
       if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
       const key = `${agent}:${id}`;
@@ -984,6 +986,7 @@ export function createAgentSessions({
       try {
         if (agent === "codex") codexWhole.delete(id);
         const source = await history(agent, id);
+        authorize();
         const { session, items, memory } = source;
         const from = agentName(agent);
         const title = session.title || "";
@@ -991,6 +994,7 @@ export function createAgentSessions({
         // into Codex brings what it continues along again (a Claude Code
         // chat holds its copy in its own transcript).
         const carried = agent === "codex" && moves.into(agent, id) ? await shown(agent, id) : memory ? items.slice(memory.from) : items;
+        authorize();
         const turns = moveTurns(carried, { summary: memory?.summary || "", from });
         const note = handoff({ from, title, cwd: session.cwd });
         let target;
@@ -999,33 +1003,39 @@ export function createAgentSessions({
         // Resolve attachments before creating a target, so a missing image cannot
         // silently turn into a placeholder in an otherwise successful transfer.
         const complete = to === "codex" || to === "claude" ? (await shown(agent, id, null, new Set(), true)).map(item => ({ ...item })) : null;
+        authorize();
         if (complete) for (const item of complete) {
           if (!item.images) continue;
           const source = item.imageOrigin || { agent, id, item: item.id };
           item.imageData = [];
           for (let n = 0; n < item.images; n++) {
             const image = await adapter(source.agent).image(source.id, source.item, n);
+            authorize();
             item.imageData.push(`data:${image.type};base64,${image.data.toString("base64")}`);
           }
         }
+        authorize();
         if (to === "codex") {
           ({ threadId: target } = await codexLive.forkHistory({
             cwd: session.cwd,
             name: title,
             items: complete,
             from,
+            authorize,
           }));
           nativeHistory = true;
         } else if (to === "openclaw") {
-          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }));
+          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }, authorize));
         } else {
-          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "" }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
+          authorize();
           void claudeImports.add(target);
         }
         // A Claude Code target begins with the history written for it, which
         // Reach shows as the original chat's own messages instead.
+        authorize();
         moves.add({
           from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
           to: { agent: to, id: target, ...(nativeHistory ? { nativeHistory: true } : {}) },
@@ -1120,7 +1130,9 @@ export function createAgentSessions({
             if (result?.model !== name || result.unconfirmed)
               throw Object.assign(new Error("Claude didn't confirm the model change. Check the model in Claude before trying again."), { status: 409 });
           }
-          if (effort && effort !== session.effort) {
+          // Selecting a model may reset its effort. Reapply the requested
+          // level even when it matched the previous model's saved setting.
+          if (effort && (model && model !== session.model || effort !== session.effort)) {
             if (!claudeCompose.effort)
               throw Object.assign(new Error("Reach can't change the thinking level in this Claude app. Check its current settings."), { status: 409 });
             const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
@@ -1212,16 +1224,21 @@ export function createAgentSessions({
     },
     // Rewind to before a message, as Claude Code's own: what would change
     // first (dryRun), then the code, the conversation, or both.
-    async rewind(agent, id, { messageId, code = false, conversation = false, dryRun = false } = {}) {
+    async rewind(agent, id, { messageId, code = false, conversation = false, dryRun = false, authorize = () => {} } = {}) {
+      authorize();
       if (agent !== "claude") throw Object.assign(new Error("Codex rewinds from your last message: edit it."), { status: 409 });
       const holder = await holderOf(id);
+      authorize();
       if (holder && holder.where !== "reach") throw Object.assign(new Error(`Claude is running this chat in ${holder.where === "claude-app" ? "the Claude app" : "a terminal"}: rewind it there.`), { status: 409 });
       const { session } = await claude.read(id, { limit: 1 });
-      if (dryRun) return claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true });
+      authorize();
+      if (dryRun) return claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true, authorize });
       if (!code && !conversation) throw Object.assign(new Error("Choose what to rewind."), { status: 400 });
       const entry = conversation ? await claude.rewindPoint(id, messageId) : undefined;
+      authorize();
       if (conversation && entry === null) throw Object.assign(new Error("That's the chat's first message: start a new chat instead."), { status: 409 });
-      const files = code ? await claudeHost.rewindFiles(id, { messageId, cwd: session.cwd }) : null;
+      const files = code ? await claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, authorize }) : null;
+      authorize();
       if (files && !files.canRewind) throw Object.assign(new Error(files.error || "Claude Code can't restore the code from there."), { status: 409 });
       if (conversation) claudeHost.rewindConversation(id, entry);
       listChanged();
@@ -1431,6 +1448,7 @@ export function createAgentSessions({
       return {
         models: list.map((m) => ({
           id: m.value,
+          ...(typeof m.resolvedModel === "string" ? { resolvedModel: m.resolvedModel } : {}),
           name: m.value === "default" ? m.displayName : claudeModelName(m.resolvedModel) || m.displayName || m.value,
           description: m.description || "",
           efforts: m.supportsEffort ? m.supportedEffortLevels || [] : [],

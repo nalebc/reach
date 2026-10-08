@@ -66,6 +66,7 @@ function mock({
   saved = [shortcut],
   recording = null,
   run = { status: "completed", completedSteps: 1, totalSteps: 1 },
+  savedEnabled = true,
 } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
@@ -78,9 +79,9 @@ function mock({
       return reply({ shortcuts: saved, recording });
     if (route === "/api/browser/shortcuts/run") return reply(run);
     if (route === "/api/browser/shortcuts/save") {
-      saved = [shortcut];
+      saved = savedEnabled ? [shortcut] : [];
       recording = null;
-      return reply({ ...shortcut, enabled: true });
+      return reply({ ...shortcut, enabled: savedEnabled });
     }
     throw Error(`Unexpected route ${route}`);
   };
@@ -93,7 +94,7 @@ test("the agent sees task names as buttons and one click executes the saved tool
   await dom.waitFor(() => button(c, "Open Gmail"));
   assert.equal(button(c, "Open Gmail").disabled, false);
   button(c, "Open Gmail").click();
-  await dom.waitFor(() => c.textContent.includes("Executed 1 steps"));
+  await dom.waitFor(() => c.textContent.includes("Executed 1 step"));
   assert.deepEqual(
     calls.filter((call) => call.route.endsWith("/run")),
     [
@@ -337,4 +338,55 @@ test("tools with inputs require fresh values and a stopped run is never automati
     "a value for this run",
   );
   assert.equal(dom.errors.length, 0, dom.errors.join("\n"));
+});
+
+test("relearning an owner-disabled task explains why it remains unavailable", async () => {
+  const calls = mock({ saved: [], savedEnabled: false,
+    recording: { name: "Open Gmail", stepCount: 1, error: "" } });
+  const c = await render();
+  await dom.waitFor(() => button(c, "Save as tool"));
+  button(c, "Save as tool").click();
+  await dom.waitFor(() => calls.some(call => call.route.endsWith("/save")));
+  await settle();
+  assert.match(c.textContent, /owner.*disabled|disabled.*owner/i);
+  assert.equal(button(c, "Open Gmail"), undefined);
+  assert.doesNotMatch(c.textContent, /task is now a tool in the list/);
+  assert.equal(calls.filter(call => call.route.endsWith("/save")).length, 1);
+});
+
+for (const replacement of [false, true]) test(`pending saved replay ${replacement ? "is isolated on credential change" : "survives an ordinary parent render"}`, async () => {
+  let rerender, resolveRun, oldSignal;
+  let runs = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/browser") return reply(access);
+    if (route === "/api/browser/shortcuts") return reply({ shortcuts: [shortcut], recording: null });
+    assert.equal(route, "/api/browser/shortcuts/run");
+    runs++;
+    oldSignal = init.signal;
+    return new Promise((resolve, reject) => {
+      resolveRun = () => resolve(reply({ status: "completed", completedSteps: 1, totalSteps: 1 }));
+      init.signal.addEventListener("abort", () => reject(Error("old fixture request aborted")), { once: true });
+    });
+  };
+  function Parent() {
+    const [version, setVersion] = React.useState(0);
+    rerender = () => setVersion(n => n + 1);
+    return React.createElement(SavedAgentTools, { peer: { ...peer, token: replacement && version ? "replacement-token" : peer.token }, ended: () => {} });
+  }
+  const view = await dom.render(React.createElement(Parent)); views.add(view);
+  await dom.waitFor(() => button(view.container, "Open Gmail"));
+  dom.update(() => button(view.container, "Open Gmail").click());
+  await dom.waitFor(() => !!resolveRun);
+  dom.update(rerender);
+  await settle();
+  assert.equal(oldSignal.aborted, replacement, "only changed credentials end the bridge");
+  resolveRun();
+  if (!replacement) await dom.waitFor(() => view.container.textContent.includes("Executed 1 step"));
+  else {
+    await settle();
+    assert.doesNotMatch(view.container.textContent, /old fixture request aborted|Executed 1 step/);
+    assert.equal(button(view.container, "Open Gmail").disabled, false);
+  }
+  assert.equal(runs, 1, "rerender never repeats a dispatched action");
 });

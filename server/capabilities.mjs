@@ -15,12 +15,14 @@ export const BUNDLED_CODEX = [
 // entry point (codex-cli/codex-package.json); the known paths follow.
 export async function bundledCodexPaths({ readFile = fs.readFile } = {}) {
   const found = [];
+  // These describe macOS bundles even when discovery is tested on another OS.
+  const paths = path.posix;
   for (const app of APP_ROOTS) {
-    const dir = path.join(app, "Contents/Resources/codex-cli");
+    const dir = paths.join(app, "Contents/Resources/codex-cli");
     try {
-      const { entrypoint } = JSON.parse(await readFile(path.join(dir, "codex-package.json"), "utf8"));
-      const file = typeof entrypoint === "string" && path.resolve(dir, entrypoint);
-      if (file && !path.isAbsolute(entrypoint) && file.startsWith(dir + path.sep)) found.push(file);
+      const { entrypoint } = JSON.parse(await readFile(paths.join(dir, "codex-package.json"), "utf8"));
+      const file = typeof entrypoint === "string" && paths.resolve(dir, entrypoint);
+      if (file && !paths.isAbsolute(entrypoint) && file.startsWith(dir + paths.sep)) found.push(file);
     } catch {}
   }
   return [...new Set([...found, ...BUNDLED_CODEX])];

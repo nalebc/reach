@@ -40,7 +40,7 @@ export type AgentSession = {
   // Rewound: shown as it stood then, until the next message goes on from there.
   rewound?: boolean;
   // How full its context is (tokens), as its agent counts them.
-  context?: { used: number; window: number };
+  context?: { used: number; window: number | null };
   // Claude's todo list as it stands.
   todos?: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[];
   effort?: string | null;
@@ -107,6 +107,7 @@ export type SessionItem = {
   // Codex can ask these while continuing to work; answered into that turn,
   // each answer shown on its question (answer), as in the Codex app.
   questions?: { title: string; options: string[]; answer?: string }[];
+  replies?: { questionItemId: string; question: string; answer: string }[];
   at?: number;
   turnId?: string;
 };
@@ -197,6 +198,8 @@ export type OutboxMessage = {
 };
 export type AgentModel = {
   id: string;
+  // Claude catalog aliases resolve to the ID saved in native sessions.
+  resolvedModel?: string;
   name: string;
   description?: string;
   efforts: string[];
@@ -645,8 +648,17 @@ export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>
   request<SessionPage>(peer, `${sessionPath(s)}?limit=20`).then((page) => page.session?.asking ?? null);
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back.
-export const moveSession = (peer: Peer, s: { agent: string; id: string }, to: string) =>
-  post<{ agent: string; id: string }>(peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to });
+export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string) => {
+  const moved = await post<{ agent?: unknown; id?: unknown } | null>(
+    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to },
+  );
+  // A successful HTTP status does not prove the destination is usable. Keep
+  // the source open on incompatible replies; the server may already have
+  // created the continuation, so never retry this mutation automatically.
+  if (moved?.agent !== to || typeof moved.id !== "string" || !moved.id.trim())
+    throw new Error("Reach could not confirm the continued chat. Your source chat is still here. Check the destination app before trying again.");
+  return { agent: to, id: moved.id };
+};
 // Archived (or back) in the chat's own app: it leaves Reach's list and the
 // app's alike (Codex's archive; the Claude app's own record).
 export const archiveSession = (peer: Peer, s: { agent: string; id: string }, archived = true) =>

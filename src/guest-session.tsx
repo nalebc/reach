@@ -4,7 +4,16 @@ import { request, type Peer } from "./api";
 import "./guest-bar.css";
 
 // An invited guest's access in this tab: which computers, until when.
-export type GuestSession = { peers: Peer[]; expiresAt: number };
+export type GuestSession = { peers: Peer[]; expiresAt: number; invitationId?: string };
+// Provenance is only a comparison key, never a credential. Enrollment keys
+// and device names are deliberately excluded; link order does not matter.
+export async function guestInvitationId(invites: { origin: string; secret: string }[]): Promise<string | undefined> {
+  if (!invites.length) return undefined;
+  const canonical = invites.map(({ origin, secret }) => [origin, secret])
+    .sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(canonical)));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 export const storageKey = "reach.guest-session";
 // This tab's guest access: the computers it was invited to, and the deadline.
 export function savedGuestSession(): GuestSession | null {
@@ -22,7 +31,10 @@ export function savedGuestSession(): GuestSession | null {
       peers.every(
         (p) => typeof p?.token === "string" && typeof p?.url === "string",
       )
-      ? { peers, expiresAt: value.expiresAt }
+      ? { peers, expiresAt: value.expiresAt,
+          ...(typeof value.invitationId === "string" && /^[a-f0-9]{64}$/.test(value.invitationId)
+            ? { invitationId: value.invitationId } : {}),
+        }
       : null;
   } catch {
     return null;

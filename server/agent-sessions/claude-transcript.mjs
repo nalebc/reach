@@ -281,6 +281,14 @@ function slimEntry(e, results, maxOutput) {
       }
     }
     out.message = { content: kept, ...(e.message.model ? { model: e.message.model } : {}) };
+    // Keep bounded usage on its own entry so rewinds and alternate branches
+    // report the selected history, not whichever reply was last in the file.
+    if (e.type === "assistant" && !e.isSidechain && e.message.usage && e.message.model !== "<synthetic>") {
+      const u = e.message.usage;
+      const used = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens, u.output_tokens]
+        .reduce((sum, n) => sum + (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0), 0);
+      if (used > 0 && Number.isFinite(used)) out.context = { used, window: /\[1m\]/i.test(e.message.model || "") ? 1000000 : null };
+    }
   }
   return out;
 }
@@ -322,9 +330,6 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   let updatedAt = null;
   // Claude's usage as this session last saw it (see add()).
   let usage = null;
-  // How full its context is: the last reply's tokens, as Claude Code counts
-  // them (input, cache and output), and the model that replied.
-  let context = null;
   // Where each line holding pictures sits in the file (when the reader is
   // told where its text starts), so one picture can be read back alone.
   const imageLines = new Map();
@@ -359,11 +364,6 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
-        if (e.type === "assistant" && !e.isSidechain && e.message?.usage && e.message.model !== "<synthetic>") {
-          const u = e.message.usage;
-          const used = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens, u.output_tokens].reduce((a, n) => a + (Number(n) || 0), 0);
-          if (used > 0) context = { used, model: String(e.message.model || "") };
-        }
         if (e.type === "assistant" && e.timestamp) {
           const when = Date.parse(e.timestamp);
           const quota = e.quotaLimits;
@@ -406,7 +406,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       // What Claude remembers of the chat: its latest summary (written when it
       // compacted) and the items since (moving a chat carries this; move.mjs).
       let memory = null;
+      let context = null;
       for (const e of chain) {
+        if (e.context) context = e.context;
         const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
         if (e.type === "system" && e.subtype === "compact_boundary") {
           items.push({ id: e.uuid, role: "system", kind: "compaction", text: "Context compacted", at });
@@ -519,8 +521,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         ...(memory ? { memory } : {}),
         tasks: [...tasks.values()],
         todos: todoList(todoCalls),
-        // The window: a 1M-token model's when its id says so or it's past 200k.
-        ...(context ? { context: { used: context.used, window: /\[1m\]/.test(context.model) || context.used > 200000 ? 1000000 : 200000 } } : {}),
+        // Token usage cannot establish a model's capacity. Only explicit
+        // capacity metadata permits a percentage; otherwise show the count.
+        ...(context ? { context } : {}),
         items,
       };
     },

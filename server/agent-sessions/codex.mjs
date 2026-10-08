@@ -11,6 +11,8 @@ import { promisify } from "node:util";
 import { visibleUserText } from "./message-text.mjs";
 import { codexWaitingApproval } from "./codex-asks.mjs";
 import { codexUsage } from "./account-usage.mjs";
+import { readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
+export { questionKey, questionReply, readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -63,49 +65,6 @@ export function codexSession(thread) {
     // `codex exec` runs: nobody to ask while they run.
     ...(thread.source === "exec" || thread.originator === "codex_exec" ? { headless: true } : {}),
   };
-}
-
-// Answers to Codex's questions, as the Codex app sends them into the running
-// turn: a message of this one envelope, each question named by its message
-// and its place there (the app's own format).
-const REPLY_OPEN = "<send_user_message_question_reply>";
-const REPLY_CLOSE = "</send_user_message_question_reply>";
-export const questionKey = (itemId, index) => JSON.stringify(["request_user_input_async", itemId, index]);
-export const questionReply = (replies) => `${REPLY_OPEN}\n${JSON.stringify(replies)}\n${REPLY_CLOSE}`;
-export function readQuestionReply(text) {
-  const t = String(text ?? "").trim();
-  if (!t.startsWith(REPLY_OPEN) || !t.endsWith(REPLY_CLOSE)) return null;
-  try {
-    const parsed = JSON.parse(t.slice(REPLY_OPEN.length, -REPLY_CLOSE.length));
-    const list = Array.isArray(parsed) ? parsed : [parsed];
-    return list.length && list.every((r) => typeof r?.questionItemId === "string" && typeof r.question === "string" && typeof r.answer === "string")
-      ? list
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-// Answers shown on the questions they answer, as the Codex app shows them,
-// not as messages of their own; one whose question isn't on this page stays
-// a message (its answers in words).
-export function withQuestionReplies(items) {
-  const questions = new Map(items.filter((i) => i.questions?.length).map((i) => [i.id, i]));
-  return items.filter((item) => {
-    if (!item.replies) return true;
-    const unplaced = [];
-    for (const reply of item.replies) {
-      let key;
-      try { key = JSON.parse(reply.questionItemId); } catch {}
-      const q = Array.isArray(key) && key.length === 3 && key[0] === "request_user_input_async" && Number.isInteger(key[2]) && key[2] >= 0
-        ? questions.get(key[1])?.questions?.[key[2]] : null;
-      if (q) q.answer = reply.answer;
-      else unplaced.push(reply);
-    }
-    delete item.replies;
-    item.text = unplaced.map((r) => r.answer).join("\n\n");
-    return unplaced.length > 0;
-  });
 }
 
 export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = {}) {

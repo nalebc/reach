@@ -112,3 +112,28 @@ test("reply parsing preserves unmatched answers and rejects unrelated IDs and ma
   assert.equal(items[1].text, "Keep this");
   assert.equal(withQuestionReplies([userItem(nativeText)])[0].text, "Phone\n\nOffline mode");
 });
+
+test("a confirmed answer cannot be replayed from another stale view", async () => {
+  const { live, steers } = fixture();
+  await live.answerQuestions(threadId, body);
+  await assert.rejects(live.answerQuestions(threadId, body), /already answered/);
+  assert.equal(steers.length, 1);
+});
+
+test("native transcript answers block replay after a new Reach instance starts", async () => {
+  const replied = { turnId: "turn-1", item: { type: "userMessage", id: "native-reply", content: [{ type: "text", text: nativeText }] } };
+  const { live, steers } = fixture({ items: ({ cursor }) => cursor ? { data: [asked] } : { data: [replied], nextCursor: "older" } });
+  await assert.rejects(live.answerQuestions(threadId, body), /already answered/);
+  assert.equal(steers.length, 0);
+});
+
+test("answers on a newer page attach when the question page arrives, without mutating pages", () => {
+  const newer = [userItem(nativeText)], older = [codexItem(asked)];
+  const original = structuredClone([...older, ...newer]);
+  const newestPage = withQuestionReplies(newer);
+  assert.equal(newestPage[0].text, "Phone\n\nOffline mode", "an unmatched answer remains visible");
+  const combined = withQuestionReplies([...older, ...newestPage]);
+  assert.equal(combined.length, 1);
+  assert.deepEqual(combined[0].questions.map(q => q.answer), ["Phone", "Offline mode"]);
+  assert.deepEqual([...older, ...newer], original, "the raw pages remain available for later merges");
+});

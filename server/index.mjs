@@ -1507,7 +1507,15 @@ export async function createReach(overrides = {}) {
   });
   // One-time setup from your phone: the credential is checked with Tailscale
   // and kept on this computer only; it's never sent back.
+  const invitationOwner = (req) => {
+    const client = req.reauthorize();
+    if (client.kind !== "device" || !client.scopes.includes("admin"))
+      throw fail(403, "Only a paired owner device can create or set up invitations.");
+    return client;
+  };
   app.post("/api/guests/keys", async (req, res) => {
+    const authorize = () => invitationOwner(req);
+    authorize();
     if (!guestKeys)
       throw fail(404, "Invite links need Tailscale device approval here.");
     // The easy way: one access token (used once, never kept). Reach adds its
@@ -1518,6 +1526,7 @@ export async function createReach(overrides = {}) {
       const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
       const result = await guestKeys.setupFromAccessToken({
         accessToken: req.body.accessToken,
+        authorize,
         narrowDefaultWildcard: req.body.narrowDefaultWildcard === true,
         addresses: [
           v4(st?.Self),
@@ -1536,6 +1545,7 @@ export async function createReach(overrides = {}) {
     await guestKeys.setup({
       clientId: req.body?.clientId,
       clientSecret: req.body?.clientSecret,
+      authorize,
     });
     res.json({ configured: true });
   });
@@ -1543,6 +1553,8 @@ export async function createReach(overrides = {}) {
   // the computer holding the OAuth client. `clientIds`: its invitations here
   // (revoking one of them ends the key and the guest's device).
   app.post("/api/guests/key", async (req, res) => {
+    const authorize = () => invitationOwner(req);
+    authorize();
     if (!guestKeys?.configured())
       throw fail(
         409,
@@ -1567,6 +1579,7 @@ export async function createReach(overrides = {}) {
     const key = await guestKeys.createInvite({
       ttlSeconds: ttl,
       keySeconds,
+      authorize,
       clientIds: (Array.isArray(req.body.clientIds) ? req.body.clientIds : [])
         .filter((id) => typeof id === "string" && guests.has(id))
         .slice(0, 10),
@@ -1602,6 +1615,8 @@ export async function createReach(overrides = {}) {
     res.status(201).json(grant);
   });
   app.post("/api/guests", async (req, res) => {
+    const authorize = () => invitationOwner(req);
+    authorize();
     const grant = auth.inviteGuest(req.body);
     // With an invite key, the guest needs no Tailscale account or app.
     let key;
@@ -1615,6 +1630,7 @@ export async function createReach(overrides = {}) {
         key = await guestKeys.createInvite({
           ttlSeconds: req.body.ttlSeconds,
           clientIds: [grant.clientId],
+          authorize,
         });
       } catch (error) {
         auth.revoke(grant.clientId);
@@ -1811,7 +1827,7 @@ export async function createReach(overrides = {}) {
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
       throw fail(403, "Stay inside the selected shared folder.");
     const root = client.agentRoots[index];
-    if (validateBrowserRoot(root) !== root)
+    if (validateBrowserRoot(root, { policy: client.policy }) !== root)
       throw fail(403, "The shared folder changed. Create a new invitation.");
     const scope = JSON.stringify([client.id, client.expiresAt, client.policy, client.agentRoots]);
     const check = () => {
@@ -1925,7 +1941,8 @@ export async function createReach(overrides = {}) {
       "Access-Control-Expose-Headers",
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
-    res.download(file, path.basename(file));
+    const sharedRoot = (current.agentRoots || config.roots)[Number(req.query.root ?? 0)];
+    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
   });
   // A short-lived link to one file, for the browser's own download manager.
   app.get("/api/files/download-link", async (req, res) => {
@@ -2709,7 +2726,7 @@ export async function createReach(overrides = {}) {
   // Continue a chat with the other agent, as if forked in the same app
   // (agent-sessions/move.mjs); the new chat's address comes back.
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
-    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to });
+    const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize() });
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
@@ -2758,6 +2775,7 @@ export async function createReach(overrides = {}) {
       code: b.code === true,
       conversation: b.conversation === true,
       dryRun: b.dryRun === true,
+      authorize: () => req.reauthorize(),
     });
     if (!b.dryRun) record("session", `Rewound a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
@@ -3366,7 +3384,8 @@ export async function createReach(overrides = {}) {
     const cleanup = () => { clearInterval(timer); identityCleanup(); };
     res.once("close", cleanup); res.once("finish", cleanup);
     res.setHeader("Cache-Control", "no-store");
-    res.download(file, path.basename(file));
+    const sharedRoot = (client.agentRoots || config.roots)[Number(link.root ?? 0)];
+    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
   });
   serveBuild(app, express, dist);
   // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,

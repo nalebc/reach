@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { House, MessageSquare, Terminal, FolderOpen } from "lucide-react";
 import EverythingChat from "../../src/EverythingChat";
+import { NotificationCenter, type NotificationItem } from "../../src/Notifications";
 import Screen from "../../src/Screen";
 import MobileNav from "../../src/MobileNav";
 import LivingLogo from "../../src/LivingLogo";
@@ -171,6 +172,14 @@ const clawSessions = [
   { key: "agent:work:discord:notes", title: "Ideas for the next release", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 172800000, model: "Claude Sonnet", status: "idle" },
 ];
 const clawMessages: Record<string, any[]> = {};
+let moveNumber = 0;
+const queuePreview = new URLSearchParams(location.search).get("queue") === "1";
+let queueVersion = 1;
+let sampleQueue = [
+  { id: "queue-one", text: "Review the whole queued message. ".repeat(9), images: 0, via: "app" },
+  { id: "queue-two", text: "Then check the Files preview", images: 0, via: "app" },
+  { id: "queue-three", text: "Finally summarize the test results", images: 0, via: "app" },
+];
 const clawJobs = [
   { id: "morning", name: "Morning briefing", agentId: "main", enabled: true, schedule: "Daily at 08:00 · America/Vancouver", nextRunAt: Date.now() + 3600000, lastRunAt: Date.now() - 86400000, status: "ok", error: "", delivery: "telegram" },
   { id: "weekly", name: "Weekly project review", agentId: "work", enabled: false, schedule: "Every Monday at 09:00 · America/Vancouver", nextRunAt: 0, lastRunAt: Date.now() - 172800000, status: "ok", error: "", delivery: "No external delivery" },
@@ -191,7 +200,85 @@ window.fetch = async (input, init = {}) => {
   );
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
+  if (path === "/api/notifications") {
+    const items: NotificationItem[] = sessions.filter(s => !s.archived && s.status === "waiting").flatMap(s =>
+      s.prompts?.length ? s.prompts.map(p => ({
+        id: `chat:${s.agent}:${s.id}:prompt:${p.id}`, revision: "sample-revision",
+        source: s.agent, icon: s.agent, title: p.title, detail: s.title,
+        kind: p.kind, ...(p.command ? { prompt: { command: p.command, cwd: p.cwd } } : {}),
+        actions: p.kind === "command" ? [
+          { id: "deny", label: "Deny", tone: "deny" },
+          { id: "approve", label: "Allow once", tone: "primary" },
+        ] : [],
+        target: { page: "sessions", agent: s.agent, id: s.id, prompt: p.id },
+      })) : [{
+        id: `chat:${s.agent}:${s.id}`, source: s.agent, icon: s.agent,
+        title: "Your answer is needed", detail: s.title,
+        target: { page: "sessions", agent: s.agent, id: s.id },
+      }]);
+    return Response.json({ items, unavailable: [] });
+  }
+  const notificationAction = path.match(/^\/api\/notifications\/([^/]+)\/actions$/);
+  if (notificationAction && init.method === "POST") {
+    const id = decodeURIComponent(notificationAction[1]);
+    const s = sessions.find(s => id.startsWith(`chat:${s.agent}:${s.id}:`));
+    if (s) { s.prompts = []; s.status = "idle"; }
+    window.dispatchEvent(new Event("reach-preview-refresh"));
+    return Response.json({ ok: true });
+  }
+  if (path === "/api/push") return Response.json({ key: "sample-only" });
   let data: unknown = {};
+  const queue = path.match(/^\/api\/sessions\/(codex|claude)\/([^/]+)\/queue\/(.+)$/);
+  if (queuePreview && queue && init.method === "POST") {
+    const body = JSON.parse(String(init.body || "{}"));
+    if (queue[3] === "order") {
+      sampleQueue = body.order.map((id: string) => sampleQueue.find(row => row.id === id)).filter(Boolean);
+    } else {
+      const [id, action] = queue[3].split("/");
+      if (action === "edit") sampleQueue = sampleQueue.map(row => row.id === id ? { ...row, text: body.text } : row);
+      if (action === "cancel" || action === "now") sampleQueue = sampleQueue.filter(row => row.id !== id);
+    }
+    queueVersion++;
+    return Response.json({ edited: true, reordered: true, deleted: true, hurried: true });
+  }
+  const move = path.match(/^\/api\/sessions\/(codex|claude|openclaw)\/([^/]+)\/move$/);
+  if (move && init.method === "POST") {
+    const from = move[1], sourceId = decodeURIComponent(move[2]);
+    const { to } = JSON.parse(String(init.body || "{}"));
+    const source = from === "openclaw"
+      ? clawSessions.find(s => s.key === sourceId)
+      : sessions.find(s => s.agent === from && s.id === sourceId);
+    if (!source) return Response.json({ error: "Sample chat not found." }, { status: 404 });
+    if (!["codex", "claude", "openclaw"].includes(to) || to === from)
+      return Response.json({ error: "Choose another sample app." }, { status: 400 });
+    const at = Date.now(), id = to === "openclaw"
+      ? `agent:main:reach:sample-move-${++moveNumber}` : `sample-move-${++moveNumber}`;
+    const history = from === "openclaw" ? clawMessages[sourceId] || [] : transcript[sourceId] || [];
+    if (to === "openclaw") {
+      clawSessions.unshift({ key: id, title: source.title, agentId: "main", channel: "webchat",
+        canDeliver: false, updatedAt: at, model: "Claude Sonnet", status: "idle" });
+      clawMessages[id] = history.map(item => ({ ...item, tool: false }));
+    } else {
+      const original = from === "openclaw" ? null : source as AgentSession;
+      const destination: AgentSession = {
+        ...sessions[0], ...original, agent: to, id, title: source.title,
+        status: "idle", held: "reach", prompts: undefined, asking: undefined, live: undefined,
+        model: to === "claude" ? "claude-opus-5-5" : "sample",
+        createdAt: at, updatedAt: at, movedTo: undefined,
+        movedFrom: { agent: from, id: sourceId, title: source.title },
+      };
+      sessions = [destination, ...sessions];
+      transcript[id] = [...history.map(item => ({ ...item, kind: item.kind || "text" })),
+        { id: `moved:${id}`, role: "system", kind: "notice", at,
+          text: `Continued with ${to === "claude" ? "Claude Code" : "Codex"} · earlier messages are from ${from}` }];
+    }
+    if (from !== "openclaw") {
+      const original = source as AgentSession;
+      original.movedTo = [...original.movedTo || [], { agent: to, id, at }];
+    }
+    window.dispatchEvent(new Event("reach-preview-refresh"));
+    return Response.json({ agent: to, id });
+  }
   if (path.startsWith("/api/sessions/openclaw/")) {
     const body = init.body ? JSON.parse(String(init.body)) : {};
     const key = url.searchParams.get("key") || body.key;
@@ -211,7 +298,12 @@ window.fetch = async (input, init = {}) => {
       if (init.method === "POST") { const job = clawJobs.find(j => j.id === body.id); if (job) job.enabled = body.enabled; return Response.json({ enabled: body.enabled }); }
       return Response.json({ jobs: clawJobs.filter(j => j.name.toLowerCase().includes((url.searchParams.get("query") || "").toLowerCase())), canEdit: true, hasMore: false });
     }
-    if (path.endsWith("/settings")) { Object.assign(session, { title: body.label, model: body.model || "Claude Sonnet", thinkingLevel: body.thinkingLevel || "" }); return Response.json({ saved: true }); }
+    if (path.endsWith("/settings")) {
+      if (body.label !== undefined) session.title = body.label;
+      if (body.model !== undefined) session.model = body.model || "Claude Sonnet";
+      if (body.thinkingLevel !== undefined) Object.assign(session, { thinkingLevel: body.thinkingLevel || "" });
+      return Response.json({ saved: true });
+    }
     const items = clawMessages[session.key] ||= [
       { id: "claw-user", role: "user", text: "Can you help me organize this?", tool: false },
       { id: "claw-assistant", role: "assistant", text: "Of course. We can pick up right where we left off.\n\nThis conversation is connected to **" + (session.channel === "webchat" ? "OpenClaw" : session.channel) + "**. What would you like to work on next?", tool: false },
@@ -308,7 +400,8 @@ window.fetch = async (input, init = {}) => {
       if (path.endsWith("/live")) {
         await new Promise((r) => setTimeout(r, 800));
         data = {
-          version: 1,
+          version: queueVersion,
+          ...(queuePreview && s.id === "sample-0" ? { outbox: sampleQueue } : {}),
           status: s.status,
           prompts: s.prompts || [],
           streaming: "",
@@ -356,8 +449,9 @@ window.fetch = async (input, init = {}) => {
   return Response.json(data);
 };
 function Preview() {
-  const [, redraw] = useState(0);
+  const [version, redraw] = useState(0);
   const [screenPrompt, setScreenPrompt] = useState<MacPrompt | null>(null);
+  const [target, setTarget] = useState<{ agent: AgentSession["agent"] | "openclaw"; id: string } | null>(null);
   useEffect(() => {
     const refresh = () => redraw((n) => n + 1);
     window.addEventListener("reach-preview-refresh", refresh);
@@ -374,6 +468,9 @@ function Preview() {
     recheck: () => {},
   } as AgentFeed;
   return (
+    <NotificationCenter peer={peer} enabled changes={String(version)} onOpen={({ target }) => {
+      if (target.agent && target.id) setTarget({ agent: target.agent as AgentSession["agent"] | "openclaw", id: target.id });
+    }}>
     <div className="app-shell">
       <aside className="sidebar" aria-label="Workspace navigation">
         <LivingLogo />
@@ -395,7 +492,7 @@ function Preview() {
               toast={() => {}} onChanged={() => {}}
               ask={{ ...screenPrompt, open: macPrompts.some((p) => p.id === screenPrompt.id) }}
               onAskDone={() => setScreenPrompt(null)} />
-          </> : <EverythingChat peer={peer} feed={feed} showOnScreen={setScreenPrompt} onScreen={() => setScreenPrompt({ id: "sample-question-screen", kind: "privacy", title: "Answer in Claude", detail: "", app: "Claude" })} />}
+          </> : <EverythingChat peer={peer} feed={feed} target={target} onTargetOpened={() => setTarget(null)} showOnScreen={setScreenPrompt} onScreen={() => setScreenPrompt({ id: "sample-question-screen", kind: "privacy", title: "Answer in Claude", detail: "", app: "Claude" })} />}
         </main>
       </div>
       <MobileNav
@@ -411,6 +508,7 @@ function Preview() {
         ]}
       />
     </div>
+    </NotificationCenter>
   );
 }
 createRoot(document.getElementById("root")!).render(<Preview />);

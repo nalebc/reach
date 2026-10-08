@@ -147,6 +147,13 @@ func terminalLikeApp(_ bundleId: String, _ name: String, _ path: String, _ rules
 func compile(_ sources: [String]) -> [NSRegularExpression] {
   sources.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 }
+// A compositor surface cannot identify the app that would receive a pointer
+// event. Keep its protected-title checks, but require an actual app identity.
+func pointerIdentityKnown(_ bundleId: String, _ name: String, _ path: String, _ pid: Int) -> Bool {
+  guard pid > 0, !bundleId.isEmpty || !path.isEmpty else { return false }
+  let name = lower(name).trimmingCharacters(in: .whitespacesAndNewlines)
+  return !["window server", "windowserver"].contains(name) && lower(bundleId) != "com.apple.windowserver"
+}
 // Command shortcuts can paste clipboard content or invoke autofill. A secure
 // field accepts navigation only; entering its content belongs to the owner.
 func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
@@ -272,12 +279,23 @@ func windowAt(_ point: CGPoint) -> Seen? {
 // Center reach everywhere. Full control may use them (except where Reach is);
 // the Apps preset may not.
 let systemSurfaces = ["com.apple.dock", "com.apple.spotlight", "com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.notificationcenterui", "com.apple.windowmanager"]
-func checkPoint(_ point: CGPoint, _ rules: Rules) throws {
-  if let window = windowAt(point) {
+func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? = nil) throws -> Seen {
+  // Match the same identified observations that authorize the input. A
+  // compositor without an app identity is not a conflicting target; Full
+  // control still needs a verified AX app (Apps keeps its stricter refusal).
+  func checkExpected(_ target: Seen) throws {
+    guard let expected, pointerIdentityKnown(target.bundle, target.name, target.path, Int(target.pid)) else { return }
+    if target.bundle != expected["bundle"] || (expected["title"] != nil && !target.title.isEmpty && String(target.title.prefix(200)) != expected["title"]) {
+      try refuse("The shortcut's target window changed. Look again before continuing.", "retry")
+    }
+  }
+  let window = windowAt(point)
+  if let window {
     if rules.mode == "apps", systemSurfaces.contains(lower(window.bundle)) || window.bundle.isEmpty { try refuse(notAllowedReason) }
     if systemSurfaces.contains(lower(window.bundle)) {
       if mentionsReach(window.title, rules) { try refuse(reachReason) }
     } else { try check(window, rules) }
+    try checkExpected(window)
   }
   var element: AXUIElement?
   if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element) == .success, let element {
@@ -292,7 +310,10 @@ func checkPoint(_ point: CGPoint, _ rules: Rules) throws {
       try check(s, rules)
       if s.title.isEmpty, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
     }
+    if pointerIdentityKnown(s.bundle, s.name, s.path, Int(s.pid)) { try checkExpected(s); return s }
   }
+  if let window, pointerIdentityKnown(window.bundle, window.name, window.path, Int(window.pid)) { return window }
+  try refuse("The app at this point could not be verified. Look again and retry.", "retry")
 }
 // Any of this app's windows is Reach's (Reach's terminal, a Reach tab).
 func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool {
@@ -359,11 +380,6 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
       try refuse("Choose a point on the screen.", "invalid")
     }
     let p = CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
-    if let expected, let window = windowAt(p) {
-      if window.bundle != expected["bundle"] || (expected["title"] != nil && !window.title.isEmpty && String(window.title.prefix(200)) != expected["title"]) {
-        try refuse("The shortcut's target window changed. Look again before continuing.", "retry")
-      }
-    }
     return p
   }
   if let expected {
@@ -376,11 +392,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
   switch type {
   case "move":
     let p = try point("x", "y")
-    try checkPoint(p, rules)
+    _ = try checkPoint(p, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
   case "click":
     let p = try point("x", "y")
-    try checkPoint(p, rules)
+    let target = try checkPoint(p, rules, expected)
     let right = action["button"] as? String == "right"
     let count = max(1, min(3, action["count"] as? Int ?? 1))
     let (down, up): (CGEventType, CGEventType) = right ? (.rightMouseDown, .rightMouseUp) : (.leftMouseDown, .leftMouseUp)
@@ -394,11 +410,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
         post(event)
       }
     }
-    if let window = windowAt(p) { reached = ["app": window.name, "bundle": window.bundle] }
+    reached = ["app": target.name, "bundle": target.bundle]
   case "drag":
     let from = try point("x", "y"), to = try point("toX", "toY")
-    try checkPoint(from, rules)
-    try checkPoint(to, rules)
+    _ = try checkPoint(from, rules, expected)
+    _ = try checkPoint(to, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left))
     for step in 1...12 {
       let t = CGFloat(step) / 12
@@ -408,7 +424,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     post(CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left))
   case "scroll":
     let p = try point("x", "y")
-    try checkPoint(p, rules)
+    _ = try checkPoint(p, rules, expected)
     let dx = Int32(max(-2000, min(2000, action["dx"] as? Double ?? 0)))
     let dy = Int32(max(-2000, min(2000, action["dy"] as? Double ?? 0)))
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))

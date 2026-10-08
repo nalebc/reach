@@ -903,6 +903,37 @@ test("a named native permission profile stays selected for the next Reach turn",
   assert.equal(params.approvalsReviewer, "user");
 });
 
+test("a Codex external cancellation during an in-flight queue read is not lost", async () => {
+  let finishFirst, reads = 0;
+  const daemon = fakeDaemon({ "thread/queue/list": () => ++reads === 1
+    ? new Promise(resolve => { finishFirst = resolve; })
+    : { data: [] } });
+  const live = createCodexLive({ daemon, queues: true });
+  live.view(T);
+  daemon.emit("thread/queue/changed", { threadId: T });
+  finishFirst({ data: [{ id: "cancelled", input: [{ type: "text", text: "Gone in Codex" }] }] });
+  await settled();
+  assert.equal(reads, 2, "a change during the read requires a fresh native snapshot");
+  assert.equal(live.view(T).outbox, undefined);
+  assert.ok(daemon.methods().every(method => method === "thread/queue/list"), "never replay cancelled input");
+});
+
+test("an unreadable Codex queue is not mistaken for cancellation and never resends", async () => {
+  let response = { data: [{ id: "kept", input: [{ type: "text", text: "Still unknown" }] }] };
+  const daemon = fakeDaemon({ "thread/queue/list": () => response });
+  const live = createCodexLive({ daemon, queues: true });
+  live.view(T);
+  await settled();
+  const expected = live.view(T).outbox;
+  for (const unknown of [new Error("connection gone"), {}]) {
+    response = unknown;
+    daemon.emit("thread/queue/changed", { threadId: T });
+    await settled();
+    assert.deepEqual(live.view(T).outbox, expected);
+  }
+  assert.ok(daemon.methods().every(method => method === "thread/queue/list"));
+});
+
 function nativeOwnerFixture(daemon, options = {}) {
   let request, rawRequests;
   const owned = new Set(), settings = [];
@@ -911,7 +942,7 @@ function nativeOwnerFixture(daemon, options = {}) {
     return {
       async claim(id) { owned.add(id); }, has: id => owned.has(id), hasFollowers: () => true,
       settings: (id, value) => settings.push([id, value]), update() {}, forget: id => owned.delete(id),
-      reset: () => owned.clear(), close() {},
+      reset: () => owned.clear(), close: () => owned.clear(),
     };
   } });
   return { live, request: (...args) => request(...args), rawRequests: (...args) => rawRequests(...args), settings };
@@ -994,3 +1025,83 @@ test("an unavailable desktop owner lets Reach resume the original task", async (
   assert.equal(daemon.calls.find(([m]) => m === "thread/resume")[1].threadId, T);
   assert.equal(daemon.methods().some(m => /thread\/(start|fork)/.test(m)), false);
 });
+
+test("a stale native queue edit cannot recreate a message cancelled elsewhere", async () => {
+  const daemon = fakeDaemon({
+    "turn/start": { turn: { id: "t1" } },
+    "thread/queue/list": { data: [] },
+    "thread/queue/add": { queuedSubmission: { id: "resurrected" } },
+  });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "fixture" });
+  for (const context of [{ queueIds: ["cancelled"] }, { queueIds: [], knownQueueIds: ["cancelled"] }]) {
+    const before = daemon.calls.length;
+    await assert.rejects(f.request("thread-follower-set-queued-follow-ups-state", {
+      conversationId: T, state: { [T]: [{ id: "cancelled", text: "Do not replay" }] },
+    }, context), /no longer.*queue|queued message.*changed/i);
+    assert.ok(daemon.calls.slice(before).every(([m]) => m === "thread/queue/list"), "refuse stale state before any queue mutation");
+  }
+});
+
+
+test("native follower queue writes refuse unavailable inventory before mutating anything", async () => {
+  for (const response of [{}, { data: null }]) {
+    const daemon = fakeDaemon({ "turn/start": { turn: { id: "t1" } }, "thread/queue/list": response });
+    const f = nativeOwnerFixture(daemon);
+    await f.live.send(T, { text: "fixture" });
+    for (const [method, params] of [
+      ["thread-follower-set-queued-follow-ups-state", { state: { [T]: [{ id: "new", text: "Do not invent inventory" }] } }],
+      ["thread-follower-clear-queued-messages", {}],
+      ["thread-follower-remove-queued-message", { messageId: "old" }],
+    ]) {
+      const before = daemon.calls.length;
+      await assert.rejects(f.request(method, { conversationId: T, ...params }));
+      assert.ok(daemon.calls.slice(before).every(([m]) => m === "thread/queue/list"));
+    }
+  }
+});
+
+test("native desktop answers the same Reach-owned question without adding a message or queue entry", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "t1" } } });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "Ask a synthetic question" });
+  const pending = daemon.ask(43, "item/tool/requestUserInput", {
+    threadId: T, turnId: "t1", itemId: "question-tool",
+    questions: [{ id: "color", question: "Which color?", options: [{ label: "Blue" }, { label: "Amber" }] }],
+  });
+  const response = { answers: { color: { answers: ["Blue"] } } };
+  const before = daemon.calls.length;
+  await f.request("thread-follower-submit-user-input", { conversationId: T, requestId: 43, response });
+  assert.deepEqual(await pending, response);
+  assert.deepEqual(f.rawRequests(T), []);
+  assert.equal(f.live.view(T).prompts.length, 0);
+  assert.deepEqual(daemon.calls.slice(before), [], "resolve the original request, never start, steer or queue a message");
+  await assert.rejects(f.request("thread-follower-submit-user-input", { conversationId: T, requestId: 43, response }), /already answered/);
+});
+
+
+for (const operation of ["steer", "queue"])
+  for (const loss of ["close", "connection"])
+    test(`native ${operation} stops when ${loss} changes during its authoritative read`, async () => {
+      let finish, read;
+      const reading = new Promise(resolve => { read = resolve; });
+      const readMethod = operation === "steer" ? "thread/turns/list" : "thread/queue/list";
+      const daemon = fakeDaemon({
+        "turn/start": { turn: { id: "t1" } },
+        [readMethod]: () => new Promise(resolve => { finish = resolve; read(); }),
+      });
+      const f = nativeOwnerFixture(daemon);
+      await f.live.send(T, { text: "fixture" });
+      let connected = true;
+      const context = { authorize() { if (!connected) throw Error("Original connection ended"); } };
+      const before = daemon.calls.length;
+      const work = f.request(operation === "steer" ? "thread-follower-steer-turn" : "thread-follower-clear-queued-messages", {
+        conversationId: T, input: [{ type: "text", text: "Do not dispatch" }],
+      }, context);
+      await reading;
+      if (loss === "close") f.live.close();
+      else connected = false;
+      finish({ data: operation === "steer" ? [{ id: "t1", status: "running" }] : [{ id: "q1", input: [{ type: "text", text: "queued" }] }] });
+      await assert.rejects(work, /no longer owns|connection ended/i);
+      assert.deepEqual(daemon.calls.slice(before).map(([m]) => m), [readMethod], "no side effect after the awaited read");
+    });

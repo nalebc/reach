@@ -19,7 +19,7 @@ test("each preset issues its fixed scopes and reports itself to the agent", priv
   assert.equal(view.body.preset, "full");
   assert.equal(view.body.presetName, "Full control");
   assert.deepEqual([view.body.screen, view.body.control, view.body.shell, view.body.write, view.body.open], [true, true, true, true, true]);
-  assert.deepEqual(view.body.roots.map((root) => root.path), [f.home, "/"], "Full control without chosen folders sees every shared folder");
+  assert.deepEqual(view.body.roots.map((root) => root.path), [f.home, f.shared], "Full control without chosen folders sees every shared folder");
   assert.equal(view.body.screenNotice, undefined);
   assert.equal(view.body.restrictedTerminal, undefined);
 
@@ -76,8 +76,7 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   await refused({ preset: "apps", apps: [{ id: "/Applications/Nope.app" }] }, 400, /installed on this Mac/);
   await refused({ preset: "apps" }, 400, /at least one app/);
   await refused({ preset: "files" }, 400, /at least one folder/);
-  await refused({ preset: "files", folders: [{ root: 1, path: "" }] }, 403, /Home, system/, undefined);
-  assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 1, path: "" }] })).status, 201, "Read only may watch any shared folder");
+  assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 1, path: "" }] })).status, 201, "Read only may share an ordinary configured folder");
   await refused({ preset: "full", screen: "apps" }, 400, /unsupported fields/);
   await refused({ preset: "full", restrictedTerminal: true }, 400, /unsupported fields/);
   await refused({ preset: "full", folders: [{ root: 0, path: "Missing" }] }, 404, /no longer available/);
@@ -90,6 +89,25 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   // Only the owner invites.
   const files = await f.join({ preset: "files", folders: [{ root: 0, path: "Desktop/Project" }] });
   assert.equal((await files.as("/api/agents/browser-invitations", { method: "POST", body: { name: "X", ttlSeconds: 600, preset: "readonly" } })).status, 403);
+});
+
+test("preset admission refuses filesystem roots before issuing access", privateIngressTest, async (t) => {
+  // This owner configuration deliberately includes the filesystem root; no
+  // operation reads it, and no preset may obtain access to it.
+  const f = await fixture(t, { includeSystemRoot: true });
+  const before = f.reach.auth.list().map(client => client.id);
+  for (const preset of ["full", "readonly", "files"]) {
+    const explicit = await f.invite({ preset, folders: [{ root: 1, path: "" }] });
+    assert.equal(explicit.status, 403, `${preset}: ${JSON.stringify(explicit.body)}`);
+    assert.match(explicit.body.error, /system/i);
+  }
+  for (const preset of ["full", "readonly"]) {
+    const defaults = await f.invite({ preset });
+    assert.equal(defaults.status, 403, `${preset}: ${JSON.stringify(defaults.body)}`);
+  }
+  assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "refused roots create no credentials");
+  // An explicit valid project can still be selected from that configuration.
+  assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 0, path: "Desktop/Project" }] })).status, 201);
 });
 
 test("screen presets need the Mac's screen helpers; Files does not", privateIngressTest, async (t) => {
@@ -174,7 +192,7 @@ test("changing a preset later keeps the same rules and can only narrow its hold 
   assert.ok(result.body.scopes.includes("browser:write"));
   result = await change(files.created.clientId, { preset: "readonly", folders: [] });
   assert.equal(result.status, 200, JSON.stringify(result.body));
-  assert.deepEqual(result.body.policy.roots, [f.home, "/"], "Read only without chosen folders sees every shared folder");
+  assert.deepEqual(result.body.policy.roots, [f.home, f.shared], "Read only without chosen folders sees every shared folder");
   assert.equal((await change(files.created.clientId, { preset: "files", folders: [] })).status, 400);
   assert.equal((await change(files.created.clientId, { preset: "apps", apps: [{ id: chrome.id }], folders: [] })).status, 409);
 });

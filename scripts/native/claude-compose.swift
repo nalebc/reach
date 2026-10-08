@@ -11,6 +11,15 @@
 import AppKit
 import ApplicationServices
 
+// JSON may carry the confirmed draft plus eight unconfirmed 32k drafts
+// and a 50k message. Even six-byte JSON escapes fit below this finite cap
+// (under 2.1 MiB); title/session/image paths are separate arguments.
+let composerPayloadLimit = 4_194_304
+func decodeComposerPayload(_ data: Data) -> [String: Any]? {
+  guard data.count <= composerPayloadLimit else { return nil }
+  return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+}
+
 func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
   var v: AnyObject?
   return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
@@ -160,7 +169,7 @@ struct ClaudeCompose {
     var payload: [String: Any] = [:]
     if args.contains("--json") {
       let data = FileHandle.standardInput.readDataToEndOfFile()
-      guard data.count <= 524288, let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      guard let decoded = decodeComposerPayload(data)
       else { out(["error": "Invalid composer request."]) }
       payload = decoded
     }

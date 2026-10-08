@@ -141,7 +141,17 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
   };
   for (const raw of segments(command)) {
     const piece = raw.replace(/\\ /g, " ");
-    const tokens = words(raw.replace(/^\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s*/g, ""));
+    // Keep quoted assignment values intact. Removing text only up to its
+    // first space could turn data such as NOTE='From: Reach Audit' into a
+    // supposed Reach command. Embedded command segments are still checked.
+    const tokens = words(raw);
+    while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) {
+      const assignment = tokens.shift().text;
+      // A later command may use this value as a path. Quote delimiters do
+      // not make the literal path safe, including concatenated quoted parts.
+      const value = assignment.slice(assignment.indexOf("=") + 1).replace(/["']/g, "");
+      if (protectedPath(value)) return "That path holds your passwords, keys or Reach's own files.";
+    }
     if (!tokens.length) continue;
     let index = 0;
     while (index < tokens.length && (skipPrefixes.has(baseName(tokens[index].text)) || /^-/.test(tokens[index].text))) index++;

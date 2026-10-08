@@ -55,7 +55,9 @@ test("accepts on every invited computer at once, even if one refuses", async () 
   assert.deepEqual(ready, {
     peers: [{ id: "dev-mac-a.t.ts.net", name: "mac-a", platform: "darwin", url: A, token: "token-mac-a.t.ts.net" }],
     expiresAt: 2000000000000,
+    invitationId: ready.invitationId,
   });
+  assert.match(ready.invitationId, /^[a-f0-9]{64}$/);
   assert.deepEqual(savedGuestSession(), ready, "kept for this tab");
   // In guest mode the app's computers are the guest's, never saved for good.
   setGuestPeers(ready.peers);
@@ -77,5 +79,29 @@ test("when every computer refuses: says why and offers to try again", async () =
 });
 
 test("rendering stayed clean (no React warnings)", () => {
+  assert.deepEqual(dom.errors, []);
+});
+
+
+test("each delivered person's credential is saved before another computer responds, even after unmount", async () => {
+  dom.window.sessionStorage.clear();
+  dom.window.sessionStorage.setItem("reach.guest-session", JSON.stringify({
+    peers: [{ id: "old", url: "https://old.tail.ts.net", token: "old-unrelated" }], expiresAt: Date.now() + 600000,
+  }));
+  const replies = new Map();
+  globalThis.fetch = dom.window.fetch = async url => new Promise(resolve => replies.set(new URL(url).origin, resolve));
+  let ready = 0;
+  const view = await dom.render(React.createElement(GuestAccess, { onReady() { ready++; } }));
+  await dom.waitFor(() => replies.size === 2);
+  const expiresAt = Date.now() + 600000;
+  const response = (id, token) => Response.json({ token, clientId: id, expiresAt, device: { id, name: id, platform: "darwin" } });
+  replies.get(A)(response("new-a", "new-token-a"));
+  await dom.waitFor(() => savedGuestSession()?.peers.some(p => p.token === "new-token-a"));
+  assert.equal(ready, 0, "the other computer is still pending");
+  await view.unmount();
+  replies.get(B)(response("new-b", "new-token-b"));
+  await dom.waitFor(() => savedGuestSession()?.peers.length === 2);
+  assert.deepEqual(savedGuestSession().peers.map(p => p.token).sort(), ["new-token-a", "new-token-b"]);
+  assert.equal(ready, 0);
   assert.deepEqual(dom.errors, []);
 });

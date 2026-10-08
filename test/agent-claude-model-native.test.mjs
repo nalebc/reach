@@ -24,6 +24,18 @@ test("native Claude setting controls bind each action and acknowledgement to one
     assert.doesNotMatch(settings, /AXUIElementPerformAction|postToPid/);
     // Exercise the real parser and action gate without opening or controlling an app.
     const checks = `
+// Exercise the production JSON decoder, with JS's worst-case escaping,
+// without entering ClaudeCompose.main or touching any Accessibility API.
+let payloadData = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+assert(payloadData.count > 524288)
+let payload = decodeComposerPayload(payloadData)!
+assert((payload["expected"] as? [String])?.count == 9)
+assert((payload["text"] as? String)?.count == 50000)
+let exactLimit = Data("{}".utf8) + Data(repeating: 32, count: composerPayloadLimit - 2)
+assert(decodeComposerPayload(exactLimit) != nil)
+assert(decodeComposerPayload(exactLimit + Data([32])) == nil)
+assert(decodeComposerPayload(Data("[]".utf8)) == nil)
+assert(decodeComposerPayload(Data("{".utf8)) == nil)
 assert(modelOf("Model: Sonnet 5.5") == "Sonnet 5.5")
 assert(modelOf("Opus 5.5 Medium") == "Opus 5.5")
 assert(modelOf("Effort: High") == nil)
@@ -57,7 +69,13 @@ print("native-chip-contract-ok")
     const binary = path.join(folder, "chips");
     await fs.writeFile(file, source.split("@main\nstruct ClaudeCompose")[0] + checks);
     await exec("xcrun", ["swiftc", "-module-cache-path", path.join(folder, "cache"), file, "-o", binary], { timeout: 90_000, maxBuffer: 1024 * 1024 });
-    const { stdout } = await exec(binary, [], { timeout: 5000 });
+    const payloadFile = path.join(folder, "payload.json");
+    await fs.writeFile(payloadFile, JSON.stringify({
+      text: "\u0001".repeat(40000) + "x".repeat(10000),
+      expected: Array.from({ length: 9 }, (_, i) => String.fromCharCode(i + 16).repeat(32000)),
+      draft: false,
+    }));
+    const { stdout } = await exec(binary, [payloadFile], { timeout: 5000 });
     assert.equal(stdout.trim(), "native-chip-contract-ok");
   } finally {
     await fs.rm(folder, { recursive: true, force: true });

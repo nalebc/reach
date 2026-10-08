@@ -1088,6 +1088,7 @@ export default function OpenClawSpace({
           apps={apps}
           logos={logos}
           value="openclaw"
+          pending={{ ...appPending, openclaw: Math.max(appPending.openclaw || 0, data?.approvals.length || 0) }}
           onChange={onAppChange}
           onNew={onNew}
           onRefresh={() => {
@@ -1106,7 +1107,7 @@ export default function OpenClawSpace({
             logos={logos}
             value="openclaw"
             onChange={onAppChange}
-            pending={{ ...appPending, openclaw: data?.approvals.length || 0 }}
+            pending={{ ...appPending, openclaw: Math.max(appPending.openclaw || 0, data?.approvals.length || 0) }}
           />
           <label className="chat-list-search">
             <Search size={16} />

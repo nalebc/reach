@@ -512,6 +512,25 @@
   background: #ffffff08;
   color: var(--text-strong, #eef4ef);
 }
+.chat-app-rail .chat-app-token.has-pending {
+  border-color: color-mix(in srgb, #d6c38f 35%, var(--border));
+  background: color-mix(in srgb, #d6c38f 7%, var(--panel));
+}
+.chat-app-attention { display: none; }
+.chat-attention-count {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d6c38f;
+  color: #252419;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .chat-app-symbol {
   position: relative;
   display: flex;
@@ -616,7 +635,7 @@
   .chat-heading-actions { display: none; }
   .chat-mobile-header {
     display: grid;
-    grid-template-columns: 48px 1fr 48px;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
     align-items: center;
     min-height: 52px;
   }
@@ -632,6 +651,15 @@
     color: var(--chat-ink);
   }
   .chat-mobile-header > :last-child { justify-self: end; }
+  .chat-mobile-tools { display: flex; align-items: center; gap: 3px; }
+  .chat-mobile-tools .notification-bell {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+    min-height: 42px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+  }
   .chat-swipe-hint {
     display: block;
     margin-top: 4px;
@@ -643,16 +671,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
-    padding: 8px;
+    padding: 8px 5px;
     border: 0;
     background: none;
     color: var(--chat-ink);
     font-size: 17px;
     font-weight: 600;
   }
-  .chat-app-current > svg { color: var(--chat-muted); }
+  .chat-current-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-app-current > svg { flex: none; color: var(--chat-muted); }
+  .chat-app-current.has-pending { color: #d6c38f; }
   .chat-app-current .chat-header-mascot { width: 24px; height: 32px; }
   .chat-mobile-menu {
     position: absolute;
@@ -686,6 +716,33 @@
   .chat-mobile-menu button:hover,
   .chat-mobile-menu button[aria-checked="true"] { background: color-mix(in srgb, var(--lime) 12%, var(--panel)); }
   .chat-mobile-menu small { margin-left: auto; color: var(--chat-muted); }
+  .chat-mobile-app-menu .chat-attention-count { margin-left: auto; }
+  .chat-mobile-app-menu button.has-pending {
+    box-shadow: inset 2px 0 #d6c38f;
+  }
+  .chat-app-attention {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 14px;
+    color: var(--chat-muted);
+    font-size: 11px;
+  }
+  .chat-app-attention > span { margin-right: 2px; }
+  .chat-app-attention button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    max-width: 100%;
+    padding: 6px 9px;
+    border: 1px solid color-mix(in srgb, #d6c38f 30%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, #d6c38f 6%, var(--panel));
+    color: var(--chat-ink);
+    font-size: 12px;
+  }
   .chat-library-tools {
     display: none;
     margin: 0;

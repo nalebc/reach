@@ -27,15 +27,17 @@ const browserBundle = (value) =>
   /^(com\.apple\.Safari|com\.google\.Chrome|org\.chromium|org\.mozilla\.firefox|com\.microsoft\.edgemac|com\.brave\.Browser|company\.thebrowser|com\.operasoftware|com\.vivaldi|com\.duckduckgo|com\.kagi)(\.|$)/i.test(
     value,
   );
-// Authentication URLs, tokens and typed form values never become saved text.
-const website = (value) => {
+// Only an origin landing page is inferred as reusable navigation. Paths may
+// contain authentication tokens too; keep them as per-run inputs.
+const website = (value, originOnly = true) => {
   try {
     const url = new URL(value);
     return url.protocol === "https:" &&
       !url.username &&
       !url.password &&
       !url.search &&
-      !url.hash
+      !url.hash &&
+      (!originOnly || url.pathname === "/")
       ? url.href
       : null;
   } catch {
@@ -47,13 +49,32 @@ const addressKey = (action) =>
   action.key === "l" &&
   action.modifiers?.length === 1 &&
   ["cmd", "command", "meta"].includes(action.modifiers[0]);
-const context = (front) => ({
+const printableKey = (action) =>
+  action.type === "key" &&
+  typeof action.key === "string" &&
+  (action.key.length === 1 || action.key === "space") &&
+  !action.modifiers?.some((mod) =>
+    ["cmd", "command", "meta", "control", "ctrl"].includes(mod),
+  );
+const rawContext = (front) => ({
   bundle: front.bundle,
   title: front.title || "",
   layout: front.layout || "",
 });
-const matches = (front, expected) =>
-  Object.entries(expected).every(([key, value]) => front[key] === value);
+const context = (front) => ({
+  bundle: front.bundle,
+  fingerprint: crypto
+    .createHash("sha256")
+    .update(JSON.stringify([front.title || "", front.layout || ""]))
+    .digest("hex"),
+});
+const matches = (front, expected) => {
+  const current = context(front);
+  return (
+    current.bundle === expected.bundle &&
+    current.fingerprint === expected.fingerprint
+  );
+};
 
 /** Local recipes, captured only while explicitly recording. No images, passwords or literal form text. */
 export function createAgentShortcuts({
@@ -72,7 +93,14 @@ export function createAgentShortcuts({
     saved = JSON.parse(raw);
     if (!Array.isArray(saved) || saved.length > MAX_SHORTCUTS)
       throw fail(500, "Saved shortcuts could not be read.");
-    for (const item of saved) validateSaved(item);
+    // Migrate prior recordings without losing IDs, steps or owner disable state.
+    // Sensitive literal material becomes a fingerprint or a required run input.
+    for (const item of saved) validateSaved(item, { legacy: true });
+    const migrated = saved.map(migrateSaved);
+    for (const item of migrated) validateSaved(item);
+    if (JSON.stringify(migrated) !== JSON.stringify(saved))
+      atomicJson(file, migrated);
+    saved = migrated;
   }
   const recordings = new Map(),
     inputs = new Set();
@@ -185,6 +213,11 @@ export function createAgentShortcuts({
               409,
               "Recording stopped at a protected field or a different app. Discard and record each app separately.",
             );
+          if (printableKey(action))
+            throw fail(
+              409,
+              "Recording stopped before saving a text-producing key. Use Type for form text so it becomes an input, then record again.",
+            );
           const before = entry.steps.at(-2),
             last = entry.steps.at(-1);
           // Turn Cmd+L, a plain HTTPS address, Enter into a stable navigation step.
@@ -293,7 +326,7 @@ export function createAgentShortcuts({
                   name: item.name,
                   stepCount: item.steps.length,
                   inputs: item.steps
-                    .filter((step) => step.type === "input")
+                    .filter((step) => step.input)
                     .map((step) => step.input),
                   apps: [
                     ...new Set(
@@ -402,12 +435,14 @@ export function createAgentShortcuts({
       persist(
         saved.map((item) => (item.id === id ? { ...item, enabled } : item)),
       );
+      if (!enabled && running?.id === id) running.cancelled = true;
       return { ok: true };
     },
     remove(id) {
       if (!saved.some((item) => item.id === id))
         throw fail(404, "Shortcut not found.");
       persist(saved.filter((item) => item.id !== id));
+      if (running?.id === id) running.cancelled = true;
       return { ok: true };
     },
     async run(authorize, id, values = {}) {
@@ -425,7 +460,7 @@ export function createAgentShortcuts({
           "This shortcut is disabled or outside this agent's app access.",
         );
       const required = item.steps
-        .filter((step) => step.type === "input")
+        .filter((step) => step.input)
         .map((step) => step.input);
       if (
         !isPlainRecord(values) ||
@@ -467,6 +502,7 @@ export function createAgentShortcuts({
         return latest;
       };
       running = {
+        runId: crypto.randomUUID(),
         id,
         clientId: client.id,
         name: item.name,
@@ -497,7 +533,7 @@ export function createAgentShortcuts({
               { bundle: step.bundle },
             );
             await act(
-              { type: "type", text: step.url },
+              { type: "type", text: step.url ?? values[step.input] },
               { bundle: step.bundle },
             );
             await act({ type: "key", key: "enter" }, { bundle: step.bundle });
@@ -520,7 +556,7 @@ export function createAgentShortcuts({
               step.type === "input"
                 ? { type: "type", text: values[step.input] }
                 : step.action,
-              step.context,
+              rawContext(front),
             );
           }
           current();
@@ -547,7 +583,12 @@ export function createAgentShortcuts({
         running = null;
       }
     },
-    cancel() {
+    cancel(runId) {
+      if (runId !== undefined && running?.runId !== runId)
+        throw fail(
+          409,
+          "That shortcut run ended or changed. Refresh before stopping the current run.",
+        );
       if (running) running.cancelled = true;
       return { ok: true };
     },
@@ -564,7 +605,33 @@ export function createAgentShortcuts({
   return api;
 }
 
-function validateSaved(item) {
+function migrateSaved(item) {
+  const result = copy(item);
+  let nextInput = Math.max(
+    0,
+    ...result.steps.map((step) =>
+      /^text[1-9][0-9]*$/.test(step.input || "")
+        ? Number(step.input.slice(4))
+        : 0,
+    ),
+  );
+  const input = () => `text${++nextInput}`;
+  for (const step of result.steps) {
+    if (step.context && !step.context.fingerprint)
+      step.context = context(step.context);
+    if (step.type === "website" && step.url && !website(step.url)) {
+      delete step.url;
+      step.input = input();
+    } else if (step.type === "action" && printableKey(step.action)) {
+      delete step.action;
+      step.type = "input";
+      step.input = input();
+    }
+  }
+  return result;
+}
+
+function validateSaved(item, { legacy = false } = {}) {
   if (
     !isPlainRecord(item) ||
     !identifier(item.id) ||
@@ -598,19 +665,34 @@ function validateSaved(item) {
         throw fail(400, "Invalid shortcut app.");
       if (
         step.type === "website" &&
-        (!browserBundle(step.bundle) || website(step.url) !== step.url)
+        (!browserBundle(step.bundle) ||
+          (step.input !== undefined
+            ? step.url !== undefined ||
+              !/^text[1-9][0-9]*$/.test(step.input) ||
+              inputs.has(step.input)
+            : typeof step.url !== "string" ||
+              website(step.url, !legacy) !== step.url))
       )
         throw fail(400, "Invalid shortcut website.");
+      if (step.input) inputs.add(step.input);
     } else {
       if (
         !isPlainRecord(step.context) ||
         !text(step.context.bundle, 200) ||
-        typeof step.context.title !== "string" ||
-        step.context.title.length > 200 ||
-        typeof step.context.layout !== "string" ||
-        step.context.layout.length > 2000 ||
-        Object.keys(step.context).some(
-          (key) => !["bundle", "title", "layout"].includes(key),
+        !(
+          (typeof step.context.fingerprint === "string" &&
+            /^[a-f0-9]{64}$/.test(step.context.fingerprint) &&
+            Object.keys(step.context).every((key) =>
+              ["bundle", "fingerprint"].includes(key),
+            )) ||
+          (legacy &&
+            typeof step.context.title === "string" &&
+            step.context.title.length <= 200 &&
+            typeof step.context.layout === "string" &&
+            step.context.layout.length <= 2000 &&
+            Object.keys(step.context).every((key) =>
+              ["bundle", "title", "layout"].includes(key),
+            ))
         )
       )
         throw fail(400, "Invalid shortcut context.");
@@ -619,7 +701,10 @@ function validateSaved(item) {
           throw fail(400, "Invalid shortcut text input.");
         inputs.add(step.input);
       } else if (step.type === "action") {
-        if (step.action?.type === "type")
+        if (
+          step.action?.type === "type" ||
+          (!legacy && printableKey(step.action || {}))
+        )
           throw fail(
             400,
             "Saved text must be supplied when the shortcut runs.",
@@ -631,7 +716,7 @@ function validateSaved(item) {
       step.type === "open"
         ? ["type", "app", "bundle", "delayMs"]
         : step.type === "website"
-          ? ["type", "app", "bundle", "url", "delayMs"]
+          ? ["type", "app", "bundle", "url", "input", "delayMs"]
           : step.type === "input"
             ? ["type", "input", "context", "delayMs"]
             : ["type", "action", "context", "delayMs"];
@@ -671,8 +756,10 @@ export function agentShortcutRoutes(app, { shortcuts }) {
   });
   app.post("/api/agents/shortcuts/cancel", (req, res) => {
     owner(req);
-    body(req, []);
-    res.json(shortcuts.cancel());
+    const input = body(req, ["runId"]);
+    if (typeof input.runId !== "string" || !/^[a-f0-9-]{36}$/.test(input.runId))
+      throw fail(400, "Choose the current shortcut run to stop.");
+    res.json(shortcuts.cancel(input.runId));
   });
   app.get("/api/browser/shortcuts", (req, res) => {
     if (Object.keys(req.query).some((key) => key !== "query"))

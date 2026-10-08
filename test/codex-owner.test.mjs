@@ -37,7 +37,7 @@ async function until(check) {
   }
   assert.fail("IPC event did not arrive");
 }
-function fixture(t) {
+function fixture(t, { handleRequest } = {}) {
   const packets = [],
     calls = [];
   const daemon = {
@@ -89,6 +89,7 @@ function fixture(t) {
     checkEndpoint: async () => {},
     handleRequest: async (...args) => {
       actions.push(args);
+      if (handleRequest) return handleRequest(...args);
       return { result: { turn: { id: "next-turn" } } };
     },
     connect() {
@@ -124,7 +125,8 @@ function fixture(t) {
     ws.emit("data", f.subarray(0, 2));
     ws.emit("data", f.subarray(2));
   };
-  return { owner, daemon, packets, calls, actions, send };
+  return { owner, daemon, packets, calls, actions, send, disconnect: () => ws.destroy(),
+    closing: (property) => { ws[property] = property === "writable" ? false : true; } };
 }
 
 test("Reach announces only its actual native writers and compatible local requests", async (t) => {
@@ -294,3 +296,87 @@ test("complete native history drains all pages, while initial snapshots stay bou
   );
   assert.deepEqual(cursors, [null, null, "older"]);
 });
+
+test("closing while the endpoint check waits never connects afterward", async () => {
+  let finishCheck, connects = 0;
+  const owner = createCodexOwner({
+    daemon: {}, enabled: true,
+    checkEndpoint: () => new Promise(resolve => { finishCheck = resolve; }),
+    connect: () => { connects++; throw Error("inert connect must not run after close"); },
+  });
+  const claim = owner.claim(id);
+  owner.close();
+  finishCheck();
+  await claim;
+  assert.equal(connects, 0);
+  await owner.claim(other);
+  assert.equal(owner.has(other), false, "a closed owner never advertises a new claim");
+});
+
+
+test("known queue IDs survive an empty refresh and unreadable queues never publish cancellation", async (t) => {
+  const f = fixture(t);
+  const original = f.daemon.rpc;
+  let queueResponse;
+  f.daemon.rpc = (method, params) => method === "thread/queue/list" && queueResponse !== undefined
+    ? Promise.resolve(queueResponse) : original(method, params);
+  await f.owner.claim(id);
+  f.send({ type: "broadcast", method: "thread-stream-following-changed", sourceClientId: "codex-window",
+    params: { conversationId: id, hostId: "local", following: true } });
+  const queues = () => f.packets.filter(m => m.method === "thread-queued-followups-changed");
+  await until(() => queues().length === 1);
+  queueResponse = {};
+  f.owner.update(id);
+  await until(() => f.packets.filter(m => m.method === "thread-stream-state-changed").length === 2);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(queues().length, 1, "an unknown queue is not an empty queue");
+  queueResponse = { data: [] };
+  f.owner.update(id);
+  await until(() => queues().length === 2);
+  f.send({ type: "request", requestId: "stale-queue", sourceClientId: "codex-window",
+    method: "thread-follower-set-queued-follow-ups-state", version: 1,
+    params: { conversationId: id, state: { [id]: [{ id: "q1", text: "Old" }] } } });
+  await until(() => f.actions.length === 1);
+  assert.deepEqual(f.actions[0][2].queueIds, []);
+  assert.deepEqual(f.actions[0][2].knownQueueIds, ["q1", "m1"]);
+});
+
+test("requests queued behind an in-flight action never dispatch after IPC disconnect", async (t) => {
+  let finish;
+  const f = fixture(t, { handleRequest: () => new Promise(resolve => { finish = resolve; }) });
+  await f.owner.claim(id);
+  const request = requestId => ({ type: "request", requestId, sourceClientId: "codex-window",
+    method: "thread-follower-start-turn", version: 2, params: { conversationId: id } });
+  f.send(request("first"));
+  await until(() => f.actions.length === 1);
+  f.send(request("second"));
+  f.disconnect();
+  finish({ result: { turn: { id: "already-dispatched" } } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(f.actions.length, 1);
+  assert.equal(f.packets.some(p => p.requestId === "first" || p.requestId === "second"), false,
+    "never acknowledge an old connection's requests on a replacement connection");
+});
+
+for (const loss of ["close", "disconnect", "replace", "nonwritable", "destroyed"])
+  test(`the original owner authorization expires across ${loss} during a request read`, async (t) => {
+    let finish, mutated = false;
+    const f = fixture(t, { handleRequest: async (_method, _params, context) => {
+      await new Promise(resolve => { finish = resolve; });
+      context.authorize();
+      mutated = true;
+      return { ok: true };
+    } });
+    await f.owner.claim(id);
+    f.send({ type: "request", requestId: "read-then-write", sourceClientId: "codex-window",
+      method: "thread-follower-steer-turn", version: 1, params: { conversationId: id } });
+    await until(() => typeof finish === "function");
+    if (loss === "close") f.owner.close();
+    else if (loss === "disconnect") f.disconnect();
+    else if (loss === "nonwritable" || loss === "destroyed") f.closing(loss === "nonwritable" ? "writable" : "destroyed");
+    else { f.owner.forget(id); await f.owner.claim(id); }
+    finish();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(mutated, false, "a read from the retired ownership must never authorize a write");
+    assert.equal(f.packets.some(p => p.requestId === "read-then-write" && p.resultType === "success"), false);
+  });

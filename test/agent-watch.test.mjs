@@ -19,11 +19,15 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
   const claudeProjects = path.join(root, "claude");
   fs.mkdirSync(codexHome);
   fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
+  // Isolate every provider root: native Claude activity must not enter this
+  // fixture through the registry/app-record defaults on the test machine.
   const watch = createAgentWatch({
-    codexHome, claudeProjects, debounceMs: 40,
-    claudeSessions: path.join(root, "registry"),
-    claudeAppRecords: path.join(root, "app-records"),
+    codexHome,
+    claudeProjects,
+    claudeSessions: path.join(root, "claude-sessions"),
+    claudeAppRecords: path.join(root, "claude-app-records"),
     geminiHome: path.join(root, "gemini"),
+    debounceMs: 40,
   });
   const news = [];
   watch.onChange((n) => news.push(n));
@@ -55,9 +59,20 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
 });
 
 test("an agent that isn't installed is simply not watched", () => {
-  const watch = createAgentWatch({ codexHome: "/nonexistent/codex", claudeProjects: "/nonexistent/claude" });
-  watch.onChange(() => {});
-  watch.close();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-missing-"));
+  try {
+    const watch = createAgentWatch({
+      codexHome: path.join(root, "codex"),
+      claudeProjects: path.join(root, "claude"),
+      claudeSessions: path.join(root, "claude-sessions"),
+      claudeAppRecords: path.join(root, "claude-app-records"),
+      geminiHome: path.join(root, "gemini"),
+    });
+    watch.onChange(() => {});
+    watch.close();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a transcript write is news the moment it happens, not after a wait; writes during the next moment are told once more", async () => {

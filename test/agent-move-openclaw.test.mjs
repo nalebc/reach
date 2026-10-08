@@ -28,9 +28,9 @@ function gateway(replies = {}) {
     send(raw) {
       const req = JSON.parse(raw);
       calls.push(req);
-      queueMicrotask(() => {
-        const answer = replies[req.method];
-        const reply = req.method === "connect" ? { type: "hello-ok", protocol: 3 } : (typeof answer === "function" ? answer(req.params) : answer) ?? {};
+      queueMicrotask(async () => {
+        const value = req.method === "connect" ? { type: "hello-ok", protocol: 3 } : replies[req.method] ?? {};
+        const reply = typeof value === "function" ? await value(req) : value;
         const failed = reply instanceof Error;
         this.emit(
           "message",
@@ -65,7 +65,7 @@ test("into OpenClaw: a new session named after the chat, its history as notes; o
   ]);
   claw.close();
   const failing = gateway({ "chat.inject": new Error("too large") });
-  await assert.rejects(failing.claw.fork({ title: "x", notes: ["n"] }), /too large/);
+  await assert.rejects(failing.claw.fork({ title: "x", notes: ["n"] }), /OpenClaw reported an error/);
   const removed = failing.calls.find((c) => c.method === "sessions.delete");
   assert.equal(removed.params.deleteTranscript, true);
   assert.match(removed.params.key, /^agent:main:reach-/);
@@ -76,7 +76,7 @@ test("into OpenClaw: a new session named after the chat, its history as notes; o
 test("into OpenClaw: a long title fits OpenClaw's 64 characters, and a name already taken gets a number", async () => {
   const taken = new Set(["I cant edit order of queued messages like i can do in Codex Desktop"].map((t) => t.slice(0, 64).trim()));
   const { claw, calls, dir } = gateway({
-    "sessions.patch": ({ label }) => (taken.has(label) ? new Error(`label already in use: ${label}`) : (taken.add(label), { ok: true })),
+    "sessions.patch": ({ params: { label } }) => (taken.has(label) ? new Error(`label already in use: ${label}`) : (taken.add(label), { ok: true })),
   });
   const title = "I cant edit order of queued messages like i can do in Codex Desktop app 🙂";
   await claw.fork({ title, notes: ["n"] });
@@ -133,7 +133,7 @@ const fakeDaemon = () => {
     close() {},
   };
 };
-const hub = (openClaw) => {
+const hub = (openClaw, extra = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claw-hub-"));
   claudeChat(path.join(root, "projects", "-work-app"));
   const daemon = fakeDaemon();
@@ -151,6 +151,7 @@ const hub = (openClaw) => {
     dataDir: root,
     claudeImports: { add: async () => {}, close() {} },
     openClaw,
+    ...extra,
   });
   return { root, daemon, sessions };
 };
@@ -193,4 +194,152 @@ test("an OpenClaw chat moves to Codex, shown as a fork of it", async () => {
   // Only between the apps Reach chats with.
   await assert.rejects(sessions.move("openclaw", key, { to: "gemini" }), (e) => e.status === 400);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("revocation during source history prevents creating an OpenClaw target", async (t) => {
+  let release, arrived;
+  const ready = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let forks = 0,
+    revoked = false;
+  const f = hub(
+    {
+      fork: async () => {
+        forks++;
+        return { key: "agent:main:reach-audit" };
+      },
+    },
+    {
+      codex: {
+        read: async (id) => {
+          arrived();
+          await gate;
+          return {
+            session: {
+              agent: "codex",
+              id,
+              title: "Synthetic source",
+              cwd: "/work/app",
+            },
+            items: [],
+            before: null,
+          };
+        },
+      },
+    },
+  );
+  t.after(() => {
+    f.sessions.close();
+    fs.rmSync(f.root, { recursive: true, force: true });
+  });
+  const work = f.sessions.move("codex", NEW_CODEX, {
+    to: "openclaw",
+    authorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+  });
+  await ready;
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  assert.equal(forks, 0);
+});
+
+test("revocation after the final OpenClaw note cleans only the created target and never records a move", async (t) => {
+  let release, arrived;
+  const ready = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const f = gateway({
+    "chat.inject": async () => {
+      arrived();
+      await gate;
+      return {};
+    },
+  });
+  const h = hub(f.claw);
+  t.after(() => {
+    h.sessions.close();
+    f.claw.close();
+    for (const dir of [h.root, f.dir])
+      fs.rmSync(dir, { recursive: true, force: true });
+  });
+  let revoked = false;
+  const work = h.sessions.move("claude", CLAUDE, {
+    to: "openclaw",
+    authorize() {
+      if (revoked) throw Object.assign(Error("Revoked"), { status: 401 });
+    },
+  });
+  await ready;
+  revoked = true;
+  release();
+  await assert.rejects(work, { status: 401 });
+  const created = f.calls.find((req) => req.method === "sessions.reset").params
+    .key;
+  assert.deepEqual(
+    f.calls
+      .filter((req) => req.method === "sessions.delete")
+      .map((req) => req.params),
+    [{ key: created, deleteTranscript: true }],
+  );
+  const original = await h.sessions.read("claude", CLAUDE, {});
+  assert.equal(original.session.movedTo?.length || 0, 0);
+});
+
+test("revoked owner HTTP move request forwards live authorization to deferred provider work", async (t) => {
+  const { createReach } = await import("../server/index.mjs");
+  const { ALL_SCOPES } = await import("../server/core.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claw-move-auth-"));
+  let release,
+    arrived,
+    writes = 0;
+  const ready = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const reach = await createReach({
+    roots: [root],
+    dataDir: path.join(root, ".reach"),
+    agentSessions: {
+      async move(_agent, _id, { authorize = () => {} }) {
+        arrived();
+        await gate;
+        authorize();
+        writes++;
+        return { agent: "openclaw", id: "agent:main:reach-audit" };
+      },
+    },
+  });
+  t.after(async () => {
+    await reach.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const work = fetch(
+    `http://127.0.0.1:${reach.server.address().port}/api/sessions/claude/${CLAUDE}/move`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${owner.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ to: "openclaw" }),
+    },
+  );
+  await ready;
+  reach.auth.revoke(owner.clientId);
+  release();
+  assert.equal((await work).status, 401);
+  assert.equal(writes, 0);
 });

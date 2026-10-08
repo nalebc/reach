@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { AddModelPrompt } from "./OpenClawSetup";
@@ -103,13 +103,7 @@ export function ClawModelControls({
   );
 }
 
-export function ClawSessionSettings({
-  peer,
-  session,
-  disabled,
-  onSaved,
-  onClose,
-}: {
+type ClawSessionSettingsProps = {
   peer: Peer;
   session: {
     key: string;
@@ -121,42 +115,65 @@ export function ClawSessionSettings({
   disabled: boolean;
   onSaved: () => void;
   onClose: () => void;
-}) {
+};
+export function ClawSessionSettings(props: ClawSessionSettingsProps) {
+  const { peer, session } = props;
+  // A different connection or chat owns a fresh draft and callback lifetime.
+  const identity = JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId, session.key]);
+  return <ClawSettingsForm key={identity} {...props} />;
+}
+function ClawSettingsForm({ peer, session, disabled, onSaved, onClose }: ClawSessionSettingsProps) {
   const { catalog, error } = useClawCatalog(peer);
-  const [label, setLabel] = useState(session.title);
-  const [model, setModel] = useState(
-    session.modelProvider &&
-      !session.model.startsWith(session.modelProvider + "/")
-      ? `${session.modelProvider}/${session.model}`
-      : session.model,
-  );
-  const [thinking, setThinking] = useState(session.thinkingLevel || "");
+  const [initial] = useState(() => ({
+    label: session.title,
+    model: session.model && session.modelProvider && !session.model.startsWith(session.modelProvider + "/")
+      ? `${session.modelProvider}/${session.model}` : session.model,
+    thinking: session.thinkingLevel || "",
+  }));
+  const [label, setLabel] = useState(initial.label);
+  const [model, setModel] = useState(initial.model);
+  const [thinking, setThinking] = useState(initial.thinking);
+  const modelChanged = model !== initial.model;
+  const forceThinkingOff = modelChanged && catalog?.models.find((entry) => entry.id === model)?.reasoning === false;
+  const patch = {
+    ...(label !== initial.label ? { label } : {}),
+    ...(modelChanged ? { model: model || null } : {}),
+    ...(thinking !== initial.thinking || forceThinkingOff ? { thinkingLevel: forceThinkingOff ? "off" : thinking || null } : {}),
+  };
+  const changed = Object.keys(patch).length > 0;
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const active = useRef(true);
+  const saving = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
   return (
     <form
       className="claw-settings"
       aria-label="OpenClaw chat settings"
       onSubmit={async (e) => {
         e.preventDefault();
-        if (busy || disabled || !catalog?.canEdit || !label.trim()) return;
+        if (saving.current || busy || disabled || !catalog?.canEdit || !label.trim() || !changed) return;
+        saving.current = true;
         setBusy(true);
         setProblem("");
         try {
           await post(peer, `${clawBase}/settings`, {
             key: session.key,
-            // The shown name may be OpenClaw's own (longer, or another
-            // chat's); it is sent only when changed here.
-            ...(label.trim() !== session.title.trim() && { label }),
-            model: model || null,
-            thinkingLevel: thinking || null,
+            ...patch,
           });
+          // Closing this form does not undo an already dispatched write.
+          // Its eventual reply must not close or overwrite a newer form.
+          if (!active.current) return;
           onSaved();
           onClose();
         } catch (e) {
-          setProblem((e as Error).message);
+          if (active.current) setProblem((e as Error).message);
         } finally {
-          setBusy(false);
+          saving.current = false;
+          if (active.current) setBusy(false);
         }
       }}
     >
@@ -209,7 +226,7 @@ export function ClawSessionSettings({
         </button>
         <button
           className="claw-primary"
-          disabled={busy || disabled || !catalog?.canEdit || !label.trim()}
+          disabled={busy || disabled || !catalog?.canEdit || !label.trim() || !changed}
         >
           {busy ? <Loader2 size={15} className="spin" /> : null}Save changes
         </button>

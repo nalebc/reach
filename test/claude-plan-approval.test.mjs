@@ -101,9 +101,9 @@ test("how full a chat's context is, as each agent counts it", async () => {
       // A sub-agent's own replies don't fill the chat's context.
       reply("s1", null, { input_tokens: 900000, output_tokens: 1 }, { isSidechain: true }),
   );
-  assert.deepEqual(v.context, { used: 51510, window: 200000 });
+  assert.deepEqual(v.context, { used: 51510, window: null });
   const big = parseClaudeTranscript(line({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "go" } }) + reply("a1", "u1", { input_tokens: 300000, output_tokens: 1 }));
-  assert.equal(big.context.window, 1000000, "past 200k: a 1M model");
+  assert.equal(big.context.window, null, "usage alone does not establish capacity");
   // Codex says it itself.
   let notify;
   const live = createCodexLive({ daemon: { rpc: async () => ({}), onNotification: (fn) => (notify = fn), onRequest() {}, onClose() {} }, desktop: {} });

@@ -30,6 +30,7 @@ import StrandedMessages from "./StrandedMessages";
 import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
 import { BrandCourier } from "./ReachIdentity";
+import { useAppNotifications } from "./Notifications";
 import { useChatAppSwipe } from "./useChatAppSwipe";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
@@ -715,6 +716,7 @@ export default function EverythingChat({
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
   const macPrompts = (shared || own).macPrompts || [];
+  const notificationCounts = useAppNotifications(peer);
   const logos = useAgentLogos(peer);
   const [savedAgent, setAgent] = useChatAgent();
   const apps = useMemo<ChatAppChoice[]>(() => {
@@ -828,7 +830,10 @@ export default function EverythingChat({
   const appPending = Object.fromEntries(
     apps.map((app) => [
       app.agent,
-      allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length,
+      // Both feeds describe the same requests. Keep live session updates
+      // immediate without counting the inbox's copy a second time.
+      Math.max(notificationCounts[app.agent] || 0,
+        allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length),
     ]),
   );
   const status = health.find((h) => h.agent === current);
@@ -927,6 +932,7 @@ export default function EverythingChat({
               value={picked.agent}
               onChange={setAgent}
               logos={logos}
+              pending={appPending}
             />
           </div>
           <div className="chat-new-computer" title={peer.name}>
@@ -936,6 +942,7 @@ export default function EverythingChat({
           {picked.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat
+              key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
               peer={peer}
               onStarted={(key) => {
                 setAgent("openclaw");
@@ -1014,6 +1021,11 @@ function NewClawChat({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
   const startingNow = useRef(false);
   const modelDescription = [
     catalog?.models.find((m) => m.id === model)?.name ||
@@ -1022,30 +1034,41 @@ function NewClawChat({
     thinking ? `Thinking: ${thinking}` : "Default thinking",
   ].join(" · ");
   // Asked again (a dropped answer), the same message starts the same chat.
-  const attempt = useRef<{ text: string; id: string } | null>(null);
+  const attempt = useRef<{
+    intent: string;
+    body: { text: string; requestId: string; agentId?: string; model?: string; thinkingLevel?: string };
+  } | null>(null);
   const start = async () => {
     if (!text.trim() || busy || startingNow.current) return;
     startingNow.current = true;
-    const choices = {
-      ...(agentId || catalog?.agents?.length
-        ? { agentId: agentId || catalog?.defaultAgentId }
-        : {}),
-      ...(model ? { model } : {}),
-      ...(thinking ? { thinkingLevel: thinking } : {}),
-    };
-    const fingerprint = JSON.stringify([text, choices]);
-    if (attempt.current?.text !== fingerprint)
-      attempt.current = { text: fingerprint, id: crypto.randomUUID() };
+    // Discovery may finish after an uncertain send. Only a changed user
+    // choice creates a new attempt; retries retain the exact original body.
+    const intent = JSON.stringify([text, agentId, model, thinking]);
+    if (attempt.current?.intent !== intent) {
+      attempt.current = {
+        intent,
+        body: {
+          text,
+          requestId: crypto.randomUUID(),
+          ...(agentId || catalog?.agents?.length ? { agentId: agentId || catalog?.defaultAgentId } : {}),
+          ...(model ? { model } : {}),
+          ...(thinking ? { thinkingLevel: thinking } : {}),
+        },
+      };
+    }
     setBusy(true);
     setProblem("");
     try {
       const { key } = await post<{ key: string }>(
         peer,
         "/api/sessions/openclaw/new",
-        { text, requestId: attempt.current.id, ...choices },
+        attempt.current.body,
       );
-      onStarted(key);
+      // Closing or switching apps does not cancel the dispatched task, but
+      // its old reply must not navigate the replacement view.
+      if (active.current) onStarted(key);
     } catch (e) {
+      if (!active.current) return;
       startingNow.current = false;
       setProblem((e as Error).message);
       setBusy(false);

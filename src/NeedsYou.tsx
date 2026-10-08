@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -232,22 +232,27 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
   const [failed, setFailed] = useState("");
   const [done, setDone] = useState(false);
   const turn = useRef(0);
+  const pressing = useRef(false);
   useEffect(() => {
     let live = true;
     readAsking(peer, session).then((a) => live && setAsking(a), () => {});
     return () => {
       live = false;
     };
-  }, [peer.id, session.agent, session.id, session.updatedAt]);
+  }, [peer.id, peer.url, peer.token, session.agent, session.id, session.updatedAt]);
   // Another request now: the card read for the last one is gone.
   const askingId = asking && "id" in asking ? asking.id : undefined;
-  useEffect(() => {
+  // Invalidate the old card before the new Review button can be tapped.
+  // A deferred effect could cancel the user's first review after dispatch.
+  useLayoutEffect(() => {
     turn.current++;
+    pressing.current = false;
     setCard(null);
     setFailed("");
     setLoading(false);
+    setBusy(null);
     setDone(false);
-  }, [askingId]);
+  }, [peer.id, peer.url, peer.token, session.agent, session.id, askingId]);
   if (!asking) return null;
   const load = (bring = false) => {
     const at = ++turn.current;
@@ -260,18 +265,25 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
     ).finally(() => at === turn.current && setLoading(false));
   };
   const press = async (label: string) => {
-    if (busy || !card) return;
+    if (pressing.current || !card) return;
+    pressing.current = true;
+    const at = turn.current;
     setBusy(label);
     setFailed("");
     try {
       await answerPrompt(peer, session, card.id, { label });
+      if (at !== turn.current) return;
       setDone(true);
       answered?.();
     } catch (e) {
+      if (at !== turn.current) return;
       setCard(null);
       setFailed((e as Error).message);
     } finally {
-      setBusy(null);
+      if (at === turn.current) {
+        pressing.current = false;
+        setBusy(null);
+      }
     }
   };
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();

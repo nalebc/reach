@@ -19,8 +19,8 @@ const POLICY = `// my policy
 }
 `;
 
-function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false } = {}) {
-  const api = { policy, etag: '"v1"', writes: 0, clients: [], deleted: [], calls: [], authKeys: 0 };
+function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, etag = '"v1"' } = {}) {
+  const api = { policy, etag, writes: 0, clients: [], deleted: [], calls: [], authKeys: 0, deletedAuthKeys: [] };
   api.request = async (url, init = {}) => {
     const route = new URL(url).pathname.replace("/api/v2", "");
     const method = init.method || "GET";
@@ -45,7 +45,7 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false } = 
       if (route === "/tailnet/-/devices") return reply(200, { devices: [] });
       if (route === "/tailnet/-/keys" && method === "POST")
         return reply(200, { id: `a${++api.authKeys}`, key: `tskey-auth-a${api.authKeys}-x` });
-      if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") return reply(200, {});
+      if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") { api.deletedAuthKeys.push(route.split("/").pop()); return reply(200, {}); }
       return reply(404, {});
     }
     if (auth !== `Bearer ${TOKEN}`) return reply(401, { message: "unauthorized" });
@@ -59,7 +59,7 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false } = 
     }
     if (route === "/tailnet/-/acl" && method === "POST") {
       if (raceOnWrite) api.etag = '"v2"'; // someone saved in between
-      if (init.headers["If-Match"] !== api.etag)
+      if (init.headers["If-Match"] !== undefined && init.headers["If-Match"] !== api.etag)
         return reply(412, { message: "precondition failed" });
       api.policy = init.body;
       api.etag = `"v${++api.writes + 1}"`;
@@ -184,17 +184,13 @@ test("if Reach's new client fails its check, it's deleted, not left behind", asy
   assert.equal(keys.configured(), false);
 });
 
-test(
-  "from the phone: one token sets up invite links; a guest can't",
-  { skip: process.platform === "win32", timeout: 20000 },
-  async (t) => {
+async function routeFixture(t, { api = fakeTailscale(), beforeStatus } = {}) {
     const http = await import("node:http");
     const { createReach } = await import("../server/index.mjs");
     const { ALL_SCOPES } = await import("../server/core.mjs");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-token-route-"));
     const socketDir = fs.mkdtempSync("/tmp/reach-token-sock-");
     const socketPath = path.join(socketDir, "s");
-    const api = fakeTailscale();
     const owner = { userId: "42", login: "o@example.test" };
     const reach = await createReach({
       roots: [dir],
@@ -208,12 +204,13 @@ test(
           UserProfile: { ID: 42, LoginName: owner.login },
         }),
       },
-      tailscaleStatus: async () => ({ Self: { TailscaleIPs: ["100.64.0.5", "fd7a::5"] }, Peer: {} }),
+      tailscaleStatus: async () => { await beforeStatus?.(); return { Self: { TailscaleIPs: ["100.64.0.5", "fd7a::5"] }, Peer: {} }; },
       guestKeys: { request: api.request },
     });
     await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
     await reach.listenPrivate(socketPath);
     t.after(async () => {
+      reach.server.closeAllConnections?.();
       await reach.close();
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(socketDir, { recursive: true, force: true });
@@ -221,12 +218,12 @@ test(
     const phone = reach.auth.issue("My iPhone", ALL_SCOPES, "device", {
       tailscale: { userId: "42", nodeId: "nPhone" },
     });
-    const post = (token, body) =>
+    const post = (token, body, route = "/api/guests/keys") =>
       new Promise((resolve, reject) => {
         const req = http.request(
           {
             socketPath,
-            path: "/api/guests/keys",
+            path: route,
             method: "POST",
             headers: {
               Host: "localhost",
@@ -245,6 +242,14 @@ test(
         req.once("error", reject);
         req.end(JSON.stringify(body));
       });
+    return { reach, phone, post, api, dir };
+}
+
+test(
+  "from the phone: one token sets up invite links; a guest can't",
+  { skip: process.platform === "win32", timeout: 20000 },
+  async (t) => {
+    const { reach, phone, post, api, dir } = await routeFixture(t);
     // A guest (even with full access) can't.
     const invite = reach.auth.inviteGuest({ name: "G", ttlSeconds: 600, full: true });
     const guest = reach.auth.redeemGuest(invite.invitation, { userId: "42", nodeId: "nPhone" });
@@ -298,4 +303,138 @@ test("a reviewed default-policy fix validates and narrows the wildcard before mi
   assert.deepEqual(parsePolicy(api.policy).grants[1].src, ["autogroup:member"]);
   assert.equal(api.writes, 1);
   assert.equal(api.clients.length, 1);
+});
+
+
+for (const etag of [null, "", "   ", "*"]) {
+  test(`policy without a usable version tag (${JSON.stringify(etag)}) never writes or mints`, async t => {
+    const api = fakeTailscale({ etag });
+    const keys = createGuestKeys({ dataDir: setupDir(t), self: "fixture", request: api.request });
+    await assert.rejects(keys.setupFromAccessToken({ accessToken: TOKEN, ...where }), /version|ETag/i);
+    assert.equal(api.writes, 0); assert.equal(api.clients.length, 0);
+    assert.equal(api.authKeys, 0); assert.equal(keys.configured(), false);
+  });
+}
+
+const gate = () => {
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  return { entered, release, async wait() { enter(); await waiting; } };
+};
+const routeTest = { skip: process.platform === "win32", timeout: 20000 };
+
+test("invite key setup only accepts paired owner devices, never delegated admin credentials", routeTest, async t => {
+  const f = await routeFixture(t);
+  for (const kind of ["service", "agent"]) {
+    const credential = f.reach.auth.issue(`Fixture ${kind}`, kind === "agent" ? ["files:read"] : ["admin"], kind, {
+      tailscale: { userId: "42", nodeId: "nPhone" },
+    });
+    assert.equal((await f.post(credential.token, { accessToken: TOKEN })).status, 403);
+  }
+  assert.equal(f.api.calls.length, 0); assert.equal(f.api.writes, 0);
+  assert.equal(f.api.clients.length, 0); assert.equal(f.reach.guestKeys.configured(), false);
+});
+
+for (const phase of ["status", "validate", "oauth", "devices", "probe-delete"]) {
+  test(`revoked owner during ${phase} stops subsequent invitation changes`, routeTest, async t => {
+    const pause = gate(), api = fakeTailscale();
+    const request = api.request;
+    api.request = async (url, init) => {
+      const response = await request(url, init), route = new URL(url).pathname;
+      if ((phase === "validate" && route.endsWith("/acl/validate")) ||
+          (phase === "oauth" && route.endsWith("/oauth/token")) ||
+          (phase === "devices" && route.endsWith("/devices")) ||
+          (phase === "probe-delete" && init.method === "DELETE" && route.endsWith("/keys/a1"))) await pause.wait();
+      return response;
+    };
+    const f = await routeFixture(t, { api, beforeStatus: phase === "status" ? pause.wait : undefined });
+    t.after(() => pause.release());
+    const pending = f.post(f.phone.token, { accessToken: TOKEN });
+    await pause.entered; f.reach.auth.revoke(f.phone.clientId); pause.release();
+    assert.equal((await pending).status, 401);
+    const beforeWrite = phase === "status" || phase === "validate";
+    assert.equal(api.writes, beforeWrite ? 0 : 1);
+    assert.equal(api.clients.length, beforeWrite ? 0 : 1);
+    assert.equal(api.authKeys, phase === "probe-delete" ? 1 : 0);
+    assert.equal(f.reach.guestKeys.configured(), false, "revoked request never saves credentials");
+    if (!beforeWrite) assert.deepEqual(api.deleted, [api.clients[0].id], "new unused client is cleaned up even after revocation");
+    if (phase === "oauth") assert.ok(!api.calls.includes("GET /tailnet/-/devices"));
+    if (phase === "status") assert.equal(api.calls.length, 0);
+  });
+}
+
+
+test("manual OAuth setup also rechecks owner access after token refresh", routeTest, async t => {
+  const pause = gate(), api = fakeTailscale();
+  const client = { id: "manualCNTRL", key: "tskey-client-manualCNTRL-secret" };
+  api.clients.push(client);
+  const request = api.request;
+  api.request = async (url, init) => {
+    const response = await request(url, init);
+    if (new URL(url).pathname.endsWith("/oauth/token")) await pause.wait();
+    return response;
+  };
+  const f = await routeFixture(t, { api });
+  t.after(() => pause.release());
+  const pending = f.post(f.phone.token, { clientId: client.id, clientSecret: client.key });
+  await pause.entered; f.reach.auth.revoke(f.phone.clientId); pause.release();
+  assert.equal((await pending).status, 401);
+  assert.equal(api.writes, 0); assert.equal(api.authKeys, 0);
+  assert.deepEqual(api.deleted, [], "an existing owner-supplied client is never deleted as cleanup");
+  assert.ok(!api.calls.includes("GET /tailnet/-/devices"));
+  assert.equal(f.reach.guestKeys.configured(), false);
+});
+
+test("an unchanged policy needs no version precondition because no policy write occurs", async t => {
+  const api = fakeTailscale({ etag: null,
+    policy: `{"tagOwners":{"${GUEST_TAG}":["autogroup:admin"]},"grants":[{"src":["${GUEST_TAG}"],"dst":["100.64.0.5"],"ip":["tcp:8443"]}]}`,
+  });
+  const keys = createGuestKeys({ dataDir: setupDir(t), self: "fixture", request: api.request });
+  await keys.setupFromAccessToken({ accessToken: TOKEN, ...where });
+  assert.equal(api.writes, 0); assert.equal(api.clients.length, 1);
+  assert.equal(keys.configured(), true);
+});
+
+
+for (const route of ["/api/guests/key", "/api/guests"]) {
+  for (const phase of ["oauth", "mint"]) {
+    test(`person invitation ${route} revoked during ${phase} leaves no new network key or record`, routeTest, async t => {
+      const pause = gate(), api = fakeTailscale();
+      api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+      const request = api.request;
+      api.request = async (url, init) => {
+        const response = await request(url, init), pathname = new URL(url).pathname;
+        if ((phase === "oauth" && pathname.endsWith("/oauth/token")) ||
+            (phase === "mint" && pathname.endsWith("/keys") && init.method === "POST" && init.headers.Authorization.startsWith("Bearer oauth-"))) await pause.wait();
+        return response;
+      };
+      const f = await routeFixture(t, { api });
+      t.after(() => pause.release());
+      fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
+        version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+      }), { mode: 0o600 });
+      const body = route === "/api/guests" ? { name: "Synthetic visitor", ttlSeconds: 600, roots: [0], key: true } : { ttlSeconds: 600 };
+      const pending = f.post(f.phone.token, body, route);
+      await pause.entered; f.reach.auth.revoke(f.phone.clientId); pause.release();
+      assert.equal((await pending).status, 401);
+      assert.equal(api.authKeys, phase === "mint" ? 1 : 0);
+      assert.deepEqual(api.deletedAuthKeys, phase === "mint" ? ["a1"] : []);
+      assert.equal(fs.existsSync(path.join(f.dir, "private", "guest-keys.json")), false, "revoked creation is never recorded");
+      assert.equal(f.reach.auth.list().filter(c => c.kind === "guest").length, 0, "combined creation rolls back its local guest too");
+    });
+  }
+}
+
+test("person invitation issuance requires an owner device before creating local grants or network keys", routeTest, async t => {
+  const f = await routeFixture(t);
+  const other = f.reach.auth.issue("Synthetic service", ["admin"], "service", {
+    tailscale: { userId: "42", nodeId: "nPhone" },
+  });
+  for (const [route, body] of [
+    ["/api/guests/key", { ttlSeconds: 600 }],
+    ["/api/guests", { name: "Synthetic visitor", ttlSeconds: 600, roots: [0] }],
+  ]) assert.equal((await f.post(other.token, body, route)).status, 403);
+  assert.equal(f.api.calls.length, 0);
+  assert.equal(f.reach.auth.list().filter(c => c.kind === "guest").length, 0);
 });

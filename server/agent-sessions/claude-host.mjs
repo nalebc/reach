@@ -8,6 +8,7 @@
 // follow the shapes in the CLI's own code; they need a signed-in turn to see.
 import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent } from "./compatibility.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
+import { createClaudeRewinds } from "./claude-rewinds.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { execFile, spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -187,10 +188,13 @@ export function createClaudeHost({
   graceMs = 5000,
   readFile = fs.readFileSync,
   requestTimeout = 15000,
+  rewindFile = null,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
 }) {
   const sessions = new Map();
+  const rewinds = createClaudeRewinds({ file: rewindFile });
+  const rewindUncertain = () => Object.assign(uncertainDelivery("claude"), { message: "Claude may already have continued this rewind. Check the chat in Claude, then choose a rewind again before sending." });
   let closed = false;
   const catalogs = new Map(); // folder → its handshake
   let modeList = null;
@@ -428,11 +432,17 @@ export function createClaudeHost({
     changed(s);
   }
 
-  async function launch(s, { resume }) {
+  async function launch(s, { resume, authorize = () => {} }) {
+    authorize();
+    const pendingRewind = resume ? rewinds.get(s.id) : null;
+    if (pendingRewind?.phase === "dispatching") throw rewindUncertain();
+    if (pendingRewind) s.resumeAt = pendingRewind.target === "start" ? null : pendingRewind.target;
     const claude = await locate();
+    authorize();
     if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     const compatible = await check(claude);
+    authorize();
     if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
     if (compatible.status !== "available")
       throw bad("Couldn’t check Claude Code’s connection. Try again in a moment, or use the screen or terminal.", 503);
@@ -464,7 +474,8 @@ export function createClaudeHost({
     ];
     const proc = spawn(claude, args, { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
-    if (resume) s.resumeAt = null;
+    // Starting a preview/helper does not consume a pending continuation.
+    // It is cleared only after its user message is accepted below.
     s.launchedEffort = s.settings.effort || null;
     let buffer = "";
     proc.stdout.setEncoding?.("utf8");
@@ -512,7 +523,7 @@ export function createClaudeHost({
     });
     // The handshake the SDK host makes; it also loads the session.
     // Never send the user's message before the host accepts the handshake.
-    try { await control(s, { subtype: "initialize" }); }
+    try { await control(s, { subtype: "initialize" }); authorize(); }
     catch (e) { end(s); throw Object.assign(e, { retryable: false }); }
   }
 
@@ -577,7 +588,12 @@ export function createClaudeHost({
       const input = claudeContent({ text, images }, readFile);
       const s = state(id);
       const previous = s.sending || Promise.resolve();
+      s.pendingSends = (s.pendingSends || 0) + 1;
       const operation = previous.catch(() => {}).then(async () => {
+      if (s.rewinding) throw bad("A rewind is in progress. Wait for it to finish before sending.", 409);
+      const pendingRewind = rewinds.get(id);
+      if (pendingRewind?.phase === "dispatching") throw rewindUncertain();
+      if (pendingRewind) s.resumeAt = pendingRewind.target === "start" ? null : pendingRewind.target;
       if (cwd) s.cwd = cwd;
       if (effort) s.settings.effort = effort;
       // A thinking level is a launch setting: change it between turns.
@@ -597,13 +613,20 @@ export function createClaudeHost({
           s.settings.mode = mode;
         }
       }
+      if (pendingRewind) rewinds.set(id, { ...pendingRewind, phase: "dispatching" });
       await turn(s, input);
-      // A rewind waiting for this message is done: the chat goes on from there.
+      // Persist consumption only after sending; an uncertain write leaves the
+      // dispatch marker in place, including after a Reach restart.
+      if (pendingRewind) {
+        try { rewinds.delete(id); }
+        catch { s.error = rewindUncertain().message; throw rewindUncertain(); }
+      }
+      s.resumeAt = null;
       s.rewound = null;
       return { turnId: null };
       });
       s.sending = operation;
-      return operation;
+      return operation.finally(() => { s.pendingSends--; });
     },
     // A mode picked on the phone while Reach runs the chat: at once, even
     // mid-turn (its next tool use follows it), as the app's menu does.
@@ -657,25 +680,32 @@ export function createClaudeHost({
     // Rewind, as Claude Code's own: files back as they were before a
     // message (rewind_files; dryRun: what would change, nothing done), and
     // the conversation going on from before it (on its next message).
-    async rewindFiles(id, { messageId, cwd, dryRun = false }) {
+    async rewindFiles(id, { messageId, cwd, dryRun = false, authorize = () => {} }) {
+      authorize();
       if (!UUID.test(id) || typeof messageId !== "string" || !UUID.test(messageId)) throw bad("Unknown message.", 404);
       const s = state(id);
-      if (s.turns) throw bad("Claude is working in this chat. Stop it first.", 409);
-      if (cwd) s.cwd = cwd;
-      if (!s.proc) await launch(s, { resume: true });
-      const r = await control(s, { subtype: "rewind_files", user_message_id: messageId, ...(dryRun ? { dry_run: true } : {}) });
-      return {
-        canRewind: r?.canRewind !== false,
-        ...(typeof r?.error === "string" ? { error: r.error } : {}),
-        files: Array.isArray(r?.filesChanged) ? r.filesChanged.slice(0, 200) : [],
-        insertions: Number(r?.insertions) || 0,
-        deletions: Number(r?.deletions) || 0,
-      };
+      if (s.turns || s.pendingSends || s.rewinding) throw bad("Claude is working in this chat. Stop it first.", 409);
+      s.rewinding = true;
+      try {
+        if (cwd) s.cwd = cwd;
+        if (!s.proc) await launch(s, { resume: true, authorize });
+        authorize();
+        const r = await control(s, { subtype: "rewind_files", user_message_id: messageId, ...(dryRun ? { dry_run: true } : {}) });
+        return {
+          canRewind: r?.canRewind !== false,
+          ...(typeof r?.error === "string" ? { error: r.error } : {}),
+          files: Array.isArray(r?.filesChanged) ? r.filesChanged.slice(0, 200) : [],
+          insertions: Number(r?.insertions) || 0,
+          deletions: Number(r?.deletions) || 0,
+        };
+      } finally { s.rewinding = false; }
     },
     rewindConversation(id, entry) {
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const s = state(id);
-      if (s.turns) throw bad("Claude is working in this chat. Stop it first.", 409);
+      if (s.turns || s.pendingSends || s.rewinding) throw bad("Claude is working in this chat. Stop it first.", 409);
+      // Save before accepting the choice or ending the existing helper.
+      rewinds.set(id, { target: entry === null ? "start" : entry, phase: "pending" });
       // The next launch resumes there; a process running now ends first.
       if (s.proc) end(s);
       s.resumeAt = entry || null;
@@ -684,7 +714,7 @@ export function createClaudeHost({
       return { rewound: true };
     },
     // Where a rewind waits for the next message: an entry, "start", or null.
-    rewoundTo: (id) => sessions.get(id)?.rewound || null,
+    rewoundTo: (id) => rewinds.get(id)?.target || null,
     // One background task or sub-agent stopped, the rest going on
     // (Claude Code's stop_task, as the Claude app's per-task stop).
     async stopTask(id, taskId) {

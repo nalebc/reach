@@ -11,6 +11,9 @@ const kinds = new Set([
   "invalid",
   "unavailable",
 ]);
+const helperReasons = new Set(["timeout", "process_exit", "process_error", "stdin_error", "write_error", "invalid_reply", "oversized_reply", "unexpected_reply", "stopped"]);
+const helperOperations = new Set(["rules", "catalog", "shot", "front", "act", "open", "unknown"]);
+const helperDispatches = new Set(["completion_unknown", "not_dispatched"]);
 const clean = (value, max) =>
   typeof value === "string"
     ? value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, max)
@@ -37,6 +40,14 @@ export function agentErrorDetails(error) {
       )
         result.retryInMs = Math.ceil(body.retryInMs);
     }
+  }
+  // Only a complete, fixed diagnostic tuple can cross this boundary. Never
+  // forward native stderr, request payloads, paths or arbitrary exit details.
+  if (status === 503 && body.kind === "unavailable" && helperReasons.has(body.helperReason) &&
+      helperOperations.has(body.helperOperation) && helperDispatches.has(body.helperDispatch)) {
+    result.helperReason = body.helperReason;
+    result.helperOperation = body.helperOperation;
+    result.helperDispatch = body.helperDispatch;
   }
   return result;
 }

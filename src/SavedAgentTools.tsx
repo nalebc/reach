@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Zap } from "lucide-react";
 import { request, type Peer } from "./api";
 import DeterministicAgentTools from "./DeterministicAgentTools";
@@ -14,6 +14,7 @@ type RunResult = {
   completedSteps?: number;
   totalSteps?: number;
   error?: string;
+  enabled?: boolean;
 };
 export default function SavedAgentTools({
   peer,
@@ -22,6 +23,11 @@ export default function SavedAgentTools({
   peer: Peer;
   ended: (error: unknown) => void;
 }) {
+  // Parent callbacks and equivalent peer objects can change while a replay runs.
+  // Only a changed connection must cancel it; current callbacks still receive failures.
+  const connection = useMemo(() => peer, [peer.id, peer.url, peer.token, peer.transport, peer.sessionId]);
+  const onEnded = useRef(ended);
+  onEnded.current = ended;
   const [tools, setTools] = useState<BrowserTool[]>([]);
   const [recording, setRecording] = useState<Recording | null>(null);
   const [name, setName] = useState("");
@@ -37,14 +43,23 @@ export default function SavedAgentTools({
     busy = useRef(false);
   useEffect(() => {
     mounted.current = true;
-    const session = createBrowserToolBridge(peer, ended);
+    const session = createBrowserToolBridge(connection, (failure) => {
+      if (bridge.current === session.bridge) onEnded.current(failure);
+    });
     bridge.current = session.bridge;
+    busy.current = false;
+    setPending(false);
+    setTools([]);
+    setRecording(null);
+    setValues({});
+    setMessage("");
+    setError("");
     return () => {
       mounted.current = false;
       session.dispose();
       bridge.current = null;
     };
-  }, [peer, ended]);
+  }, [connection]);
   useEffect(() => {
     const controller = new AbortController();
     let reading = false;
@@ -54,7 +69,7 @@ export default function SavedAgentTools({
       const results = await Promise.allSettled([
         bridge.current.listTools(),
         request<{ recording: Recording | null }>(
-          peer,
+          connection,
           "/api/browser/shortcuts",
           { signal: controller.signal },
         ),
@@ -70,14 +85,14 @@ export default function SavedAgentTools({
         else {
           setTools([]);
           setError(catalog.reason.message);
-          ended(catalog.reason);
+          onEnded.current(catalog.reason);
         }
         if (progress.status === "fulfilled")
           setRecording(progress.value.recording);
         else {
           setRecording(null);
           setError(progress.reason.message);
-          ended(progress.reason);
+          onEnded.current(progress.reason);
         }
       }
       reading = false;
@@ -88,44 +103,49 @@ export default function SavedAgentTools({
       controller.abort();
       clearInterval(timer);
     };
-  }, [peer, revision, ended]);
+  }, [connection, revision]);
   const call = async (toolName: string, args: object) => {
     if (busy.current || !bridge.current) return;
+    const activeBridge = bridge.current;
     busy.current = true;
     setPending(true);
     setError("");
     setMessage("Running…");
     try {
-      const result = (await bridge.current.callTool(
+      const result = (await activeBridge.callTool(
         toolName,
         args,
       )) as RunResult;
-      if (!mounted.current) return;
+      if (!mounted.current || bridge.current !== activeBridge) return;
       if (result.status === "stopped")
         setError(
           `Stopped after ${result.completedSteps}/${result.totalSteps} steps. ${result.error} Completed actions stay applied. Inspect the screen before continuing.`,
         );
       setMessage(
         result.status === "completed"
-          ? `Executed ${result.completedSteps} steps. Check the screen to verify the task succeeded.`
+          ? `Executed ${result.completedSteps} step${result.completedSteps === 1 ? "" : "s"}. Check the screen to verify the task succeeded.`
           : result.status === "stopped"
             ? ""
             : toolName === "reach_save_shortcut"
-              ? "Saved. The task is now a tool in the list."
+              ? result.enabled === false
+                ? "Saved. The owner has disabled this task, so it remains unavailable until they enable it."
+                : "Saved. The task is now a tool in the list."
               : toolName === "reach_record_shortcut"
                 ? "Recording your app actions. Save after verifying success."
                 : "Recording discarded.",
       );
       setRevision((value) => value + 1);
     } catch (failure) {
-      if (mounted.current) {
+      if (mounted.current && bridge.current === activeBridge) {
         setMessage("");
         setError((failure as Error).message);
-        ended(failure);
+        onEnded.current(failure);
       }
     } finally {
-      busy.current = false;
-      if (mounted.current) setPending(false);
+      if (mounted.current && bridge.current === activeBridge) {
+        busy.current = false;
+        setPending(false);
+      }
     }
   };
   return (

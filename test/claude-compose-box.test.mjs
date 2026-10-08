@@ -39,6 +39,26 @@ test("a draft is read back until the editor shows it, and every text Reach may h
   assert.match(swift, /text typed on your Mac\. Reach won't overwrite it: send or clear it there\.", "draft": true\]/);
 });
 
+test("all ownership candidates and a maximum message fit in the finite native JSON budget", () => {
+  // JSON escapes a control character to six bytes per UTF-16 code unit:
+  // nine possible drafts (confirmed + eight uncertain), each at the API's
+  // 32k limit, plus a message at its 50k limit. Its escape/plain-text mix
+  // also fits the HTTP parser's 256 KiB cap. Do not drop ownership evidence.
+  const expected = Array.from({ length: 9 }, (_, i) => String.fromCharCode(i + 16).repeat(32000));
+  const text = "\u0001".repeat(40000) + "x".repeat(10000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ text })) <= 256 * 1024);
+  assert.ok(expected.every((text) => Buffer.byteLength(JSON.stringify({ text })) <= 256 * 1024));
+  const bytes = Buffer.byteLength(JSON.stringify({ text, expected, draft: false }));
+  const maximum = Number(swift.match(/let composerPayloadLimit = ([0-9_]+)/)?.[1].replaceAll("_", ""));
+  assert.ok(bytes > 524288, "regresses the previous cap, with every input within its API limit");
+  assert.ok(Number.isSafeInteger(maximum) && maximum <= 4 * 1024 * 1024, "still a finite input budget");
+  assert.ok(bytes <= maximum, `all candidates require ${bytes} bytes`);
+  const decode = between("func decodeComposerPayload(", "\nfunc attr(");
+  assert.match(decode, /guard data\.count <= composerPayloadLimit else \{ return nil \}/);
+  assert.match(decode, /JSONSerialization\.jsonObject\(with: data\)/);
+  assert.match(swift, /guard let decoded = decodeComposerPayload\(data\)/);
+});
+
 test("right after switching chats, the helper waits for the window to show this chat, by its id", () => {
   const guard = between("guard let title = option", 'out(["error": "The Claude app is showing another chat."');
   assert.match(guard, /let showing = \{ \(w: Window\) -> Bool in session\.map \{ w\.sessions == \[\$0\] \} \?\? \(w\.titles == \[title\]\) \}/);

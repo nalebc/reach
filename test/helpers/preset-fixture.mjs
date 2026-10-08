@@ -21,11 +21,12 @@ Object.assign(apps, { chrome, notes, onePassword, terminal, messages });
 const ownerAccount = { userId: "42", login: "owner@example.test" };
 const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nWasm: "100.64.0.4", nAgent: "100.64.0.5" };
 
-export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, agentShellRun, browserToolOptions } = {}) {
+export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, agentShellRun, browserToolOptions, includeSystemRoot = false } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-presets-")));
   const socketDir = fs.mkdtempSync("/tmp/reach-presets-sock-");
   const socketPath = path.join(socketDir, "s"), dataDir = path.join(dir, "private");
-  const home = path.join(dir, "home");
+  const home = path.join(dir, "home"), shared = path.join(dir, "shared");
+  fs.mkdirSync(shared);
   fs.mkdirSync(path.join(home, "Desktop", "Project"), { recursive: true });
   fs.writeFileSync(path.join(home, "Desktop", "Project", "brief.txt"), "A project brief");
   // Private things an agent must never reach, even under Full control.
@@ -41,7 +42,7 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     ...desktopExtras,
   };
   const reach = await createReach({
-    roots: [home, "/"], dataDir, port: 0, screen: true, tailscaleOwner: ownerAccount, publicOrigin: "",
+    roots: [home, includeSystemRoot ? path.parse(home).root : shared], dataDir, port: 0, screen: true, tailscaleOwner: ownerAccount, publicOrigin: "",
     browserScreenSupported: true, browserAppSupported: false,
     // Exercise preset admission/scopes independently of the host native file helper.
     browserFilesSupported: true,
@@ -88,5 +89,5 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     const as = (route, options = {}) => call(route, { node: "nAgent", token: joined.token, ...options });
     return { created: created.body, joined, as };
   };
-  return { reach, call, invite, join, home, cancelled, socketPath };
+  return { reach, call, invite, join, home, shared, cancelled, socketPath };
 }

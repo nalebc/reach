@@ -237,3 +237,48 @@ test("an agent name containing Abort or Cancel remains a structured busy respons
     });
   }
 });
+
+
+test("helper diagnostics reach HTTP, tailnet and a real MCP desktop tool without private fields or retries", async t => {
+  const body = { error: "Completion is unknown. Check the screen before trying again.", kind: "unavailable", helperReason: "process_exit", helperOperation: "act", helperDispatch: "completion_unknown", stderr: "PRIVATE-stderr", path: "/PRIVATE", exitCode: 99 };
+  const safe = { error: body.error, status: 503, kind: body.kind, helperReason: body.helperReason, helperOperation: body.helperOperation, helperDispatch: body.helperDispatch };
+  let calls = 0;
+  const api = await local(t, (req, res) => {
+    if (req.url === "/api/browser") return json(res, 200, { preset: "full", screen: true, control: true });
+    assert.equal(req.url, "/api/browser/desktop/input");
+    calls++;
+    json(res, 503, body);
+  });
+  const tailnet = tailnetApi({ fetch: () => ({ response: Promise.resolve(head(503, body)), abort() {} }) }, "https://fixture.tailnet.ts.net", "fixture");
+  for (const client of [api, tailnet]) {
+    await assert.rejects(client("/api/browser/desktop/input", "POST", { action: { type: "key", key: "enter" } }), error => {
+      assert.deepEqual(error.body, safe);
+      assert.equal(error.status, 503);
+      assert.equal(JSON.stringify(error).includes("PRIVATE"), false);
+      return true;
+    });
+  }
+  const input = new PassThrough(), output = new PassThrough();
+  let text = "";
+  output.on("data", chunk => { text += chunk; });
+  const done = serveMcp({ api, scopes: ["browser:read", "browser:control"], input, output });
+  input.end(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reach_act", arguments: { action: { type: "key", key: "enter" } } } }) + "\n");
+  await done;
+  const result = JSON.parse(text).result;
+  assert.equal(result.isError, true);
+  assert.deepEqual(JSON.parse(result.content[0].text), safe);
+  assert.equal(calls, 2, "one direct call and one MCP call; neither is retried");
+});
+
+test("helper metadata crosses the boundary only as a complete valid 503 tuple", () => {
+  const body = { error: "failed", status: 503, kind: "unavailable", helperReason: "timeout", helperOperation: "act", helperDispatch: "completion_unknown" };
+  assert.deepEqual(agentErrorDetails(body), body);
+  for (const patch of [
+    { status: 403 }, { status: 409 }, { kind: "blocked" },
+    { helperReason: "PRIVATE-reason" }, { helperOperation: "/PRIVATE-path" },
+    { helperDispatch: "PRIVATE-state" }, { helperDispatch: undefined },
+  ]) {
+    const result = agentErrorDetails({ ...body, ...patch });
+    for (const key of ["helperReason", "helperOperation", "helperDispatch"]) assert.equal(result[key], undefined);
+  }
+});
