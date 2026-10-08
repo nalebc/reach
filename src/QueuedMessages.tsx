@@ -4,7 +4,6 @@ import {
   ChevronDown,
   GripVertical,
   Image as ImageIcon,
-  MoreHorizontal,
   SquarePen,
   X,
 } from "lucide-react";
@@ -40,19 +39,26 @@ export default function QueuedMessages({
   onRemove: (m: OutboxMessage) => void;
   // Where Reach can do it (a Claude app chat, any Codex chat).
   onSendNow?: (m: OutboxMessage) => void;
-  onReorder?: (ids: string[]) => void;
+  onReorder?: (ids: string[]) => Promise<void> | void;
 }) {
   const claude = agent === "claude";
   const [open, setOpen] = useState(false);
-  const [menu, setMenu] = useState<string | null>(null);
   // The one shown whole, and the one being edited (its words so far).
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(
+    null,
+  );
   const [saving, setSaving] = useState(false);
   // While a row is dragged: the order shown, sent once the finger lifts.
   const [order, setOrder] = useState<string[] | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
-  const drag = useRef<{ id: string } | null>(null);
+  const drag = useRef<{
+    id: string;
+    pointerId: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const orderRef = useRef<string[] | null>(null);
   useEffect(() => {
     if (messages.length < 2) setOpen(false);
   }, [messages.length]);
@@ -66,15 +72,43 @@ export default function QueuedMessages({
     visibleUserText(m.text) ||
     (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message");
 
-  const move = (id: string, to: number) => {
-    const ids = (order || messages.map((m) => m.id)).filter((x) => x !== id);
+  useEffect(() => {
+    if (!orderRef.current) return;
+    const actual = messages.map((m) => m.id);
+    if (
+      actual.join() === orderRef.current.join() ||
+      actual.length !== orderRef.current.length ||
+      actual.some((id) => !orderRef.current?.includes(id))
+    ) {
+      orderRef.current = null;
+      setOrder(null);
+    }
+  }, [messages]);
+
+  const move = (
+    id: string,
+    to: number,
+    from = orderRef.current || messages.map((m) => m.id),
+  ) => {
+    const ids = from.filter((x) => x !== id);
     ids.splice(Math.max(0, Math.min(ids.length, to)), 0, id);
     return ids;
   };
-  const finish = (ids: string[]) => {
+  const finish = async (ids: string[]) => {
     const before = messages.map((m) => m.id).join();
-    if (ids.join() !== before) onReorder?.(ids);
-    setOrder(null);
+    if (ids.join() === before) {
+      orderRef.current = null;
+      setOrder(null);
+      return;
+    }
+    orderRef.current = ids;
+    setOrder(ids);
+    try {
+      await onReorder?.(ids);
+    } catch {
+      orderRef.current = null;
+      setOrder(null);
+    }
   };
 
   const row = (m: OutboxMessage, index: number) => (
@@ -84,49 +118,77 @@ export default function QueuedMessages({
         if (el) rows.current.set(m.id, el);
         else rows.current.delete(m.id);
       }}
-      className={`qm-row ${order && drag.current?.id === m.id ? "dragging" : ""}`}
+      className={`qm-row ${drag.current?.active && drag.current.id === m.id ? "dragging" : ""}`}
     >
       {sortable && !m.sending && (
         <button
           className="qm-grip"
           aria-label={`Reorder queued message ${index + 1} of ${shown.length}`}
           title="Drag or use the arrow keys to reorder"
+          disabled={!!busy}
           onPointerDown={(e) => {
+            if (e.button !== 0) return;
             e.currentTarget.setPointerCapture?.(e.pointerId);
-            drag.current = { id: m.id };
-            setOrder(messages.map((x) => x.id));
+            drag.current = {
+              id: m.id,
+              pointerId: e.pointerId,
+              startY: e.clientY,
+              active: false,
+            };
           }}
           onPointerMove={(e) => {
-            if (!drag.current) return;
-            // Over which row is the finger now? That's the new place.
+            const current = drag.current;
+            if (!current || current.pointerId !== e.pointerId) return;
+            if (!current.active) {
+              if (Math.abs(e.clientY - current.startY) < 5) return;
+              current.active = true;
+              orderRef.current = messages.map((x) => x.id);
+              setOrder(orderRef.current);
+            }
+            const ids = orderRef.current || messages.map((x) => x.id);
+            const from = ids.indexOf(current.id);
+            // Cross the other row's midpoint before changing places.
             for (const [id, el] of rows.current) {
               const r = el.getBoundingClientRect();
+              const to = ids.indexOf(id);
+              if (to < 0 || to === from) continue;
               if (
-                id !== drag.current.id &&
-                e.clientY >= r.top &&
-                e.clientY <= r.bottom
+                (to > from &&
+                  e.clientY >= r.top + r.height / 2 &&
+                  e.clientY <= r.bottom) ||
+                (to < from &&
+                  e.clientY <= r.top + r.height / 2 &&
+                  e.clientY >= r.top)
               ) {
-                const ids = order || messages.map((x) => x.id);
-                setOrder(move(drag.current.id, ids.indexOf(id)));
+                const next = move(current.id, to, ids);
+                orderRef.current = next;
+                setOrder(next);
                 break;
               }
             }
           }}
-          onPointerUp={() => {
-            if (!drag.current) return;
+          onPointerUp={(e) => {
+            if (!drag.current || drag.current.pointerId !== e.pointerId) return;
+            const active = drag.current.active;
             drag.current = null;
-            finish(order || messages.map((x) => x.id));
+            if (active)
+              void finish(orderRef.current || messages.map((x) => x.id));
           }}
           onPointerCancel={() => {
             drag.current = null;
+            orderRef.current = null;
             setOrder(null);
           }}
           onKeyDown={(e) => {
             if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
             e.preventDefault();
-            const ids = messages.map((x) => x.id);
-            finish(
-              move(m.id, ids.indexOf(m.id) + (e.key === "ArrowUp" ? -1 : 1)),
+            const ids = orderRef.current || messages.map((x) => x.id);
+            void finish(
+              move(
+                m.id,
+                ids.indexOf(m.id) + (e.key === "ArrowUp" ? -1 : 1),
+                ids,
+              ),
             );
           }}
         >
@@ -153,6 +215,8 @@ export default function QueuedMessages({
               try {
                 await onEdit(m, editing.text);
                 setEditing(null);
+              } catch {
+                // Keep the draft open; the parent shows the server's error.
               } finally {
                 setSaving(false);
               }
@@ -166,10 +230,18 @@ export default function QueuedMessages({
               onChange={(e) => setEditing({ id: m.id, text: e.target.value })}
             />
             <span className="qm-edit-actions">
-              <button type="button" onClick={() => setEditing(null)} disabled={saving}>
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                disabled={saving}
+              >
                 Cancel
               </button>
-              <button type="submit" className="primary" disabled={saving || (!editing.text.trim() && !m.images)}>
+              <button
+                type="submit"
+                className="primary"
+                disabled={saving || (!editing.text.trim() && !m.images)}
+              >
                 Save
               </button>
             </span>
@@ -192,43 +264,33 @@ export default function QueuedMessages({
           </small>
         ) : null}
       </div>
-      {onSendNow && (!claude || m.via === "app") && !m.sending && editing?.id !== m.id && (
-        <button
-          className="qm-now"
-          aria-label="Send now"
-          title="Send now"
-          disabled={!!busy}
-          onClick={() => onSendNow(m)}
-        >
-          <ArrowUp size={15} />
-        </button>
-      )}
-      {editing?.id !== m.id && (
-        <span className="qm-menu">
+      {onSendNow &&
+        (!claude || m.via === "app") &&
+        !m.sending &&
+        editing?.id !== m.id && (
           <button
-            aria-label="Queued message actions"
-            aria-expanded={menu === m.id}
+            className="qm-now"
+            aria-label="Send now"
+            title="Send now"
             disabled={!!busy}
-            onClick={() => setMenu(menu === m.id ? null : m.id)}
+            onClick={() => onSendNow(m)}
           >
-            <MoreHorizontal size={16} />
+            <ArrowUp size={15} />
           </button>
-          {menu === m.id && (
-            <div className="qm-popover" role="menu">
-              <button
-                role="menuitem"
-                disabled={!canEdit || !!m.sending}
-                onClick={() => {
-                  setMenu(null);
-                  setExpanded(null);
-                  setEditing({ id: m.id, text: visibleUserText(m.text) });
-                }}
-              >
-                <SquarePen size={14} /> Edit message
-              </button>
-            </div>
-          )}
-        </span>
+        )}
+      {editing?.id !== m.id && (
+        <button
+          className="qm-action"
+          aria-label="Edit queued message"
+          title="Edit"
+          disabled={!canEdit || !!m.sending}
+          onClick={() => {
+            setExpanded(null);
+            setEditing({ id: m.id, text: visibleUserText(m.text) });
+          }}
+        >
+          <SquarePen size={16} />
+        </button>
       )}
       <button
         aria-label="Remove queued message"

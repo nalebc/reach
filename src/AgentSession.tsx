@@ -2812,9 +2812,12 @@ export default function AgentSessionView({
             }}
             {...((agent === "claude" || agent === "codex") && {
               onReorder: async (ids: string[]) => {
+                setQueueBusy("order");
                 try {
                   await reorderQueued(peer, initial, ids);
-                } catch (error) { setProblem((error as Error).message); }
+                  void load(false);
+                } catch (error) { setProblem((error as Error).message); throw error; }
+                finally { setQueueBusy(null); }
               },
             })}
           />

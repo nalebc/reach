@@ -191,9 +191,8 @@ test("app-owned Codex turns have Stop; queued messages sit above the composer an
   assert.ok(button("Stop"));
   assert.equal($(".as-scroll .qm"), null);
   assert.ok($(".as-composer .qm"));
-  // Edit is in the row's menu, as in the Codex app, and changes it where it waits.
-  await click(button("Queued message actions"));
-  await click($('[role="menuitem"]'));
+  // Edit is reachable in the row and changes it where it waits.
+  await click(button("Edit queued message"));
   const box = $('textarea[aria-label="Edit queued message"]');
   assert.equal(box.value, "Then test");
   dom.update(() => {
