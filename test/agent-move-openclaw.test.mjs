@@ -343,3 +343,13 @@ test("revoked owner HTTP move request forwards live authorization to deferred pr
   assert.equal((await work).status, 401);
   assert.equal(writes, 0);
 });
+
+test("auto-continue can restore its project when moving out of OpenClaw", async t => {
+  const { root, daemon, sessions } = hub({ history: async () => ({
+    session: { title: "Continue the project" }, items: [{ id: "m1", role: "user", text: "Finish it" }],
+  }) });
+  t.after(() => { sessions.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await sessions.move("openclaw", "agent:main:reach-project", { to: "codex", cwd: "/work/original-project" });
+  const fork = daemon.calls.find(([method]) => method === "thread/fork")[1];
+  assert.equal(fork.cwd, "/work/original-project");
+});

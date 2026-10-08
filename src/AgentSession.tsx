@@ -58,7 +58,7 @@ import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
-import { RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
+import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
 import { HelperBadge, TeamStrip, teamHelping, teamLedBy, teamToolLabel } from "./Teams";
 import MascotTyping from "./MascotTyping";
 import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
@@ -2424,7 +2424,7 @@ export default function AgentSessionView({
   const [details, setDetails] = useState(false);
   // A second opinion on a reply, or a relay for when this chat's agent
   // finishes (Relays.tsx). One just set up shows at once, before the list has it.
-  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" }>(null);
+  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" | "auto-continue" }>(null);
   const [ownRelays, setOwnRelays] = useState<Relay[]>([]);
   const shownRelays = useMemo(() => {
     const byId = new Map(ownRelays.map((r) => [r.id, r]));
@@ -2644,6 +2644,15 @@ export default function AgentSessionView({
                 onSelect(s);
               }}
             />
+            {(info.agent === "claude" || info.agent === "codex") && (
+              <button className="relay-menu-item" role="menuitem" onClick={() => {
+                setDetails(false);
+                setRelaySheet({ mode: "auto-continue" });
+              }}>
+                <Workflow size={18} />
+                <span className="move-item-text"><span>Auto-continue</span><small>Switch providers when usage runs out</small></span>
+              </button>
+            )}
             {/* Its work goes on to another agent (Relays.tsx). */}
             <button
               className="relay-menu-item"
@@ -3524,6 +3533,10 @@ export default function AgentSessionView({
           onClose={() => setRelaySheet(null)}
           onStarted={relayStarted}
         />
+      )}
+      {relaySheet?.mode === "auto-continue" && (
+        <AutoContinueSheet peer={peer} session={info} health={health}
+          onClose={() => setRelaySheet(null)} onStarted={relayStarted} />
       )}
       {relaySheet?.mode === "relay" && (
         <RelaySheet

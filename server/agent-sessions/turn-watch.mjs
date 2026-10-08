@@ -39,6 +39,7 @@ export function usageLimited(agent, item) {
       item?.detail === "billing_error" ||
       /hit your [\w' ]{0,30}limit|usage limit|out of (extra )?usage|usage credits|spend limit|credit balance/i.test(text)
     );
+  if (agent === "openclaw") return /usage limit|out of (extra )?usage|credit balance|insufficient credits|quota exhausted/i.test(text);
   return false;
 }
 
