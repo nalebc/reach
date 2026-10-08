@@ -50,6 +50,13 @@ export function stepWords(step: RelayStep, chain: Relay["chain"] = [], n = 0, st
 
 // Where a relay stands, seen from one of its chats.
 export function relayLine(relay: Relay, here: ChatRef) {
+  if (relay.trigger === "usage") {
+    const target = agentLabel(relay.steps[0]?.agent || "");
+    if (relay.state === "waiting") return `Auto-continue in ${target} if usage runs out (24 hours).`;
+    if (relay.state === "sending") return `Continuing in ${target}…`;
+    if (relay.state === "done") return `Auto-continued in ${target}.`;
+    return relay.problem || "Auto-continue stopped.";
+  }
   const at = relay.chain.at(-1)!;
   const waitingHere = at.agent === here.agent && at.id === here.id;
   const rest = relay.steps.slice(relay.next).map((s, i) => stepWords(s, relay.chain, relay.next + i, relay.steps));
@@ -131,7 +138,7 @@ export function RelayStrip({
               </span>
             )}
             <span className="relay-row-text">{relayLine(r, here)}</span>
-            {elsewhere && r.state !== "stopped" && (
+            {elsewhere && (r.state !== "stopped" || r.trigger === "usage") && (
               <button className="relay-row-action" onClick={() => onOpen(at)}>
                 Open
               </button>
@@ -560,4 +567,36 @@ export function SecondOpinionButton({ onClick, labelled = false }: { onClick: ()
       <SearchCheck size={15} />
     </button>
   );
+}
+
+// Uses the same persisted, cancellable watch as a relay, with a usage-only trigger.
+export function AutoContinueSheet({ peer, session, health, onClose, onStarted }: {
+  peer: Peer; session: AgentSession; health: AgentHealth[];
+  onClose: () => void; onStarted: (started: RelayStarted) => void;
+}) {
+  const target = session.agent === "claude" ? "codex" : "claude";
+  const ready = relayAgents(health, { openclaw: false }).includes(target);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const enable = async () => {
+    setBusy(true);
+    try {
+      onStarted(await startRelay(peer, {
+        from: { agent: session.agent, id: session.id },
+        steps: [{ kind: "build", agent: target }], trigger: "usage",
+      }));
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+    <p className="relay-say">If {agentLabel(session.agent)} runs out of usage, automatically continue this conversation in {agentLabel(target)} with its history and the same project.</p>
+    <p className="relay-say">Watches this chat for 24 hours and switches once. The new provider uses its own permissions and usage. You can cancel above the message box.</p>
+    {!ready && <p className="relay-problem">Sign in to {agentLabel(target)} with available usage on this computer first.</p>}
+    {problem && <p className="relay-problem" role="alert">{problem}</p>}
+    <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
+      {busy ? <Loader2 size={16} className="spin" /> : `Enable auto-continue in ${agentLabel(target)}`}
+    </button>
+  </ChatSheet>;
 }

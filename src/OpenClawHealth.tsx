@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Activity, Loader2, RotateCw } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { ClawMaintenance } from "./OpenClawMaintenance";
 import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
 import { ClawRow } from "./OpenClawRow";
@@ -205,21 +206,6 @@ function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
       setBusy("");
     }
   };
-  // Doctor and Update run in a Reach terminal, answered there.
-  const inTerminal = async (what: "doctor" | "update") => {
-    setBusy(what);
-    setNote("");
-    setProblem("");
-    try {
-      const { terminal } = await post<{ terminal: { id: string } }>(peer, `${clawBase}/health/${what}`);
-      window.dispatchEvent(new CustomEvent("reach:open-terminal", { detail: terminal.id }));
-      setNote("Opened in Terminal");
-    } catch (e) {
-      setProblem((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
   return (
     <>
       <div className="claw-health-actions">
@@ -232,15 +218,8 @@ function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
           {busy === "restart" && <Loader2 size={14} className="spin" />}
           {busy === "restart" ? "Restarting…" : armed ? "Tap to restart" : "Restart"}
         </button>
-        <button type="button" className="claw-secondary" disabled={!!busy} onClick={() => inTerminal("doctor")}>
-          {busy === "doctor" && <Loader2 size={14} className="spin" />}
-          Doctor
-        </button>
-        <button type="button" className="claw-secondary" disabled={!!busy} onClick={() => inTerminal("update")}>
-          {busy === "update" && <Loader2 size={14} className="spin" />}
-          Update
-        </button>
       </div>
+      <ClawMaintenance peer={peer} onChanged={onRestarted} disabled={!!busy} />
       {note && <p className="claw-note claw-health-note">{note}</p>}
       {problem && (
         <p className="claw-error" role="alert">

@@ -1478,10 +1478,12 @@ test("a message sent mid-turn ends with that turn's result, not Working for good
 // "I keep changing permissions to Auto but it reverts to Manual." The
 // transcript keeps the mode of the chat's last message (Manual); filled in
 // on the next message, it switched Reach's Claude Code straight back.
-test("Auto picked for a chat Reach runs stays Auto on its next messages", async () => {
+test("Auto picked for a chat Reach runs stays Auto on its next messages", async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-mode-test-"));
   const claude = fakeClaude();
   const claudeHost = host(claude);
   const sessions = createAgentSessions({
+    dataDir,
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
     claude: {
@@ -1495,6 +1497,7 @@ test("Auto picked for a chat Reach runs stays Auto on its next messages", async 
     signIn: {},
     liveMs: -1,
   });
+  t.after(() => { sessions.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
   await sessions.send("claude", ID, { text: "first" });
   const proc = claude.last();
   proc.print({ type: "result", is_error: false });
@@ -1686,8 +1689,13 @@ test("a chat cut off by Reach quitting is handed to the next Reach, once", async
   const kept = JSON.parse(fs.readFileSync(workingFile, "utf8"));
   assert.ok(Number.isFinite(kept.stoppedAt));
   const next = host(fakeClaude(), { workingFile });
-  assert.deepEqual(next.interrupted(), [{ id: ID, cwd: "/work/app" }]);
+  const [recovery] = next.interrupted();
+  assert.equal(recovery.id, ID);
+  assert.equal(recovery.cwd, "/work/app");
+  assert.equal(typeof recovery.recovery, "string");
   assert.deepEqual(next.interrupted(), []);
+  assert.equal(fs.existsSync(workingFile), true, "reading must not lose pending recovery");
+  next.recovered(ID);
   assert.equal(fs.existsSync(workingFile), false);
   // Left long ago (Reach stopped yesterday): not continued.
   fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID }], stoppedAt: Date.now() - 60 * 60 * 1000 }));
@@ -1697,13 +1705,14 @@ test("a chat cut off by Reach quitting is handed to the next Reach, once", async
 test("the next Reach continues a chat the last one cut off, the way any message reaches it", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-continue-"));
   const workingFile = path.join(dir, "claude-working.json");
-  fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site" }], stoppedAt: Date.now() }));
+  fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site", model: "claude-test-model", effort: "max", mode: "acceptEdits" }], stoppedAt: Date.now() }));
   const claude = fakeClaude(), h = host(claude, { workingFile });
   const sessions = createAgentSessions({
     dataDir: dir,
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: { list: async () => [], health: async () => ({}) },
     claude: {
+      starts: async () => [],
       health: async () => ({ signedIn: true }),
       read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [] }),
     },
@@ -1721,6 +1730,8 @@ test("the next Reach continues a chat the last one cut off, the way any message 
   assert.ok(proc, "Claude Code was resumed");
   assert.deepEqual(proc.args.slice(proc.args.indexOf("--resume"), proc.args.indexOf("--resume") + 2), ["--resume", ID]);
   assert.equal(proc.options.cwd, "/work/site");
+  for (const [flag, value] of [["--model", "claude-test-model"], ["--effort", "max"], ["--permission-mode", "acceptEdits"]])
+    assert.equal(proc.args[proc.args.indexOf(flag) + 1], value);
   const sent = proc.lines.find((m) => m.type === "user");
   assert.match(sent.message.content[0].text, /^Reach restarted while you were working/);
 });
@@ -1734,5 +1745,98 @@ test("a chat whose Claude Code dies before Reach's close is still continued", as
   await h.send(ID, { text: "fix it", cwd: "/work/app" });
   claude.last().exit(143);
   h.close();
-  assert.deepEqual(host(fakeClaude(), { workingFile }).interrupted(), [{ id: ID, cwd: "/work/app" }]);
+  assert.deepEqual(h.working(), [], "a dead process must not hold a deferred restart");
+  const [recovery] = host(fakeClaude(), { workingFile }).interrupted();
+  assert.equal(recovery.id, ID);
+  assert.equal(recovery.cwd, "/work/app");
 });
+
+test("recovery survives another shutdown before handoff and retains the last confirmed settings", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-recovery-journal-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const workingFile = path.join(dir, "working.json");
+  const fake = fakeClaude(), first = host(fake, { workingFile });
+  await first.send(ID, { text: "work", cwd: "/work/app", model: "chosen-model", effort: "max", mode: "manual" });
+  fake.last().print({ type: "system", subtype: "status", permissionMode: "acceptEdits" });
+  first.close();
+  const second = host(fakeClaude(), { workingFile });
+  const pending = second.interrupted();
+  assert.equal(pending[0].model, "chosen-model");
+  assert.equal(pending[0].effort, "max");
+  assert.equal(pending[0].mode, "acceptEdits");
+  second.close();
+  const third = host(fakeClaude(), { workingFile });
+  assert.deepEqual(third.interrupted(), pending);
+  third.recovered(ID);
+  third.close();
+  assert.equal(fs.existsSync(workingFile), false);
+});
+
+test("a user's explicit stop never becomes an automatic continuation", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-recovery-stop-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const workingFile = path.join(dir, "working.json");
+  const fake = fakeClaude(), h = host(fake, { workingFile });
+  await h.send(ID, { text: "work", cwd: "/work/app" });
+  await h.stop(ID);
+  fake.last().exit(143);
+  h.close();
+  assert.deepEqual(host(fakeClaude(), { workingFile }).interrupted(), []);
+});
+
+for (const scenario of ["native", "already running", "queued reply", "uncertain delivery", "read unavailable"]) {
+  test(`restart recovery: ${scenario}`, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-recovery-route-"));
+    const workingFile = path.join(dir, "working.json");
+    fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site", model: "old-model", effort: "max" }], stoppedAt: Date.now() }));
+    const fake = fakeClaude(), h = host(fake, { workingFile });
+    const outbox = createOutbox({ file: path.join(dir, "outbox.json") });
+    if (scenario === "queued reply") outbox.add(ID, { text: "my queued reply", via: "app", title: "Claw" });
+    let attempts = 0;
+    const received = [];
+    const sessions = createAgentSessions({
+      dataDir: dir, outbox, claudeHost: h,
+      daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+      codex: { list: async () => [], health: async () => ({}) },
+      claude: {
+      starts: async () => [],
+        list: async () => [],
+        read: async (id) => {
+          if (scenario === "read unavailable") throw Error("temporarily unavailable");
+          return { session: { agent: "claude", id, cwd: "/work/site", inApp: true, title: "Claw", model: "native-model", effort: "low" }, items: [] };
+        },
+      },
+      claudeCompose: { deliver: async (id, message) => {
+        attempts++;
+        if (scenario === "uncertain delivery") throw Object.assign(Error("delivery uncertain"), { retryable: false });
+        received.push({ id, ...message });
+      } },
+      claudeImports: { add: async () => assert.fail("native chat must not be imported again"), close() {} },
+      live: async () => new Map(scenario === "already running" ? [[ID, { where: "claude-app", exact: true, busy: true, pid: 123 }]] : []),
+      signIn: {}, continueMs: 1, queueMs: 1, appRetryMs: 1,
+    });
+    t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+    sessions.warm();
+    sessions.warm(); // warmup can be called twice without duplicating recovery.
+    await settle(100);
+    assert.equal(fake.runs.length, 0, "native recovery must not start a Reach-owned Claude process");
+    if (scenario === "read unavailable") {
+      assert.equal(fs.existsSync(workingFile), true);
+      assert.equal(attempts, 0);
+    } else {
+      assert.equal(fs.existsSync(workingFile), false);
+      assert.equal(attempts, scenario === "already running" ? 0 : 1);
+      if (scenario === "uncertain delivery") {
+        assert.equal(outbox.list(ID)[0].delivery, "paused");
+        const reloaded = createOutbox({ file: path.join(dir, "outbox.json") });
+        assert.equal(reloaded.list(ID).length, 1);
+        assert.equal(reloaded.list(ID)[0].delivery, "paused");
+      } else if (scenario !== "already running") {
+        assert.equal(received[0].id, ID);
+        assert.equal(received[0].text, scenario === "queued reply" ? "my queued reply" : "Reach restarted while you were working and cut off your last step. Continue where you left off.");
+        assert.equal(received[0].model, undefined, "the native app keeps its current settings");
+        assert.equal(outbox.list(ID).length, 0);
+      }
+    }
+  });
+}

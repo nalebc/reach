@@ -470,9 +470,12 @@ export function createAgentSessions({
     liveCache = null;
     return !alive(holder.pid);
   };
-  const holderOf = async (id) => {
+  const holderOf = async (id, { requireLive = false } = {}) => {
     liveCache = null;
-    const holder = (await liveNow().catch(() => new Map())).get(id);
+    const holder = (await liveNow().catch((error) => {
+      if (requireLive) throw error;
+      return new Map();
+    })).get(id);
     if (!holder || claudeHost.drives(id)) return null;
     if (holder.where === "terminal")
       throw blocked(`This session is open in a terminal on your ${computerWord(platform)}. Reply there or from the Terminal tab.`);
@@ -531,6 +534,7 @@ export function createAgentSessions({
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
   let closed = false;
+  let recoveryChats = claudeHost.interrupted?.() || [];
   const preparingHelpers = new AbortController();
   const delivering = new Set();
   const deliveringMessage = new Map();
@@ -636,7 +640,7 @@ export function createAgentSessions({
     }
   };
   // Left waiting when Reach last stopped: on their way again.
-  for (const id of outbox.sessions()) void deliver(id);
+  for (const id of outbox.sessions()) if (!recoveryChats.some((chat) => chat.id === id)) void deliver(id);
   // Claude sessions started here join the Claude app's list once Reach lets
   // go of them, through the app's own import, when nobody is at the Mac (the
   // import switches the app's window), so they're there when you get to it.
@@ -1566,16 +1570,48 @@ export function createAgentSessions({
       // Chats the last Reach left mid-turn (a restart, a crash) go on: told
       // so the way any message reaches them, into the Claude app when it
       // lists the chat, else Reach's own Claude Code.
-      const left = claudeHost.interrupted?.() || [];
+      const left = recoveryChats;
+      recoveryChats = [];
       if (left.length) {
-        const api = this;
-        const resume = (chat, tries = 0) => {
+        const resume = async (chat, tries = 0) => {
           if (closed) return;
-          api.send("claude", chat.id, { text: CONTINUE_AFTER_RESTART }).catch(() => {
-            if (tries < 4) setTimeout(() => resume(chat, tries + 1), 30000).unref?.();
-          });
+          try {
+            const { session } = await claude.read(chat.id, { limit: 1 });
+            const holder = await holderOf(chat.id, { requireLive: true });
+            if (closed) return;
+            // Someone may already have continued in the native app. Never
+            // send a second continuation into their running turn.
+            const running = claudeHost.running(chat.id) || (holder && await busy(chat.id, holder));
+            if (closed) return;
+            if (!running && !outbox.list(chat.id).length) {
+              const { recovery, model, effort, mode } = chat;
+              const native = session.inApp && claudeCompose && !keepOut("claude", chat.id);
+              outbox.add(chat.id, {
+                text: CONTINUE_AFTER_RESTART, recovery,
+                ...(native
+                  // Native chats retain the app's current settings and wait
+                  // for it to open, rather than silently switching owners.
+                  ? { via: "app", title: session.appTitle || session.title || "Untitled" }
+                  : { cwd: session.cwd || chat.cwd, model, effort, mode: mode || session.mode }),
+              });
+              if (!native && !session.inApp && !keepOut("claude", chat.id)) void claudeImports.add(chat.id);
+            }
+            try { claudeHost.recovered?.(chat.id); }
+            catch (error) {
+              // If the handoff can't be committed, don't risk sending the
+              // same continuation again on the next restart.
+              for (const message of outbox.list(chat.id))
+                if (message.recovery === chat.recovery) outbox.pause(chat.id, message.id, "Recovery could not be saved. Check the chat before continuing.");
+              throw error;
+            }
+            void deliver(chat.id);
+          } catch {
+            // No send occurs here: the durable outbox owns delivery and
+            // pauses uncertain writes. Only read/save failures retry here.
+            if (!closed && tries < 4) setTimeout(() => void resume(chat, tries + 1), 30000).unref?.();
+          }
         };
-        setTimeout(() => left.forEach((chat) => resume(chat)), continueMs).unref?.();
+        setTimeout(() => left.forEach((chat) => void resume(chat)), continueMs).unref?.();
       }
       // The helpers that read and press an app's card, built just after
       // start (2-5 s each, cached by their source), so the first card opened

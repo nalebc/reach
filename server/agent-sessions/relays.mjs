@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { agentName } from "./move.mjs";
-import { turnOutcome } from "./turn-watch.mjs";
+import { turnOutcome, usageLimited } from "./turn-watch.mjs";
 import { CODEX_MODES } from "./codex.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { backMessage, relayMessage, reportMessage, reviewMessage, turnMaterial } from "./chat-context.mjs";
@@ -232,6 +232,7 @@ export function createRelays({
   const view = (r) => ({
     id: r.id,
     state: r.state,
+    ...(r.trigger ? { trigger: r.trigger } : {}),
     problem: r.problem || "",
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -263,6 +264,29 @@ export function createRelays({
     if (reason) return void stop(r, reason);
     const step = r.steps[r.next];
     const src = r.chain.at(-1);
+    if (r.trigger === "usage") {
+      r.state = "sending";
+      r.updatedAt = now();
+      candidates.delete(r.id);
+      save();
+      try {
+        const moved = await sessions.move(src.agent, src.id, {
+          to: step.agent, resume: true, owner: r.owner, authorize: allowed(r.owner),
+        });
+        r.chain.push({ agent: moved.agent, id: moved.id, title: src.title, cwd: src.cwd });
+        r.sent.push({ kind: "build", to: { agent: moved.agent, id: moved.id }, at: now() });
+        r.next++;
+        r.state = moved.resumed ? "done" : "stopped";
+        r.problem = moved.resumed ? "" : moved.resumeError || "The chat moved, but couldn't continue. Open it to retry.";
+        r.updatedAt = now();
+        save();
+        void say(r, moved.resumed ? "Auto-continued" : "Auto-continue stopped",
+          moved.resumed ? `${agentName(src.agent)} ran out of usage. Continued in ${agentName(moved.agent)}.` : r.problem);
+      } catch (e) {
+        stop(r, e?.message || "Couldn't continue in the other agent.");
+      }
+      return;
+    }
     // A helper's turn that ended on an error or a Stop is still reported to
     // its lead (what went wrong); every other step needs a reply.
     const material =
@@ -428,7 +452,10 @@ export function createRelays({
           const items = page.items || [];
           const outcome = turnOutcome(items);
           const ours = startsWith(outcome.request, r.expect);
-          if (outcome.kind === "reply" && ours && outcome.item.id !== r.since) {
+          const eligible = r.trigger === "usage"
+            ? outcome.kind === "error" && usageLimited(src.agent, outcome.item)
+            : outcome.kind === "reply";
+          if (eligible && ours && outcome.item.id !== r.since) {
             const seen = candidates.get(r.id);
             if (seen?.item === outcome.item.id && now() - seen.at >= settleMs) {
               await fire(r, page, outcome).catch(() => {});
@@ -452,7 +479,7 @@ export function createRelays({
             const end = items.at(-1)?.id;
             if (ours && (outcome.kind === "error" || outcome.kind === "stopped") && end !== r.since && end !== r.noted) {
               r.noted = end;
-              r.problem = `${agentName(src.agent)} ${outcome.kind === "stopped" ? "was stopped" : "ended on an error"}. This waits for its next reply.`;
+              r.problem = r.trigger === "usage" ? "Auto-continue waits for a usage limit; other errors and stops do not switch providers." : `${agentName(src.agent)} ${outcome.kind === "stopped" ? "was stopped" : "ended on an error"}. This waits for its next reply.`;
               r.updatedAt = now();
               save();
             }
@@ -488,9 +515,14 @@ export function createRelays({
     // postBack (Oct 8, the owner's choice per relay): the last answer is
     // posted to the OpenClaw chat this started from, the one-to-one WhatsApp
     // or Telegram chat that asked (openClaw.post: never a group or channel).
-    async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "", postBack = false }) {
+    async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "", postBack = false, trigger = "reply" }) {
       if (!sources.includes(from?.agent) || !chatId(from.agent, from?.id)) throw bad("Unknown chat.", 404);
       const checked = checkSteps(steps, from, agents);
+      if (!["reply", "usage"].includes(trigger)) throw bad("Unknown relay trigger.");
+      if (trigger === "usage" && (!RELAY_AGENTS.includes(from.agent) || checked.length !== 1 ||
+          checked[0].kind !== "build" || !RELAY_AGENTS.includes(checked[0].agent) || checked[0].agent === from.agent ||
+          atOnce || item || postBack || checked[0].instructions))
+        throw bad("Auto-continue needs one other provider: Codex or Claude Code.");
       if (postBack !== false) {
         if (postBack !== true || from.agent !== "openclaw" || !openClaw?.post)
           throw bad("Only a WhatsApp or Telegram chat in OpenClaw can get the result back.");
@@ -520,11 +552,12 @@ export function createRelays({
         updatedAt: now(),
         waitingSince: now(),
         steps: checked,
+        trigger,
         next: 0,
         chain: [{ agent: from.agent, id: from.id, title: page.session?.title || "", cwd: page.session?.cwd || dir }],
         // Waiting: a reply newer than the chat's end now (any reply ending
         // the turn it's in, when it's working now).
-        since: BUSY.has(page.session?.status) ? null : items.at(-1)?.id || null,
+        since: trigger === "usage" || BUSY.has(page.session?.status) ? null : items.at(-1)?.id || null,
         expect: "",
         state: "waiting",
         problem: "",

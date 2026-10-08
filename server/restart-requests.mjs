@@ -73,7 +73,7 @@ export function restartRequests({ dataDir, restart, working = () => [], onChange
     try {
       return working() || [];
     } catch {
-      return [];
+      throw fail(503, "Reach couldn't check working chats. The restart is still waiting.");
     }
   };
   // A restart waiting for chats: checked on a beat, restarts once none work.
@@ -83,7 +83,8 @@ export function restartRequests({ dataDir, restart, working = () => [], onChange
     timer = setInterval(() => {
       const r = readRequest(file);
       if (!r?.after) return void clearInterval(timer);
-      if (chats().length) return;
+      try { if (chats().length) return; }
+      catch { return; }
       clearInterval(timer);
       fs.rmSync(file, { force: true });
       restart();

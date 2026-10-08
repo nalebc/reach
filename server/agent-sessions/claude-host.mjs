@@ -265,7 +265,7 @@ export function createClaudeHost({
   let recorded = null;
   // A process that died mid-turn (a restart's signal can reach it before
   // Reach's own close) stays on record until its chat gets a message again.
-  const busy = () => [...sessions.values()].filter((s) => (s.proc && (s.turns || s.background)) || s.cutOff);
+  const busy = () => [...sessions.values()].filter((s) => !s.stopping && ((s.proc && (s.turns || s.background)) || s.cutOff));
   const record = (stoppedAt, strict = false) => {
     if (!workingFile || (closed && !stoppedAt)) return;
     const chats = [...new Map([
@@ -598,7 +598,7 @@ export function createClaudeHost({
     proc.on("exit", () => {
       if (s.proc !== proc) return;
       s.proc = null;
-      if (s.turns || s.background) s.cutOff = true;
+      if (!s.stopping && (s.turns || s.background)) s.cutOff = true;
       for (const waiting of s.pending.values()) { clearTimeout(waiting.timer); waiting.reject(uncertainDelivery("claude")); }
       s.pending.clear();
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
@@ -769,6 +769,7 @@ export function createClaudeHost({
         s.stopping = false;
         throw error;
       });
+      record();
       return { stopped: true };
     },
     async respond(id, promptId, answer) {

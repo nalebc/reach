@@ -18,11 +18,12 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-restart-"));
   const dataDir = path.join(dir, "private");
   let restarted = 0;
+  let working = [];
   const reach = await createReach({
     dataDir,
     roots: [dir],
     restartReach: () => restarted++,
-    agentSessions: { list: async () => ({ sessions: [] }), close() {} },
+    agentSessions: { list: async () => ({ sessions: [] }), working: () => working, close() {} },
     openClaw: { overview: async () => ({ connected: false }), close() {} },
   });
   t.after(async () => {
@@ -58,6 +59,20 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   assert.equal((await call(route, owner, { revision: item.revision, action: "restart" })).status, 200);
   assert.equal(restarted, 1);
   assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
+  // Exercise the phone's actual notification/action endpoints as well as
+  // the standalone restart controller.
+  working = [{ id: "chat-a", title: "Claw UI rebuild" }];
+  askRestart(dataDir, { app: "Claude" });
+  await new Promise((r) => setTimeout(r, 400));
+  const busy = (await call("/api/notifications")).body.items.find((i) => i.source === "restart");
+  assert.match(busy.summary, /Claw UI rebuild/);
+  const busyRoute = `/api/notifications/${encodeURIComponent(busy.id)}/actions`;
+  const deferred = await call(busyRoute, owner, { revision: busy.revision, action: "after" });
+  assert.equal(deferred.status, 200);
+  assert.equal(restarted, 1);
+  working = [];
+  for (let n = 0; n < 40 && restarted === 1; n++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(restarted, 2);
   await new Promise((r) => setTimeout(r, 400)); // answered: the list refreshes
   assert.equal((await call("/api/notifications")).body.items.some((i) => i.source === "restart"), false);
   // Not now: dropped, nothing restarts.
@@ -65,7 +80,7 @@ test("an agent's restart is a Needs you request; only the owner's Restart restar
   await new Promise((r) => setTimeout(r, 400)); // the new request wakes the list
   const next = (await call("/api/notifications")).body.items.find((i) => i.source === "restart");
   assert.equal((await call(`/api/notifications/${encodeURIComponent(next.id)}/actions`, owner, { revision: next.revision, action: "deny" })).status, 200);
-  assert.equal(restarted, 1);
+  assert.equal(restarted, 2);
   assert.equal(fs.existsSync(restartRequestFile(dataDir)), false);
 });
 
