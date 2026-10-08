@@ -90,6 +90,8 @@ before(async () => {
 });
 beforeEach(() => {
   dom.window.localStorage.clear();
+  // Each app's own list, Codex first (Chat itself starts on All until an app is picked).
+  dom.window.localStorage.setItem("reach.chatAgent", "codex");
   items = [];
   calls = [];
   stale = false;

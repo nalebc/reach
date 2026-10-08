@@ -20,8 +20,7 @@ What's set up shows above the box, with Cancel. Each relay sends once. A relay s
 
 **5. Mention a chat.** Type **@** in a message box to pick a chat from any agent, as well as files. Your message goes with that chat's latest request, reply and changed files. The bubble shows the chat's name, not the pasted context.
 
-**6. The All page.** The first page in Chat when more than one agent is installed (swipe right from Codex, or pick **All** in the app menu), for every agent at once, on every computer this phone is paired with:
-- **While you were away**: what finished, what failed, what waits on you, and how many files each chat changed since you last looked.
+**6. The All page.** The first page in Chat when more than one agent is installed (swipe right from Codex, or pick **All** in the app menu), for every agent at once, on every computer this phone is paired with. Chat opens on it until you pick an app, then on the app you picked last. It shows:
 - **Search everything**: one search across Codex and Claude Code conversations (what was said, not tool output or the agents' own notes), plus every chat's name.
 - **Teams** at work and **relays** in progress, with Cancel.
 - **Projects**: chats grouped by folder across agents, each with its agent, status and the files it changed recently. A warning shows when two chats changed the same file in the last 30 minutes.
@@ -38,19 +37,18 @@ With more than one computer, each row shows which computer it's on, and the same
 - **It stops when access does.** A relay checks, when it sends, that the phone that set it up is still an approved owner device and that Reach isn't paused. Otherwise it stops and says why.
 - **After a restart.** A relay that was sending when Reach stopped is marked uncertain and never retried automatically. Check the destination chat first.
 - **Teams stay bounded.** A team has at most 12 hand-offs and follow-ups, at most 3 helpers at work at once, and helpers can't hand off further. Every tool call checks that the phone that started the team is still an approved owner device and that Reach isn't paused. **Stop** ends it: no more hand-offs or wake-ups, its helpers at work stopped, and its key deleted.
-- **Each computer answers for itself.** The All page asks each paired computer directly, with that computer's own credentials; one computer's credentials never go to another. "Since you last looked" is kept per computer, by that computer's clock, and **Got it** marks only the computers that answered. One that refuses this phone isn't asked again until its live connection lets this phone in (or the page is opened again).
+- **Each computer answers for itself.** The All page asks each paired computer directly, with that computer's own credentials; one computer's credentials never go to another. One that refuses this phone isn't asked again until its live connection lets this phone in (or the page is opened again).
 - **A team's key is its own.** The lead's tools reach Reach on a private socket in Reach's data folder (readable only by your account), with a random key kept in a file only your account can read. The agent's settings hold that file's path, never the key. A tool call can only start or talk to the team's own helper chats, in the team's folder; it can't pick a folder, a mode or another chat.
 
 ## Limits
 
-- Across computers: the All page's away report, search and projects cover every paired computer that answers. The rest stays on the computer you're connected to: relays and teams (and their Cancel and Stop), what **@** offers, where a relay can go, and the count of requests that need you. To act on another computer's relay, open one of its chats first.
+- Across computers: the All page's search and projects cover every paired computer that answers. The rest stays on the computer you're connected to: relays and teams (and their Cancel and Stop), what **@** offers, where a relay can go, and the count of requests that need you. To act on another computer's relay, open one of its chats first.
 - One phone page reads another computer only if that computer lets it in: computers linked with `./reach link` accept each other's pages (or list the address in `REACH_ALLOWED_ORIGINS`). One that doesn't fails the way an offline one does, so the page says it didn't answer.
 - The All page appears when the computer you're connected to has more than one agent, whatever the other computers have.
 - Overlap warnings compare paths inside the same folder on the same computer. Separate worktrees are separate folders.
 - A team's chats stay in Reach while the team runs. The lead's tools exist only in the process Reach runs, and a lead's follow-up must never type into the Claude desktop app. So neither the lead nor its helpers join the Claude app's list, and **Open in app** is refused until you stop the team. If the Codex app takes over a lead's thread, the tools may not be there for turns the app runs. Once a team stops, its lead launches as an ordinary chat again, without the team's instructions or tools.
 - Gemini CLI chats are read only, so they can be mentioned, searched and relayed from, but can't receive relays. OpenClaw chats can be mentioned; relays and reviews go to Codex and Claude Code.
 - Search reads the agents' own history files and keeps what was said in memory (under 40 MB for 20,000 messages), let go after 20 minutes without a search. The first search after that reads the files again (about 4 seconds for 1.4 GB of history); until it's done, recent chats are found first. Messages are searched up to their first 4,000 characters. OpenClaw conversations aren't searched yet, and Gemini CLI chats are found by name.
-- The away report counts files from each finished turn's changes as the agent reported them; what an agent changed through a shell command isn't counted.
 
 ## Verification
 
@@ -64,7 +62,7 @@ October 7, 2026. These are automated results against stand-ins, plus measurement
   - mention expansion;
   - journal, overlap and search indexing, including incremental reads, half-written lines and rewritten files;
   - each phone flow through the real components;
-  - (October 8) the All page across computers, with stand-ins: one computer that answers (its clock ahead of this one), one that's away, one that refuses this phone, and one whose live connection turned it away. Each computer only ever got its own credentials. Through the whole app, a chat on another computer switched Reach to that computer and was read from there; tapped while that computer didn't answer, picking this computer again kept Reach here.
+  - (October 8) the All page across computers, with stand-ins: one computer that answers, one that's away, one that refuses this phone, and one whose live connection turned it away. Each computer only ever got its own credentials. Through the whole app, a chat on another computer switched Reach to that computer and was read from there; tapped while that computer didn't answer, picking this computer again kept Reach here.
 - **Full suite:** passed on the last commit with only these changes applied, with a production build.
 - **Search on this Mac** (about 1.4 GB, 20,000 messages): about 4 s to read everything the first time, about 40 ms per search after, about 36 MB held. Reach's event loop was never held up more than 16 ms while reading.
 - **Team tools, checked at no cost, with the real bridge** (`scripts/team-mcp.mjs`, a real key file, socket and team engine):
@@ -83,6 +81,6 @@ October 7, 2026. These are automated results against stand-ins, plus measurement
 
 ## Where it lives
 
-- Server: `server/agent-sessions/relays.mjs` (relays, second opinions, helpers' reports), `teams.mjs`, `team-tools.mjs` and `team-bridge.mjs` (team chats; the lead's bridge is `scripts/team-mcp.mjs`), `turn-watch.mjs` (finished turns), `journal.mjs` (away report), `overlaps.mjs` (projects), `search.mjs`, `chat-context.mjs` (what goes between agents).
+- Server: `server/agent-sessions/relays.mjs` (relays, second opinions, helpers' reports), `teams.mjs`, `team-tools.mjs` and `team-bridge.mjs` (team chats; the lead's bridge is `scripts/team-mcp.mjs`), `turn-watch.mjs` (finished turns), `journal.mjs` (how each turn ended, kept a week; the phone no longer shows it), `overlaps.mjs` (projects), `search.mjs`, `chat-context.mjs` (what goes between agents).
 - Phone: `src/ChatHub.tsx` (the All page), `src/fleet-chats.ts` (asking every paired computer), `src/Relays.tsx` (second opinion, relays, the route drawing), `src/Teams.tsx` (team chats), `src/MentionMenu.tsx`, `src/UsageStrip.tsx`.
 - API: [the HTTP API reference](API.md#working-across-agents).

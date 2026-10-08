@@ -802,7 +802,8 @@ export default function EverythingChat({
   // The app a new chat starts in: the one shown, or from All, the first.
   const newApp = picked.agent === "all" ? apps.find((app) => app.agent !== "all") || picked : picked;
   useEffect(() => {
-    if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent("codex");
+    // The app last picked isn't here (anymore): All when there is one.
+    if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent(apps.some((app) => app.agent === "all") ? "all" : "codex");
   }, [health, apps, savedAgent]);
   const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);

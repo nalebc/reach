@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type RefObject } from "react";
-import { ArrowUpRight, Check, FolderOpen, Loader2, Search, ShieldCheck, TriangleAlert, X } from "lucide-react";
+import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, type AgentSession, type Relay, type Team } from "./agent-sessions";
@@ -19,18 +19,16 @@ import {
 import "./chat-hub.css";
 
 // The All page (docs/ACROSS_AGENTS.md): every agent's chats at once, which
-// neither app can show, on every computer this phone is paired with. What
-// happened while you were away, one search across them all, relays under way,
-// and projects: chats grouped by folder whatever their agent, with the files
-// each changed lately and a warning when two changed the same file. Each
-// computer reads its own (server/agent-sessions: journal.mjs, search.mjs,
-// overlaps.mjs) and answers on its own (fleet-chats.ts); a row from another
-// computer opens there.
+// neither app can show, on every computer this phone is paired with. One
+// search across them all, relays under way, and projects: chats grouped by
+// folder whatever their agent, with the files each changed lately and a
+// warning when two changed the same file. Each computer reads its own
+// (server/agent-sessions: search.mjs, overlaps.mjs) and answers on its own
+// (fleet-chats.ts); a row from another computer opens there.
 
 type Ref = { agent: string; id: string; title?: string };
 // A computer's chats (not archived), as it listed them.
 type ComputerChats = { computer: Peer; sessions: AgentSession[] };
-type JournalEvent = { id: string; kind: string; agent: string; chat: string; title: string; cwd?: string; files?: number; text?: string; at: number };
 type Activity = {
   chats: { agent: string; id: string; title: string; cwd: string; files: { file: string; at: number }[] }[];
   overlaps: { file: string; chats: { agent: string; id: string; title: string; at: number }[] }[];
@@ -40,138 +38,25 @@ type Hit = { agent: string; id: string; role: string; at: number; snippet: strin
 // A chat's project: a Claude app worktree belongs to its project's folder.
 export const projectOf = (cwd: string) => (cwd || "").replace(/[\\/]\.claude[\\/]worktrees[\\/][^\\/]+[\\/]?$/, "");
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
-// Where the phone last looked, per computer (what came after is news), as
-// that computer's own clock had it.
-const SEEN = "reach.lastSeen:";
-const readSeen = (peer: string) => {
-  try {
-    return Number(localStorage.getItem(SEEN + peer)) || 0;
-  } catch {
-    return 0;
+// The chats that changed one file, each name once: two chats with the same
+// name (a chat and the one split off from it, say) are "two Claude Code chats
+// named …", never one name twice.
+const COUNTS = ["", "one", "two", "three", "four"];
+const whoChanged = (chats: { agent: string; title: string }[]) => {
+  const named = new Map<string, { agent: string; title: string; n: number }>();
+  for (const c of chats) {
+    const title = plainLine(c.title) || "a chat";
+    const one = named.get(`${c.agent}\n${title}`) || { agent: c.agent, title, n: 0 };
+    one.n++;
+    named.set(`${c.agent}\n${title}`, one);
   }
-};
-const saveSeen = (peer: string, at: number) => {
-  try {
-    localStorage.setItem(SEEN + peer, String(at));
-  } catch {
-    /* this visit only */
-  }
+  const said = [...named.values()].map(({ agent, title, n }) =>
+    n > 1 ? `${COUNTS[n] || n} ${agentLabel(agent)} chats named “${title}”` : `${agentLabel(agent)} (“${title}”)`,
+  );
+  return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0] || "";
 };
 // Which computer a row is on, when the page covers more than one.
 const Where = ({ computer }: { computer: Peer }) => <span className="hub-computer">{computer.name}</span>;
-
-// "While you were away": what came since the phone last looked, on every
-// computer that answers. Each is asked from where it was last seen, by its
-// own clock; Got it marks only the ones that answered.
-function AwayReport({
-  computers,
-  connections,
-  labelled,
-  logos,
-  onOpen,
-}: {
-  computers: Peer[];
-  connections?: FleetConnections;
-  labelled: boolean;
-  logos: AgentLogos;
-  onOpen: (computer: Peer, chat: Ref) => void;
-}) {
-  const [seenAt, setSeenAt] = useState<Record<string, number>>({});
-  const first = useRef<Record<string, number>>({});
-  const sinceOf = (p: Peer) => seenAt[p.id] ?? (first.current[p.id] ??= readSeen(p.id) || Date.now() - 12 * 60 * 60 * 1000);
-  const answers = useEveryComputer<{ events: JournalEvent[]; waiting: Ref[]; now: number }>(
-    computers,
-    (p) => `/api/sessions/journal?since=${sinceOf(p)}`,
-    60000,
-    { connections, nudge: (p) => presence(connections?.[p.id]) },
-  );
-  const answered = computers.flatMap((computer) => {
-    const value = answers[computer.id]?.value;
-    return value ? [{ computer, value }] : [];
-  });
-  // After Got it, what came before is gone at once (not when it's next read).
-  const events = answered.flatMap(({ computer, value }) =>
-    (Array.isArray(value.events) ? value.events : []).filter((e) => e.at > sinceOf(computer)).map((e) => ({ ...e, computer })),
-  );
-  const finished = events.filter((e) => e.kind === "finished");
-  // Each chat once (its latest), the ones that need a look first.
-  const lines = useMemo(() => {
-    const seen = new Set<string>();
-    const order = ["usage", "failed", "relay-stopped", "relayed", "finished"];
-    return [...events]
-      .filter((e) => order.includes(e.kind))
-      .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || b.at - a.at)
-      .filter((e) => {
-        const key = `${e.computer.id}:${e.agent}:${e.chat}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 6);
-  }, [answers, seenAt]);
-  const waiting = answered.flatMap(({ computer, value }) => (Array.isArray(value.waiting) ? value.waiting : []).map((w) => ({ ...w, computer })));
-  if (!answered.length || (!lines.length && !waiting.length)) return null;
-  const files = new Map<string, number>();
-  for (const e of finished) files.set(e.agent, (files.get(e.agent) || 0) + (e.files || 0));
-  const changed = [...files].filter(([, n]) => n > 0).map(([agent, n]) => `${agentLabel(agent)} changed ${n} file${n === 1 ? "" : "s"}`);
-  const chats = new Set(finished.map((e) => `${e.computer.id}:${e.agent}:${e.chat}`)).size;
-  const since = Math.min(...answered.map(({ computer }) => sinceOf(computer)));
-  const say = (e: JournalEvent) => {
-    const name = `“${plainLine(e.title) || "a chat"}”`;
-    if (e.kind === "usage") return `${agentLabel(e.agent)} ran out of usage in ${name}`;
-    if (e.kind === "failed") return `${name} ended on an error`;
-    if (e.kind === "relay-stopped") return `A relay stopped: ${e.text || name}`;
-    if (e.kind === "relayed") return `Relayed to ${agentLabel(e.agent)}: ${name}`;
-    return `${name} finished${e.files ? ` · ${e.files} file${e.files === 1 ? "" : "s"} changed` : ""}`;
-  };
-  // Seen up to each answering computer's own now; one that didn't answer
-  // keeps its news for when it does.
-  const seenNow = () => {
-    const now = Object.fromEntries(answered.filter(({ value }) => Number.isFinite(value.now)).map(({ computer, value }) => [computer.id, value.now]));
-    for (const [id, at] of Object.entries(now)) saveSeen(id, at);
-    setSeenAt((old) => ({ ...old, ...now }));
-  };
-  return (
-    <section className="hub-card hub-away" aria-label="While you were away">
-      <header>
-        <h2>While you were away</h2>
-        <small>since {new Date(since).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}</small>
-      </header>
-      <p className="hub-away-sum">
-        {[
-          chats && `${chats} chat${chats === 1 ? "" : "s"} finished`,
-          waiting.length && `${waiting.length} waiting on you`,
-          ...changed,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
-      <ul>
-        {waiting.slice(0, 3).map(({ computer, ...w }) => (
-          <li key={`w:${computer.id}:${w.agent}:${w.id}`}>
-            <button onClick={() => onOpen(computer, { agent: w.agent, id: w.id, title: w.title })}>
-              <AgentLogo agent={w.agent} logos={logos} size={16} />
-              <span>Waiting on you: “{plainLine(w.title || "") || "a chat"}”</span>
-              {labelled && <Where computer={computer} />}
-            </button>
-          </li>
-        ))}
-        {lines.map((e) => (
-          <li key={`e:${e.computer.id}:${e.id}`} className={e.kind}>
-            <button onClick={() => (seenNow(), onOpen(e.computer, { agent: e.agent, id: e.chat, title: e.title }))}>
-              <AgentLogo agent={e.agent} logos={logos} size={16} />
-              <span>{say(e)}</span>
-              {labelled && <Where computer={e.computer} />}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <button className="hub-got-it" onClick={seenNow}>
-        <Check size={14} /> Got it
-      </button>
-    </section>
-  );
-}
 
 // One search across every agent's conversations on every computer: the
 // chats' names at once, what was said in them from each computer as it
@@ -450,7 +335,6 @@ export default function ChatHub({
           </span>
         </button>
       )}
-      <AwayReport computers={asked} connections={connections} labelled={labelled} logos={logos} onOpen={openOn} />
       {crews.length > 0 && (
         <section className="hub-card hub-teams" aria-label="Teams">
           <header>
@@ -539,7 +423,7 @@ export default function ChatHub({
                     <TriangleAlert size={14} />
                     <span>
                       <strong>{o.file.slice(root.replace(/[\\/]$/, "").length + 1) || base(o.file)}</strong> changed by{" "}
-                      {o.chats.map((c) => `${agentLabel(c.agent)} (“${plainLine(c.title) || "a chat"}”)`).join(" and ")} in the last half hour.
+                      {whoChanged(o.chats)} in the last half hour.
                     </span>
                   </p>
                 ))}

@@ -454,6 +454,9 @@ beforeEach(() => {
   mac.logos = { codex: LOGO, claude: LOGO };
   dom.window.localStorage.clear();
   dom.window.sessionStorage.clear();
+  // These start on an app's own list: Codex unless a test picks another
+  // (Chat itself starts on All until you pick an app).
+  dom.window.localStorage.setItem("reach.chatAgent", "codex");
 });
 // A failed test must not leave its screen behind for the next one.
 const views = [];
@@ -3635,10 +3638,12 @@ test("failed discovery offers retry without claiming an app is missing", async (
   assert.equal(button("New chat"), undefined);
 });
 
-test("an unavailable remembered optional app falls back to Codex on this computer", async () => {
+test("an unavailable remembered optional app falls back to All on this computer", async () => {
   dom.window.localStorage.setItem("reach.chatAgent", "openclaw");
   await home([codexSession()], signedIn);
-  assert.equal($(".chat-app-rail [aria-pressed=true]").getAttribute("aria-label"), "Codex");
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal($(".chat-current-name").textContent, "All");
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");
   assert.equal($$(".chat-card").length, 1);
   assert.equal(button("OpenClaw"), undefined);
 });

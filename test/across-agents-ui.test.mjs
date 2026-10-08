@@ -366,7 +366,7 @@ test("the All page groups every agent's chats by project, warns of files two cha
     claudeSession({ title: "Refactor auth", cwd: "/work/app/.claude/worktrees/bold-fox", updatedAt: now - 2000 }),
     claudeSession({ id: NEW, title: "Plan the API", cwd: "/work/api", status: "waiting", updatedAt: now - 60000 }),
   ];
-  const asked = [];
+  const journal = [];
   Object.assign(routes, {
     "/api/sessions/activity": () => ({
       chats: [
@@ -382,17 +382,8 @@ test("the All page groups every agent's chats by project, warns of files two cha
         },
       ],
     }),
-    "/api/sessions/journal": (init, href) => (
-      asked.push(href.searchParams.get("since")),
-      {
-        events: [
-          { id: "e1", kind: "finished", agent: "claude", chat: CLAUDE, title: "Refactor auth", files: 3, at: now - 5000 },
-          { id: "e2", kind: "usage", agent: "codex", chat: CODEX, title: "Fix login", text: "You’ve hit your usage limit.", at: now - 4000 },
-        ],
-        waiting: [{ agent: "claude", id: NEW, title: "Plan the API" }],
-        now,
-      }
-    ),
+    // The away report is gone: nothing asks for it.
+    "/api/sessions/journal": () => (journal.push(1), { events: [], waiting: [], now }),
     "/api/sessions/search": (init, href) => ({
       partial: false,
       results:
@@ -429,17 +420,9 @@ test("the All page groups every agent's chats by project, warns of files two cha
   assert.match(projects[0].textContent, /Changed auth\.ts, login\.ts/);
   const warning = await dom.waitFor(() => $(".hub-overlap"));
   assert.match(warning.textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\) in the last half hour/);
-  // While you were away: what needs a look first.
-  const away = await dom.waitFor(() => $(".hub-away"));
-  assert.match(away.querySelector(".hub-away-sum").textContent, /1 chat finished · 1 waiting on you · Claude Code changed 3 files/);
-  assert.deepEqual([...away.querySelectorAll("li")].map((li) => li.textContent), [
-    "Waiting on you: “Plan the API”",
-    "Codex ran out of usage in “Fix login”",
-    "“Refactor auth” finished · 3 files changed",
-  ]);
-  await click(button("Got it"));
-  assert.equal(dom.window.localStorage.getItem("reach.lastSeen:mac"), String(now));
-  await dom.waitFor(() => asked.at(-1) === String(now));
+  // No "while you were away" card, and nothing asked for one.
+  assert.equal($(".hub-away"), null);
+  assert.deepEqual(journal, []);
   // Relays under way, with Cancel.
   assert.match($(".hub-relays").textContent, /Fix login.*When Codex finishes: Claude Code builds it/);
   // One search: names at once, what was said from the Mac.
@@ -597,14 +580,12 @@ const watchRequests = (t) => {
 const ownCredentialsOnly = (requests) => {
   for (const { origin, authorization } of requests) if (authorization) assert.equal(authorization, tokenAt[origin], `credentials sent to ${origin}`);
 };
-const lineText = (li) => li.querySelector("button > span:not(.agent-logo):not(.hub-computer)").textContent;
 
-test("the All page covers every paired computer: one report, one search, one projects list, each row on its computer", async (t) => {
+test("the All page covers every paired computer: one search and one projects list, each row on its computer", async (t) => {
   const now = Date.now();
-  // Studio's clock runs a little ahead; what was seen there is kept by its clock.
+  // Studio's clock runs a little ahead of this one.
   const later = now + 7000;
   const requests = watchRequests(t);
-  const journals = [];
   const opened = [];
   const plainList = routes["/api/sessions"];
   Object.assign(routes, {
@@ -617,21 +598,6 @@ test("the All page covers every paired computer: one report, one search, one pro
           codexSession({ id: NEW, title: "Draft release notes", cwd: "/work/site", updatedAt: now - 90000 }),
         ],
       }),
-    }),
-    "/api/sessions/journal": byComputer({
-      [peer.url]: (init, href) => (
-        journals.push(["mac", href.searchParams.get("since")]),
-        {
-          events: [{ id: "e1", kind: "finished", agent: "codex", chat: CODEX, title: "Fix login", files: 1, at: now - 4000 }],
-          waiting: [{ agent: "claude", id: CLAUDE, title: "Refactor auth" }],
-          now,
-        }
-      ),
-      // The same event id as the Mac's: ids are each computer's own.
-      [studio.url]: (init, href) => (
-        journals.push(["studio", href.searchParams.get("since")]),
-        { events: [{ id: "e1", kind: "finished", agent: "claude", chat: STUDIO, title: "Tune the build", files: 2, at: later - 5000 }], waiting: [], now: later }
-      ),
     }),
     "/api/sessions/activity": byComputer({
       [peer.url]: () => ({
@@ -660,7 +626,7 @@ test("the All page covers every paired computer: one report, one search, one pro
     }),
   });
   t.after(() => {
-    for (const r of ["/api/sessions/journal", "/api/sessions/activity", "/api/sessions/search"]) delete routes[r];
+    for (const r of ["/api/sessions/activity", "/api/sessions/search"]) delete routes[r];
     routes["/api/sessions"] = plainList;
   });
   dom.window.localStorage.setItem("reach.chatAgent", "all");
@@ -697,25 +663,6 @@ test("the All page covers every paired computer: one report, one search, one pro
   await dom.waitFor(() => projects[1].querySelector(".hub-overlap"));
   assert.match(projects[1].querySelector(".hub-overlap").textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\)/);
   assert.equal(projects[0].querySelector(".hub-overlap"), null);
-  // One report: each computer's news since it was last seen, on its computer.
-  const away = await dom.waitFor(() => ($$(".hub-away li").length === 3 ? $(".hub-away") : null));
-  assert.equal(away.querySelector(".hub-away-sum").textContent, "2 chats finished · 1 waiting on you · Codex changed 1 file · Claude Code changed 2 files");
-  assert.deepEqual(
-    [...away.querySelectorAll("li")].map((li) => [lineText(li), li.querySelector(".hub-computer").textContent]),
-    [
-      ["Waiting on you: “Refactor auth”", "Mac"],
-      ["“Tune the build” finished · 2 files changed", "Studio"],
-      ["“Fix login” finished · 1 file changed", "Mac"],
-    ],
-  );
-  // Got it: up to each answering computer's own now. Attic keeps its news for
-  // when it answers; the chat still waiting on you stays.
-  await click(button("Got it"));
-  assert.equal(dom.window.localStorage.getItem("reach.lastSeen:mac"), String(now));
-  assert.equal(dom.window.localStorage.getItem("reach.lastSeen:studio"), String(later));
-  assert.equal(dom.window.localStorage.getItem("reach.lastSeen:attic"), null);
-  assert.deepEqual([...away.querySelectorAll("li")].map(lineText), ["Waiting on you: “Refactor auth”"]);
-  await dom.waitFor(() => journals.some(([at, since]) => at === "studio" && since === String(later)));
   // One search: every computer's chats, newest first, each on its computer.
   await typeInto($('input[aria-label="Search all chats"]'), "cache");
   const hits = await dom.waitFor(() => ($$(".hub-hit").length === 2 && $(".hub-results .hub-note.bad") ? $$(".hub-hit") : null));
@@ -733,8 +680,9 @@ test("the All page covers every paired computer: one report, one search, one pro
   ownCredentialsOnly(requests);
   assert.ok(requests.some((r) => r.origin === studio.url) && requests.some((r) => r.origin === attic.url) && requests.some((r) => r.origin === lab.url));
   assert.ok(!requests.some((r) => r.origin === office.url));
-  // Lab said no once per question, and wasn't asked again.
-  assert.ok(requests.filter((r) => r.origin === lab.url).length <= 3, "Lab: asked once each for its list, journal and activity");
+  // Lab said no once per question, and wasn't asked again; no computer was asked for a journal.
+  assert.ok(requests.filter((r) => r.origin === lab.url).length <= 2, "Lab: asked once each for its list and activity");
+  assert.ok(!requests.some((r) => r.path === "/api/sessions/journal"));
   assert.deepEqual(dom.errors, []);
 });
 
@@ -825,5 +773,49 @@ test("a chat on another computer, opened from the All page, switches Reach to th
   });
   assert.deepEqual([...new Set(reads.map((r) => r.origin))], [studio.url], "read from Studio only");
   ownCredentialsOnly(requests);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Chat starts on All until you pick an app, then keeps the one you picked", async () => {
+  const shownApp = () => $(".chat-current-name")?.textContent;
+  // Nothing picked yet: every agent's chats together.
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal(shownApp(), "All");
+  // Claude Code picked (the app menu at the top): Chat opens there next time.
+  await click($(".chat-app-current"));
+  await click($$('[role="menuitemradio"]').find((b) => b.getAttribute("aria-label") === "Claude Code"));
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "claude");
+  await views.splice(0)[0].unmount();
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-library") && !$(".chat-hub"));
+  assert.equal(shownApp(), "Claude");
+  await views.splice(0)[0].unmount();
+  // The app picked isn't here anymore: back to All.
+  dom.window.localStorage.setItem("reach.chatAgent", "gemini");
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("two chats with the same name changing one file read as two chats, not one name twice", async (t) => {
+  const now = Date.now();
+  routes["/api/sessions/activity"] = () => ({
+    chats: [],
+    overlaps: [
+      {
+        file: "/work/app/docs/notes.md",
+        chats: [
+          { agent: "claude", id: CLAUDE, title: "Refactor auth", at: now },
+          { agent: "claude", id: NEW, title: "Refactor auth", at: now },
+        ],
+      },
+    ],
+  });
+  t.after(() => delete routes["/api/sessions/activity"]);
+  await home([claudeSession(), claudeSession({ id: NEW }), codexSession()]);
+  const warning = await dom.waitFor(() => $(".hub-overlap"));
+  assert.equal(warning.textContent, "docs/notes.md changed by two Claude Code chats named “Refactor auth” in the last half hour.");
   assert.deepEqual(dom.errors, []);
 });

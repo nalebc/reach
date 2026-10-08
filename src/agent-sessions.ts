@@ -272,13 +272,14 @@ export function usageLink(agent: string, error: { text?: string | null; detail?:
 }
 
 // The agent the Chat tab shows, remembered here and shared with the tab bar
-// (which wears that agent's logo).
+// (which wears that agent's logo). Until one is picked: All, every agent's
+// chats together (Chat shows Codex when this computer has just one agent).
 const CHAT_AGENT = "reach.chatAgent";
 export const readChatAgent = (): string => {
   try {
-    return localStorage.getItem(CHAT_AGENT) || "codex";
+    return localStorage.getItem(CHAT_AGENT) || "all";
   } catch {
-    return "codex";
+    return "all";
   }
 };
 export function saveChatAgent(agent: string) {

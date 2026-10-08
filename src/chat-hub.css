@@ -101,60 +101,6 @@
   color: var(--chat-muted);
   font-size: 12px;
 }
-.hub-away-sum {
-  margin: 0 0 6px;
-  color: var(--chat-muted);
-  font-size: 13px;
-}
-.hub-away ul {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.hub-away li button {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 38px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13.5px;
-  text-align: left;
-}
-.hub-away li button > span {
-  display: -webkit-box;
-  min-width: 0;
-  overflow: hidden;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.hub-away li.usage,
-.hub-away li.failed,
-.hub-away li.relay-stopped {
-  color: var(--warning, #d6c38f);
-}
-.hub-got-it {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  margin: 4px 0 0;
-  padding: 0 12px;
-  border: 1px solid var(--chat-line);
-  border-radius: 999px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-}
 .hub-relays .relay-row {
   margin: 0 0 6px;
 }
@@ -229,10 +175,6 @@
   text-overflow: ellipsis;
   vertical-align: 1px;
   white-space: nowrap;
-}
-.hub-away li button > .hub-computer {
-  flex: 0 0 auto;
-  margin-left: auto;
 }
 .hub-hit-copy small > .hub-computer {
   margin-right: 6px;
