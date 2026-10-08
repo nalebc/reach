@@ -47,52 +47,9 @@
   pointer-events: none;
 }
 /* Always-available essentials while the bars are hidden. */
-.screen-immersive-pill {
-  position: absolute;
-  z-index: 7;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
-  background: #0b1012a6;
-  border: 1px solid #ffffff1f;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  animation: immersive-pill-in 0.22s ease;
-}
-.screen-immersive-pill button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 44px;
-  height: 44px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: #e9f0ec;
-  font-size: 13px;
-  font-weight: 600;
-}
-.screen-immersive-pill button:active {
-  background: #ffffff1f;
-}
-.screen-immersive-pill button:disabled {
-  opacity: 0.45;
-}
-@keyframes immersive-pill-in {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .simple-screen.screen-immersive > .simple-screen-toolbar,
-  .simple-screen.screen-immersive > .simple-screen-dock,
-  .screen-immersive-pill {
+.simple-screen.screen-immersive > .simple-screen-dock {
     transition: none;
     animation: none;
   }
@@ -157,13 +114,6 @@
   max-width: none;
   flex: 1;
 }
-.simple-screen .simple-screen-actions {
-  flex: none;
-}
-.simple-screen .simple-screen-actions .icon-button {
-  flex: none;
-  min-width: 36px;
-}
 .simple-screen .keyboard-button {
   white-space: nowrap;
 }
@@ -186,9 +136,6 @@
   display: flex;
   min-height: 44px;
 }
-.simple-screen.screen-expanded .screen-immersive-pill {
-  max-width: calc(100% - 24px);
-}
 .app-shell:has(.screen-expanded) .mobile-nav {
   visibility: hidden;
 }
@@ -196,9 +143,6 @@
   .simple-screen .simple-screen-toolbar {
     padding: 8px;
     gap: 6px;
-  }
-  .simple-screen .simple-screen-actions {
-    gap: 2px;
   }
   .simple-screen .simple-screen-dock {
     gap: 6px;

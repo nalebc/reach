@@ -77,8 +77,9 @@ test("a new chat can start in a folder found by browsing Home", async () => {
   assert.ok(!dom.document.querySelector(".folder-pick"), "the browser closes");
   // The browsed folder stays among the choices.
   await click(folderButton());
-  assert.equal(byText("site")?.getAttribute("aria-pressed"), "true");
-  await click(byText("site"));
+  const chosenFolder = dom.document.querySelector('.as-picker button[aria-pressed="true"]');
+  assert.equal(chosenFolder?.textContent, "site");
+  await click(chosenFolder);
 
   const box = dom.document.querySelector("textarea");
   const setValue = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set;

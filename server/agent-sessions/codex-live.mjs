@@ -19,6 +19,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { codexArchive } from "./portable-history.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
+import { createCodexOwner, codexQueuedMessage } from "./codex-owner.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
 import { codexMode, questionKey, questionReply } from "./codex.mjs";
 import { randomUUID } from "node:crypto";
@@ -204,6 +205,8 @@ const finished = (turn) => !!turn?.completedAt || ["completed", "failed"].includ
 export function createCodexLive({
   daemon,
   desktop = createCodexDesktop(),
+  ownerFactory = createCodexOwner,
+  nativeTurns = !process.env.NODE_TEST_CONTEXT,
   now = Date.now,
   wait = sleep,
   deliverMs = 10000,
@@ -223,6 +226,7 @@ export function createCodexLive({
         lastCompleted: null,
         error: null,
         prompts: new Map(),
+        nativeRequests: new Map(),
         streaming: null,
         activity: null,
         items: 0,
@@ -234,6 +238,12 @@ export function createCodexLive({
       });
     return threads.get(id);
   };
+  let api;
+  const owner = ownerFactory({
+    daemon,
+    requests: id => [...state(id).nativeRequests.values()],
+    handleRequest: nativeRequest,
+  });
   // Told of each change to a thread (the chat list hears of its status and
   // questions this way).
   const changeListeners = new Set();
@@ -242,8 +252,12 @@ export function createCodexLive({
     t.version++;
     for (const wake of [...t.waiters]) wake();
     for (const listener of changeListeners) { try { listener(id); } catch {} }
+    owner.update(id);
   };
   const release = (id) => {
+    // Keep the engine subscribed while Codex follows it. Both composers
+    // remain connected to this writer, including between turns.
+    if (owner.hasFollowers(id)) return;
     if (!subscribed.delete(id)) return;
     daemon.rpc("thread/unsubscribe", { threadId: id }).catch(() => {});
   };
@@ -263,10 +277,12 @@ export function createCodexLive({
   };
   daemon.onClose?.(() => {
     subscribed.clear();
+    owner.reset?.();
     for (const [id, t] of threads)
       if (t.status !== "idle" || t.prompts.size) {
         Object.assign(t, { status: "idle", turnId: null, streaming: null, activity: null });
         t.prompts.clear();
+        t.nativeRequests.clear();
         t.error = "Lost the connection to Codex. Send again to continue.";
         changed(id);
       }
@@ -333,7 +349,10 @@ export function createCodexLive({
       for (const [threadId, t] of threads) {
         let dropped = false;
         for (const [key, prompt] of t.prompts)
-          if (String(prompt.requestId) === String(p.requestId)) dropped = t.prompts.delete(key) || dropped;
+          if (String(prompt.requestId) === String(p.requestId)) {
+            t.nativeRequests.delete(key);
+            dropped = t.prompts.delete(key) || dropped;
+          }
         if (dropped) {
           if (!t.prompts.size && t.status === "waiting") t.status = "running";
           changed(threadId);
@@ -343,6 +362,7 @@ export function createCodexLive({
     }
     const id = p.threadId || p.turn?.threadId;
     if (!id) return;
+    owner.update(id);
     if (m.method === "thread/queue/changed") {
       queueChanged(id);
       return void (queues && readQueue(id));
@@ -351,6 +371,7 @@ export function createCodexLive({
     switch (m.method) {
       case "thread/settings/updated":
         if (object(p.threadSettings)) t.mode = codexMode(p.threadSettings);
+        owner.settings(id, p.threadSettings || {});
         t.items++; // Re-read the native model and effort in the composer.
         break;
       case "turn/started":
@@ -368,6 +389,7 @@ export function createCodexLive({
         t.lastCompleted = turn.id || null;
         if (turn.status === "failed" && turn.error?.message) t.error = turn.error.message;
         t.prompts.clear();
+        t.nativeRequests.clear();
         t.items++;
         release(id);
         break;
@@ -409,7 +431,9 @@ export function createCodexLive({
         break;
       case "thread/closed":
         subscribed.delete(id);
+        owner.forget(id);
         t.prompts.clear();
+        t.nativeRequests.clear();
         t.status = "idle";
         t.turnId = null;
         break;
@@ -434,14 +458,16 @@ export function createCodexLive({
     const t = state(prompt.threadId);
     const key = String(message.id);
     t.prompts.set(key, { ...prompt, id: key, requestId: message.id, at: now(), resolve });
+    t.nativeRequests.set(key, { id: message.id, method: message.method, params: message.params });
     t.status = "waiting";
     changed(prompt.threadId);
   });
   async function attach(threadId) {
     if (subscribed.has(threadId)) return;
     // No approval/sandbox overrides: the thread keeps its own settings.
-    await daemon.rpc("thread/resume", { threadId, excludeTurns: true });
+    const resumed = await daemon.rpc("thread/resume", { threadId, excludeTurns: true });
     subscribed.add(threadId);
+    await owner.claim(threadId, resumed);
   }
   async function runningOnDisk(threadId) {
     const r = await daemon
@@ -527,7 +553,143 @@ export function createCodexLive({
     }
     changed(threadId);
   };
-  return {
+  async function nativeRequest(method, p, context = {}) {
+    const id = p.conversationId, t = state(id);
+    if (!owner.has(id)) throw bad("Reach no longer owns this task.", 409);
+    switch (method) {
+      case "thread-follower-start-turn": {
+        if (p.turnStart?.context?.responseItems?.length)
+          throw bad("This context needs the Codex app's own writer.", 409);
+        const request = p.turnStart?.request;
+        if (!Array.isArray(request?.input) || !request.input.length) throw bad("Write a message.");
+        await attach(id);
+        const result = await daemon.rpc("turn/start", { ...request, threadId: id, clientUserMessageId: request.clientUserMessageId || randomUUID() });
+        owner.settings(id, request);
+        begin(id, result.turn);
+        const queued = p.turnStart.context?.serverQueuedMessageId;
+        if (queued) await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
+        return { result };
+      }
+      case "thread-follower-steer-turn": {
+        const latest = (await daemon.rpc("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
+        if (!latest || finished(latest)) throw bad("No active turn to steer.", 409);
+        const result = await daemon.rpc("turn/steer", { threadId: id, expectedTurnId: latest.id, input: p.input, clientUserMessageId: p.clientUserMessageId || randomUUID(), ...(p.additionalContext ? { additionalContext: p.additionalContext } : {}) });
+        const queued = p.restoreMessage?.serverQueuedMessageId;
+        if (queued) await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: queued }).catch(() => {});
+        changed(id);
+        return { result };
+      }
+      case "thread-follower-update-thread-settings": {
+        await attach(id);
+        const settings = p.threadSettings || {};
+        if (p.activeTurnId) {
+          const active = (await daemon.rpc("thread/turns/list", { threadId: id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }))?.data?.[0];
+          if (!active || finished(active) || active.id !== p.activeTurnId) throw bad("That turn has finished.", 409);
+          const selected = Object.fromEntries(["model", "effort", "serviceTier", "summary", "approvalsReviewer"].filter(k => k in settings).map(k => [k, settings[k]]));
+          await daemon.rpc("turn/settings/update", { ...selected, threadId: id, turnId: p.activeTurnId });
+        } else await daemon.rpc("thread/settings/update", { ...settings, threadId: id });
+        owner.settings(id, settings); changed(id);
+        return { applied: true };
+      }
+      case "thread-follower-update-daybreak":
+        await daemon.rpc("thread/metadata/update", { threadId: id, daybreakEnabled: p.daybreakEnabled });
+        return { ok: true };
+      case "thread-follower-edit-last-user-turn":
+        await api.editLast(id, { turnId: p.turnId, text: p.message });
+        return { ok: true };
+      case "thread-follower-compact-thread":
+        await api.call(id, "thread/compact/start");
+        return { ok: true };
+      case "thread-follower-interrupt-turn":
+        if (p.expectedTurnId && t.turnId && p.expectedTurnId !== t.turnId) throw bad("That turn has finished.", 409);
+        await api.stop(id);
+        return { ok: true, interruptedTurnId: p.expectedTurnId || t.turnId || null };
+      case "thread-follower-remove-queued-message": {
+        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const q = list.find(q => q.id === p.messageId || q.clientUserMessageId === p.messageId);
+        if (!q) return { removed: null };
+        await api.cancelQueued(id, q.id);
+        const cwd = (await daemon.rpc("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
+        return { removed: codexQueuedMessage(q, cwd) };
+      }
+      case "thread-follower-clear-queued-messages": {
+        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        for (const q of list) await api.cancelQueued(id, q.id);
+        const cwd = (await daemon.rpc("thread/read", { threadId: id, includeTurns: false })).thread.cwd;
+        return { messages: list.map(q => codexQueuedMessage(q, cwd)) };
+      }
+      case "thread-follower-set-queued-follow-ups-state": {
+        const messages = p.state?.[id];
+        if (!Array.isArray(messages) || messages.length > 100) throw bad("Invalid queued messages.");
+        const list = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const included = new Set(messages.map(m => m.id)), discarded = new Set(p.discardedMessageIds || []);
+        if (included.size !== messages.length) throw bad("Queued messages must have unique ids.");
+        // Validate the entire edit before deleting anything. A reorder keeps
+        // the original input, including skills and attached model context.
+        const prepared = messages.map(message => {
+          if (typeof message.id !== "string" || !message.id) throw bad("Invalid queued message.");
+          const existing = list.find(q => q.id === message.id || q.clientUserMessageId === message.id);
+          const text = String(message.text ?? message.context?.prompt ?? "");
+          if (text.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+          const attachments = message.context?.imageAttachments || [];
+          if (!Array.isArray(attachments)) throw bad("Invalid queued pictures.");
+          const images = attachments.map(i => {
+            if (typeof (i?.localPath || i?.src) !== "string") throw bad("Invalid queued picture.");
+            return i.localPath ? { type: "localImage", path: i.localPath } : { type: "image", url: i.src };
+          });
+          const kept = (existing?.input || []).filter(i => !["text", "image", "localImage"].includes(i.type));
+          const input = [...(text.trim() ? [{ type: "text", text, text_elements: [] }] : []), ...images, ...kept];
+          if (!input.length) throw bad("Write a message or keep its pictures.");
+          const before = existing && codexQueuedMessage(existing);
+          const unchanged = before && before.text === text && JSON.stringify(before.context.imageAttachments.map(i => i.localPath || i.src)) === JSON.stringify(attachments.map(i => i.localPath || i.src));
+          return { message, existing, input, unchanged };
+        });
+        const baseline = new Set(context.queueIds || []);
+        for (const q of list) {
+          if (discarded.has(q.id) || baseline.has(q.id) && !included.has(q.id))
+            await daemon.rpc("thread/queue/delete", { threadId: id, queuedSubmissionId: q.id });
+        }
+        const order = [];
+        for (const { message, existing, input, unchanged } of prepared) {
+          if (discarded.has(message.id)) continue;
+          if (existing) {
+            if (!unchanged) await daemon.rpc("thread/queue/update", { threadId: id, queuedSubmissionId: existing.id, input });
+            order.push(existing.id);
+          } else {
+            const added = await daemon.rpc("thread/queue/add", { threadId: id, input, clientUserMessageId: message.clientUserMessageId || message.id || randomUUID() });
+            order.push(added.queuedSubmission.id);
+          }
+        }
+        const current = (await daemon.rpc("thread/queue/list", { threadId: id })).data || [];
+        const liveIds = new Set(current.map(q => q.id));
+        await daemon.rpc("thread/queue/reorder", { threadId: id, queuedSubmissionIds: [...order.filter(q => liveIds.has(q)), ...current.map(q => q.id).filter(q => !order.includes(q))] });
+        await readQueue(id); changed(id);
+        return { ok: true };
+      }
+      default: {
+        const methods = {
+          "thread-follower-command-approval-decision": "item/commandExecution/requestApproval",
+          "thread-follower-file-approval-decision": "item/fileChange/requestApproval",
+          "thread-follower-permissions-request-approval-response": "item/permissions/requestApproval",
+          "thread-follower-submit-user-input": "item/tool/requestUserInput",
+          "thread-follower-submit-mcp-server-elicitation-response": "mcpServer/elicitation/request",
+        };
+        const key = String(p.requestId), prompt = t.prompts.get(key);
+        if (!prompt || prompt.method !== methods[method]) throw bad("This prompt was already answered.", 409);
+        if (prompt.attempted) throw bad("This answer was already attempted. Check Codex.", 409);
+        const response = "decision" in p ? answerFor(prompt, { decision: p.decision }) : p.response;
+        if (!object(response)) throw bad("Invalid answer.");
+        prompt.attempted = true;
+        await prompt.resolve(response);
+        t.prompts.delete(key); t.nativeRequests.delete(key);
+        if (!t.prompts.size && t.status === "waiting") t.status = "running";
+        changed(id);
+        return { ok: true };
+      }
+    }
+  }
+  return api = {
+    close: () => owner.close(),
     drives: (threadId) => subscribed.has(threadId),
     currentMode: (threadId) => threads.get(threadId)?.mode || null,
     onChange(listener) {
@@ -662,6 +824,26 @@ export function createCodexLive({
         await daemon.rpc("turn/steer", { threadId, expectedTurnId: t.turnId, input });
         return { steered: true };
       }
+      // Use the already discovered writer when Codex owns this task. This
+      // also preserves per-turn settings such as Plan without taking over.
+      if (nativeTurns && !subscribed.has(threadId) && !steer && typeof desktop.startTurn === "function") {
+        if (await runningOnDisk(threadId)) return queueElsewhere(threadId, input);
+        const planned = collaboration === "plan" || collaboration === "default" ? {
+          collaborationMode: { mode: collaboration, settings: {
+            model: model || (await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null))?.thread?.model || await withModel(),
+            reasoning_effort: effort || null, developer_instructions: null,
+          } },
+        } : {};
+        try {
+          const result = await desktop.startTurn(threadId, {
+            threadId, input, clientUserMessageId: randomUUID(), ...planned,
+            ...(model ? { model } : {}), ...(effort ? { effort } : {}),
+            ...(speed ? { serviceTier: speed } : {}), ...codexTurnMode(mode),
+          });
+          t.error = null; t.items++; changed(threadId);
+          return { ...result, delivered: true };
+        } catch (error) { if (!error.ownerUnavailable) throw error; }
+      }
       try {
         await attach(threadId);
       } catch (e) {
@@ -794,6 +976,7 @@ export function createCodexLive({
       });
       const threadId = started.thread.id;
       subscribed.add(threadId);
+      await owner.claim(threadId, started);
       if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) }).catch(() => {});
       let r;
       try {
@@ -826,6 +1009,7 @@ export function createCodexLive({
       const threadId = result?.thread?.id;
       if (!UUID.test(threadId || "")) throw uncertainDelivery("codex");
       subscribed.add(threadId);
+      await owner.claim(threadId, result);
       try {
         if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) });
       } finally { release(threadId); }
@@ -842,6 +1026,7 @@ export function createCodexLive({
       });
       const threadId = started.thread.id;
       subscribed.add(threadId);
+      await owner.claim(threadId, started);
       if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) }).catch(() => {});
       try {
         for (const items of batches) await daemon.rpc("thread/inject_items", { threadId, items });
@@ -979,6 +1164,7 @@ export function createCodexLive({
       try {
         await prompt.resolve(response);
         t.prompts.delete(String(promptId));
+        t.nativeRequests.delete(String(promptId));
         if (!t.prompts.size && t.status === "waiting") t.status = "running";
         changed(threadId);
         return { answered: true };

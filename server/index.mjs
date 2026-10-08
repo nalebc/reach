@@ -64,6 +64,8 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
+import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installPlan, installTerminalCommand } from "./agent-install.mjs";
@@ -623,6 +625,9 @@ export async function createReach(overrides = {}) {
     verifyClient: (id) => auth.list().find((client) => client.id === id),
     phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(), paused: () => paused, record,
   }) : null);
+  const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
+  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
+    ...(overrides.browserToolOptions || {}) });
   const browserCapture = async (authorize, fresh = false) => {
     notPaused();
     authorize();
@@ -821,7 +826,7 @@ export async function createReach(overrides = {}) {
       );
       res.setHeader(
         "Access-Control-Allow-Methods",
-        "GET, POST, PUT, DELETE, OPTIONS",
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       );
     }
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1672,6 +1677,8 @@ export async function createReach(overrides = {}) {
     }
     const { client, before, after } = auth.changeAccess(id, req.body || {});
     agentDesktop?.cancelClient?.(id);
+    agentShortcuts.cancelClient(id);
+    agentTools.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1711,6 +1718,8 @@ export async function createReach(overrides = {}) {
   // Ends a credential now: requests, sockets, screen control.
   // A session's work ends; its credential stays (Reopen link) or goes (revoke).
   const endSession = (id) => {
+    agentShortcuts.cancelClient(id);
+    agentTools.cancelClient(id);
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
@@ -1817,11 +1826,13 @@ export async function createReach(overrides = {}) {
     return browserFileOperation({ op: operation, root, path: relative,
       ...limits, privatePaths: browserPaths() }, check, { config });
   };
+  agentShortcutRoutes(app, { shortcuts: agentShortcuts });
+  agentToolRoutes(app, { tools: agentTools });
   browserAccessRoutes(app, {
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
-    desktop: agentDesktop, shell: agentShell,
+    desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools,
     prepareFunnel: async () => {
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -2336,7 +2347,22 @@ export async function createReach(overrides = {}) {
         : { ...payload, version },
     );
   };
-  openClawRoutes(app, openClaw);
+  openClawRoutes(app, openClaw, {
+    // What Reach doesn't set up itself (a model's key, a bot's token) opens
+    // OpenClaw's own setup in a Reach terminal, typed into there.
+    openSetup: (section, req) => {
+      const current = req.reauthorize();
+      notPaused();
+      const terminal = terminals.create({
+        cwd: os.homedir(),
+        name: "OpenClaw setup",
+        clientId: current.id,
+        command: `openclaw configure --section ${section}`,
+      });
+      record("terminal", "Opened OpenClaw setup");
+      return terminal;
+    },
+  });
   // Installing Claude Code or Codex from the phone (agent-install.mjs): its
   // maker's command first, to show; confirmed, run in a Reach terminal that
   // ends with it. The owner's own devices only (as every session route).
@@ -2656,7 +2682,7 @@ export async function createReach(overrides = {}) {
   // A permission card the Claude app or the Codex app shows, as it shows it:
   // read when the phone opens it (that chat is brought up in its app).
   app.get("/api/sessions/:agent/:id/card", async (req, res) => {
-    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id));
+    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id, { bring: req.query.bring === "1" }));
   });
   app.post("/api/sessions/:agent/:id/prompts/:prompt", async (req, res) => {
     const result = await agentSessions.respond(
@@ -3995,6 +4021,8 @@ export async function createReach(overrides = {}) {
       browserAppAccess.close();
       await browserApprovals.flushChanges();
       agentDesktop?.close?.();
+      agentShortcuts.close();
+      agentTools.close();
       await browserCommandLog.close();
       browserSnapshots.clear();
       clearInterval(approvalCleanup);

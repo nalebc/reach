@@ -28,8 +28,16 @@ type Props = {
   onClose: () => void;
 };
 
+// A chat may use a model the connection's picker no longer lists. Its real
+// selection must never turn into the catalog's default just by opening it.
 export const currentModel = (models: AgentModel[], model: string | null) =>
-  models.find((m) => m.id === model) || models.find((m) => m.isDefault) || models[0];
+  model ? models.find((m) => m.id === model) : models.find((m) => m.isDefault) || models[0];
+export const modelDisplayName = (model: string) => {
+  const parts = /^gpt-([\d.]+)-(.+)$/i.exec(model);
+  return parts
+    ? `GPT-${parts[1]} ${parts[2].split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")}`
+    : model;
+};
 // Keeps the effort when the new model has it, else the model's own default.
 export const effortFor = (m: AgentModel, effort: string | null) =>
   effort && m.efforts.includes(effort) ? effort : m.defaultEffort || undefined;
@@ -66,8 +74,8 @@ function Status({ busy, error, working, empty, onRetry }: { busy?: boolean; erro
       {working && <p className="ms-note">Applies to the next turn. The current reply keeps its model.</p>}
       {busy && <p className="ms-note" role="status">{empty ? "Loading models…" : "Changing model…"}</p>}
       {error && <p className="ms-note ms-error" role="alert">{error}</p>}
-      {!busy && empty && onRetry && (
-        <button className="ms-retry" onClick={onRetry}>Try loading models again</button>
+      {onRetry && (
+        <button className="ms-retry" disabled={busy} onClick={onRetry}>{empty ? "Try loading models again" : "Refresh model list"}</button>
       )}
     </>
   );
@@ -78,10 +86,20 @@ function Status({ busy, error, working, empty, onRetry }: { busy?: boolean; erro
 function Mark({ checked, pending }: { checked: boolean; pending: boolean }) {
   return pending ? <Loader2 size={18} className="spin ms-check" /> : checked ? <Check size={20} className="ms-check" /> : null;
 }
-function ModelRows({ models, current, busy, onPick }: { models: AgentModel[]; current?: AgentModel; busy?: boolean; onPick: (m: AgentModel) => void }) {
+function ModelRows({ models, model, current, busy, onPick }: { models: AgentModel[]; model: string | null; current?: AgentModel; busy?: boolean; onPick: (m: AgentModel) => void }) {
   const [tapped, setTapped] = useState("");
+  const unlisted = model && !models.some((m) => m.id === model) ? model : null;
   return (
     <div className="ms-card" role="radiogroup" aria-label="Models">
+      {unlisted && (
+        <button className="ms-current-unlisted" role="radio" aria-checked="true" disabled>
+          <span className="ms-text">
+            <span>{modelDisplayName(unlisted)}</span>
+            <small>{busy ? "Current model" : "Current model · Not in this connection’s model list"}</small>
+          </span>
+          <Check size={20} className="ms-check" />
+        </button>
+      )}
       {models.map((m) => (
         <button key={m.id} role="radio" aria-checked={m.id === current?.id} aria-busy={busy && tapped === m.id} disabled={busy} onClick={() => (setTapped(m.id), onPick(m))}>
           <span className="ms-text">
@@ -115,7 +133,7 @@ export function ClaudeModelSheet(props: Props) {
       <Status {...props} empty={!models.length} />
       {page === "models" ? (
         <>
-          <ModelRows models={models} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
+          <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
           {!!current?.efforts.length && (
             <button className="ms-card ms-row" disabled={busy} onClick={() => setPage("effort")}>
               <span>Effort</span>
@@ -165,7 +183,7 @@ export function CodexConfigureSheet(props: Props) {
         <h2>Configure</h2>
       </header>
       <Status {...props} empty={!models.length} />
-      <ModelRows models={models} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
+      <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
       {!!current?.speeds?.length && <SpeedRow speeds={current.speeds} speed={props.speed || current.defaultSpeed || "default"} onPick={(id) => onPick({ speed: id })} />}
       <button className="ms-done" onClick={onClose}>Done</button>
     </Sheet>
@@ -202,7 +220,7 @@ export function CodexEffortStrip({ agent, models, model, effort, busy, onPick, o
   return (
     <div className={`ms-strip ${agent}`} role="group" aria-label="Model and effort">
       <button className="ms-strip-label" onClick={onConfigure}>
-        <strong>{current?.name || "Model"}</strong> {level && <span>{levelName(level, agent)}</span>}
+        <strong>{current?.name || (model ? modelDisplayName(model) : "Model")}</strong> {level && <span>{levelName(level, agent)}</span>}
         <ChevronRight size={18} />
       </button>
       {efforts.length > 1 && (

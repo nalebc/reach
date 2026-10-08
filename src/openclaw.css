@@ -3,8 +3,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -20,21 +20,22 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: -10px 0 12px;
+  margin: 14px 0 20px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .claw-channels {
   display: flex;
   gap: 5px;
   overflow-x: auto;
-  margin: 0 0 24px;
+  margin: 0 0 20px;
   padding: 3px 0;
 }
 .claw-channels button {
   flex: none;
-  padding: 6px 10px;
-  font-size: 11px;
+  min-height: 36px;
+  padding: 7px 12px;
+  font-size: 12px;
   border: 0;
   border-radius: 20px;
   color: var(--muted);
@@ -42,21 +43,15 @@
 }
 .claw-channels button[aria-pressed="true"] {
   color: var(--text-strong);
-  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
 }
-.claw-note,
-.claw-footnote {
+.claw-note {
   display: flex;
   align-items: center;
   gap: 7px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
-}
-.claw-footnote {
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
 }
 .claw-error {
   color: var(--danger, #e5a18b);
@@ -83,6 +78,40 @@
 .claw-thread-head > div {
   flex: 1;
   min-width: 0;
+}
+.claw-thread-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+.claw-thread-title > div {
+  flex: 1;
+  min-width: 0;
+}
+.claw-thread-title > svg {
+  flex: none;
+}
+.claw-thread-actions { position: relative; flex: none; }
+.claw-thread-actions > summary { cursor: pointer; list-style: none; }
+.claw-thread-actions > summary::-webkit-details-marker { display: none; }
+.claw-thread-menu {
+  position: absolute; z-index: 5; top: calc(100% + 6px); right: 0;
+  display: grid; gap: 2px; min-width: 230px; max-width: calc(100vw - 32px); padding: 5px;
+  border: 1px solid var(--border); border-radius: 13px; background: var(--panel); box-shadow: 0 12px 32px #0006;
+}
+.claw-thread-menu .claw-icon { justify-content: flex-start; gap: 9px; width: 100%; height: auto; min-height: 40px; padding: 8px 10px; color: var(--text-strong); font-size: 13px; text-align: left; }
+.claw-thread-menu .claw-icon > svg { flex: none; color: var(--muted); }
+.claw-app-switch {
+  flex: none;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
 }
 .claw-conversation .claw-thread-head h1 {
   overflow: hidden;
@@ -188,15 +217,6 @@
   justify-content: space-between;
   gap: 12px;
 }
-.claw-destination select {
-  width: auto;
-  max-width: 100%;
-  border: 0;
-  padding: 7px 2px;
-  color: var(--muted);
-  font-size: 12px;
-  background: var(--panel, var(--bg));
-}
 .claw-delivery-note {
   display: block;
   color: var(--muted);
@@ -214,8 +234,17 @@
 }
 @media (max-width: 720px) {
   .claw-conversation {
-    height: calc(100dvh - 96px - env(safe-area-inset-bottom));
-    padding: calc(16px + env(safe-area-inset-top)) 18px 0;
+    position: fixed;
+    z-index: 80;
+    top: var(--vv-top, 0);
+    left: var(--vv-left, 0);
+    width: var(--vv-width, 100%);
+    height: var(--vv-height, 100dvh);
+    min-height: 0;
+    max-width: none;
+    padding: calc(12px + env(safe-area-inset-top)) 14px
+      max(14px, env(safe-area-inset-bottom));
+    background: var(--bg);
   }
   .claw-thread-head {
     padding-top: 2px;
@@ -231,7 +260,26 @@
     gap: 0;
   }
 }
-.claw-conversation .need-text small { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; }
+.claw-conversation .need-text small {
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.claw-conversation .needs-you {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 35%;
+  overflow: auto;
+}
+.claw-transcript {
+  min-height: min(96px, 24%);
+}
+.claw-composer {
+  flex: 0 1 auto;
+  max-height: 45%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 /* A chat that belongs to a WhatsApp group, a Discord channel or a cron job:
    one quiet line where the message box would be (OpenClawSpace.tsx). */
 .claw-readonly {
@@ -254,4 +302,345 @@
 .chat-create.claw-start {
   align-self: flex-start;
   margin: 4px 0 12px;
+}
+
+.claw-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+}
+.claw-tabs button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+.claw-tabs button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
+  color: var(--text-strong);
+}
+.claw-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.claw-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.claw-status-dot.connected {
+  background: var(--lime);
+}
+.claw-status-dot.disconnected {
+  background: var(--danger, #e5a18b);
+}
+.claw-library .chat-project-group h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.claw-library .chat-project-group h2 > svg {
+  color: var(--muted);
+}
+.claw-library .chat-card {
+  padding-inline: 8px;
+}
+.claw-library .claw-chat-context {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.claw-panel-heading {
+  margin-bottom: 20px;
+}
+.claw-panel-heading h2 {
+  margin: 0 0 6px;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 550;
+}
+.claw-panel-heading p,
+.claw-empty {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+.claw-empty {
+  padding: 24px 0;
+}
+.claw-detail-card {
+  padding: 16px;
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+}
+.claw-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.claw-card-top > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 550;
+}
+.claw-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+}
+.claw-badge.connected,
+.claw-badge.running {
+  color: var(--lime);
+}
+.claw-badge.error,
+.claw-badge.disconnected {
+  color: var(--danger, #e5a18b);
+}
+.claw-detail-card > p {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.claw-detail-card > p.claw-error {
+  color: var(--danger, #e5a18b);
+}
+.claw-job-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 14px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.claw-job-facts dt {
+  color: var(--muted);
+}
+.claw-job-facts dd {
+  margin: 0;
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+.claw-secondary,
+.claw-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+.claw-primary {
+  border-color: var(--lime);
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+.claw-settings {
+  flex: 0 1 auto;
+  max-height: 48%;
+  overflow: auto;
+  padding: 14px;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+}
+.claw-settings > label,
+.claw-settings-fields > label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-settings-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 12px 0;
+}
+.claw-settings input,
+.claw-settings-fields select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: none;
+  background: var(--bg);
+  color: var(--text-strong);
+  font-size: 14px;
+}
+.claw-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claw-conversation button:focus-visible,
+.claw-library button:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
+}
+.claw-library .chat-quick-new {
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .claw-library .chat-card {
+    min-height: 64px;
+    padding: 10px 4px;
+  }
+  .claw-library .chat-entry-copy {
+    gap: 3px;
+  }
+  .claw-library .claw-chat-context {
+    font-size: 11px;
+  }
+  .claw-library .chat-card-time {
+    display: block;
+    font-size: 11px;
+  }
+  .claw-library .chat-project-group h2 {
+    font-size: 14px;
+  }
+  .claw-conversation .claw-thread-head {
+    gap: 2px;
+  }
+  .claw-settings input,
+  .claw-settings-fields select,
+  .claw-new-agent select {
+    font-size: 16px;
+  }
+}
+
+/* What's missing, asked for where it's missed (OpenClawSetup.tsx). */
+.claw-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claw-panel-actions:empty {
+  display: none;
+}
+.claw-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  margin: 0 0 10px;
+  border: 1px dashed var(--border);
+  border-radius: 13px;
+}
+.claw-missing p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.claw-missing code {
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.claw-missing .claw-settings-actions {
+  align-self: stretch;
+  margin-top: 0;
+}
+.claw-whatsapp img {
+  align-self: center;
+  width: min(240px, 100%);
+  height: auto;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+.claw-link {
+  align-self: flex-start;
+  padding: 4px 0 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.claw-settings.claw-schedule-form {
+  max-height: none;
+  margin: 0 0 12px;
+}
+.claw-check {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+.claw-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.claw-secondary.claw-delete-ask {
+  color: var(--danger, #e5a18b);
+  background: color-mix(in srgb, var(--danger, #e5a18b) 14%, transparent);
+}
+.claw-schedule-form textarea,
+.claw-schedule-form > label > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.claw-schedule-form > label + label {
+  margin-top: 12px;
+}
+.claw-settings .claw-check input {
+  width: auto;
+  min-height: 0;
 }

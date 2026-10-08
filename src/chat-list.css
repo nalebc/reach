@@ -25,9 +25,21 @@
 }
 .chat-list-heading {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 13px;
   min-width: 0;
+}
+.chat-header-mascot {
+  display: inline-flex;
+  flex: none;
+  width: 30px;
+  height: 39px;
+}
+.chat-header-mascot .brand-courier,
+.chat-welcome-mascot .brand-courier {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 .chat-library .chat-list-top h1 {
   margin: 0;
@@ -204,6 +216,7 @@
 .chat-row-status .chat-state-dot { width: 8px; height: 8px; }
 .chat-mobile-header,
 .chat-mobile-menu,
+.chat-swipe-hint,
 .chat-source-strip,
 .chat-quick-new { display: none; }
 .chat-library .chat-review-link {
@@ -294,12 +307,8 @@
   color: var(--chat-faint);
   font-size: 10px;
   line-height: 1.6;
-}
-.chat-entry-arrow {
-  color: var(--chat-faint);
-}
-.chat-card:hover .chat-entry-arrow {
-  color: var(--chat-ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .chat-card-state {
   display: inline-flex;
@@ -322,15 +331,6 @@
   height: 5px;
   border-radius: 50%;
   background: currentColor;
-}
-.chat-active-group .chat-entries {
-  padding: 3px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--panel) 65%, var(--bg));
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.chat-active-group .chat-card + .chat-card {
-  border-top: 1px solid var(--border);
 }
 .chat-library .chat-list-note {
   display: flex;
@@ -355,6 +355,12 @@
 }
 .chat-list-empty > svg {
   color: var(--chat-muted);
+}
+.chat-welcome-mascot {
+  display: inline-flex;
+  width: 64px;
+  height: 83px;
+  margin-bottom: 8px;
 }
 .chat-list-empty strong {
   font-size: 18px;
@@ -443,9 +449,6 @@
   .chat-library .chat-card {
     padding-inline: 4px;
     gap: 9px;
-  }
-  .chat-active-group .chat-card {
-    padding-inline: 9px;
   }
 }
 @media (max-width: 400px) {
@@ -596,7 +599,7 @@
 }
 
 /* On phones, the project and its one-line conversations form a single list. */
-@media (max-width: 600px) and (pointer: coarse) {
+@media (max-width: 600px) {
   .app-shell .main-content.page-sessions { background: var(--bg); }
   .page-sessions .chat-library {
     max-width: none;
@@ -629,6 +632,13 @@
     color: var(--chat-ink);
   }
   .chat-mobile-header > :last-child { justify-self: end; }
+  .chat-swipe-hint {
+    display: block;
+    margin-top: 4px;
+    color: var(--chat-muted);
+    font-size: 11px;
+    text-align: center;
+  }
   .chat-app-current {
     display: flex;
     align-items: center;
@@ -643,6 +653,7 @@
     font-weight: 600;
   }
   .chat-app-current > svg { color: var(--chat-muted); }
+  .chat-app-current .chat-header-mascot { width: 24px; height: 32px; }
   .chat-mobile-menu {
     position: absolute;
     z-index: 30;
@@ -743,11 +754,11 @@
     border-radius: 10px;
   }
   .chat-entry-logo,
-  .chat-card-preview,
-  .chat-card-time { display: none; }
+  .chat-card-preview { display: none; }
   .chat-entry-copy { gap: 0; }
   .chat-entry-copy > strong { font-size: 15px; font-weight: 400; line-height: 1.35; letter-spacing: 0; }
-  .chat-entry-tail { align-self: center; padding: 0; }
+  .chat-entry-tail { align-self: center; flex-direction: row; align-items: center; gap: 8px; padding: 0; }
+  .chat-card-time { color: var(--chat-muted); font-size: 11px; }
   .chat-library .chat-card-state.error { font-size: 11px; }
   .chat-quick-new {
     position: fixed;

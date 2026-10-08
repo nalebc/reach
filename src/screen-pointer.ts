@@ -46,18 +46,3 @@ export function screenPoint(
     return null;
   return { x: (clientX - left) / width, y: (clientY - top) / height };
 }
-
-export function ripplePoint(
-  clientX: number,
-  clientY: number,
-  viewport: ScreenRect,
-  scrollLeft: number,
-  scrollTop: number,
-  clientLeft = 0,
-  clientTop = 0,
-) {
-  return {
-    left: clientX - viewport.left + scrollLeft - clientLeft,
-    top: clientY - viewport.top + scrollTop - clientTop,
-  };
-}

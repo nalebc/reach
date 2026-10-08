@@ -1071,6 +1071,37 @@ test("a chat open in the Codex app says so and keeps the app's settings", async 
 // them (Oct 6). Before, every model and then every effort sat in one list.
 const modelRow = (name) => $$(".ms-card[aria-label=Models] > button").find((b) => b.querySelector(".ms-text > span").textContent === name);
 const checkedModel = () => $(".ms-card[aria-label=Models] [aria-checked=true] .ms-text > span")?.textContent;
+test("an unlisted selected model stays visible, never checks the default, and a refresh recovers its native entry", async (t) => {
+  const selected = codexSession({ model: "gpt-6.1-sol", effort: "high" });
+  mac.pages[`codex:${CODEX}`].session = selected;
+  const original = routes["/api/sessions/models"];
+  let reads = 0;
+  const offers = { ...CODEX_OFFERS, models: [...CODEX_OFFERS.models] };
+  routes["/api/sessions/models"] = () => { reads++; return offers; };
+  t.after(() => { routes["/api/sessions/models"] = original; });
+  await open(selected, signedIn, { ...peer, url: "https://unlisted-model.test" });
+  await dom.waitFor(() => reads && !$(".as-model").disabled);
+  assert.match($(".as-model").textContent, /GPT-6.1 Sol High/);
+  await click($(".as-model"));
+  assert.match($(".ms-strip-label").textContent, /GPT-6.1 Sol High/);
+  assert.equal($(".ms-dots"), null, "another model's effort choices must not replace the selected model's");
+  await click($(".ms-strip-label"));
+  assert.equal(checkedModel(), "GPT-6.1 Sol");
+  assert.equal(modelRow("GPT-6.1 Sol").disabled, true, "the unlisted entry describes the current selection without inventing availability");
+  assert.match(modelRow("GPT-6.1 Sol").textContent, /Not in this connection’s model list/);
+  assert.equal(modelRow("GPT-6 Astra").getAttribute("aria-checked"), "false");
+  assert.deepEqual(mac.sent, [], "opening settings never changes the native model");
+  offers.models.push({ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high"], defaultEffort: "medium" });
+  await click(button("Refresh model list"));
+  await dom.waitFor(() => reads === 2 && modelRow("GPT-6.1 Sol") && !modelRow("GPT-6.1 Sol").disabled);
+  assert.equal(checkedModel(), "GPT-6.1 Sol");
+  assert.equal($(".ms-current-unlisted"), null);
+  assert.deepEqual(mac.sent, [], "refreshing the catalog preserves the actual selected model and effort");
+  await click($(".ms-done"));
+  assert.match($(".as-model").textContent, /GPT-6.1 Sol High/);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("Codex: the model and effort as words and dots over the composer, the models in Configure", async () => {
   const view = await open(codexSession());
   await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
@@ -2005,6 +2036,68 @@ test("exploring upcoming apps in a new conversation preserves the supported app'
   assert.deepEqual(dom.errors, []);
 });
 
+test("refreshing a new chat's model list discovers new models without resetting its draft or settings", async (t) => {
+  const original = routes["/api/sessions/models"];
+  const offers = { ...CODEX_OFFERS, models: [...CODEX_OFFERS.models] };
+  let reads = 0;
+  routes["/api/sessions/models"] = () => { reads++; return offers; };
+  t.after(() => { routes["/api/sessions/models"] = original; });
+  await home([codexSession()], signedIn, {}, { ...peer, url: "https://new-model-refresh.test" });
+  await click(button("New chat"));
+  await dom.waitFor(() => $(".chat-model").getAttribute("aria-label").includes("GPT-6 Astra"));
+  await typeInto($("textarea"), "Keep these choices");
+  await click($(".as-mode-pick"));
+  await click(modeRow("Full access"));
+  await click($(".chat-model"));
+  await click($(".ms-dots [aria-label=High]"));
+  await click($(".ms-strip-label"));
+  await click(modelRow("GPT-6 Sol"));
+  offers.models = [
+    ...offers.models.map(m => ({ ...m, isDefault: false })),
+    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high"], defaultEffort: "medium", isDefault: true },
+  ];
+  await click(button("Refresh model list"));
+  await dom.waitFor(() => reads === 2 && modelRow("GPT-6.1 Sol") && !modelRow("GPT-6.1 Sol").disabled);
+  assert.equal(checkedModel(), "GPT-6 Sol");
+  assert.equal($("textarea").value, "Keep these choices");
+  assert.equal($(".chat-folder").getAttribute("aria-label"), "Folder: /work/app");
+  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Full access");
+  assert.match($(".chat-model").getAttribute("aria-label"), /GPT-6 Sol.*High/);
+  assert.deepEqual(mac.sent, []);
+  await click(modelRow("GPT-6.1 Sol"));
+  await click($(".ms-done"));
+  await click($(".chat-model"));
+  await click(button("Start"));
+  await dom.waitFor(() => mac.sent.some(m => m.route === "/api/sessions"));
+  assert.deepEqual(mac.sent.find(m => m.route === "/api/sessions").body, {
+    agent: "codex", cwd: "/work/app", text: "Keep these choices", images: [],
+    model: "gpt-6.1-sol", effort: "high", mode: "full-access",
+  });
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a failed new-chat model catalog can be retried without losing the draft", async (t) => {
+  const original = routes["/api/sessions/models"];
+  let fail = true;
+  routes["/api/sessions/models"] = () => fail
+    ? Response.json({ error: "Codex catalog disconnected" }, { status: 503 })
+    : CODEX_OFFERS;
+  t.after(() => { routes["/api/sessions/models"] = original; });
+  await home([codexSession()], signedIn, {}, { ...peer, url: "https://new-model-retry.test" });
+  await click(button("New chat"));
+  await typeInto($("textarea"), "Keep this draft");
+  await click($(".chat-model"));
+  await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+  assert.match($(".ms-sheet [role=alert]").textContent, /catalog disconnected/);
+  fail = false;
+  await click(button("Try loading models again"));
+  await dom.waitFor(() => $(".chat-model").getAttribute("aria-label").includes("GPT-6 Astra"));
+  assert.equal($("textarea").value, "Keep this draft");
+  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Approve for me");
+  assert.deepEqual(mac.sent, []);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("a new Codex chat starts in the Codex app's own mode, in the most recent folder", async () => {
   await home([codexSession(), claudeSession({ cwd: "/work/site" })]);
   assert.equal($("textarea"), null);
@@ -2014,10 +2107,15 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
   assert.equal(field().placeholder, "What would you like to work on?");
   // Open, it names the folder it will start in (the most recent one).
   assert.match($(".chat-folder").textContent, /app/);
+  assert.equal($(".chat-new-computer").textContent, "Mac");
+  assert.ok(!$(".as-box .chat-folder"), "the folder has its own context row above the composer");
   await typeInto(field(), "Add tests for login");
   await dom.waitFor(() =>
-    $(".as-mode-pick")?.textContent.includes("Approve for me"),
+    $(".as-mode-pick")?.getAttribute("aria-label") === "Permissions: Approve for me",
   );
+  assert.equal($(".as-mode-pick").textContent, "", "permissions have an icon and an accessible name");
+  assert.equal($(".chat-model").textContent, "", "a long model name does not crowd the toolbar");
+  assert.match($(".chat-model").getAttribute("aria-label"), /Model and thinking:.*GPT-6 Astra.*Medium/);
   // Folder and mode open inline, like the model.
   await click($(".chat-folder"));
   assert.deepEqual(
@@ -2124,13 +2222,16 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
   assert.equal(field().placeholder, "What would you like to work on?");
   await typeInto(field(), "Plan the API");
   await dom.waitFor(() =>
-    $(".chat-model")?.textContent.includes("Default (recommended)"),
+    $(".chat-model")?.getAttribute("aria-label").includes("Default (recommended)"),
   );
+  assert.equal($(".chat-model").textContent, "");
+  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Default");
   await click($(".as-mode-pick"));
   // Claude Code's own modes, in the Claude app's order and words (as in a
   // chat), after the settings' default.
   assert.deepEqual(modeNames(), ["Default", "Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
   await click(modeRow("Plan"));
+  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Plan");
   await click($(".chat-model"));
   await click(await dom.waitFor(() => modelRow("Fable 5.1")));
   await click($(".chat-model"));
@@ -2140,6 +2241,8 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
       b.textContent.startsWith("Max"),
     ),
   );
+  assert.match($(".chat-model").getAttribute("aria-label"), /Fable 5.1.*Max/);
+  assert.equal($(".chat-model").getAttribute("data-custom"), "true");
   // A model that doesn't take Auto mode isn't offered it.
   await click($(".as-mode-pick"));
   assert.ok(!modeNames().includes("Auto"));
@@ -2509,7 +2612,7 @@ test("reviews stay with their app, retain device dialogs, and send each app's ex
   );
   assert.equal($$(".chat-home .need-dots button").length, 3);
   assert.deepEqual(buttons(cards[0]), ["Deny", "Allow for this session"]);
-  assert.deepEqual(buttons(cards[1]), ["Open"]);
+  assert.deepEqual(buttons(cards[1]), ["Open chat"]);
   await click(
     [...cards[0].querySelectorAll("button")].find(
       (b) => b.textContent === "Allow for this session",
@@ -2528,7 +2631,7 @@ test("reviews stay with their app, retain device dialogs, and send each app's ex
   // A question opens its chat to be answered there.
   await click(
     [...cards[1].querySelectorAll("button")].find(
-      (b) => b.textContent === "Open",
+      (b) => b.textContent === "Open chat",
     ),
   );
   await dom.waitFor(() => $(".as-page") || $(".agent-session"));
@@ -2917,15 +3020,6 @@ test("Claude's composer has one round button: Stop while it works, Send once you
   assert.equal(button("Stop"), undefined);
   assert.ok(button("Send").classList.contains("ready"));
   assert.deepEqual(dom.errors, []);
-});
-
-test("Claude's greeting follows the moment", async () => {
-  const { greeting } = await dom.load("/src/EverythingChat.tsx");
-  assert.equal(greeting(new Date(2026, 9, 5, 9)), "New week", "Monday morning");
-  assert.equal(greeting(new Date(2026, 9, 6, 9)), "Good morning");
-  assert.equal(greeting(new Date(2026, 9, 6, 14)), "Good afternoon");
-  assert.equal(greeting(new Date(2026, 9, 6, 21)), "Good evening");
-  assert.equal(greeting(new Date(2026, 9, 6, 2)), "Good evening");
 });
 
 // A Windows (or Linux) computer: what the agent screens say about where things

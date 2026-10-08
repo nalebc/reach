@@ -250,7 +250,6 @@ h1.terminal-switch {
   margin: 0;
   font: 600 16px system-ui, sans-serif;
 }
-/* First time with two terminals: a hand shows the swipe, then it's gone. */
 /* Touches pass through: the first swipe both switches and dismisses it. */
 .terminal-swipe-hint {
   pointer-events: none;

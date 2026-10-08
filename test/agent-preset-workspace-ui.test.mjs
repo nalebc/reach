@@ -37,6 +37,7 @@ function mock(access, { busy = false, input, catalog } = {}) {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
     if (route === "/api/browser") return reply(access);
+    if (route === "/api/browser/shortcuts") return reply({ shortcuts: [], recording: null });
     if (route === "/api/browser/desktop/screen") { assert.equal(parsed.searchParams.get("maxWidth"), "2560", "the page asks for the display's own pixels"); return jpeg(); }
     if (route === "/api/browser/desktop/front") return reply({ app: "Google Chrome", title: "Amazon", terminalLike: false, secure: false, blocked: "", holder: "" });
     if (route === "/api/browser/desktop/input") return input ? input(body.action) : busy ? reply({ error: "Grok is using the Mac right now.", kind: "busy", holder: "Grok", retryInMs: 1800 }, 409) : reply({ ok: true, app: "Google Chrome" });
@@ -71,7 +72,7 @@ test("one column, no tabs: what it may do is written out, the screen is live, an
   assert.match(c.textContent, /Full control/);
   assert.match(c.querySelector(".ap-foot").textContent, /Commands run as the owner and are not confined to shared folders/);
   const headings = [...c.querySelectorAll("h2")].map((h) => h.textContent.trim());
-  assert.deepEqual(headings, ["The Mac's screen", "Open an app on the Mac", "Files on the Mac", "Commands on the Mac"]);
+  assert.deepEqual(headings, ["Saved tools", "The Mac's screen", "Open an app on the Mac", "Files on the Mac", "Commands on the Mac"]);
   await dom.waitFor(() => /Live · updated/.test(c.textContent));
   assert.match(c.textContent, /1 protected window left out/);
   const reload = button(c, "Reload page");
@@ -292,7 +293,7 @@ test("Read only looks and never touches; Apps shows only its apps", async () => 
   for (const view of views) await view.unmount(); views.clear();
   const apps = await open({ ...full, preset: "apps", presetName: "Apps", shell: false, write: false, roots: [], apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }] });
   assert.match(apps.c.textContent, /You may see and use only the chosen apps, open apps\./);
-  assert.deepEqual([...apps.c.querySelectorAll("h2")].map((h) => h.textContent.trim()), ["The Mac's screen", "Open an app on the Mac"]);
+  assert.deepEqual([...apps.c.querySelectorAll("h2")].map((h) => h.textContent.trim()), ["Saved tools", "The Mac's screen", "Open an app on the Mac"]);
   assert.match(apps.c.textContent, /Only these apps\./);
 });
 

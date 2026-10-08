@@ -28,6 +28,7 @@ export function createAgentWatch({
   claudeProjects = path.join(os.homedir(), ".claude", "projects"),
   claudeSessions = path.join(os.homedir(), ".claude", "sessions"),
   claudeAppRecords = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  geminiHome = path.join(os.homedir(), ".gemini"),
   watch = (dir, options, listener) => fs.watch(dir, options, listener),
   debounceMs = 120,
 } = {}) {
@@ -94,6 +95,16 @@ export function createAgentWatch({
   });
   start(claudeAppRecords, { recursive: true }, (event, file) => {
     if (/local_[^/]*\.json$/.test(String(file || ""))) tell("claude:app", { agent: "claude", kind: "app" });
+  });
+  // Gemini rewrites JSON sessions or appends JSONL records while its CLI
+  // runs. Its filename has only eight id characters: wake open Gemini
+  // histories, which resolve the complete native session id themselves.
+  start(path.join(geminiHome, "tmp"), { recursive: true }, (event, file) => {
+    if (/(?:^|[\\/])chats[\\/]session-[^\\/]+\.jsonl?$/.test(String(file || "")))
+      tell("gemini:history", { agent: "gemini", kind: "history" });
+  });
+  start(geminiHome, {}, (event, file) => {
+    if (String(file || "") === "projects.json") tell("gemini:projects", { agent: "gemini", kind: "projects" });
   });
   return {
     onChange(listener) {

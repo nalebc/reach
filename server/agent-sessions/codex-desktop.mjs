@@ -29,6 +29,8 @@ const steerUncertain = () =>
     fail("The Codex app didn't confirm it. It may already be in the chat: check there before sending again."),
     { uncertain: true },
   );
+const startUnavailable = () => Object.assign(fail("Codex's task owner is unavailable."), { ownerUnavailable: true });
+const startUncertain = () => Object.assign(fail("Codex didn't confirm the message. Check the chat before sending again."), { uncertain: true });
 const MAX_FRAME = 16 * 1024 * 1024;
 
 export function createCodexDesktop({
@@ -215,6 +217,15 @@ export function createCodexDesktop({
     return { ...threadSettings, applied: true };
   };
   return {
+    startTurn(conversationId, request) {
+      if (!Array.isArray(request?.input) || !request.input.length) return Promise.reject(startUnavailable());
+      return ask(conversationId, {
+        method: "thread-follower-start-turn", version: 2,
+        params: { turnStart: { request: { ...request, threadId: conversationId, clientUserMessageId: request.clientUserMessageId || randomUUID() }, context: { inheritThreadSettings: true } } },
+        check: result => result?.result?.turn?.id != null,
+        unavailable: startUnavailable, uncertain: startUncertain,
+      }).then(result => ({ turnId: result.result.turn.id }));
+    },
     // Into the running turn now, as the Codex app's own Steer does (from its
     // composer, or a queued message's Steer: then queued names it, and the
     // app takes it out of its queue). input: Codex's UserInput items.

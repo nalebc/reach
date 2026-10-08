@@ -31,25 +31,16 @@ import {
   UserRoundPlus,
   Command,
   Settings,
-  HardDrive,
-  Clock,
   RefreshCw,
   Link2,
   LogOut,
   Check,
-  Copy,
-  ExternalLink,
   Shield,
   KeyRound,
-  Activity as ActivityIcon,
   Smartphone,
-  Server,
-  Download,
   Info,
-  Trash2,
   ScanLine,
   Bot,
-  X as Close,
   MessagesSquare,
 } from "lucide-react";
 import {
@@ -63,7 +54,6 @@ import {
   Peer,
   Device,
   Session,
-  Activity,
   readPeers,
   savePeers,
   peersKey,
@@ -75,7 +65,6 @@ import {
   normalizeUrl,
   request,
   post,
-  bytes,
   platform,
   AgentRequest,
 } from "./api";
@@ -89,7 +78,6 @@ import {
   Monitor,
   Folder,
   Terminal,
-  MessageSquare,
   AppWindow,
   ShieldCheck,
   Wifi,
@@ -185,11 +173,9 @@ function ReachWorkspace() {
     [notice, setNotice] = useState(""),
     [terminals, setTerminals] = useState<Session[]>([]),
     [chats, setChats] = useState<Session[]>([]),
-    [activities, setActivities] = useState<Activity[]>([]),
     [terminalId, setTerminalId] = useState(""),
     [terminalSource, setTerminalSource] = useState("mac"),
     [chatId, setChatId] = useState(""),
-    [chatFocused, setChatFocused] = useState(false),
     [newSession, setNewSession] = useState<{
       kind: string;
       path: string;
@@ -348,15 +334,13 @@ function ReachWorkspace() {
     Promise.all([
       readList(allowed.terminal, "/api/terminals"),
       readList(allowed.codex, "/api/chats"),
-      readList(allowed.activity, "/api/activity"),
       readList(allowed.agents, "/api/agents/requests"),
-    ]).then(([t, c, a, r]) => {
+    ]).then(([t, c, r]) => {
       if (generation !== connectionGeneration.current) return;
       // A permission/tool update can finish while a list request is in flight.
       const current = featuresRef.current;
       setTerminals(current.terminal ? t : []);
       setChats(current.codex ? c : []);
-      setActivities(current.activity ? a : []);
       setRequests(current.agents ? r : []);
       setTerminalId((old) =>
         current.terminal
@@ -498,7 +482,6 @@ function ReachWorkspace() {
     setDevice(null);
     setTerminals([]);
     setChats([]);
-    setActivities([]);
     setRequests([]);
     refreshDevice();
     refreshSessions();
@@ -533,10 +516,22 @@ function ReachWorkspace() {
     if (!pageAccessible(id, features)) return;
     if (id === "terminal")
       setTerminalSource(features.desktopTerminals ? "mac" : "reach");
-    if (id === "chat") setChatFocused(false);
     setPage(id);
     setMobileMenu(false);
   };
+  // A page that started a Reach terminal (OpenClaw's setup) opens it here.
+  useEffect(() => {
+    const open = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (typeof id !== "string" || !id || !pageAccessible("terminal", featuresRef.current)) return;
+      setTerminalId(id);
+      setPage("terminal");
+      setTerminalSource("reach");
+      setMobileMenu(false);
+    };
+    window.addEventListener("reach:open-terminal", open);
+    return () => window.removeEventListener("reach:open-terminal", open);
+  }, []);
   // A notification's link (?page=…): opened once Reach knows what this phone
   // may see, then dropped from the address so a reload doesn't open it again.
   // With Reach already open, the service worker passes the link instead.

@@ -8,6 +8,7 @@ import { saveBlob } from "./native";
 import { OptionButtons } from "./agent-ui";
 import AgentShell from "./AgentShell";
 import AgentFileChanges from "./AgentFileChanges";
+import SavedAgentTools from "./SavedAgentTools";
 import "./agent-page.css";
 
 // The page an agent drives by sight when it was invited with a preset. One
@@ -88,6 +89,7 @@ export default function AgentPage({ peer, access, onEnd, reload = () => window.l
       </header>
       <p className="ap-abilities">You may {abilities.join(", ") || "do nothing yet"}. Everything else is closed.{access.screen && " The screen below updates by itself; you never need to refresh it."}{access.screen && access.control && " Click the picture to click there on the Mac."}</p>
       {status.text && <p className={`ap-status ${status.tone}`} role="status" aria-live="polite">{status.text}</p>}
+      {access.control && access.open && <SavedAgentTools peer={peer} ended={ended} />}
 
       {access.screen && <ScreenCard peer={peer} access={access} now={now} tell={tell} ended={ended} />}
       {access.open && <AppsCard peer={peer} access={access} tell={tell} ended={ended} />}

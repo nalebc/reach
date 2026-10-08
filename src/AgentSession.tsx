@@ -48,7 +48,7 @@ import AgentAccess from "./AgentAccess";
 import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
-import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
+import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, modelDisplayName } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
@@ -666,7 +666,6 @@ function ModelMenu({
   model,
   effort,
   speed,
-  anchor,
   busy,
   error,
   working,
@@ -679,7 +678,6 @@ function ModelMenu({
   model: string | null;
   effort: string | null;
   speed?: string | null;
-  anchor: HTMLElement | null;
   busy?: boolean;
   error?: string;
   working?: boolean;
@@ -832,7 +830,7 @@ function AskingCard({
   where: string;
   word: string;
   onScreen?: () => void;
-  loadCard?: () => Promise<AppCard>;
+  loadCard?: (bring?: boolean) => Promise<AppCard>;
   onAnswer?: (label: string) => Promise<void>;
 }) {
   const id = asking.kind === "permission" ? asking.id : undefined;
@@ -842,17 +840,21 @@ function AskingCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const answering = useRef(false);
-  useEffect(() => {
-    if (!answerable) return;
-    let active = true;
+  const loading = useRef(0);
+  const load = (bring = false) => {
+    const turn = ++loading.current;
     setCard(null);
     setFailed("");
-    loadCard!().then(
-      (c) => active && setCard(c),
-      (e) => active && setFailed((e as Error).message),
+    loadCard!(bring).then(
+      (c) => turn === loading.current && setCard(c),
+      (e) => turn === loading.current && setFailed((e as Error).message),
     );
+  };
+  useEffect(() => {
+    if (!answerable) return;
+    load();
     return () => {
-      active = false;
+      loading.current++;
     };
   }, [id, answerable]);
   const press = async (label: string) => {
@@ -961,9 +963,16 @@ function AskingCard({
             {failed || `This request is already open in the ${where}.`} Answer it on your {word}
             {onScreen ? " through live screen." : "."}
           </p>
-          {onScreen && (
+          {(onScreen || (answerable && failed)) && (
             <div className="as-prompt-actions">
-              <button className="primary" onClick={onScreen}>Open screen to answer</button>
+              {/* Looked at, the app stays on the chat you use there: brought
+                  up only on this tap. */}
+              {answerable && failed && (
+                <button className={onScreen ? undefined : "primary"} onClick={() => load(true)}>
+                  Bring it up in the {where}
+                </button>
+              )}
+              {onScreen && <button className="primary" onClick={onScreen}>Open screen to answer</button>}
             </div>
           )}
         </>
@@ -1365,6 +1374,9 @@ export function ModelPicker({
   model,
   effort,
   speed,
+  busy,
+  error,
+  onRetry,
   onPick,
   onClose,
 }: {
@@ -1373,13 +1385,16 @@ export function ModelPicker({
   model: string | null;
   effort: string | null;
   speed?: string | null;
+  busy?: boolean;
+  error?: string;
+  onRetry?: () => void;
   onPick: (choice: { model?: string; effort?: string; speed?: string }, done: boolean) => void;
   onClose: () => void;
 }) {
   const [configuring, setConfiguring] = useState(false);
-  const shared = { agent, models, model, effort, speed, onClose };
+  const shared = { agent, models, model, effort, speed, busy, error, onRetry, onClose };
   if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next, true)} />;
-  if (configuring) return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, false)} onClose={() => setConfiguring(false)} />;
+  if (configuring || error || !models.length) return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, false)} onClose={configuring ? () => setConfiguring(false) : onClose} />;
   return <CodexEffortStrip {...shared} onPick={(next) => onPick(next, false)} onConfigure={() => setConfiguring(true)} />;
 }
 
@@ -1489,7 +1504,6 @@ export default function AgentSessionView({
   const [modeError, setModeError] = useState("");
   const savingMode = useRef(false);
   const modeButton = useRef<HTMLButtonElement>(null);
-  const modelButton = useRef<HTMLButtonElement>(null);
   const { view: live } = useSessionLive(peer, initial);
   const reviewCount = live.prompts.length || (info.asking ? 1 : 0);
   const selectedPrompt =
@@ -1863,7 +1877,7 @@ export default function AgentSessionView({
     models.find((m) => m.id === modelId)?.name ||
     (agent === "codex"
       ? modelId
-        ? modelId.toUpperCase().replace(/-/g, " ")
+        ? modelDisplayName(modelId)
         : ""
       : claudeModel(modelId));
 
@@ -2621,7 +2635,7 @@ export default function AgentSessionView({
                   }
                   word={word}
                   onScreen={onScreen}
-                  loadCard={() => appCard(peer, initial)}
+                  loadCard={(bring) => appCard(peer, initial, bring)}
                   onAnswer={async (label) => {
                     const asked = info.asking;
                     if (asked?.kind !== "permission" || !asked.id) return;
@@ -2740,7 +2754,6 @@ export default function AgentSessionView({
             model={modelId}
             effort={effort}
             speed={choice.speed || info.speed || null}
-            anchor={modelButton.current}
             busy={modelsLoading || modelSaving}
             error={modelError}
             working={working}
@@ -2946,7 +2959,6 @@ export default function AgentSessionView({
             {/* Always in sight, as both apps keep their model by the box. */}
             {(agent === "codex" || agent === "claude") && (
               <button
-                ref={modelButton}
                 className="as-model"
                 aria-expanded={picking}
                 onClick={() => {

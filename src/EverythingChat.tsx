@@ -1,19 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
-  ChevronDown,
+  Bot,
+  ChevronsUpDown,
+  ClipboardList,
   FolderOpen,
+  Gauge,
+  Laptop,
   Loader2,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   Sparkle,
   X,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
+import { modelDisplayName } from "./ModelSheet";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
+import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import ChatList, {
   ChatAppPicker,
   ChatComingSoon,
@@ -22,10 +29,10 @@ import ChatList, {
 import StrandedMessages from "./StrandedMessages";
 import { FolderPicker } from "./FolderBrowser";
 import ChatSheet from "./ChatSheet";
+import { BrandCourier } from "./ReachIdentity";
+import { useChatAppSwipe } from "./useChatAppSwipe";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
-  AgentLogo,
-  ClaudeSpark,
   useAgentLogos,
   type AgentLogos,
 } from "./agent-logos";
@@ -129,6 +136,10 @@ export function NewChat({
 
   const [images, setImages] = useState<Attachment[]>([]);
   const [models, setModels] = useState<AgentModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelError, setModelError] = useState("");
+  const [modelReload, setModelReload] = useState(0);
+  const modelDefaults = useRef(true);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
@@ -152,29 +163,45 @@ export function NewChat({
     setModels([]);
     setModel(null);
     setEffort(null);
+    setSpeed(null);
     setMode(agent === "codex" ? "auto" : "default");
     setPanel("");
     setModes(null);
+    modelDefaults.current = true;
+  }, [peer.url, peer.token, agent]);
+  useEffect(() => {
     let live = true;
-    listModels(peer, agent).then(
-      (r) => {
-        if (!live) return;
-        setModels(r.models);
-        if (r.modes?.length) setModes(r.modes);
-        // New chats start the way the agent's app would start them.
-        if (agent === "codex" && r.mode) setMode(r.mode);
-        const first = r.models.find((m) => m.isDefault) || r.models[0];
-        if (first) {
-          setModel(first.id);
-          setEffort(first.defaultEffort);
-        }
-      },
-      () => {},
-    );
+    setModelsLoading(true);
+    setModelError("");
+    listModels(peer, agent, { refresh: modelReload > 0 })
+      .then(
+        (r) => {
+          if (!live) return;
+          setModels(r.models);
+          if (r.modes?.length) setModes(r.modes);
+          if (!r.models.length)
+            setModelError("No models were returned. Try loading them again.");
+          if (!modelDefaults.current) return;
+          // New chats start the way the agent's app would start them.
+          if (agent === "codex" && r.mode) setMode(r.mode);
+          const first = r.models.find((m) => m.isDefault) || r.models[0];
+          if (first) {
+            modelDefaults.current = false;
+            setModel(first.id);
+            setEffort(first.defaultEffort);
+          }
+        },
+        (e) => {
+          if (live) setModelError((e as Error).message);
+        },
+      )
+      .finally(() => {
+        if (live) setModelsLoading(false);
+      });
     return () => {
       live = false;
     };
-  }, [peer.url, peer.token, agent]);
+  }, [peer.url, peer.token, agent, modelReload]);
   const current = models.find((m) => m.id === model);
   // Permission modes for the new chat, as the agent offers them now. Claude
   // Code starts in your settings' default unless you pick one.
@@ -198,9 +225,23 @@ export function NewChat({
     !uploading &&
     !!cwd &&
     (text.trim().length > 0 || images.some((i) => i.id));
-  const open = true;
   const modeName =
     modeChoices.find((m) => m.id === mode)?.label || modeLabel(agent, mode);
+  const ModeIcon =
+    mode === "plan"
+      ? ClipboardList
+      : ["full-access", "bypassPermissions", "dontAsk"].includes(mode)
+        ? ShieldAlert
+        : ShieldCheck;
+  const modelDescription = current
+    ? [current.name, effortLabel(effort, agent), speed === "fast" ? "Fast" : ""]
+        .filter(Boolean)
+        .join(" · ")
+    : model
+      ? modelDisplayName(model)
+      : modelsLoading
+        ? "Loading models…"
+        : "Choose a model";
   const addFiles = (files: File[]) => {
     for (const file of files) {
       if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name))
@@ -289,15 +330,35 @@ export function NewChat({
   );
   return (
     <section
-      className={`chat-new ${agent} ${open ? "open" : ""}`}
+      className={`chat-new ${agent}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
-      {problem && <p className="as-hint bad">{problem}</p>}
+      <button
+        className="chat-new-context chat-folder"
+        aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
+        title={cwd || "Choose a folder"}
+        aria-expanded={panel === "folder"}
+        disabled={busy}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setPanel(panel === "folder" ? "" : "folder")}
+      >
+        <FolderOpen size={18} />
+        <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
+        <ChevronsUpDown size={14} />
+      </button>
+      {problem && (
+        <p className="as-hint bad" role="alert">
+          {problem}
+        </p>
+      )}
       {panel === "folder" && (
         <>
           {choiceRow(
             [
-              ...folders.map((f) => ({ id: f, label: folderLabel(f, folders) })),
+              ...folders.map((f) => ({
+                id: f,
+                label: folderLabel(f, folders),
+              })),
               // A folder picked by browsing, until another is chosen.
               ...(cwd && !folders.includes(cwd)
                 ? [{ id: cwd, label: folderLabel(cwd, folders) }]
@@ -351,6 +412,9 @@ export function NewChat({
           model={model}
           effort={effort}
           speed={speed}
+          busy={modelsLoading || busy}
+          error={modelError}
+          onRetry={() => setModelReload((n) => n + 1)}
           onPick={(next, done) => {
             if (next.speed) return setSpeed(next.speed);
             if (next.model) setModel(next.model);
@@ -387,10 +451,11 @@ export function NewChat({
           )}
           <textarea
             ref={input}
-            rows={open ? 3 : 1}
+            rows={3}
             value={text}
             placeholder="What would you like to work on?"
             aria-label={`New ${agentLabel(agent)} chat`}
+            disabled={busy}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
               const files = [...e.clipboardData.files];
@@ -399,91 +464,75 @@ export function NewChat({
               addFiles(files);
             }}
           />
-          {!open && cwd && (
-            <span className="chat-new-where" aria-hidden="true">
-              in {folderLabel(cwd, folders)}
-            </span>
-          )}
         </div>
-        {open && (
-          <div className="as-tools">
-            <button
-              className="as-icon"
-              aria-label="Add images"
-              onClick={() => picker.current?.click()}
-            >
-              <Plus size={18} />
-            </button>
-            <input
-              ref={picker}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(e) => {
-                addFiles([...(e.target.files || [])]);
-                e.target.value = "";
-              }}
-            />
-            <button
-              className="as-model chat-folder"
-              aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
-              aria-expanded={panel === "folder"}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPanel(panel === "folder" ? "" : "folder")}
-            >
-              <FolderOpen size={14} />
-              <span>{cwd ? folderLabel(cwd, folders) : "Folder"}</span>
-            </button>
-            <button
-              className="as-model as-mode-pick"
-              aria-expanded={panel === "mode"}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPanel(panel === "mode" ? "" : "mode")}
-            >
-              {agent === "codex" && <ShieldCheck size={14} />}
-              <span>{modeName}</span>
-            </button>
-            <span className="as-spacer" />
-            {current && (
-              <button
-                className="as-model chat-model"
-                aria-expanded={panel === "model"}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setPanel(panel === "model" ? "" : "model")}
-              >
-                <span className="as-model-name">{current.name}</span>{" "}
-                <span className="as-model-effort">{effortLabel(effort, agent)}</span>
-                <ChevronDown size={14} />
-              </button>
+        <div className="as-tools chat-new-tools">
+          <button
+            className="as-icon"
+            aria-label="Add images"
+            title="Add images"
+            disabled={busy}
+            onClick={() => picker.current?.click()}
+          >
+            <Plus size={18} />
+          </button>
+          <input
+            ref={picker}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              addFiles([...(e.target.files || [])]);
+              e.target.value = "";
+            }}
+          />
+          <button
+            className="as-icon as-mode-pick"
+            aria-label={`Permissions: ${modeName}`}
+            title={`Permissions: ${modeName}`}
+            aria-expanded={panel === "mode"}
+            aria-haspopup="menu"
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setPanel(panel === "mode" ? "" : "mode")}
+          >
+            <ModeIcon size={21} />
+          </button>
+          <button
+            className="as-icon chat-model"
+            aria-label={`Model and thinking: ${modelDescription}`}
+            title={`Model and thinking: ${modelDescription}`}
+            aria-expanded={panel === "model"}
+            data-custom={
+              (!!current &&
+                (!current.isDefault ||
+                  effort !== current.defaultEffort ||
+                  speed === "fast")) ||
+              undefined
+            }
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setPanel(panel === "model" ? "" : "model")}
+          >
+            <Gauge size={21} />
+          </button>
+          <span className="as-spacer" />
+          <button
+            className={`as-send ${ready ? "ready" : ""}`}
+            aria-label="Start"
+            disabled={!ready}
+            onClick={() => void start()}
+          >
+            {busy ? (
+              <Loader2 size={16} className="spin" />
+            ) : (
+              <ArrowUp size={21} />
             )}
-            <button
-              className={`as-send ${ready ? "ready" : ""}`}
-              aria-label="Start"
-              disabled={!ready}
-              onClick={() => void start()}
-            >
-              {busy ? (
-                <Loader2 size={16} className="spin" />
-              ) : (
-                <ArrowUp size={18} />
-              )}
-            </button>
-          </div>
-        )}
+          </button>
+        </div>
       </div>
     </section>
   );
-}
-
-// The Claude app greets by the moment: a new week on Monday morning,
-// otherwise the time of day.
-export function greeting(now = new Date()) {
-  const hour = now.getHours();
-  if (now.getDay() === 1 && hour >= 5 && hour < 12) return "New week";
-  if (hour >= 5 && hour < 12) return "Good morning";
-  if (hour >= 12 && hour < 18) return "Good afternoon";
-  return "Good evening";
 }
 
 // "Install on Mac": its maker's own command, shown first and run once
@@ -785,6 +834,7 @@ export default function EverythingChat({
   const status = health.find((h) => h.agent === current);
   const needsSetup = picked.supported && picked.agent !== "openclaw" && !!status && (!status.installed || !status.signedIn || !!status.error);
 
+  const swipeApps = useChatAppSwipe(apps, picked.agent, setAgent);
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
   return (
     <>
@@ -834,7 +884,7 @@ export default function EverythingChat({
           deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
           onNew={() => { setNewFolder(""); setSheet("new"); }} />
       ) : (
-        <div className="chat-workspace" aria-hidden={!!sheet || undefined}>
+        <div ref={swipeApps} className="chat-workspace" aria-hidden={!!sheet || undefined}>
           {/* Messages whose chat was deleted, to send elsewhere or delete. */}
           <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />
           <ChatList
@@ -870,7 +920,7 @@ export default function EverythingChat({
         </div>
       )}
       {sheet === "new" && (
-        <ChatSheet title="New conversation" onClose={() => setSheet("")}>
+        <ChatSheet title="New conversation" className="chat-create-sheet" leading={<BrandCourier active />} onClose={() => setSheet("")}>
           <div className="chat-new-app-row">
             <ChatAppPicker
               apps={apps}
@@ -878,6 +928,10 @@ export default function EverythingChat({
               onChange={setAgent}
               logos={logos}
             />
+          </div>
+          <div className="chat-new-computer" title={peer.name}>
+            <Laptop size={16} />
+            <span>{peer.name}</span>
           </div>
           {picked.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
@@ -921,7 +975,6 @@ export default function EverythingChat({
                   autoFocus
                 />
               )}
-              <p className="chat-sheet-footnote">On {peer.name}</p>
             </>
           )}
         </ChatSheet>
@@ -946,21 +999,51 @@ export default function EverythingChat({
 
 // A new OpenClaw chat from Reach: a session of its own (never one of WhatsApp's
 // or Discord's), its first message sent as it starts (server/openclaw.mjs).
-function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string) => void }) {
+function NewClawChat({
+  peer,
+  onStarted,
+}: {
+  peer: Peer;
+  onStarted: (key: string) => void;
+}) {
+  const { catalog, error: catalogError } = useClawCatalog(peer);
+  const [agentId, setAgentId] = useState("");
+  const [model, setModel] = useState("");
+  const [thinking, setThinking] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const startingNow = useRef(false);
+  const modelDescription = [
+    catalog?.models.find((m) => m.id === model)?.name ||
+      model ||
+      "Agent default",
+    thinking ? `Thinking: ${thinking}` : "Default thinking",
+  ].join(" · ");
   // Asked again (a dropped answer), the same message starts the same chat.
   const attempt = useRef<{ text: string; id: string } | null>(null);
   const start = async () => {
     if (!text.trim() || busy || startingNow.current) return;
     startingNow.current = true;
-    if (attempt.current?.text !== text) attempt.current = { text, id: crypto.randomUUID() };
+    const choices = {
+      ...(agentId || catalog?.agents?.length
+        ? { agentId: agentId || catalog?.defaultAgentId }
+        : {}),
+      ...(model ? { model } : {}),
+      ...(thinking ? { thinkingLevel: thinking } : {}),
+    };
+    const fingerprint = JSON.stringify([text, choices]);
+    if (attempt.current?.text !== fingerprint)
+      attempt.current = { text: fingerprint, id: crypto.randomUUID() };
     setBusy(true);
     setProblem("");
     try {
-      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text, requestId: attempt.current.id });
+      const { key } = await post<{ key: string }>(
+        peer,
+        "/api/sessions/openclaw/new",
+        { text, requestId: attempt.current.id, ...choices },
+      );
       onStarted(key);
     } catch (e) {
       startingNow.current = false;
@@ -976,21 +1059,99 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
         void start();
       }}
     >
-      <textarea
-        aria-label="New OpenClaw chat"
-        placeholder="What would you like OpenClaw to do?"
-        rows={3}
-        value={text}
-        autoFocus
-        onChange={(e) => setText(e.target.value)}
-        disabled={busy}
-      />
-      <div className="chat-new-claw-tools">
-        <small>Replies stay in Reach and OpenClaw.</small>
-        <button className="as-send ready" aria-label="Start" disabled={!text.trim() || busy}>
-          {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
-        </button>
+      {catalog?.agents?.length ? (
+        <label className="chat-new-context claw-new-agent">
+          <Bot size={18} />
+          <select
+            aria-label="OpenClaw agent"
+            disabled={busy}
+            value={agentId || catalog.defaultAgentId}
+            onChange={(e) => setAgentId(e.target.value)}
+          >
+            {catalog.agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+          <ChevronsUpDown size={14} />
+        </label>
+      ) : null}
+      {optionsOpen && (
+        <div className="chat-new-settings">
+          <div className="chat-new-settings-heading">
+            <span>Model & thinking</span>
+            <button
+              type="button"
+              className="as-icon"
+              aria-label="Close model and thinking"
+              onClick={() => setOptionsOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          {catalog ? (
+            <ClawModelControls
+              peer={peer}
+              catalog={catalog}
+              model={model}
+              thinking={thinking}
+              disabled={busy}
+              onModel={setModel}
+              onThinking={setThinking}
+            />
+          ) : (
+            <p className="claw-note">{catalogError || "Loading models…"}</p>
+          )}
+          {catalog?.errors?.map((message) => (
+            <p className="claw-note" key={message}>
+              {message}
+            </p>
+          ))}
+        </div>
+      )}
+      <div className="as-box">
+        <div className="as-field">
+          <textarea
+            aria-label="New OpenClaw chat"
+            placeholder="What would you like OpenClaw to do?"
+            rows={3}
+            value={text}
+            autoFocus
+            onChange={(e) => setText(e.target.value)}
+            disabled={busy}
+          />
+        </div>
+        <div className="as-tools chat-new-tools">
+          <button
+            type="button"
+            className="as-icon chat-model"
+            aria-label="Model & thinking"
+            aria-description={modelDescription}
+            title={`Model & thinking: ${modelDescription}`}
+            aria-expanded={optionsOpen}
+            data-custom={!!(model || thinking) || undefined}
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setOptionsOpen(!optionsOpen)}
+          >
+            <Gauge size={21} />
+          </button>
+          <span className="as-spacer" />
+          <button
+            className={`as-send ${text.trim() && !busy ? "ready" : ""}`}
+            aria-label="Start"
+            disabled={!text.trim() || busy}
+          >
+            {busy ? (
+              <Loader2 size={16} className="spin" />
+            ) : (
+              <ArrowUp size={21} />
+            )}
+          </button>
+        </div>
       </div>
+      <small className="claw-note">Replies stay in Reach and OpenClaw.</small>
       {problem && (
         <p className="chat-sheet-intro" role="alert">
           {problem}

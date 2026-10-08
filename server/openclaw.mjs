@@ -110,6 +110,17 @@ async function deviceIdentity(file) {
 // WhatsApp group. Enforced on send, whoever asks.
 const channelOf = (s) => String(s?.deliveryContext?.channel || s?.channel || s?.lastChannel || "webchat").toLowerCase();
 export const reachMade = (key) => /^agent:[\w-]+:reach-[\w-]+$/.test(String(key || ""));
+// OpenClaw names a chat in at most 64 characters (sessions.patch refuses
+// more), cut between characters, never inside an emoji.
+export const LABEL_MAX = 64;
+export function chatLabel(text, room = LABEL_MAX) {
+  let out = "";
+  for (const ch of String(text || "").trim().replace(/\s+/g, " ")) {
+    if (out.length + ch.length > room) break;
+    out += ch;
+  }
+  return out.trim();
+}
 export function writable(s) {
   const to = s?.deliveryContext?.to || s?.lastTo;
   return reachMade(s?.key) && ["webchat", "internal"].includes(channelOf(s)) && !(typeof to === "string" && to.trim());
@@ -136,6 +147,55 @@ export function readableName(s) {
   if (/:channel:/.test(key)) return `${app || "Chat"} channel`;
   if (/:direct:/.test(key)) return `${app || "Chat"} direct messages`;
   return app ? `${app} chat` : "OpenClaw chat";
+}
+
+export function readableSchedule(schedule) {
+  if (schedule?.kind === "every") {
+    const seconds = Math.max(1, Math.round(Number(schedule.everyMs) / 1000));
+    if (!Number.isFinite(seconds)) return "Recurring";
+    const [amount, unit] =
+      seconds % 86400 === 0
+        ? [seconds / 86400, "day"]
+        : seconds % 3600 === 0
+          ? [seconds / 3600, "hour"]
+          : seconds % 60 === 0
+            ? [seconds / 60, "minute"]
+            : [seconds, "second"];
+    return `Every ${amount} ${unit}${amount === 1 ? "" : "s"}`;
+  }
+  if (schedule?.kind === "at")
+    return typeof schedule.at === "string" ? schedule.at : "One-time run";
+  if (schedule?.kind !== "cron" || typeof schedule.expr !== "string")
+    return "Scheduled";
+  const [minute, hour, day, month, week] = schedule.expr.trim().split(/\s+/);
+  let label = schedule.expr;
+  if (
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour) &&
+    Number(minute) < 60 &&
+    Number(hour) < 24 &&
+    day === "*" &&
+    month === "*"
+  ) {
+    const time = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+    const days = [
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday",
+    ];
+    if (week === "*") label = `Daily at ${time}`;
+    else if (week === "1-5") label = `Weekdays at ${time}`;
+    else if (/^[0-7]$/.test(week))
+      label = `Every ${days[Number(week)]} at ${time}`;
+  }
+  return [label, typeof schedule.tz === "string" ? schedule.tz : ""]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function createOpenClaw({
@@ -199,6 +259,7 @@ export function createOpenClaw({
   // reply being written changes (its words come with the events): a phone
   // reading the chat as it streams doesn't ask the Gateway each time.
   const histories = new Map(); // key -> { turn, limit, at, result }
+  const settingVersions = new Map();
   const turnOf = (key) => {
     const run = runs.get(key);
     return `${run?.runId || ""}|${run?.status || ""}|${!!run?.generated}`;
@@ -290,7 +351,7 @@ export function createOpenClaw({
     if (hadApprovals) approvalsChanged();
     if (dropped) keepOpen();
   };
-  const request = (method, params = {}, completion) =>
+  const request = (method, params = {}, completion, waitMs = timeoutMs) =>
     new Promise((resolve, reject) => {
       if (!socket || socket.readyState !== WebSocket.OPEN)
         return reject(connectionError());
@@ -303,7 +364,7 @@ export function createOpenClaw({
             "OpenClaw did not respond in time. Check the session before retrying.",
           ),
         );
-      }, timeoutMs);
+      }, waitMs);
       pending.set(id, { resolve, reject, timer });
       if (completion) completions.set(id, completion);
       try {
@@ -482,7 +543,7 @@ export function createOpenClaw({
       (e) => (injectable = /invalid chat\.inject params/i.test(String(e?.message || ""))),
     );
   };
-  const rpc = async (method, params, completion) => {
+  const rpc = async (method, params, completion, waitMs) => {
     await connect();
     if (method === "chat.inject") await injectProbe;
     if (methods && !methods.has(method) && !(method === "chat.inject" && injectable === true))
@@ -490,8 +551,9 @@ export function createOpenClaw({
         409,
         `This OpenClaw Gateway does not support ${method}. Update OpenClaw on this computer.`,
       );
-    return request(method, params, completion);
+    return request(method, params, completion, waitMs);
   };
+  const can = (method) => !methods || methods.has(method);
   const updateRun = (event, p) => {
     if (typeof p.runId !== "string" || !p.runId) return;
     if (terminalRuns.has(p.runId)) return;
@@ -671,10 +733,26 @@ export function createOpenClaw({
   // chat's run, the approvals), or one chat (its run and reply so far).
   const stamp = (value) => crypto.createHash("sha1").update(JSON.stringify(value)).digest("base64url").slice(0, 12);
   const listStamp = () =>
-    stamp([ready, [...runs].map(([key, run]) => [key, run.status, !!run.generated]), activeApprovals().map((a) => a.id)]);
+    stamp([
+      ready,
+      [...settingVersions],
+      [...runs].map(([key, run]) => [key, run.status, !!run.generated]),
+      activeApprovals().map((a) => a.id),
+    ]);
   const chatStamp = (key) => {
     const run = runs.get(key);
-    return stamp([ready, run?.runId, run?.status, run?.text, run?.error, run?.retrying, !!run?.generated, run?.delivery?.status, activeApprovals(key).map((a) => [a.id, a.canRespond])]);
+    return stamp([
+      ready,
+      settingVersions.get(key),
+      run?.runId,
+      run?.status,
+      run?.text,
+      run?.error,
+      run?.retrying,
+      !!run?.generated,
+      run?.delivery?.status,
+      activeApprovals(key).map((a) => [a.id, a.canRespond]),
+    ]);
   };
   const activeApprovals = (key) =>
     [...approvals.values()]
@@ -750,12 +828,356 @@ export function createOpenClaw({
       s.deliveryContext?.channel || s.channel || s.lastChannel || "webchat",
     updatedAt: s.updatedAt || 0,
     model: s.model || "",
+    modelProvider: s.modelProvider || "",
+    thinkingLevel: s.thinkingLevel || "",
     status: activeApprovals(s.key).length
       ? "waiting"
       : runs.get(s.key)?.status || "idle",
     canStop: runs.get(s.key)?.method !== "agent",
   });
+  // Names a new chat; OpenClaw keeps names apart, so a second "Login page"
+  // becomes "Login page (2)".
+  const nameChat = async (key, title) => {
+    const base = chatLabel(title);
+    if (!base) return;
+    for (let n = 1; ; n++) {
+      const suffix = n === 1 ? "" : ` (${n})`;
+      const label = chatLabel(base, LABEL_MAX - suffix.length) + suffix;
+      try {
+        return await rpc("sessions.patch", { key, label });
+      } catch (error) {
+        if (n >= 20 || !/label already in use/.test(error.message)) throw error;
+      }
+    }
+  };
   const api = {
+    // Fixed, read-only inventories. Return only display fields: Gateway
+    // account objects and agent configuration may contain credentials.
+    async catalog() {
+      await connect();
+      const read = async (method) => {
+        if (methods && !methods.has(method)) return null;
+        const result = await rpc(method, {});
+        const rows = result?.[method === "agents.list" ? "agents" : "models"];
+        if (
+          !Array.isArray(rows) ||
+          rows.some((row) => !row || typeof row.id !== "string")
+        )
+          throw fail(
+            502,
+            `OpenClaw returned an unsupported ${method === "agents.list" ? "agent" : "model"} list.`,
+          );
+        return result;
+      };
+      const results = await Promise.allSettled([
+        read("agents.list"),
+        read("models.list"),
+      ]);
+      const agents =
+        results[0].status === "fulfilled" ? results[0].value : null;
+      const models =
+        results[1].status === "fulfilled" ? results[1].value : null;
+      return {
+        defaultAgentId:
+          typeof agents?.defaultId === "string" ? agents.defaultId : "main",
+        agents: (agents?.agents || []).map((a) => ({
+          id: a.id,
+          name:
+            typeof a.identity?.name === "string"
+              ? a.identity.name
+              : typeof a.name === "string"
+                ? a.name
+                : a.id,
+        })),
+        models: (models?.models || []).map((m) => ({
+          id:
+            typeof m.provider === "string" &&
+            m.provider &&
+            !m.id.startsWith(`${m.provider}/`)
+              ? `${m.provider}/${m.id}`
+              : m.id,
+          name: typeof m.name === "string" ? m.name : m.id,
+          reasoning: m.reasoning !== false,
+        })),
+        canEdit: !methods || methods.has("sessions.patch"),
+        errors: results.flatMap((r, i) =>
+          r.status === "rejected"
+            ? [
+                `${i ? "Models" : "Agents"}: ${redact(r.reason?.message || "Unavailable")}`,
+              ]
+            : [],
+        ),
+      };
+    },
+    // `refresh` asks each channel again (OpenClaw's probe), not its last word.
+    async channels({ refresh = false } = {}) {
+      const result = await rpc("channels.status", { probe: refresh === true }, undefined, refresh === true ? 30000 : undefined);
+      if (
+        !result?.channelAccounts ||
+        typeof result.channelAccounts !== "object"
+      )
+        throw fail(502, "OpenClaw returned unsupported channel status.");
+      return {
+        channels: Object.entries(result.channelAccounts).flatMap(
+          ([channel, accounts]) =>
+            (Array.isArray(accounts) ? accounts : [])
+              .filter((a) => a && typeof a === "object")
+              .map((a) => ({
+                channel,
+                accountId: String(a.accountId || "default"),
+                name: String(a.name || a.accountId || "Default account"),
+                status:
+                  a.enabled === false
+                    ? "disabled"
+                    : a.configured === false
+                      ? "unconfigured"
+                      : a.connected === false ||
+                          a.running === false ||
+                          a.linked === false
+                        ? "disconnected"
+                        : a.connected === true
+                          ? "connected"
+                          : a.running === true
+                            ? "running"
+                            : "unknown",
+                error: redact(a.lastError || ""),
+              })),
+        ),
+        // What Reach can set up here; the rest is OpenClaw's own setup.
+        canLinkWhatsApp: can("web.login.start") && can("web.login.wait"),
+      };
+    },
+    // Links WhatsApp: OpenClaw's QR, scanned in WhatsApp → Linked devices
+    // on the phone that has WhatsApp. Never over a linked account (OpenClaw
+    // stops the channel to start a login); `relink` logs it out first.
+    async linkWhatsApp({ accountId, relink = false } = {}) {
+      if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
+        throw fail(400, "Choose a WhatsApp account.");
+      const status = await rpc("channels.status", { probe: false });
+      const accounts = Array.isArray(status?.channelAccounts?.whatsapp) ? status.channelAccounts.whatsapp : [];
+      const id = accountId || status?.channelDefaultAccountId?.whatsapp;
+      const account = accounts.find((a) => a?.accountId === id) || (!accountId && accounts.length === 1 ? accounts[0] : null);
+      if (account?.connected === true && !relink)
+        throw fail(409, "WhatsApp is already connected in OpenClaw.");
+      if (account && (account.linked === true || account.connected === true)) {
+        if (!relink)
+          throw fail(409, "WhatsApp is linked but not connected. Refresh, or link it again with a new QR.");
+        await rpc("channels.logout", { channel: "whatsapp", ...(accountId ? { accountId } : {}) });
+      }
+      const result = await rpc(
+        "web.login.start",
+        { timeoutMs: 30000, ...(accountId ? { accountId } : {}) },
+        undefined,
+        40000,
+      );
+      const qr = typeof result?.qrDataUrl === "string" && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(result.qrDataUrl) && result.qrDataUrl.length < 300000
+        ? result.qrDataUrl
+        : "";
+      changed();
+      return { qr, message: redact(String(result?.message || "")).slice(0, 300) };
+    },
+    // Waits a while for the QR to be scanned (the phone asks again).
+    async waitWhatsApp({ accountId } = {}) {
+      if (accountId !== undefined && (typeof accountId !== "string" || !/^[\w-]{1,80}$/.test(accountId)))
+        throw fail(400, "Choose a WhatsApp account.");
+      const result = await rpc(
+        "web.login.wait",
+        { timeoutMs: 20000, ...(accountId ? { accountId } : {}) },
+        undefined,
+        30000,
+      );
+      if (result?.connected === true) changed();
+      return { connected: result?.connected === true, message: redact(String(result?.message || "")).slice(0, 300) };
+    },
+    async automations({ offset = 0, query = "" } = {}) {
+      offset = Number(offset);
+      if (
+        !Number.isInteger(offset) ||
+        offset < 0 ||
+        offset > 100000 ||
+        typeof query !== "string" ||
+        query.length > 200
+      )
+        throw fail(400, "Choose a valid schedule page or search.");
+      const result = await rpc("cron.list", {
+        includeDisabled: true,
+        limit: 50,
+        offset,
+        ...(query ? { query } : {}),
+      });
+      if (
+        !Array.isArray(result?.jobs) ||
+        result.jobs.some(
+          (j) =>
+            !j ||
+            typeof j.id !== "string" ||
+            typeof j.name !== "string" ||
+            typeof j.enabled !== "boolean",
+        )
+      )
+        throw fail(502, "OpenClaw returned unsupported scheduled jobs.");
+      return {
+        canEdit: !methods || methods.has("cron.update"),
+        canAdd: can("cron.add"),
+        canRun: can("cron.run"),
+        canRemove: can("cron.remove"),
+        hasMore: result.hasMore === true,
+        nextOffset: result.nextOffset ?? offset + result.jobs.length,
+        jobs: result.jobs.map((j) => ({
+          id: j.id,
+          name: j.name,
+          agentId: j.agentId || "main",
+          enabled: j.enabled === true,
+          schedule: readableSchedule(j.schedule),
+          nextRunAt: j.state?.nextRunAtMs || 0,
+          lastRunAt: j.state?.lastRunAtMs || 0,
+          status: j.state?.runningAtMs
+            ? "running"
+            : typeof j.state?.lastRunStatus === "string"
+              ? j.state.lastRunStatus
+              : typeof j.state?.lastStatus === "string"
+                ? j.state.lastStatus
+                : "idle",
+          error: redact(j.state?.lastError || ""),
+          delivery:
+            j.delivery?.mode === "announce"
+              ? j.delivery.channel || "Last channel"
+              : j.delivery?.mode === "webhook"
+                ? "Webhook"
+                : "No external delivery",
+        })),
+      };
+    },
+    async setAutomation({ id, enabled } = {}) {
+      if (
+        typeof id !== "string" ||
+        !id ||
+        id.length > 200 ||
+        typeof enabled !== "boolean"
+      )
+        throw fail(400, "Choose a scheduled job and whether it is enabled.");
+      const result = await rpc("cron.update", { id, patch: { enabled } });
+      if (result?.enabled !== enabled)
+        throw fail(
+          502,
+          "OpenClaw did not confirm the schedule change. Refresh before trying again.",
+        );
+      return { enabled };
+    },
+    // A new schedule: OpenClaw runs `message` in a chat of its own at each
+    // time; replies stay in OpenClaw (and Reach) unless `announce` sends
+    // them to the channel last used.
+    async addAutomation({ name, expr, tz, message, agentId, announce = false } = {}) {
+      if (typeof name !== "string" || !name.trim() || name.trim().length > 120)
+        throw fail(400, "Name the schedule (up to 120 characters).");
+      if (typeof message !== "string" || !message.trim() || message.length > 20000)
+        throw fail(400, "Write what OpenClaw should do each time.");
+      const fields = typeof expr === "string" ? expr.trim().split(/\s+/) : [];
+      if (fields.length !== 5 || !fields.every((f) => /^[\d*/,\-A-Za-z?]{1,40}$/.test(f)))
+        throw fail(400, "Choose when it runs (five cron fields, like 0 9 * * 1-5).");
+      if (tz !== undefined && tz !== "" && (typeof tz !== "string" || !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+\-]+)*$/.test(tz) || tz.length > 64))
+        throw fail(400, "Choose a valid time zone.");
+      if (agentId !== undefined && (typeof agentId !== "string" || !/^[\w-]{1,80}$/.test(agentId)))
+        throw fail(400, "Choose an OpenClaw agent.");
+      if (typeof announce !== "boolean") throw fail(400, "Choose where results go.");
+      const result = await rpc("cron.add", {
+        name: name.trim(),
+        ...(agentId ? { agentId } : {}),
+        enabled: true,
+        schedule: { kind: "cron", expr: fields.join(" "), ...(tz ? { tz } : {}) },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: message.trim() },
+        delivery: announce ? { mode: "announce", channel: "last" } : { mode: "none" },
+      });
+      const id = result?.id || result?.job?.id;
+      if (typeof id !== "string" || !id)
+        throw fail(502, "OpenClaw did not confirm the new schedule. Refresh before trying again.");
+      return { id };
+    },
+    async runAutomation({ id } = {}) {
+      if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
+      const result = await rpc("cron.run", { id, mode: "force" });
+      if (result?.ok === false || result?.runnable === false)
+        throw fail(
+          409,
+          result.reason === "already-running"
+            ? "This schedule is already running."
+            : `OpenClaw did not run this schedule${result.reason ? ` (${redact(String(result.reason)).slice(0, 80)})` : ""}.`,
+        );
+      return { ran: true };
+    },
+    async removeAutomation({ id } = {}) {
+      if (typeof id !== "string" || !id || id.length > 200) throw fail(400, "Choose a scheduled job.");
+      const result = await rpc("cron.remove", { id });
+      if (result?.ok === false || result?.removed === false)
+        throw fail(409, "OpenClaw did not remove this schedule. Refresh before trying again.");
+      return { removed: true };
+    },
+    async settings({ key, label, model, thinkingLevel } = {}) {
+      const row = await known(key);
+      if (!writable(row))
+        throw fail(
+          403,
+          "Reach changes only chats it made. Channel and scheduled chats are managed in OpenClaw.",
+        );
+      if (
+        ["running", "unknown"].includes(runs.get(key)?.status) ||
+        activeApprovals(key).length
+      )
+        throw fail(
+          409,
+          "Wait for OpenClaw to finish before changing this chat.",
+        );
+      const patch = { key };
+      if (label !== undefined) {
+        if (typeof label !== "string" || !label.trim() || label.trim().length > LABEL_MAX)
+          throw fail(400, `Choose a chat name of up to ${LABEL_MAX} characters.`);
+        patch.label = label.trim();
+      }
+      if (model !== undefined) {
+        if (
+          model !== null &&
+          (typeof model !== "string" || !model.trim() || model.length > 200)
+        )
+          throw fail(400, "Choose a model or the agent default.");
+        patch.model = model;
+      }
+      if (thinkingLevel !== undefined) {
+        if (
+          thinkingLevel !== null &&
+          ![
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "adaptive",
+          ].includes(thinkingLevel)
+        )
+          throw fail(400, "Choose a thinking level or the agent default.");
+        patch.thinkingLevel = thinkingLevel;
+      }
+      if (Object.keys(patch).length === 1)
+        throw fail(400, "Choose a chat setting to change.");
+      const result = await rpc("sessions.patch", patch).catch((error) => {
+        if (/label already in use/.test(error.message))
+          throw fail(409, "Another OpenClaw chat already has this name. Choose another.");
+        throw error;
+      });
+      if (result?.ok !== true)
+        throw fail(
+          502,
+          "OpenClaw did not confirm the chat settings. Refresh before trying again.",
+        );
+      listAt = 0;
+      settingVersions.set(key, (settingVersions.get(key) || 0) + 1);
+      if (settingVersions.size > 1024)
+        settingVersions.delete(settingVersions.keys().next().value);
+      changed();
+      return { saved: true };
+    },
     // Approvals came or went (notifications look then, not on a beat).
     onApprovalsChange(listener) {
       approvalListeners.add(listener);
@@ -1068,10 +1490,29 @@ export function createOpenClaw({
     // A new chat started from Reach: a webchat session of Reach's own (no
     // WhatsApp or Discord behind it), the only kind Reach writes in. Works
     // on Gateways too old to move chats (no chat.inject).
-    async create({ title = "" } = {}) {
-      const key = `agent:main:reach-${crypto.randomUUID().slice(0, 8)}`;
+    async create({ title = "", agentId, model, thinkingLevel } = {}) {
+      if (agentId !== undefined) {
+        if (typeof agentId !== "string" || !/^[\w-]{1,80}$/.test(agentId))
+          throw fail(400, "Choose an OpenClaw agent.");
+        const roster = await rpc("agents.list", {});
+        if (!roster?.agents?.some((a) => a.id === agentId))
+          throw fail(400, "This OpenClaw agent is no longer available.");
+      }
+      const key = `agent:${agentId || "main"}:reach-${crypto.randomUUID().slice(0, 8)}`;
       await rpc("sessions.reset", { key, reason: "new" });
-      if (title) await rpc("sessions.patch", { key, label: String(title).slice(0, 120) }).catch(() => {});
+      listAt = 0;
+      if (model !== undefined || thinkingLevel !== undefined) {
+        try {
+          await api.settings({ key, model, thinkingLevel });
+        } catch (error) {
+          await rpc("sessions.delete", { key, deleteTranscript: true }).catch(
+            () => {},
+          );
+          listAt = 0;
+          throw error;
+        }
+      }
+      if (title) await nameChat(key, title).catch(() => {});
       listAt = 0;
       return { key };
     },
@@ -1079,20 +1520,26 @@ export function createOpenClaw({
     // asks again after a dropped answer gets the same chat, not a second).
     // A message OpenClaw refused leaves no empty chat behind; one whose
     // fate is unknown keeps its chat, which shows what happened.
-    start({ text, requestId }) {
+    start({ text, requestId, agentId, model, thinkingLevel }) {
       if (typeof text !== "string" || !text.trim() || text.length > 100000)
         throw fail(400, "Write what you'd like OpenClaw to do.");
       if (typeof requestId !== "string" || !/^[\w-]{8,100}$/.test(requestId))
         throw fail(400, "A message request ID is required.");
       const known = starts.get(requestId);
+      const choices = JSON.stringify([agentId, model, thinkingLevel]);
       if (known) {
-        if (known.text !== text)
+        if (known.text !== text || known.choices !== choices)
           throw fail(409, "This message request ID was already used for a different message.");
         return known.promise;
       }
-      const started = { text };
+      const started = { text, choices };
       started.promise = (async () => {
-        const { key } = await api.create({ title: text.trim().split("\n")[0].slice(0, 60) });
+        const { key } = await api.create({
+          title: text.trim().split("\n")[0],
+          agentId,
+          model,
+          thinkingLevel,
+        });
         try {
           await api.send({ key, text, requestId: `new-${requestId}` });
         } catch (error) {
@@ -1126,8 +1573,8 @@ export function createOpenClaw({
       const key = `agent:main:reach-${crypto.randomUUID().slice(0, 8)}`;
       await rpc("sessions.reset", { key, reason: "new" });
       try {
-        if (title) await rpc("sessions.patch", { key, label: String(title).slice(0, 120) });
-        for (const message of notes) await rpc("chat.inject", { sessionKey: key, message, label });
+        if (title) await nameChat(key, title);
+        for (const message of notes) await rpc("chat.inject", { sessionKey: key, message, label: chatLabel(label, 100) });
       } catch (error) {
         await rpc("sessions.delete", { key, deleteTranscript: true }).catch(() => {});
         throw error;
@@ -1241,8 +1688,16 @@ export async function startOpenClawGateway({
   }
 }
 
-export function openClawRoutes(app, client, { startGateway = startOpenClawGateway, settleMs = 500 } = {}) {
+export const SETUP_SECTIONS = ["model", "channels"];
+export function openClawRoutes(app, client, { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {}) {
   const base = "/api/sessions/openclaw";
+  // Only fixed sections of `openclaw configure`, never the phone's text.
+  app.post(`${base}/setup`, async (req, res) => {
+    const section = req.body?.section;
+    if (!SETUP_SECTIONS.includes(section)) throw fail(400, "Choose what to set up in OpenClaw.");
+    if (!openSetup) throw fail(409, "Reach can't open OpenClaw's setup here.");
+    res.json({ terminal: await openSetup(section, req) });
+  });
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),
   );
@@ -1259,6 +1714,41 @@ export function openClawRoutes(app, client, { startGateway = startOpenClawGatewa
   app.get(`${base}/history`, async (req, res) =>
     res.json(await client.history(req.query.key, req.query.limit)),
   );
+  app.get(`${base}/catalog`, async (_req, res) =>
+    res.json(await client.catalog()),
+  );
+  app.get(`${base}/channels`, async (req, res) =>
+    res.json(await client.channels({ refresh: req.query.refresh === "1" })),
+  );
+  app.post(`${base}/channels/whatsapp/link`, async (req, res) =>
+    res.json(await client.linkWhatsApp(req.body || {})),
+  );
+  app.post(`${base}/channels/whatsapp/wait`, async (req, res) =>
+    res.json(await client.waitWhatsApp(req.body || {})),
+  );
+  app.post(`${base}/automations/new`, async (req, res) =>
+    res.json(await client.addAutomation(req.body || {})),
+  );
+  app.post(`${base}/automations/run`, async (req, res) =>
+    res.json(await client.runAutomation(req.body || {})),
+  );
+  app.post(`${base}/automations/remove`, async (req, res) =>
+    res.json(await client.removeAutomation(req.body || {})),
+  );
+  app.get(`${base}/automations`, async (req, res) =>
+    res.json(
+      await client.automations({
+        offset: req.query.offset,
+        query: req.query.query,
+      }),
+    ),
+  );
+  app.post(`${base}/automations`, async (req, res) =>
+    res.json(await client.setAutomation(req.body || {})),
+  );
+  app.post(`${base}/settings`, async (req, res) =>
+    res.json(await client.settings(req.body || {})),
+  );
   app.post(`${base}/send`, async (req, res) =>
     res.json(await client.send(req.body || {})),
   );
@@ -1270,6 +1760,9 @@ export function openClawRoutes(app, client, { startGateway = startOpenClawGatewa
       await client.start({
         text: req.body?.text,
         requestId: req.body?.requestId ?? crypto.randomUUID(),
+        agentId: req.body?.agentId,
+        model: req.body?.model,
+        thinkingLevel: req.body?.thinkingLevel,
       }),
     ),
   );

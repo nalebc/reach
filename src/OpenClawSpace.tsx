@@ -2,10 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUp,
-  ChevronRight,
+  ChevronDown,
+  Bot,
+  CalendarClock,
+  MessageSquare,
+  MoreHorizontal,
+  Settings2,
+  Radio,
+  SquarePen,
+  X,
   GitFork,
   Loader2,
-  Plus,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -13,12 +20,22 @@ import {
   Trash2,
 } from "lucide-react";
 import { request, post, type Peer } from "./api";
-import { ChatAppPicker, ago, type ChatAppChoice } from "./ChatList";
+import {
+  ChatAppPicker,
+  ChatLibraryHeader,
+  ago,
+  type ChatAppChoice,
+} from "./ChatList";
+import { ClawSessionSettings } from "./OpenClawControls";
+import { OpenSetup, ScheduleForm, WhatsAppLink } from "./OpenClawSetup";
+import { useViewportBox } from "./useViewportBox";
+import { useChatAppSwipe } from "./useChatAppSwipe";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
 import { MoveOffer } from "./MoveChat";
 import type { AgentHealth, AgentSession } from "./agent-sessions";
+import { BrandCourier } from "./ReachIdentity";
 import "./openclaw.css";
 
 const base = "/api/sessions/openclaw";
@@ -29,6 +46,8 @@ type Session = {
   channel: string;
   updatedAt: number;
   model: string;
+  modelProvider?: string;
+  thinkingLevel?: string;
   status: string;
   canStop?: boolean;
   // Reach writes only in chats it made (server/openclaw.mjs writable()).
@@ -181,6 +200,8 @@ function Conversation({
   health = [],
   onOpenChat,
   onScreen,
+  apps,
+  onAppChange,
 }: {
   peer: Peer;
   session: Session;
@@ -192,8 +213,34 @@ function Conversation({
   health?: AgentHealth[];
   onOpenChat?: (s: AgentSession) => void;
   onScreen?: () => void;
+  apps: ChatAppChoice[];
+  onAppChange: (app: string) => void;
 }) {
+  const surface = useRef<HTMLElement>(null);
+  const [narrow, setNarrow] = useState(
+    () => matchMedia("(max-width: 720px)").matches,
+  );
+  useEffect(() => {
+    const media = matchMedia("(max-width: 720px)");
+    const change = () => setNarrow(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useViewportBox(surface, narrow);
   const [moving, setMoving] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const threadActions = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (event: Event) => {
+      if (event.type === "keydown" && (event as KeyboardEvent).key !== "Escape") return;
+      if (event.type !== "keydown" && threadActions.current?.contains(event.target as Node)) return;
+      if (threadActions.current) threadActions.current.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", close); };
+  }, []);
   // Deleting is for good (in OpenClaw too): the first tap asks, a second deletes.
   const [deleting, setDeleting] = useState<"" | "ask" | "busy">("");
   useEffect(() => {
@@ -268,7 +315,11 @@ function Conversation({
     }
   };
   return (
-    <section className="claw-conversation" aria-label="OpenClaw conversation">
+    <section
+      ref={surface}
+      className="claw-conversation"
+      aria-label="OpenClaw conversation"
+    >
       <header className="claw-thread-head">
         <button
           className="claw-icon"
@@ -278,26 +329,51 @@ function Conversation({
           <ArrowLeft size={19} />
         </button>
         <div>
-          <h1>{current.title}</h1>
-          <span>
-            {channelName(current.channel)} · {current.agentId}
-            {current.model ? ` · ${current.model}` : ""}
-          </span>
+          <button
+            className="claw-thread-title"
+            aria-label="Choose an app, OpenClaw selected"
+            aria-expanded={appMenuOpen}
+            onClick={() => setAppMenuOpen(!appMenuOpen)}
+          >
+            <div>
+              <h1>{current.title}</h1>
+              <span>
+                {channelName(current.channel)} · {current.agentId}
+                {current.model ? ` · ${current.model}` : ""}
+              </span>
+            </div>
+            <ChevronDown size={15} />
+          </button>
         </div>
+        {current.writable === true && (
+          <button
+            className="claw-icon"
+            aria-label="OpenClaw chat settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen(!settingsOpen)}
+          >
+            <Settings2 size={18} />
+          </button>
+        )}
+        <details className="claw-thread-actions" ref={threadActions}>
+          <summary className="claw-icon" aria-label="OpenClaw conversation actions"><MoreHorizontal size={20} /></summary>
+          <div className="claw-thread-menu">
         <button
           className="claw-icon"
           aria-label="Refresh OpenClaw conversation"
-          onClick={reload}
+          onClick={() => { if (threadActions.current) threadActions.current.open = false; reload(); }}
         >
           <RefreshCw size={16} />
+          Refresh chat
         </button>
         {!!deviceRequests && (
           <button
             className="claw-icon"
             aria-label={`Review ${deviceRequests} device requests`}
-            onClick={onReviewDevice}
+            onClick={() => { if (threadActions.current) threadActions.current.open = false; onReviewDevice(); }}
           >
             <ShieldCheck size={18} />
+            Review device requests
           </button>
         )}
         {current.writable === true && (
@@ -319,6 +395,7 @@ function Conversation({
             }}
           >
             {deleting === "busy" ? <Loader2 size={16} className="spin" /> : <Trash2 size={17} />}
+            {deleting ? "Tap again to delete" : "Delete chat"}
           </button>
         )}
         {onOpenChat && (
@@ -326,12 +403,34 @@ function Conversation({
             className="claw-icon"
             aria-label="Continue in another app"
             aria-expanded={moving}
-            onClick={() => setMoving(!moving)}
+            onClick={() => { if (threadActions.current) threadActions.current.open = false; setMoving(!moving); }}
           >
             <GitFork size={18} />
+            Continue in another app
           </button>
         )}
+          </div>
+        </details>
       </header>
+      {appMenuOpen && (
+        <div className="claw-app-switch">
+          <ChatAppPicker
+            apps={apps}
+            logos={logos}
+            value="openclaw"
+            onChange={onAppChange}
+          />
+        </div>
+      )}
+      {settingsOpen && current.writable === true && (
+        <ClawSessionSettings
+          peer={peer}
+          session={current}
+          disabled={unsettled}
+          onSaved={reload}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
       {moving && onOpenChat && (
         <div className="claw-move">
           <MoveOffer
@@ -539,6 +638,355 @@ function Conversation({
   );
 }
 
+type ScheduledJob = {
+  id: string;
+  name: string;
+  agentId: string;
+  enabled: boolean;
+  schedule: string;
+  nextRunAt: number;
+  lastRunAt: number;
+  status: string;
+  error: string;
+  delivery: string;
+};
+type ChannelAccount = {
+  channel: string;
+  accountId: string;
+  name: string;
+  status: string;
+  error: string;
+};
+const scheduleTime = (ms: number) =>
+  new Date(ms).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+function ClawWorkspacePanel({
+  peer,
+  view,
+  query,
+  refresh,
+}: {
+  peer: Peer;
+  view: "automations" | "channels";
+  query: string;
+  refresh: number;
+}) {
+  const [revision, setRevision] = useState(0);
+  const [busy, setBusy] = useState("");
+  const [problem, setProblem] = useState("");
+  const [offset, setOffset] = useState(0);
+  useEffect(() => setOffset(0), [query]);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState("");
+  const [linking, setLinking] = useState<"" | "link" | "relink">("");
+  const [ran, setRan] = useState("");
+  useEffect(() => {
+    if (!removing) return;
+    const timer = setTimeout(() => setRemoving(""), 4000);
+    return () => clearTimeout(timer);
+  }, [removing]);
+  const act = async (id: string, path: string, body: object) => {
+    if (busy) return false;
+    setBusy(id);
+    setProblem("");
+    try {
+      await post(peer, `${base}/${path}`, body);
+      setRevision((n) => n + 1);
+      return true;
+    } catch (e) {
+      setProblem((e as Error).message);
+      return false;
+    } finally {
+      setBusy("");
+    }
+  };
+  const { data, error } = usePolling<{
+    jobs?: ScheduledJob[];
+    channels?: ChannelAccount[];
+    canEdit?: boolean;
+    canAdd?: boolean;
+    canRun?: boolean;
+    canRemove?: boolean;
+    canLinkWhatsApp?: boolean;
+    hasMore?: boolean;
+    nextOffset?: number;
+    version?: string;
+  }>(
+    peer,
+    `${base}/${view}${view === "automations" ? `?${new URLSearchParams({ offset: String(offset), query })}` : ""}`,
+    10000,
+    refresh + revision,
+  );
+  const matches = (value: string) =>
+    value.toLowerCase().includes(query.trim().toLowerCase());
+  const channels = (data?.channels || []).filter((c) =>
+    matches(`${c.channel} ${c.name} ${c.status}`),
+  );
+  const jobs = data?.jobs || [];
+  const whatsapp = (data?.channels || []).find((c) => c.channel === "whatsapp");
+  const refreshChannels = async () => {
+    if (busy) return;
+    setBusy("refresh");
+    setProblem("");
+    try {
+      await request(peer, `${base}/channels?refresh=1`);
+      setRevision((n) => n + 1);
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <section
+      className="claw-panel"
+      aria-label={
+        view === "automations"
+          ? "OpenClaw schedules"
+          : "OpenClaw channel health"
+      }
+    >
+      <div className="claw-panel-heading">
+        <h2>
+          {view === "automations" ? "Scheduled jobs" : "Connected channels"}
+        </h2>
+        <p>
+          {view === "automations"
+            ? "Upcoming runs of your OpenClaw schedules. Add, run, pause or delete them here."
+            : "Connection status for the messaging apps in your Gateway."}
+        </p>
+        <div className="claw-panel-actions">
+          {view === "automations" && data?.canAdd && !adding && (
+            <button className="claw-secondary" onClick={() => setAdding(true)}>
+              New schedule
+            </button>
+          )}
+          {view === "channels" && (
+            <button
+              className="claw-secondary"
+              aria-label="Refresh channel status"
+              disabled={!!busy}
+              onClick={() => void refreshChannels()}
+            >
+              {busy === "refresh" ? <Loader2 size={14} className="spin" /> : null}
+              Refresh
+            </button>
+          )}
+        </div>
+      </div>
+      {view === "automations" && adding && (
+        <ScheduleForm
+          peer={peer}
+          onCancel={() => setAdding(false)}
+          onAdded={() => {
+            setAdding(false);
+            setRevision((n) => n + 1);
+          }}
+        />
+      )}
+      {view === "channels" && linking && (
+        <WhatsAppLink
+          peer={peer}
+          relink={linking === "relink"}
+          onCancel={() => setLinking("")}
+          onDone={() => setRevision((n) => n + 1)}
+        />
+      )}
+      {(error || problem) && (
+        <p className="claw-error" role="alert">
+          {error || problem}
+        </p>
+      )}
+      {!data && !error && (
+        <p className="claw-note" role="status">
+          <Loader2 size={14} className="spin" />
+          Loading {view === "automations" ? "schedules" : "channels"}…
+        </p>
+      )}
+      {data && (view === "automations" ? !jobs.length : !channels.length) && (
+        query ? (
+          <p className="claw-empty">No matches. Try another search.</p>
+        ) : view === "automations" ? (
+          !adding && (
+            <div className="claw-missing">
+              <p>No schedules yet. Have OpenClaw do something at set times: a morning briefing, a weekly report.</p>
+              {data.canAdd && (
+                <button className="claw-primary" onClick={() => setAdding(true)}>
+                  Add a schedule
+                </button>
+              )}
+            </div>
+          )
+        ) : (
+          <div className="claw-missing">
+            <p>No messaging apps connected yet. Connect one so OpenClaw can answer you there.</p>
+          </div>
+        )
+      )}
+      {view === "channels" && data && !query && !linking && (
+        <div className="claw-missing">
+          {data.canLinkWhatsApp && (!whatsapp || whatsapp.status === "unconfigured") && (
+            <>
+              <p>WhatsApp isn't linked. Link it with a QR from OpenClaw.</p>
+              <button className="claw-primary" onClick={() => setLinking("link")}>
+                Connect WhatsApp
+              </button>
+            </>
+          )}
+          <p className="claw-note">
+            Discord, Telegram, Slack and others need a bot token, typed into OpenClaw's own setup.
+          </p>
+          <OpenSetup peer={peer} section="channels">
+            Add another channel
+          </OpenSetup>
+        </div>
+      )}
+      {view === "channels"
+        ? channels.map((c) => (
+            <article
+              className="claw-detail-card"
+              key={`${c.channel}:${c.accountId}`}
+            >
+              <div className="claw-card-top">
+                <strong>{channelName(c.channel)}</strong>
+                <span className={`claw-badge ${c.status}`}>
+                  <span className={`claw-status-dot ${c.status}`} />
+                  {c.status[0].toUpperCase() + c.status.slice(1)}
+                </span>
+              </div>
+              <p>{c.name}</p>
+              {c.error && <p className="claw-error">{c.error}</p>}
+              {c.channel === "whatsapp" && data?.canLinkWhatsApp && ["disconnected", "unknown"].includes(c.status) && !linking && (
+                <button className="claw-secondary" onClick={() => setLinking("relink")}>
+                  Link again with a new QR
+                </button>
+              )}
+            </article>
+          ))
+        : jobs.map((job) => (
+            <article className="claw-detail-card" key={job.id}>
+              <div className="claw-card-top">
+                <strong>{job.name}</strong>
+                <span
+                  className={`claw-badge ${job.status === "error" ? "error" : job.enabled ? "connected" : "disabled"}`}
+                >
+                  {job.status === "running"
+                    ? "Running"
+                    : job.enabled
+                      ? "Enabled"
+                      : "Paused"}
+                </span>
+              </div>
+              <p>
+                {job.agentId} · {job.schedule}
+              </p>
+              <dl className="claw-job-facts">
+                {job.enabled && !!job.nextRunAt && (
+                  <>
+                    <dt>Next run</dt>
+                    <dd>{scheduleTime(job.nextRunAt)}</dd>
+                  </>
+                )}
+                {!!job.lastRunAt && (
+                  <>
+                    <dt>Last run</dt>
+                    <dd>
+                      {scheduleTime(job.lastRunAt)} ·{" "}
+                      {job.status === "ok" ? "Completed" : job.status}
+                    </dd>
+                  </>
+                )}
+                <dt>Delivery</dt>
+                <dd>{channelName(job.delivery)}</dd>
+              </dl>
+              {job.error && <p className="claw-error">{job.error}</p>}
+              {data?.canEdit && (
+                <button
+                  className="claw-secondary"
+                  aria-label={`${job.enabled ? "Pause" : "Resume"} ${job.name}`}
+                  disabled={!!busy}
+                  onClick={async () => {
+                    if (busy) return;
+                    setBusy(job.id);
+                    setProblem("");
+                    try {
+                      await post(peer, `${base}/automations`, {
+                        id: job.id,
+                        enabled: !job.enabled,
+                      });
+                      setRevision((n) => n + 1);
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                    } finally {
+                      setBusy("");
+                    }
+                  }}
+                >
+                  {busy === job.id ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : null}
+                  {job.enabled ? "Pause schedule" : "Resume schedule"}
+                </button>
+              )}
+              <div className="claw-job-actions">
+                {data?.canRun && (
+                  <button
+                    className="claw-secondary"
+                    aria-label={`Run ${job.name} now`}
+                    disabled={!!busy || job.status === "running"}
+                    onClick={async () => {
+                      if (await act(`run:${job.id}`, "automations/run", { id: job.id })) setRan(job.id);
+                    }}
+                  >
+                    {busy === `run:${job.id}` ? <Loader2 size={14} className="spin" /> : null}
+                    {ran === job.id ? "Started" : "Run now"}
+                  </button>
+                )}
+                {data?.canRemove && (
+                  <button
+                    className={`claw-secondary${removing === job.id ? " claw-delete-ask" : ""}`}
+                    aria-label={removing === job.id ? `Tap again to delete ${job.name}` : `Delete ${job.name}`}
+                    disabled={!!busy}
+                    onClick={async () => {
+                      if (removing !== job.id) return setRemoving(job.id);
+                      setRemoving("");
+                      await act(`remove:${job.id}`, "automations/remove", { id: job.id });
+                    }}
+                  >
+                    {busy === `remove:${job.id}` ? <Loader2 size={14} className="spin" /> : null}
+                    {removing === job.id ? "Tap again to delete" : "Delete"}
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+      {view === "automations" && (offset > 0 || data?.hasMore) && (
+        <div className="claw-settings-actions">
+          <button
+            className="claw-secondary"
+            disabled={!offset}
+            onClick={() => setOffset(Math.max(0, offset - 50))}
+          >
+            Previous
+          </button>
+          <button
+            className="claw-secondary"
+            disabled={!data?.hasMore}
+            onClick={() => setOffset(data?.nextOffset || offset + 50)}
+          >
+            Next schedules
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function OpenClawSpace({
   peer,
   apps,
@@ -582,15 +1030,24 @@ export default function OpenClawSpace({
     `${base}/changes`,
   );
   const [opened, setOpened] = useState<Session | null>(null);
+  const swipeApps = useChatAppSwipe(apps, "openclaw", onAppChange);
   const [starting, setStarting] = useState(false);
   const [startProblem, setStartProblem] = useState("");
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchField = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (searchOpen) searchField.current?.focus();
+  }, [searchOpen]);
+  const [view, setView] = useState<"chats" | "automations" | "channels">(
+    "chats",
+  );
   const [channel, setChannel] = useState("");
   const sessions = data?.sessions || [];
   const found = sessions.filter(
     (s) =>
       (!channel || s.channel === channel) &&
-      `${s.title} ${s.agentId} ${s.channel}`
+      `${s.title} ${s.agentId} ${s.channel} ${s.model}`
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
@@ -617,33 +1074,32 @@ export default function OpenClawSpace({
         health={health}
         onOpenChat={onOpenChat}
         onScreen={onScreen}
+        apps={apps}
+        onAppChange={onAppChange}
       />
     );
   return (
-    <div className="chat-workspace">
-      <div className="chat-library claw-library">
-        <header className="chat-list-top">
-          <div className="chat-list-heading">
-            <h1>Chats</h1>
-            <span className="chat-list-device">{peer.name}</span>
-          </div>
-          <button
-            className="claw-icon"
-            aria-label="Refresh OpenClaw sessions"
-            onClick={() => {
-              setRefresh((n) => n + 1);
-              onDiscover?.();
-            }}
-          >
-            <RefreshCw size={16} />
-          </button>
-          {onNew && (
-            <button className="chat-create" aria-label="New chat" onClick={onNew}>
-              <Plus size={16} />
-              <span>New chat</span>
-            </button>
-          )}
-        </header>
+    <div ref={swipeApps} className="chat-workspace">
+      <div
+        className={`chat-library claw-library ${searchOpen ? "search-open" : ""}`}
+      >
+        <ChatLibraryHeader
+          peer={peer}
+          apps={apps}
+          logos={logos}
+          value="openclaw"
+          onChange={onAppChange}
+          onNew={onNew}
+          onRefresh={() => {
+            setRefresh((n) => n + 1);
+            onDiscover?.();
+          }}
+          searchOpen={searchOpen}
+          onSearch={() => {
+            if (searchOpen) setQuery("");
+            setSearchOpen(!searchOpen);
+          }}
+        />
         <div className="chat-library-tools">
           <ChatAppPicker
             apps={apps}
@@ -655,19 +1111,52 @@ export default function OpenClawSpace({
           <label className="chat-list-search">
             <Search size={16} />
             <input
+              ref={searchField}
               type="search"
               aria-label="Search OpenClaw sessions"
-              placeholder="Search sessions"
+              placeholder={
+                view === "chats"
+                  ? "Search chats"
+                  : view === "automations"
+                    ? "Search schedules"
+                    : "Search channels"
+              }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            {query && (
+              <button aria-label="Clear search" onClick={() => setQuery("")}>
+                <X size={15} />
+              </button>
+            )}
           </label>
         </div>
+        <div className="claw-tabs" role="group" aria-label="OpenClaw workspace">
+          {(
+            [
+              ["chats", MessageSquare, "Chats"],
+              ["automations", CalendarClock, "Schedules"],
+              ["channels", Radio, "Channels"],
+            ] as const
+          ).map(([value, Icon, label]) => (
+            <button
+              key={value}
+              aria-pressed={view === value}
+                onClick={() => { setView(value); setQuery(""); setSearchOpen(false); }}
+            >
+              <Icon size={16} />
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="claw-library-meta">
-          <span>
-            {data?.connected
-              ? `${sessions.length} sessions · Synced from OpenClaw`
-              : "Local OpenClaw"}
+          <span className="claw-sync-status">
+            <span
+              className={`claw-status-dot ${data?.connected ? "connected" : ""}`}
+            />
+            {!data ? "Connecting to Gateway…" : data.connected
+              ? `${sessions.length} chats · Gateway connected`
+              : "Gateway offline"}
           </span>
           {!!deviceRequests && (
             <button className="chat-review-link" onClick={onReviewDevice}>
@@ -713,7 +1202,16 @@ export default function OpenClawSpace({
             Finding OpenClaw sessions on {peer.name}…
           </p>
         )}
-        {data?.connected && (
+        {data?.connected && view !== "chats" && (
+          <ClawWorkspacePanel
+            key={view}
+            peer={peer}
+            view={view}
+            query={query}
+            refresh={refresh}
+          />
+        )}
+        {data?.connected && view === "chats" && (
           <>
             <div
               className="claw-channels"
@@ -731,17 +1229,22 @@ export default function OpenClawSpace({
               ))}
             </div>
             {!found.length && (
-              <p className="claw-note">
-                {sessions.length
-                  ? "No sessions match these filters."
-                  : "No sessions yet. Conversations you start with OpenClaw will appear here automatically."}
-              </p>
+              sessions.length ? (
+                <p className="claw-note">No sessions match these filters.</p>
+              ) : (
+                <div className="chat-list-empty">
+                  <span className="chat-welcome-mascot" aria-hidden="true"><BrandCourier active /></span>
+                  <strong>Room for your next idea</strong>
+                  <p>Start an OpenClaw chat. Your conversations will appear here automatically.</p>
+                </div>
+              )
             )}
             {agents.map((agent) => (
-              <section className="chat-group" key={agent}>
+              <section className="chat-group chat-project-group" key={agent}>
                 <div className="chat-group-heading">
                   <h2>
-                    {agent}
+                    <Bot size={18} />
+                    {agent === "main" ? "Main agent" : agent}
                     <span>
                       {found.filter((s) => s.agentId === agent).length}
                     </span>
@@ -752,7 +1255,7 @@ export default function OpenClawSpace({
                     .filter((s) => s.agentId === agent)
                     .map((s) => (
                       <button
-                        className="chat-card"
+                        className={`chat-card ${s.status}`}
                         key={s.key}
                         onClick={() => setOpened(s)}
                       >
@@ -766,31 +1269,53 @@ export default function OpenClawSpace({
                         </span>
                         <span className="chat-entry-copy">
                           <strong>{s.title}</strong>
-                          <span className="chat-entry-context">
+                          <span className="chat-card-preview claw-chat-context">
                             {channelName(s.channel)}
-                            {s.status === "waiting"
-                              ? " · Needs you"
-                              : s.status === "running"
-                                ? " · Working"
-                                : ""}
+                            {s.writable ? " · Reach chat" : " · Read only"}
                           </span>
                         </span>
                         <span className="chat-entry-tail">
-                          <time className="chat-card-time">
+                          {s.status === "running" ? (
+                            <Loader2
+                              size={16}
+                              className="chat-row-status spin"
+                              aria-label="Working"
+                            />
+                          ) : s.status === "waiting" ? (
+                            <span
+                              className="chat-row-status waiting"
+                              aria-label="Needs you"
+                            >
+                              <span className="chat-state-dot" />
+                            </span>
+                          ) : null}
+                          <time
+                            className="chat-card-time"
+                            dateTime={s.updatedAt ? new Date(s.updatedAt).toISOString() : undefined}
+                            title={s.updatedAt ? `Updated ${new Date(s.updatedAt).toLocaleString()}` : undefined}
+                          >
                             {s.updatedAt ? ago(s.updatedAt) : ""}
                           </time>
-                          <ChevronRight size={15} />
                         </span>
                       </button>
                     ))}
                 </div>
               </section>
             ))}
-            <p className="claw-footnote">
-              Sessions from every agent on this computer’s current OpenClaw
-              Gateway.
-            </p>
           </>
+        )}
+        {onNew && view === "chats" && (
+          <button
+            className="chat-quick-new"
+            aria-label="New OpenClaw chat"
+            onClick={onNew}
+          >
+            <SquarePen size={21} />
+            <span>Ask OpenClaw anything</span>
+            <span className="chat-quick-arrow">
+              <ArrowUp size={18} />
+            </span>
+          </button>
         )}
       </div>
     </div>

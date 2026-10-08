@@ -38,7 +38,6 @@ export default function DesktopSurface({
   onField,
   knownField,
   onStaleFields,
-  onBlind,
   resetKey,
   initialCursor,
   compact = false,
@@ -74,7 +73,6 @@ export default function DesktopSurface({
   onStaleFields?: () => void;
   // The Mac can't see what's under the finger (a game, a canvas, a remote
   // desktop): its text fields can't be found, so offer the keyboard button.
-  onBlind?: (blind: boolean) => void;
   resetKey: string;
   initialCursor: Point | null;
   compact?: boolean;
@@ -388,7 +386,6 @@ export default function DesktopSurface({
                 secure: a.secure === true,
               };
               if (a.field !== true && knownField?.(point)) onStaleFields?.();
-              onBlind?.(a.blind === true);
             }
           },
           () => {},

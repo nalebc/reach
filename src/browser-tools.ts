@@ -83,7 +83,7 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
         throw Object.assign(Error(body.error || "The shared screen could not be read."), { status: response.status });
       }
       return screenResult(response);
-    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : "", "POST")),
+    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : name.startsWith("reach_tool_") ? "/api/browser/tools/run" : name.startsWith("reach_saved_") || name === "reach_run_shortcut" ? "/api/browser/shortcuts/run" : "", "POST")),
   });
   function dispose() {
     disposed = true;

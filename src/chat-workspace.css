@@ -60,10 +60,22 @@
   margin: 0 0 18px;
 }
 .reach-chat-sheet .chat-sheet-heading h2 {
+  flex: 1;
   margin: 0;
   font-size: 19px;
   font-weight: 500;
   letter-spacing: -0.4px;
+}
+.chat-sheet-leading {
+  display: inline-flex;
+  flex: none;
+  width: 32px;
+  height: 42px;
+}
+.chat-sheet-leading > svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 .chat-sheet-close {
   display: grid;
@@ -95,24 +107,14 @@
 .chat-new-app-row .chat-app-rail {
   width: 100%;
 }
-/* The box, its chips, the model sheets and the mode menu are each app's own
-   (agent-session.css, model-sheet.css), not Reach's: only their fit is here. */
-/* Room to write, but never pushed under the keyboard: it gives way first. */
-.chat-home .chat-new textarea {
-  min-height: min(112px, max(48px, calc(var(--sheet-height, 100dvh) - 330px)));
-}
-/* One row, always: the send button never drops to a line of its own; the
-   model's name gives way (…) when the row is full. */
-.chat-home .chat-new .as-tools,
+/* Conversation controls keep their labels; new chats use an icon toolbar. */
 .chat-redesign .as-tools {
   flex-wrap: nowrap;
   gap: 4px;
 }
-.chat-home .chat-new .as-tools > *,
 .chat-redesign .as-tools > * {
   flex-shrink: 0;
 }
-.chat-home .chat-new .as-tools > .as-spacer,
 .chat-redesign .as-tools > .as-spacer {
   flex: 1 1 0;
   min-width: 0;
@@ -120,17 +122,14 @@
 /* A narrow phone: tighter chips, so the mode and the model both read beside
    + and send. */
 @media (max-width: 430px) {
-  .chat-home .chat-new .as-tools,
   .chat-redesign .as-tools {
     gap: 4px;
   }
-  .chat-home .chat-new .as-tools > .as-model,
   .chat-redesign .as-tools > button.as-mode,
   .chat-redesign .as-tools > .as-model {
     padding-inline: 10px;
   }
 }
-.chat-home .chat-new .as-tools > .as-model,
 .chat-redesign .as-tools > .as-model,
 .chat-redesign .as-tools > button.as-mode {
   flex-shrink: 1;
@@ -142,11 +141,9 @@
 /* A narrow phone: a long mode ("Bypass permissions") gives way before the
    model's name. */
 @media (max-width: 430px) {
-  .chat-home .chat-new .as-tools > .as-mode-pick,
   .chat-redesign .as-tools > button.as-mode {
     flex-shrink: 3;
   }
-  .chat-home .chat-new .as-tools > .chat-model,
   .chat-redesign .as-tools > .as-model {
     flex-shrink: 0.2;
   }
@@ -154,8 +151,138 @@
 .chat-home .chat-new .as-picker {
   margin-bottom: 10px;
 }
-.chat-home .chat-new .as-folder-input {
-  margin-bottom: 10px;
+/* Reach's new-chat sheet: context above, room to write, quiet round tools. */
+.chat-create-sheet {
+  border-radius: 24px;
+}
+.chat-create-sheet .chat-sheet-heading h2 {
+  font-size: 20px;
+  font-weight: 550;
+}
+.chat-create-sheet .chat-sheet-close {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--panel);
+}
+.chat-new-computer {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px 3px;
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.chat-new-computer svg,
+.chat-new-context svg {
+  flex: none;
+}
+.chat-new-computer span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-new-context {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+button.chat-new-context:hover,
+.chat-new-context[aria-expanded="true"] {
+  background: var(--panel);
+}
+.chat-new-context > svg {
+  color: var(--muted);
+}
+.chat-new-context > svg:last-child {
+  margin-left: auto;
+}
+.chat-new-context > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-home :is(.chat-new, .chat-new-claw) .as-box {
+  --as-text: var(--text-strong);
+  --as-muted: var(--muted);
+  --as-faint: var(--muted);
+  --as-user-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  padding: 8px;
+  gap: 4px;
+  border-radius: 24px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.chat-home :is(.chat-new, .chat-new-claw) .as-box:focus-within {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime) 35%, var(--border));
+}
+/* The writing area gives way first when the keyboard opens. */
+.chat-home :is(.chat-new, .chat-new-claw) .as-field textarea {
+  min-height: min(112px, max(48px, calc(var(--sheet-height, 100dvh) - 350px)));
+  padding: 8px 8px 4px;
+  font-family: var(--as-user-font);
+  font-size: 16px;
+  line-height: 1.5;
+}
+.chat-home .chat-new-tools {
+  flex-wrap: nowrap;
+  min-height: 44px;
+  gap: 2px;
+}
+.chat-home .chat-new-tools > .as-icon,
+.chat-home .chat-new-tools > .as-send {
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  max-width: none;
+  padding: 0;
+  border-radius: 50%;
+}
+.chat-home .chat-new-tools > .as-icon {
+  background: transparent;
+  color: var(--muted);
+}
+.chat-home .chat-new-tools > .as-icon:not(:disabled):hover,
+.chat-home .chat-new-tools > .as-icon[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--lime) 10%, transparent);
+  color: var(--lime);
+}
+.chat-home .chat-new-tools > .as-icon[data-custom]::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lime);
+}
+.chat-home .chat-new-tools > .as-send {
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+.chat-home .chat-new-tools > .as-send:disabled {
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  color: var(--muted);
+}
+.chat-home .chat-new-tools > .as-spacer {
+  flex: 1 1 0;
+  min-width: 0;
 }
 /* New chat's folder browser: Home, then any folder inside it. */
 .folder-pick {
@@ -247,12 +374,6 @@
   background: var(--as-accent);
   color: #1a1a19;
 }
-.reach-chat-sheet .chat-sheet-footnote {
-  min-height: 0;
-  margin: 12px 0 0;
-  color: var(--as-faint);
-  font-size: 11px;
-}
 .chat-status {
   min-height: 0;
   margin: 12px 0;
@@ -274,14 +395,6 @@
   flex: none;
   padding: 6px 12px;
   font-size: 13px;
-}
-.chat-new .chat-folder {
-  max-width: 150px;
-}
-.chat-folder span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* Review requests retain their complete context and original actions. */
 .reach-chat-sheet .needs-track {
@@ -471,8 +584,7 @@
   color: #24251a;
 }
 .chat-redesign .as-review-body .as-prompt,
-.chat-redesign .as-review-body .as-consent,
-.chat-redesign .as-review-body .as-asking {
+.chat-redesign .as-review-body .as-consent {
   margin: 0;
   padding: 12px;
   border-radius: 12px;
@@ -508,6 +620,9 @@
     max-height: min(90dvh, calc(var(--sheet-height, 100dvh) - 8px));
     padding: 18px 20px max(22px, env(safe-area-inset-bottom));
     border-radius: 18px 18px 0 0;
+  }
+  .reach-chat-sheet.chat-create-sheet {
+    border-radius: 26px 26px 0 0;
   }
   .chat-sheet-close {
     width: 38px;
@@ -606,32 +721,47 @@
 .chat-redesign .as-latest-anchor { position: relative; flex: 0 0 0; height: 0; z-index: 2; }
 /* A new OpenClaw chat (EverythingChat.tsx NewClawChat). */
 .chat-new-claw {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--as-line, #ffffff1a);
-  border-radius: 18px;
-  background: var(--as-composer, #ffffff08);
+  display: grid;
+  gap: 0;
 }
-.chat-new-claw textarea {
-  min-height: 72px;
+.chat-new-claw .claw-new-agent select {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
   border: 0;
-  background: none;
-  color: inherit;
+  appearance: none;
+  background: transparent;
+  color: var(--text-strong);
   font: inherit;
-  resize: none;
-  outline: none;
+  font-size: 16px;
+  cursor: pointer;
 }
-.chat-new-claw-tools {
+.chat-new-claw > .claw-note {
+  margin: 10px 8px 0;
+  font-size: 11px;
+}
+.chat-new-settings {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.chat-new-settings-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
+  font-size: 13px;
 }
-.chat-new-claw-tools small {
-  color: var(--muted, #8e8e8e);
-  font-size: 12px;
+.chat-new-settings-heading .as-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+.chat-new-settings .claw-settings-fields {
+  margin: 6px 0 2px;
 }
 
 /* Install on Mac: the command shown before it runs, then its progress. */

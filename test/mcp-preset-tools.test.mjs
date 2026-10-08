@@ -10,8 +10,9 @@ const access = (preset, extra = {}) => ({ preset, screen: ["full", "apps", "read
 const names = (preset, extra) => toolsFor(presetScopes({ preset, ...extra }), access(preset, extra)).map((tool) => tool.name);
 
 test("preset credentials advertise the preset's tools over MCP", () => {
-  assert.deepEqual(names("full"), ["reach_access", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file", "reach_shell", "reach_shell_history"]);
-  assert.deepEqual(names("apps"), ["reach_access", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_open_app"]);
+  const reusable = ["reach_tools", "reach_tool_protocol", "reach_define_tool", "reach_tool_operation", "reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"];
+  assert.deepEqual(names("full"), ["reach_access", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_open_app", ...reusable, "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file", "reach_shell", "reach_shell_history"]);
+  assert.deepEqual(names("apps"), ["reach_access", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_open_app", ...reusable]);
   assert.deepEqual(names("files"), ["reach_access", "reach_list_files", "reach_search_files", "reach_read_file"]);
   assert.deepEqual(names("files", { write: true }), ["reach_access", "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file"]);
   assert.deepEqual(names("readonly"), ["reach_access", "reach_screenshot", "reach_front", "reach_list_files", "reach_search_files", "reach_read_file"]);

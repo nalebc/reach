@@ -563,10 +563,6 @@ button.as-title:active {
   text-decoration: none;
   white-space: nowrap;
 }
-.as-banner .as-usage {
-  align-self: flex-start;
-  margin-top: 6px;
-}
 
 /* Working */
 .as-working {
@@ -791,26 +787,6 @@ button.as-title:active {
 .as-page:not(.kb-open) .as-composer {
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
 }
-.as-banner {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 22px;
-  background: var(--as-card);
-  font-size: 13.5px;
-}
-.as-banner > div:first-child {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.as-banner strong {
-  font-weight: 600;
-}
-.as-banner span {
-  color: var(--as-muted);
-}
 /* The Codex app's out-of-usage card: Reset usage, then Upgrade. */
 .as-banner-actions {
   display: flex;
@@ -904,22 +880,6 @@ button.as-title:active {
   padding-right: 44px;
 }
 .as-field textarea::placeholder {
-  color: var(--as-faint);
-}
-.as-enter {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 0;
-  border-radius: 8px;
-  background: none;
-  color: var(--as-text);
-}
-.as-enter:disabled {
   color: var(--as-faint);
 }
 .as-attachments {
@@ -1625,7 +1585,6 @@ button.as-mode:disabled {
 .as-box .as-field textarea { max-height: min(160px, 25dvh); overflow-y: auto; }
 .as-page[data-compact-viewport="true"] .as-bar { min-height: 44px; padding-block: 0; }
 .as-page[data-compact-viewport="true"] .as-scroll { padding-block: 10px; }
-/* Queued messages: queued-messages.css (QueuedMessages.tsx). */
 
 /* The permission mode menu: a small card over the composer's mode button, as
    the Claude and Codex apps open it (not a row of chips). */
@@ -1753,26 +1712,6 @@ button.as-mode:disabled {
   transform: rotate(180deg);
 }
 /* The model menu's thinking levels, under its models. */
-.as-menu-efforts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-  padding: 8px 6px 4px;
-  border-top: 0.5px solid var(--as-float-line);
-}
-.as-menu-efforts button {
-  flex: 1 1 auto;
-  justify-content: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: var(--as-bubble);
-  font-size: 13.5px;
-}
-.as-menu-efforts button[aria-pressed="true"] {
-  background: var(--as-text);
-  color: var(--as-bg);
-}
 
 .as-account-usage { flex: none; margin: 0 max(20px, calc((100% - 724px) / 2)); font-size: 12px; color: var(--muted, #888); }
 .as-usage-summary { cursor: pointer; padding: 7px 0; }

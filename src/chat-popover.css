@@ -32,6 +32,8 @@
   }
 }
 .chat-popover .move-item {
+  /* Rows keep their height (a long error grows its row); the menu scrolls. */
+  flex: none;
   min-height: 44px;
 }
 .chat-popover .move-item > svg:last-child:not(:first-child) {

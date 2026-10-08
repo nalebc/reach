@@ -19,6 +19,11 @@ const terminalAction = object({
   command: { ...string(2000), description: "Use pwd, cd, ls, cat, head, tail, wc or grep. Each action supplies its own cwd; cd does not change later actions. A restricted read-only command. The host validates commands and paths and asks the owner before running." },
 }, ["type", "root", "command"]);
 const definition = (name, title, description, inputSchema, example, extra = {}) => ({ name, title, description, inputSchema, example, ...extra });
+export const savedToolName = item => `reach_saved_${item.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 12) || "task"}_${item.id.replace(/-/g, "")}`;
+export const SAVED_TOOLS_HINT = "Before starting a laptop task, check Saved tools in the workspace or reach_tools for a matching named tool. Select its button or call its reach_tool_* tool once with a requestId. To create a deterministic tool, read reach_tool_protocol and submit the same reach.tool.v1 format with reach_define_tool. Older recorded tasks remain in reach_shortcuts.";
+export const deterministicToolName = item => `reach_tool_${item.id}`;
+const requestId = { ...string(36), pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "A fresh UUID for a new operation. Reuse it after a lost response; effects will never be repeated." };
+const toolDefinitionSchema = object({ protocol: kinds("reach.tool.v1"), id: { ...string(48), pattern: "^[a-z][a-z0-9_]*$" }, title: string(80), description: string(500), origins: { type: "array", minItems: 1, maxItems: 4, items: string(2000) }, inputs: { type: "object", maxProperties: 12, additionalProperties: true }, steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", maxProperties: 8, additionalProperties: true } } }, ["protocol", "id", "title", "description", "origins", "inputs", "steps"]);
 const location = { root, path: relativePath };
 const requestsAllowed = (access) => access.screen === "apps" || access.restrictedTerminal === true || access.commandRequests === true;
 const terminalAllowed = (access) => access.restrictedTerminal === true && !!access.roots?.length;
@@ -36,18 +41,47 @@ const desktopActions = [
 ];
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
-  const tools = [definition("reach_access", "Access", "Read this session's preset, what it may do, its shared folders and when it ends.", object(), {})];
+  const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
   if (access.screen) tools.push(
     definition("reach_screenshot", "Screenshot", "The Mac's screen now, as {image: base64 JPEG, mimeType}, at the display's own resolution up to maxWidth pixels (default 2560; use up to 3840 to read small controls). Reach's own windows, password apps and apps the owner hid are left out; in the Apps preset only the chosen apps appear. Coordinates for actions are fractions of this image.", object({ maxWidth: integer(320, 3840) }), { maxWidth: 2560 }),
     definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
   );
   if (access.control) tools.push(
-    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
+    definition("reach_act", "Act on the screen", "Before repeating a laptop task, check reach_shortcuts or the reach_saved_* tools for a saved method. One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
   );
   if (access.open) tools.push(
     definition("reach_desktop_apps", "Apps you may use", "The apps this session may open or bring forward, with whether each is running.", object(), {}),
     definition("reach_open_app", "Open an app", "Open or bring forward one of those apps by its path, then take a screenshot.", object({ app: string(4096) }, ["app"]), { app: access.apps?.[0]?.id || "/Applications/Safari.app" }),
   );
+  if (access.control && access.open && access.screen) tools.push(
+    definition("reach_tools", "Find deterministic tools", "Check here before browser tasks. Returns the named built-in and agent-created tools, their exact reach.tool.v1 definitions and allowed browsers. Search by task name.", object({ query: string(160) }), { query: "Gmail" }),
+    definition("reach_tool_protocol", "Tool creation protocol", "Read reach.tool.v1: declared inputs, HTTPS origins, fixed DOM operations and checked results. The built-in tools use this same format. No JavaScript, shell or guessed steps.", object(), {}),
+    definition("reach_define_tool", "Create deterministic tool", "Validate and save a new immutable reach.tool.v1 definition. It immediately appears as a named button and MCP tool. Read reach_tool_protocol and inspect reach_tools first; use a new ID. Creating a definition does not execute it.", object({ definition: toolDefinitionSchema }, ["definition"]), {}),
+    definition("reach_tool_operation", "Check tool run", "Recover a lost response by requestId without repeating any browser action. Handles expire and do not survive a Reach restart.", object({ requestId }, ["requestId"]), {}),
+    definition("reach_shortcuts", "Saved shortcuts", "Check here before app tasks. Find reusable tasks and required inputs within your current access. Without query, returns a compact catalog. Search by task name to inspect up to ten matching shortcuts' exact steps before running one. Also reports your current recording.", object({ query: string(160) }), { query: "Gmail" }),
+    definition("reach_record_shortcut", "Record a shortcut", "Before doing a reusable task with no matching shortcut, record your successful reach_act and reach_open_app calls under a clear task name. Form text becomes an input supplied at replay; passwords and screenshots are never saved. Cmd+L, a plain HTTPS URL (no query or fragment), Enter becomes a stable Open website step.", object({ name: string(80) }, ["name"]), { name: "Open Gmail" }),
+    definition("reach_save_shortcut", "Save recorded shortcut", "After verifying the task succeeded, save its recording as a reusable local shortcut. Future agents can discover and replay it immediately within their own current app permissions. Saving needs no extra owner step. Discard failed or incomplete tasks instead.", object(), {}),
+    definition("reach_discard_shortcut", "Discard recording", "Discard your current shortcut recording without undoing completed actions.", object(), {}),
+    definition("reach_run_shortcut", "Run saved shortcut", "Run one enabled shortcut by ID in a single call, with your current permissions checked before every step. Text inputs are never stored. Stops at changed windows, password fields, owner activity, pause or revoked access. Inspect status and completedSteps; stopped steps are not rolled back. Never blindly retry a partially completed task. Take a screenshot after completion to verify the result.", object({ id: string(128), values: { type: "object", maxProperties: 60, additionalProperties: string(2000) } }, ["id"]), { id: "shortcut-id-from-reach_shortcuts" }),
+  );
+  if (access.control && access.open && access.screen) for (const item of access.browserTools?.tools || []) {
+    if (item.protocol !== "reach.tool.v1" || !/^[a-z][a-z0-9_]{0,47}$/.test(item.id) || !plain(item.inputs) || !Array.isArray(item.steps)) continue;
+    const properties = { browser: kinds(access.browserTools.browsers), requestId };
+    const required = ["browser", "requestId"];
+    const example = { browser: access.browserTools.browsers[0] };
+    for (const [key, field] of Object.entries(item.inputs)) {
+      if (["browser", "requestId"].includes(key)) continue;
+      properties[key] = { ...string(field.maxLength || 2000, field.required === false ? 0 : 1), description: field.label, ...(field.enum ? { enum: field.enum } : {}), ...(field.default !== undefined ? { default: field.default } : {}), ...(["handle", "file"].includes(field.type) ? { pattern: requestId.pattern } : {}) };
+      if (field.required !== false && field.default === undefined) required.push(key);
+      if (field.default !== undefined) example[key] = field.default;
+    }
+    tools.push(definition(deterministicToolName(item), item.title, `${item.description} Fixed ${item.steps.length}-step protocol. Stops on missing, ambiguous or stale targets. Check status and completedSteps; retry only with the SAME requestId after a lost response.`, object(properties, required), example));
+  }
+  if (access.control && access.open && access.screen) for (const item of access.savedTools || []) {
+    if (typeof item.name !== "string" || !/^[a-f0-9-]{36}$/.test(item.id) || !Array.isArray(item.inputs) || item.inputs.some(key => !/^text[1-9][0-9]*$/.test(key))) continue;
+    const properties = Object.fromEntries(item.inputs.map(key => [key, { ...string(2000), description: "Text for this run only; never persisted. Password fields remain blocked." }]));
+    tools.push(definition(savedToolName(item), item.name, `Execute the saved task “${item.name}” (${item.stepCount} steps) immediately, using your current app access. Stops if the app/window changes or the owner takes control. Check the returned progress and take a screenshot to verify the result; never blindly retry a partially completed task.`, object(properties, item.inputs), {}));
+  }
   if (access.roots?.length) tools.push(
     definition("reach_list_files", "List files", "List one shared folder.", object(location, ["root"]), { root: firstRoot, path: "" }),
     definition("reach_search_files", "Find files", "Find files by name inside one shared folder.", object({ root, query: string(160) }, ["root", "query"]), { root: firstRoot, query: "readme" }),
@@ -102,7 +136,28 @@ export function browserToolsFor(access = {}) {
 
 const plain = (value) => !!value && typeof value === "object" && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const invalid = (detail) => { throw Error(`Invalid tool arguments: ${detail}`); };
+function boundedJSON(value, depth = 0) {
+  if (depth > 12) invalid("The tool definition is too deeply nested.");
+  if (typeof value === "string") { validate(string(20000, 0), value); return; }
+  if (value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) return;
+  if (Array.isArray(value)) {
+    if (value.length > 24 || Reflect.ownKeys(value).some(key => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))) invalid("Use a bounded plain array.");
+    for (let i = 0; i < value.length; i++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) invalid("Use plain array values.");
+      boundedJSON(descriptor.value, depth + 1);
+    }
+    return;
+  }
+  if (!plain(value) || Reflect.ownKeys(value).length > 24) invalid("Use a bounded JSON tool definition.");
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || ["__proto__", "prototype", "constructor"].includes(key) || !descriptor || !Object.hasOwn(descriptor, "value")) invalid("Use plain definition fields.");
+    boundedJSON(descriptor.value, depth + 1);
+  }
+}
 function validate(schema, value, label = "arguments") {
+  if (!Object.keys(schema).length) { boundedJSON(value); return; }
   if (schema.oneOf) {
     for (const choice of schema.oneOf) {
       try { validate(choice, value, label); return; } catch { /* Try each supported exact action shape. */ }
@@ -111,11 +166,13 @@ function validate(schema, value, label = "arguments") {
   }
   if (schema.type === "object") {
     if (!plain(value)) invalid(`${label} must be an object.`);
+    if (schema.maxProperties !== undefined && Reflect.ownKeys(value).length > schema.maxProperties) invalid(`${label} has too many fields.`);
     for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== "string" || !Object.hasOwn(schema.properties, key)) invalid(`${label} contains an unsupported field.`);
+      const property = typeof key === "string" && (Object.hasOwn(schema.properties || {}, key) ? schema.properties[key] : schema.additionalProperties === true ? {} : schema.additionalProperties && typeof schema.additionalProperties === "object" && /^text[1-9][0-9]*$/.test(key) ? schema.additionalProperties : null);
+      if (!property) invalid(`${label} contains an unsupported field.`);
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !Object.hasOwn(descriptor, "value")) invalid(`${label} must contain only plain values.`);
-      validate(schema.properties[key], descriptor.value, `${label}.${key}`);
+      validate(property, descriptor.value, `${label}.${key}`);
     }
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) invalid(`${label}.${key} is required.`);
   } else if (schema.type === "array") {
@@ -150,6 +207,14 @@ export function browserToolRequest(name, args, access) {
   validate(tool.inputSchema, args);
   // Copy before the asynchronous request; later mutations cannot change approval content.
   const input = JSON.parse(JSON.stringify(args));
+  if (name === "reach_define_tool" && new TextEncoder().encode(JSON.stringify(input.definition)).length > 24000) invalid("The definition exceeds 24 KiB.");
+  const deterministic = (access.browserTools?.tools || []).find(item => deterministicToolName(item) === name);
+  if (deterministic) {
+    const { browser, requestId, ...values } = input;
+    return { route: "/api/browser/tools/run", method: "POST", body: { id: deterministic.id, browser, requestId, values }, response: "json" };
+  }
+  const saved = (access.savedTools || []).find(item => savedToolName(item) === name);
+  if (saved) return { route: "/api/browser/shortcuts/run", method: "POST", body: { id: saved.id, values: input }, response: "json" };
   if (Object.hasOwn(input, "root")) rootAllowed(access, input.root);
   pathAllowed(input.path);
   const actions = name === "reach_request_batch" ? input.actions : name === "reach_request_action" ? [input.action] : [];
@@ -166,7 +231,16 @@ export function browserToolRequest(name, args, access) {
   }
   if (name === "reach_shell") { rootAllowed(access, input.root); pathAllowed(input.cwd); }
   switch (name) {
+    case "reach_tools": return get(`/api/browser/tools${input.query ? `?${new URLSearchParams({ query: input.query })}` : ""}`);
+    case "reach_tool_protocol": return get("/api/browser/tools/protocol");
+    case "reach_define_tool": return { route: "/api/browser/tools/define", method: "POST", body: input, response: "json" };
+    case "reach_tool_operation": return get(`/api/browser/tools/operations/${input.requestId}`);
     case "reach_access": return get("/api/browser");
+    case "reach_shortcuts": return get(`/api/browser/shortcuts${input.query ? `?${new URLSearchParams({ query: input.query })}` : ""}`);
+    case "reach_record_shortcut": return { route: "/api/browser/shortcuts/record", method: "POST", body: input, response: "json" };
+    case "reach_save_shortcut": return { route: "/api/browser/shortcuts/save", method: "POST", body: input, response: "json" };
+    case "reach_discard_shortcut": return { route: "/api/browser/shortcuts/record", method: "DELETE", body: input, response: "json" };
+    case "reach_run_shortcut": return { route: "/api/browser/shortcuts/run", method: "POST", body: input, response: "json" };
     case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 2560) })}`, "image");
     case "reach_front": return get("/api/browser/desktop/front");
     case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };

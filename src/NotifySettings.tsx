@@ -448,15 +448,3 @@ export function NotificationSetup({
     </section>
   );
 }
-
-// The setup on its own, as the bell's panel shows it (Settings doesn't).
-export function NotifySettings({ peer }: { peer: Peer }) {
-  const state = useNotificationSetup(peer);
-  if (!state.here || state.support === "unsupported" || !state.allowed)
-    return null;
-  return (
-    <div className="panel settings-panel">
-      <NotificationSetup state={state} />
-    </div>
-  );
-}

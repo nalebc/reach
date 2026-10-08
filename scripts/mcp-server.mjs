@@ -3,10 +3,11 @@
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
 import { agentErrorDetails } from "../server/agent-transport.mjs";
-import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
+import { browserToolsFor, browserToolRequest, SAVED_TOOLS_HINT } from "../server/browser-tools.mjs";
 
-const BROWSER_ONLY_NAMES = new Set(["reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
+const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
 const BROWSER_TOOL_SCOPES = {
+  reach_tools: "browser:control", reach_tool_protocol: "browser:control", reach_define_tool: "browser:control", reach_tool_operation: "browser:control",
   reach_access: "browser:read", reach_list_files: "files:read", reach_search_files: "files:read", reach_read_file: "files:read",
   reach_read_terminal: "browser:read", reach_screen: "browser:read", reach_scroll: "browser:scroll",
   reach_request_action: "browser:request", reach_request_batch: "browser:request", reach_list_requests: "browser:request", reach_cancel_request: "browser:request",
@@ -16,10 +17,11 @@ const BROWSER_TOOL_SCOPES = {
   reach_screenshot: "browser:screen", reach_front: "browser:screen", reach_act: "browser:control",
   reach_desktop_apps: "browser:open", reach_open_app: "browser:open", reach_change_file: "browser:write",
   reach_shell: "browser:shell", reach_shell_history: "browser:shell",
+  reach_shortcuts: "browser:control", reach_record_shortcut: "browser:control", reach_save_shortcut: "browser:control", reach_discard_shortcut: "browser:control", reach_run_shortcut: "browser:control",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_open_app", "reach_change_file", "reach_shell"]);
-const BROWSER_DESTRUCTIVE = new Set(["reach_terminal_command", "reach_change_file", "reach_shell"]);
+const BROWSER_WRITES = new Set(["reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_open_app", "reach_change_file", "reach_shell"]);
+const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
 
 const location = {
   root: {
@@ -229,7 +231,7 @@ export const tools = [
   },
 ];
 export async function callTool(api, name, a, browserAccess) {
-  if (browserAccess || BROWSER_ONLY_NAMES.has(name)) {
+  if (browserAccess || BROWSER_ONLY_NAMES.has(name) || name.startsWith("reach_saved_") || name.startsWith("reach_tool_") || ["reach_tools", "reach_define_tool"].includes(name)) {
     const access = browserAccess || await api("/api/browser");
     const plan = browserToolRequest(name, a, access);
     return api(plan.route, plan.method, plan.body);
@@ -340,8 +342,8 @@ const TOOL_SCOPES = {
 };
 // Tools the credential's access allows (the computer enforces it anyway).
 export function toolsFor(scopes, browserAccess) {
-  if (scopes.includes("browser:read")) return browserToolsFor(browserAccess).filter((tool) => scopes.includes(BROWSER_TOOL_SCOPES[tool.name])).map(({ example, approvalRequired, ...tool }) => ({
-    ...tool, annotations: { readOnlyHint: !BROWSER_WRITES.has(tool.name), destructiveHint: approvalRequired === true || BROWSER_DESTRUCTIVE.has(tool.name), openWorldHint: false },
+  if (scopes.includes("browser:read")) return browserToolsFor(browserAccess).filter((tool) => scopes.includes(tool.name.startsWith("reach_saved_") || tool.name.startsWith("reach_tool_") ? "browser:control" : BROWSER_TOOL_SCOPES[tool.name])).map(({ example, approvalRequired, ...tool }) => ({
+    ...tool, annotations: { readOnlyHint: !BROWSER_WRITES.has(tool.name) && tool.name !== "reach_define_tool" && !tool.name.startsWith("reach_saved_") && !tool.name.startsWith("reach_tool_") || ["reach_tool_protocol", "reach_tool_operation"].includes(tool.name), destructiveHint: approvalRequired === true || BROWSER_DESTRUCTIVE.has(tool.name) || tool.name.startsWith("reach_saved_"), openWorldHint: tool.name.startsWith("reach_tool_") && !["reach_tool_protocol", "reach_tool_operation"].includes(tool.name) },
   }));
   return tools.filter((tool) => {
     if (!Object.hasOwn(TOOL_SCOPES, tool.name)) return false;
@@ -382,8 +384,9 @@ export function serveMcp({
       if (r.method === "initialize")
         result = {
           protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name, version: "0.1.0" },
+          ...(scopes?.includes("browser:control") ? { instructions: `${SAVED_TOOLS_HINT} Chrome and Safari use the same protocol as the built-ins. Definitions contain only fixed steps and result checks. No arbitrary script or passwords. Supply a fresh UUID requestId for a new run; after a lost response use reach_tool_operation or retry the SAME requestId. An uncertain or stopped run reports partial progress: inspect the browser before continuing. Definition creation immediately adds a named tool to the list.` } : {}),
         };
       else if (r.method === "ping") result = {};
       else if (r.method === "tools/list") {
@@ -414,6 +417,8 @@ export function serveMcp({
         return;
       }
       write({ id: r.id, result });
+      if (r.method === "tools/call" && ["reach_save_shortcut", "reach_define_tool"].includes(r.params?.name) && !result?.isError)
+        write({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
     } catch (e) {
       write({ id: r?.id ?? null, error: { code: -32603, message: e.message } });
     }

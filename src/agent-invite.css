@@ -55,37 +55,6 @@
   transform: rotate(-30deg) scale(0.92);
 }
 /* A grant: the row opens its choices; the switch turns it on or off. */
-.ag-grant-head {
-  display: flex;
-  align-items: center;
-  padding-right: 14px;
-}
-.ag-grant-head .ag-row-head {
-  flex: 1;
-  min-width: 0;
-}
-.ag-grant-head .ag-row-head:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.ag-grant:not(.is-on) .ag-row-icon {
-  color: var(--ag-faint);
-}
-.ivt .ag-invite button.ag-note-button,
-.ag-note-button {
-  padding: 10px 12px;
-  border: 0;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--ag-amber) 10%, transparent);
-  color: var(--ag-amber);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-.ag-note-button u {
-  text-underline-offset: 3px;
-}
 .ag-lines {
   display: grid;
 }
@@ -108,14 +77,6 @@
 }
 .ag-wide {
   width: 100%;
-}
-.ag-reassure {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: var(--ag-faint);
-  font-size: 12.5px;
 }
 .ag-error {
   margin: 0;
@@ -183,38 +144,6 @@
   color: #cfdad2;
   font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
   resize: vertical;
-}
-.ag-steps {
-  display: grid;
-  gap: 10px;
-  width: 100%;
-  margin: 4px 0 0;
-  padding: 14px 0 0;
-  border-top: 1px solid var(--ag-line);
-  counter-reset: step;
-  list-style: none;
-  text-align: left;
-}
-.ag-steps li {
-  display: flex;
-  gap: 10px;
-  color: #cfdad2;
-  font-size: 13.5px;
-  line-height: 1.45;
-  counter-increment: step;
-}
-.ag-steps li::before {
-  content: counter(step);
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #ffffff10;
-  color: var(--ag-text);
-  font-size: 12px;
-  font-weight: 650;
 }
 .ag-done .ag-link {
   justify-self: center;

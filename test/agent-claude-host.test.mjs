@@ -952,9 +952,9 @@ test("a Claude app chat's permission card shows on the phone as the app draws it
   });
   const { session } = await sessions.read("claude", ID);
   assert.deepEqual(session.asking, { kind: "permission", text: items[1].text, command: true, id: "app-permission:toolu_9" });
-  // Opened on the phone: the chat brought up in the app, its card read there
+  // Explicitly brought up from the phone: the chat shown in the app, its card read there
   // (the one that names this command: its first 40 characters).
-  assert.deepEqual(await sessions.card("claude", ID), {
+  assert.deepEqual(await sessions.card("claude", ID, { bring: true }), {
     id: "app-permission:toolu_9",
     texts: ["Allow Claude to run this command?", 'cd ~/.claude/projects && grep -l "flipping coing" *.jsonl'],
     buttons: ["Deny", "Always allow for this project", "Allow once"],
@@ -1330,6 +1330,38 @@ test("an app that shows Reach nothing isn't brought up to read a card", async ()
   assert.deepEqual(touched, []);
   assert.deepEqual((await cards.card("claude", "chat")).buttons, ["Deny", "Allow once"]);
   assert.deepEqual(touched, [["read", "claude"]]);
+});
+
+// Two Claude app chats waiting on a permission, each opened on the phone:
+// reading each card switched the app's window to it and left it there, so the
+// Mac flipped between the two. Looking never switches it under someone using
+// the app, and puts it back on its chat; only "Bring it up" leaves it there.
+test("looking at a Claude app card never leaves the app on another chat", async () => {
+  const { createAppCards } = await import("../server/agent-sessions/app-cards.mjs");
+  const opened = [];
+  let inFront = true;
+  const cards = createAppCards({
+    pending: async (agent, id) => ({ id: `app-permission:${id}`, expect: ["npm test"], appSessionId: `local_${id}` }),
+    open: async (url) => opened.push(url),
+    read: async () => ({ found: true, texts: [], buttons: [{ label: "Deny" }, { label: "Allow once" }] }),
+    press: async () => {},
+    shown: () => [{ id: "a", session: "local_a" }],
+    frontmost: async () => inFront,
+    idle: async () => 5,
+    wait: async () => {},
+  });
+  // In the Claude app, using it: nothing switches.
+  await assert.rejects(cards.card("claude", "b"), (e) => e.inApp === true);
+  assert.deepEqual(opened, []);
+  // In another app: read, then back on the chat it showed.
+  inFront = false;
+  assert.deepEqual((await cards.card("claude", "b")).buttons, ["Deny", "Allow once"]);
+  assert.deepEqual(opened, ["claude://code/needs-input?session=local_b", "claude://code/continue?session=local_a"]);
+  // Brought up on a tap: it stays.
+  opened.length = 0;
+  inFront = true;
+  await cards.card("claude", "b", { bring: true });
+  assert.deepEqual(opened, ["claude://code/needs-input?session=local_b"]);
 });
 
 test("an uncertain app or terminal approval cannot be replayed from another phone", async () => {
