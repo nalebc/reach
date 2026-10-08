@@ -538,7 +538,52 @@ const queuedReply = ({ messageId, ...reply }) => {
   return reply;
 };
 
-test("one Claude session everywhere: Reach continues it, waits its turn when the app is busy, never makes a copy", async () => {
+test("session fixtures never read or write the host Claude import stores unless an importer is injected", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-import-isolation-"));
+  const file = path.join(dir, "claude-imports.json");
+  const records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
+  const touched = [];
+  // Trap the old constructor/read and add/save paths before they can touch
+  // anything. In particular, the host's app records are never actually read.
+  for (const name of ["readFileSync", "writeFileSync", "renameSync", "readdirSync"]) {
+    const original = fs[name];
+    t.mock.method(fs, name, (...args) => {
+      const target = String(args[0]);
+      if (target === file || target.startsWith(`${file}.`) || target === records || target.startsWith(`${records}${path.sep}`)) {
+        touched.push(name);
+        if (name === "readFileSync") return "{}";
+        if (name === "readdirSync") return [];
+        return undefined;
+      }
+      return original(...args);
+    });
+  }
+  const claude = fakeClaude(), h = host(claude);
+  const sessions = createAgentSessions({
+    dataDir: dir,
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}) },
+    claude: {
+      health: async () => ({ signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [] }),
+    },
+    claudeHost: h,
+    live: async () => new Map(),
+    signIn: {},
+    open: async () => assert.fail("a fixture opened the host Claude app"),
+  });
+  t.after(() => { sessions.close(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const { threadId } = await sessions.start("claude", { cwd: "/work/site", text: "new fixture" });
+  claude.last().print({ type: "result", is_error: false });
+  h.release(threadId);
+  await sessions.send("claude", ID, { text: "existing fixture" });
+  claude.last().print({ type: "result", is_error: false });
+  h.release(ID);
+  await settle();
+  assert.deepEqual(touched, [], "the test default must be inert, including constructor, add and release");
+});
+
+test("one Claude session everywhere: Reach continues it, waits its turn when the app is busy, never makes a copy", async (t) => {
   const claude = fakeClaude();
   const claudeHost = host(claude);
   let signedIn = false;
@@ -552,11 +597,14 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   let idle = 5;
   // Sessions whose Claude app window is to be reloaded (claude-import.mjs).
   const refreshed = [];
+  const importDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-"));
   const imports = createClaudeImports({
-    file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-")), "claude-imports.json"),
+    file: path.join(importDir, "claude-imports.json"),
     open: openLink,
     idle: async () => idle,
     appRunning: async () => true,
+    startedAt: async () => null,
+    shown: () => [], // Link-only fixture; window restoration is tested with synthetic records.
     // The chat the Claude app holds is in its list; others aren't.
     imported: (id) => id === ID,
     write: null,
@@ -587,6 +635,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     claudeImports: imports,
     claudeRefresh: { add: async (id) => refreshed.push(id), close() {} },
   });
+  t.after(() => { sessions.close(); fs.rmSync(importDir, { recursive: true, force: true }); });
   await assert.rejects(sessions.send("claude", ID, { text: "hi" }), /signed out/);
   signedIn = true;
   where = "terminal";

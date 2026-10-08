@@ -248,25 +248,26 @@ export function createAgentSessions({
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
   // never this Mac's app in tests.
-  claudeImports ??= createClaudeImports({
-    file: path.join(dataDir, "claude-imports.json"),
-    open,
-    resume: !process.env.NODE_TEST_CONTEXT,
-    held: (id) => claudeHost.drives(id),
-    frontmost: () => claudeFrontmost(),
-    describe: async (id) => {
-      const { session } = await claude.read(id, { limit: 1 });
-      return {
-        cwd: session.cwd,
-        title: session.title,
-        model: session.model,
-        mode: claudeHost.modeOf?.(id) || session.mode,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-      };
-    },
-    ...(process.env.NODE_TEST_CONTEXT ? { write: null, appRunning: async () => false } : {}),
-  });
+  claudeImports ??= process.env.NODE_TEST_CONTEXT
+    ? { add: async () => {}, close() {} }
+    : createClaudeImports({
+        file: path.join(dataDir, "claude-imports.json"),
+        open,
+        resume: true,
+        held: (id) => claudeHost.drives(id),
+        frontmost: () => claudeFrontmost(),
+        describe: async (id) => {
+          const { session } = await claude.read(id, { limit: 1 });
+          return {
+            cwd: session.cwd,
+            title: session.title,
+            model: session.model,
+            mode: claudeHost.modeOf?.(id) || session.mode,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+          };
+        },
+      });
   const adapters = { codex, claude, gemini };
   const fileSearch = createFileSearch();
   const adapter = (agent) => {

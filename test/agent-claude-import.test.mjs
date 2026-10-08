@@ -37,6 +37,7 @@ test("a session started from Reach joins the Claude app only while nobody is at 
     open: async (...args) => opened.push(args),
     idle: async () => mac.idle,
     appRunning: async () => mac.running,
+    startedAt: async () => null,
     imported: (id) => mac.inApp.has(id),
     // Link-only fixture: never read the live Claude window's records or
     // trigger its four-second restore path. Restore is tested below.
@@ -82,6 +83,7 @@ test("waiting imports survive a restart, and stop when Reach quits", async (t) =
     open: async (...args) => opened.push(args),
     idle: async () => 600,
     appRunning: async () => true,
+    startedAt: async () => null,
     imported: () => false,
     shown: () => [],
     write: null,
@@ -98,6 +100,7 @@ test("waiting imports survive a restart, and stop when Reach quits", async (t) =
     open: async () => assert.fail("opened after quitting"),
     idle: async () => (looks++, 5),
     appRunning: async () => true,
+    startedAt: async () => null,
     imported: () => false,
     shown: () => [],
     write: null,
@@ -381,6 +384,8 @@ test("an app whose records changed shape gets none from Reach: its import link i
     file: path.join(tmp(), "claude-imports.json"),
     open: async (...args) => opened.push(args),
     appRunning: async () => true,
+    startedAt: async () => null,
+    idle: async () => 600,
     frontmost: async () => false,
     imported: (id) => inClaudeApp(id, records),
     describe: async () => ({ cwd: "/Users/me/site" }),
