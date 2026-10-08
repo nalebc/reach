@@ -1,7 +1,8 @@
 // Images attached to agent messages from the phone. They are kept privately
 // and referenced by an id Reach made, never by a path the phone chose. The
 // file's own bytes decide the type; HEIC (iPhone photos) is converted by
-// macOS because the models take PNG, JPEG, GIF and WebP.
+// macOS because the models take PNG, JPEG, GIF and WebP. The id comes from
+// the bytes, so the same picture sent twice is the same id (image-repeats.mjs).
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -40,7 +41,12 @@ export function createAgentImages({ dir, run = exec }) {
         fs.rmSync(temporary, { force: true });
         throw bad("Send a PNG, JPEG, GIF, WebP or HEIC image.");
       }
-      const id = crypto.randomUUID();
+      const id = contentId(fs.readFileSync(temporary));
+      const ext = kind === "heic" ? "jpg" : kind;
+      if (fs.existsSync(path.join(dir, `${id}.${ext}`))) {
+        fs.rmSync(temporary, { force: true });
+        return `${id}.${ext}`;
+      }
       if (kind !== "heic") {
         fs.renameSync(temporary, path.join(dir, `${id}.${kind}`));
         return `${id}.${kind}`;
@@ -67,6 +73,60 @@ export function createAgentImages({ dir, run = exec }) {
       });
     },
   };
+}
+
+// A UUID-shaped id from the image's bytes (ids are UUID-shaped, as before).
+const contentId = (bytes) => {
+  const h = crypto.createHash("sha256").update(bytes).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+};
+
+// Width and height from the image's header, or null.
+export function imageSize(bytes) {
+  const b = bytes;
+  const text = (start, end) => b.subarray(start, end).toString("latin1");
+  const kind = imageKind(b.subarray(0, 16));
+  if (kind === "png" && b.length >= 24) return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  if (kind === "gif" && b.length >= 10) return { width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
+  if (kind === "webp" && b.length >= 30) {
+    const chunk = text(12, 16);
+    if (chunk === "VP8X") return { width: 1 + b.readUIntLE(24, 3), height: 1 + b.readUIntLE(27, 3) };
+    if (chunk === "VP8 ") return { width: b.readUInt16LE(26) & 0x3fff, height: b.readUInt16LE(28) & 0x3fff };
+    if (chunk === "VP8L")
+      return { width: 1 + (b[21] | ((b[22] & 0x3f) << 8)), height: 1 + ((b[22] >> 6) | (b[23] << 2) | ((b[24] & 0x0f) << 10)) };
+  }
+  if (kind === "jpg") {
+    // The first start-of-frame marker holds the size.
+    for (let i = 2; i + 9 < b.length; ) {
+      if (b[i] !== 0xff) return null;
+      const marker = b[i + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker))
+        return { width: b.readUInt16BE(i + 7), height: b.readUInt16BE(i + 5) };
+      i += 2 + b.readUInt16BE(i + 2);
+    }
+  }
+  return null;
+}
+
+// About how many input tokens a model spends on an image this size, in each
+// provider's published terms: Claude scales it to fit 1568px and about 1.15
+// megapixels, then counts a token per 750 pixels; OpenAI (Codex) fits it in
+// 2048px with its short side at most 768px, then counts 170 per 512px tile
+// plus 85. An estimate: the models' own counts may differ a little.
+export function imageTokens(size, agent) {
+  if (!size?.width || !size?.height) return 0;
+  let { width: w, height: h } = size;
+  if (agent === "codex") {
+    const fit = Math.min(1, 2048 / Math.max(w, h));
+    w *= fit;
+    h *= fit;
+    const short = Math.min(1, 768 / Math.min(w, h));
+    w *= short;
+    h *= short;
+    return 85 + 170 * Math.ceil(w / 512) * Math.ceil(h / 512);
+  }
+  const fit = Math.min(1, 1568 / Math.max(w, h), Math.sqrt(1_150_000 / (w * h)));
+  return Math.round((w * fit * (h * fit)) / 750);
 }
 
 // Any file attached to a message from the phone (a PDF, a log, a zip): kept

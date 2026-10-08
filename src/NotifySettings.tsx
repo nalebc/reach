@@ -194,6 +194,7 @@ const homeUrl = () => location.origin + location.pathname;
 // What each switch is about, in people's words.
 const CATEGORIES = [
   ["done", "Chats finished"],
+  ["openclaw", "OpenClaw background work"],
   ["chat", "Agent questions & approvals"],
   ["computer", "Mac permission prompts"],
   ["handoffs", "Apps handed to you"],
@@ -406,7 +407,7 @@ export function NotificationSetup({
                 <input
                   type="checkbox"
                   role="switch"
-                  checked={preferences[key]}
+                  checked={preferences[key] !== false}
                   disabled={busy}
                   onChange={(e) =>
                     void state.update({

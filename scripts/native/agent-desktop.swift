@@ -655,6 +655,16 @@ func rules(from request: [String: Any]) -> Rules {
             ["com.google.Chrome", "com.apple.Safari"].contains(id) else { try refuse("Choose Chrome or Safari within this agent's app access.", "blocked") }
           let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ""
           if let reason = appReason(id, name, canonical(URL(fileURLWithPath: path)), rules) { try refuse(reason) }
+          // Check the permission without sending an event or displaying a consent
+          // dialog to a guest. TCC attributes this helper to the app running Reach.
+          if !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty {
+            let target = NSAppleEventDescriptor(bundleIdentifier: id)
+            let permission = AEDeterminePermissionToAutomateTarget(target.aeDesc, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
+            if permission == errAEEventNotPermitted || permission == errAEEventWouldRequireUserConsent {
+              try refuse("The owner needs to allow Reach’s Terminal to control \(name) in System Settings → Privacy & Security → Automation.", "setup_required")
+            }
+            guard permission == noErr else { try refuse("\(name) is not ready for browser tools. The owner should open a browser window and try again.", "setup_required") }
+          }
           out(["ok": true, "app": name, "bundle": id])
         default:
           try refuse("Unknown request.", "invalid")

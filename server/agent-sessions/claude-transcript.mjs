@@ -250,6 +250,12 @@ export function commandOutput(value) {
   const parts = [...text.matchAll(/<local-command-(?:stdout|stderr)>([\s\S]*?)(?:<\/local-command-(?:stdout|stderr)>|$)/g)].map((m) => m[1].trim());
   return (parts.length ? parts.filter(Boolean).join("\n\n") : text).replace(/\x1b\[[0-9;]*m/g, "").trim();
 }
+// The pictures a line holds: a message's, or those of one typed while Claude
+// worked (a queued command keeps them in its prompt, not in a message).
+export function imageBlocks(e) {
+  const pieces = e?.type === "attachment" ? e.attachment?.prompt : e?.message?.content;
+  return Array.isArray(pieces) ? pieces.filter((b) => b?.type === "image") : [];
+}
 const FIELDS = ["uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "isSidechain", "isMeta", "isCompactSummary", "isApiErrorMessage", "error", "timestamp"];
 // One transcript line as the conversation needs it; tool results go to
 // `results` by their call's id (already cut to what's shown), images stay
@@ -360,10 +366,13 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
         const slim = slimEntry(e, results, maxOutput);
         if (slim.uuid) byId.set(slim.uuid, slim);
-        if (at !== null && slim.uuid && Array.isArray(slim.message?.content) && slim.message.content.some((b) => b.type === "image"))
+        if (at !== null && slim.uuid && imageBlocks(slim).length)
           imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
         // A command's output can be the newest message too.
-        if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
+        // So can a message typed while it works: the app shows it at once,
+        // not when Claude next writes.
+        const queued = slim.type === "attachment" && slim.attachment?.type === "queued_command" && slim.attachment.humanTurn;
+        if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || queued || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
         if (e.type === "assistant" && e.timestamp) {
@@ -496,7 +505,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             .join("\n")
             .trim();
           items.push({
-            id: `${e.uuid}:${items.length}`,
+            id: `${e.uuid}:error`,
             role: "system",
             kind: "error",
             text: text || "Claude Code hit an error.",
@@ -506,9 +515,12 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         } else if (e.type === "assistant") {
           const content = Array.isArray(e.message?.content) ? e.message.content : [];
           if (e.message?.model && e.message.model !== "<synthetic>") model = e.message.model;
-          for (const b of content) {
+          // Ids by the block's place in its own message, never the chat's:
+          // one item more or fewer above shifted every id after it, and the
+          // phone dropped the older pages it held and redrew the rows.
+          for (const [n, b] of content.entries()) {
             if (b?.type === "text" && b.text?.trim())
-              items.push({ id: `${e.uuid}:${items.length}`, role: "assistant", kind: "text", text: b.text, at });
+              items.push({ id: `${e.uuid}:${n}`, role: "assistant", kind: "text", text: b.text, at });
             else if (b?.type === "tool_use") {
               items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
               if (b.name === "TodoWrite" || b.name === "TaskCreate" || b.name === "TaskUpdate")

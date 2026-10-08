@@ -157,6 +157,7 @@ before(async () => {
       [base + "/automations/new"]: (init) => (setupCalls.push(["new", JSON.parse(init.body)]), { id: "job-2" }),
       [base + "/automations/run"]: (init) => (setupCalls.push(["run", JSON.parse(init.body)]), { ran: true }),
       [base + "/automations/remove"]: (init) => (setupCalls.push(["remove", JSON.parse(init.body)]), { removed: true }),
+      [base + "/channels/add"]: (init) => (setupCalls.push(["add", JSON.parse(init.body)]), { added: true }),
       [base + "/setup"]: (init) => (setupCalls.push(["setup", JSON.parse(init.body)]), { terminal: { id: "term-1" } }),
       [base + "/channels/whatsapp/link"]: (init) => (setupCalls.push(["link", JSON.parse(init.body)]), { qr: "data:image/png;base64,iVBORw0KGgo=", message: "" }),
       [base + "/channels/whatsapp/wait"]: () => (whatsappStatus = "connected", { connected: true, message: "Linked" }),
@@ -639,6 +640,7 @@ test("missing things are asked for: a schedule is added, run and deleted; a chan
   await mount();
   await click("Schedules");
   await dom.waitFor(() => button("New schedule"));
+  assert.ok(!button("Add a schedule"), "one way to add, not two");
   await click("New schedule");
   await typeInto(dom.document.querySelector('[aria-label="Schedule name"]'), "Evening recap");
   await typeInto(dom.document.querySelector('[aria-label="What OpenClaw does each time"]'), "Recap my day");
@@ -660,7 +662,7 @@ test("missing things are asked for: a schedule is added, run and deleted; a chan
   whatsappStatus = "unconfigured";
   await click("Channels");
   await dom.waitFor(() => button("Connect WhatsApp"));
-  await click("Add another channel");
+  await click("Other apps");
   await dom.waitFor(() => opened.length > 0);
   assert.deepEqual(setupCalls.find(([k]) => k === "setup")[1], { section: "channels" });
   assert.equal(opened[0], "term-1");
@@ -756,4 +758,24 @@ test("closing a pending OpenClaw start and switching apps cannot be undone by it
     assert.equal(dom.document.querySelector('[role="dialog"]'), null);
     assert.equal(started.length, 1, "the already dispatched task is not retried or claimed cancelled");
   } finally { finish(); newWait = null; }
+});
+
+test("a messaging app is added in Reach by its bot token, not in a terminal", async () => {
+  setupCalls = [];
+  await mount();
+  await click("Channels");
+  await dom.waitFor(() => button("Add a messaging app"));
+  await click("Add a messaging app");
+  await dom.waitFor(() => dom.document.querySelector('[aria-label="Telegram bot token"]'));
+  assert.equal(button("Add Telegram").disabled, true);
+  dom.document.querySelector('[role=radio][aria-checked=false]').click();
+  await dom.waitFor(() => dom.document.querySelector('[aria-label="Discord bot token"]'));
+  const field = dom.document.querySelector('[aria-label="Discord bot token"]');
+  assert.equal(field.type, "password");
+  await typeInto(field, "  MTA-secret-token  ");
+  await click("Add Discord");
+  await dom.waitFor(() => setupCalls.some(([k]) => k === "add"));
+  assert.deepEqual(setupCalls.find(([k]) => k === "add")[1], { channel: "discord", token: "MTA-secret-token" });
+  await dom.waitFor(() => dom.document.body.textContent.includes("Discord is added"));
+  assert.ok(!dom.document.body.textContent.includes("MTA-secret-token"));
 });

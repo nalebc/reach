@@ -47,6 +47,7 @@ function browser({
   let preferences = {
     chat: true,
     done: true,
+    openclaw: true,
     computer: true,
     handoffs: true,
     access: true,
@@ -333,8 +334,9 @@ test("enabled devices can mute categories, pause, resume and keep their choices 
   let view = await render();
   await tap(mainSwitch(view), 80);
   const switches = () => categories(view);
-  // Chats finished, agent questions, Mac prompts, apps handed over, access.
-  assert.equal(switches().length, 5);
+  // Chats finished, OpenClaw, agent questions, Mac prompts, apps handed over, access.
+  assert.equal(switches().length, 6);
+  assert.equal(switches()[1].closest("label").textContent, "OpenClaw background work");
   assert.ok(switches().every((input) => input.checked));
   switches()[0].click();
   await settle(80);

@@ -165,7 +165,7 @@ test("why a Claude chat can't take a reply from the phone names the computer it 
   }
 });
 
-test("the Claude app's own cards, answered from the phone, name the computer they're on", async () => {
+test("the apps' own cards, answered from the phone, name the computer they're on", async () => {
   for (const [platform, word] of PLATFORMS) {
     // Through the Chat tab, which hands its platform on: a consent card and a
     // permission card in Claude app chats the app no longer lists.
@@ -177,10 +177,6 @@ test("the Claude app's own cards, answered from the phone, name the computer the
     await assert.rejects(sessions.respond("claude", ID, "consent:toolu_1", { decision: "deny" }), {
       status: 409,
       message: `The Claude app doesn't list this session. Answer it on your ${word}.`,
-    });
-    await assert.rejects(sessions.card("claude", ID), {
-      status: 409,
-      message: `The Claude app doesn't list this chat. Answer it on your ${word}.`,
     });
     sessions.close();
 
@@ -201,40 +197,15 @@ test("the Claude app's own cards, answered from the phone, name the computer the
       message: `Reach already pressed an answer in the Claude app but couldn't confirm it. Check the card on your ${word}.`,
     });
 
+    // A Codex app request Reach can't tell apart stays with the Codex app.
     const cards = createAppCards({
-      read: async () => ({}),
-      press: async () => {},
-      open: async () => {},
-      pending: async () => ({ id: "app-permission:toolu_3", expect: [] }),
-      shown: () => [],
-      wait: async () => {},
+      pending: async () => ({ id: "app-permission:codex:c1", callId: "c1" }),
+      desktop: { requests: async () => [], answer: async () => {} },
       platform,
     });
-    await assert.rejects(cards.card("claude", ID), {
+    await assert.rejects(cards.card("codex", ID), {
       status: 409,
-      message: `Reach can't tell this request's card apart. Answer it on your ${word}.`,
-    });
-
-    // A question card the app never took: never answered twice.
-    const asking = createAppCards({
-      read: async () => ({}),
-      press: async () => {},
-      open: async () => {},
-      pending: async () => null,
-      pendingQuestion: async () => ({ id: "app-question:toolu_4", questions: [{ question: "Pick", options: [{ label: "A" }] }] }),
-      answerQuestion: async () => {},
-      shown: () => [{ id: ID }],
-      wait: async () => {},
-      confirmMs: 0,
-      platform,
-    });
-    await assert.rejects(asking.answer("claude", ID, "app-question:toolu_4", { answers: { q0: ["A"] } }), {
-      status: 409,
-      message: `The Claude app didn't take the answer. Answer it on your ${word}.`,
-    });
-    await assert.rejects(asking.answer("claude", ID, "app-question:toolu_4", { answers: { q0: ["A"] } }), {
-      status: 409,
-      message: `This answer was already attempted. Check the app or terminal on your ${word} before answering again.`,
+      message: `Reach can't tell which request this is. Answer it in the Codex app on your ${word}.`,
     });
   }
 });
@@ -280,7 +251,7 @@ test("a Codex message no window took says to open the chat on the computer it ru
   }
 });
 
-test("a question handed back to the computer says where it was answered", async (t) => {
+test("a question answered on the computer says where it was answered", async (t) => {
   for (const [platform, word] of PLATFORMS) {
     // The broker's own connection handler, without opening a socket (as in
     // agent-asks-state.test.mjs).
@@ -288,8 +259,9 @@ test("a question handed back to the computer says where it was answered", async 
     const create = net.createServer;
     net.createServer = (...args) => (server = create(...args));
     let asks;
+    let waiting = true;
     try {
-      asks = createAgentAsks({ socketPath: "/unused-test.sock", idle: async () => 600, everyMs: 5, watchGraceMs: 30, watching: () => true, platform });
+      asks = createAgentAsks({ socketPath: "/unused-test.sock", everyMs: 5, unseenMs: 20, waiting: async () => waiting, platform });
     } finally {
       net.createServer = create;
     }
@@ -303,7 +275,8 @@ test("a question handed back to the computer says where it was answered", async 
     socket.emit("data", JSON.stringify({ agent: "claude", session_id: ID, tool_name: "AskUserQuestion", tool_input: { questions } }) + "\n");
     await new Promise((r) => setTimeout(r, 0));
     const [prompt] = asks.prompts("claude", ID);
-    assert.deepEqual(asks.answer("claude", ID, prompt.id, { decision: "answerOnMac" }), { handedOff: true });
+    waiting = false;
+    for (let i = 0; i < 200 && asks.has("claude", ID); i++) await new Promise((r) => setTimeout(r, 5));
     assert.throws(() => asks.answer("claude", ID, prompt.id, { answers: { "Choose one": ["A"] } }), {
       status: 409,
       message: `Answered on your ${word}.`,

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createClaudeTranscript, parseClaudeTranscript } from "./claude-transcript.mjs";
+import { createClaudeTranscript, imageBlocks, parseClaudeTranscript } from "./claude-transcript.mjs";
 import { claudeArchive } from "./portable-history.mjs";
 import { claudeLines } from "./move.mjs";
 import { visibleUserText } from "./message-text.mjs";
@@ -533,7 +533,7 @@ export function createClaudeSessions({
       } finally {
         await handle.close();
       }
-      const block = entry?.uuid === uuid ? (entry.message?.content || []).filter((b) => b?.type === "image")[n] : null;
+      const block = entry?.uuid === uuid ? imageBlocks(entry)[n] : null;
       const type = block?.source?.media_type;
       if (block?.source?.type !== "base64" || !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(type)) throw missing();
       return { type, data: Buffer.from(String(block.source.data), "base64") };

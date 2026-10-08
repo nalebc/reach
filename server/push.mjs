@@ -12,7 +12,9 @@ const unb64 = (text) => Buffer.from(String(text), "base64url");
 const RECORD_SIZE = 4096;
 const MAX_PER_CLIENT = 5;
 // "done": a chat finished its work (agent-sessions/done-watch.mjs).
-const categories = ["chat", "done", "computer", "handoffs", "access"];
+// "openclaw": OpenClaw's background work ended (openclaw-watch.mjs).
+// A switch missing from saved preferences is on.
+const categories = ["chat", "done", "openclaw", "computer", "handoffs", "access"];
 const preferences = (s) => ({
   ...Object.fromEntries(
     categories.map((key) => [key, s?.preferences?.[key] !== false]),

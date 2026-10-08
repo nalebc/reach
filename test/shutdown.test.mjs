@@ -207,10 +207,10 @@ for (const signal of ["SIGINT", "SIGTERM"])
       const reach = await startReach(t);
       await connectPhone(t, reach.url, reach.output());
       if (process.platform === "darwin") {
-        const pending = ["mac-prompts.swift", "terminal-watch.swift", "permission-card.swift", "claude-consent.swift"];
+        const pending = ["mac-prompts.swift", "terminal-watch.swift", "claude-consent.swift"];
         const deadline = Date.now() + 15000;
         while (pending.some(source => !reach.output().includes(JSON.stringify(source)))) {
-          assert.ok(Date.now() < deadline, "all four startup helper builds must be pending before shutdown");
+          assert.ok(Date.now() < deadline, "all three startup helper builds must be pending before shutdown");
           await sleep(20);
         }
       }

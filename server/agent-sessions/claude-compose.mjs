@@ -25,34 +25,49 @@ const settingUnknown = (message) => Object.assign(new Error(message), {
 
 // The Claude app, as macOS names it.
 export const CLAUDE_BUNDLE = "com.anthropic.claudefordesktop";
-// Whether the Claude app is the one in use (frontmost) on the Mac.
-export async function claudeFrontmost(run = exec) {
+// The app in use (frontmost) on the Mac, by its bundle id, or null.
+export async function frontBundle(run = exec) {
   const { stdout: front } = await run("/usr/bin/lsappinfo", ["front"], { timeout: 3000 });
   const { stdout } = await run("/usr/bin/lsappinfo", ["info", "-only", "bundleid", String(front).trim()], { timeout: 3000 });
-  return String(stdout).includes(`"${CLAUDE_BUNDLE}"`);
+  return /"([^"]+)"\s*$/.exec(String(stdout).trim())?.[1] || null;
+}
+// Whether the Claude app is the one in use (frontmost) on the Mac.
+export async function claudeFrontmost(run = exec) {
+  return (await frontBundle(run)) === CLAUDE_BUNDLE;
+}
+// Opens a claude:// link without taking the Mac from whoever uses it: `open
+// -g` asks for that, but the Claude app comes forward anyway when it handles
+// the link. Whatever app was in front is put back in front.
+export async function openInBackground(url, { run = exec, front = () => frontBundle(run), wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const before = await Promise.resolve(front()).catch(() => null);
+  await run("/usr/bin/open", ["-g", url], { timeout: 10000 });
+  if (!before || before === CLAUDE_BUNDLE) return;
+  for (const ms of [100, 250, 500, 1000]) {
+    await wait(ms);
+    if ((await Promise.resolve(front()).catch(() => null)) !== CLAUDE_BUNDLE) continue;
+    await run("/usr/bin/open", ["-b", before], { timeout: 10000 }).catch(() => {});
+    return;
+  }
 }
 
-// Claude Code's permission modes as the Claude app's menu names them; the ones
-// Reach may pick there (never Bypass permissions, turned on at the Mac).
-export const APP_MODES = { manual: "Manual", default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto" };
 // Claude Code's effort levels as the Claude app's menu names them.
 export const APP_EFFORTS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 // session: the chat by the app's own id (local_…), which the window must
 // show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
-  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode, effort, model },
+  { title, session, waitMs, text = "", images = [], draft, expected, stop, effort, model, keep },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
 ) {
   const file = await binary();
-  const json = draft || expected !== undefined;
+  const json = draft || expected !== undefined || keep;
   let call;
-  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : mode ? ["--mode", mode] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || mode || effort ? [] : images.flatMap((image) => ["--image", image]))], {
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || effort ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
   }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
     call.child.stdin.on("error", () => {}); // helper can refuse before reading
-    call.child.stdin.end(JSON.stringify({ text, expected: expected ?? "", draft: !!draft }));
+    call.child.stdin.end(JSON.stringify({ text, expected: expected ?? "", draft: !!draft, ...(keep ? { keep: true } : {}) }));
   }
   let result;
   try {
@@ -63,11 +78,6 @@ export async function typeIntoClaude(
   if (model) {
     if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
     if (result.model !== model || result.unconfirmed) throw settingUnknown("Claude didn't confirm the model change. Check the model in Claude before trying again.");
-    return result;
-  }
-  if (mode) {
-    if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
-    if (result.mode !== mode || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
     return result;
   }
   // An effort the app's menu didn't offer says so; nothing was changed.
@@ -81,8 +91,9 @@ export async function typeIntoClaude(
   // tried again. otherChat: the window shows another chat (it says which).
   // Anything else unclear: maybe sent, never retried.
   // occupied: the box holds text Reach doesn't know of; nothing was typed.
+  // kept: text typed on the Mac, set aside (keep) and not put back.
   if (result[action] === false && typeof result.error === "string")
-    throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {}, result.draft === true ? { occupied: true } : {});
+    throw Object.assign(waiting(result.error), Array.isArray(result.sessions) ? { otherChat: true } : {}, result.draft === true ? { occupied: true } : {}, typeof result.kept === "string" ? { kept: result.kept } : {});
   if (result[action] !== true || result.error) throw uncertainDelivery("claude");
   return result;
 }
@@ -123,16 +134,21 @@ export function draftFile(file) {
 
 export function createClaudeCompose({
   type,
+  // Text typed on the Mac that was set aside for a message and couldn't be
+  // put back in its box: saved, never lost.
+  keepText = (id, text) => console.warn(`Reach: text from the Claude app's box for ${id} couldn't be put back:\n${text}`),
   open,
   // Whether the chat's transcript shows the message arrived after `since`.
   arrived,
   shown = () => claudeAppShown(),
   idle = idleSeconds,
   appRunning = claudeAppRunning,
-  // Tests that don't say treat the Claude app as the one in use (as before).
-  frontmost = process.env.NODE_TEST_CONTEXT ? () => true : claudeFrontmost,
   awayMs = 30 * 1000,
   switchMs = 15 * 1000,
+  // After a switch that didn't put the message in, how long before the
+  // window is switched for that chat again.
+  heldMs = 5 * 60 * 1000,
+  clock = Date.now,
   confirmMs = 10 * 1000,
   wait = (ms) => new Promise((r) => setTimeout(r, ms)),
   // The next write to a chat's transcript, and the next change to the Claude
@@ -158,6 +174,12 @@ export function createClaudeCompose({
   // The app's own id for a chat: what the window must show to be typed in.
   const sessionOf = (id) => shown().find((s) => s.id === id)?.session || null;
   const screen = () => Promise.resolve(onScreen()).catch(() => null);
+  // Chats the window isn't switched to again for now (id -> until): one tried
+  // in the background and refused. Retried every few seconds, each try
+  // switched the window there and back, over and over, pulling Claude in
+  // front of the app in use. (A box holding text typed on the Mac never holds
+  // a message: it's set aside and put back once nobody is at the Mac.)
+  const held = new Map();
   let tail = Promise.resolve();
   const serial = (work) => {
     const result = tail.then(work);
@@ -199,21 +221,6 @@ export function createClaudeCompose({
         return { stopped: true };
       });
     },
-    // A permission mode picked on the phone, picked in the app's own menu (so
-    // both show the same one) when the chat is on screen; otherwise it goes
-    // in with the chat's next message.
-    mode(id, { title, mode }) {
-      return serial(async () => {
-        const label = APP_MODES[mode];
-        if (!label) throw Object.assign(new Error("Reach can't pick that mode in the Claude app."), { status: 400 });
-        const session = sessionOf(id);
-        if (!session || !(await appRunning()) || await screen() !== session)
-          throw waiting("Changes in the Claude app when this chat is open there, or with your next message.");
-        const result = await type({ title, session, waitMs: 0, mode: label });
-        if (result?.mode !== label || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
-        return { mode };
-      });
-    },
     // The catalog resolves an API model id to the exact name in the app's menu.
     // Never switch chats for a setting or accept an unconfirmed native click.
     model(id, { title, model }) {
@@ -244,7 +251,7 @@ export function createClaudeCompose({
     },
     // `now`: sent with Send now from the phone, so it goes in even while
     // someone uses the Mac (the Claude window switches to this chat).
-    deliver(id, { title, text = "", images = [], owner, now = false, mode = null }) {
+    deliver(id, { title, text = "", images = [], owner, now = false }) {
       return serial(async () => {
       if (!(await appRunning())) throw Object.assign(waiting("Goes in when the Claude app is open on your Mac."), { appClosed: true });
       const list = shown();
@@ -258,15 +265,21 @@ export function createClaudeCompose({
       let back = null;
       let switched = false;
       const showing = await screen();
+      // Only while nobody uses the Mac, whichever app is in front: a window
+      // switching chats under someone in another app, and Claude coming
+      // forward over it, is just as much in their way. The same goes for
+      // setting aside text typed in the chat's box.
+      const seconds = now ? Infinity : await Promise.resolve(idle()).catch(() => null);
+      const away = seconds != null && seconds * 1000 >= awayMs;
+      const awayIn = seconds == null ? {} : { retryMs: Math.max(0, awayMs - seconds * 1000) };
       if (showing !== target.session) {
-        const elsewhere = !now && !(await Promise.resolve(frontmost()).catch(() => true));
-        const seconds = now || elsewhere ? Infinity : await Promise.resolve(idle()).catch(() => null);
-        if (seconds == null || seconds * 1000 < awayMs)
+        if (!now && (held.get(id) ?? 0) > clock())
+          throw waiting("The Claude app didn't open this chat; trying again in a few minutes. Send now puts it in at once.");
+        if (!away)
           throw Object.assign(
-            waiting("Goes in when you open this chat in the Claude app, or step away from the app. Send now puts it in at once."),
-            // You're in the Claude app: tried again when you leave it, or
-            // once you'd count as away (no input for awayMs).
-            { inApp: true, ...(seconds == null ? {} : { retryMs: Math.max(0, awayMs - seconds * 1000) }) },
+            waiting("Goes in when you open this chat in the Claude app, or step away from the Mac. Send now puts it in at once."),
+            // Tried again once you'd count as away (no input for awayMs).
+            { inApp: true, ...awayIn },
           );
         back = showing || list[0]?.session || null;
         // In the background: Claude never comes forward over what you're doing.
@@ -277,15 +290,27 @@ export function createClaudeCompose({
       try {
         const draft = drafts.get(id);
         if (draft && draft.owner !== owner) throw waiting("Another device is editing this draft.");
-        // The mode picked on the phone first, as one picked in the app's
-        // composer applies to the message sent after it.
         // Typed only while the window shows this very chat, by its id; just
-        // switched to, it's given switchMs to get there.
-        const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}) };
-        if (APP_MODES[mode]) await type({ ...into, mode: APP_MODES[mode] });
-        await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) });
+        // switched to, it's given switchMs to get there. A mode picked on the
+        // phone isn't picked here: it goes with Claude Code's next request
+        // (agent-asks.mjs).
+        // Text typed on the Mac in its box is set aside and put back after
+        // Send, only while nobody is at the Mac (or with Send now).
+        const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}), ...(away ? { keep: true } : {}) };
+        const result = await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) });
+        if (typeof result?.kept === "string") keepText(id, result.kept);
+        held.delete(id);
         if (drafts.delete(id)) keep();
       } catch (e) {
+        if (typeof e?.kept === "string") keepText(id, e.kept);
+        // Text typed on the Mac, while you're at it: goes in once you step
+        // away (it's set aside then and put back).
+        if (e?.occupied)
+          throw Object.assign(
+            waiting("This chat's box in the Claude app has text in it. Goes in once you step away from the Mac (the text is put back after); Send now puts it in at once."),
+            { inApp: true, ...(away ? {} : awayIn) },
+          );
+        if (switched && e?.waiting) held.set(id, clock() + heldMs);
         // Switched to, but the window never showed it: back, and again later.
         if (switched && e?.otherChat) throw waiting("The Claude app didn't open this chat; trying again.");
         throw e;

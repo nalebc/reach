@@ -744,7 +744,16 @@ test("notification preferences persist per browser, suppress categories and paus
     ),
     { sent: 0, suppressed: 1 },
   );
-  for (const category of ["computer", "handoffs", "access"]) {
+  // OpenClaw's switch mutes only OpenClaw, not chats finishing.
+  push.updatePreferences("owner", phone.endpoint, { openclaw: false });
+  const one = (category) =>
+    push.notify(["owner"], { title: "Done", category }, { endpoint: phone.endpoint });
+  push.updatePreferences("owner", phone.endpoint, {}, 0);
+  assert.equal((await one("openclaw")).suppressed, 1);
+  assert.equal((await one("done")).sent, 1);
+  push.updatePreferences("owner", phone.endpoint, { openclaw: true });
+  assert.equal((await one("openclaw")).sent, 1);
+  for (const category of ["done", "openclaw", "computer", "handoffs", "access"]) {
     push.updatePreferences("owner", phone.endpoint, { [category]: false });
     assert.equal(
       (
@@ -800,6 +809,8 @@ test("preference API edits only an owned subscription and preserves other switch
   assert.equal(prefs.chat, false);
   assert.equal(prefs.access, false);
   assert.equal(prefs.handoffs, true);
+  // Saved before the OpenClaw switch existed: missing means on.
+  assert.equal(prefs.openclaw, true);
   assert.ok(prefs.pausedUntil > Date.now());
   assert.equal(
     (await edit(owner.token, {}, 0)).body.preferences.pausedUntil,

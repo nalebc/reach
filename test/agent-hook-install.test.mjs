@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   agentHookCommand,
+  agentModeHookCommand,
+  claudeHookState,
   installClaudeHook,
   installCodexHook,
   uninstallClaudeHook,
@@ -128,4 +130,30 @@ test("settings are replaced whole: same permissions, through a symlink, nothing 
   writeWhole(fresh, "{}\n");
   assert.equal(fsm.statSync(fresh).mode & 0o777, 0o600);
   fsm.rmSync(dir, { recursive: true, force: true });
+});
+
+// The mode check before each tool call comes and goes with the request hook,
+// beside the person's own PreToolUse hooks, and the state says when either
+// is missing or points elsewhere.
+test("Reach's mode hook goes in and out with its request hook, and the state checks both", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-hook-install-"));
+  const settingsPath = path.join(dir, "settings.json");
+  const guard = { matcher: "Bash", hooks: [{ type: "command", command: "/usr/local/bin/guard" }] };
+  fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: [guard] } }));
+  const command = agentHookCommand({ node: "/n", script: "/r/scripts/agent-hook.mjs", agent: "claude", socketPath: "/r/s.sock" });
+  const modeCommand = agentModeHookCommand({ script: "/r/scripts/agent-mode-hook.sh", modesDir: "/r/.reach/pending-modes" });
+  assert.equal(modeCommand, `/bin/sh '/r/scripts/agent-mode-hook.sh' '/r/.reach/pending-modes'`);
+  assert.equal(claudeHookState({ settingsPath, command, modeCommand }), "off");
+  installClaudeHook({ settingsPath, command, modeCommand });
+  const hooks = JSON.parse(fs.readFileSync(settingsPath, "utf8")).hooks;
+  assert.deepEqual(hooks.PreToolUse, [guard, { matcher: "*", hooks: [{ type: "command", command: modeCommand, timeout: 10 }] }]);
+  assert.equal(claudeHookState({ settingsPath, command, modeCommand }), "on");
+  assert.equal(claudeHookState({ settingsPath, command, modeCommand: modeCommand.replace("/r/", "/moved/") }), "outdated");
+  // An install from before the mode hook: outdated until put in again.
+  installClaudeHook({ settingsPath, command });
+  uninstallClaudeHook({ settingsPath });
+  installClaudeHook({ settingsPath, command });
+  assert.equal(claudeHookState({ settingsPath, command, modeCommand }), "outdated");
+  uninstallClaudeHook({ settingsPath });
+  assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, "utf8")), { hooks: { PreToolUse: [guard] } });
 });

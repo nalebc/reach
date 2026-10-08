@@ -1,0 +1,65 @@
+/* Under an OpenClaw reply (OpenClawRelay.tsx): quiet until the reply is the
+   newest, hovered or tapped. */
+.claw-relay {
+  display: none;
+  margin-top: 8px;
+}
+.claw-relay.on,
+.claw-message:hover .claw-relay,
+.claw-message:focus-within .claw-relay {
+  display: block;
+}
+.claw-relay-pills,
+.claw-relay-folders {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.claw-relay-folders {
+  margin-top: 8px;
+}
+.claw-relay-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 0 12px;
+  border: 1px solid var(--border, #ffffff1f);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-strong, inherit);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.claw-relay-pill.quiet {
+  color: var(--muted, inherit);
+}
+.claw-relay-pill > svg {
+  flex: none;
+  color: var(--muted, currentColor);
+}
+.claw-relay-pill:active,
+.claw-relay-pill[aria-selected="true"] {
+  background: color-mix(in srgb, var(--muted, #888) 14%, transparent);
+}
+.claw-relay-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--muted, inherit);
+  font-size: 13px;
+}
+.claw-relay-browse {
+  flex-basis: 100%;
+}
+.claw-relay > .claw-error {
+  margin: 6px 0 0;
+}

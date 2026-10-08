@@ -22,7 +22,11 @@ const views = new Set(),
   };
 const button = (root, label) =>
   [...root.querySelectorAll("button")].find(
-    (entry) => entry.textContent.trim() === label,
+    (entry) =>
+      entry.textContent.trim() === label ||
+      [label, `Run ${label}`, `Recover ${label}`].includes(
+        entry.getAttribute("aria-label"),
+      ),
   );
 before(async () => {
   dom = await startDom();
@@ -130,7 +134,11 @@ test("a screen agent sees named Chrome/Safari tools and executes one fixed opera
   await settle();
   button(f.root, "Open Gmail account").click();
   button(f.root, "Open Gmail account").click();
-  await dom.waitFor(() => f.root.textContent.includes("completed · 3/3"));
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
   const calls = f.calls.filter((call) => call.route.endsWith("/run"));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.browser, "Safari");
@@ -162,7 +170,11 @@ test("the visual protocol editor registers a new definition and its named button
     1,
   );
   button(f.root, "Do example task").click();
-  await dom.waitFor(() => f.root.textContent.includes("completed · 5/5"));
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
   assert.equal(f.driver.counters.clicks, 1);
   assert.match(
     f.root.querySelector('[aria-label="Tool result"]').textContent,
@@ -198,7 +210,11 @@ test("an uncertain visual run retains its request ID and never creates a second 
       });
   };
   button(f.root, "Do example task").click();
-  await dom.waitFor(() => f.root.textContent.includes("uncertain ·"));
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Check the browser",
+  );
   button(f.root, "Do example task").click();
   await dom.waitFor(
     () => f.calls.filter((call) => call.route.endsWith("/run")).length === 2,
@@ -206,7 +222,47 @@ test("an uncertain visual run retains its request ID and never creates a second 
   const runs = f.calls.filter((call) => call.route.endsWith("/run"));
   assert.equal(runs[0].body.requestId, runs[1].body.requestId);
   assert.equal(f.driver.counters.clicks, 1);
-  assert.ok(button(f.root, "Start another run"));
+  assert.ok(button(f.root, "New run"));
+});
+
+test("setup refusals from an already-running older server show owner guidance and allow a fresh explicit attempt", async (t) => {
+  const f = await fixture(t);
+  const run = f.tools.run.bind(f.tools);
+  f.tools.run = async (...args) => {
+    const result = await run(...args);
+    return result.status === "needs_owner"
+      ? { ...result, status: "stopped" }
+      : result;
+  };
+  f.driver.before = async () => {
+    throw Object.assign(Error("The owner needs to enable macOS Automation."), {
+      code: "setup_required",
+    });
+  };
+  await dom.waitFor(() => button(f.root, "Open Walmart account"));
+  button(f.root, "Open Walmart account").click();
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Needs the owner",
+  );
+  assert.equal(f.root.querySelector(".atl-recovery"), null);
+  assert.equal(f.driver.browsers.get("Chrome").length, 0);
+  assert.match(
+    f.root.querySelector('[role="alert"]').textContent,
+    /Privacy & Security → Automation/,
+  );
+  f.driver.before = null;
+  assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
+  button(f.root, "Open Walmart account").click();
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
+  const runs = f.calls.filter((call) => call.route.endsWith("/run"));
+  assert.equal(runs.length, 2);
+  assert.notEqual(runs[0].body.requestId, runs[1].body.requestId);
 });
 
 test("a pending deterministic tool survives equivalent peer objects and parent callbacks", async (t) => {
@@ -244,7 +300,11 @@ test("a pending deterministic tool survives equivalent peer objects and parent c
     false,
   );
   release();
-  await dom.waitFor(() => f.root.textContent.includes("completed · 3/3"));
+  await dom.waitFor(
+    () =>
+      f.root.querySelector(".atl-result-heading h2")?.textContent ===
+      "Completed",
+  );
   assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
 });
 

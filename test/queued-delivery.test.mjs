@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createOutbox } from "../server/agent-sessions/outbox.mjs";
-import { claudeFrontmost, createClaudeCompose } from "../server/agent-sessions/claude-compose.mjs";
+import { claudeFrontmost, createClaudeCompose, openInBackground } from "../server/agent-sessions/claude-compose.mjs";
 import { AppThreads } from "../server/app-threads.mjs";
 
 // Messages from the phone took too long and, while they waited, never showed
@@ -175,7 +175,7 @@ test("the menu bar helper lists them and a click opens only the chat's own claud
   assert.match(helper, /if \(\[url\.scheme isEqual:@"claude"\]\) \[NSWorkspace\.sharedWorkspace openURL:url\];/);
 });
 
-const mac = ({ onScreen = B, frontmost = false, idle = 0 } = {}) => {
+const mac = ({ onScreen = B, idle = 0 } = {}) => {
   const m = { onScreen, opened: [], typed: [] };
   m.compose = createClaudeCompose({
     type: async ({ text }) => (m.typed.push(text), { sent: true }),
@@ -187,7 +187,6 @@ const mac = ({ onScreen = B, frontmost = false, idle = 0 } = {}) => {
     shown: () => [m.onScreen, m.onScreen === A ? B : A].map((id) => ({ id, session: `local_${id}` })),
     idle: async () => idle,
     appRunning: async () => true,
-    frontmost: async () => frontmost,
     wait: async () => {},
     switchMs: 50,
     confirmMs: 20,
@@ -195,19 +194,40 @@ const mac = ({ onScreen = B, frontmost = false, idle = 0 } = {}) => {
   return m;
 };
 
-test("while you're in another app, the chat switches in the background, the message goes in, and the window goes back", async () => {
-  const m = mac({ frontmost: false, idle: 0 });
+// "When laptop is open, i can see claude app switching chat to another by
+// itself, even if i control the mac" (2026-10-08): it switched whenever Claude
+// wasn't in front, and Claude came forward over the app in use.
+test("the window switches chats only while nobody uses the Mac, in the background, and goes back", async () => {
+  const m = mac({ idle: 600 });
   assert.deepEqual(await m.compose.deliver(A, { title: "Fix", text: "hi" }), { delivered: true });
   assert.deepEqual(m.typed, ["hi"]);
-  // Claude never comes forward over what you're doing.
   assert.deepEqual(m.opened, [
     [`claude://code/continue?session=local_${A}`, { background: true }],
     [`claude://code/continue?session=local_${B}`, { background: true }],
   ]);
-  // Using the Claude app itself: never switched under you.
-  const busy = mac({ frontmost: true, idle: 0 });
-  await assert.rejects(busy.compose.deliver(A, { title: "Fix", text: "hi" }), (e) => e.waiting && /step away from the app/.test(e.message));
+  // Using the Mac, in Claude or any other app: never switched under you.
+  const busy = mac({ idle: 0 });
+  await assert.rejects(busy.compose.deliver(A, { title: "Fix", text: "hi" }), (e) => e.waiting && /step away from the Mac/.test(e.message));
   assert.deepEqual(busy.opened, []);
+});
+
+test("a background link puts back the app that was in front when Claude comes forward anyway", async () => {
+  const calls = [];
+  let front = "com.google.Chrome";
+  const run = async (cmd, args) => {
+    calls.push(args);
+    if (args[0] === "-g") front = "com.anthropic.claudefordesktop";
+    if (args[0] === "-b") front = args[1];
+    return { stdout: "" };
+  };
+  await openInBackground("claude://code/continue?session=local_a", { run, front: async () => front, wait: async () => {} });
+  assert.deepEqual(calls, [["-g", "claude://code/continue?session=local_a"], ["-b", "com.google.Chrome"]]);
+  assert.equal(front, "com.google.Chrome");
+  // Claude was in front already: left as it is.
+  calls.length = 0;
+  front = "com.anthropic.claudefordesktop";
+  await openInBackground("claude://code/continue?session=local_b", { run, front: async () => front, wait: async () => {} });
+  assert.deepEqual(calls, [["-g", "claude://code/continue?session=local_b"]]);
 });
 
 test("which app is in use is read from macOS's own app list", async () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { post, request, type Peer } from "./api";
+import type { Workflow } from "./Workflows";
 
 // Every Codex and Claude Code session on the computer (server/agent-sessions).
 export type AgentName = "codex" | "claude" | "gemini";
@@ -52,6 +53,11 @@ export type AgentSession = {
   mode?: string | null;
   // What it waits on you for in another app (the Claude app, a terminal).
   asking?: AgentAsking;
+  // Claude Code there can't be answered from the phone yet: Reach's hook
+  // isn't in its settings ("off") or points at an old place ("outdated").
+  phoneAnswers?: "off" | "outdated" | "unsupported";
+  // A mode picked on the phone that Claude Code takes with its next request.
+  pendingMode?: string;
   // The Claude app's own consent card it waits on (id when answerable here).
   consent?: { id?: string; kind: string; title: string; reason?: string; options?: string[] };
   // Prompts waiting on the phone (permission requests, questions).
@@ -68,10 +74,10 @@ export type AgentQuestion = {
   options: { label: string; description?: string }[];
 };
 export type AgentAsking =
-  // id: Claude's question in the Claude app, answered from here (its options
-  // pressed there).
+  // Claude's question, answered at the Mac (from the phone, it comes as a
+  // prompt through Claude Code's hook instead).
   | { kind: "question"; questions: AgentQuestion[]; id?: string }
-  // id: the Claude app's card, answerable from here (Allow once or Deny).
+  // id: the Codex app's request, answerable from here through its IPC.
   | { kind: "permission"; text: string; command?: boolean; id?: string }
   // Something else Claude Code shows and waits on (a notice to acknowledge).
   | { kind: "dialog"; text: string }
@@ -141,6 +147,8 @@ export type AgentHealth = {
   limit?: string;
   // OpenClaw: whether its Gateway can take a chat moved from another agent.
   canTakeMoves?: boolean;
+  // OpenClaw: its Gateway answers (it has no sign-in of its own).
+  connected?: boolean;
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
@@ -272,13 +280,14 @@ export function usageLink(agent: string, error: { text?: string | null; detail?:
 }
 
 // The agent the Chat tab shows, remembered here and shared with the tab bar
-// (which wears that agent's logo).
+// (which wears that agent's logo). Until one is picked: All, every agent's
+// chats together (Chat shows Codex when this computer has just one agent).
 const CHAT_AGENT = "reach.chatAgent";
 export const readChatAgent = (): string => {
   try {
-    return localStorage.getItem(CHAT_AGENT) || "codex";
+    return localStorage.getItem(CHAT_AGENT) || "all";
   } catch {
-    return "codex";
+    return "all";
   }
 };
 export function saveChatAgent(agent: string) {
@@ -395,7 +404,7 @@ export type Relay = {
 // when the chat's agent next finishes. opened: the chat it went to.
 export const startRelay = (
   peer: Peer,
-  body: { from: { agent: string; id: string }; steps: RelayStep[]; now?: boolean; item?: string },
+  body: { from: { agent: string; id: string }; steps: RelayStep[]; now?: boolean; item?: string; cwd?: string },
 ) => post<{ relay: Relay; opened?: { agent: string; id: string } }>(peer, "/api/sessions/relays", body);
 export const cancelRelay = (peer: Peer, id: string) =>
   post<{ cancelled: boolean }>(peer, `/api/sessions/relays/${encodeURIComponent(id)}/cancel`);
@@ -436,6 +445,7 @@ type SessionList = {
   macPrompts?: MacPrompt[];
   relays?: Relay[];
   teams?: Team[];
+  workflows?: Workflow[];
   version: string;
 };
 
@@ -451,6 +461,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   const [macPrompts, setMacPrompts] = useState<MacPrompt[]>([]);
   const [relays, setRelays] = useState<Relay[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
+  // Workflows on this computer (Workflows.tsx), each task without its text.
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
   const [failure, setFailure] = useState("");
   // Bumped when the feed stops or restarts: answers to requests sent
@@ -499,6 +511,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       setMacPrompts(r.macPrompts || []);
       setRelays(r.relays || []);
       setTeams(r.teams || []);
+      setWorkflows(r.workflows || []);
     } catch (e) {
       if (mine !== run.current) return;
       failures.current++;
@@ -514,6 +527,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     setHealth([]);
     setRelays([]);
     setTeams([]);
+    setWorkflows([]);
     known.current = "";
     held.current = false;
     failures.current = 0;
@@ -564,7 +578,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     seenRevision.current = revision;
     void load();
   }, [revision, load]);
-  return { sessions, errors, health, failure, projects, macPrompts, relays, teams, reload: () => load(true), recheck: () => recheck.current() };
+  return { sessions, errors, health, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -638,10 +652,10 @@ export const reorderQueued = (peer: Peer, s: { agent: AgentName; id: string }, o
   post<{ reordered: true }>(peer, `${sessionPath(s)}/queue/order`, { order });
 export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, text: string) =>
   post<{ synced: boolean; supported?: boolean }>(peer, `${sessionPath(s)}/draft`, { text });
-// A permission mode picked on the phone; for a Claude app chat, picked in the
-// app too (applied: false when it goes with the next message instead).
+// A permission mode picked on the phone. A Claude app or terminal chat takes
+// it with Claude Code's next request (next: "request"); never clicked in.
 export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
-  post<{ mode: string; applied: boolean }>(peer, `${sessionPath(s)}/mode`, { mode });
+  post<{ mode: string; applied: boolean; next?: "request" }>(peer, `${sessionPath(s)}/mode`, { mode });
 export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string; speed?: string }) =>
   post<{ model: string; effort?: string; applied: boolean }>(peer, `${sessionPath(s)}/model`, choice);
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
@@ -708,15 +722,15 @@ export type InstallPlan = {
 };
 export const installAgent = (peer: Peer, agent: string, confirm = false) =>
   post<InstallPlan>(peer, `/api/sessions/agent-install/${encodeURIComponent(agent)}`, { confirm });
-// A permission card the Claude app or the Codex app shows, as it shows it:
-// its words and its buttons, in order. Looked at, the app's window comes back
-// to its chat and isn't switched while someone uses the app; bring: the chat
-// comes up there and stays.
-// more: the choices in the card's menu (the Codex app's "Approval options");
-// moreInApp: a menu whose choices stay in the app.
+// A Codex app approval as the phone draws it: its words and one button per
+// decision it offers, read through the Codex app's IPC (nothing is clicked).
 export type AppCard = { id: string; texts: string[]; buttons: string[]; more?: string[]; moreInApp?: boolean };
-export const appCard = (peer: Peer, s: { agent: AgentName; id: string }, bring = false) =>
-  request<AppCard>(peer, `${sessionPath(s)}/card${bring ? "?bring=1" : ""}`);
+export const appCard = (peer: Peer, s: { agent: AgentName; id: string }) =>
+  request<AppCard>(peer, `${sessionPath(s)}/card`);
+// Claude Code's permissions and questions answered from the phone: Reach's
+// hook put in (or taken out of) Claude Code's settings on the Mac.
+export const setPhoneAnswers = (peer: Peer, on: boolean) =>
+  post<{ state: string }>(peer, "/api/agents/claude/phone-answers", { on });
 // What a chat waits on in another app, from its newest few items only (the
 // list doesn't say; Needs you asks for the chats waiting on you).
 export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>

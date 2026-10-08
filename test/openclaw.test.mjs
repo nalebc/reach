@@ -799,6 +799,84 @@ test("a Gateway that can't add a moved chat's history says so up front; one that
   assert.equal(listed.c.canMove(), true);
 });
 
+// Post-back (Oct 8): a relay's result goes to the one-to-one chat that asked,
+// through OpenClaw's own `send`. Never a group or channel (Oct 5), never
+// another recipient, never without a live, connected channel.
+test("post sends to the chat's own one-to-one destination only", async (t) => {
+  const { c, calls } = await fixture(t);
+  const sent = () => calls.filter((x) => x.method === "send");
+  assert.deepEqual(
+    await c.post({ key: rows[0].key, text: " Done: login fixed ", requestId: "relay-1-post" }),
+    { posted: true, channel: "whatsapp" },
+  );
+  assert.deepEqual(sent().map((x) => x.params), [
+    { to: "123", message: "Done: login fixed", channel: "whatsapp", sessionKey: rows[0].key, idempotencyKey: "relay-1-post" },
+  ]);
+  // A Discord channel, a Reach chat with no app, bad input: nothing sent.
+  await assert.rejects(c.post({ key: rows[1].key, text: "x", requestId: "relay-2-post" }), (e) => e.status === 403);
+  await assert.rejects(c.post({ key: REACH, text: "x", requestId: "relay-3-post" }), (e) => e.status === 409);
+  await assert.rejects(c.post({ key: rows[0].key, text: " ", requestId: "relay-4-post" }), (e) => e.status === 400);
+  await assert.rejects(c.post({ key: rows[0].key, text: "x".repeat(20001), requestId: "relay-5-post" }), (e) => e.status === 400);
+  await assert.rejects(c.post({ key: rows[0].key, text: "x", requestId: "no" }), (e) => e.status === 400);
+  // Access gone after the chat was found: nothing sent.
+  let n = 0;
+  await assert.rejects(
+    c.post({ key: rows[0].key, text: "x", requestId: "relay-6-post" }, () => {
+      if (++n > 1) throw Object.assign(new Error("Not allowed"), { status: 403 });
+    }),
+    /Not allowed/,
+  );
+  assert.equal(sent().length, 1);
+});
+
+test("post refuses a WhatsApp group and a channel that isn't connected", async (t) => {
+  const group = await fixture(t);
+  group.handle((req) =>
+    req.method === "sessions.list"
+      ? { payload: { sessions: [{ key: "agent:main:whatsapp:group:120@g.us", channel: "whatsapp", updatedAt: 1, deliveryContext: { channel: "whatsapp", to: "120@g.us" } }] } }
+      : undefined,
+  );
+  await assert.rejects(group.c.post({ key: "agent:main:whatsapp:group:120@g.us", text: "x", requestId: "relay-7-post" }), (e) => e.status === 403);
+  assert.equal(group.calls.filter((x) => x.method === "send").length, 0);
+  const down = await fixture(t);
+  down.handle((req) =>
+    req.method === "channels.status" ? { payload: { channelAccounts: { whatsapp: [{ accountId: "default", connected: false }] } } } : undefined,
+  );
+  await assert.rejects(down.c.post({ key: rows[0].key, text: "x", requestId: "relay-8-post" }), (e) => e.status === 409);
+  assert.equal(down.calls.filter((x) => x.method === "send").length, 0);
+});
+
+// A chat's spend (openclaw-usage.mjs): 2026.3.13 handles sessions.usage
+// without listing it, as chat.inject. Asked once; "invalid params" means yes.
+test("sessions.usage is asked about once when unlisted, and callable only if it's there", async (t) => {
+  const unlisted = await fixture(t);
+  unlisted.handle((req) =>
+    req.method === "connect"
+      ? { payload: { features: { methods: ["sessions.list"] } } }
+      : req.method === "sessions.usage"
+        ? req.params.limit === 0
+          ? { error: { message: "invalid sessions.usage params: limit must be >= 1" } }
+          : { payload: { sessions: [] } }
+        : undefined,
+  );
+  await unlisted.c.overview();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(unlisted.c.can("sessions.usage"), true);
+  assert.deepEqual(await unlisted.c.call("sessions.usage", { limit: 5 }), { sessions: [] });
+  const without = await fixture(t);
+  without.handle((req) =>
+    req.method === "connect"
+      ? { payload: { features: { methods: ["sessions.list"] } } }
+      : req.method === "sessions.usage"
+        ? { error: { message: "unknown method: sessions.usage" } }
+        : undefined,
+  );
+  await without.c.overview();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(without.c.can("sessions.usage"), false);
+  await assert.rejects(without.c.call("sessions.usage", { limit: 5 }), /does not support sessions\.usage/);
+});
+
 // "Make everything evented" (2026-10-06): notifications looked every 5 s, and
 // that look also opened OpenClaw's connection again after a drop. Now they
 // look when told: OpenClaw says when approvals come or go, and opens a
@@ -1683,4 +1761,25 @@ test("a send denied at RPC preflight can be explicitly retried with the same ID 
   const history = await f.c.history(REACH);
   assert.equal(history.streaming, "Fresh reply");
   assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 1);
+});
+
+test("a messaging app is added through OpenClaw's own command, its token an argument and never shell text", async () => {
+  const { addOpenClawChannel } = await import("../server/openclaw.mjs");
+  const ran = [];
+  const run = async (...args) => (ran.push(args), { stdout: "" });
+  assert.deepEqual(await addOpenClawChannel({ channel: "telegram", token: " 123:ABC$(id);`x`|y " }, { run, env: { SHELL: "/bin/zsh" }, platform: "darwin" }), { added: true });
+  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token", "123:ABC$(id);`x`|y"]]);
+  await addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678", appToken: "xapp-12345678", name: "Work" }, { run, platform: "darwin", env: {} });
+  assert.deepEqual(ran[1][1].slice(3), ["channels", "add", "--channel", "slack", "--bot-token", "xoxb-12345678", "--app-token", "xapp-12345678", "--name", "Work"]);
+  await assert.rejects(addOpenClawChannel({ channel: "whatsapp", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
+  await assert.rejects(addOpenClawChannel({ channel: "__proto__", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "short" }, { run }), /bot token/);
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "has space inside" }, { run }), /bot token/);
+  await assert.rejects(addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678" }, { run }), /app token/);
+  // OpenClaw's own output (which could echo a token) never reaches the phone.
+  const refused = async () => { throw Object.assign(new Error("bad token MTA-secret"), { stderr: "MTA-secret" }); };
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run: refused, platform: "darwin" }), (e) => !/MTA-secret/.test(e.message) && /didn't accept/.test(e.message));
+  let checks = 0;
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run, authorize: () => { if (++checks > 1) throw new Error("revoked"); } }), /revoked/);
+  assert.equal(ran.length, 2, "a revoked phone adds nothing");
 });

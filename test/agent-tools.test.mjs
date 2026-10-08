@@ -511,16 +511,116 @@ test("lost acknowledgements, concurrent duplicate calls and restart recovery nev
 test("setup failure reports needs_owner and never guesses a keyboard fallback", async (t) => {
   const f = setup(t);
   await f.tools.define(f.authorize, exampleTool());
-  f.driver.before = async () => {
-    throw Object.assign(
-      Error("Allow JavaScript from Apple Events is disabled"),
-      { code: "setup_required" },
-    );
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "preflight")
+      throw Object.assign(
+        Error("Allow JavaScript from Apple Events is disabled"),
+        { code: "setup_required" },
+      );
   };
   const result = await f.run("example_task");
   assert.equal(result.status, "needs_owner");
   assert.equal(result.completedSteps, 0);
   assert.equal(f.driver.counters.clicks, 0);
+  assert.deepEqual(
+    f.driver.calls.map((call) => call.op),
+    ["tabs", "preflight"],
+  );
+  assert.equal(f.driver.browsers.get("Chrome").length, 0);
+  f.driver.before = null;
+  const same = await f.run("example_task", {}, "Chrome", result.requestId);
+  assert.equal(
+    same.status,
+    "needs_owner",
+    "a recorded failure is never replayed under the same ID",
+  );
+  assert.equal(f.driver.calls.length, 2);
+  assert.equal((await f.run("example_task")).status, "completed");
+  assert.equal(f.driver.counters.clicks, 1);
+});
+
+test("missing Automation or a profile window stops before browser navigation, then a fresh run can succeed", async (t) => {
+  const f = setup(t);
+  const original = f.desktop.withBrowser;
+  f.desktop.withBrowser = async () => {
+    throw Object.assign(
+      Error("The owner needs to allow Reach’s Terminal in macOS Automation."),
+      { kind: "setup_required" },
+    );
+  };
+  const denied = await f.run("builtin_open_walmart");
+  assert.equal(denied.status, "needs_owner");
+  assert.equal(denied.code, "setup_required");
+  assert.equal(denied.completedSteps, 0);
+  assert.equal(f.driver.calls.length, 0);
+  f.desktop.withBrowser = original;
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "preflight")
+      throw Object.assign(Error("Open a Chrome profile window."), {
+        code: "browser_window_required",
+      });
+  };
+  const noWindow = await f.run("builtin_open_walmart");
+  assert.equal(noWindow.status, "needs_owner");
+  assert.equal(noWindow.completedSteps, 0);
+  assert.deepEqual(
+    f.driver.calls.map((call) => call.op),
+    ["tabs", "preflight"],
+  );
+  f.driver.before = null;
+  assert.equal((await f.run("builtin_open_walmart")).status, "completed");
+});
+
+test("the scripting check uses the matched Chrome profile window and preserves it through handle-based tools", async (t) => {
+  const f = setup(t);
+  f.driver.add("Chrome", "https://example.com/");
+  const account = f.driver.add("Chrome", "https://www.walmart.com/orders");
+  account.window = 77;
+  f.driver.before = async (_browser, request) => {
+    if (request.op === "preflight" && request.window !== 77)
+      throw Object.assign(
+        Error("Scripting is disabled in the other profile."),
+        { code: "setup_required" },
+      );
+  };
+  const result = await f.run("builtin_walmart_find", { query: "chair" });
+  assert.equal(result.status, "completed");
+  const tracked = await f.run("builtin_walmart_track", {
+    order: result.data.orders.items[0].handle,
+  });
+  assert.equal(tracked.status, "completed");
+  assert.deepEqual(
+    f.driver.calls
+      .filter((call) => call.op === "preflight")
+      .map((call) => call.window),
+    [77, 77],
+  );
+  assert.equal(f.driver.browsers.get("Chrome").length, 2);
+});
+
+test("a signed-out Walmart tracking form at the orders URL needs the owner before any task step", async (t) => {
+  const f = setup(t);
+  const tab = f.driver.add("Chrome", "https://www.walmart.com/orders");
+  tab.dom.window.document.body.innerHTML =
+    '<h1>Track your order</h1><input aria-label="Email address"><input aria-label="Order number"><button>View order status</button><h1>Sign in to do more with your account</h1><button>Sign in or create account</button>';
+  const result = await f.run("builtin_open_walmart");
+  assert.equal(result.status, "needs_owner");
+  assert.equal(result.code, "login_required");
+  assert.equal(result.completedSteps, 0);
+  assert.match(result.error, /owner needs to sign in to Walmart/);
+  assert.equal(f.driver.counters.clicks, 0);
+  assert.equal(f.driver.browsers.get("Chrome").length, 1);
+  f.driver.load(tab, "https://www.walmart.com/orders");
+  assert.equal((await f.run("builtin_open_walmart")).status, "completed");
+  tab.dom.window.document.body.insertAdjacentHTML(
+    "beforeend",
+    "<div hidden><h1>Sign in to do more with your account</h1><button>Sign in or create account</button></div>",
+  );
+  assert.equal(
+    (await f.run("builtin_open_walmart")).status,
+    "completed",
+    "hidden sign-in templates do not block a signed-in workspace",
+  );
 });
 
 test("existing drafts are preserved and missing or tampered file handles fail before composition", async (t) => {

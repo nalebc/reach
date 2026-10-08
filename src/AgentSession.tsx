@@ -1,6 +1,7 @@
 import { withQuestionReplies } from "../server/agent-sessions/codex-questions.mjs";
 import { useWantedPrompt } from "./notification-focus";
-import { AccountUsage } from "./AccountUsage";
+import { UsageSheet } from "./UsageRing";
+import { NEAR_AT, shortReset, usageOf } from "./usage";
 import {
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Gauge,
   Globe,
   Info,
   Copy,
@@ -72,6 +74,7 @@ import {
   answerCodexQuestions,
   answerPrompt,
   appCard,
+  setPhoneAnswers,
   sessionImage,
   effortLabel,
   listModels,
@@ -598,6 +601,7 @@ export function ModeMenu({
   locked,
   busy = false,
   error,
+  pending,
   inline = false,
   onPick,
   onClose,
@@ -612,6 +616,10 @@ export function ModeMenu({
   locked?: string;
   busy?: boolean;
   error?: string;
+  // A mode picked here that Claude Code takes at its next step (a Claude app
+  // or terminal chat; a step that would ask asks here, and switches with the
+  // allow): said, not shown as the mode it's in.
+  pending?: string;
   // A new chat's menu: drawn in its place above the box (a chat may be open
   // under the sheet), its "Default" (your settings' own) first, as named.
   inline?: boolean;
@@ -639,6 +647,12 @@ export function ModeMenu({
       ))}
       {locked && <p className="as-mode-menu-locked">{locked}</p>}
       {busy && <p role="status">Changing permissions…</p>}
+      {pending && !busy && (
+        <p role="status" className="as-mode-menu-locked">
+          {list.find((m) => m.id === pending || (pending === "default" && m.id === "manual"))?.label || pending} from
+          Claude's next step.
+        </p>
+      )}
       {error && <p role="alert" className="as-mode-menu-locked">{error}</p>}
     </ComposerMenu>
   );
@@ -780,6 +794,7 @@ function SentImages({
     };
   }, [peer.url, peer.token, session.agent, session.id, item, shownCount, urls]);
   const sources = urls || loaded;
+  const [open, setOpen] = useState<number | null>(null);
   // Gone from the Mac (a temporary file the app attached): said, not blank.
   if (!urls && loaded.length && loaded.every((l) => !l))
     return (
@@ -791,15 +806,113 @@ function SentImages({
     <div className="as-user-images">
       {Array.from({ length: shownCount }, (_, n) =>
         sources[n] ? (
-          <img key={n} src={sources[n]!} alt="" />
+          <button key={n} type="button" className="as-image-open" aria-label={`Open image ${n + 1} of ${count}`} onClick={() => setOpen(n)}>
+            <img src={sources[n]!} alt="" />
+          </button>
         ) : (
           <span key={n} className="as-image-wait" aria-hidden="true" />
         ),
       )}
       {count > shownCount && (
-        <span className="as-tag">+{count - shownCount}</span>
+        <button type="button" className="as-tag as-image-more" aria-label={`Open image ${shownCount + 1} of ${count}`} onClick={() => setOpen(shownCount)}>
+          +{count - shownCount}
+        </button>
+      )}
+      {open !== null && (
+        <ImageViewer
+          count={urls ? urls.length : count}
+          at={open}
+          onMove={setOpen}
+          onClose={() => setOpen(null)}
+          source={(n) => (urls ? Promise.resolve(urls[n]) : item ? sessionImage(peer, session, item, n) : Promise.reject())}
+        />
       )}
     </div>
+  );
+}
+
+// A sent picture full screen, to look at closely: the others a swipe or an
+// arrow away; closed by its X, the dark around it, or Escape.
+function ImageViewer({
+  count,
+  at,
+  onMove,
+  onClose,
+  source,
+}: {
+  count: number;
+  at: number;
+  onMove: (n: number) => void;
+  onClose: () => void;
+  source: (n: number) => Promise<string>;
+}) {
+  const [shown, setShown] = useState<{ n: number; url: string | null } | null>(null);
+  const touch = useRef<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    source(at).then(
+      (url) => active && setShown({ n: at, url }),
+      () => active && setShown({ n: at, url: null }),
+    );
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [at]);
+  const move = (by: number) => {
+    const n = at + by;
+    if (n >= 0 && n < count) onMove(n);
+  };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") move(-1);
+      else if (e.key === "ArrowRight") move(1);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  });
+  const current = shown?.n === at ? shown : null;
+  return createPortal(
+    <div
+      className="as-viewer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Image ${at + 1} of ${count}`}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        if (touch.current === null) return;
+        const dx = e.changedTouches[0].clientX - touch.current;
+        touch.current = null;
+        if (Math.abs(dx) > 50) move(dx < 0 ? 1 : -1);
+      }}
+    >
+      <button type="button" className="as-viewer-close" aria-label="Close" onClick={onClose}>
+        <X size={22} />
+      </button>
+      {count > 1 && <span className="as-viewer-count">{at + 1} / {count}</span>}
+      {!current ? (
+        <span className="as-viewer-wait" aria-label="Loading">
+          <Loader2 size={26} className="spin" />
+        </span>
+      ) : current.url ? (
+        <img src={current.url} alt="" />
+      ) : (
+        <span className="as-viewer-gone">This picture isn't on the Mac anymore.</span>
+      )}
+      {at > 0 && (
+        <button type="button" className="as-viewer-arrow left" aria-label="Previous image" onClick={() => move(-1)}>
+          <ChevronLeft size={26} />
+        </button>
+      )}
+      {at < count - 1 && (
+        <button type="button" className="as-viewer-arrow right" aria-label="Next image" onClick={() => move(1)}>
+          <ChevronRight size={26} />
+        </button>
+      )}
+    </div>,
+    document.body,
   );
 }
 
@@ -859,6 +972,8 @@ function AskingCard({
   onScreen,
   loadCard,
   onAnswer,
+  phoneAnswers,
+  onPhoneAnswers,
 }: {
   agent: string;
   asking: AgentAsking;
@@ -866,8 +981,13 @@ function AskingCard({
   where: string;
   word: string;
   onScreen?: () => void;
-  loadCard?: (bring?: boolean) => Promise<AppCard>;
+  loadCard?: () => Promise<AppCard>;
   onAnswer?: (label: string) => Promise<void>;
+  // Claude Code there can't be answered from the phone until Reach's hook is
+  // in its settings: one tap puts it there (from Claude's next request on;
+  // this one stays with the Mac).
+  phoneAnswers?: "off" | "outdated" | "unsupported";
+  onPhoneAnswers?: () => Promise<void>;
 }) {
   const id = asking.kind === "permission" ? asking.id : undefined;
   const answerable = !!id && !!loadCard && !!onAnswer;
@@ -877,11 +997,13 @@ function AskingCard({
   const [moreOpen, setMoreOpen] = useState(false);
   const answering = useRef(false);
   const loading = useRef(0);
-  const load = (bring = false) => {
+  const [enabling, setEnabling] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const load = () => {
     const turn = ++loading.current;
     setCard(null);
     setFailed("");
-    loadCard!(bring).then(
+    loadCard!().then(
       (c) => turn === loading.current && setCard(c),
       (e) => turn === loading.current && setFailed((e as Error).message),
     );
@@ -907,6 +1029,9 @@ function AskingCard({
       answering.current = false;
     }
   };
+  // Claude Code without Reach's hook: answerable from the phone after one tap
+  // (Claude Code then asks the phone too, from its next request on).
+  const canEnable = agent === "claude" && (phoneAnswers === "off" || phoneAnswers === "outdated") && !!onPhoneAnswers && asking.kind !== "consent" && asking.kind !== "dialog";
   // Its main choice, as the apps make it: the one-time Allow.
   const primary = card?.buttons.find((b) => /^Allow once\b/.test(b)) ?? card?.buttons.find((b) => /^Allow\b/.test(b));
   const command = asking.kind === "permission" && asking.command ? asking.text : "";
@@ -999,16 +1124,34 @@ function AskingCard({
             {failed || `This request is already open in the ${where}.`} Answer it on your {word}
             {onScreen ? " through live screen." : "."}
           </p>
-          {(onScreen || (answerable && failed)) && (
+          {enabled && (
+            <p className="as-reason" role="status">
+              Claude's next requests come here too.
+            </p>
+          )}
+          {(onScreen || (answerable && failed) || canEnable) && (
             <div className="as-prompt-actions">
-              {/* Looked at, the app stays on the chat you use there: brought
-                  up only on this tap. */}
-              {answerable && failed && (
-                <button className={onScreen ? undefined : "primary"} onClick={() => load(true)}>
-                  Bring it up in the {where}
+              {canEnable && (
+                <button
+                  className="primary"
+                  disabled={enabling}
+                  onClick={async () => {
+                    setEnabling(true);
+                    try {
+                      await onPhoneAnswers?.();
+                      setEnabled(true);
+                    } catch {
+                      /* said by the chat */
+                    } finally {
+                      setEnabling(false);
+                    }
+                  }}
+                >
+                  {enabling ? <Loader2 size={14} className="spin" /> : "Answer Claude from your phone"}
                 </button>
               )}
-              {onScreen && <button className="primary" onClick={onScreen}>Open screen to answer</button>}
+              {answerable && failed && <button onClick={() => load()}>Try again</button>}
+              {onScreen && <button className={canEnable ? undefined : "primary"} onClick={onScreen}>Open screen to answer</button>}
             </div>
           )}
         </>
@@ -1758,6 +1901,58 @@ export default function AgentSessionView({
       prepend.current = null;
     } else if (atBottom.current && !touchingTranscript.current) el.scrollTop = el.scrollHeight;
   }, [items, pending, live.streaming, live.prompts.length, working]);
+  // Where this chat was being read, kept for the tab: the page reloaded (a
+  // new interface, a reconnect) and the chat came back at its end, the
+  // reader scrolling up again (Oct 8). The message at the top of the screen
+  // and how far down it sits; earlier pages are loaded again to find it.
+  const placeKey = `reach-chat-place:${peer.id}:${initial.agent}:${initial.id}`;
+  const place = useRef<{ at: string; offset: number; tries: number } | null | undefined>(undefined);
+  if (place.current === undefined)
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(placeKey) || "null");
+      place.current = typeof saved?.at === "string" && typeof saved.offset === "number" ? { at: saved.at, offset: saved.offset, tries: 0 } : null;
+    } catch {
+      place.current = null;
+    }
+  const findingPlace = useRef(false);
+  useLayoutEffect(() => {
+    const want = place.current;
+    const el = scroller.current;
+    if (!want || !items || !el || findingPlace.current) return;
+    const mark = [...el.querySelectorAll<HTMLElement>(".as-at")].find((m) => m.dataset.at === want.at);
+    const box = mark?.firstElementChild;
+    if (box) {
+      el.scrollTop += box.getBoundingClientRect().top - el.getBoundingClientRect().top - want.offset;
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+      setReadingHistory(!atBottom.current);
+      place.current = null;
+    } else if (before && want.tries < 6) {
+      want.tries++;
+      findingPlace.current = true;
+      void older().finally(() => (findingPlace.current = false));
+    } else place.current = null;
+  }, [items, before]);
+  const placeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const keepPlace = () => {
+    clearTimeout(placeTimer.current);
+    placeTimer.current = setTimeout(() => {
+      const el = scroller.current;
+      // Not while coming back to it (the first scroll to the end would forget it).
+      if (!el || place.current) return;
+      try {
+        if (atBottom.current) return sessionStorage.removeItem(placeKey);
+        const top = el.getBoundingClientRect().top;
+        for (const mark of el.querySelectorAll<HTMLElement>(".as-at")) {
+          const box = mark.firstElementChild?.getBoundingClientRect();
+          if (box && box.bottom > top) {
+            sessionStorage.setItem(placeKey, JSON.stringify({ at: mark.dataset.at, offset: box.top - top }));
+            return;
+          }
+        }
+      } catch {}
+    }, 250);
+  };
+  useEffect(() => () => clearTimeout(placeTimer.current), []);
   // Follow the last message through keyboard/composer resizing only when the
   // reader was already at the end. Reading history never fights new output.
   useEffect(() => {
@@ -1842,8 +2037,9 @@ export default function AgentSessionView({
     }
     return places;
   }, [blocks, info.movedTo]);
+  // Each message marked with its id (no box of its own), so a reload can
+  // come back to the one being read (`place` below).
   const placeMoves = (nodes: ReactNode[]) => {
-    if (!movePlaces.size) return nodes;
     const out: ReactNode[] = [];
     const at = (i: number) => {
       const moves = movePlaces.get(i);
@@ -1852,7 +2048,9 @@ export default function AgentSessionView({
     };
     at(-1);
     nodes.forEach((node, i) => {
-      out.push(node);
+      const b = blocks[i];
+      const id = b.type === "tools" ? `tools-${b.items[0].id}` : b.item.id;
+      out.push(<div key={id} className="as-at" data-at={id}>{node}</div>);
       at(i);
     });
     return out;
@@ -1919,6 +2117,12 @@ export default function AgentSessionView({
     lastItem?.kind === "error" &&
     !!usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) &&
     (health.find((h) => h.agent === agent)?.usable !== true || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
+  // Close to its limit (90% and up) and not out yet: said above the message
+  // box before it runs out; a tap shows its limits. Out, the strip below
+  // says so instead.
+  const nearLimit = usageOf(health.find((h) => h.agent === agent));
+  const nearShown = !!nearLimit && nearLimit.level !== "out" && nearLimit.percent >= NEAR_AT && !nearLimit.stale;
+  const [usageOpen, setUsageOpen] = useState(false);
   // Agents with usage that can take the chat on from here (MoveChat.tsx).
   const continueIn =
     outOfUsage || claudeLimit || stoppedOnLimit
@@ -2371,7 +2575,6 @@ export default function AgentSessionView({
       {items && items.length > 2 && !helping && !ledTeam && (
         <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
       )}
-      <AccountUsage health={health.find((h) => h.agent === agent)} />
       {details && (
         <>
           {/* A tap anywhere else closes the menu. */}
@@ -2472,6 +2675,23 @@ export default function AgentSessionView({
                 </span>
               </button>
             )}
+            {/* Its account's limits (UsageRing.tsx), as on the chat list. */}
+            {nearLimit && (
+              <button
+                className="relay-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setDetails(false);
+                  setUsageOpen(true);
+                }}
+              >
+                <Gauge size={18} />
+                <span className="move-item-text">
+                  <span>Usage</span>
+                  <small>{nearLimit.level === "out" ? "Out of usage" : `${nearLimit.percent}% used`}{nearLimit.resetsAt ? ` · resets ${shortReset(nearLimit.resetsAt)}` : ""}</small>
+                </span>
+              </button>
+            )}
           </div>
         </>
       )}
@@ -2529,6 +2749,7 @@ export default function AgentSessionView({
           atBottom.current =
             el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
           setReadingHistory(!atBottom.current);
+          keepPlace();
         }}
       >
         {before && (
@@ -2604,7 +2825,7 @@ export default function AgentSessionView({
               >
               <div className="as-user">
                 {b.item.queued && (
-                  <span className="as-tag">Sent while working</span>
+                  <span className="as-tag as-queued">Sent while working</span>
                 )}
                 {b.item.images ? (
                   agent === "claude" || agent === "codex" ? (
@@ -2780,39 +3001,7 @@ export default function AgentSessionView({
             )}
             {info.asking &&
               !live.prompts.length &&
-              (info.asking.kind === "question" && info.asking.id ? (
-                // Claude's question in the Claude app: its options tapped
-                // here, pressed there (no live screen needed).
-                <PromptCard
-                  prompt={{
-                    id: info.asking.id,
-                    kind: "question",
-                    title: `${agentLabel(agent)} has a question`,
-                    questions: info.asking.questions.map((q, i) => ({
-                      id: `q${i}`,
-                      header: q.header || "",
-                      question: q.question,
-                      options: q.options.map((o) => ({ label: o.label, description: o.description || "" })),
-                      other: false,
-                      secret: false,
-                      multiSelect: !!q.multiSelect,
-                    })),
-                  }}
-                  agent={agent}
-                  logos={logos}
-                  word={word}
-                  onAnswer={async ({ answers }) => {
-                    const asked = info.asking;
-                    if (asked?.kind !== "question" || !asked.id) return;
-                    try {
-                      await answerPrompt(peer, initial, asked.id, { answers });
-                      setInfo((old) => ({ ...old, asking: undefined }));
-                    } catch (e) {
-                      setProblem((e as Error).message);
-                    }
-                  }}
-                />
-              ) : info.asking.kind === "consent" && info.asking.id ? (
+              (info.asking.kind === "consent" && info.asking.id ? (
                 <ConsentCard
                   asking={info.asking}
                   peer={peer}
@@ -2841,7 +3030,17 @@ export default function AgentSessionView({
                   }
                   word={word}
                   onScreen={onScreen}
-                  loadCard={(bring) => appCard(peer, initial, bring)}
+                  loadCard={() => appCard(peer, initial)}
+                  phoneAnswers={info.phoneAnswers}
+                  onPhoneAnswers={async () => {
+                    try {
+                      await setPhoneAnswers(peer, true);
+                      setInfo((old) => ({ ...old, phoneAnswers: undefined }));
+                    } catch (e) {
+                      setProblem((e as Error).message);
+                      throw e;
+                    }
+                  }}
                   onAnswer={async (label) => {
                     const asked = info.asking;
                     if (asked?.kind !== "permission" || !asked.id) return;
@@ -2910,6 +3109,15 @@ export default function AgentSessionView({
             logos={logos}
           />
         )}
+        {nearShown && !(outOfUsage || claudeLimit || stoppedOnLimit) && (
+          <button className={`usage-near ${nearLimit!.level}`} onClick={() => setUsageOpen(true)}>
+            {agentLabel(agent)} {nearLimit!.percent}% used
+            {nearLimit!.resetsAt ? ` · resets ${shortReset(nearLimit!.resetsAt)}` : ""}
+          </button>
+        )}
+        {usageOpen && (
+          <UsageSheet health={health.filter((h) => h.agent === agent)} logos={logos} onClose={() => setUsageOpen(false)} />
+        )}
         {(problem || note || blocked) && (
           <p className={`as-hint ${problem ? "bad" : ""}`}>
             {problem || blocked || note}
@@ -2937,6 +3145,7 @@ export default function AgentSessionView({
             anchor={modeButton.current}
             busy={modeSaving}
             error={modeError}
+            pending={info.pendingMode || undefined}
             onClose={() => setChoosingMode(false)}
             onPick={async (id) => {
               if (savingMode.current) return;
@@ -2948,6 +3157,11 @@ export default function AgentSessionView({
                 if (result.applied) {
                   setInfo((old) => ({ ...old, mode: id }));
                   setChoice((old) => ({ ...old, mode: undefined }));
+                } else if (result.next === "request") {
+                  // Claude Code there takes it with its next request: the
+                  // mode it's in stays shown, and the menu says what's coming.
+                  setInfo((old) => ({ ...old, pendingMode: id }));
+                  return;
                 } else setChoice((old) => ({ ...old, mode: id }));
                 setChoosingMode(false);
               } catch (error) {

@@ -107,6 +107,8 @@ export type NotificationPreferences = {
   chat: boolean;
   // A chat finished its work.
   done: boolean;
+  // OpenClaw's background work ended.
+  openclaw: boolean;
   computer: boolean;
   handoffs: boolean;
   access: boolean;

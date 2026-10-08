@@ -363,8 +363,6 @@ export function createClaudeImports({
   appRunning = claudeAppRunning,
   // When the open app was launched (ms), or null.
   startedAt = claudeAppStartedAt,
-  // Whether the Claude app is in front: true, false, or null (unknown).
-  frontmost = async () => null,
   imported = (id) => inClaudeApp(id),
   // Reach's own Claude Code still runs this chat: not yet.
   held = () => false,
@@ -421,8 +419,9 @@ export function createClaudeImports({
     const seconds = await Promise.resolve(idle()).catch(() => null);
     return seconds == null || seconds * 1000 >= awayMs;
   };
-  // The app's window may switch now: it isn't in front, or nobody is there.
-  const clear = async () => (await Promise.resolve(frontmost()).catch(() => null)) === false || (await away());
+  // The app's window may switch now: nobody is at the Mac. (Not just "Claude
+  // isn't in front": the switch pulled Claude over the app in use.)
+  const clear = away;
   async function one(id, entry) {
     if (held(id)) return "wait";
     if (imported(id)) {

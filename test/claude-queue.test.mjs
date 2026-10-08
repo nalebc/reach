@@ -120,14 +120,14 @@ test("a draft that may or may not have landed: either text in the box counts as 
   } });
   await assert.rejects(chat.draft(A, { title: "Fix", text: "Hel", owner: "phone" }));
   app.box = "my own note";
-  await assert.rejects(chat.deliver(A, { title: "Fix", text: "Hello", owner: "phone" }), /typed on your Mac/);
+  await assert.rejects(chat.deliver(A, { title: "Fix", text: "Hello", owner: "phone" }), /has text in it/);
   assert.equal(app.box, "my own note");
 });
 
 test("text typed on the Mac is never overwritten: the message waits and says why", async () => {
   const app = claudeApp();
   app.box = "my own half-written note";
-  await assert.rejects(compose(app).deliver(A, { title: "Fix", text: "from the phone" }), /typed on your Mac/);
+  await assert.rejects(compose(app).deliver(A, { title: "Fix", text: "from the phone" }), /has text in it/);
   assert.equal(app.box, "my own half-written note");
   assert.deepEqual(app.sent, []);
 });

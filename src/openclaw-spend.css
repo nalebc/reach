@@ -1,0 +1,184 @@
+/* What OpenClaw spends: a chat's pill, the status line's pill and its sheet. */
+:root {
+  --claw-spend-warn: #d6b25e;
+}
+.claw-chat-cost {
+  flex: none;
+  align-self: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.claw-spend-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.claw-spend-pill.near,
+.claw-spend-pill.over {
+  border-color: color-mix(in srgb, var(--claw-spend-warn) 50%, var(--border));
+  color: var(--claw-spend-warn);
+}
+.claw-spend-pill.over {
+  background: color-mix(in srgb, var(--claw-spend-warn) 12%, transparent);
+}
+
+.claw-spend {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.claw-spend h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.claw-spend-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+}
+.claw-spend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 44px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.claw-spend-row + .claw-spend-row {
+  border-top: 1px solid var(--border);
+}
+.claw-spend-row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.claw-spend-row > strong {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  max-width: 62%;
+  color: var(--text-strong);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.claw-spend-row small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-spend-row.near > strong,
+.claw-spend-row.over > strong,
+.claw-spend-cache > span:first-child {
+  color: var(--claw-spend-warn);
+}
+.claw-spend-row select,
+.claw-spend-confirm select {
+  max-width: 100%;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+}
+.claw-spend-fixes {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.claw-spend-fixes .claw-secondary,
+.claw-spend-row > .claw-secondary {
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.claw-spend-budget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.claw-spend-budget input {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  border: 0;
+  background: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+.claw-spend-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+  font-size: 13px;
+}
+.claw-spend-confirm > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-spend-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.claw-spend-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claw-spend-changes > li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+.claw-spend-changes > li > span:first-child {
+  color: var(--muted);
+}
+.claw-spend-changes strong {
+  color: var(--text-strong);
+  font-weight: 550;
+}

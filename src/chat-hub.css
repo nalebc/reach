@@ -101,60 +101,6 @@
   color: var(--chat-muted);
   font-size: 12px;
 }
-.hub-away-sum {
-  margin: 0 0 6px;
-  color: var(--chat-muted);
-  font-size: 13px;
-}
-.hub-away ul {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.hub-away li button {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 38px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13.5px;
-  text-align: left;
-}
-.hub-away li button > span {
-  display: -webkit-box;
-  min-width: 0;
-  overflow: hidden;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.hub-away li.usage,
-.hub-away li.failed,
-.hub-away li.relay-stopped {
-  color: var(--warning, #d6c38f);
-}
-.hub-got-it {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  margin: 4px 0 0;
-  padding: 0 12px;
-  border: 1px solid var(--chat-line);
-  border-radius: 999px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-}
 .hub-relays .relay-row {
   margin: 0 0 6px;
 }
@@ -230,10 +176,6 @@
   vertical-align: 1px;
   white-space: nowrap;
 }
-.hub-away li button > .hub-computer {
-  flex: 0 0 auto;
-  margin-left: auto;
-}
 .hub-hit-copy small > .hub-computer {
   margin-right: 6px;
 }
@@ -286,4 +228,45 @@
 .hub-team-copy small {
   color: var(--chat-muted);
   font-size: 12px;
+}
+
+/* An agent close to its limit (usage.ts): one row, the way to its limits,
+   and an agent with room to start in instead. */
+.chat-needs-row.usage-row {
+  padding: 0 14px 0 0;
+  border-color: color-mix(in srgb, var(--usage-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--usage-warn) 7%, transparent);
+}
+.chat-needs-row.usage-row.critical,
+.chat-needs-row.usage-row.out {
+  border-color: color-mix(in srgb, var(--usage-out) 32%, transparent);
+  background: color-mix(in srgb, var(--usage-out) 8%, transparent);
+}
+.usage-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 0 0 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.usage-row-main {
+  padding-block: 8px;
+}
+.usage-row-main > span {
+  min-width: 0;
+  line-height: 1.35;
+}
+.usage-row .chat-needs-row-go {
+  flex: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
 }

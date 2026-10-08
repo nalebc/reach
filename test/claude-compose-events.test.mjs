@@ -36,7 +36,6 @@ test("a message counts as in when its chat's transcript is written, not on a 300
     shown: () => [{ id: A, session: `local_${A}` }],
     idle: async () => 0,
     appRunning: async () => true,
-    frontmost: async () => true,
     wait: later,
     confirmMs: 5000,
     transcriptNews: (id, ms) => transcript.wait(ms),
@@ -63,9 +62,8 @@ test("a switch to the chat is known when the Claude app's records change, not on
     },
     arrived: async () => true,
     shown: () => (looks++, [onScreen, onScreen === A ? B : A].map((id) => ({ id, session: `local_${id}` }))),
-    idle: async () => 0,
+    idle: async () => 600,
     appRunning: async () => true,
-    frontmost: async () => false,
     wait: later,
     switchMs: 5000,
     appNews: (ms) => app.wait(ms),
@@ -124,7 +122,6 @@ test("you're in the Claude app: the wait says when you'd count as away; the app 
     open: async () => {},
     arrived: async () => true,
     shown: () => [B, A].map((id) => ({ id, session: `local_${id}` })),
-    frontmost: async () => true,
     idle: async () => 10,
     awayMs: 30000,
   };
@@ -240,9 +237,8 @@ test("two chats with the same name: the message is typed only once the window sh
     // Same name; the app's records even name A first.
     shown: () => [{ id: A, session: "local_a", title: "Fix" }, { id: B, session: "local_b", title: "Fix" }],
     onScreen: async () => showing,
-    idle: async () => 0,
+    idle: async () => 600,
     appRunning: async () => true,
-    frontmost: async () => false,
     wait: later,
   });
   assert.deepEqual(await compose.deliver(A, { title: "Fix", text: "hi" }), { delivered: true });
@@ -259,7 +255,7 @@ test("two chats with the same name: the message is typed only once the window sh
   assert.equal(typed.at(-1).session, "local_a");
 });
 
-test("drafts, Stop and modes are typed only into the chat with that id", async () => {
+test("drafts and Stop are typed only into the chat with that id", async () => {
   const typed = [];
   const compose = createClaudeCompose({
     type: async (message) => (typed.push(message), message.stop ? { stopped: true } : message.mode ? { mode: message.mode } : { drafted: true }),
@@ -270,8 +266,7 @@ test("drafts, Stop and modes are typed only into the chat with that id", async (
   });
   await compose.draft(A, { title: "Fix", text: "dra", owner: "phone" });
   await compose.stop(A, { title: "Fix" });
-  await compose.mode(A, { title: "Fix", mode: "plan" });
-  assert.deepEqual(typed.map((m) => [m.session, m.waitMs]), [["local_a", 0], ["local_a", 0], ["local_a", 0]]);
+  assert.deepEqual(typed.map((m) => [m.session, m.waitMs]), [["local_a", 0], ["local_a", 0]]);
 });
 
 test("the Claude app helper is asked for the chat by its id, and says which one it shows", async () => {
@@ -287,5 +282,5 @@ test("the Claude app helper is asked for the chat by its id, and says which one 
   const { readFileSync } = await import("node:fs");
   const helper = readFileSync(new URL("../scripts/native/claude-compose.swift", import.meta.url), "utf8");
   assert.match(helper, /session\.map \{ w\.sessions == \[\$0\] \}/);
-  assert.match(helper, /guard showing\(window\) else \{ out\(\["error": "The Claude app switched to another chat."\]\) \}/);
+  assert.match(helper, /guard showing\(window\) else \{ fail\("The Claude app switched to another chat."\) \}/);
 });

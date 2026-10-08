@@ -274,3 +274,55 @@ test("editing your last message asks the app that owns the chat, as its own Edit
   assert.equal(edit.targetClientId, "desktop-owner");
   assert.deepEqual(edit.params, { conversationId: thread, turnId: "turn-2", message: "again" });
 });
+
+// The Codex app's approvals: read from the chat's state (its owner sends it
+// to a follower), answered by the request's own id, and taken as answered
+// only once the request has left the state. The owner says "ok" even for an
+// id it no longer has, so that alone never counts.
+const approval = { id: 12, method: "item/commandExecution/requestApproval", params: { itemId: "c7", command: "npm test" } };
+function owner(states) {
+  return (message, { socket }) => {
+    if (message.type === "broadcast" && message.method === "thread-stream-following-changed" && message.params.following) {
+      const state = states.length > 1 ? states.shift() : states[0];
+      const packet = frame({
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "desktop-owner",
+        params: { conversationId: thread, hostId: "local", change: { type: "snapshot", revision: 1, conversationState: state } },
+      });
+      // A large state arrives in many pieces.
+      for (let at = 0; at < packet.length; at += 7) socket.emit("data", packet.subarray(at, at + 7));
+      return true;
+    }
+    if (message.type === "request" && message.method.startsWith("thread-follower-")) {
+      queueMicrotask(() =>
+        socket.emit("data", frame({ type: "response", requestId: message.requestId, method: message.method, handledByClientId: "desktop-owner", resultType: "success", result: { ok: true } })),
+      );
+      return true;
+    }
+    return message.type !== "request";
+  };
+}
+
+test("Codex app approvals are read from the chat's state and answered by the request's own id", async () => {
+  const pending = { requests: [approval, { id: "q1", method: "item/tool/requestUserInput", params: {} }], padding: "x".repeat(5000) };
+  const { desktop, messages } = fixture(owner([pending, pending, { requests: [] }]));
+  assert.deepEqual((await desktop.requests(thread)).map((r) => r.id), [12, "q1"]);
+  assert.deepEqual(await desktop.answer(thread, { id: 12, method: approval.method, response: { decision: "accept" } }), { answered: true });
+  const sent = messages.find((m) => m.method === "thread-follower-command-approval-decision");
+  assert.deepEqual(sent.params, { conversationId: thread, requestId: 12, decision: "accept" });
+  assert.equal(sent.targetClientId, "desktop-owner");
+  // Following ends once done.
+  assert.ok(messages.some((m) => m.method === "thread-stream-following-changed" && m.params.following === false));
+});
+
+test("a Codex app approval still in the chat after its answer is uncertain, and one already gone isn't answered", async () => {
+  const { desktop } = fixture(owner([{ requests: [approval] }]), { timeoutMs: 5000 });
+  await assert.rejects(
+    desktop.answer(thread, { id: 12, method: approval.method, response: { decision: "accept" } }),
+    (e) => e.uncertain === true,
+  );
+  const gone = fixture(owner([{ requests: [] }]));
+  await assert.rejects(gone.desktop.answer(thread, { id: 12, method: approval.method, response: { decision: "accept" } }), /already answered/);
+  assert.equal(gone.messages.some((m) => m.method === "thread-follower-command-approval-decision"), false);
+});

@@ -442,8 +442,9 @@ test("a chat joins the app's list whatever happens: written for its next launch,
   assert.deepEqual(opened, []);
   imports.close();
 
-  // Open since before the record: in front and in use, it waits; once the
-  // app isn't in front, its import link, and the window goes back.
+  // Open since before the record: while the Mac is in use (in Claude or any
+  // other app) it waits; once nobody's there, its import link, and the
+  // window goes back.
   const D = "2c9a6f1e-0000-4000-8000-000000000003";
   mac.running = true;
   mac.launched = 500;
@@ -454,6 +455,9 @@ test("a chat joins the app's list whatever happens: written for its next launch,
   assert.deepEqual(opened, []);
   assert.deepEqual(imports.pending(), [D]);
   mac.front = false;
+  await imports.check();
+  assert.deepEqual(opened, []);
+  mac.idle = 600;
   await imports.check();
   assert.deepEqual(opened, [
     [`claude://resume?session=${D}`, { background: true }],
@@ -466,6 +470,7 @@ test("a chat joins the app's list whatever happens: written for its next launch,
   const E = "3d0b7f2a-0000-4000-8000-000000000004";
   opened.length = 0;
   mac.front = true;
+  mac.idle = 5;
   imports = make();
   clock = 3000;
   await imports.add(E);

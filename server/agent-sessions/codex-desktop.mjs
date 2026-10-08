@@ -31,7 +31,8 @@ const steerUncertain = () =>
   );
 const startUnavailable = () => Object.assign(fail("Codex's task owner is unavailable."), { ownerUnavailable: true });
 const startUncertain = () => Object.assign(fail("Codex didn't confirm the message. Check the chat before sending again."), { uncertain: true });
-const MAX_FRAME = 16 * 1024 * 1024;
+// A chat's whole state comes in one frame (the Codex app allows 256 MB).
+const MAX_FRAME = 256 * 1024 * 1024;
 
 export function createCodexDesktop({
   home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
@@ -61,7 +62,9 @@ export function createCodexDesktop({
   // One request to the app that owns the chat (found by asking): it's
   // written once and never replayed; with no clear answer after it's written,
   // the outcome is uncertain, not failed.
-  const ask = async (conversationId, { method, version, params, check, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
+  // work, instead of one request: several steps with the owner ({ rpc,
+  // snapshot }), e.g. reading the chat's state before answering in it.
+  const ask = async (conversationId, { method, version, params, check, work, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
     if (!UUID.test(conversationId)) throw unavailable();
     try {
       await checkEndpoint();
@@ -70,10 +73,19 @@ export function createCodexDesktop({
     }
     let socket,
       buffer = Buffer.alloc(0),
+      // Pieces of a frame still coming (a chat's whole state can be large):
+      // joined once it's all there, not on every piece.
+      parts = [],
+      partsLength = 0,
+      need = 4,
       clientId = "initializing-client",
       ended = false,
-      wroteSettings = false;
+      wroteSettings = false,
+      following = false;
     const pending = new Map();
+    // The chat's state as its owner sends it to a follower (newest first).
+    const snapshots = [];
+    let snapshotWaiter = null;
     const end = (error) => {
       if (ended) return;
       ended = true;
@@ -151,7 +163,12 @@ export function createCodexDesktop({
         });
         socket.on("data", (chunk) => {
           try {
-            buffer = Buffer.concat([buffer, chunk]);
+            parts.push(chunk);
+            partsLength += chunk.length;
+            if (partsLength < need) return;
+            buffer = Buffer.concat([buffer, ...parts]);
+            parts = [];
+            partsLength = 0;
             while (buffer.length >= 4) {
               const length = buffer.readUInt32LE(0);
               if (!length || length > MAX_FRAME) throw unavailable();
@@ -160,7 +177,15 @@ export function createCodexDesktop({
                 buffer.subarray(4, 4 + length).toString("utf8"),
               );
               buffer = buffer.subarray(4 + length);
-              if (message.type === "client-discovery-request") {
+              if (
+                message.type === "broadcast" &&
+                message.method === "thread-stream-state-changed" &&
+                message.params?.conversationId === conversationId &&
+                message.params?.change?.type === "snapshot"
+              ) {
+                snapshots.unshift(message.params.change.conversationState);
+                snapshotWaiter?.();
+              } else if (message.type === "client-discovery-request") {
                 send({
                   type: "client-discovery-response",
                   requestId: message.requestId,
@@ -181,6 +206,8 @@ export function createCodexDesktop({
                 else p.resolve(message);
               }
             }
+            // What's next awaited: the rest of a header, or of a frame.
+            need = buffer.length < 4 ? 4 - buffer.length : 4 + buffer.readUInt32LE(0) - buffer.length;
           } catch {
             end(wroteSettings ? uncertain() : unavailable());
           }
@@ -200,10 +227,39 @@ export function createCodexDesktop({
         !owner.handledByClientId
       )
         throw unavailable();
+      if (work) {
+        // Following the chat: its owner sends its whole state (and again
+        // whenever asked by following once more).
+        const snapshot = async () => {
+          const before = snapshots.length;
+          following = true;
+          send({ type: "broadcast", method: "thread-stream-following-changed", sourceClientId: clientId, params: { conversationId, hostId: "local", following: true }, version: 1 });
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { snapshotWaiter = null; reject(wroteSettings ? uncertain() : unavailable()); }, timeoutMs);
+            snapshotWaiter = () => {
+              if (snapshots.length === before) return;
+              clearTimeout(timer);
+              snapshotWaiter = null;
+              resolve();
+            };
+          });
+          const state = snapshots[0];
+          if (!state || typeof state !== "object") throw wroteSettings ? uncertain() : unavailable();
+          return state;
+        };
+        return await work({
+          rpc: (m, p, v) => rpc(m, { conversationId, ...p }, v, owner.handledByClientId),
+          snapshot,
+        });
+      }
       const answer = await rpc(method, { conversationId, ...params }, version, owner.handledByClientId);
       if (!check(answer.result)) throw uncertain();
       return answer.result;
     } finally {
+      if (following && !ended)
+        try {
+          send({ type: "broadcast", method: "thread-stream-following-changed", sourceClientId: clientId, params: { conversationId, hostId: "local", following: false }, version: 1 });
+        } catch {}
       end(unavailable());
     }
   };
@@ -216,7 +272,53 @@ export function createCodexDesktop({
     });
     return { ...threadSettings, applied: true };
   };
+  const approvalUnavailable = () =>
+    fail("The Codex app couldn't take this answer now. Answer it in the Codex app.");
+  const approvalUncertain = () =>
+    Object.assign(fail("The Codex app didn't confirm the answer. Check the chat in Codex before answering again."), { uncertain: true });
+  const pendingOf = (state) =>
+    (Array.isArray(state?.requests) ? state.requests : []).filter(
+      (r) => r && (typeof r.id === "string" || Number.isInteger(r.id)) && typeof r.method === "string",
+    );
   return {
+    // What a chat the Codex app holds waits on: its owner's own requests
+    // ({ id, method, params }), each with the id it answers by.
+    requests(conversationId) {
+      return ask(conversationId, {
+        work: async ({ snapshot }) => pendingOf(await snapshot()),
+        unavailable: approvalUnavailable,
+        uncertain: approvalUnavailable,
+      });
+    },
+    // Answers one of them as the Codex app's own buttons do (forwarded to the
+    // chat's owner): only while it still waits, then confirmed by the request
+    // leaving the chat's state. The owner says "ok" even for an id it no
+    // longer has, so that alone isn't taken as answered.
+    answer(conversationId, { id, method, response }) {
+      const call = {
+        "item/commandExecution/requestApproval": ["thread-follower-command-approval-decision", { decision: response?.decision }],
+        "item/fileChange/requestApproval": ["thread-follower-file-approval-decision", { decision: response?.decision }],
+        "item/permissions/requestApproval": ["thread-follower-permissions-request-approval-response", { response }],
+        "item/tool/requestUserInput": ["thread-follower-submit-user-input", { response }],
+        "mcpServer/elicitation/request": ["thread-follower-submit-mcp-server-elicitation-response", { response }],
+      }[method];
+      if (!call || response == null) return Promise.reject(approvalUnavailable());
+      return ask(conversationId, {
+        unavailable: approvalUnavailable,
+        uncertain: approvalUncertain,
+        work: async ({ rpc, snapshot }) => {
+          const same = (r) => String(r.id) === String(id) && r.method === method;
+          if (!pendingOf(await snapshot()).some(same)) throw fail("This request was already answered.");
+          const sent = await rpc(call[0], { requestId: id, ...call[1] }, 1);
+          if (sent.result?.ok !== true) throw approvalUncertain();
+          for (let i = 0; i < 10; i++) {
+            if (!pendingOf(await snapshot()).some(same)) return { answered: true };
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          throw approvalUncertain();
+        },
+      });
+    },
     startTurn(conversationId, request) {
       if (!Array.isArray(request?.input) || !request.input.length) return Promise.reject(startUnavailable());
       return ask(conversationId, {

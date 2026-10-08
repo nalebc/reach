@@ -644,3 +644,26 @@
   width: auto;
   min-height: 0;
 }
+.claw-channel-form {
+  align-self: stretch;
+}
+.claw-app-choice {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.claw-app-choice button {
+  flex: 1;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+}
+.claw-app-choice button.on {
+  border-color: var(--text-strong);
+  color: var(--text-strong);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}

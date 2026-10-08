@@ -2,7 +2,8 @@
 // presses its Send, as the person would at the Mac: the app's own Claude Code
 // process runs it and its window shows it at once (a chat that is working
 // queues it, as the app does). Only when the window's header names the chat
-// it is meant for, and never over text already in the box. Which chat is
+// it is meant for, and never over text typed on the Mac (set aside and put
+// back after Send when Reach is told to keep it). Which chat is
 // on screen is read by the app's own id for it (--session local_…, from its
 // page's address: two chats can share a name, never an id); without one, by
 // the name in the header (--title, exactly).
@@ -417,15 +418,36 @@ struct ClaudeCompose {
     }
     guard window.boxes.count == 1, let box = window.boxes.first else { out(["error": "Couldn't find the Claude app's message box."]) }
     // What Reach put there (any draft it may have left, a write it never saw
-    // confirmed included), or the very message being sent (its own draft,
-    // synced as it was typed): fine. Anything else was typed on the Mac and is
-    // never overwritten. An empty box reads "\n" (its editor keeps a line
-    // break), so the space around the text doesn't count.
+    // confirmed included), the very message being sent (its own draft, synced
+    // as it was typed), or the start of it (the app keeps each chat's draft
+    // and can bring back an older, shorter one): fine. An empty box reads
+    // "\n" (its editor keeps a line break), so the space around the text
+    // doesn't count.
     let known = (payload["expected"] as? [String]) ?? [(payload["expected"] as? String) ?? ""]
     let trimmed = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines) }
     let current = value(box)
-    guard known.contains(where: { current == trimmed($0) }) || (!text.isEmpty && current == trimmed(text)) else {
-      out(["error": "This chat's box in the Claude app has text typed on your Mac. Reach won't overwrite it: send or clear it there.", "draft": true])
+    let ours = current.isEmpty || known.contains(where: { current == trimmed($0) || trimmed($0).hasPrefix(current) })
+      || (!text.isEmpty && trimmed(text).hasPrefix(current))
+    // Anything else was typed on the Mac. A message (never a draft) sent with
+    // `keep` (nobody at the Mac, or Send now) sets it aside, goes in, and puts
+    // it back; otherwise it's never overwritten.
+    let keep = payload["keep"] as? Bool == true && payload["draft"] as? Bool != true && !ours
+    if !ours && !keep {
+      out(["error": "This chat's box in the Claude app has text typed on your Mac. Reach won't overwrite it: send or clear it there.", "draft": true, "length": current.count])
+    }
+    let stash = keep ? str(box, kAXValueAttribute) : ""
+    // Every way out once it's set aside puts it back first (or says it
+    // couldn't, with the text, so Reach keeps it).
+    let putBack = { (into: AXUIElement) -> Bool in
+      guard keep else { return true }
+      AXUIElementSetAttributeValue(into, kAXValueAttribute as CFString, stash as CFString)
+      for _ in 0..<20 where value(into) != current { usleep(50_000) }
+      return value(into) == current
+    }
+    let fail = { (message: String) -> Never in
+      // Only into this chat's own box (never another chat's).
+      if keep, !(showing(look(app)) && putBack(box)) { out(["error": message, "kept": stash]) }
+      out(["error": message])
     }
     if payload["draft"] as? Bool == true {
       // No focus changes, clipboard access, key presses or Send during typing.
@@ -455,10 +477,10 @@ struct ClaudeCompose {
       for file in images {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: file)), let image = NSImage(data: data),
           let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
-        else { out(["error": "A picture couldn't be read."]) }
+        else { fail("A picture couldn't be read.") }
         pasteboard.clearContents()
         pasteboard.setData(png, forType: .png)
-        guard showing(look(app)), pressMenu(app, ["Edit", "Paste"]) else { out(["error": "Couldn't paste the picture into the Claude app."]) }
+        guard showing(look(app)), pressMenu(app, ["Edit", "Paste"]) else { fail("Couldn't paste the picture into the Claude app.") }
         usleep(700_000)
       }
     }
@@ -467,7 +489,7 @@ struct ClaudeCompose {
     // at once (no fixed 300 ms pause), for up to a second.
     if !text.isEmpty || !current.isEmpty {
       guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
-      else { out(["error": "Claude couldn't update the message."]) }
+      else { fail("Claude couldn't update the message.") }
       usleep(20_000)
     }
     window = look(app)
@@ -475,19 +497,23 @@ struct ClaudeCompose {
       usleep(50_000)
       window = look(app)
     }
-    guard showing(window) else { out(["error": "The Claude app switched to another chat."]) }
+    guard showing(window) else { fail("The Claude app switched to another chat.") }
     guard window.boxes.count == 1, let currentBox = window.boxes.first, value(currentBox) == trimmed(text)
-    else { out(["error": "The message changed before Send. Reach hasn't sent it."]) }
-    guard let send = window.send, enabled(send) else { out(["error": "The Claude app's Send isn't available."]) }
-    guard AXUIElementPerformAction(send, kAXPressAction as CFString) == .success else { out(["error": "Couldn't press Send in the Claude app."]) }
+    else { fail("The message changed before Send. Reach hasn't sent it.") }
+    guard let send = window.send, enabled(send) else { fail("The Claude app's Send isn't available.") }
+    guard AXUIElementPerformAction(send, kAXPressAction as CFString) == .success else { fail("Couldn't press Send in the Claude app.") }
     // The box emptying says the app took it: read on the box itself (one call,
     // not a walk of the whole window). Reach confirms from the transcript too.
     for _ in 0..<25 {
       usleep(20_000)
-      if value(currentBox).isEmpty { out(["sent": true]) }
+      if value(currentBox).isEmpty {
+        if !keep { out(["sent": true]) }
+        out(putBack(currentBox) ? ["sent": true, "restored": true] : ["sent": true, "kept": stash])
+      }
     }
     // The app received Send. An uncertain UI refresh must not retry it and
-    // accidentally submit the same message twice.
-    out(["sent": true, "unconfirmed": true])
+    // accidentally submit the same message twice. What was set aside isn't
+    // put over a box that may still hold the message: Reach keeps it.
+    out(keep ? ["sent": true, "unconfirmed": true, "kept": stash] : ["sent": true, "unconfirmed": true])
   }
 }

@@ -12,7 +12,7 @@ import { presetScopes } from "./agent-presets.mjs";
 // of its actions extends, and the others are told who has it. Screenshots are
 // reads and run side by side. The owner's own hands (checked natively) and the
 // owner's phone (checked here) always come first.
-const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503 };
+const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 };
 const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked" });
 const number = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", "escape", "esc", "left", "right", "down", "up", "forwarddelete", "home", "end", "pageup", "pagedown",

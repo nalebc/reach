@@ -366,7 +366,7 @@ test("the All page groups every agent's chats by project, warns of files two cha
     claudeSession({ title: "Refactor auth", cwd: "/work/app/.claude/worktrees/bold-fox", updatedAt: now - 2000 }),
     claudeSession({ id: NEW, title: "Plan the API", cwd: "/work/api", status: "waiting", updatedAt: now - 60000 }),
   ];
-  const asked = [];
+  const journal = [];
   Object.assign(routes, {
     "/api/sessions/activity": () => ({
       chats: [
@@ -382,17 +382,8 @@ test("the All page groups every agent's chats by project, warns of files two cha
         },
       ],
     }),
-    "/api/sessions/journal": (init, href) => (
-      asked.push(href.searchParams.get("since")),
-      {
-        events: [
-          { id: "e1", kind: "finished", agent: "claude", chat: CLAUDE, title: "Refactor auth", files: 3, at: now - 5000 },
-          { id: "e2", kind: "usage", agent: "codex", chat: CODEX, title: "Fix login", text: "You’ve hit your usage limit.", at: now - 4000 },
-        ],
-        waiting: [{ agent: "claude", id: NEW, title: "Plan the API" }],
-        now,
-      }
-    ),
+    // The away report is gone: nothing asks for it.
+    "/api/sessions/journal": () => (journal.push(1), { events: [], waiting: [], now }),
     "/api/sessions/search": (init, href) => ({
       partial: false,
       results:
@@ -429,17 +420,9 @@ test("the All page groups every agent's chats by project, warns of files two cha
   assert.match(projects[0].textContent, /Changed auth\.ts, login\.ts/);
   const warning = await dom.waitFor(() => $(".hub-overlap"));
   assert.match(warning.textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\) in the last half hour/);
-  // While you were away: what needs a look first.
-  const away = await dom.waitFor(() => $(".hub-away"));
-  assert.match(away.querySelector(".hub-away-sum").textContent, /1 chat finished · 1 waiting on you · Claude Code changed 3 files/);
-  assert.deepEqual([...away.querySelectorAll("li")].map((li) => li.textContent), [
-    "Waiting on you: “Plan the API”",
-    "Codex ran out of usage in “Fix login”",
-    "“Refactor auth” finished · 3 files changed",
-  ]);
-  await click(button("Got it"));
-  assert.equal(dom.window.localStorage.getItem("reach.lastSeen:mac"), String(now));
-  await dom.waitFor(() => asked.at(-1) === String(now));
+  // No "while you were away" card, and nothing asked for one.
+  assert.equal($(".hub-away"), null);
+  assert.deepEqual(journal, []);
   // Relays under way, with Cancel.
   assert.match($(".hub-relays").textContent, /Fix login.*When Codex finishes: Claude Code builds it/);
   // One search: names at once, what was said from the Mac.
@@ -554,6 +537,47 @@ test("the lead's chat shows its team at work, a helper's chat the way back, and 
   assert.deepEqual(dom.errors, []);
 });
 
+test("usage on the All page: a ring at the top, one row when an agent is close, its limits a tap away, and an agent with room to start in", async () => {
+  const soon = Date.now() + 3 * 3600 * 1000;
+  const usage = (percent) => ({ available: true, updatedAt: Date.now(), windows: [{ id: "w", label: "Weekly", usedPercent: percent, resetsAt: soon, severity: "normal" }] });
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  await home([codexSession(), claudeSession()], both({ usage: usage(30) }, { usage: usage(92) }));
+  await dom.waitFor(() => $(".chat-hub"));
+  // Below 80% an agent says nothing; Claude at 92% gets the row.
+  const row = await dom.waitFor(() => $(".usage-row"));
+  assert.ok(row.classList.contains("warning"));
+  assert.match(row.textContent, /Claude Code 92% · resets/);
+  // The ring at the top is the agent closest to its limit, said in words to a screen reader.
+  const ring = $$(".usage-button").find((b) => b.closest(".chat-mobile-tools"));
+  assert.match(ring.getAttribute("aria-description"), /^Claude, 92% of Weekly used, resets/);
+  assert.ok(ring.classList.contains("warning"));
+  // The row opens each agent's limits.
+  await click(row.querySelector(".usage-row-main"));
+  const sheet = await dom.waitFor(() => $(".usage-sheet"));
+  assert.deepEqual([...sheet.querySelectorAll(".usage-sheet-agent h3")].map((h) => h.textContent), ["Codex", "Claude"]);
+  await click(sheet.querySelector(".chat-sheet-close"));
+  // Use Codex: a new chat, in Codex.
+  await click([...row.querySelectorAll("button")].find((b) => /Use Codex/.test(b.textContent)));
+  const create = await dom.waitFor(() => $(".chat-create-sheet"));
+  const tokens = [...create.querySelectorAll(".chat-app-token")];
+  assert.equal(tokens.find((b) => b.getAttribute("aria-pressed") === "true")?.getAttribute("aria-label"), "Codex");
+  // Each agent's ring in New chat, so a long task starts where there's room.
+  assert.match(tokens.find((b) => b.getAttribute("aria-label") === "Codex").getAttribute("aria-description"), /30% of Weekly used/);
+  assert.equal(create.querySelectorAll(".usage-ring.warning").length, 1);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("an agent out of usage is Out on its ring, whatever its percent", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  await home([claudeSession()], both({}, { usable: false, resetsAt: Date.now() + 3600000, usage: { available: true, windows: [{ id: "w", label: "Weekly", usedPercent: 40, resetsAt: null, severity: "normal" }] } }));
+  const ring = await dom.waitFor(() => $$(".usage-button").find((b) => b.closest(".chat-mobile-tools")));
+  assert.ok(ring.classList.contains("out"));
+  assert.equal(ring.querySelector(".usage-pill").textContent, "Out");
+  // Out, not when it comes back (that's for almost out): said in words instead.
+  assert.match(ring.getAttribute("aria-description"), /out of usage, resets/);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("the All page lists teams at work, and their reports stay out of Relays", async () => {
   dom.window.localStorage.setItem("reach.chatAgent", "all");
   const report = { ...relayOf({ id: "r9", steps: [{ kind: "report", to: { agent: "codex", id: CODEX } }], chain: [{ agent: "claude", id: CLAUDE, title: "Team · Add pagination" }] }) };
@@ -561,5 +585,278 @@ test("the All page lists teams at work, and their reports stay out of Relays", a
   const card = await dom.waitFor(() => $(".hub-teams"));
   assert.match(card.textContent, /Ship pagination.*Codex leads · 1 helper working/);
   assert.equal($(".hub-relays"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+// The All page across every paired computer (src/fleet-chats.ts). Stand-ins:
+// Studio answers; Attic is away; Lab keeps its chats from this phone (403);
+// Office's live connection turned this phone away. Each stand-in is told
+// apart by the address the phone asked.
+const STUDIO = "22222222-3333-4444-8555-666666666666";
+const studio = { id: "studio", name: "Studio", url: "https://studio.test", token: "studio-token", platform: "darwin" };
+const attic = { id: "attic", name: "Attic", url: "https://attic.test", token: "attic-token", platform: "darwin" };
+const lab = { id: "lab", name: "Lab", url: "https://lab.test", token: "lab-token", platform: "linux" };
+const office = { id: "office", name: "Office", url: "https://office.test", token: "office-token", platform: "darwin" };
+const tokenAt = Object.fromEntries([peer, studio, attic, lab, office].map((p) => [p.url, `Bearer ${p.token}`]));
+// A route as each computer answers it: Attic fails the way a browser does
+// when a computer is away; Lab says no.
+const byComputer = (answers) => (init, href) => {
+  if (href.origin === attic.url) throw new TypeError("Failed to fetch");
+  if (href.origin === lab.url) return Response.json({ error: "This credential does not grant admin access." }, { status: 403 });
+  return answers[href.origin]?.(init, href) ?? {};
+};
+// Every request the phone made: where to, and the credentials it carried.
+const watchRequests = (t) => {
+  const plain = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = (url, init = {}) => {
+    const href = new URL(url, dom.window.location.href);
+    requests.push({ origin: href.origin, path: href.pathname, authorization: new Headers(init.headers).get("Authorization") });
+    return plain(url, init);
+  };
+  t.after(() => (globalThis.fetch = plain));
+  return requests;
+};
+// No computer ever gets another's credentials.
+const ownCredentialsOnly = (requests) => {
+  for (const { origin, authorization } of requests) if (authorization) assert.equal(authorization, tokenAt[origin], `credentials sent to ${origin}`);
+};
+
+test("the All page covers every paired computer: one search and one projects list, each row on its computer", async (t) => {
+  const now = Date.now();
+  // Studio's clock runs a little ahead of this one.
+  const later = now + 7000;
+  const requests = watchRequests(t);
+  const opened = [];
+  const plainList = routes["/api/sessions"];
+  Object.assign(routes, {
+    "/api/sessions": byComputer({
+      [studio.url]: () => ({
+        version: "s1",
+        errors: {},
+        sessions: [
+          claudeSession({ id: STUDIO, title: "Tune the build", cwd: "/work/app", updatedAt: now - 500 }),
+          codexSession({ id: NEW, title: "Draft release notes", cwd: "/work/site", updatedAt: now - 90000 }),
+        ],
+      }),
+    }),
+    "/api/sessions/activity": byComputer({
+      [peer.url]: () => ({
+        chats: [],
+        overlaps: [
+          {
+            file: "/work/app/src/auth.ts",
+            chats: [
+              { agent: "codex", id: CODEX, title: "Fix login", at: now },
+              { agent: "claude", id: CLAUDE, title: "Refactor auth", at: now },
+            ],
+          },
+        ],
+      }),
+      [studio.url]: () => ({ chats: [{ agent: "claude", id: STUDIO, title: "Tune the build", cwd: "/work/app", files: [{ file: "/work/app/build.mjs", at: later }] }], overlaps: [] }),
+    }),
+    "/api/sessions/search": byComputer({
+      [peer.url]: () => ({
+        partial: false,
+        results: [{ agent: "codex", id: CODEX, role: "user", at: now - 6000, snippet: "…clear the cache first…", title: "Fix login", cwd: "/work/app", listed: true }],
+      }),
+      [studio.url]: () => ({
+        partial: false,
+        results: [{ agent: "claude", id: STUDIO, role: "assistant", at: later - 3000, snippet: "…the build cache was stale…", title: "Tune the build", cwd: "/work/app", listed: true }],
+      }),
+    }),
+  });
+  t.after(() => {
+    for (const r of ["/api/sessions/activity", "/api/sessions/search"]) delete routes[r];
+    routes["/api/sessions"] = plainList;
+  });
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  await mount(
+    React.createElement(EverythingChat, {
+      peer,
+      feed: {
+        sessions: [codexSession({ updatedAt: now - 1000 }), claudeSession({ updatedAt: now - 2000 })],
+        errors: {},
+        health: both(),
+        failure: "",
+        relays: [],
+        reload: async () => {},
+        recheck: () => {},
+      },
+      computers: [peer, studio, attic, lab, office],
+      connections: { [office.id]: { state: "denied", devices: [] } },
+      onOpenOn: (computer, chat) => opened.push([computer.id, chat.agent, chat.id]),
+    }),
+  );
+  // Who isn't here, and why; the page names the computers it covers.
+  const note = await dom.waitFor(() => $(".hub-fleet-note"));
+  await dom.waitFor(() => note.textContent === "Attic didn’t answer. Office needs this phone paired again. Lab doesn’t share its chats with this phone.");
+  assert.equal($(".hub-lead").textContent, "Every agent’s chats on Mac, Studio, Attic and Office, together.");
+  // One projects list: the same folder on two computers is two projects.
+  const projects = await dom.waitFor(() => ($$(".hub-project").length === 3 ? $$(".hub-project") : null));
+  assert.deepEqual(
+    projects.map((p) => p.getAttribute("aria-label")),
+    ["app conversations on Studio", "app conversations on Mac", "site conversations on Studio"],
+  );
+  assert.deepEqual(projects.map((p) => p.querySelector("h2 .hub-computer").textContent), ["Studio", "Mac", "Studio"]);
+  await dom.waitFor(() => /Tune the build.*Changed build\.mjs/.test(projects[0].textContent));
+  // Two chats changing one file is the Mac's warning only: Studio's folder is on another disk.
+  await dom.waitFor(() => projects[1].querySelector(".hub-overlap"));
+  assert.match(projects[1].querySelector(".hub-overlap").textContent, /src\/auth\.ts changed by Codex \(“Fix login”\) and Claude Code \(“Refactor auth”\)/);
+  assert.equal(projects[0].querySelector(".hub-overlap"), null);
+  // One search: every computer's chats, newest first, each on its computer.
+  await typeInto($('input[aria-label="Search all chats"]'), "cache");
+  const hits = await dom.waitFor(() => ($$(".hub-hit").length === 2 && $(".hub-results .hub-note.bad") ? $$(".hub-hit") : null));
+  assert.deepEqual(hits.map((h) => h.querySelector(".hub-computer").textContent), ["Studio", "Mac"]);
+  assert.match(hits[0].textContent, /Tune the build.*Claude Code: …the build cache was stale…/);
+  assert.equal($(".hub-results .hub-note.bad").textContent, "Attic didn’t answer.");
+  // A chat on Studio goes to Studio (App switches computers); one here opens here.
+  await click(hits[0]);
+  assert.deepEqual(opened, [["studio", "claude", STUDIO]]);
+  await click(hits[1]);
+  await dom.waitFor(() => $(".as-page"));
+  assert.match($(".as-title strong").textContent, /Fix login/);
+  // Each computer was asked with its own credentials only; Office, which
+  // turned this phone away, wasn't asked at all.
+  ownCredentialsOnly(requests);
+  assert.ok(requests.some((r) => r.origin === studio.url) && requests.some((r) => r.origin === attic.url) && requests.some((r) => r.origin === lab.url));
+  assert.ok(!requests.some((r) => r.origin === office.url));
+  // Lab said no once per question, and wasn't asked again; no computer was asked for a journal.
+  assert.ok(requests.filter((r) => r.origin === lab.url).length <= 3, "Lab: asked once each for its list, activity and usage");
+  assert.ok(!requests.some((r) => r.path === "/api/sessions/journal"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a chat on another computer, opened from the All page, switches Reach to that computer and opens there", async (t) => {
+  const now = Date.now();
+  const requests = watchRequests(t);
+  const computers = [peer, studio];
+  const at = (href) => computers.find((p) => p.url === href.origin);
+  const device = (p) => ({
+    id: p.id,
+    name: p.name,
+    platform: "darwin",
+    arch: "arm64",
+    release: "25.0",
+    roots: [],
+    memory: { total: 1, free: 1 },
+    uptime: 1,
+    network: { connected: true, peers: [] },
+    capabilities: { files: true, terminal: true, apps: true, screen: true, codex: false },
+  });
+  const saved = { ...routes };
+  t.after(() => {
+    for (const key of Object.keys(routes)) if (!(key in saved)) delete routes[key];
+    Object.assign(routes, saved);
+  });
+  // Studio's Reach stops answering for a while (its chats were listed just before).
+  let studioAway = false;
+  Object.assign(routes, {
+    "/api/device": (init, href) =>
+      at(href) === studio && studioAway ? Response.json({ error: "Reach is restarting." }, { status: 503 }) : device(at(href)),
+    "/api/terminals": () => ({ sessions: [] }),
+    "/api/codex": () => ({ sessions: [] }),
+    "/api/activity": () => ({ activities: [] }),
+    "/api/sessions/health": () => ({ agents: both() }),
+    "/api/sessions": (init, href) => ({
+      version: at(href).id,
+      errors: {},
+      sessions:
+        at(href) === studio
+          ? [claudeSession({ id: STUDIO, title: "Tune the build", cwd: "/work/site", updatedAt: now })]
+          : [codexSession({ updatedAt: now - 1000 }), claudeSession({ updatedAt: now - 2000 })],
+    }),
+    "/api/sessions/journal": () => ({ events: [], waiting: [], now }),
+    "/api/sessions/activity": () => ({ chats: [], overlaps: [] }),
+    [`/api/sessions/claude/${STUDIO}`]: (init, href) =>
+      at(href) === studio
+        ? { session: claudeSession({ id: STUDIO, title: "Tune the build", cwd: "/work/site" }), items: [] }
+        : Response.json({ error: "No such chat on this computer." }, { status: 404 }),
+    // A long poll, as the others here: answered at once, it would be asked again at once.
+    [`/api/sessions/claude/${STUDIO}/live`]: async () => (await settle(60), idleLive()),
+  });
+  // Live connections are beside the point here; none may leave this harness.
+  const socket = globalThis.WebSocket;
+  globalThis.WebSocket = class {
+    close() {}
+    send() {}
+  };
+  t.after(() => (globalThis.WebSocket = socket));
+  dom.window.localStorage.setItem("reach.devices", JSON.stringify(computers));
+  dom.window.localStorage.setItem("reach.active", "mac");
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  dom.window.sessionStorage.setItem("reach.place", JSON.stringify({ peer: "mac", page: "sessions" }));
+  const { default: App } = await dom.load("/src/App.tsx");
+  await mount(React.createElement(App));
+  // Studio's chat is on the Mac's All page, marked as Studio's.
+  const studioCard = () => $('.chat-card[aria-label="Tune the build, Claude Code, on Studio"]');
+  // Tapped while Studio doesn't answer: Reach goes to Studio and says so. Picking
+  // the Mac then keeps you on the Mac; the chat waiting for Studio doesn't
+  // pull you back once the Mac has loaded.
+  studioAway = true;
+  await click(await dom.waitFor(studioCard, 15000));
+  await dom.waitFor(() => dom.window.localStorage.getItem("reach.active") === "studio" && /out of reach/.test(dom.document.body.textContent));
+  await click($('nav.fleet-switcher button[title="Mac"]'));
+  await dom.waitFor(() => $(".chat-hub") && studioCard());
+  await settle(300);
+  assert.equal(dom.window.localStorage.getItem("reach.active"), "mac");
+  assert.equal($(".as-page"), null);
+  // Studio back: the same tap switches and opens the chat there.
+  studioAway = false;
+  await click(studioCard());
+  // Reach is on Studio now, with the chat open there.
+  await dom.waitFor(() => /Tune the build/.test($(".as-page .as-title strong")?.textContent || ""), 15000);
+  assert.equal(dom.window.localStorage.getItem("reach.active"), "studio");
+  // The chat opens from Studio's list at once, then reads itself from Studio.
+  const reads = await dom.waitFor(() => {
+    const found = requests.filter((r) => r.path === `/api/sessions/claude/${STUDIO}`);
+    return found.length ? found : null;
+  });
+  assert.deepEqual([...new Set(reads.map((r) => r.origin))], [studio.url], "read from Studio only");
+  ownCredentialsOnly(requests);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Chat starts on All until you pick an app, then keeps the one you picked", async () => {
+  const shownApp = () => $(".chat-current-name")?.textContent;
+  // Nothing picked yet: every agent's chats together.
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal(shownApp(), "All");
+  // Claude Code picked (the app menu at the top): Chat opens there next time.
+  await click($(".chat-app-current"));
+  await click($$('[role="menuitemradio"]').find((b) => b.getAttribute("aria-label") === "Claude Code"));
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "claude");
+  await views.splice(0)[0].unmount();
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-library") && !$(".chat-hub"));
+  assert.equal(shownApp(), "Claude");
+  await views.splice(0)[0].unmount();
+  // The app picked isn't here anymore: back to All.
+  dom.window.localStorage.setItem("reach.chatAgent", "gemini");
+  await home([codexSession(), claudeSession()]);
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("two chats with the same name changing one file read as two chats, not one name twice", async (t) => {
+  const now = Date.now();
+  routes["/api/sessions/activity"] = () => ({
+    chats: [],
+    overlaps: [
+      {
+        file: "/work/app/docs/notes.md",
+        chats: [
+          { agent: "claude", id: CLAUDE, title: "Refactor auth", at: now },
+          { agent: "claude", id: NEW, title: "Refactor auth", at: now },
+        ],
+      },
+    ],
+  });
+  t.after(() => delete routes["/api/sessions/activity"]);
+  await home([claudeSession(), claudeSession({ id: NEW }), codexSession()]);
+  const warning = await dom.waitFor(() => $(".hub-overlap"));
+  assert.equal(warning.textContent, "docs/notes.md changed by two Claude Code chats named “Refactor auth” in the last half hour.");
   assert.deepEqual(dom.errors, []);
 });

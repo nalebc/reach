@@ -7,6 +7,16 @@ import JSON5 from "json5";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { partLabels } from "./agent-sessions/message-parts.mjs";
+import * as usageFeature from "./openclaw-usage.mjs";
+import * as healthFeature from "./openclaw-health.mjs";
+import * as schedulesFeature from "./openclaw-schedules.mjs";
+import * as watchFeature from "./openclaw-watch.mjs";
+import * as agentsFeature from "./openclaw-agents.mjs";
+import * as skillsFeature from "./openclaw-skills.mjs";
+import * as onboardFeature from "./openclaw-onboard.mjs";
+
+// Features in files of their own, each adding its routes.
+export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
@@ -273,6 +283,7 @@ export function createOpenClaw({
     listAt = 0,
     listing,
     methods,
+    serverVersion = "",
     redact = publicGatewayError;
   const pending = new Map(),
     runs = new Map(),
@@ -283,7 +294,9 @@ export function createOpenClaw({
     starts = new Map(),
     terminalRuns = new Set(),
     // Told when approvals come or go (notifications look then).
-    approvalListeners = new Set();
+    approvalListeners = new Set(),
+    // Told every Gateway event (features in openclaw-*.mjs watch these).
+    eventListeners = new Set();
   const approvalsChanged = () => {
     for (const listener of approvalListeners) listener();
     tell();
@@ -510,6 +523,10 @@ export function createOpenClaw({
                       /invalid chat\.inject params/i.test(
                         String(frame.error?.message || ""),
                       ),
+                    // Any method: it exists here, only the params were wrong.
+                    invalidParams: /invalid \S+ params/i.test(
+                      String(frame.error?.message || ""),
+                    ),
                   },
                 ),
               );
@@ -561,6 +578,10 @@ export function createOpenClaw({
               },
             }).then((hello) => {
               if (socket !== ws) return finish(connectionError());
+              serverVersion =
+                typeof hello?.server?.version === "string"
+                  ? hello.server.version.slice(0, 40)
+                  : "";
               methods = Array.isArray(hello?.features?.methods)
                 ? new Set(hello.features.methods)
                 : null;
@@ -571,6 +592,11 @@ export function createOpenClaw({
             }, finish);
           } else {
             const p = frame.payload || {};
+            for (const listener of eventListeners) {
+              try {
+                listener(frame.event, p);
+              } catch {}
+            }
             if (["chat", "agent"].includes(frame.event))
               updateRun(frame.event, p);
             if (
@@ -612,7 +638,17 @@ export function createOpenClaw({
   // add: "invalid chat.inject params" means it's there, anything else not.
   let injectable = null;
   let injectProbe = Promise.resolve();
+  // sessions.usage likewise (2026.3.13 handles it, lists it nowhere): a
+  // chat's spend (openclaw-usage.mjs).
+  let usageable = null;
+  let usageProbe = Promise.resolve();
   const probeInject = () => {
+    usageable = null;
+    if (methods && !methods.has("sessions.usage"))
+      usageProbe = request("sessions.usage", { limit: 0 }).then(
+        () => (usageable = true),
+        (e) => (usageable = e?.invalidParams === true),
+      );
     injectable = null;
     if (!methods || methods.has("chat.inject")) return;
     injectProbe = request("chat.inject", {}).then(
@@ -637,11 +673,13 @@ export function createOpenClaw({
       await connect();
       check();
       if (method === "chat.inject") await injectProbe;
+      if (method === "sessions.usage") await usageProbe;
       check();
       if (
         methods &&
         !methods.has(method) &&
-        !(method === "chat.inject" && injectable === true)
+        !(method === "chat.inject" && injectable === true) &&
+        !(method === "sessions.usage" && usageable === true)
       )
         throw fail(
           409,
@@ -654,7 +692,11 @@ export function createOpenClaw({
     // No await between the final live authorization and socket dispatch.
     return request(method, params, completion, waitMs);
   };
-  const can = (method) => !methods || methods.has(method);
+  const can = (method) =>
+    !methods ||
+    methods.has(method) ||
+    (method === "chat.inject" && injectable === true) ||
+    (method === "sessions.usage" && usageable !== false);
   const updateRun = (event, p) => {
     if (typeof p.runId !== "string" || !p.runId) return;
     if (terminalRuns.has(p.runId)) return;
@@ -1167,7 +1209,9 @@ export function createOpenClaw({
           error: redact(j.state?.lastError || ""),
           delivery:
             j.delivery?.mode === "announce"
-              ? j.delivery.channel || "Last channel"
+              ? j.delivery.channel && j.delivery.channel !== "last"
+                ? j.delivery.channel
+                : "Last channel"
               : j.delivery?.mode === "webhook"
                 ? "Webhook"
                 : "No external delivery",
@@ -1318,6 +1362,26 @@ export function createOpenClaw({
       changed();
       return { saved: true };
     },
+    // For features in their own files (server/openclaw-*.mjs): one Gateway
+    // method through the same live authorization and support checks.
+    call(method, params = {}, authorize = () => {}, waitMs) {
+      return rpc(method, params, undefined, authorize, waitMs);
+    },
+    // Whether the connected Gateway lists `method` (true before connecting).
+    can(method) {
+      return can(method);
+    },
+    // Every Gateway event, as (event, payload); payloads are OpenClaw's own
+    // text, so redact before anything reaches a phone.
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
+    redact: (value) => redact(value),
+    // Whether Reach's Gateway connection is open now (relays, workflows).
+    connected: () => ready,
+    // The connected Gateway's own version ("" before connecting).
+    server: () => ({ version: serverVersion }),
     // Approvals came or went (notifications look then, not on a beat).
     onApprovalsChange(listener) {
       approvalListeners.add(listener);
@@ -1744,6 +1808,52 @@ export function createOpenClaw({
       return started.promise;
     },
     // Removes a chat Reach made (never one of WhatsApp's or Discord's).
+    // A relay's or workflow's result, posted where this chat's own messages
+    // go: the WhatsApp or Telegram chat that asked, one to one. The owner
+    // chose it for that relay (Oct 8). Never a group or channel (Oct 5: a
+    // reply reached a friends' WhatsApp group), never another recipient,
+    // and no agent runs: OpenClaw's `send` delivers the text as it is.
+    async post({ key, text, requestId }, authorize = () => {}) {
+      authorize();
+      validKey(key);
+      if (typeof text !== "string" || !text.trim() || text.length > 20000)
+        throw fail(400, "Nothing to post, or too long to post (20,000 characters at most).");
+      if (typeof requestId !== "string" || !/^[\w-]{8,100}$/.test(requestId))
+        throw fail(400, "A post request ID is required.");
+      const row = await known(key);
+      authorize();
+      const target = destination(row);
+      if (!target)
+        throw fail(409, "This chat has no app to post to. Nothing was sent.");
+      if (
+        /:group:|:channel:|@g\.us/i.test(`${key} ${target.to}`) ||
+        /group|channel/i.test(String(row.chatType || ""))
+      )
+        throw fail(403, "Reach posts only to one-to-one chats, never groups or channels. Nothing was sent.");
+      await checkChannel(target);
+      authorize();
+      const result = await rpc(
+        "send",
+        {
+          to: target.to,
+          message: text.trim(),
+          channel: target.channel,
+          ...(typeof target.accountId === "string" && target.accountId
+            ? { accountId: target.accountId }
+            : {}),
+          ...(target.threadId != null && target.threadId !== ""
+            ? { threadId: String(target.threadId) }
+            : {}),
+          sessionKey: key,
+          idempotencyKey: requestId,
+        },
+        undefined,
+        authorize,
+      );
+      if (result?.ok === false)
+        throw fail(502, "OpenClaw didn't confirm the post. Check the chat before posting again.");
+      return { posted: true, channel: target.channel };
+    },
     async remove(key, authorize = () => {}) {
       authorize();
       if (!reachMade(key)) throw fail(403, "Reach removes only chats it made.");
@@ -1931,14 +2041,66 @@ export async function startOpenClawGateway({
   }
 }
 
+// Channels a phone can add with a bot token, through OpenClaw's own
+// `openclaw channels add` (its checks, its config; the Gateway then starts
+// the channel). Tokens go to OpenClaw only: never stored or echoed by Reach.
+export const TOKEN_CHANNELS = {
+  telegram: ["token"],
+  discord: ["token"],
+  slack: ["botToken", "appToken"],
+};
+const tokenShape = /^[\x21-\x7e]{8,4096}$/;
+export async function addOpenClawChannel(
+  { channel, token, botToken, appToken, name } = {},
+  {
+    run = promisify(execFile),
+    env = process.env,
+    platform = process.platform,
+    authorize = () => {},
+  } = {},
+) {
+  authorize();
+  const fields = TOKEN_CHANNELS[channel];
+  if (!fields || !Object.hasOwn(TOKEN_CHANNELS, channel))
+    throw fail(400, "Choose Telegram, Discord or Slack.");
+  const values = { token, botToken, appToken };
+  for (const field of fields)
+    if (typeof values[field] !== "string" || !tokenShape.test(values[field].trim()))
+      throw fail(400, field === "appToken" ? "Paste the Slack app token (xapp-…)." : field === "botToken" ? "Paste the Slack bot token (xoxb-…)." : "Paste the bot token.");
+  if (name !== undefined && name !== "" && (typeof name !== "string" || name.length > 80 || /[\u0000-\u001f]/.test(name)))
+    throw fail(400, "Choose a shorter account name.");
+  if (platform === "win32") throw fail(409, "On Windows, add channels in OpenClaw on this computer.");
+  // OpenClaw copies the token into its own config (a --token-file would be
+  // kept as a path to that file instead).
+  const args = ["channels", "add", "--channel", channel];
+  if (channel === "slack")
+    args.push("--bot-token", values.botToken.trim(), "--app-token", values.appToken.trim());
+  else args.push("--token", values.token.trim());
+  if (name) args.push("--name", name.trim());
+  authorize();
+  try {
+    // "$@": the tokens are arguments, never shell text.
+    await run(env.SHELL || "/bin/sh", ["-lc", 'exec openclaw "$@"', "openclaw", ...args], { timeout: 60000 });
+  } catch {
+    throw fail(409, "OpenClaw didn't accept this channel. Check the token and try again.");
+  }
+  return { added: true };
+}
+
 export const SETUP_SECTIONS = ["model", "channels"];
 export function openClawRoutes(
   app,
   client,
-  { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {},
+  { startGateway = startOpenClawGateway, settleMs = 500, openSetup, addChannel = addOpenClawChannel, features = FEATURES, ...context } = {},
 ) {
   const base = "/api/sessions/openclaw";
   const authorize = (req) => () => req.reauthorize();
+  for (const feature of features)
+    feature.routes(app, client, { ...context, base, authorize, openSetup });
+  app.post(`${base}/channels/add`, async (req, res) => {
+    const added = await addChannel(req.body || {}, { authorize: authorize(req) });
+    res.json(added);
+  });
   // Only fixed sections of `openclaw configure`, never the phone's text.
   app.post(`${base}/setup`, async (req, res) => {
     const section = req.body?.section;

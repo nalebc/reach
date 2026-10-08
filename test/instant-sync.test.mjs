@@ -52,7 +52,7 @@ test("a change in the Codex app's history makes the open chat read again at once
   assert.equal(live.view(other).items, quiet);
 });
 
-test("a Claude Code chat written to on the Mac wakes the phone that has it open; Reach's own writes and closed chats don't", async () => {
+test("a Claude Code chat written to on the Mac wakes the phone that has it open, Reach's own included; closed chats don't", async () => {
   let tell;
   const nudged = [];
   const driving = new Set();
@@ -81,11 +81,14 @@ test("a Claude Code chat written to on the Mac wakes the phone that has it open;
   tell({ agent: "claude", kind: "history", id: C });
   assert.equal(await settledWithin(waiting, 500), true);
   assert.equal(sessions.view("claude", C).items, 1);
-  // Reach writing it itself (its own reply) is told by its own events instead.
+  // A chat Reach's process holds: its file still wakes the phone. The
+  // process tells of a reply before the file has it (the phone read too
+  // early), and the Claude app or a terminal can write while it idles.
   driving.add(C);
-  const again = sessions.changes("claude", C, sessions.view("claude", C).version, 300);
+  const again = sessions.changes("claude", C, sessions.view("claude", C).version, 25000);
   tell({ agent: "claude", kind: "history", id: C });
-  assert.equal(await settledWithin(again, 100), false);
+  assert.equal(await settledWithin(again, 500), true);
+  assert.equal(sessions.view("claude", C).items, 2);
   driving.delete(C);
   // Written in the instant between two polls (one answered, the next not yet
   // asked): still counted, so the next poll returns at once instead of the
@@ -95,8 +98,35 @@ test("a Claude Code chat written to on the Mac wakes the phone that has it open;
   tell({ agent: "claude", kind: "status" });
   assert.equal(await settledWithin(sessions.changes("claude", C, seen, 25000), 100), true);
   // The status news is checked against the registry first (a moment later).
-  for (let i = 0; i < 20 && sessions.view("claude", C).items < 3; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(sessions.view("claude", C).items, 3);
+  for (let i = 0; i < 20 && sessions.view("claude", C).items < 4; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sessions.view("claude", C).items, 4);
+  sessions.close?.();
+});
+
+test("a change in the Codex app's history reaches an open chat between two polls, not only one waiting that instant", async () => {
+  let tell;
+  const sessions = createAgentSessions({
+    agentWatch: { onChange: (fn) => (tell = fn), close() {} },
+    codexLive: { nudge() {}, view: () => ({ version: 0, prompts: [] }), changes: (id, version, ms) => new Promise((r) => setTimeout(r, ms)), drives: () => false, onChange() {} },
+    claudeHost: {
+      view: () => ({ version: 0, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 }),
+      changes: (id, version, ms) => new Promise((r) => setTimeout(r, ms)),
+      drives: () => false,
+      onRelease() {},
+    },
+    claude: { list: async () => [], starts: async () => [], health: async () => ({ agent: "claude", signedIn: true }) },
+    codex: { list: async () => [], health: async () => ({ agent: "codex", signedIn: true }) },
+    live: async () => new Map(),
+    detect: async () => [],
+  });
+  // The phone's poll answered; the next one isn't asked yet.
+  const seen = sessions.view("codex", T).version;
+  const controller = new AbortController();
+  void sessions.changes("codex", T, seen, 25000, controller.signal);
+  controller.abort();
+  // The Codex app writes a reply to its history database meanwhile.
+  tell({ agent: "codex", kind: "history" });
+  assert.equal(await settledWithin(sessions.changes("codex", T, seen, 25000), 100), true, "the next poll returns at once");
   sessions.close?.();
 });
 

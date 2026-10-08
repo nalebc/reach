@@ -95,7 +95,7 @@ test("another chat on screen: it waits while someone uses the Mac, then opens th
   // Away: switched, sent, switched back to what was on screen.
   m.idle = 600;
   assert.deepEqual(await compose(m).deliver(A, message), { delivered: true });
-  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}`, waitMs: 50 }]);
+  assert.deepEqual(m.typed, [{ ...message, session: `local_${A}`, waitMs: 50, keep: true }]);
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
 });
 
@@ -115,6 +115,49 @@ test("nothing is typed unless the window really shows the chat; a switch that do
   assert.equal(draft.opened.at(-1), `claude://code/continue?session=local_${B}`);
 });
 
+test("a box with text typed on the Mac never holds a message: set aside and put back once nobody is at the Mac, or with Send now", async () => {
+  // At the Mac, the chat on screen: nothing set aside under someone typing,
+  // tried again once they'd count as away.
+  const m = mac({ onScreen: A, idle: 5 });
+  const kept = [];
+  const c = compose(m, {
+    keepText: (id, text) => kept.push([id, text]),
+    type: async (value) => {
+      if (!value.keep) throw Object.assign(new Error("typed on your Mac"), { waiting: true, occupied: true });
+      m.typed.push(value);
+      return { sent: true, ...(m.restore === false ? { kept: "my notes" } : { restored: true }) };
+    },
+  });
+  await assert.rejects(c.deliver(A, message), (e) => e.waiting && e.inApp && e.retryMs === 25000 && /step away/.test(e.message));
+  assert.deepEqual(m.typed, []);
+  // Send now: in at once, the text put back.
+  assert.deepEqual(await c.deliver(A, { ...message, now: true }), { delivered: true });
+  assert.equal(m.typed.at(-1).keep, true);
+  // Away, another chat on screen: switched, in, and never held after a refusal.
+  m.idle = 600;
+  m.onScreen = B;
+  m.restore = false;
+  assert.deepEqual(await c.deliver(A, message), { delivered: true });
+  assert.deepEqual(m.typed.at(-1), { ...message, session: `local_${A}`, waitMs: 50, keep: true });
+  // Text that couldn't be put back is saved, never lost.
+  assert.deepEqual(kept, [[A, "my notes"]]);
+});
+
+test("a chat the app didn't open isn't switched to again for a few minutes", async () => {
+  let at = 0;
+  const lost = mac({ onScreen: B, lands: false });
+  const later = compose(lost, { clock: () => at, heldMs: 1000 });
+  await assert.rejects(later.deliver(A, message), /didn.t open this chat/);
+  await assert.rejects(later.deliver(A, message), /few minutes/);
+  assert.equal(lost.opened.length, 2);
+  at = 1001;
+  await assert.rejects(later.deliver(A, message), /didn.t open this chat/);
+  assert.equal(lost.opened.length, 4);
+  // Send now still switches at once.
+  await assert.rejects(later.deliver(A, { ...message, now: true }), /didn.t open this chat/);
+  assert.equal(lost.opened.length, 6);
+});
+
 test("the Claude app closed, or not listing the chat: it waits, saying so; taken but not yet in the transcript is never sent twice", async () => {
   await assert.rejects(compose(mac({ onScreen: A, running: false })).deliver(A, message), /Claude app is open/);
   const unlisted = mac({ onScreen: A });
@@ -132,33 +175,29 @@ test("the helper is given the chat's title, the text and each picture, and its r
   assert.deepEqual(runs[0][1], ["--title", "Fix the chart", "--text", "Run the tests", "--image", "/data/agent-images/p.png"]);
   await assert.rejects(typeIntoClaude(message, helper('{"error":"There\'s a draft in that chat on your Mac.","draft":true,"sent":false}')), (e) => e.waiting && /draft/.test(e.message));
   await assert.rejects(typeIntoClaude(message, helper("garbage")), (e) => e.code === "AGENT_DELIVERY_UNKNOWN");
+  // keep goes as JSON (never as an argument), and text not put back comes back.
+  const stdin = [];
+  const keeping = { binary: async () => "/bin/helper", run: (...args) => Object.assign(Promise.resolve({ stdout: '{"error":"The Claude app switched to another chat.","kept":"my notes","sent":false}' }), { child: { stdin: { on() {}, end: (v) => stdin.push(JSON.parse(v)) } }, args }) };
+  await assert.rejects(typeIntoClaude({ ...message, keep: true }, keeping), (e) => e.waiting && e.kept === "my notes");
+  assert.equal(stdin[0].keep, true);
 });
 
-test("a permission mode picked on the phone is picked in the Claude app's own menu; never Bypass", async () => {
-  // On screen: picked in the app at once, by the name its menu gives it.
+// A permission mode is never picked in the Claude app's menu (that click
+// failed silently): it goes with Claude Code's next request (agent-asks.mjs),
+// and a message sent with one is only typed, nothing else.
+test("the Claude app's permission mode is never clicked, not even with a message", async () => {
   const m = mac({ onScreen: A });
-  const c = compose(m, { type: async (v) => (m.typed.push(v), v.mode ? { mode: v.mode } : {}) });
-  assert.deepEqual(await c.mode(A, { title: message.title, mode: "acceptEdits" }), { mode: "acceptEdits" });
-  assert.deepEqual(await c.mode(A, { title: message.title, mode: "default" }), { mode: "default" });
-  assert.deepEqual(m.typed.map((v) => v.mode), ["Accept edits", "Manual"]);
-  await assert.rejects(c.mode(A, { title: message.title, mode: "bypassPermissions" }), (e) => e.status === 400);
-  // Another chat on screen: never switched for a mode; it goes with the next message.
-  const away = mac({ onScreen: B });
-  await assert.rejects(compose(away).mode(A, { title: message.title, mode: "plan" }), /with your next message/);
-  assert.deepEqual(away.opened, []);
-  // That next message: the mode first, then the text, as in the app's composer.
-  const next = mac({ onScreen: A });
-  await compose(next).deliver(A, { title: message.title, text: "Go", mode: "plan" });
-  assert.deepEqual(next.typed.map((v) => v.mode || v.text), ["Plan", "Go"]);
-});
-
-test("the helper is told the mode by the name the Claude app's menu uses, with nothing else", async () => {
+  const c = compose(m);
+  assert.equal(c.mode, undefined);
+  await c.deliver(A, { title: message.title, text: "Go", mode: "plan" });
+  assert.deepEqual(m.typed.map((v) => v.mode || v.text), ["Go"]);
+  // The helper isn't told a mode either.
   const calls = [];
   await typeIntoClaude(
-    { title: "Fix the chart", mode: "Plan", images: ["/x.png"] },
-    { binary: async () => "/bin/helper", run: (file, args) => (calls.push(args), Promise.resolve({ stdout: '{"mode":"Plan"}\n' })) },
+    { title: "Fix the chart", mode: "Plan", text: "Hi" },
+    { binary: async () => "/bin/helper", run: (file, args) => (calls.push(args), Promise.resolve({ stdout: '{"sent":true}\n' })) },
   );
-  assert.deepEqual(calls, [["--title", "Fix the chart", "--mode", "Plan"]]);
+  assert.equal(calls[0].includes("--mode"), false);
 });
 
 // Oct 6: the phone couldn't change a Claude app chat's effort ("Reach can't
@@ -208,16 +247,15 @@ test("the model helper carries no text or images and rejects a native refusal", 
   await assert.rejects(typeIntoClaude({ title: "Audit", model: "Sonnet 5.5" }, { binary: async () => "/bin/helper", run: run('{"error":"unexpected model confirmation","unconfirmed":true}\n') }), /unexpected model confirmation/);
 });
 
-test("mode and effort settings follow exact visible session identity when app records lag", async () => {
+test("effort settings follow exact visible session identity when app records lag", async () => {
   const m = mac({ onScreen: A });
   const c = compose(m, { onScreen: async () => `local_${B}` });
-  await assert.rejects(c.mode(A, { title: message.title, mode: "plan" }), /when this chat is open/);
   await assert.rejects(c.effort(A, { title: message.title, effort: "high" }), /Open this chat/);
   assert.deepEqual(m.typed, []);
 });
 
 test("a setting selection that lost its session is uncertain and never automatically retried", async () => {
-  for (const setting of [{ mode: "Plan" }, { effort: "High" }]) {
+  for (const setting of [{ effort: "High" }]) {
     const output = JSON.stringify({ error: "Claude changed chats. Check the current setting.", unconfirmed: true });
     await assert.rejects(typeIntoClaude({ title: message.title, session: `local_${A}`, ...setting }, {
       binary: async () => "/bin/helper", run: async () => ({ stdout: output }),

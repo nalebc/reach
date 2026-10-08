@@ -13,6 +13,7 @@ import {
   X,
   SquarePen,
   Archive,
+  Workflow,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { Peer } from "./api";
@@ -23,6 +24,8 @@ import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import { computerWord } from "./pause";
 import { BrandCourier } from "./ReachIdentity";
 import { NotificationBell } from "./Notifications";
+import { UsageButton, UsagePill, UsageRing } from "./UsageRing";
+import { usageOf, usageSentence } from "./usage";
 import "./chat-list.css";
 
 export const ago = (ms: number, now = Date.now()) => {
@@ -49,6 +52,9 @@ const pendingCount = (count: number) => count > 9 ? "9+" : count;
 
 // Every app uses this header, including OpenClaw. The desktop app rail is
 // hidden on phones, so its replacement must always travel with the header.
+// The Workflows icon at the top of Chat (Workflows.tsx): how many run or
+// wait on you, and its page.
+export type WorkflowsEntry = { active: number; paused: number; onOpen: () => void };
 export function ChatLibraryHeader({
   peer,
   apps,
@@ -60,6 +66,8 @@ export function ChatLibraryHeader({
   onRefresh,
   searchOpen,
   onSearch,
+  workflows,
+  health = [],
 }: {
   peer: Peer;
   apps: ChatAppChoice[];
@@ -71,6 +79,10 @@ export function ChatLibraryHeader({
   onRefresh?: () => void;
   searchOpen: boolean;
   onSearch: () => void;
+  workflows?: WorkflowsEntry;
+  // Each agent's account usage: its ring at the top (UsageRing.tsx); on
+  // All, the agent closest to its limit.
+  health?: AgentHealth[];
 }) {
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -93,6 +105,7 @@ export function ChatLibraryHeader({
   }, [appMenuOpen, actionsOpen]);
   const name =
     apps.find((app) => app.agent === value)?.name || agentLabel(value);
+  const usageHere = value === "all" ? health.filter((h) => apps.some((app) => app.agent === h.agent)) : health.filter((h) => h.agent === value);
   return (
     <header className="chat-list-top">
       <div className="chat-mobile-header">
@@ -122,6 +135,25 @@ export function ChatLibraryHeader({
           <ChevronDown size={17} />
         </button>
         <div className="chat-mobile-tools">
+          <UsageButton health={usageHere} logos={logos} />
+          {workflows && (
+            <button
+              className="chat-mobile-round chat-workflows"
+              aria-label={`Workflows${workflows.active ? `, ${workflows.active} active` : ""}${workflows.paused ? `, ${workflows.paused} paused` : ""}`}
+              onClick={() => {
+                workflows.onOpen();
+                setAppMenuOpen(false);
+                setActionsOpen(false);
+              }}
+            >
+              <Workflow size={21} />
+              {!!workflows.active && (
+                <span className={`chat-workflows-count ${workflows.paused ? "paused" : ""}`} aria-hidden="true">
+                  {workflows.active}
+                </span>
+              )}
+            </button>
+          )}
           <button
             className="chat-mobile-round"
             aria-label="Search chats"
@@ -156,12 +188,15 @@ export function ChatLibraryHeader({
                 setAppMenuOpen(false);
               }}
             >
-              <AgentLogo
-                agent={app.agent}
-                name={app.name}
-                logos={logos}
-                size={19}
-              />
+              <span className="usage-logo">
+                <AgentLogo
+                  agent={app.agent}
+                  name={app.name}
+                  logos={logos}
+                  size={19}
+                />
+                <UsageRing usage={usageOf(health.find((h) => h.agent === app.agent))} />
+              </span>
               {app.name}
               {!!pending[app.agent] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[app.agent])}</span>}
               {!app.supported && <small>Coming soon</small>}
@@ -204,7 +239,23 @@ export function ChatLibraryHeader({
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
+        <UsageButton health={usageHere} logos={logos} />
         <NotificationBell compact />
+        {workflows && (
+          <button
+            className="chat-refresh chat-workflows"
+            aria-label={`Workflows${workflows.active ? `, ${workflows.active} active` : ""}${workflows.paused ? `, ${workflows.paused} paused` : ""}`}
+            title="Workflows"
+            onClick={workflows.onOpen}
+          >
+            <Workflow size={16} />
+            {!!workflows.active && (
+              <span className={`chat-workflows-count ${workflows.paused ? "paused" : ""}`} aria-hidden="true">
+                {workflows.active}
+              </span>
+            )}
+          </button>
+        )}
         {onRefresh && (
           <button
             className="chat-refresh"
@@ -244,12 +295,15 @@ export function ChatAppPicker({
   onChange,
   logos,
   pending = {},
+  health = [],
 }: {
   apps?: ChatAppChoice[];
   value: string;
   onChange: (value: string) => void;
   logos: AgentLogos;
   pending?: Record<string, number>;
+  // Each agent's ring around its logo (UsageRing.tsx).
+  health?: AgentHealth[];
 }) {
   const rail = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -276,18 +330,17 @@ export function ChatAppPicker({
       role="group"
       aria-label="Choose an app"
     >
-      {apps.map((app) => (
+      {apps.map((app) => {
+        const usage = usageOf(health.find((h) => h.agent === app.agent));
+        const described = app.supported
+          ? [pending[app.agent] && pendingLabel(pending[app.agent]), usage && usageSentence(app.name, usage)].filter(Boolean).join(". ")
+          : "Coming soon";
+        return (
         <button
           key={app.agent}
           className={`chat-app-token ${app.supported ? "" : "upcoming"} ${pending[app.agent] ? "has-pending" : ""}`}
           aria-label={app.name}
-          aria-description={
-            app.supported
-              ? pending[app.agent]
-                ? pendingLabel(pending[app.agent])
-                : undefined
-              : "Coming soon"
-          }
+          aria-description={described || undefined}
           aria-pressed={value === app.agent}
           title={`${app.name}${app.supported ? "" : " · Coming soon"}`}
           onClick={() => onChange(app.agent)}
@@ -299,6 +352,8 @@ export function ChatAppPicker({
               logos={logos}
               size={22}
             />
+            <UsageRing usage={usage} />
+            <UsagePill usage={usage} />
             {!!pending[app.agent] && (
               <span className="chat-app-pending" aria-hidden="true">
                 {pendingCount(pending[app.agent])}
@@ -312,7 +367,8 @@ export function ChatAppPicker({
             <span className="chat-app-soon-dot" aria-hidden="true" />
           )}
         </button>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -372,6 +428,7 @@ export default function ChatList({
   health = [],
   onSectionMoved,
   onArchived,
+  workflows,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -397,6 +454,8 @@ export default function ChatList({
   onSectionMoved?: (to: string) => void;
   // A chat archived or brought back from here: the list to read again.
   onArchived?: () => void;
+  // The Workflows icon at the top (Workflows.tsx).
+  workflows?: WorkflowsEntry;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -568,6 +627,8 @@ export default function ChatList({
           }}
           onNew={!upcoming && canStart ? () => onNew() : undefined}
           onRefresh={onRefresh}
+          workflows={workflows}
+          health={health}
           searchOpen={searchOpen}
           onSearch={() => {
             if (searchOpen) setQuery("");
@@ -581,6 +642,7 @@ export default function ChatList({
           logos={logos}
           value={filter}
           pending={appPending}
+          health={health}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
             setLimit(12);

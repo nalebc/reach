@@ -12,9 +12,17 @@ const exec = promisify(execFile);
 // - Claude Code: its native installer (code.claude.com/docs/en/setup).
 // - Codex: its npm package, or Homebrew's cask without npm
 //   (github.com/openai/codex).
+// - OpenClaw: its npm package, or its installer script (which brings Node)
+//   without npm; no onboarding there, the phone sets it up next
+//   (docs.openclaw.ai/install). On Windows OpenClaw points to WSL: none.
 export const AGENT_INSTALLS = {
   claude: { name: "Claude Code", commands: ["curl -fsSL https://claude.ai/install.sh | bash"] },
   codex: { name: "Codex", commands: ["npm install -g @openai/codex", "brew install --cask codex"], needs: ["npm", "brew"] },
+  openclaw: {
+    name: "OpenClaw",
+    commands: ["npm install -g openclaw@latest", "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard"],
+    needs: ["npm"],
+  },
 };
 const windowsInstalls = {
   claude: { name: "Claude Code", commands: ["irm https://claude.ai/install.ps1 | iex"] },

@@ -1,6 +1,7 @@
-// Puts Reach's PermissionRequest hook (scripts/agent-hook.mjs) into Claude
-// Code's user settings and Codex's config, once, with the person's OK; takes
-// it out again. Only Reach's own entry is touched: other hooks and settings
+// Puts Reach's PermissionRequest hook (scripts/agent-hook.mjs), and its
+// PreToolUse hook for permission modes (scripts/agent-mode-hook.sh), into
+// Claude Code's user settings (and the older Codex entry into Codex's config),
+// once, with the person's OK; takes them out again. Only Reach's own entry is touched: other hooks and settings
 // stay as they are, and each file keeps its layout. A copy of the file is kept
 // before any change.
 import fs from "node:fs";
@@ -8,11 +9,15 @@ import os from "node:os";
 import path from "node:path";
 
 // Reach's entries, under the hook's current name and its first one.
-const MARKS = ["agent-hook.mjs", "claude-hook.mjs"];
+const MARKS = ["agent-hook.mjs", "claude-hook.mjs", "agent-mode-hook.sh"];
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 export function agentHookCommand({ node = process.execPath, script, agent, socketPath }) {
   return `${quote(node)} ${quote(script)} ${quote(agent)} ${quote(socketPath)}`;
+}
+// The PreToolUse hook: a few shell lines, run before every tool call.
+export function agentModeHookCommand({ script, modesDir }) {
+  return `/bin/sh ${quote(script)} ${quote(modesDir)}`;
 }
 
 // Whole or not at all: written beside it, then moved over it (a Claude Code
@@ -61,36 +66,62 @@ function edit(settingsPath, backupDir, change) {
 const isReach = (entry) =>
   (entry?.hooks || []).some((h) => MARKS.some((mark) => String(h?.command || "").includes(mark)));
 
+// Each of Reach's hook events, with its entry: the request held for the
+// phone (as long as a question may wait), and the mode check before each
+// tool call (quick; it never waits).
+const claudeEntries = ({ command, modeCommand, timeout }) => ({
+  PermissionRequest: { matcher: "*", hooks: [{ type: "command", command, timeout, statusMessage: "Asking your phone (Reach)" }] },
+  ...(modeCommand ? { PreToolUse: { matcher: "*", hooks: [{ type: "command", command: modeCommand, timeout: 10 }] } } : {}),
+});
+
 export function installClaudeHook({
   settingsPath = path.join(os.homedir(), ".claude", "settings.json"),
   backupDir,
   command,
-  // Long enough for a question to wait for the phone; Reach lets go sooner
-  // whenever someone is at the Mac.
+  modeCommand,
+  // Long enough for a question to wait for the phone; Reach lets go once it's
+  // answered on the Mac.
   timeout = 24 * 60 * 60,
 }) {
-  const entry = {
-    matcher: "*",
-    hooks: [{ type: "command", command, timeout, statusMessage: "Asking your phone (Reach)" }],
-  };
+  const entries = claudeEntries({ command, modeCommand, timeout });
   return edit(settingsPath, backupDir, (settings) => {
     settings.hooks ??= {};
-    const list = Array.isArray(settings.hooks.PermissionRequest) ? settings.hooks.PermissionRequest : [];
-    const others = list.filter((e) => !isReach(e));
-    const current = list.filter(isReach);
-    if (current.length === 1 && JSON.stringify(current[0]) === JSON.stringify(entry)) return;
-    settings.hooks.PermissionRequest = [...others, entry];
+    for (const [event, entry] of Object.entries(entries)) {
+      const list = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+      const others = list.filter((e) => !isReach(e));
+      const current = list.filter(isReach);
+      if (current.length === 1 && JSON.stringify(current[0]) === JSON.stringify(entry)) continue;
+      settings.hooks[event] = [...others, entry];
+    }
   });
+}
+
+// Whether Claude Code runs Reach's hooks: "on" (these commands), "outdated"
+// (Reach's entries, other commands: Node or Reach moved, or one missing), or
+// "off".
+export function claudeHookState({ settingsPath = path.join(os.homedir(), ".claude", "settings.json"), command, modeCommand }) {
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8") || "{}");
+  } catch {
+    return "off";
+  }
+  const ours = (event) => (Array.isArray(settings?.hooks?.[event]) ? settings.hooks[event].filter(isReach) : []);
+  const has = (event, cmd) => ours(event).some((e) => (e.hooks || []).some((h) => h?.command === cmd));
+  if (!ours("PermissionRequest").length && !ours("PreToolUse").length) return "off";
+  return has("PermissionRequest", command) && (!modeCommand || has("PreToolUse", modeCommand)) ? "on" : "outdated";
 }
 
 export function uninstallClaudeHook({ settingsPath = path.join(os.homedir(), ".claude", "settings.json"), backupDir }) {
   return edit(settingsPath, backupDir, (settings) => {
-    const list = settings.hooks?.PermissionRequest;
-    if (!Array.isArray(list) || !list.some(isReach)) return;
-    const others = list.filter((e) => !isReach(e));
-    if (others.length) settings.hooks.PermissionRequest = others;
-    else delete settings.hooks.PermissionRequest;
-    if (!Object.keys(settings.hooks).length) delete settings.hooks;
+    for (const event of ["PermissionRequest", "PreToolUse"]) {
+      const list = settings.hooks?.[event];
+      if (!Array.isArray(list) || !list.some(isReach)) continue;
+      const others = list.filter((e) => !isReach(e));
+      if (others.length) settings.hooks[event] = others;
+      else delete settings.hooks[event];
+    }
+    if (settings.hooks && !Object.keys(settings.hooks).length) delete settings.hooks;
   });
 }
 

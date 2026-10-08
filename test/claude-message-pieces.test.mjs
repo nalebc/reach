@@ -54,3 +54,25 @@ test("a stopped turn keeps its words and shows a quiet Stopped, not a message fr
     ],
   );
 });
+
+test("a message typed while Claude works shows at once, before Claude writes anything after it", () => {
+  const text = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: "Fix it" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "On it." }] } }),
+    line({ ...base, type: "attachment", uuid: "q1", parentUuid: "a1", timestamp: at(3), attachment: { type: "queued_command", humanTurn: true, prompt: "also the tests" } }),
+  ].join("\n");
+  const { items } = parseClaudeTranscript(text);
+  assert.deepEqual(items.at(-1) && [items.at(-1).text, items.at(-1).queued], ["also the tests", true]);
+});
+
+test("Claude's words keep their id when something above them comes or goes, so the phone keeps the pages it loaded", () => {
+  const reply = line({ ...base, type: "assistant", uuid: "a2", parentUuid: "q1", timestamp: at(4), message: { content: [{ type: "text", text: "Done." }] } });
+  const start = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: "Fix it" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "On it." }] } }),
+  ];
+  const queued = line({ ...base, type: "attachment", uuid: "q1", parentUuid: "a1", timestamp: at(3), attachment: { type: "queued_command", humanTurn: true, prompt: "also the tests" } });
+  const empty = line({ ...base, type: "attachment", uuid: "q1", parentUuid: "a1", timestamp: at(3), attachment: { type: "queued_command", humanTurn: true, prompt: "" } });
+  const idOf = (lines) => parseClaudeTranscript(lines.join("\n")).items.find((i) => i.text === "Done.").id;
+  assert.equal(idOf([...start, queued, reply]), idOf([...start, empty, reply]));
+});

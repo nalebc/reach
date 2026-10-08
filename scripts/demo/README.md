@@ -13,7 +13,10 @@ After installing development dependencies, run from the repository root:
 node scripts/demo/start.mjs
 ```
 
-Open `http://127.0.0.1:5201` and use a 390 × 844 browser viewport. The demo uses
+Open `http://127.0.0.1:5201` and use a 390 × 844 browser viewport. Workflows at
+each stage are at `/scripts/demo/workflows.html?view=` `draft`, `empty`,
+`planning`, `running`, `paused`, `list` (the Workflows page), `none` (none yet)
+or `new` (New chat). The demo uses
 Home Mac, My iPhone, My iPad, and Alex as fictional devices and people. This
 fixture is for local screenshots only; do not deploy it as an operational Reach
 frontend. The Screen and terminal transports are not part of this fixture.

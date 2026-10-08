@@ -17,6 +17,9 @@
   --lime: #b9efd4;
   --lime-ink: #16362a;
   --radius: 14px;
+  /* Usage near its limit, and out of it (usage.ts). */
+  --usage-warn: #d6c38f;
+  --usage-out: #f1a08d;
 }
 * {
   box-sizing: border-box;

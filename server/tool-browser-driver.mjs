@@ -64,7 +64,17 @@ export function nativeToolProcess(
         ),
       timeoutMs,
     );
-    child.on("error", (error) => finish(error));
+    child.on("error", () =>
+      finish(
+        Object.assign(
+          fail(
+            503,
+            "The browser helper could not start. The owner should check Reach’s browser setup.",
+          ),
+          { code: "setup_required" },
+        ),
+      ),
+    );
     child.stdin.on("error", () => {});
     child.stdout.on("data", (chunk) => {
       size += chunk.length;
@@ -83,7 +93,7 @@ export function nativeToolProcess(
       const message = Buffer.concat(errors).toString().slice(0, 500);
       if (code !== 0) {
         const setup =
-          /Apple Events|JavaScript.*(disabled|allowed|enabled)|not authorized|not permitted|1743|10000/i.test(
+          /Allow JavaScript from Apple Events|JavaScript.*(disabled|turned off|not allowed|not enabled)|not authorized|not permitted|-1743\b|-1744\b/i.test(
             message,
           );
         finish(
@@ -91,8 +101,16 @@ export function nativeToolProcess(
             fail(
               setup ? 503 : 409,
               setup
-                ? "Enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."
-                : message || "The browser command failed.",
+                ? "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach’s Terminal to control it in macOS Automation settings."
+                : [
+                    "The target browser window is gone.",
+                    "The target tab is gone.",
+                    "The target tab changed. No action was taken.",
+                    "The target document changed. No action was taken.",
+                    "The new browser window has not acknowledged creation. Inspect it before continuing.",
+                    "The browser returned an unexpected result.",
+                  ].find((detail) => message.includes(detail)) ||
+                    "The browser command failed. Check browser setup with the owner, or continue in Screen.",
             ),
             { code: setup ? "setup_required" : "browser_changed" },
           ),
@@ -133,10 +151,13 @@ export function createToolBrowserDriver({
         );
       }
       if (result?.error)
-        throw Object.assign(fail(409, result.error), {
-          code: result.code,
-          uncertain: result.uncertain === true,
-        });
+        throw Object.assign(
+          fail(result.code === "setup_required" ? 503 : 409, result.error),
+          {
+            code: result.code,
+            uncertain: result.uncertain === true,
+          },
+        );
       return result;
     },
     async page(browser, target, request, options) {

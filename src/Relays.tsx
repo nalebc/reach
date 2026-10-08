@@ -26,8 +26,12 @@ type ChatRef = { agent: string; id: string; title?: string };
 export type RelayStarted = { relay: Relay; opened?: { agent: string; id: string } };
 
 // The agents that can take a step now: installed, signed in, with usage.
-export const relayAgents = (health: AgentHealth[]) =>
-  ["codex", "claude"].filter((a) => health.some((h) => h.agent === a && h.installed && h.signedIn && h.usable !== false));
+// OpenClaw takes relays, reviews and workflow tasks, never a team (teams:
+// docs/ACROSS_AGENTS.md).
+export const relayAgents = (health: AgentHealth[], { openclaw = true } = {}) =>
+  ["codex", "claude", ...(openclaw ? ["openclaw"] : [])].filter((a) =>
+    health.some((h) => h.agent === a && h.installed && (a === "openclaw" ? h.connected === true : h.signedIn && h.usable !== false)),
+  );
 // The other agent first (the point of a second opinion), then the same one.
 const othersFirst = (agent: string, agents: string[]) => [...agents.filter((a) => a !== agent), ...agents.filter((a) => a === agent)];
 
@@ -220,6 +224,7 @@ export function SecondOpinionSheet({
   peer,
   session,
   item,
+  cwd,
   health,
   logos,
   onClose,
@@ -228,6 +233,8 @@ export function SecondOpinionSheet({
   peer: Peer;
   session: AgentSession;
   item?: string;
+  // The folder to work in, for a chat that has none (OpenClaw's).
+  cwd?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
@@ -245,7 +252,7 @@ export function SecondOpinionSheet({
     setProblem("");
     try {
       const steps: RelayStep[] = [{ kind: "review", agent: reviewer }, ...(back ? [{ kind: "back" as const }] : [])];
-      onStarted(await startRelay(peer, { from: { agent: session.agent, id: session.id }, steps, now: true, ...(item ? { item } : {}) }));
+      onStarted(await startRelay(peer, { from: { agent: session.agent, id: session.id }, steps, now: true, ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -330,6 +337,8 @@ export function RelaySheet({
   working,
   hasReply,
   sessions,
+  cwd,
+  item,
   health,
   logos,
   onClose,
@@ -340,6 +349,9 @@ export function RelaySheet({
   working: boolean;
   hasReply: boolean;
   sessions: AgentSession[];
+  cwd?: string;
+  // From one reply further up: it goes on now, from that reply.
+  item?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
@@ -352,7 +364,7 @@ export function RelaySheet({
   const [picked, setPicked] = useState(-1);
   const [to, setTo] = useState<AgentSession | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [when, setWhen] = useState<"now" | "next">(working || !hasReply ? "next" : "now");
+  const [when, setWhen] = useState<"now" | "next">(item ? "now" : working || !hasReply ? "next" : "now");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   // Chats a reply can go to: Codex and Claude Code chats, newest first.
@@ -384,7 +396,7 @@ export function RelaySheet({
           : s,
     );
     try {
-      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: when === "now" }));
+      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: !!item || when === "now", ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -482,7 +494,7 @@ export function RelaySheet({
               />
             )}
           </div>
-          {!working && hasReply && (
+          {!working && hasReply && !item && (
             <div className="relay-when" role="radiogroup" aria-label="When">
               <button role="radio" aria-checked={when === "now"} disabled={busy} onClick={() => setWhen("now")}>
                 Its reply now

@@ -7,7 +7,7 @@ const peer = { id: "mac", name: "My Mac", url: "https://mac.tail.ts.net:8443", t
 const reply = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const session = {
-  agent: "claude",
+  agent: "codex",
   id: "chat-1",
   title: "Fix the build",
   cwd: "/repo",
@@ -19,9 +19,11 @@ const session = {
   status: "waiting",
   preview: "",
   archived: false,
-  live: { where: "claude-app", pid: 1, tty: null },
+  held: "codex-app",
 };
-const asking = { kind: "permission", text: "npm run build", command: true, id: "app-permission:tool-1" };
+// Only the Codex app's requests have a card answered here (its IPC); Claude
+// Code's come as prompts through its hook.
+const asking = { kind: "permission", text: "npm run build", command: true, id: "app-permission:codex:tool-1" };
 before(async () => {
   dom = await startDom();
   React = dom.React;
@@ -40,13 +42,13 @@ const strip = (opened = []) =>
     items: agentNeeds({ peer, sessions: [session], logos: {}, open: (s) => opened.push(s.id), answered: () => opened.push("answered") }),
   });
 
-test("a chat waiting in the Claude app is answered in Needs you: Review reads its card, its button is pressed there", async () => {
+test("a chat waiting in the Codex app is answered in Needs you: Review reads its request, its decision is sent through the app's IPC", async () => {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const { pathname, search } = new URL(url);
     calls.push([init.method || "GET", pathname + search, init.body ? JSON.parse(init.body) : undefined]);
     if (pathname.endsWith("/card"))
-      return reply({ id: asking.id, texts: ["Allow Claude to run", "npm run build"], buttons: ["Deny", "Allow once", "Always allow"] });
+      return reply({ id: asking.id, texts: ["Run this command?", "npm run build"], buttons: ["Allow once", "Allow for this chat", "Deny"] });
     if (pathname.includes("/prompts/")) return reply({ answered: true });
     return reply({ session: { ...session, asking }, items: [], before: null });
   };
@@ -59,37 +61,41 @@ test("a chat waiting in the Claude app is answered in Needs you: Review reads it
   assert.ok(calls.every(([, route]) => !route.endsWith("/card")));
   await click(button(view.container, "Review"));
   await dom.waitFor(() => button(view.container, "Allow once"));
-  assert.match(view.container.textContent, /Allow Claude to run/);
+  assert.match(view.container.textContent, /Run this command\?/);
   assert.equal(button(view.container, "Allow once").className, "primary");
   await click(button(view.container, "Allow once"));
-  await dom.waitFor(() => /Answered in the Claude app/.test(view.container.textContent));
+  await dom.waitFor(() => /Answered in the Codex app/.test(view.container.textContent));
   const answer = calls.find(([m]) => m === "POST");
-  assert.equal(answer[1], `/api/sessions/claude/chat-1/prompts/${encodeURIComponent(asking.id)}`);
+  assert.equal(answer[1], `/api/sessions/codex/chat-1/prompts/${encodeURIComponent(asking.id)}`);
   assert.deepEqual(answer[2], { label: "Allow once" });
   assert.deepEqual(opened, ["answered"]);
   await view.unmount();
 });
 
-test("a card that can't be read says why and offers to bring it up in the app", async () => {
+// Nothing is brought up or pressed in an app to read a card: a card that
+// can't be read says why, and Review tries again.
+test("a card that can't be read says why and can be tried again, with nothing brought up in the app", async () => {
   const calls = [];
+  let readable = false;
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const { pathname, search } = new URL(url);
     calls.push([init.method || "GET", pathname + search]);
     if (pathname.endsWith("/card"))
-      return search.includes("bring=1")
-        ? reply({ id: asking.id, texts: ["Allow Claude to run"], buttons: ["Deny", "Allow once"] })
-        : reply({ error: "The Claude app on your Mac shows another chat, and you're using it." }, 409);
+      return readable
+        ? reply({ id: asking.id, texts: ["Run this command?"], buttons: ["Allow once", "Deny"] })
+        : reply({ error: "The Codex app couldn't take this answer now. Answer it in the Codex app." }, 409);
     return reply({ session: { ...session, asking }, items: [], before: null });
   };
   const view = await dom.render(strip());
   await dom.waitFor(() => button(view.container, "Review"));
   await click(button(view.container, "Review"));
   await dom.waitFor(() => view.container.querySelector(".need-elsewhere .problem"));
-  assert.match(view.container.textContent, /you're using it/);
-  await click(button(view.container, "Bring it up in the Claude app"));
+  assert.match(view.container.textContent, /Answer it in the Codex app/);
+  assert.equal([...view.container.querySelectorAll("button")].some((b) => /Bring it up/.test(b.textContent)), false);
+  readable = true;
+  await click(button(view.container, "Try again"));
   await dom.waitFor(() => button(view.container, "Allow once"));
-  assert.ok(calls.some(([, route]) => route.endsWith("/card?bring=1")));
-  assert.ok(calls.every(([m]) => m === "GET"));
+  assert.ok(calls.every(([m, route]) => m === "GET" && !route.includes("bring=")));
   await view.unmount();
 });
 

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import ScreenBoundary from "./ScreenBoundary";
 import App from "./App";
 import TransferTray from "./TransferTray";
+import { Spinner } from "./ui";
 import { request, setGuestPeers, type Device, type Peer } from "./api";
 import {
   forgetGuestSession,
@@ -59,7 +60,7 @@ function GuestWorkspace({ peer, onEnd }: { peer: Peer; onEnd: () => void }) {
       </main>
     );
   return browser ? (
-    <Suspense fallback={null}>
+    <Suspense fallback={<Spinner label="Opening your shared workspace…" />}>
       <BrowserWorkspace peer={peer} onEnd={onEnd} />
     </Suspense>
   ) : (
@@ -124,7 +125,7 @@ function GuestRoot() {
     </p></main>;
   if (!session)
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<Spinner label="Opening your invitation…" />}>
         <GuestAccess
           ended={ended}
           onReady={(value) => {

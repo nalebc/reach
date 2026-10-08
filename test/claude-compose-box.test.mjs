@@ -21,7 +21,9 @@ test("an empty Claude message box (read as a line break) isn't taken for text ty
   assert.match(swift, /func value\(_ box: AXUIElement\) -> String \{ str\(box, kAXValueAttribute\)\.trimmingCharacters\(in: \.whitespacesAndNewlines\) \}/);
   const check = between('let known = (payload["expected"]', "text typed on your Mac");
   assert.match(check, /let current = value\(box\)/);
-  assert.match(check, /known\.contains\(where: \{ current == trimmed\(\$0\) \}\) \|\| \(!text\.isEmpty && current == trimmed\(text\)\)/);
+  // Reach's own text, or the start of it (the app can bring back an older,
+  // shorter draft of the chat).
+  assert.match(check, /known\.contains\(where: \{ current == trimmed\(\$0\) \|\| trimmed\(\$0\)\.hasPrefix\(current\) \}\)\s*\|\| \(!text\.isEmpty && trimmed\(text\)\.hasPrefix\(current\)\)/);
   // No raw comparison of the box's text is left (the draft check and the
   // last look before Send included).
   assert.doesNotMatch(swift, /str\((box|currentBox), kAXValueAttribute\) ==/);
@@ -36,7 +38,7 @@ test("a draft is read back until the editor shows it, and every text Reach may h
   // The texts Reach may have left come as a list (one string still works).
   assert.match(swift, /let known = \(payload\["expected"\] as\? \[String\]\) \?\? \[\(payload\["expected"\] as\? String\) \?\? ""\]/);
   // The occupied refusal says so, so Reach doesn't count it as maybe typed.
-  assert.match(swift, /text typed on your Mac\. Reach won't overwrite it: send or clear it there\.", "draft": true\]/);
+  assert.match(swift, /text typed on your Mac\. Reach won't overwrite it: send or clear it there\.", "draft": true, "length": current\.count\]/);
 });
 
 test("all ownership candidates and a maximum message fit in the finite native JSON budget", () => {

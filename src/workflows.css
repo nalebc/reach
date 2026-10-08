@@ -1,0 +1,547 @@
+/* Workflows (Workflows.tsx), laid out as ChatGPT lays out its lists, in its
+   dark colours: a rounded section per step with a row per task (icon, name,
+   a word on the right, a chevron), dashed cards to add, pills for actions,
+   one white pill for what's next, few words. (Two classes: the sheet is
+   also .chat-home, whose colours come later.) */
+.reach-chat-sheet.workflow-sheet {
+  --as-bg: #212121;
+  --as-text: #ececec;
+  --as-muted: #9b9b9b;
+  --as-line: #ffffff17;
+  --wf-group: #2a2a2a;
+  --wf-field: #303030;
+  --wf-press: #ffffff0f;
+  --wf-blue: #5ea9ff;
+  --wf-danger: #f28b82;
+  color: var(--as-text);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+.workflow-sheet button {
+  font: inherit;
+}
+.wf-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -12px 0 16px;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+.wf-muted {
+  color: var(--as-muted);
+}
+
+/* A step: its label, then its tasks in one rounded section. */
+.wf-step {
+  margin: 0 0 14px;
+}
+.wf-label {
+  margin: 0 6px 7px;
+  color: var(--as-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.wf-group {
+  margin: 0 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--as-line);
+  border-radius: 22px;
+  background: var(--wf-group);
+}
+.wf-step > .wf-group {
+  margin: 0;
+}
+.wf-item + .wf-item {
+  position: relative;
+}
+.wf-item + .wf-item::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 52px;
+  border-top: 1px solid var(--as-line);
+}
+.wf-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+button.wf-item-main:not(:disabled):active {
+  background: var(--wf-press);
+}
+.wf-item-main > .agent-logo,
+.wf-item-main > svg {
+  flex: 0 0 auto;
+}
+.wf-item-copy {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wf-item-title {
+  overflow: hidden;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-item-value {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--as-muted);
+  font-size: 15px;
+}
+.wf-item-value.stopped,
+.wf-item-value.uncertain {
+  color: var(--wf-danger);
+}
+.wf-item.waiting .wf-item-title,
+.wf-item.skipped .wf-item-title {
+  color: var(--as-muted);
+}
+.wf-item-chevron {
+  flex: 0 0 auto;
+  margin-right: -4px;
+  color: #ffffff4d;
+}
+.wf-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+.wf-action {
+  flex: 0 0 auto;
+  padding: 6px 2px 6px 8px;
+  border: 0;
+  background: none;
+  color: var(--wf-blue);
+  font-size: 15px;
+}
+.wf-action:disabled {
+  opacity: 0.5;
+}
+.wf-paused svg {
+  color: #f5c26b;
+}
+.wf-paused .wf-item-title {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* Editing a task: its name in the row, its words, then chips. */
+.wf-edit-title,
+.wf-rename {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px; /* no zoom on iPhone */
+}
+.wf-rename {
+  margin: -6px 0 14px;
+  padding: 12px 16px;
+  border-radius: 999px;
+  background: var(--wf-field);
+}
+.wf-edit-text {
+  width: 100%;
+  min-height: 84px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 18px;
+  outline: none;
+  background: var(--wf-field);
+  color: var(--as-text);
+  font: inherit;
+  font-size: 16px; /* no zoom on iPhone */
+  line-height: 1.45;
+  resize: vertical;
+}
+.wf-edit-title::placeholder,
+.wf-edit-text::placeholder,
+.wf-rename::placeholder {
+  color: #ffffff59;
+}
+.wf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.wf-chips:empty {
+  display: none;
+}
+.wf-chip,
+.wf-pill,
+.wf-seg > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--as-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.wf-chip[aria-pressed="true"] {
+  border-color: transparent;
+  background: #ececec;
+  color: #0d0d0d;
+}
+.wf-chip:disabled,
+.wf-pill:disabled,
+.wf-icon:disabled {
+  opacity: 0.4;
+}
+.wf-seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--as-line);
+  border-radius: 999px;
+}
+.wf-seg > button {
+  min-height: 28px;
+  border: 0;
+  color: var(--as-muted);
+}
+.wf-seg > button[aria-pressed="true"] {
+  background: var(--wf-field);
+  color: var(--as-text);
+}
+.wf-chips-end {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.wf-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--as-muted);
+}
+.wf-item-main > .wf-icon {
+  margin: -6px -8px -6px 0;
+}
+.wf-icon:not(:disabled):active {
+  background: var(--wf-press);
+}
+
+/* What a task finished with, and what went wrong. */
+.wf-summary,
+.wf-problem {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+}
+.wf-summary {
+  color: var(--as-muted);
+  -webkit-line-clamp: 3;
+}
+.wf-problem {
+  margin: 0 6px 12px;
+  color: var(--wf-danger);
+  -webkit-line-clamp: 2;
+}
+.wf-item-body .wf-problem {
+  margin: 0;
+}
+
+/* Dashed cards: a starting point, or one more task. */
+.wf-dashed {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 60px;
+  margin: 0 0 10px;
+  padding: 10px 16px;
+  border: 1.5px dashed #ffffff29;
+  border-radius: 22px;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.wf-dashed:not(:disabled):active {
+  background: var(--wf-press);
+}
+.wf-dashed:disabled {
+  opacity: 0.5;
+}
+.wf-dashed-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 24px;
+  color: var(--as-muted);
+}
+.wf-dashed-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.wf-dashed-copy strong {
+  font-size: 16px;
+  font-weight: 400;
+}
+.wf-dashed-copy small {
+  overflow: hidden;
+  color: var(--as-muted);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-dashed.add {
+  margin-bottom: 16px;
+}
+.wf-dashed.add strong {
+  color: var(--as-muted);
+}
+
+/* While the planner works: rows to come. */
+.wf-bone {
+  display: block;
+  width: 55%;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--wf-field);
+  animation: wf-pulse 1.4s ease-in-out infinite;
+}
+.wf-bone.round {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+}
+@keyframes wf-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-bone {
+    animation: none;
+  }
+}
+
+/* The one thing to do next, and the quieter rest. */
+.wf-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 50px;
+  margin: 2px 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: #ececec;
+  color: #0d0d0d;
+  font-size: 17px;
+  font-weight: 600;
+}
+.wf-primary:disabled {
+  opacity: 0.4;
+}
+.wf-footer {
+  display: flex;
+  gap: 8px;
+}
+.wf-footer > .wf-pill {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 46px;
+  font-size: 16px;
+}
+.wf-pill.danger {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--wf-danger) 20%, transparent);
+  color: var(--wf-danger);
+}
+.wf-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+}
+.wf-confirm > span {
+  flex: 1 1 auto;
+  font-size: 15px;
+}
+.wf-quiet-row {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.wf-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted);
+  font-size: 14px;
+}
+
+/* In New chat, with Workflow picked. */
+.wf-intro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px 10px;
+  margin: 0 0 10px;
+  color: var(--as-muted, #9b9b9b);
+  font-size: 13px;
+}
+.wf-intro > .wf-text-btn {
+  min-height: 32px;
+  padding: 0;
+  color: var(--as-text, #ececec);
+  font-weight: 500;
+}
+.wf-intro > .wf-problem {
+  flex-basis: 100%;
+}
+
+/* The Workflows page: Active, Drafts and Done as pills (the chosen one
+   filled), the rows, a floating pill for a new one; or, with none yet, one
+   line and one pill. */
+.wf-tabs {
+  display: flex;
+  gap: 6px;
+  margin: -6px 0 16px;
+}
+.wf-tabs > button {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted);
+  font-size: 16px;
+}
+.wf-tabs > button[aria-selected="true"] {
+  background: var(--wf-field);
+  color: var(--as-text);
+}
+.wf-flow-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--wf-field);
+  color: var(--as-text);
+}
+.wf-flow.paused .wf-flow-icon,
+.wf-flow.paused .wf-item-value {
+  color: #f5c26b;
+}
+.wf-none {
+  margin: 8px 6px 18px;
+  color: var(--as-muted);
+  font-size: 15px;
+}
+.wf-fab {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  margin: 8px 0 0 auto;
+  padding: 0 20px 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #ececec;
+  color: #0d0d0d;
+  font-size: 16px;
+  font-weight: 600;
+  box-shadow: 0 6px 24px #0008;
+}
+.wf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 10px 24px;
+  text-align: center;
+}
+.wf-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 6px;
+  border-radius: 12px;
+  background: var(--wf-field);
+}
+.wf-empty strong {
+  font-size: 18px;
+  font-weight: 500;
+}
+.wf-empty p {
+  margin: 0 0 10px;
+  color: var(--as-muted);
+  font-size: 15px;
+}
+.wf-empty .wf-primary {
+  width: auto;
+  padding: 0 26px;
+}
+
+/* The Workflows icon at the top of Chat (ChatList.tsx): how many run. */
+.chat-workflows {
+  position: relative;
+}
+.chat-workflows-count {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ececec;
+  color: #0d0d0d;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.chat-workflows-count.paused {
+  background: #f5c26b;
+  color: #2b1d00;
+}

@@ -31,7 +31,9 @@ export function createAgentWatch({
   geminiHome = path.join(os.homedir(), ".gemini"),
   watch = (dir, options, listener) => fs.watch(dir, options, listener),
   debounceMs = 120,
+  retryMs = 5000,
 } = {}) {
+  const retries = new Set();
   const listeners = new Set();
   const timers = new Map();
   const watchers = [];
@@ -59,14 +61,32 @@ export function createAgentWatch({
     window.timer.unref?.();
     timers.set(key, window);
   };
+  // A watch that fails (the folder isn't there yet: the agent installed
+  // later) or dies (the folder replaced, macOS dropping it) starts again
+  // after retryMs: a dead one left every chat waiting for the phone's 30 s
+  // look until Reach restarted.
+  let closed = false;
   const start = (dir, options, listener) => {
+    const again = () => {
+      if (closed) return;
+      const timer = setTimeout(() => {
+        retries.delete(timer);
+        start(dir, options, listener);
+      }, retryMs);
+      timer.unref?.();
+      retries.add(timer);
+    };
     try {
       const watcher = watch(dir, options, listener);
-      watcher.on?.("error", () => {});
+      watcher.on?.("error", () => {
+        watcher.close?.();
+        watchers.splice(watchers.indexOf(watcher) >>> 0, 1);
+        again();
+      });
       watcher.unref?.();
       watchers.push(watcher);
     } catch {
-      /* not there (the agent isn't installed): nothing to watch */
+      again();
     }
   };
   start(codexHome, {}, (event, file) => {
@@ -112,6 +132,9 @@ export function createAgentWatch({
       return () => listeners.delete(listener);
     },
     close() {
+      closed = true;
+      for (const timer of retries) clearTimeout(timer);
+      retries.clear();
       for (const watcher of watchers.splice(0)) watcher.close?.();
       for (const held of timers.values()) clearTimeout(held.timer);
       timers.clear();

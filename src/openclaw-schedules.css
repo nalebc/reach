@@ -1,0 +1,117 @@
+/* A schedule's past runs and edit form, inside its card (OpenClawScheduleMore.tsx). */
+.claw-sched-more {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+.claw-sched-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.claw-sched-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+.claw-sched-pill.on {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text-strong) 10%, transparent);
+}
+.claw-sched-pill:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+.claw-sched-failed {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger, #e5a18b) 10%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.claw-sched-failed strong {
+  color: var(--danger, #e5a18b);
+  font-weight: 550;
+}
+.claw-sched-failed span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.claw-sched-runs {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.claw-sched-runs ul {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claw-sched-runs li {
+  display: grid;
+  gap: 3px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+.claw-sched-runs li:first-child {
+  border-top: 0;
+}
+.claw-sched-run {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.claw-sched-when {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+.claw-sched-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-sched-meta:empty {
+  display: none;
+}
+.claw-sched-chat {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-sched-error {
+  margin: 0;
+  color: var(--danger, #e5a18b);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.claw-settings.claw-sched-form {
+  margin: 0;
+  background: var(--bg);
+}
+.claw-settings.claw-sched-form textarea,
+.claw-settings.claw-sched-form input,
+.claw-settings.claw-sched-form select {
+  background: var(--panel);
+}
+@media (max-width: 420px) {
+  .claw-settings.claw-sched-form .claw-settings-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
