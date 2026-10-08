@@ -2,58 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { post, type Peer } from "./api";
 import { clawBase, useClawCatalog } from "./OpenClawControls";
+import { ClawWizard } from "./OpenClawWizard";
 import { ClawAddProvider } from "./OpenClawOnboard";
 
-// What's missing in OpenClaw, asked for where it's missed: a schedule, a
-// channel, a model. What Reach doesn't set up itself (a model's key, a bot's
-// token) opens OpenClaw's own setup in a Reach terminal, typed into there.
-
-export function OpenSetup({
-  peer,
-  section,
-  children,
-}: {
+// Advanced setup uses OpenClaw's structured questions inside Reach.
+export function OpenSetup({ peer, children }: {
   peer: Peer;
-  section: "model" | "channels";
+  section: "model" | "channels" | "skills";
   children: string;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState("");
-  return (
-    <>
-      <button
-        type="button"
-        className="claw-secondary"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          setProblem("");
-          try {
-            const { terminal } = await post<{ terminal: { id: string } }>(
-              peer,
-              `${clawBase}/setup`,
-              { section },
-            );
-            window.dispatchEvent(
-              new CustomEvent("reach:open-terminal", { detail: terminal.id }),
-            );
-          } catch (e) {
-            setProblem((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? <Loader2 size={14} className="spin" /> : null}
-        {children}
-      </button>
-      {problem && (
-        <p className="claw-error" role="alert">
-          {problem}
-        </p>
-      )}
-    </>
-  );
+  const [open, setOpen] = useState(false);
+  return <>
+    <button type="button" className="claw-secondary" onClick={() => setOpen(true)}>{children}</button>
+    {open && <ClawWizard key={`${peer.id}:${peer.url}:${peer.token}`} peer={peer} onClose={() => setOpen(false)} />}
+  </>;
 }
 
 // The model a chat wants isn't offered: OpenClaw offers only models it has
@@ -72,7 +34,7 @@ export function AddModelPrompt({ peer }: { peer: Peer }) {
       <ClawAddProvider peer={peer} onDone={() => setOpen(false)} onCancel={() => setOpen(false)} />
       <div className="claw-settings-actions">
         <OpenSetup peer={peer} section="model">
-          Other models on Mac
+          More model options
         </OpenSetup>
       </div>
     </div>
