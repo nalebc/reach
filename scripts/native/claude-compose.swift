@@ -407,21 +407,26 @@ struct ClaudeCompose {
       out(["stopped": true])
     }
     guard window.boxes.count == 1, let box = window.boxes.first else { out(["error": "Couldn't find the Claude app's message box."]) }
-    let expected = (payload["expected"] as? String) ?? ""
-    // What Reach put there, or the very message being sent (its own draft,
+    // What Reach put there (any draft it may have left, a write it never saw
+    // confirmed included), or the very message being sent (its own draft,
     // synced as it was typed): fine. Anything else was typed on the Mac and is
     // never overwritten. An empty box reads "\n" (its editor keeps a line
     // break), so the space around the text doesn't count.
+    let known = (payload["expected"] as? [String]) ?? [(payload["expected"] as? String) ?? ""]
     let trimmed = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines) }
     let current = value(box)
-    guard current == trimmed(expected) || (!text.isEmpty && current == trimmed(text)) else {
+    guard known.contains(where: { current == trimmed($0) }) || (!text.isEmpty && current == trimmed(text)) else {
       out(["error": "This chat's box in the Claude app has text typed on your Mac. Reach won't overwrite it: send or clear it there.", "draft": true])
     }
     if payload["draft"] as? Bool == true {
       // No focus changes, clipboard access, key presses or Send during typing.
-      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success,
-        showing(look(app)), value(box) == trimmed(text)
+      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
       else { out(["error": "Claude couldn't update this draft."]) }
+      // The editor shows the text a frame or more later: read back for up to
+      // a second, as before Send (one read at once missed it, and Reach then
+      // took its own draft for text typed on the Mac).
+      for _ in 0..<20 where value(box) != trimmed(text) { usleep(50_000) }
+      guard value(box) == trimmed(text), showing(look(app)) else { out(["error": "Claude couldn't update this draft."]) }
       out(["drafted": true])
     }
     AXUIElementSetAttributeValue(box, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -451,7 +456,7 @@ struct ClaudeCompose {
     // The text, then a last look that it's still the same chat before Send.
     // The app enables Send a frame after the text goes in: looked for again
     // at once (no fixed 300 ms pause), for up to a second.
-    if !text.isEmpty || !expected.isEmpty {
+    if !text.isEmpty || !current.isEmpty {
       guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
       else { out(["error": "Claude couldn't update the message."]) }
       usleep(20_000)

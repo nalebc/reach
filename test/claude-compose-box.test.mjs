@@ -19,13 +19,24 @@ const between = (start, end) => {
 test("an empty Claude message box (read as a line break) isn't taken for text typed on the Mac", () => {
   // `value` reads the box without the space around its text.
   assert.match(swift, /func value\(_ box: AXUIElement\) -> String \{ str\(box, kAXValueAttribute\)\.trimmingCharacters\(in: \.whitespacesAndNewlines\) \}/);
-  const check = between('let expected = (payload["expected"]', "text typed on your Mac");
+  const check = between('let known = (payload["expected"]', "text typed on your Mac");
   assert.match(check, /let current = value\(box\)/);
-  assert.match(check, /current == trimmed\(expected\) \|\| \(!text\.isEmpty && current == trimmed\(text\)\)/);
+  assert.match(check, /known\.contains\(where: \{ current == trimmed\(\$0\) \}\) \|\| \(!text\.isEmpty && current == trimmed\(text\)\)/);
   // No raw comparison of the box's text is left (the draft check and the
   // last look before Send included).
   assert.doesNotMatch(swift, /str\((box|currentBox), kAXValueAttribute\) ==/);
   assert.match(swift, /let currentBox = window\.boxes\.first, value\(currentBox\) == trimmed\(text\)/);
+});
+
+test("a draft is read back until the editor shows it, and every text Reach may have left counts as its own", () => {
+  // Read once, at once, the editor hadn't shown it yet: "couldn't update this
+  // draft", with the draft in the box and Reach unaware it put it there.
+  const draft = between('if payload["draft"] as? Bool == true', 'out(["drafted": true])');
+  assert.match(draft, /for _ in 0\.\.<20 where value\(box\) != trimmed\(text\) \{ usleep\(50_000\) \}/);
+  // The texts Reach may have left come as a list (one string still works).
+  assert.match(swift, /let known = \(payload\["expected"\] as\? \[String\]\) \?\? \[\(payload\["expected"\] as\? String\) \?\? ""\]/);
+  // The occupied refusal says so, so Reach doesn't count it as maybe typed.
+  assert.match(swift, /text typed on your Mac\. Reach won't overwrite it: send or clear it there\.", "draft": true\]/);
 });
 
 test("right after switching chats, the helper waits for the window to show this chat, by its id", () => {

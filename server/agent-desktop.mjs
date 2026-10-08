@@ -313,10 +313,11 @@ export function createAgentDesktop(config, {
       const holder = currentHolder();
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
+        path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),
         holder: holder && holder.clientId !== latest.id ? holder.name : "" };
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
-    async act(client, input, authorize) {
+    async act(client, input, authorize, { expected } = {}) {
       const latest = live(client, authorize, "browser:control");
       const action = normalizeAction(input);
       const state = await session(latest);
@@ -333,7 +334,7 @@ export function createAgentDesktop(config, {
         }
         checkState(client, authorize, "browser:control", state);
         take(latest);
-        const result = answer(await dispatchInput(latest, state, { op: "act", action }, authorize, "browser:control"));
+        const result = answer(await dispatchInput(latest, state, { op: "act", action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
         note(latest, action.type, result);

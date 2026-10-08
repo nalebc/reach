@@ -13,6 +13,8 @@ export type BrowserAccess = {
   write?: boolean;
   apps?: { id: string; name?: string; bundleId?: string }[];
   hidden?: { id: string; name?: string }[];
+  savedTools?: { id: string; name: string; tool?: string; stepCount: number; inputs: string[]; apps: string[] }[];
+  savedToolHint?: string;
   commandRequests?: boolean;
   restrictedTerminal?: boolean;
   terminalApproval?: boolean;
@@ -27,6 +29,8 @@ export type BrowserTool = {
   approvalRequired?: boolean;
 };
 export function browserToolsFor(access?: Partial<BrowserAccess>): BrowserTool[];
+export const SAVED_TOOLS_HINT: string;
+export function savedToolName(item: { id: string; name: string }): string;
 export function browserToolRequest(name: string, args: unknown, access: BrowserAccess): {
   route: string;
   method: "GET" | "POST" | "DELETE";

@@ -1,7 +1,7 @@
 // Shared browser/Node transport contract. Longer calls remain bounded, and
 // only known scheduling fields cross an error boundary (never arbitrary data).
 export const agentRequestTimeout = (route, method = "GET") =>
-  method === "POST" && route === "/api/browser/shell" ? 70000 : 35000;
+  method === "POST" && ["/api/browser/shell", "/api/browser/shortcuts/run"].includes(route) ? 70000 : 35000;
 
 const kinds = new Set([
   "busy",

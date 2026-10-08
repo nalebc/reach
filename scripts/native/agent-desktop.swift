@@ -351,14 +351,26 @@ func flags(_ mods: [String]) -> CGEventFlags {
 let browserIds = ["com.apple.safari", "com.google.chrome", "org.chromium", "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser", "com.operasoftware", "com.vivaldi", "com.duckduckgo", "com.kagi"]
 func isBrowser(_ bundle: String) -> Bool { let id = lower(bundle); return browserIds.contains(where: { id.hasPrefix($0) }) }
 
-func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws -> [String: Any] {
+func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expected: [String: String]? = nil) throws -> [String: Any] {
   if rules.mode == "view" { try refuse("This agent can only look. It has no mouse or keyboard here.") }
   let type = action["type"] as? String ?? ""
   func point(_ x: String, _ y: String) throws -> CGPoint {
     guard let nx = action[x] as? Double, let ny = action[y] as? Double, (0...1).contains(nx), (0...1).contains(ny) else {
       try refuse("Choose a point on the screen.", "invalid")
     }
-    return CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
+    let p = CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
+    if let expected, let window = windowAt(p) {
+      if window.bundle != expected["bundle"] || (expected["title"] != nil && !window.title.isEmpty && String(window.title.prefix(200)) != expected["title"]) {
+        try refuse("The shortcut's target window changed. Look again before continuing.", "retry")
+      }
+    }
+    return p
+  }
+  if let expected {
+    let current = front(rules)
+    if expected.contains(where: { (current[$0.key] as? String) != $0.value }) || current["secure"] as? Bool == true || !(current["blocked"] as? String ?? "").isEmpty {
+      try refuse("The shortcut's app, window or focused field changed. Look again before continuing.", "retry")
+    }
   }
   var reached: [String: Any] = [:]
   switch type {
@@ -544,8 +556,23 @@ func front(_ rules: Rules) -> [String: Any] {
     let element = seen(focused); s.url = element.url; s.secure = element.secure
   }
   let blocked = appReason(bundle, name, path, rules) ?? windowTitleReason(s.title, bundle, path, s.pid, rules) ?? urlReason(s.url, rules)
+  // Geometry and focus identity, without field values, let saved actions stop
+  // when the window moves or the focused control changes.
+  var layout = ""
+  func geometry(_ element: AXUIElement) -> String {
+    var p = CGPoint.zero, size = CGSize.zero
+    if let value = attr(element, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgPoint, &p) }
+    if let value = attr(element, kAXSizeAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgSize, &size) }
+    return "\(Int(p.x)),\(Int(p.y)),\(Int(size.width)),\(Int(size.height))"
+  }
+  let display = CGDisplayBounds(CGMainDisplayID())
+  layout = "\(Int(display.width)),\(Int(display.height))"
+  if let window = elementAttr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute) { layout += "|" + geometry(window) }
+  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute), pidOf(focused) == app.processIdentifier {
+    layout += "|" + geometry(focused) + "|" + string(focused, kAXRoleAttribute) + "|" + string(focused, kAXIdentifierAttribute)
+  }
   return ["ok": true, "app": name, "bundle": bundle, "title": blocked == nil ? String(s.title.prefix(200)) : "",
-    "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? ""]
+    "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? "", "path": path, "layout": String(layout.prefix(2000))]
 }
 
 func rules(from request: [String: Any]) -> Rules {
@@ -596,7 +623,7 @@ func rules(from request: [String: Any]) -> Rules {
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
           try checkOwner(Date().timeIntervalSince(lastPosted))
-          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules))
+          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules, request["expected"] as? [String: String]))
         case "open":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           try checkOwner(Date().timeIntervalSince(lastPosted))

@@ -76,10 +76,13 @@ export const museMessage = (link: string, issued: Issued) => {
   const sharing = ["full", "apps"].includes(issued.preset)
     ? " One agent acts on the Mac at a time: a busy or paused reply means wait and retry. The owner's own hands come first. Take a screenshot before and after you act."
     : "";
+  const savedTools = ["full", "apps"].includes(issued.preset)
+    ? " Check Saved tools before acting. Click a matching task to execute it, or find its reach_saved_* tool using reach_shortcuts."
+    : "";
   const opening = issued.always
     ? "Open this Reach link in your browser; the owner will match your connection code. Your access lasts until the owner ends it, in this browser: if you close the page, open it again in the same browser and you are back. The link works once; for a different browser, ask the owner to reopen it."
     : "Open this temporary Reach link in your browser and keep it open; the owner will match your connection code.";
-  return `${opening} ${grant}${protectedWords}${sharing} Use the Screen, Files and Terminal tabs or the window.reach tools (listTools). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
+  return `${opening} ${grant}${protectedWords}${sharing}${savedTools} Use the page's labelled controls or window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
 // Every invite gets a fresh, silly name; the dice roll another.

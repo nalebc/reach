@@ -1,6 +1,13 @@
-# Claude and Codex compatibility
+# Agent compatibility
 
 Reach cannot guarantee compatibility with every future agent update. Its chat adapters depend on CLI protocols, local transcript formats and, for some Claude desktop actions, Accessibility controls. Screen, files and terminals do not depend on those chat adapters.
+
+## Same-session synchronization
+
+- Codex uses its local owner/follower connection. Reach-created tasks keep the same native task ID in Codex desktop; desktop composer actions go to that task's writer. Reach sends to the desktop owner when Codex already owns the task.
+- Claude Code uses its native session UUID and transcript. Opening a Reach-created conversation in Claude releases Reach's idle writer first. Subsequent messages to desktop conversations use the native composer, with exact-session checks and protection for existing Mac drafts. Native sends require Accessibility permission for the app running Reach.
+- OpenClaw uses the local Gateway's session key and history. Separate clients see the same conversation. Reach sends only to its own local webchat sessions, and does not deliver messages to external channels.
+- Gemini currently supports reading native JSON/JSONL histories, with file-change notifications that wake open Reach chats. Sending, queueing, and approval controls are unavailable in this adapter. The installed Gemini CLI 0.39.1 rejected the October 7, 2026 live test with `UNSUPPORTED_CLIENT` for the signed-in personal account; this is separate from history synchronization.
 
 ## Runtime behavior
 
