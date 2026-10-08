@@ -860,3 +860,48 @@ test("two chats with the same name changing one file read as two chats, not one 
   assert.equal(warning.textContent, "docs/notes.md changed by two Claude Code chats named “Refactor auth” in the last half hour.");
   assert.deepEqual(dom.errors, []);
 });
+
+test("auto-continue can be enabled from the chat menu and cancelled", async t => {
+  routes["/api/sessions/relays"] = record("/api/sessions/relays");
+  routes["/api/sessions/relays/r1/cancel"] = record("/api/sessions/relays/r1/cancel");
+  t.after(() => {
+    delete routes["/api/sessions/relays"];
+    delete routes["/api/sessions/relays/r1/cancel"];
+  });
+  mac.answers["/api/sessions/relays"] = { relay: relayOf({ trigger: "usage", priority: ["codex", "claude", "gemini", "openclaw"] }) };
+  mac.answers["/api/sessions/relays/r1/cancel"] = { cancelled: true };
+  await open(codexSession(), both());
+  await click(await dom.waitFor(() => button("More")));
+  await click($$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
+  const sheet = await dom.waitFor(() => $(".relay-sheet"));
+  assert.match(sheet.textContent, /24 hours, uses each provider once/);
+  assert.match(sheet.textContent, /Read-only in Reach · skipped/);
+  assert.equal(mac.sent.length, 0);
+  await click(button("Move Claude Code up"));
+  await click(button("Enable auto-continue"));
+  await dom.waitFor(() => $(".relay-strip"));
+  assert.deepEqual(mac.sent[0], { route: "/api/sessions/relays", body: {
+    from: { agent: "codex", id: CODEX }, priority: ["claude", "codex", "gemini", "openclaw"], trigger: "usage",
+  } });
+  assert.match($(".relay-strip").textContent, /Auto-continue: Codex → Claude Code → Gemini CLI → OpenClaw/);
+  assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex", "gemini", "openclaw"]);
+  await click(button("Cancel relay"));
+  await dom.waitFor(() => !$(".relay-row"));
+  assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("auto-continue remembers the selected priority and requires another available provider", async () => {
+  dom.window.localStorage.setItem("reach-continue-priority:mac", JSON.stringify(["claude", "codex"]));
+  await open(codexSession(), both());
+  await click(await dom.waitFor(() => button("More")));
+  await click($$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
+  await dom.waitFor(() => $(".continue-priority"));
+  assert.deepEqual($$(".continue-priority strong").map(n => n.textContent), ["Claude Code", "Codex", "Gemini CLI", "OpenClaw"]);
+  assert.equal($("input[aria-label='Use OpenClaw']").checked, false);
+  assert.equal(button("Enable auto-continue").disabled, false);
+  await click($("input[aria-label='Use Claude Code']"));
+  assert.equal(button("Enable auto-continue").disabled, true);
+  assert.equal($("input[aria-label='Use Codex']").disabled, true);
+  assert.equal(mac.sent.length, 0);
+});

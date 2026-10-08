@@ -107,6 +107,8 @@ export type SessionItem = {
   status?: string;
   queued?: boolean;
   images?: number;
+  // Pictures the chat already had, sent as a note instead (image-repeats.mjs).
+  repeats?: number;
   // Pieces sent as they are, by what they are: "Voice message", "PDF"…
   attachments?: string[];
   // Chats mentioned with "@", by name (shown on the phone, not sent by the agent).
@@ -134,6 +136,8 @@ export type AgentHealth = {
   };
   agent: string;
   name?: string;
+  // What Reach saved this agent, in input tokens (server/savings.mjs).
+  savings?: { tokens: number; kinds: Record<string, { tokens: number; count: number }> };
   supported?: boolean;
   installed: boolean;
   signedIn: boolean;
@@ -381,12 +385,16 @@ export type AgentFeed = ReturnType<typeof useAgentSessions>;
 // new chat that reads it and changes nothing; send: into a chat you picked;
 // back: the review returns to the chat that was reviewed.
 export type RelayStep = {
-  kind: "build" | "review" | "send" | "back";
+  // "post": Reach's own last step, the answer back to the WhatsApp or
+  // Telegram chat that asked (asked for with `postBack`, never set here).
+  kind: "build" | "review" | "send" | "back" | "post";
   agent?: string;
   to?: { agent: string; id: string; title?: string };
   instructions?: string;
 };
 export type Relay = {
+  trigger?: "reply" | "usage";
+  priority?: string[];
   id: string;
   state: "waiting" | "sending" | "done" | "stopped" | "uncertain";
   problem: string;
@@ -404,7 +412,7 @@ export type Relay = {
 // when the chat's agent next finishes. opened: the chat it went to.
 export const startRelay = (
   peer: Peer,
-  body: { from: { agent: string; id: string }; steps: RelayStep[]; now?: boolean; item?: string; cwd?: string },
+  body: { from: { agent: string; id: string }; steps?: RelayStep[]; trigger?: "reply" | "usage"; priority?: string[]; now?: boolean; item?: string; cwd?: string; postBack?: boolean },
 ) => post<{ relay: Relay; opened?: { agent: string; id: string } }>(peer, "/api/sessions/relays", body);
 export const cancelRelay = (peer: Peer, id: string) =>
   post<{ cancelled: boolean }>(peer, `/api/sessions/relays/${encodeURIComponent(id)}/cancel`);

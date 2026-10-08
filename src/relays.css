@@ -384,3 +384,27 @@
   flex: 0 0 auto;
   margin: 0 1px;
 }
+
+.continue-priority {
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: provider;
+}
+.continue-priority li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  counter-increment: provider;
+}
+.continue-priority li::before {
+  content: counter(provider) ".";
+  min-width: 18px;
+  opacity: .6;
+}
+.continue-priority label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.continue-priority strong, .continue-priority small { display: block; }
+.continue-priority small { opacity: .65; margin-top: 3px; }
+.continue-priority button { display: grid; place-items: center; min-width: 40px; min-height: 40px; }
+.continue-priority button:disabled { opacity: .3; }

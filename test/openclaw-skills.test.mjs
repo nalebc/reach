@@ -235,14 +235,17 @@ test("a skill's API key is written to OpenClaw and never comes back", async () =
   assert.equal(refused.message, "OpenClaw didn't save the key. Try again or set it up on your Mac.");
 });
 
-test("Set up on Mac opens OpenClaw's own skills setup, a fixed command", async () => {
-  const opened = [];
-  const f = fixture({ skills: [], openCommand: (command, name) => (opened.push([command, name]), { id: "t1" }) });
-  assert.deepEqual(await f.hit("POST", "/skills/setup", { body: { section: "anything" } }), { terminal: { id: "t1" } });
-  assert.deepEqual(opened, [["openclaw configure --section skills", "OpenClaw skills"]]);
-  assert.match("openclaw configure --section skills", /^openclaw [a-z][a-z -]*$/);
-  const g = fixture({ skills: [] });
-  await assert.rejects(g.hit("POST", "/skills/setup", { body: {} }), { status: 409 });
+test("skill setup accepts only missing values and never returns secrets", async () => {
+  const f = fixture({ skills: [statusSkill({})] });
+  assert.deepEqual(await f.hit("POST", "/skills/setup", { body: { key: "memo", env: { MEMO_TOKEN: "private-token" } } }), { saved: true });
+  const call = f.calls.at(-1);
+  assert.equal(call.method, "skills.update");
+  assert.equal(call.params.env.MEMO_TOKEN, "private-token");
+  for (const env of [{ PATH: "evil" }, { MEMO_TOKEN: "" }, { MEMO_TOKEN: "line\nbreak" }, []]) {
+    await assert.rejects(f.hit("POST", "/skills/setup", { body: { key: "memo", env } }), { status: 400 });
+  }
+  const bad = fixture({ skills: [statusSkill({})], updateFails: true });
+  await assert.rejects(bad.hit("POST", "/skills/setup", { body: { key: "memo", env: { MEMO_TOKEN: "private-token" } } }), (e) => !e.message.includes("private-token"));
 });
 
 test("skills UI: groups, pills, toggle and a two-step install", async () => {
@@ -257,7 +260,7 @@ test("skills UI: groups, pills, toggle and a two-step install", async () => {
         canSetup: true,
         skills: [
           { name: "weather", key: "weather", emoji: "☔", source: "bundled", bundled: true, state: "ready", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
-          { name: "helper", key: "helper", emoji: "", source: "clawhub", bundled: false, state: "setup", blocked: false, missing: { bins: ["helper"], env: ["HELPER_KEY"], config: [], os: [] }, install: [{ id: "node-0", kind: "node", label: "x" }], keyName: "HELPER_KEY", ...(job ? { installing: job } : {}) },
+          { name: "helper", key: "helper", emoji: "", source: "clawhub", bundled: false, state: "setup", blocked: false, missing: { bins: ["helper"], env: ["HELPER_KEY", "HELPER_ACCOUNT"], config: [], os: [] }, install: [{ id: "node-0", kind: "node", label: "x" }], keyName: "HELPER_KEY", ...(job ? { installing: job } : {}) },
           { name: "spy", key: "spy", emoji: "", source: "workspace", bundled: false, state: "off", blocked: false, missing: { bins: [], env: [], config: [], os: [] }, install: [] },
         ],
       }),
@@ -283,7 +286,7 @@ test("skills UI: groups, pills, toggle and a two-step install", async () => {
     const helper = doc.querySelector('[aria-label="Needs setup"] .claw-skill');
     assert.match(helper.textContent, /ClawHub/);
     assert.match(helper.textContent, /HELPER_KEY/);
-    // Write-only key field; Set up on Mac stays as the fallback.
+    // Missing keys and other values are entered in Reach.
     const field = doc.querySelector('[aria-label="helper HELPER_KEY"]');
     assert.equal(field.type, "password");
     assert.equal(field.getAttribute("autocomplete"), "off");
@@ -292,10 +295,13 @@ test("skills UI: groups, pills, toggle and a two-step install", async () => {
     btn("spy on").click();
     await dom.waitFor(() => sent.length === 1);
     assert.deepEqual(sent[0], ["enable", { key: "spy", enabled: true }]);
-    await dom.waitFor(() => !btn("Set up on Mac").disabled);
-    btn("Set up on Mac").click();
+    const account = doc.querySelector('[aria-label="helper HELPER_ACCOUNT"]');
+    await typeInto(account, "my-account");
+    account.closest("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     await dom.waitFor(() => sent.length === 2);
-    assert.deepEqual(sent[1], ["setup", {}]);
+    assert.deepEqual(sent[1], ["setup", { key: "helper", env: { HELPER_ACCOUNT: "my-account" } }]);
+    await dom.waitFor(() => account.value === "");
+    assert.doesNotMatch(doc.body.textContent, /Set up on Mac/);
     await typeInto(field, "sk-test-key-123");
     field.closest("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     await dom.waitFor(() => sent.length === 3);

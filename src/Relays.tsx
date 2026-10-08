@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, Info, Loader2, Plus, SearchCheck, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Info, Loader2, Plus, SearchCheck, Workflow, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import ChatSheet from "./ChatSheet";
@@ -14,6 +14,7 @@ import {
   type RelayStep,
 } from "./agent-sessions";
 import "./relays.css";
+import { CONTINUE_PRIORITY, checkContinuePriority, continueUnavailable } from "../server/agent-sessions/auto-continue.mjs";
 
 // Working across agents (docs/ACROSS_AGENTS.md): a second opinion on a reply,
 // and relays (what one agent did goes on to another when it finishes). The
@@ -43,12 +44,22 @@ export function stepWords(step: RelayStep, chain: Relay["chain"] = [], n = 0, st
   if (step.kind === "build") return `${who} builds it`;
   if (step.kind === "review") return `${who} reviews it`;
   if (step.kind === "send") return `to “${step.to?.title || "a chat"}”`;
+  if (step.kind === "post") return "posted back to the chat that asked";
   const before = chain[n - 1]?.agent || (n >= 2 ? steps[n - 2]?.agent || steps[n - 2]?.to?.agent : chain[0]?.agent);
   return `the review goes back to ${before ? agentLabel(before) : "the builder"}`;
 }
 
 // Where a relay stands, seen from one of its chats.
 export function relayLine(relay: Relay, here: ChatRef) {
+  if (relay.trigger === "usage") {
+    const target = agentLabel(relay.steps[relay.next]?.agent || relay.steps[0]?.agent || "");
+    if (relay.state === "waiting") return relay.priority
+      ? `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Unavailable providers are skipped (24 hours).`
+      : `Auto-continue in ${target} if usage runs out (24 hours).`;
+    if (relay.state === "sending") return `Continuing in ${target}…`;
+    if (relay.state === "done") return `Auto-continued in ${agentLabel(relay.chain.at(-1)?.agent || relay.steps[0]?.agent || "")}.`;
+    return relay.problem || "Auto-continue stopped.";
+  }
   const at = relay.chain.at(-1)!;
   const waitingHere = at.agent === here.agent && at.id === here.id;
   const rest = relay.steps.slice(relay.next).map((s, i) => stepWords(s, relay.chain, relay.next + i, relay.steps));
@@ -130,7 +141,7 @@ export function RelayStrip({
               </span>
             )}
             <span className="relay-row-text">{relayLine(r, here)}</span>
-            {elsewhere && r.state !== "stopped" && (
+            {elsewhere && (r.state !== "stopped" || r.trigger === "usage") && (
               <button className="relay-row-action" onClick={() => onOpen(at)}>
                 Open
               </button>
@@ -225,6 +236,7 @@ export function SecondOpinionSheet({
   session,
   item,
   cwd,
+  postTo,
   health,
   logos,
   onClose,
@@ -235,6 +247,9 @@ export function SecondOpinionSheet({
   item?: string;
   // The folder to work in, for a chat that has none (OpenClaw's).
   cwd?: string;
+  // An OpenClaw chat with a person on WhatsApp or Telegram: the app's name,
+  // offered as a switch to post the answer back there.
+  postTo?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
@@ -244,6 +259,8 @@ export function SecondOpinionSheet({
   const [reviewer, setReviewer] = useState(agents[0] || "");
   const canReturn = session.agent === "codex" || session.agent === "claude";
   const [back, setBack] = useState(canReturn);
+  // Off until chosen, each time (the owner's choice per relay, Oct 8).
+  const [postBack, setPostBack] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const from = agentLabel(session.agent);
@@ -252,7 +269,16 @@ export function SecondOpinionSheet({
     setProblem("");
     try {
       const steps: RelayStep[] = [{ kind: "review", agent: reviewer }, ...(back ? [{ kind: "back" as const }] : [])];
-      onStarted(await startRelay(peer, { from: { agent: session.agent, id: session.id }, steps, now: true, ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
+      onStarted(
+        await startRelay(peer, {
+          from: { agent: session.agent, id: session.id },
+          steps,
+          now: true,
+          ...(item ? { item } : {}),
+          ...(cwd ? { cwd } : {}),
+          ...(postTo && postBack ? { postBack: true } : {}),
+        }),
+      );
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -285,6 +311,12 @@ export function SecondOpinionSheet({
               <span>Send the review back here</span>
             </label>
           )}
+          {postTo && (
+            <label className="relay-switch">
+              <input type="checkbox" role="switch" checked={postBack} disabled={busy} onChange={(e) => setPostBack(e.target.checked)} />
+              <span>Post the answer on {postTo}</span>
+            </label>
+          )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={busy || !reviewer} onClick={() => void ask()}>
             {busy ? <Loader2 size={16} className="spin" /> : `Ask ${reviewer === session.agent ? `a new ${agentLabel(reviewer)} chat` : agentLabel(reviewer)}`}
@@ -298,7 +330,7 @@ export function SecondOpinionSheet({
 }
 
 // What each kind of step does, as its tile says it.
-const VERB: Record<RelayStep["kind"], string> = { build: "builds", review: "reviews", back: "fixes", send: "gets it" };
+const VERB: Record<RelayStep["kind"], string> = { build: "builds", review: "reviews", back: "fixes", send: "gets it", post: "posts it" };
 // The step that naturally comes next: a review of what was built, then the fixes.
 function nextStep(steps: RelayStep[], from: string, agents: string[]): RelayStep | null {
   const last = steps.at(-1);
@@ -339,6 +371,7 @@ export function RelaySheet({
   sessions,
   cwd,
   item,
+  postTo,
   health,
   logos,
   onClose,
@@ -352,11 +385,14 @@ export function RelaySheet({
   cwd?: string;
   // From one reply further up: it goes on now, from that reply.
   item?: string;
+  // As SecondOpinionSheet's: the app the last answer can be posted on.
+  postTo?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
   onStarted: (started: RelayStarted) => void;
 }) {
+  const [postBack, setPostBack] = useState(false);
   const agents = relayAgents(health);
   const from = session.agent;
   const first = othersFirst(from, agents)[0];
@@ -396,7 +432,7 @@ export function RelaySheet({
           : s,
     );
     try {
-      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: !!item || when === "now", ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
+      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: !!item || when === "now", ...(item ? { item } : {}), ...(cwd ? { cwd } : {}), ...(postTo && postBack ? { postBack: true } : {}) }));
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -505,6 +541,12 @@ export function RelaySheet({
             </div>
           )}
           <Rules />
+          {postTo && (
+            <label className="relay-switch">
+              <input type="checkbox" role="switch" checked={postBack} disabled={busy} onChange={(e) => setPostBack(e.target.checked)} />
+              <span>Post the last answer on {postTo}</span>
+            </label>
+          )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={!ready || busy} onClick={() => void go()}>
             {busy ? <Loader2 size={16} className="spin" /> : when === "now" && !working && hasReply ? "Relay now" : "Start relay"}
@@ -528,4 +570,72 @@ export function SecondOpinionButton({ onClick, labelled = false }: { onClick: ()
       <SearchCheck size={15} />
     </button>
   );
+}
+
+// Uses the same persisted, cancellable watch as a relay, with a usage-only trigger.
+export function AutoContinueSheet({ peer, session, health, onClose, onStarted }: {
+  peer: Peer; session: AgentSession; health: AgentHealth[];
+  onClose: () => void; onStarted: (started: RelayStarted) => void;
+}) {
+  const storageKey = `reach-continue-priority:${peer.id}`;
+  const [order, setOrder] = useState<string[]>(() => {
+    try {
+      const saved = checkContinuePriority(JSON.parse(localStorage.getItem(storageKey) || "null"));
+      return [...saved, ...CONTINUE_PRIORITY.filter((a) => !saved.includes(a))];
+    } catch { return [...CONTINUE_PRIORITY]; }
+  });
+  const [included, setIncluded] = useState<string[]>(() => {
+    try {
+      const saved = checkContinuePriority(JSON.parse(localStorage.getItem(storageKey) || "null"));
+      return saved.includes(session.agent) ? saved : [...saved, session.agent];
+    } catch { return [...CONTINUE_PRIORITY]; }
+  });
+  const priority = order.filter((a) => included.includes(a));
+  const ready = priority.some((a) => a !== session.agent && !continueUnavailable(a, health));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const reorder = (index: number, offset: number) => setOrder((previous) => {
+    const next = [...previous];
+    [next[index], next[index + offset]] = [next[index + offset], next[index]];
+    return next;
+  });
+  const enable = async () => {
+    setBusy(true);
+    setProblem("");
+    try {
+      const started = await startRelay(peer, {
+        from: { agent: session.agent, id: session.id }, priority, trigger: "usage",
+      });
+      try { localStorage.setItem(storageKey, JSON.stringify(priority)); } catch { /* private browser */ }
+      onStarted(started);
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+    <p className="relay-say">When usage runs out, continue with the first available provider in this order. If that provider runs out too, move to the next unused provider with the conversation history.</p>
+    <ol className="continue-priority" aria-label="Provider priority">
+      {order.map((agent, index) => {
+        const unavailable = continueUnavailable(agent, health);
+        const current = agent === session.agent;
+        return <li key={agent}>
+          <label>
+            <input type="checkbox" checked={included.includes(agent)} disabled={busy || current}
+              aria-label={`Use ${agentLabel(agent)}`}
+              onChange={(e) => setIncluded((list) => e.target.checked ? [...list, agent] : list.filter((a) => a !== agent))} />
+            <span><strong>{agentLabel(agent)}</strong><small>{current ? "Current provider" : unavailable ? `${unavailable} · skipped` : "Available"}</small></span>
+          </label>
+          <button aria-label={`Move ${agentLabel(agent)} up`} disabled={busy || index === 0} onClick={() => reorder(index, -1)}><ArrowUp size={16} /></button>
+          <button aria-label={`Move ${agentLabel(agent)} down`} disabled={busy || index === order.length - 1} onClick={() => reorder(index, 1)}><ArrowDown size={16} /></button>
+        </li>;
+      })}
+    </ol>
+    <p className="relay-say">Watches for 24 hours, uses each provider once, and skips providers that are unavailable. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
+    {!ready && <p className="relay-problem">Select another available provider. Sign in or reconnect on this computer if needed.</p>}
+    {problem && <p className="relay-problem" role="alert">{problem}</p>}
+    <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
+      {busy ? <Loader2 size={16} className="spin" /> : "Enable auto-continue"}
+    </button>
+  </ChatSheet>;
 }

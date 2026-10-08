@@ -175,6 +175,31 @@ export function claudeAnswer(prompt, answer, platform = process.platform) {
   };
 }
 
+// The chats a Reach left working, if it stopped lately: older ones were left
+// long enough ago that continuing them would surprise. A Reach that crashed
+// never said when: the last turn it recorded counts, with more room.
+const CONTINUE_WITHIN = 15 * 60 * 1000;
+const CONTINUE_AFTER_CRASH = 6 * 60 * 60 * 1000;
+export function readWorking(file, at = Date.now()) {
+  if (!file) return [];
+  try {
+    const written = fs.statSync(file).mtimeMs;
+    const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+    const chats = Array.isArray(kept?.chats) ? kept.chats : [];
+    if (Number.isFinite(kept?.stoppedAt) ? at - kept.stoppedAt > CONTINUE_WITHIN : at - written > CONTINUE_AFTER_CRASH) {
+      fs.rmSync(file, { force: true });
+      return [];
+    }
+    return chats.filter((c) => c && UUID.test(String(c.id))).map((c) => ({
+      id: c.id, cwd: typeof c.cwd === "string" ? c.cwd : null,
+      recovery: c.recovery || `${c.id}:${c.since || kept.stoppedAt || written}`,
+      ...Object.fromEntries(["model", "effort", "mode"].flatMap((key) => typeof c[key] === "string" ? [[key, c[key]]] : [])),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export function createClaudeHost({
   locate, // async () => absolute path of the claude CLI, or null
   spawn = spawnChild,
@@ -194,6 +219,9 @@ export function createClaudeHost({
   // More flags for a session on every launch (a team's lead: its tools and
   // standing instructions, teams.mjs); false when it must have none any more.
   extraArgs = () => null,
+  // The chats mid-turn, kept on disk at each turn's start and end: a restart
+  // (or a crash) ends their processes, and the next Reach continues them.
+  workingFile = null,
 }) {
   const sessions = new Map();
   const rewinds = createClaudeRewinds({ file: rewindFile });
@@ -231,7 +259,43 @@ export function createClaudeHost({
   // Told of each change to a session (the chat list hears of its status and
   // questions this way).
   const changeListeners = new Set();
+  // What the last Reach left working, read once before this one writes.
+  const recoveries = new Map(readWorking(workingFile, now()).map((chat) => [chat.id, chat]));
+  let interrupted = [...recoveries.values()];
+  let recorded = null;
+  // A process that died mid-turn (a restart's signal can reach it before
+  // Reach's own close) stays on record until its chat gets a message again.
+  const busy = () => [...sessions.values()].filter((s) => !s.stopping && ((s.proc && (s.turns || s.background)) || s.cutOff));
+  const record = (stoppedAt, strict = false) => {
+    if (!workingFile || (closed && !stoppedAt)) return;
+    const chats = [...new Map([
+      ...recoveries,
+      ...busy().map((s) => [s.id, { id: s.id, cwd: s.cwd || null, since: s.busySince || now(),
+        ...Object.fromEntries(["model", "effort", "mode"].flatMap((key) => typeof s.settings[key] === "string" ? [[key, s.settings[key]]] : [])),
+      }]),
+    ]).values()];
+    const json = JSON.stringify(chats);
+    if (json === recorded && !stoppedAt) return;
+    try {
+      if (!chats.length) {
+        fs.rmSync(workingFile, { force: true });
+        recorded = json;
+        return;
+      }
+      fs.mkdirSync(path.dirname(workingFile), { recursive: true, mode: 0o700 });
+      const tmp = `${workingFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ chats, ...(stoppedAt ? { stoppedAt } : {}) }), { mode: 0o600 });
+      fs.renameSync(tmp, workingFile);
+      recorded = json;
+    } catch (error) {
+      if (strict) throw error;
+      /* continued by hand then */
+    }
+  };
   const changed = (s) => {
+    if (s.turns || s.background) s.busySince ||= now();
+    else s.busySince = 0;
+    record();
     s.version++;
     for (const wake of [...s.waiters]) wake();
     for (const listener of changeListeners) { try { listener(s.id); } catch {} }
@@ -296,6 +360,8 @@ export function createClaudeHost({
     s.status = "idle";
     s.streaming = "";
     s.activity = null;
+    s.busySince = 0;
+    record();
     try {
       proc.stdin.end();
     } catch {}
@@ -381,6 +447,8 @@ export function createClaudeHost({
           // time (2.1.291). Ambient ones (monitors) last the session; they
           // don't keep it.
           s.background = m.tasks.filter((t) => t && !t.ambient).length;
+          s.busySince = s.turns || s.background ? s.busySince || now() : 0;
+          record();
           if (s.background) clearTimeout(s.idle);
           else rest(s);
           return;
@@ -530,6 +598,7 @@ export function createClaudeHost({
     proc.on("exit", () => {
       if (s.proc !== proc) return;
       s.proc = null;
+      if (!s.stopping && (s.turns || s.background)) s.cutOff = true;
       for (const waiting of s.pending.values()) { clearTimeout(waiting.timer); waiting.reject(uncertainDelivery("claude")); }
       s.pending.clear();
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
@@ -573,6 +642,7 @@ export function createClaudeHost({
   }
 
   async function turn(s, input) {
+    s.cutOff = false;
     s.turns++;
     s.unread = (s.unread || 0) + 1;
     s.wrote = true;
@@ -596,6 +666,23 @@ export function createClaudeHost({
       released.add(listener);
     },
     running: (id) => !!sessions.get(id)?.turns,
+    // Chats mid-turn (or with background agents at work) right now.
+    working: () => busy().filter((s) => s.proc).map((s) => s.id),
+    // The chats the last Reach left mid-turn, once: [{ id, cwd }].
+    interrupted() {
+      const chats = interrupted;
+      interrupted = [];
+      return chats;
+    },
+    // Remove only after a durable outbox entry exists or another owner is
+    // already running the chat. Reading the journal never consumes it.
+    recovered(id) {
+      const chat = recoveries.get(id);
+      if (!chat) return;
+      recoveries.delete(id);
+      try { record(undefined, true); }
+      catch (error) { recoveries.set(id, chat); throw error; }
+    },
     // The mode Reach last gave this chat's Claude Code (or it reported).
     modeOf: (id) => sessions.get(id)?.settings?.mode || null,
     // A phone has the session open right now (its live view is waiting).
@@ -658,6 +745,7 @@ export function createClaudeHost({
       if (!s?.proc) return false;
       await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
       s.settings.mode = mode;
+      record();
       return true;
     },
     async start({ cwd, text, images, model, effort, mode, extra }) {
@@ -681,6 +769,7 @@ export function createClaudeHost({
         s.stopping = false;
         throw error;
       });
+      record();
       return { stopped: true };
     },
     async respond(id, promptId, answer) {
@@ -860,6 +949,9 @@ export function createClaudeHost({
     },
     // Reach is quitting: let every Claude Code process go.
     close() {
+      // What was working stays on record (with when Reach stopped) for the
+      // next Reach to continue.
+      record(now());
       closed = true;
       for (const s of sessions.values()) end(s);
     },

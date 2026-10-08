@@ -65,7 +65,7 @@ const GROUPS = [
   ["off", "Off"],
 ] as const;
 
-// Skills, checked before they install (Agents tab, under the agents).
+// Skills, grouped by readiness and checked before they install.
 export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string; refresh: number }) {
   const [data, setData] = useState<Skills | null>(null);
   const [error, setError] = useState("");
@@ -148,97 +148,99 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
             <h3>
               {title} <span>{group.length}</span>
             </h3>
-            {group.map((skill) => {
-              const needs = [...skill.missing.env, ...skill.missing.config].length > 0;
-              const job = skill.installing;
-              return (
-                <div className="claw-skill" key={skill.name}>
-                  <span className="claw-skill-emoji" aria-hidden="true">
-                    {skill.emoji || "🧩"}
-                  </span>
-                  <div className="claw-skill-main">
-                    <strong>{skill.name}</strong>
-                    <div className="claw-skill-pills">
-                      <span className={`claw-skill-pill source ${skill.bundled ? "" : "outside"}`}>
-                        {SOURCE[skill.source] || "Other"}
-                      </span>
-                      {skill.state !== "off" &&
-                        skill.missing.bins.map((b) => (
-                          <span className="claw-skill-pill missing" key={`b:${b}`} title="Missing program">
-                            {b}
-                          </span>
-                        ))}
-                      {skill.state !== "off" &&
-                        skill.missing.env.map((e) => (
-                          <span className="claw-skill-pill missing" key={`e:${e}`} title="Missing key">
-                            {e}
-                          </span>
-                        ))}
-                      {skill.state !== "off" &&
-                        skill.missing.config.map((c) => (
-                          <span className="claw-skill-pill missing" key={`c:${c}`} title="Missing setting">
-                            {c}
-                          </span>
-                        ))}
-                      {skill.state !== "off" && skill.missing.os.length > 0 && (
-                        <span className="claw-skill-pill missing">Not for this Mac</span>
-                      )}
-                      {skill.blocked && <span className="claw-skill-pill missing">Blocked</span>}
-                    </div>
-                    {job && (
-                      <p className={`claw-skill-job ${job.status}`} role="status">
-                        {job.status === "running" ? (
-                          <>
-                            <Loader2 size={12} className="spin" /> Installing…
-                          </>
-                        ) : job.status === "done" ? (
-                          job.flagged ? "Installed · OpenClaw flagged its code" : "Installed"
-                        ) : (
-                          job.message || "Install failed"
-                        )}
-                      </p>
-                    )}
-                    {skill.state === "setup" && skill.keyName && data?.canToggle && (
-                      <KeyField peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
-                    )}
-                    {skill.state === "setup" && (
-                      <div className="claw-skill-actions">
-                        {data?.canInstall && skill.missing.bins.length > 0 && skill.install.length > 0 && job?.status !== "running" &&
-                          skill.install.map((option) => (
-                            <button
-                              key={option.id}
-                              className="claw-skill-chip"
-                              disabled={running || !!data?.busy}
-                              aria-label={`Install ${skill.name}${skill.install.length > 1 ? ` with ${option.kind}` : ""}`}
-                              onClick={() => setChecking({ name: skill.name, install: option.id })}
-                            >
-                              {skill.install.length > 1 ? `Install · ${option.kind}` : "Install"}
-                            </button>
+            <div className="claw-skill-rows">
+              {group.map((skill) => {
+                const needs = [...skill.missing.env, ...skill.missing.config].length > 0;
+                const job = skill.installing;
+                return (
+                  <div className="claw-skill" key={skill.name}>
+                    <span className="claw-skill-emoji" aria-hidden="true">
+                      {skill.emoji || "🧩"}
+                    </span>
+                    <div className="claw-skill-main">
+                      <strong>{skill.name}</strong>
+                      <div className="claw-skill-pills">
+                        <span className={`claw-skill-pill source ${skill.bundled ? "" : "outside"}`}>
+                          {SOURCE[skill.source] || "Other"}
+                        </span>
+                        {skill.state !== "off" &&
+                          skill.missing.bins.map((b) => (
+                            <span className="claw-skill-pill missing" key={`b:${b}`} title="Missing program">
+                              {b}
+                            </span>
                           ))}
-                        {needs && data?.canSetup && (
-                          <button className="claw-skill-chip" disabled={!!busy} onClick={() => void setup()}>
-                            {busy === "setup" ? <Loader2 size={12} className="spin" /> : null}
-                            Set up on Mac
-                          </button>
+                        {skill.state !== "off" &&
+                          skill.missing.env.map((e) => (
+                            <span className="claw-skill-pill missing" key={`e:${e}`} title="Missing key">
+                              {e}
+                            </span>
+                          ))}
+                        {skill.state !== "off" &&
+                          skill.missing.config.map((c) => (
+                            <span className="claw-skill-pill missing" key={`c:${c}`} title="Missing setting">
+                              {c}
+                            </span>
+                          ))}
+                        {skill.state !== "off" && skill.missing.os.length > 0 && (
+                          <span className="claw-skill-pill missing">Not for this Mac</span>
                         )}
+                        {skill.blocked && <span className="claw-skill-pill missing">Blocked</span>}
                       </div>
+                      {job && (
+                        <p className={`claw-skill-job ${job.status}`} role="status">
+                          {job.status === "running" ? (
+                            <>
+                              <Loader2 size={12} className="spin" /> Installing…
+                            </>
+                          ) : job.status === "done" ? (
+                            job.flagged ? "Installed · OpenClaw flagged its code" : "Installed"
+                          ) : (
+                            job.message || "Install failed"
+                          )}
+                        </p>
+                      )}
+                      {skill.state === "setup" && skill.keyName && data?.canToggle && (
+                        <KeyField peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
+                      )}
+                      {skill.state === "setup" && (
+                        <div className="claw-skill-actions">
+                          {data?.canInstall && skill.missing.bins.length > 0 && skill.install.length > 0 && job?.status !== "running" &&
+                            skill.install.map((option) => (
+                              <button
+                                key={option.id}
+                                className="claw-skill-chip"
+                                disabled={running || !!data?.busy}
+                                aria-label={`Install ${skill.name}${skill.install.length > 1 ? ` with ${option.kind}` : ""}`}
+                                onClick={() => setChecking({ name: skill.name, install: option.id })}
+                              >
+                                {skill.install.length > 1 ? `Install · ${option.kind}` : "Install"}
+                              </button>
+                            ))}
+                          {needs && data?.canSetup && (
+                            <button className="claw-skill-chip" disabled={!!busy} onClick={() => void setup()}>
+                              {busy === "setup" ? <Loader2 size={12} className="spin" /> : null}
+                              Set up on Mac
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {data?.canToggle && !skill.blocked && (
+                      <button
+                        role="switch"
+                        aria-checked={skill.state !== "off"}
+                        aria-label={`${skill.name} on`}
+                        className={`claw-skill-switch ${skill.state !== "off" ? "on" : ""}`}
+                        disabled={!!busy}
+                        onClick={() => void toggle(skill)}
+                      >
+                        <span />
+                      </button>
                     )}
                   </div>
-                  {data?.canToggle && !skill.blocked && (
-                    <button
-                      role="switch"
-                      aria-checked={skill.state !== "off"}
-                      aria-label={`${skill.name} on`}
-                      className={`claw-skill-switch ${skill.state !== "off" ? "on" : ""}`}
-                      disabled={!!busy}
-                      onClick={() => void toggle(skill)}
-                    >
-                      <span />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         );
       })}

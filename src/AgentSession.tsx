@@ -36,6 +36,7 @@ import {
   ListChecks,
   GitFork,
   AtSign,
+  ImageIcon,
   SearchCheck,
   Workflow,
   RotateCcw,
@@ -58,7 +59,7 @@ import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
-import { RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
+import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
 import { HelperBadge, TeamStrip, teamHelping, teamLedBy, teamToolLabel } from "./Teams";
 import MascotTyping from "./MascotTyping";
 import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
@@ -1693,6 +1694,7 @@ export default function AgentSessionView({
   const [modeError, setModeError] = useState("");
   const savingMode = useRef(false);
   const modeButton = useRef<HTMLButtonElement>(null);
+  const pickedMode = useRef<{ mode: string; at: number } | null>(null);
   const { view: live } = useSessionLive(peer, initial);
   const reviewCount = live.prompts.length || (info.asking ? 1 : 0);
   const selectedPrompt =
@@ -1816,7 +1818,11 @@ export default function AgentSessionView({
           else turn.again = true;
         }
         // A question answered elsewhere is simply gone from the new read.
-        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ...session }));
+        // A mode waiting for Claude's next step is gone once it's taken; a
+        // read begun before the pick reached Reach doesn't drop it.
+        const picked = pickedMode.current;
+        const keepPick = !session.pendingMode && picked && Date.now() - picked.at < 5000 && session.mode !== picked.mode;
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, pendingMode: keepPick ? picked.mode : undefined, ...session }));
         setItems((current) => {
           if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
@@ -2008,7 +2014,7 @@ export default function AgentSessionView({
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text), mentions: mentionedChats(raw.text) } : raw;
-      if (item.role === "user" && !item.text && !item.images && !item.skills?.length && !item.attachments?.length) continue;
+      if (item.role === "user" && !item.text && !item.images && !item.repeats && !item.skills?.length && !item.attachments?.length) continue;
       const last = out[out.length - 1];
       // A sub-agent stands on its own, not folded into the steps.
       if (item.kind === "agent") out.push({ type: "agent", item });
@@ -2279,6 +2285,8 @@ export default function AgentSessionView({
         modeChoices.find((m) => m.id === id || (id === "default" && m.id === "manual"))?.label ||
         modeLabel(agent, id);
   const modeShown = choice.mode || info.mode || null;
+  // Picked on the phone, waiting for Claude's next step (null once it's in).
+  const pendingMode = info.pendingMode && info.pendingMode !== info.mode ? info.pendingMode : null;
   const send = async () => {
     if (!canSend || sendingNow.current) return;
     // One of Codex's own commands ("/status") runs instead of being sent.
@@ -2424,7 +2432,7 @@ export default function AgentSessionView({
   const [details, setDetails] = useState(false);
   // A second opinion on a reply, or a relay for when this chat's agent
   // finishes (Relays.tsx). One just set up shows at once, before the list has it.
-  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" }>(null);
+  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" | "auto-continue" }>(null);
   const [ownRelays, setOwnRelays] = useState<Relay[]>([]);
   const shownRelays = useMemo(() => {
     const byId = new Map(ownRelays.map((r) => [r.id, r]));
@@ -2644,6 +2652,15 @@ export default function AgentSessionView({
                 onSelect(s);
               }}
             />
+            {(info.agent === "claude" || info.agent === "codex") && (
+              <button className="relay-menu-item" role="menuitem" onClick={() => {
+                setDetails(false);
+                setRelaySheet({ mode: "auto-continue" });
+              }}>
+                <Workflow size={18} />
+                <span className="move-item-text"><span>Auto-continue</span><small>Switch providers when usage runs out</small></span>
+              </button>
+            )}
             {/* Its work goes on to another agent (Relays.tsx). */}
             <button
               className="relay-menu-item"
@@ -2840,6 +2857,11 @@ export default function AgentSessionView({
                       {b.item.images} image{b.item.images === 1 ? "" : "s"}
                     </span>
                   )
+                ) : null}
+                {b.item.repeats ? (
+                  <span className="as-tag as-attachment" title="Already in this chat, not sent again">
+                    <ImageIcon size={13} /> Same image{b.item.repeats > 1 ? ` ×${b.item.repeats}` : ""}
+                  </span>
                 ) : null}
                 {b.item.skills?.map((name) => (
                   <span key={name} className="as-skill">{name}</span>
@@ -3145,7 +3167,7 @@ export default function AgentSessionView({
             anchor={modeButton.current}
             busy={modeSaving}
             error={modeError}
-            pending={info.pendingMode || undefined}
+            pending={pendingMode || undefined}
             onClose={() => setChoosingMode(false)}
             onPick={async (id) => {
               if (savingMode.current) return;
@@ -3158,10 +3180,11 @@ export default function AgentSessionView({
                   setInfo((old) => ({ ...old, mode: id }));
                   setChoice((old) => ({ ...old, mode: undefined }));
                 } else if (result.next === "request") {
-                  // Claude Code there takes it with its next request: the
-                  // mode it's in stays shown, and the menu says what's coming.
-                  setInfo((old) => ({ ...old, pendingMode: id }));
-                  return;
+                  // Claude Code there takes it at its next step: the button
+                  // shows it, waiting, until the chat says it's in.
+                  const pending = id === "manual" ? "default" : id;
+                  pickedMode.current = { mode: pending, at: Date.now() };
+                  setInfo((old) => ({ ...old, pendingMode: pending }));
                 } else setChoice((old) => ({ ...old, mode: id }));
                 setChoosingMode(false);
               } catch (error) {
@@ -3425,13 +3448,15 @@ export default function AgentSessionView({
                 ref={modeButton}
                 className={`as-mode ${agent}`}
                 aria-expanded={choosingMode}
+                aria-label={pendingMode ? `${modeName(pendingMode)} from Claude's next step` : undefined}
                 onClick={() => {
                   setChoosingMode(!choosingMode);
                   setPicking(false);
                 }}
               >
                 {agent === "codex" && <ShieldCheck size={14} />}
-                <span>{modeShown ? modeName(modeShown) : "Default"}</span>
+                {pendingMode && <Loader2 size={14} className="as-mode-wait" aria-hidden />}
+                <span>{pendingMode ? modeName(pendingMode) : modeShown ? modeName(modeShown) : "Default"}</span>
               </button>
             )}
             {agent === "codex" && (
@@ -3524,6 +3549,10 @@ export default function AgentSessionView({
           onClose={() => setRelaySheet(null)}
           onStarted={relayStarted}
         />
+      )}
+      {relaySheet?.mode === "auto-continue" && (
+        <AutoContinueSheet peer={peer} session={info} health={health}
+          onClose={() => setRelaySheet(null)} onStarted={relayStarted} />
       )}
       {relaySheet?.mode === "relay" && (
         <RelaySheet

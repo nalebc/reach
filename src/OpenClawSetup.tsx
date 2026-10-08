@@ -90,21 +90,25 @@ export function cronFor(repeat: Repeat, time: string, day: number, custom: strin
   return custom.trim().replace(/\s+/g, " ");
 }
 
+export type ScheduleDraft = { name: string; message: string; repeat?: Repeat; time?: string; day?: number };
 export function ScheduleForm({
   peer,
   onAdded,
   onCancel,
+  initial,
 }: {
   peer: Peer;
   onAdded: () => void;
   onCancel: () => void;
+  // A suggestion tapped on Scheduled: its words, still editable.
+  initial?: ScheduleDraft;
 }) {
   const { catalog } = useClawCatalog(peer);
-  const [name, setName] = useState("");
-  const [message, setMessage] = useState("");
-  const [repeat, setRepeat] = useState<Repeat>("daily");
-  const [time, setTime] = useState("09:00");
-  const [day, setDay] = useState(1);
+  const [name, setName] = useState(initial?.name || "");
+  const [message, setMessage] = useState(initial?.message || "");
+  const [repeat, setRepeat] = useState<Repeat>(initial?.repeat || "daily");
+  const [time, setTime] = useState(initial?.time || "09:00");
+  const [day, setDay] = useState(initial?.day ?? 1);
   const [custom, setCustom] = useState("");
   const [agentId, setAgentId] = useState("");
   const [announce, setAnnounce] = useState(false);

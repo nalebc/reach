@@ -268,7 +268,7 @@ export function routes(app, client, ctx) {
       skills,
       canToggle: client.can("skills.update"),
       canInstall: client.can("skills.install"),
-      canSetup: typeof ctx.openCommand === "function",
+      canSetup: client.can("skills.update"),
       busy: !!installing,
     });
   });
@@ -368,10 +368,30 @@ export function routes(app, client, ctx) {
     res.json({ started: true, installing: installs.get(name) });
   });
 
-  // API keys and env never go through the phone: OpenClaw asks on the Mac.
+  // Only values declared missing by this skill, written directly to OpenClaw.
   app.post(`${base}/skills/setup`, async (req, res) => {
-    if (typeof ctx.openCommand !== "function") throw fail(409, "Reach can't open OpenClaw's setup here.");
     authorize(req)();
-    res.json({ terminal: await ctx.openCommand("openclaw configure --section skills", "OpenClaw skills", req) });
+    const { key, env } = req.body || {};
+    validName(key);
+    if (!env || typeof env !== "object" || Array.isArray(env) || !Object.keys(env).length)
+      throw fail(400, "Enter the missing skill values.");
+    const data = await status();
+    if (!data || !client.can("skills.update")) throw fail(409, "This OpenClaw can't change skills.");
+    const skill = data.skills.find((s) => (s?.skillKey ?? s?.name) === key);
+    if (!skill) throw fail(404, "This skill isn't available anymore.");
+    const allowed = new Set(skill.missing?.env || []);
+    const values = Object.create(null);
+    for (const [name, value] of Object.entries(env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) || !allowed.has(name) ||
+          typeof value !== "string" || !value.trim() || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value))
+        throw fail(400, "Enter valid values for this skill's missing settings.");
+      values[name] = value.trim();
+    }
+    try {
+      await client.call("skills.update", { skillKey: key, env: values }, authorize(req));
+    } catch {
+      throw fail(409, "OpenClaw didn't save these values. Try again.");
+    }
+    res.json({ saved: true });
   });
 }

@@ -10,8 +10,9 @@
 // owner's approved devices, and Reach not paused.
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { agentName } from "./move.mjs";
-import { turnOutcome } from "./turn-watch.mjs";
+import { agentName, resumeText } from "./move.mjs";
+import { canContinue, checkContinuePriority, continueUnavailable } from "./auto-continue.mjs";
+import { turnOutcome, usageLimited } from "./turn-watch.mjs";
 import { CODEX_MODES } from "./codex.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { backMessage, relayMessage, reportMessage, reviewMessage, turnMaterial } from "./chat-context.mjs";
@@ -21,7 +22,7 @@ import { clipMiddle } from "./move.mjs";
 // OpenClaw joins both when Reach has its Gateway (agentChats below).
 export const RELAY_AGENTS = ["codex", "claude"];
 const SOURCES = ["codex", "claude", "gemini"];
-const KINDS = ["build", "review", "send", "back", "report", "record"];
+const KINDS = ["build", "review", "send", "back", "report", "record", "post"];
 export const MAX_STEPS = 3;
 // A relay left waiting this long stops (set it up again if still wanted).
 export const WAIT_MS = 24 * 60 * 60 * 1000;
@@ -127,8 +128,10 @@ const clean = (text, max) => String(text ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-
 
 // The steps as asked for, checked: one to three, each a known kind; "back"
 // needs a chat before the one it follows. "report" (a helper's result to its
-// team's lead, teams.mjs) and "record" (how a workflow's task ended,
-// workflows.mjs) are Reach's own: never ones the phone sets up.
+// team's lead, teams.mjs), "record" (how a workflow's task ended,
+// workflows.mjs) and "post" (the last answer back to the WhatsApp or
+// Telegram chat that asked: `postBack` on start) are Reach's own: never
+// steps the phone sets up.
 // OpenClaw may be a step's agent when Reach has its Gateway (`agents`); a
 // chat picked to send to, or sent back to, must then be one Reach made.
 export function checkSteps(steps, from, agents = RELAY_AGENTS) {
@@ -142,7 +145,7 @@ export function checkSteps(steps, from, agents = RELAY_AGENTS) {
       if (!agents.includes(step.agent)) throw bad(named);
       return { kind, agent: step.agent, ...(instructions ? { instructions } : {}) };
     }
-    if (kind === "report" || kind === "record") throw bad("Unknown step.");
+    if (kind === "report" || kind === "record" || kind === "post") throw bad("Unknown step.");
     if (kind === "send") {
       const to = { agent: step.to?.agent, id: step.to?.id };
       if (!agents.includes(to.agent) || !chatId(to.agent, to.id)) throw bad(agents.includes("openclaw") ? "Pick a Codex, Claude Code or OpenClaw chat." : "Pick a Codex or Claude Code chat.");
@@ -230,6 +233,8 @@ export function createRelays({
   const view = (r) => ({
     id: r.id,
     state: r.state,
+    ...(r.trigger ? { trigger: r.trigger } : {}),
+    ...(r.priority ? { priority: [...r.priority] } : {}),
     problem: r.problem || "",
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -259,8 +264,65 @@ export function createRelays({
   const fire = async (r, page, outcome, quiet = false) => {
     const reason = authorized(r.owner);
     if (reason) return void stop(r, reason);
-    const step = r.steps[r.next];
+    let step = r.steps[r.next];
     const src = r.chain.at(-1);
+    if (r.trigger === "usage") {
+      if (r.priority) {
+        let health;
+        try {
+          health = await chats.health({ fresh: true });
+        } catch {
+          if (r.state === "waiting") stop(r, "Couldn't check provider availability. Set up auto-continue again to retry.");
+          return;
+        }
+        // Cancellation or revocation may arrive while health is loading.
+        if (r.state !== "waiting") return;
+        const used = new Set(r.chain.map((c) => c.agent));
+        const target = r.priority.find((a) => !used.has(a) && !continueUnavailable(a, health));
+        if (!target) return void stop(r, "No unused provider in your priority order is available. Check sign-in and usage, then enable auto-continue again.");
+        r.next = r.steps.findIndex((s) => s.agent === target);
+        step = r.steps[r.next];
+      }
+      const denied = authorized(r.owner);
+      if (denied) return void stop(r, denied);
+      r.state = "sending";
+      r.updatedAt = now();
+      candidates.delete(r.id);
+      save();
+      try {
+        const moved = await sessions.move(src.agent, src.id, {
+          to: step.agent, resume: step.agent !== "openclaw", owner: r.owner, authorize: allowed(r.owner),
+          ...(src.agent === "openclaw" && src.cwd ? { cwd: folder(src.cwd) } : {}),
+        });
+        if (step.agent === "openclaw") {
+          try {
+            await sessions.send("openclaw", moved.id, {
+              text: `${resumeText(agentName(src.agent))}\n\n${CLAW_NOTE}`,
+              requestId: `continue-${r.id}-${r.next}`, authorize: allowed(r.owner),
+            });
+            moved.resumed = true;
+          } catch (e) {
+            moved.resumed = false;
+            moved.resumeError = e?.message || "The chat moved, but couldn't continue.";
+          }
+        }
+        r.chain.push({ agent: moved.agent, id: moved.id, title: src.title, cwd: src.cwd });
+        r.sent.push({ kind: "build", to: { agent: moved.agent, id: moved.id }, at: now() });
+        r.next++;
+        const more = r.priority?.some((a) => canContinue(a) && !r.chain.some((c) => c.agent === a));
+        r.state = moved.resumed ? more ? "waiting" : "done" : "stopped";
+        r.since = null;
+        r.expect = "";
+        r.problem = moved.resumed ? "" : moved.resumeError || "The chat moved, but couldn't continue. Open it to retry.";
+        r.updatedAt = now();
+        save();
+        void say(r, moved.resumed ? "Auto-continued" : "Auto-continue stopped",
+          moved.resumed ? `${agentName(src.agent)} ran out of usage. Continued in ${agentName(moved.agent)}.` : r.problem);
+      } catch (e) {
+        stop(r, e?.message || "Couldn't continue in the other agent.");
+      }
+      return;
+    }
     // A helper's turn that ended on an error or a Stop is still reported to
     // its lead (what went wrong); every other step needs a reply.
     const material =
@@ -286,6 +348,32 @@ export function createRelays({
     const from = agentName(src.agent);
     const title = page.session?.title || src.title || "";
     const cwd = page.session?.cwd || src.cwd || "";
+    // The last answer, as it is, to the chat that asked (r.chain[0]).
+    if (step.kind === "post") {
+      const origin = r.chain[0];
+      r.state = "sending";
+      r.updatedAt = now();
+      candidates.delete(r.id);
+      save();
+      try {
+        const posted = await openClaw.post(
+          { key: origin.id, text: clipMiddle(material.answer, 20000), requestId: `relay-${r.id}-post` },
+          allowed(r.owner),
+        );
+        r.sent.push({ kind: "post", to: { agent: origin.agent, id: origin.id }, at: now() });
+        r.next++;
+        r.state = "done";
+        r.problem = "";
+        r.updatedAt = now();
+        save();
+        const app = { whatsapp: "WhatsApp", telegram: "Telegram" }[posted?.channel] || "its app";
+        void say(r, `${origin.title || "OpenClaw"} · Posted`, `${agentName(src.agent)}'s answer is on ${app}.`);
+        return origin;
+      } catch (e) {
+        stop(r, e?.message || "It couldn't be posted.");
+        throw e;
+      }
+    }
     r.state = "sending";
     r.updatedAt = now();
     candidates.delete(r.id);
@@ -400,7 +488,10 @@ export function createRelays({
           const items = page.items || [];
           const outcome = turnOutcome(items);
           const ours = startsWith(outcome.request, r.expect);
-          if (outcome.kind === "reply" && ours && outcome.item.id !== r.since) {
+          const eligible = r.trigger === "usage"
+            ? outcome.kind === "error" && usageLimited(src.agent, outcome.item)
+            : outcome.kind === "reply";
+          if (eligible && ours && outcome.item.id !== r.since) {
             const seen = candidates.get(r.id);
             if (seen?.item === outcome.item.id && now() - seen.at >= settleMs) {
               await fire(r, page, outcome).catch(() => {});
@@ -424,7 +515,7 @@ export function createRelays({
             const end = items.at(-1)?.id;
             if (ours && (outcome.kind === "error" || outcome.kind === "stopped") && end !== r.since && end !== r.noted) {
               r.noted = end;
-              r.problem = `${agentName(src.agent)} ${outcome.kind === "stopped" ? "was stopped" : "ended on an error"}. This waits for its next reply.`;
+              r.problem = r.trigger === "usage" ? "Auto-continue waits for a usage limit; other errors and stops do not switch providers." : `${agentName(src.agent)} ${outcome.kind === "stopped" ? "was stopped" : "ended on an error"}. This waits for its next reply.`;
               r.updatedAt = now();
               save();
             }
@@ -457,15 +548,33 @@ export function createRelays({
     // A relay that starts at once answers with the chat it went to.
     // An OpenClaw chat isn't in a folder: a build or review from it needs
     // one picked (`cwd`, checked as a new chat's).
-    async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "" }) {
+    // postBack (Oct 8, the owner's choice per relay): the last answer is
+    // posted to the OpenClaw chat this started from, the one-to-one WhatsApp
+    // or Telegram chat that asked (openClaw.post: never a group or channel).
+    async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "", postBack = false, trigger = "reply", priority = null }) {
       if (!sources.includes(from?.agent) || !chatId(from.agent, from?.id)) throw bad("Unknown chat.", 404);
-      const checked = checkSteps(steps, from, agents);
+      const ordered = priority === null ? null : checkContinuePriority(priority);
+      if (ordered && (trigger !== "usage" || steps !== undefined)) throw bad("Use a priority order instead of relay steps for auto-continue.");
+      const checked = ordered ? ordered.filter((a) => a !== from.agent).map((agent) => ({ kind: "build", agent })) : checkSteps(steps, from, agents);
+      if (ordered && (!canContinue(from.agent) || !ordered.includes(from.agent) ||
+          !checked.some((s) => canContinue(s.agent)) || atOnce || item || postBack))
+        throw bad("Include this provider and at least one other provider Reach can continue in.");
+      if (!["reply", "usage"].includes(trigger)) throw bad("Unknown relay trigger.");
+      if (trigger === "usage" && !ordered && (!RELAY_AGENTS.includes(from.agent) || checked.length !== 1 ||
+          checked[0].kind !== "build" || !RELAY_AGENTS.includes(checked[0].agent) || checked[0].agent === from.agent ||
+          atOnce || item || postBack || checked[0].instructions))
+        throw bad("Auto-continue needs one other provider: Codex or Claude Code.");
+      if (postBack !== false) {
+        if (postBack !== true || from.agent !== "openclaw" || !openClaw?.post)
+          throw bad("Only a WhatsApp or Telegram chat in OpenClaw can get the result back.");
+        checked.push({ kind: "post" });
+      }
       const reason = authorized(owner);
       if (reason) throw bad(reason, 403);
       const dir = from.agent === "openclaw" && cwd ? folder(cwd) : "";
       if (from.agent === "openclaw" && !dir && ["build", "review"].includes(checked[0].kind) && checked[0].agent !== "openclaw")
         throw bad("Pick the folder to work in.");
-      if (relays.some((r) => r.state === "waiting" && r.chain.length === 1 && r.chain[0].agent === from.agent && r.chain[0].id === from.id && !atOnce))
+      if (relays.some((r) => ["waiting", "sending"].includes(r.state) && r.chain.some((c) => c.agent === from.agent && c.id === from.id) && !atOnce))
         throw bad("This chat already has a relay waiting. Cancel it first.", 409);
       const page = await sessions.read(from.agent, from.id, { limit: 200 });
       const items = page.items || [];
@@ -477,6 +586,10 @@ export function createRelays({
           if (step.to.agent === "openclaw" && !target.session.writable) throw bad("Reach writes only in OpenClaw chats it made. Pick one of those.");
           step.to = { ...step.to, title: target.session.title || "", cwd: target.session.cwd || "" };
         }
+      const denied = authorized(owner);
+      if (denied) throw bad(denied, 403);
+      if (!atOnce && relays.some((r) => ["waiting", "sending"].includes(r.state) && r.chain.some((c) => c.agent === from.agent && c.id === from.id)))
+        throw bad("This chat already has a relay waiting. Cancel it first.", 409);
       const r = {
         id: randomUUID(),
         owner,
@@ -484,11 +597,13 @@ export function createRelays({
         updatedAt: now(),
         waitingSince: now(),
         steps: checked,
+        trigger,
+        ...(ordered ? { priority: ordered } : {}),
         next: 0,
         chain: [{ agent: from.agent, id: from.id, title: page.session?.title || "", cwd: page.session?.cwd || dir }],
         // Waiting: a reply newer than the chat's end now (any reply ending
         // the turn it's in, when it's working now).
-        since: BUSY.has(page.session?.status) ? null : items.at(-1)?.id || null,
+        since: trigger === "usage" || BUSY.has(page.session?.status) ? null : items.at(-1)?.id || null,
         expect: "",
         state: "waiting",
         problem: "",

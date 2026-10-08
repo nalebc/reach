@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { visibleUserText } from "./message-text.mjs";
+import { repeatedImages, visibleUserText } from "./message-text.mjs";
 import { codexWaitingApproval } from "./codex-asks.mjs";
 import { codexUsage } from "./account-usage.mjs";
 import { readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
@@ -77,17 +77,20 @@ export function codexItem({ item, turnId, startedAtMs }, { maxOutput = 4000 } = 
       const replies = only == null ? null : readQuestionReply(only);
       if (replies)
         return { id: item.id, role: "user", kind: "text", text: replies.map((r) => r.answer).join("\n\n"), replies, at, turnId };
-      const text = visibleUserText(content
+      const said = content
         .filter((c) => c?.type === "text" && typeof c.text === "string")
         .map((c) => c.text)
-        .join("\n"));
+        .join("\n");
+      const text = visibleUserText(said);
       const images = content.filter((c) => c?.type === "image" || c?.type === "localImage").length;
+      // Pictures the chat already had, sent as a note (image-repeats.mjs).
+      const repeats = repeatedImages(said);
       // Skills picked from "/" go with the message, as the Codex app shows them.
       const skills = content.filter((c) => c?.type === "skill" && c.name).map((c) => String(c.name));
       // A voice note or file it took as is: named, never dropped.
       const attachments = partLabels(content);
-      return text || images || skills.length || attachments.length
-        ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(skills.length ? { skills } : {}), ...(attachments.length ? { attachments } : {}), at, turnId }
+      return text || images || repeats || skills.length || attachments.length
+        ? { id: item.id, role: "user", kind: "text", text, ...(images ? { images } : {}), ...(repeats ? { repeats } : {}), ...(skills.length ? { skills } : {}), ...(attachments.length ? { attachments } : {}), at, turnId }
         : null;
     }
     case "agentMessage": {
