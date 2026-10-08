@@ -394,6 +394,7 @@ export type RelayStep = {
 };
 export type Relay = {
   trigger?: "reply" | "usage";
+  priority?: string[];
   id: string;
   state: "waiting" | "sending" | "done" | "stopped" | "uncertain";
   problem: string;
@@ -411,7 +412,7 @@ export type Relay = {
 // when the chat's agent next finishes. opened: the chat it went to.
 export const startRelay = (
   peer: Peer,
-  body: { from: { agent: string; id: string }; steps: RelayStep[]; trigger?: "reply" | "usage"; now?: boolean; item?: string; cwd?: string; postBack?: boolean },
+  body: { from: { agent: string; id: string }; steps?: RelayStep[]; trigger?: "reply" | "usage"; priority?: string[]; now?: boolean; item?: string; cwd?: string; postBack?: boolean },
 ) => post<{ relay: Relay; opened?: { agent: string; id: string } }>(peer, "/api/sessions/relays", body);
 export const cancelRelay = (peer: Peer, id: string) =>
   post<{ cancelled: boolean }>(peer, `/api/sessions/relays/${encodeURIComponent(id)}/cancel`);

@@ -45,7 +45,7 @@ test("relays are set up, listed and cancelled by the owner's devices only", asyn
     const started = await call("/api/sessions/relays", owner.token, body);
     assert.equal(started.status, 200);
     assert.deepEqual((await started.json()).opened, { agent: "codex", id: "new-1" });
-    assert.deepEqual(calls[0], ["start", { owner: owner.clientId, from: body.from, steps: body.steps, trigger: "reply", now: true, item: "a1" }]);
+    assert.deepEqual(calls[0], ["start", { owner: owner.clientId, from: body.from, steps: body.steps, trigger: "reply", priority: null, now: true, item: "a1" }]);
     assert.deepEqual(await (await call("/api/sessions/relays", owner.token)).json(), { relays: [waiting] });
     // The chat list carries them, so phones see progress with it.
     const listed = await (await call("/api/sessions", owner.token)).json();

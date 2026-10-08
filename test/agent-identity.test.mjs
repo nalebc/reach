@@ -32,6 +32,10 @@ test("every surface names the agents the same way", () => {
 });
 
 test("OpenClaw's send button has its colors outside a chat page (it was transparent)", () => {
-  assert.match(src("openclaw.css"), /\.claw-send \{[^}]*background: var\(--claw-white\);[^}]*color: var\(--claw-white-ink\);/);
-  assert.match(src("OpenClawSpace.tsx"), /className="claw-send"/);
+  const css = src("openclaw.css");
+  assert.match(css, /\.claw-app,[^{]*\{[^}]*--claw-white: #f3f3f3;[^}]*--claw-white-ink: #0d0d0d;/);
+  assert.match(css, /\.claw-send \{[^}]*background: var\(--claw-white\);[^}]*color: var\(--claw-white-ink\);/);
+  const chat = src("OpenClawSpace.tsx");
+  assert.match(chat, /className="claw-conversation claw-app"/);
+  assert.match(chat, /className=\{`claw-send\$\{text\.trim\(\) \? " ready" : ""\}`\}/);
 });

@@ -171,8 +171,9 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
+  const [maintaining, setMaintaining] = useState(false);
   const [armed, setArmed] = useState(false);
-  const [busy, setBusy] = useState<"" | "restart" | "doctor" | "update">("");
+  const [busy, setBusy] = useState<"" | "restart">("");
   const [note, setNote] = useState("");
   const [problem, setProblem] = useState("");
   // A second tap restarts; the first only asks, for a few seconds.
@@ -212,14 +213,14 @@ function Fixes({ peer, onRestarted }: { peer: Peer; onRestarted: () => void }) {
         <button
           type="button"
           className={`claw-secondary ${armed ? "armed" : ""}`}
-          disabled={!!busy}
+          disabled={!!busy || maintaining}
           onClick={restart}
         >
           {busy === "restart" && <Loader2 size={14} className="spin" />}
           {busy === "restart" ? "Restarting…" : armed ? "Tap to restart" : "Restart"}
         </button>
       </div>
-      <ClawMaintenance peer={peer} onChanged={onRestarted} disabled={!!busy} />
+      <ClawMaintenance peer={peer} onChanged={onRestarted} onBusyChange={setMaintaining} disabled={!!busy} />
       {note && <p className="claw-note claw-health-note">{note}</p>}
       {problem && (
         <p className="claw-error" role="alert">
