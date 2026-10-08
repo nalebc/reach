@@ -1664,3 +1664,75 @@ test("a team lead's flags go with every launch, and none once its team has stopp
   hooked = false;
   assert.equal((await relaunch("again")).includes("--mcp-config"), false, "a stopped team's lead is an ordinary chat");
 });
+
+// Oct 8: an agent's restart ended Reach's Claude Code mid-step ("Claw UI
+// rebuild") and nothing ever continued it. The chats mid-turn are kept on
+// disk; the next Reach finds them, once.
+test("a chat cut off by Reach quitting is handed to the next Reach, once", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-working-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const workingFile = path.join(dir, "claude-working.json");
+  const claude = fakeClaude();
+  const h = host(claude, { workingFile });
+  await h.send(ID, { text: "fix it", cwd: "/work/app" });
+  assert.deepEqual(h.working(), [ID]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(workingFile, "utf8")).chats.map((c) => c.id), [ID]);
+  // A finished turn leaves nothing to continue.
+  claude.last().print({ type: "result", subtype: "success", is_error: false, result: "Done" });
+  assert.deepEqual(h.working(), []);
+  assert.equal(fs.existsSync(workingFile), false);
+  await h.send(ID, { text: "and the tests", cwd: "/work/app" });
+  h.close();
+  const kept = JSON.parse(fs.readFileSync(workingFile, "utf8"));
+  assert.ok(Number.isFinite(kept.stoppedAt));
+  const next = host(fakeClaude(), { workingFile });
+  assert.deepEqual(next.interrupted(), [{ id: ID, cwd: "/work/app" }]);
+  assert.deepEqual(next.interrupted(), []);
+  assert.equal(fs.existsSync(workingFile), false);
+  // Left long ago (Reach stopped yesterday): not continued.
+  fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID }], stoppedAt: Date.now() - 60 * 60 * 1000 }));
+  assert.deepEqual(host(fakeClaude(), { workingFile }).interrupted(), []);
+});
+
+test("the next Reach continues a chat the last one cut off, the way any message reaches it", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-continue-"));
+  const workingFile = path.join(dir, "claude-working.json");
+  fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site" }], stoppedAt: Date.now() }));
+  const claude = fakeClaude(), h = host(claude, { workingFile });
+  const sessions = createAgentSessions({
+    dataDir: dir,
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}) },
+    claude: {
+      health: async () => ({ signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [] }),
+    },
+    claudeHost: h,
+    claudeImports: { add: async () => {}, close() {} },
+    live: async () => new Map(),
+    signIn: {},
+    continueMs: 1,
+    open: async () => {},
+  });
+  t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  sessions.warm();
+  await settle(50);
+  const proc = claude.last();
+  assert.ok(proc, "Claude Code was resumed");
+  assert.deepEqual(proc.args.slice(proc.args.indexOf("--resume"), proc.args.indexOf("--resume") + 2), ["--resume", ID]);
+  assert.equal(proc.options.cwd, "/work/site");
+  const sent = proc.lines.find((m) => m.type === "user");
+  assert.match(sent.message.content[0].text, /^Reach restarted while you were working/);
+});
+
+test("a chat whose Claude Code dies before Reach's close is still continued", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-cutoff-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const workingFile = path.join(dir, "claude-working.json");
+  const claude = fakeClaude();
+  const h = host(claude, { workingFile });
+  await h.send(ID, { text: "fix it", cwd: "/work/app" });
+  claude.last().exit(143);
+  h.close();
+  assert.deepEqual(host(fakeClaude(), { workingFile }).interrupted(), [{ id: ID, cwd: "/work/app" }]);
+});

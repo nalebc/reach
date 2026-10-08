@@ -43,6 +43,7 @@ export function stepWords(step: RelayStep, chain: Relay["chain"] = [], n = 0, st
   if (step.kind === "build") return `${who} builds it`;
   if (step.kind === "review") return `${who} reviews it`;
   if (step.kind === "send") return `to “${step.to?.title || "a chat"}”`;
+  if (step.kind === "post") return "posted back to the chat that asked";
   const before = chain[n - 1]?.agent || (n >= 2 ? steps[n - 2]?.agent || steps[n - 2]?.to?.agent : chain[0]?.agent);
   return `the review goes back to ${before ? agentLabel(before) : "the builder"}`;
 }
@@ -225,6 +226,7 @@ export function SecondOpinionSheet({
   session,
   item,
   cwd,
+  postTo,
   health,
   logos,
   onClose,
@@ -235,6 +237,9 @@ export function SecondOpinionSheet({
   item?: string;
   // The folder to work in, for a chat that has none (OpenClaw's).
   cwd?: string;
+  // An OpenClaw chat with a person on WhatsApp or Telegram: the app's name,
+  // offered as a switch to post the answer back there.
+  postTo?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
@@ -244,6 +249,8 @@ export function SecondOpinionSheet({
   const [reviewer, setReviewer] = useState(agents[0] || "");
   const canReturn = session.agent === "codex" || session.agent === "claude";
   const [back, setBack] = useState(canReturn);
+  // Off until chosen, each time (the owner's choice per relay, Oct 8).
+  const [postBack, setPostBack] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const from = agentLabel(session.agent);
@@ -252,7 +259,16 @@ export function SecondOpinionSheet({
     setProblem("");
     try {
       const steps: RelayStep[] = [{ kind: "review", agent: reviewer }, ...(back ? [{ kind: "back" as const }] : [])];
-      onStarted(await startRelay(peer, { from: { agent: session.agent, id: session.id }, steps, now: true, ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
+      onStarted(
+        await startRelay(peer, {
+          from: { agent: session.agent, id: session.id },
+          steps,
+          now: true,
+          ...(item ? { item } : {}),
+          ...(cwd ? { cwd } : {}),
+          ...(postTo && postBack ? { postBack: true } : {}),
+        }),
+      );
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -285,6 +301,12 @@ export function SecondOpinionSheet({
               <span>Send the review back here</span>
             </label>
           )}
+          {postTo && (
+            <label className="relay-switch">
+              <input type="checkbox" role="switch" checked={postBack} disabled={busy} onChange={(e) => setPostBack(e.target.checked)} />
+              <span>Post the answer on {postTo}</span>
+            </label>
+          )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={busy || !reviewer} onClick={() => void ask()}>
             {busy ? <Loader2 size={16} className="spin" /> : `Ask ${reviewer === session.agent ? `a new ${agentLabel(reviewer)} chat` : agentLabel(reviewer)}`}
@@ -298,7 +320,7 @@ export function SecondOpinionSheet({
 }
 
 // What each kind of step does, as its tile says it.
-const VERB: Record<RelayStep["kind"], string> = { build: "builds", review: "reviews", back: "fixes", send: "gets it" };
+const VERB: Record<RelayStep["kind"], string> = { build: "builds", review: "reviews", back: "fixes", send: "gets it", post: "posts it" };
 // The step that naturally comes next: a review of what was built, then the fixes.
 function nextStep(steps: RelayStep[], from: string, agents: string[]): RelayStep | null {
   const last = steps.at(-1);
@@ -339,6 +361,7 @@ export function RelaySheet({
   sessions,
   cwd,
   item,
+  postTo,
   health,
   logos,
   onClose,
@@ -352,11 +375,14 @@ export function RelaySheet({
   cwd?: string;
   // From one reply further up: it goes on now, from that reply.
   item?: string;
+  // As SecondOpinionSheet's: the app the last answer can be posted on.
+  postTo?: string;
   health: AgentHealth[];
   logos: AgentLogos;
   onClose: () => void;
   onStarted: (started: RelayStarted) => void;
 }) {
+  const [postBack, setPostBack] = useState(false);
   const agents = relayAgents(health);
   const from = session.agent;
   const first = othersFirst(from, agents)[0];
@@ -396,7 +422,7 @@ export function RelaySheet({
           : s,
     );
     try {
-      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: !!item || when === "now", ...(item ? { item } : {}), ...(cwd ? { cwd } : {}) }));
+      onStarted(await startRelay(peer, { from: { agent: from, id: session.id }, steps: out, now: !!item || when === "now", ...(item ? { item } : {}), ...(cwd ? { cwd } : {}), ...(postTo && postBack ? { postBack: true } : {}) }));
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
@@ -505,6 +531,12 @@ export function RelaySheet({
             </div>
           )}
           <Rules />
+          {postTo && (
+            <label className="relay-switch">
+              <input type="checkbox" role="switch" checked={postBack} disabled={busy} onChange={(e) => setPostBack(e.target.checked)} />
+              <span>Post the last answer on {postTo}</span>
+            </label>
+          )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={!ready || busy} onClick={() => void go()}>
             {busy ? <Loader2 size={16} className="spin" /> : when === "now" && !working && hasReply ? "Relay now" : "Start relay"}

@@ -106,6 +106,9 @@ const claudeModelName = (id) => {
   return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : null;
 };
 
+// What a chat Reach was running hears when Reach comes back after cutting it off.
+export const CONTINUE_AFTER_RESTART = "Reach restarted while you were working and cut off your last step. Continue where you left off.";
+
 export function createAgentSessions({
   // A team's lead chat (teams.mjs): kept out of the Claude app (its process
   // wouldn't have the team's tools), and what it's launched or resumed with.
@@ -139,6 +142,7 @@ export function createAgentSessions({
   claudeHost = createClaudeHost({
     locate: () => locateClaude(),
     rewindFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-rewinds.json"),
+    workingFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-working.json"),
     extraArgs: (id) => {
       const team = teamExtras("claude", id);
       return team === false ? false : team?.extra || null;
@@ -163,6 +167,8 @@ export function createAgentSessions({
   takeOverMs = 3000,
   // How often a message waiting for the Claude app checks again.
   queueMs = 1500,
+  // How soon after start the chats the last Reach cut off are continued.
+  continueMs = 3000,
   // How often one the Claude app hasn't taken tries again, when the Mac
   // doesn't say what it waits for (the app in front, see frontmost()).
   appRetryMs = 5000,
@@ -1548,8 +1554,29 @@ export function createAgentSessions({
         mode: null,
       };
     },
+    // The Claude chats Reach runs that are mid-turn now, by title: a restart
+    // would cut them off (restart-requests.mjs waits for them).
+    working() {
+      const ids = claudeHost.working?.() || [];
+      const known = listKept?.value?.sessions || [];
+      return ids.map((id) => ({ id, title: known.find((s) => s.agent === "claude" && s.id === id)?.title || "A Claude chat" }));
+    },
     // Connects to Codex and indexes Claude transcripts before the phone asks.
     warm() {
+      // Chats the last Reach left mid-turn (a restart, a crash) go on: told
+      // so the way any message reaches them, into the Claude app when it
+      // lists the chat, else Reach's own Claude Code.
+      const left = claudeHost.interrupted?.() || [];
+      if (left.length) {
+        const api = this;
+        const resume = (chat, tries = 0) => {
+          if (closed) return;
+          api.send("claude", chat.id, { text: CONTINUE_AFTER_RESTART }).catch(() => {
+            if (tries < 4) setTimeout(() => resume(chat, tries + 1), 30000).unref?.();
+          });
+        };
+        setTimeout(() => left.forEach((chat) => resume(chat)), continueMs).unref?.();
+      }
       // The helpers that read and press an app's card, built just after
       // start (2-5 s each, cached by their source), so the first card opened
       // on the phone doesn't wait for a build.

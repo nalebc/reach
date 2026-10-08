@@ -11,6 +11,9 @@ import { fail, isPlainRecord } from "./core.mjs";
 export const restartRequestFile = (dataDir) =>
   path.join(dataDir, "restart-request.json");
 const LIFETIME = 30 * 60 * 1000;
+// "Restart when done" waits this long at most (a background dev server
+// counts as working and would hold it forever).
+const WAIT_LIMIT = 4 * 60 * 60 * 1000;
 
 // The command's side: one request at a time; asking again keeps it.
 export function askRestart(dataDir, { app = "", now = Date.now() } = {}) {
@@ -41,7 +44,7 @@ function readRequest(file, now = Date.now()) {
       Number.isFinite(r.expiresAt) &&
       r.expiresAt > now
     )
-      return { ...r, app: typeof r.app === "string" ? r.app.slice(0, 80) : "" };
+      return { ...r, app: typeof r.app === "string" ? r.app.slice(0, 80) : "", after: r.after === true };
   } catch {
     /* none */
   }
@@ -49,7 +52,10 @@ function readRequest(file, now = Date.now()) {
 }
 
 // Reach's side: the open request, answering it, and a nudge when one arrives.
-export function restartRequests({ dataDir, restart, onChange = () => {}, watch = fs.watch }) {
+// A restart ends the Claude chats Reach runs mid-turn (Oct 8, "Claw UI
+// rebuild" stopped mid-step): with any working, the card names them and
+// "Restart when they finish" waits for the last one.
+export function restartRequests({ dataDir, restart, working = () => [], onChange = () => {}, watch = fs.watch, everyMs = 3000 }) {
   const file = restartRequestFile(dataDir);
   // Reach just started: whatever restart was asked for has happened.
   fs.rmSync(file, { force: true });
@@ -63,19 +69,53 @@ export function restartRequests({ dataDir, restart, onChange = () => {}, watch =
   } catch {
     /* the regular scan still finds it */
   }
+  const chats = () => {
+    try {
+      return working() || [];
+    } catch {
+      return [];
+    }
+  };
+  // A restart waiting for chats: checked on a beat, restarts once none work.
+  let timer = null;
+  const wait = () => {
+    clearInterval(timer);
+    timer = setInterval(() => {
+      const r = readRequest(file);
+      if (!r?.after) return void clearInterval(timer);
+      if (chats().length) return;
+      clearInterval(timer);
+      fs.rmSync(file, { force: true });
+      restart();
+      onChange();
+    }, everyMs);
+    timer.unref?.();
+  };
   return {
     list: () => {
       const r = readRequest(file);
-      return r ? [r] : [];
+      return r ? [{ ...r, working: chats() }] : [];
     },
     decide(id, action) {
       const r = readRequest(file);
       if (!r || r.id !== id) throw fail(409, "This restart was already answered.");
+      if (action === "after" && chats().length) {
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ ...r, after: true, expiresAt: Date.now() + WAIT_LIMIT }), { mode: 0o600 });
+        fs.renameSync(tmp, file);
+        wait();
+        onChange();
+        return { status: "waiting" };
+      }
       fs.rmSync(file, { force: true });
-      if (action !== "restart") return { status: "declined" };
+      clearInterval(timer);
+      if (action !== "restart" && action !== "after") return { status: "declined" };
       restart();
       return { status: "restarting" };
     },
-    close: () => watcher?.close(),
+    close: () => {
+      clearInterval(timer);
+      watcher?.close();
+    },
   };
 }
