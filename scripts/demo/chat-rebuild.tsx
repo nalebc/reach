@@ -163,11 +163,15 @@ const transcript: Record<string, any[]> = {};
 const clawSessions = [
   { key: "agent:main:whatsapp:family", title: "Weekend plans", agentId: "main", channel: "whatsapp", canDeliver: true, updatedAt: Date.now() - 120000, model: "Claude Sonnet", status: "idle" },
   { key: "agent:work:discord:launch", title: "Website launch", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 1800000, model: "Claude Sonnet", status: "idle" },
-  { key: "agent:main:main", title: "Your personal assistant", agentId: "main", channel: "webchat", canDeliver: false, updatedAt: Date.now() - 3600000, model: "Claude Sonnet", status: "idle" },
+  { key: "agent:main:reach-preview", title: "Your personal assistant", agentId: "main", channel: "webchat", writable: true, canDeliver: false, updatedAt: Date.now() - 3600000, model: "Claude Sonnet", status: "idle" },
   { key: "agent:main:whatsapp:shopping", title: "A shopping list for the week", agentId: "main", channel: "whatsapp", canDeliver: true, updatedAt: Date.now() - 86400000, model: "Claude Sonnet", status: "idle" },
   { key: "agent:work:discord:notes", title: "Ideas for the next release", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 172800000, model: "Claude Sonnet", status: "idle" },
 ];
 const clawMessages: Record<string, any[]> = {};
+const clawJobs = [
+  { id: "morning", name: "Morning briefing", agentId: "main", enabled: true, schedule: "Daily at 08:00 · America/Vancouver", nextRunAt: Date.now() + 3600000, lastRunAt: Date.now() - 86400000, status: "ok", error: "", delivery: "telegram" },
+  { id: "weekly", name: "Weekly project review", agentId: "work", enabled: false, schedule: "Every Monday at 09:00 · America/Vancouver", nextRunAt: 0, lastRunAt: Date.now() - 172800000, status: "ok", error: "", delivery: "No external delivery" },
+];
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = new URL(
@@ -186,6 +190,21 @@ window.fetch = async (input, init = {}) => {
     const key = url.searchParams.get("key") || body.key;
     const session = clawSessions.find(s => s.key === key) || clawSessions[0];
     if (path.endsWith("/overview")) return Response.json({ connected: true, sessions: clawSessions, approvals: [] });
+    if (path.endsWith("/new")) {
+      const key = `agent:${body.agentId || "main"}:reach-${body.requestId}`;
+      if (!clawSessions.some(s => s.key === key)) {
+        clawSessions.unshift({ key, title: body.text.trim().split("\n")[0].slice(0, 60), agentId: body.agentId || "main", channel: "webchat", writable: true, canDeliver: false, updatedAt: Date.now(), model: body.model || "Claude Sonnet", status: "idle" });
+        clawMessages[key] = [{ id: "first", role: "user", text: body.text, tool: false }, { id: "answer", role: "assistant", text: "This is a sample conversation. Your selected agent, model and thinking level were included when it started.", tool: false }];
+      }
+      return Response.json({ key });
+    }
+    if (path.endsWith("/catalog")) return Response.json({ defaultAgentId: "main", agents: [{ id: "main", name: "Personal assistant" }, { id: "work", name: "Work assistant" }], models: [{ id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet", reasoning: true }, { id: "openai/gpt-5.4", name: "GPT-5.4", reasoning: true }], canEdit: true, errors: [] });
+    if (path.endsWith("/channels")) return Response.json({ channels: [{ channel: "whatsapp", accountId: "personal", name: "Personal account", status: "connected", error: "" }, { channel: "discord", accountId: "work", name: "Work server", status: "connected", error: "" }, { channel: "telegram", accountId: "bot", name: "Personal bot", status: "disconnected", error: "Reconnect this account in OpenClaw." }] });
+    if (path.endsWith("/automations")) {
+      if (init.method === "POST") { const job = clawJobs.find(j => j.id === body.id); if (job) job.enabled = body.enabled; return Response.json({ enabled: body.enabled }); }
+      return Response.json({ jobs: clawJobs.filter(j => j.name.toLowerCase().includes((url.searchParams.get("query") || "").toLowerCase())), canEdit: true, hasMore: false });
+    }
+    if (path.endsWith("/settings")) { Object.assign(session, { title: body.label, model: body.model || "Claude Sonnet", thinkingLevel: body.thinkingLevel || "" }); return Response.json({ saved: true }); }
     const items = clawMessages[session.key] ||= [
       { id: "claw-user", role: "user", text: "Can you help me organize this?", tool: false },
       { id: "claw-assistant", role: "assistant", text: "Of course. We can pick up right where we left off.\n\nThis conversation is connected to **" + (session.channel === "webchat" ? "OpenClaw" : session.channel) + "**. What would you like to work on next?", tool: false },

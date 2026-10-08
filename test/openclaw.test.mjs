@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createOpenClaw, localOpenClawConfig } from "../server/openclaw.mjs";
+import { createOpenClaw, localOpenClawConfig, readableSchedule } from "../server/openclaw.mjs";
 
 const rows = [
   {
@@ -436,7 +436,20 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-http-"));
   const calls = [];
   const fake = Object.fromEntries(
-    ["overview", "history", "send", "stop", "approve", "start", "remove"].map((method) => [
+    [
+      "overview",
+      "history",
+      "send",
+      "stop",
+      "approve",
+      "start",
+      "remove",
+      "catalog",
+      "channels",
+      "automations",
+      "setAutomation",
+      "settings",
+    ].map((method) => [
       method,
       async (...args) => {
         calls.push({ method, args });
@@ -467,6 +480,11 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     ["approval", "POST"],
     ["new", "POST"],
     ["remove", "POST"],
+    ["catalog", "GET"],
+    ["channels", "GET"],
+    ["automations", "GET"],
+    ["automations", "POST"],
+    ["settings", "POST"],
   ];
   // Starting OpenClaw's Gateway: owners only too (it runs on this computer).
   for (const [route, method] of [...routes, ["gateway/start", "POST"]]) {
@@ -509,7 +527,20 @@ test("OpenClaw HTTP routes inherit owner-device authentication before reaching t
     );
   assert.deepEqual(
     calls.map((c) => c.method),
-    ["overview", "history", "send", "stop", "approve", "start", "remove"],
+    [
+      "overview",
+      "history",
+      "send",
+      "stop",
+      "approve",
+      "start",
+      "remove",
+      "catalog",
+      "channels",
+      "automations",
+      "setAutomation",
+      "settings",
+    ],
   );
 });
 
@@ -993,4 +1024,240 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
   await routes["/api/sessions/openclaw/gateway/start"]({}, { json: (v) => (answered = v) });
   assert.deepEqual(answered, { connected: true });
   assert.equal(up, 3);
+});
+
+test("OpenClaw inventories expose display fields and redact credentials, without starting work", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) => ({
+    payload: {
+      "agents.list": {
+        defaultId: "work",
+        agents: [
+          {
+            id: "work",
+            name: "Work",
+            identity: { name: "Research" },
+            apiKey: "private",
+          },
+        ],
+      },
+      "models.list": {
+        models: [
+          {
+            id: "model",
+            provider: "provider",
+            name: "Model",
+            reasoning: true,
+            apiKey: "private",
+          },
+        ],
+      },
+      "channels.status": {
+        channelAccounts: {
+          whatsapp: [
+            { accountId: "personal", connected: true, token: "private" },
+          ],
+          discord: [
+            {
+              accountId: "bot",
+              connected: false,
+              running: true,
+              lastError: "Failed secret-token",
+            },
+          ],
+          slack: [{ accountId: "work", running: true }],
+        },
+      },
+      "cron.list": {
+        jobs: [
+          {
+            id: "daily",
+            name: "Daily briefing",
+            agentId: "work",
+            enabled: true,
+            schedule: { kind: "cron", expr: "0 8 * * *", tz: "UTC" },
+            state: {
+              nextRunAtMs: 100,
+              lastRunAtMs: 90,
+              lastRunStatus: "error",
+              lastError: "secret-token",
+            },
+            payload: { message: "private" },
+            delivery: { mode: "announce", channel: "telegram", to: "private" },
+          },
+        ],
+        hasMore: true,
+        nextOffset: 50,
+      },
+    }[req.method],
+  }));
+  const catalog = await c.catalog();
+  assert.deepEqual(catalog.agents, [{ id: "work", name: "Research" }]);
+  assert.deepEqual(catalog.models, [
+    { id: "provider/model", name: "Model", reasoning: true },
+  ]);
+  assert.equal(catalog.defaultAgentId, "work");
+  const channels = await c.channels();
+  assert.deepEqual(
+    channels.channels.map((c) => c.status),
+    ["connected", "disconnected", "running"],
+  );
+  assert.equal(channels.channels[1].error, "Failed [redacted]");
+  const jobs = await c.automations({ offset: 50, query: "Daily" });
+  assert.equal(jobs.jobs[0].delivery, "telegram");
+  assert.equal(jobs.jobs[0].error, "[redacted]");
+  assert.equal(jobs.hasMore, true);
+  assert.deepEqual(calls.find((c) => c.method === "cron.list").params, {
+    includeDisabled: true,
+    limit: 50,
+    offset: 50,
+    query: "Daily",
+  });
+  assert.doesNotMatch(
+    JSON.stringify([catalog, channels, jobs]),
+    /private|secret-token/,
+  );
+  assert.equal(
+    calls.some((c) => ["chat.send", "agent", "cron.run"].includes(c.method)),
+    false,
+  );
+});
+
+test("chat settings require a Reach-created idle chat and confirmed Gateway acknowledgement", async (t) => {
+  const { c, calls, handle } = await fixture(t, { coalesceMs: 0 });
+  let acknowledged = true;
+  handle((req) =>
+    req.method === "sessions.patch"
+      ? { payload: { ok: acknowledged } }
+      : undefined,
+  );
+  const before = await c.overview();
+  await assert.rejects(
+    c.settings({ key: rows[0].key, label: "Changed" }),
+    /only chats it made/,
+  );
+  await assert.rejects(
+    c.settings({ key: REACH, thinkingLevel: "unsafe" }),
+    /thinking level/,
+  );
+  await assert.rejects(c.settings({ key: REACH, label: " " }), /chat name/);
+  assert.equal(
+    calls.some((c) => c.method === "sessions.patch"),
+    false,
+  );
+  await c.settings({
+    key: REACH,
+    label: " New name ",
+    model: "provider/model",
+    thinkingLevel: "high",
+    deliver: true,
+    elevatedLevel: "full",
+  });
+  assert.deepEqual(calls.find((c) => c.method === "sessions.patch").params, {
+    key: REACH,
+    label: "New name",
+    model: "provider/model",
+    thinkingLevel: "high",
+  });
+  assert.notEqual((await c.overview()).version, before.version);
+  await c.settings({ key: REACH, model: null, thinkingLevel: null });
+  acknowledged = false;
+  await assert.rejects(
+    c.settings({ key: REACH, label: "Not saved" }),
+    /did not confirm/,
+  );
+  await c.send({ key: REACH, text: "Working", requestId: "settings-working" });
+  await assert.rejects(
+    c.settings({ key: REACH, label: "While running" }),
+    /finish/,
+  );
+});
+
+test("selected agent, model and thinking apply before a new chat sends, with retry identity including choices", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  const made = [];
+  handle((req) => {
+    if (req.method === "agents.list")
+      return { payload: { agents: [{ id: "work" }] } };
+    if (req.method === "sessions.reset")
+      made.push({ key: req.params.key, channel: "webchat", label: "New" });
+    if (req.method === "sessions.list")
+      return { payload: { sessions: [...rows, ...made] } };
+    if (req.method === "sessions.patch") return { payload: { ok: true } };
+  });
+  const options = {
+    text: "Research",
+    requestId: "selected-agent",
+    agentId: "work",
+    model: "provider/model",
+    thinkingLevel: "high",
+  };
+  const first = await c.start(options);
+  assert.match(first.key, /^agent:work:reach-/);
+  assert.deepEqual(await c.start(options), first);
+  const settings = calls.find(
+    (c) => c.method === "sessions.patch" && c.params.model,
+  );
+  const send = calls.find((c) => c.method === "chat.send");
+  assert.ok(calls.indexOf(settings) < calls.indexOf(send));
+  assert.equal(send.params.sessionKey, first.key);
+  assert.equal(calls.filter((c) => c.method === "chat.send").length, 1);
+  assert.throws(
+    () => c.start({ ...options, model: "other" }),
+    /different message/,
+  );
+  await assert.rejects(c.create({ agentId: "missing" }), /no longer available/);
+  await assert.rejects(
+    c.create({ agentId: "work:whatsapp" }),
+    /Choose an OpenClaw agent/,
+  );
+});
+
+test("schedule pause and resume use a fixed update and require confirmation; malformed inventories fail clearly", async (t) => {
+  const { c, calls, handle } = await fixture(t);
+  handle((req) =>
+    req.method === "cron.update"
+      ? { payload: { enabled: req.params.patch.enabled } }
+      : undefined,
+  );
+  assert.deepEqual(
+    await c.setAutomation({
+      id: "daily",
+      enabled: false,
+      payload: { message: "inject" },
+    }),
+    { enabled: false },
+  );
+  assert.deepEqual(await c.setAutomation({ id: "daily", enabled: true }), {
+    enabled: true,
+  });
+  assert.deepEqual(
+    calls.filter((c) => c.method === "cron.update").map((c) => c.params),
+    [
+      { id: "daily", patch: { enabled: false } },
+      { id: "daily", patch: { enabled: true } },
+    ],
+  );
+  await assert.rejects(
+    c.setAutomation({ id: "daily", enabled: "true" }),
+    /scheduled job/,
+  );
+  handle((req) => (req.method === "cron.update" ? { payload: {} } : undefined));
+  await assert.rejects(
+    c.setAutomation({ id: "daily", enabled: false }),
+    /did not confirm/,
+  );
+  await assert.rejects(c.automations(), /unsupported scheduled jobs/);
+  await assert.rejects(c.automations({ offset: -1 }), /valid schedule page/);
+  const catalog = await c.catalog();
+  assert.equal(catalog.errors.length, 2);
+});
+
+test("schedules describe common recurrence and retain advanced expressions", () => {
+  assert.equal(readableSchedule({ kind: "every", everyMs: 30000 }), "Every 30 seconds");
+  assert.equal(readableSchedule({ kind: "every", everyMs: 3600000 }), "Every 1 hour");
+  assert.equal(readableSchedule({ kind: "cron", expr: "0 8 * * *", tz: "UTC" }), "Daily at 08:00 · UTC");
+  assert.equal(readableSchedule({ kind: "cron", expr: "30 9 * * 1-5" }), "Weekdays at 09:30");
+  assert.equal(readableSchedule({ kind: "cron", expr: "0 9 * * 1" }), "Every Monday at 09:00");
+  assert.equal(readableSchedule({ kind: "cron", expr: "*/15 * * * *" }), "*/15 * * * *");
 });

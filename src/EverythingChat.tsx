@@ -14,6 +14,7 @@ import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
+import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import ChatList, {
   ChatAppPicker,
   ChatComingSoon,
@@ -947,6 +948,11 @@ export default function EverythingChat({
 // A new OpenClaw chat from Reach: a session of its own (never one of WhatsApp's
 // or Discord's), its first message sent as it starts (server/openclaw.mjs).
 function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string) => void }) {
+  const { catalog, error: catalogError } = useClawCatalog(peer);
+  const [agentId, setAgentId] = useState("");
+  const [model, setModel] = useState("");
+  const [thinking, setThinking] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -956,11 +962,24 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
   const start = async () => {
     if (!text.trim() || busy || startingNow.current) return;
     startingNow.current = true;
-    if (attempt.current?.text !== text) attempt.current = { text, id: crypto.randomUUID() };
+    const choices = {
+      ...(agentId || catalog?.agents?.length
+        ? { agentId: agentId || catalog?.defaultAgentId }
+        : {}),
+      ...(model ? { model } : {}),
+      ...(thinking ? { thinkingLevel: thinking } : {}),
+    };
+    const fingerprint = JSON.stringify([text, choices]);
+    if (attempt.current?.text !== fingerprint)
+      attempt.current = { text: fingerprint, id: crypto.randomUUID() };
     setBusy(true);
     setProblem("");
     try {
-      const { key } = await post<{ key: string }>(peer, "/api/sessions/openclaw/new", { text, requestId: attempt.current.id });
+      const { key } = await post<{ key: string }>(
+        peer,
+        "/api/sessions/openclaw/new",
+        { text, requestId: attempt.current.id, ...choices },
+      );
       onStarted(key);
     } catch (e) {
       startingNow.current = false;
@@ -976,6 +995,23 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
         void start();
       }}
     >
+      {catalog?.agents?.length ? (
+        <label className="claw-new-agent">
+          Agent
+          <select
+            aria-label="OpenClaw agent"
+            disabled={busy}
+            value={agentId || catalog.defaultAgentId}
+            onChange={(e) => setAgentId(e.target.value)}
+          >
+            {catalog.agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <textarea
         aria-label="New OpenClaw chat"
         placeholder="What would you like OpenClaw to do?"
@@ -986,11 +1022,39 @@ function NewClawChat({ peer, onStarted }: { peer: Peer; onStarted: (key: string)
         disabled={busy}
       />
       <div className="chat-new-claw-tools">
-        <small>Replies stay in Reach and OpenClaw.</small>
+        <button
+          type="button"
+          className="claw-options-toggle"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen(!optionsOpen)}
+        >
+          Model & thinking
+          <ChevronDown size={14} />
+        </button>
         <button className="as-send ready" aria-label="Start" disabled={!text.trim() || busy}>
           {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} />}
         </button>
       </div>
+      {optionsOpen &&
+        (catalog ? (
+          <ClawModelControls
+            catalog={catalog}
+            model={model}
+            thinking={thinking}
+            disabled={busy}
+            onModel={setModel}
+            onThinking={setThinking}
+          />
+        ) : (
+          <p className="claw-note">{catalogError || "Loading models…"}</p>
+        ))}
+      {optionsOpen &&
+        catalog?.errors?.map((message) => (
+          <p className="claw-note" key={message}>
+            {message}
+          </p>
+        ))}
+      <small className="claw-note">Replies stay in Reach and OpenClaw.</small>
       {problem && (
         <p className="chat-sheet-intro" role="alert">
           {problem}
