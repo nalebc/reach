@@ -116,7 +116,7 @@ test("clicking the picture clicks the Mac and the result is written next to the 
   await click([...c.querySelectorAll('[aria-label="Apps you may use"] [role="radio"]')].find((item) => item.dataset.value === "/System/Applications/Notes.app"));
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/desktop/open"));
   assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/browser/desktop/open")[2], { app: "/System/Applications/Notes.app" });
-  await dom.waitFor(() => /Done: Notes is in front/.test(c.textContent));
+  await dom.waitFor(() => /Open request completed for Notes\. Check the screen to verify it is in front\./.test(c.textContent));
 });
 
 test("aiming: the picture is requested at the display's resolution, a zoomed quarter maps clicks exactly, and the last click is marked", async () => {
@@ -409,4 +409,38 @@ test("app search reaches allowed catalog entries beyond the first eighty and rep
   await type(search, "");
   assert.equal(options().length, 80);
   assert.match(c.textContent, /Showing 80 of 101 apps/);
+});
+
+for (const actionFailure of [false, true]) test(`app catalog polling recovery ${actionFailure ? "preserves an uncertain open action" : "clears its transient 429"}`, async (t) => {
+  let poll, throttled = !actionFailure, opens = 0;
+  const interval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 15000) { poll = callback; return interval(() => {}, 3600000); }
+    return interval(callback, ms, ...args);
+  });
+  mock(full);
+  const fetch = globalThis.fetch;
+  globalThis.fetch = dom.window.fetch = (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/browser/desktop/apps" && throttled) return Promise.resolve(reply({ error: "Too many agent requests. Wait briefly and retry." }, 429));
+    if (route === "/api/browser/desktop/open") { opens++; return Promise.resolve(reply({ error: "Completion unknown. Inspect the screen before retrying." }, 503)); }
+    return fetch(url, init);
+  };
+  const view = await dom.render(React.createElement(BrowserWorkspace, { peer, onEnd() {} }));
+  views.add(view);
+  const c = view.container;
+  if (actionFailure) {
+    const app = await dom.waitFor(() => c.querySelector('[aria-label="Apps you may use"] [data-value="/System/Applications/Notes.app"]'));
+    await click(app);
+    await dom.waitFor(() => c.textContent.includes("Completion unknown"));
+    throttled = true; poll();
+  }
+  await dom.waitFor(() => c.textContent.includes("Too many agent requests"));
+  if (actionFailure) assert.match(c.textContent, /Completion unknown/, "polling failure must not replace action status");
+  throttled = false; poll();
+  await dom.waitFor(() => c.querySelector('[aria-label="Apps you may use"]'));
+  await settle();
+  assert.doesNotMatch(c.textContent, /Too many agent requests/);
+  if (actionFailure) assert.match(c.textContent, /Completion unknown/);
+  assert.equal(opens, actionFailure ? 1 : 0, "recovery never repeats app opening");
 });

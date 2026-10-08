@@ -324,17 +324,26 @@ func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool {
 struct Focus { let app: NSRunningApplication; let element: Seen; let terminalLike: Bool }
 // Keys and text go to the focused element; check it and its app.
 func focus(_ rules: Rules) throws -> Focus {
-  guard let front = NSWorkspace.shared.frontmostApplication else { try refuse("Nothing is ready for typing.", "retry") }
+  guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is ready for typing.", "retry") }
   let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
   if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
   let app = AXUIElementCreateApplication(front.processIdentifier)
   var s = Seen(bundle: bundle, name: name, path: path, pid: front.processIdentifier)
   if let window = elementAttr(app, kAXFocusedWindowAttribute) { s.title = string(window, kAXTitleAttribute) }
   try check(s, rules)
-  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) {
-    let element = seen(focused)
-    if pidOf(focused) == front.processIdentifier { try check(element, rules); s = element; s.bundle = bundle; s.name = name; s.path = path }
+  // AppKit's foreground observation and Accessibility must identify the same
+  // process. Never authorize global keys from a stale or unverifiable app.
+  var focusedPid: pid_t = 0
+  guard let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
+    AXUIElementGetPid(focused, &focusedPid) == .success, focusedPid == front.processIdentifier else {
+    try refuse("The focused app could not be verified. Look again before typing or pressing a key.", "retry")
   }
+  let element = seen(focused)
+  guard element.pid == front.processIdentifier else {
+    try refuse("The focused app changed while it was checked. Look again before typing or pressing a key.", "retry")
+  }
+  try check(element, rules)
+  s = element; s.bundle = bundle; s.name = name; s.path = path
   return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules))
 }
 // The owner's own hands come first: any real input in the last moments pauses

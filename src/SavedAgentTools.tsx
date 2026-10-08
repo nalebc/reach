@@ -33,6 +33,7 @@ export default function SavedAgentTools({
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [pollError, setPollError] = useState("");
   const [values, setValues] = useState<Record<string, Record<string, string>>>(
     {},
   );
@@ -53,6 +54,7 @@ export default function SavedAgentTools({
     setValues({});
     setMessage("");
     setError("");
+    setPollError("");
     return () => {
       mounted.current = false;
       session.dispose();
@@ -75,6 +77,15 @@ export default function SavedAgentTools({
       ]);
       if (!controller.signal.aborted && mounted.current) {
         const [catalog, progress] = results;
+        // A recovered read clears only its polling warning. Action outcomes,
+        // including uncertain or partial completion, remain until another action.
+        setPollError(
+          progress.status === "rejected"
+            ? progress.reason.message
+            : catalog.status === "rejected"
+              ? catalog.reason.message
+              : "",
+        );
         if (catalog.status === "fulfilled")
           setTools(
             catalog.value.filter((tool) =>
@@ -83,14 +94,12 @@ export default function SavedAgentTools({
           );
         else {
           setTools([]);
-          setError(catalog.reason.message);
           onEnded.current(catalog.reason);
         }
         if (progress.status === "fulfilled")
           setRecording(progress.value.recording);
         else {
           setRecording(null);
-          setError(progress.reason.message);
           onEnded.current(progress.reason);
         }
       }
@@ -267,6 +276,11 @@ export default function SavedAgentTools({
       {message && (
         <p className="ap-status" role="status">
           {message}
+        </p>
+      )}
+      {pollError && (
+        <p className="ap-status is-blocked" role="alert">
+          {pollError}
         </p>
       )}
       {error && (

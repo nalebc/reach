@@ -456,12 +456,13 @@ function ScreenCard({ peer, access, now, tell, ended }: { peer: Peer; access: Pr
 
 function AppsCard({ peer, access, tell, ended }: { peer: Peer; access: PresetAccess; tell: (text: string, tone?: "" | "is-wait" | "is-blocked" | "is-done") => void; ended: (e: unknown) => void }) {
   const [apps, setApps] = useState<DesktopApp[] | null>(null);
+  const [pollError, setPollError] = useState("");
   const [query, setQuery] = useState("");
   const search = query.trim().toLowerCase();
   const matchingApps = apps?.filter((app) => `${app.name} ${app.bundleId} ${app.id}`.toLowerCase().includes(search)) || [];
   const shownApps = matchingApps.slice(0, 80);
   const busy = useRef(false);
-  const load = useCallback(() => request<{ apps: DesktopApp[] }>(peer, "/api/browser/desktop/apps").then((value) => setApps(value.apps)).catch((e) => { ended(e); tell(`Not done: ${(e as Error).message}`, "is-blocked"); }), [peer, ended, tell]);
+  const load = useCallback(() => request<{ apps: DesktopApp[] }>(peer, "/api/browser/desktop/apps").then((value) => { setApps(value.apps); setPollError(""); }).catch((e) => { ended(e); setPollError((e as Error).message); }), [peer, ended]);
   useEffect(() => { void load(); const timer = setInterval(() => void load(), 15000); return () => clearInterval(timer); }, [load]);
   const open = async (id: string) => {
     if (busy.current) return;
@@ -472,7 +473,7 @@ function AppsCard({ peer, access, tell, ended }: { peer: Peer; access: PresetAcc
       const response = await peerFetch(peer, "/api/browser/desktop/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app: id }) });
       const value = await response.json().catch(() => ({}));
       if (!response.ok) throw Object.assign(Error(value.error || "The app couldn't be opened."), { status: response.status, body: value });
-      tell(`Done: ${value.app || app?.name || "the app"} is in front. The screen above is updating.`, "is-done");
+      tell(`Open request completed for ${value.app || app?.name || "the app"}. Check the screen to verify it is in front.`, "is-done");
       setTimeout(() => void load(), 1500);
     } catch (e) {
       ended(e);
@@ -483,6 +484,7 @@ function AppsCard({ peer, access, tell, ended }: { peer: Peer; access: PresetAcc
   return (
     <section className="ap-card" aria-labelledby="ap-apps-title">
       <div className="ap-card-head"><h2 id="ap-apps-title"><AppWindow size={16} /> Open an app on the Mac</h2><p className="ap-live">{access.preset === "apps" ? "Only these apps." : "Password apps and Reach are never listed."}</p></div>
+      {pollError && <p className="ap-status is-blocked" role="alert">{pollError}</p>}
       {apps === null ? <p className="ap-quiet">Loading apps…</p> : apps.length ? (
         <>
           <label className="ap-row ap-type">
