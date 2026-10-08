@@ -65,7 +65,7 @@ const GROUPS = [
   ["off", "Off"],
 ] as const;
 
-// Skills, checked before they install (Agents tab, under the agents).
+// Skills, grouped by readiness and checked before they install.
 export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string; refresh: number }) {
   const [data, setData] = useState<Skills | null>(null);
   const [error, setError] = useState("");
@@ -110,19 +110,6 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
       setBusy("");
     }
   };
-  const setup = async () => {
-    if (busy) return;
-    setBusy("setup");
-    setProblem("");
-    try {
-      const { terminal } = await post<{ terminal: { id: string } }>(peer, `${clawBase}/skills/setup`, {});
-      window.dispatchEvent(new CustomEvent("reach:open-terminal", { detail: terminal.id }));
-    } catch (e) {
-      setProblem((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
   return (
     <section className="claw-panel claw-skills" aria-label="OpenClaw skills">
       <div className="claw-panel-heading">
@@ -148,8 +135,9 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
             <h3>
               {title} <span>{group.length}</span>
             </h3>
+            <div className="claw-skill-rows">
             {group.map((skill) => {
-              const needs = [...skill.missing.env, ...skill.missing.config].length > 0;
+
               const job = skill.installing;
               return (
                 <div className="claw-skill" key={skill.name}>
@@ -201,6 +189,9 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                     {skill.state === "setup" && skill.keyName && data?.canToggle && (
                       <KeyField peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
                     )}
+                    {skill.state === "setup" && data?.canSetup && skill.missing.env.some((name) => name !== skill.keyName) && (
+                      <SkillValues peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
+                    )}
                     {skill.state === "setup" && (
                       <div className="claw-skill-actions">
                         {data?.canInstall && skill.missing.bins.length > 0 && skill.install.length > 0 && job?.status !== "running" &&
@@ -215,12 +206,6 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                               {skill.install.length > 1 ? `Install · ${option.kind}` : "Install"}
                             </button>
                           ))}
-                        {needs && data?.canSetup && (
-                          <button className="claw-skill-chip" disabled={!!busy} onClick={() => void setup()}>
-                            {busy === "setup" ? <Loader2 size={12} className="spin" /> : null}
-                            Set up on Mac
-                          </button>
-                        )}
                       </div>
                     )}
                   </div>
@@ -239,6 +224,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                 </div>
               );
             })}
+            </div>
           </div>
         );
       })}
@@ -305,6 +291,34 @@ function KeyField({ peer, skill, onSaved }: { peer: Peer; skill: Skill; onSaved:
       )}
     </form>
   );
+}
+
+function SkillValues({ peer, skill, onSaved }: { peer: Peer; skill: Skill; onSaved: () => void }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const names = skill.missing.env.filter((name) => name !== skill.keyName);
+  return <form className="claw-settings" aria-label={`Set up ${skill.name}`} onSubmit={async (e) => {
+    e.preventDefault();
+    if (busy || !names.every((name) => values[name]?.trim())) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      await post(peer, `${clawBase}/skills/setup`, { key: skill.key, env: Object.fromEntries(names.map((name) => [name, values[name]])) });
+      setValues({});
+      onSaved();
+    } catch (e) { setProblem((e as Error).message); }
+    finally { setBusy(false); }
+  }}>
+    {names.map((name) => <label key={name}>{name}<input type="password" autoComplete="off" autoCapitalize="off" spellCheck={false}
+      aria-label={`${skill.name} ${name}`} value={values[name] || ""} disabled={busy} maxLength={4096}
+      onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))} /></label>)}
+    <p className="claw-note">Saved to OpenClaw on your computer. Existing values are never shown here.</p>
+    <button type="submit" className="claw-skill-chip" disabled={busy || !names.every((name) => values[name]?.trim())}>
+      {busy && <Loader2 size={12} className="spin" />}Save settings
+    </button>
+    {problem && <p className="claw-error" role="alert">{problem}</p>}
+  </form>;
 }
 
 // What will run and what the skill can reach; installs on a second tap.
