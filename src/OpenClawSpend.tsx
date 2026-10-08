@@ -349,7 +349,7 @@ function Routing({ peer }: { peer: Peer }) {
             <span>OpenRouter</span>
             <span className="claw-spend-fixes">
               <OpenSetup peer={peer} section="model">
-                On Mac
+                Guided setup
               </OpenSetup>
               {!addRouter && (
                 <button type="button" className="claw-secondary" onClick={() => setAddRouter(true)}>

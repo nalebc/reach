@@ -2102,12 +2102,10 @@ export function openClawRoutes(
     const added = await addChannel(req.body || {}, { authorize: authorize(req) });
     res.json(added);
   });
-  // Only fixed sections of `openclaw configure`, never the phone's text.
-  app.post(`${base}/setup`, async (req, res) => {
-    const section = req.body?.section;
-    if (!SETUP_SECTIONS.includes(section)) throw fail(400, "Choose what to set up in OpenClaw.");
-    if (!openSetup) throw fail(409, "Reach can't open OpenClaw's setup here.");
-    res.json({ terminal: await openSetup(section, req) });
+  // Older phones must not silently launch a terminal for advanced setup.
+  app.post(`${base}/setup`, async (req, _res) => {
+    authorize(req)();
+    throw fail(409, "Use guided setup in Reach. Refresh the page to get the new setup controls.");
   });
   app.get(`${base}/overview`, async (_req, res) =>
     res.json(await client.overview()),

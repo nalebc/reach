@@ -158,6 +158,7 @@ before(async () => {
       [base + "/automations/run"]: (init) => (setupCalls.push(["run", JSON.parse(init.body)]), { ran: true }),
       [base + "/automations/remove"]: (init) => (setupCalls.push(["remove", JSON.parse(init.body)]), { removed: true }),
       [base + "/channels/add"]: (init) => (setupCalls.push(["add", JSON.parse(init.body)]), { added: true }),
+      [base + "/wizard"]: () => ({ supported: true, status: "idle", busy: false, problem: "", step: null }),
       [base + "/setup"]: (init) => (setupCalls.push(["setup", JSON.parse(init.body)]), { terminal: { id: "term-1" } }),
       [base + "/channels/whatsapp/link"]: (init) => (setupCalls.push(["link", JSON.parse(init.body)]), { qr: "data:image/png;base64,iVBORw0KGgo=", message: "" }),
       [base + "/channels/whatsapp/wait"]: () => (whatsappStatus = "connected", { connected: true, message: "Linked" }),
@@ -646,7 +647,7 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
 });
 
-test("missing things are asked for: a schedule is added, run and deleted; a channel and a model open OpenClaw's setup; WhatsApp links by QR", async () => {
+test("missing things are asked for: a schedule is added, run and deleted; advanced setup stays in Reach; WhatsApp links by QR", async () => {
   setupCalls = [];
   await mount();
   await click("Scheduled");
@@ -681,9 +682,10 @@ test("missing things are asked for: a schedule is added, run and deleted; a chan
   await dom.waitFor(() => button("Connect WhatsApp"));
   await click("Add a messaging app");
   await click("Other apps");
-  await dom.waitFor(() => opened.length > 0);
-  assert.deepEqual(setupCalls.find(([k]) => k === "setup")[1], { section: "channels" });
-  assert.equal(opened[0], "term-1");
+  await dom.waitFor(() => button("Start guided setup"));
+  assert.deepEqual(opened, []);
+  assert.equal(setupCalls.some(([k]) => k === "setup"), false);
+  await click("Close guided openclaw setup");
   await click("Close add a messaging app");
   await click("Connect WhatsApp");
   await dom.waitFor(() => dom.document.querySelector('img[alt="WhatsApp link QR code"]') || dom.document.body.textContent.includes("is linked"));

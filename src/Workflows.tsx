@@ -10,8 +10,8 @@ import "./workflows.css";
 // of tasks for one folder, each Codex's or Claude Code's, a build or a
 // review, run in order by the Mac. Written here or drafted by a planner
 // chat, saved as you edit; nothing runs until Run. Laid out as ChatGPT lays
-// out its lists: a rounded section per step, a row per task (its agent, its
-// name, a word on the right), dashed cards to add, few words.
+// out its lists: clear task rows, labeled editing controls, and an explicit
+// choice between making changes and reviewing only.
 
 type ChatRef = { agent: string; id: string; title?: string };
 export type WorkflowTaskState = "waiting" | "starting" | "working" | "done" | "stopped" | "skipped" | "uncertain";
@@ -163,7 +163,6 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
 const toDraft = ({ id, title, agent, kind, task, together }: WorkflowTask): TaskDraft => ({ id, title, agent, kind, task: task || "", together });
 // The tasks that have started, and those before them, stay as they are.
 const lockedCount = (w: Workflow) => (w.state === "draft" ? 0 : w.tasks.reduce((n, t, i) => (t.state !== "waiting" ? i + 1 : n), 0));
-// The next of the agents here for a task (Codex → Claude Code → OpenClaw).
 
 // Starting points for a draft with no tasks yet: the agents placed, what to
 // build left for you to say. Codex and Claude Code take the code; OpenClaw,
@@ -298,8 +297,8 @@ function TaskInstructions({ value, n, review, onChange }: { value: string; n: nu
   </label>;
 }
 
-// Editing: the tasks still to start, the open one with its words and chips
-// (agent, build or review, with previous, move, remove). Saved a moment
+// Editing: the tasks still to start, with instructions, an agent picker,
+// task mode, scheduling, and ordering controls. Saved a moment
 // after each change; started tasks stay as they are, above.
 function Editor({
   peer,
