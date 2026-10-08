@@ -117,10 +117,7 @@ export function ChatLibraryHeader({
             setActionsOpen(false);
           }}
         >
-          <span className="chat-header-mascot" aria-hidden="true">
-            <BrandCourier active />
-          </span>
-          <span className="chat-current-name">{name}</span>
+          <span className="chat-current-name">{value === "claude" ? "Claude" : name}</span>
           {!!pending[value] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[value])}</span>}
           <ChevronDown size={17} />
         </button>
@@ -140,9 +137,6 @@ export function ChatLibraryHeader({
           <NotificationBell compact />
         </div>
       </div>
-      {apps.length > 1 && (
-        <span className="chat-swipe-hint">Swipe left or right to switch apps</span>
-      )}
       {appMenuOpen && (
         <div
           className="chat-mobile-menu chat-mobile-app-menu"
@@ -206,10 +200,7 @@ export function ChatLibraryHeader({
         </div>
       )}
       <div className="chat-list-heading">
-        <span className="chat-header-mascot" aria-hidden="true">
-          <BrandCourier active />
-        </span>
-        <h1>Chats</h1>
+        <h1>{name}</h1>
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
@@ -225,7 +216,7 @@ export function ChatLibraryHeader({
         )}
         {onNew && (
           <button className="chat-create" aria-label="New chat" onClick={onNew}>
-            <Plus size={16} />
+            <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
             <span>New chat</span>
           </button>
         )}
@@ -526,7 +517,7 @@ export default function ChatList({
           {...hold(s)}
         >
           <span className="chat-entry-logo" title={agentLabel(s.agent)}>
-            <AgentLogo agent={s.agent} logos={logos} size={20} />
+            <AgentLogo agent={s.agent} logos={logos} size={18} />
           </span>
           <span className="chat-entry-copy">
             <strong>{plainLine(s.title || "") || "New chat"}</strong>
@@ -766,7 +757,9 @@ export default function ChatList({
         />
       )}
       {!compact && !upcoming && canStart && <button className="chat-quick-new" aria-label={`New ${picked?.name || agentLabel(filter)} chat`} onClick={() => onNew()}>
-        <Plus size={21} /><span>Ask {picked?.name || agentLabel(filter)}</span><span className="chat-quick-arrow"><ArrowUpRight size={22} /></span>
+        <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
+        <span className="chat-quick-label">Ask {picked?.name || agentLabel(filter)}</span>
+        <span className="chat-quick-arrow"><ArrowUpRight size={22} /></span>
       </button>}
       {/* On the page: the list contains its layout, which would pin it. */}
       {undo && createPortal(

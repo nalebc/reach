@@ -2,29 +2,86 @@ import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-const peer = { id: "swipe-mac", name: "Mac", url: "https://reach.test", token: "t", platform: "darwin" };
-const claw = { key: "agent:main:reach-swipe", title: "OpenClaw plan", agentId: "main", channel: "webchat", writable: true, updatedAt: Date.now(), status: "idle" };
+const peer = {
+  id: "swipe-mac",
+  name: "Mac",
+  url: "https://reach.test",
+  token: "t",
+  platform: "darwin",
+};
+const claw = {
+  key: "agent:main:reach-swipe",
+  title: "OpenClaw plan",
+  agentId: "main",
+  channel: "webchat",
+  writable: true,
+  updatedAt: Date.now(),
+  status: "idle",
+};
 const feed = {
-  sessions: ["codex", "claude"].map((agent) => ({ agent, id: agent, title: `${agent} plan`, cwd: "/work", updatedAt: Date.now(), status: "idle" })),
-  health: ["codex", "claude", "openclaw", "gemini"].map((agent) => ({ agent, installed: true, signedIn: true, supported: true })),
-  errors: {}, failure: "", macPrompts: [], reload() {}, recheck() {},
+  sessions: ["codex", "claude"].map((agent) => ({
+    agent,
+    id: agent,
+    title: `${agent} plan`,
+    cwd: "/work",
+    updatedAt: Date.now(),
+    status: "idle",
+  })),
+  health: ["codex", "claude", "openclaw", "gemini"].map((agent) => ({
+    agent,
+    installed: true,
+    signedIn: true,
+    supported: true,
+  })),
+  errors: {},
+  failure: "",
+  macPrompts: [],
+  reload() {},
+  recheck() {},
 };
 let dom, EverythingChat, view;
 before(async () => {
-  dom = await startDom({ routes: {
-    "/api/sessions/logos": () => ({ version: "1", logos: {} }),
-    "/api/sessions/commands": () => ({ commands: [] }),
-    "/api/sessions/models": () => ({ models: [], modes: [] }),
-    "/api/sessions/claude/claude": () => ({ session: feed.sessions[1], items: [] }),
-    "/api/sessions/claude/claude/live": async () => {
-      await settle(60);
-      return { version: 1, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 };
+  dom = await startDom({
+    routes: {
+      "/api/sessions/logos": () => ({ version: "1", logos: {} }),
+      "/api/sessions/commands": () => ({ commands: [] }),
+      "/api/sessions/models": () => ({ models: [], modes: [] }),
+      "/api/sessions/claude/claude": () => ({
+        session: feed.sessions[1],
+        items: [],
+      }),
+      "/api/sessions/claude/claude/live": async () => {
+        await settle(60);
+        return {
+          version: 1,
+          status: "idle",
+          error: null,
+          prompts: [],
+          streaming: "",
+          activity: null,
+          items: 0,
+        };
+      },
+      "/api/sessions/openclaw/overview": () => ({
+        connected: true,
+        sessions: [claw],
+        approvals: [],
+      }),
+      "/api/sessions/openclaw/history": () => ({
+        session: claw,
+        items: [],
+        approvals: [],
+        streaming: "",
+        error: "",
+      }),
     },
-    "/api/sessions/openclaw/overview": () => ({ connected: true, sessions: [claw], approvals: [] }),
-    "/api/sessions/openclaw/history": () => ({ session: claw, items: [], approvals: [], streaming: "", error: "" }),
-  } });
+  });
   dom.window.innerWidth = 393;
-  dom.window.matchMedia = (media) => ({ matches: !media.includes("prefers-reduced-motion"), addEventListener() {}, removeEventListener() {} });
+  dom.window.matchMedia = (media) => ({
+    matches: !media.includes("prefers-reduced-motion"),
+    addEventListener() {},
+    removeEventListener() {},
+  });
   ({ default: EverythingChat } = await dom.load("/src/EverythingChat.tsx"));
 });
 after(() => dom?.close());
@@ -38,7 +95,9 @@ const idle = () => dom.waitFor(() => !$(".chat-app-pages")?.dataset.motion);
 async function mount(app = "codex") {
   dom.window.localStorage.clear();
   dom.window.localStorage.setItem("reach.chatAgent", app);
-  view = await dom.render(dom.React.createElement(EverythingChat, { peer, feed }));
+  view = await dom.render(
+    dom.React.createElement(EverythingChat, { peer, feed }),
+  );
   await settle();
 }
 function touch(target, type, points, changed = points) {
@@ -50,17 +109,146 @@ function touch(target, type, points, changed = points) {
   target.dispatchEvent(event);
   return event;
 }
-const point = (x, y = 300, identifier = 1) => ({ clientX: x, clientY: y, identifier });
+const point = (x, y = 300, identifier = 1) => ({
+  clientX: x,
+  clientY: y,
+  identifier,
+});
 function swipe(target = $(".chat-workspace"), dx = -130, dy = 0, x = 250) {
   touch(target, "touchstart", [point(x)]);
   const move = touch(target, "touchmove", [point(x + dx, 300 + dy)]);
   const end = touch(target, "touchend", [], [point(x + dx, 300 + dy)]);
   return { move, end };
 }
+// Give releases a realistic timeline without waiting on gesture duration.
+function timedDrag(target, points) {
+  const now = Date.now;
+  const start = now();
+  try {
+    points.forEach(([at, x, y = 300], index) => {
+      Date.now = () => start + at;
+      const final = index === points.length - 1;
+      touch(
+        target,
+        index === 0 ? "touchstart" : final ? "touchend" : "touchmove",
+        final ? [] : [point(x, y)],
+        [point(x, y)],
+      );
+    });
+  } finally {
+    Date.now = now;
+  }
+}
+
+for (const width of [320, 393, 768]) {
+  test(`slow drags snap at half the ${width}px page in either direction`, async () => {
+    const originalWidth = dom.window.innerWidth;
+    dom.window.innerWidth = width;
+    try {
+      for (const direction of [-1, 1]) {
+        for (const fraction of [0.49, 0.5]) {
+          await mount("claude");
+          const x = width * (direction < 0 ? 0.75 : 0.25);
+          const end = x + direction * width * fraction;
+          timedDrag($(".chat-workspace"), [
+            [0, x],
+            [600, end],
+            [750, end],
+          ]);
+          await idle();
+          assert.equal(
+            selected(),
+            fraction < 0.5 ? "claude" : direction < 0 ? "openclaw" : "codex",
+          );
+          await view.unmount();
+          view = null;
+        }
+      }
+    } finally {
+      dom.window.innerWidth = originalWidth;
+    }
+  });
+}
+
+test("short flicks tolerate a stationary final frame, while pauses and reversals snap back", async () => {
+  for (const [expected, points] of [
+    [
+      "claude",
+      [
+        [0, 250],
+        [35, 210],
+        [70, 175],
+        [75, 175],
+      ],
+    ],
+    [
+      "codex",
+      [
+        [0, 250],
+        [35, 210],
+        [70, 175],
+        [300, 175],
+      ],
+    ],
+    [
+      "codex",
+      [
+        [0, 250],
+        [60, 120],
+        [85, 175],
+        [90, 180],
+      ],
+    ],
+    [
+      "codex",
+      [
+        [0, 250],
+        [20, 215],
+        [30, 215],
+      ],
+    ],
+  ]) {
+    await mount();
+    timedDrag($(".chat-workspace"), points);
+    await idle();
+    assert.equal(selected(), expected);
+    await view.unmount();
+    view = null;
+  }
+});
+
+test("vertical finger drift after the horizontal drag locks does not reject a half-page swipe", async () => {
+  await mount();
+  timedDrag($(".chat-workspace"), [
+    [0, 290, 300],
+    [50, 255, 315],
+    [600, 80, 400],
+    [750, 80, 400],
+  ]);
+  await idle();
+  assert.equal(selected(), "claude");
+});
+
+test("the release position can cross halfway or reveal the app on the opposite side", async () => {
+  await mount();
+  timedDrag($(".chat-workspace"), [
+    [0, 290],
+    [600, 190],
+    [1000, 80],
+  ]);
+  await idle();
+  assert.equal(selected(), "claude");
+  timedDrag($(".chat-workspace"), [
+    [0, 190],
+    [50, 110],
+    [75, 310],
+  ]);
+  await idle();
+  assert.equal(selected(), "codex");
+});
 
 test("page swipes follow the app menu in both directions, including OpenClaw, and stop at each end", async () => {
   await mount();
-  assert.match($(".chat-swipe-hint").textContent, /Swipe left or right/);
   swipe(undefined, 130, 0, 100);
   await idle();
   assert.equal(selected(), "codex");
@@ -111,7 +299,11 @@ test("swiping a chat row switches apps without also opening the row; a fresh tap
   await mount();
   const card = $(".chat-card");
   swipe(card);
-  const ghost = new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+  const ghost = new dom.window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    detail: 1,
+  });
   card.dispatchEvent(ghost);
   assert.equal(ghost.defaultPrevented, true);
   await idle();
@@ -120,7 +312,9 @@ test("swiping a chat row switches apps without also opening the row; a fresh tap
   const nextCard = $(".chat-card");
   touch(nextCard, "touchstart", [point(200)]);
   touch(nextCard, "touchend", [], [point(200)]);
-  nextCard.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, detail: 1 }));
+  nextCard.dispatchEvent(
+    new dom.window.MouseEvent("click", { bubbles: true, detail: 1 }),
+  );
   await settle();
   assert.ok($(".as-page"));
 });
@@ -178,15 +372,26 @@ test("the page follows the finger, reveals real adjacent chats, and promotes the
   assert.equal(next.dataset.app, "claude");
   assert.equal(next.getAttribute("aria-hidden"), "true");
   assert.ok(next.hasAttribute("inert"));
-  assert.equal(next.querySelector(".chat-card strong").textContent, "claude plan");
+  assert.equal(
+    next.querySelector(".chat-card strong").textContent,
+    "claude plan",
+  );
   assert.equal(selected(), "codex");
   touch(page, "touchend", [], [point(120)]);
   assert.equal(pager.dataset.motion, "settling");
   assert.equal(pager.style.getPropertyValue("--chat-page-x"), "-393px");
-  assert.equal(selected(), "codex", "release does not replace the visible page instantly");
+  assert.equal(
+    selected(),
+    "codex",
+    "release does not replace the visible page instantly",
+  );
   await idle();
   assert.equal(selected(), "claude");
-  assert.equal($(".chat-page-pane.current"), next, "loaded preview is preserved when it becomes active");
+  assert.equal(
+    $(".chat-page-pane.current"),
+    next,
+    "loaded preview is preserved when it becomes active",
+  );
   assert.ok(!next.hasAttribute("inert"));
   assert.equal($(".chat-page-pane.neighbor"), null);
 });
@@ -200,13 +405,20 @@ test("a partial drag and a cancellation slide back, with resistance at the first
   assert.ok($(".chat-page-pane.neighbor"));
   touch(page, "touchend", [], [point(220)]);
   assert.equal($(".chat-app-pages").dataset.motion, "settling");
-  assert.equal($(".chat-app-pages").style.getPropertyValue("--chat-page-x"), "0px");
+  assert.equal(
+    $(".chat-app-pages").style.getPropertyValue("--chat-page-x"),
+    "0px",
+  );
   await idle();
   assert.equal(selected(), "codex");
   touch(page, "touchstart", [point(100)]);
   touch(page, "touchmove", [point(230)]);
   await settle();
-  assert.ok(Number.parseFloat($(".chat-app-pages").style.getPropertyValue("--chat-page-x")) < 32);
+  assert.ok(
+    Number.parseFloat(
+      $(".chat-app-pages").style.getPropertyValue("--chat-page-x"),
+    ) < 32,
+  );
   assert.equal($(".chat-page-pane.neighbor"), null);
   touch(page, "touchcancel", []);
   await idle();
@@ -220,12 +432,12 @@ test("reversing a drag reveals the app on the new side; slow deliberate drags st
   touch(page, "touchmove", [point(100)]);
   await settle();
   assert.equal($(".chat-page-pane.neighbor").dataset.app, "openclaw");
-  touch(page, "touchmove", [point(280)]);
+  touch(page, "touchmove", [point(380)]);
   await settle();
   assert.equal($(".chat-page-pane.neighbor").dataset.app, "codex");
   assert.equal($(".chat-page-pane.neighbor .claw-library"), null);
   await settle(850);
-  touch(page, "touchend", [], [point(280)]);
+  touch(page, "touchend", [], [point(380)]);
   await idle();
   assert.equal(selected(), "codex");
 });
@@ -240,7 +452,8 @@ test("an external app change or unmount cancels a pending slide rather than navi
   assert.equal(selected(), "openclaw");
   assert.equal($(".chat-page-pane.neighbor"), null);
   swipe(undefined, 130, 0, 100);
-  await view.unmount(); view = null;
+  await view.unmount();
+  view = null;
   await settle(360);
   assert.equal(selected(), "openclaw");
 });
@@ -248,15 +461,41 @@ test("an external app change or unmount cancels a pending slide rather than navi
 test("reduced motion retains direct finger tracking and settles without an animated release", async () => {
   await mount();
   const media = dom.window.matchMedia;
-  dom.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  dom.window.matchMedia = () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+  });
   try {
     const page = $(".chat-workspace");
     touch(page, "touchstart", [point(250)]);
     touch(page, "touchmove", [point(120)]);
     await settle();
-    assert.equal($(".chat-app-pages").style.getPropertyValue("--chat-page-x"), "-130px");
+    assert.equal(
+      $(".chat-app-pages").style.getPropertyValue("--chat-page-x"),
+      "-130px",
+    );
     touch(page, "touchend", [], [point(120)]);
     assert.equal(selected(), "claude");
     assert.equal($(".chat-app-pages").dataset.motion, undefined);
-  } finally { dom.window.matchMedia = media; }
+  } finally {
+    dom.window.matchMedia = media;
+  }
+});
+
+test("a browser ending its touch pointer stream leaves the non-passive touch swipe in control", async () => {
+  await mount();
+  const page = $(".chat-workspace");
+  touch(page, "touchstart", [point(250)]);
+  touch(page, "touchmove", [point(120)]);
+  const canceledPointer = new dom.window.Event("pointercancel", {
+    bubbles: true,
+  });
+  Object.defineProperty(canceledPointer, "pointerType", { value: "touch" });
+  page.dispatchEvent(canceledPointer);
+  await settle();
+  assert.equal($(".chat-app-pages").dataset.motion, "dragging");
+  touch(page, "touchend", [], [point(120)]);
+  await idle();
+  assert.equal(selected(), "claude");
 });

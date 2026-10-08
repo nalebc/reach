@@ -9,7 +9,6 @@ import {
   MoreHorizontal,
   Settings2,
   Radio,
-  SquarePen,
   X,
   GitFork,
   Loader2,
@@ -1258,12 +1257,12 @@ export default function OpenClawSpace({
                         key={s.key}
                         onClick={() => setOpened(s)}
                       >
-                        <span className="chat-entry-logo">
+                        <span className="chat-entry-logo" title="OpenClaw">
                           <AgentLogo
                             agent="openclaw"
                             name="OpenClaw"
                             logos={logos}
-                            size={20}
+                            size={18}
                           />
                         </span>
                         <span className="chat-entry-copy">
@@ -1309,8 +1308,8 @@ export default function OpenClawSpace({
             aria-label="New OpenClaw chat"
             onClick={onNew}
           >
-            <SquarePen size={21} />
-            <span>Ask OpenClaw anything</span>
+            <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
+            <span className="chat-quick-label">Ask OpenClaw anything</span>
             <span className="chat-quick-arrow">
               <ArrowUp size={18} />
             </span>

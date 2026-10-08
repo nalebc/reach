@@ -43,9 +43,8 @@ export default function ChatAppPager({
       y: number;
       app: string;
       horizontal: boolean;
-      lastX: number;
-      lastAt: number;
-      velocity: number;
+      direction: number;
+      samples: { x: number; at: number }[];
     } | null = null;
     let nextApp: string | null = null;
     let frame = 0;
@@ -110,7 +109,10 @@ export default function ChatAppPager({
     const cancel = () => {
       const moved = gesture?.horizontal;
       gesture = null;
-      if (moved) settlePage(null);
+      if (moved) {
+        suppressClickUntil = Date.now() + 400;
+        settlePage(null);
+      }
     };
     const start = (point: Point, target: Element) => {
       if (
@@ -146,9 +148,8 @@ export default function ChatAppPager({
         y: point.clientY,
         app: latest.current.value,
         horizontal: false,
-        lastX: point.clientX,
-        lastAt: Date.now(),
-        velocity: 0,
+        direction: 0,
+        samples: [{ x: point.clientX, at: Date.now() }],
       };
     };
     const move = (point: Point, event: Event) => {
@@ -189,10 +190,16 @@ export default function ChatAppPager({
         flushSync(() => setNeighbor(nextValue));
       }
       const now = Date.now();
-      from.velocity =
-        (point.clientX - from.lastX) / Math.max(1, now - from.lastAt);
-      from.lastX = point.clientX;
-      from.lastAt = now;
+      const previous = from.samples[from.samples.length - 1];
+      const direction = Math.sign(point.clientX - previous.x);
+      // Average recent motion rather than the final frame: lifting a finger
+      // often produces one stationary sample. A reversal starts fresh.
+      if (direction && direction !== from.direction) {
+        from.samples = [previous];
+        from.direction = direction;
+      }
+      from.samples = from.samples.filter((sample) => now - sample.at <= 100);
+      from.samples.push({ x: point.clientX, at: now });
       offset = next
         ? Math.max(-width(), Math.min(width(), dx))
         : Math.sign(dx) * Math.min(32, Math.abs(dx) * 0.18);
@@ -200,28 +207,38 @@ export default function ChatAppPager({
     };
     const end = (point: Point | undefined, event: Event) => {
       const from = gesture;
+      if (!from?.horizontal) {
+        gesture = null;
+        return;
+      }
+      // Touchend may include movement beyond the last touchmove. Use the
+      // actual release position for both the preview and the snap decision.
+      if (point?.identifier === from.id) move(point, event);
+      if (gesture !== from) return;
       gesture = null;
-      if (!from?.horizontal) return;
       suppressClickUntil = Date.now() + 400;
       if (event.cancelable) event.preventDefault();
       const dx = point ? point.clientX - from.x : 0;
-      const dy = point ? Math.abs(point.clientY - from.y) : Infinity;
-      const index = latest.current.apps.findIndex(app => app.agent === from.app);
+      const index = latest.current.apps.findIndex(
+        (app) => app.agent === from.app,
+      );
       const destination = latest.current.apps[index + (dx < 0 ? 1 : -1)]?.agent;
+      const first = from.samples[0];
+      const last = from.samples[from.samples.length - 1];
+      const velocity = (last.x - first.x) / Math.max(1, last.at - first.at);
       const flick =
         Math.abs(dx) >= 64 &&
-        Math.abs(from.velocity) >= 0.6 &&
-        Math.sign(from.velocity) === Math.sign(dx) &&
-        Date.now() - from.lastAt < 100;
+        Math.abs(velocity) >= 0.5 &&
+        Math.sign(velocity) === Math.sign(dx);
       const commit =
         point?.identifier === from.id &&
         nextApp &&
         nextApp === destination &&
         !blocked() &&
         from.app === latest.current.value &&
-        dy <= 48 &&
-        Math.abs(dx) >= dy * 1.6 &&
-        (Math.abs(dx) >= Math.min(96, width() * 0.25) || flick);
+        // Once the horizontal gesture owns the drag, vertical finger drift
+        // must not veto it. Slow drags snap at halfway; flicks can finish early.
+        (Math.abs(dx) >= width() * 0.5 || flick);
       settlePage(commit ? nextApp : null);
     };
     const touchStart = (event: TouchEvent) => {
@@ -269,6 +286,9 @@ export default function ChatAppPager({
     const pointerEnd = (event: PointerEvent) => {
       if (event.pointerType === "mouse") end(mousePoint(event), event);
     };
+    const pointerCancel = (event: PointerEvent) => {
+      if (event.pointerType === "mouse") cancel();
+    };
     const click = (event: MouseEvent) => {
       if (event.detail && Date.now() < suppressClickUntil) {
         event.preventDefault();
@@ -292,7 +312,7 @@ export default function ChatAppPager({
     page.addEventListener("pointerdown", pointerStart);
     page.addEventListener("pointermove", pointerMove);
     page.addEventListener("pointerup", pointerEnd);
-    page.addEventListener("pointercancel", cancel);
+    page.addEventListener("pointercancel", pointerCancel);
     page.addEventListener("click", click, true);
     page.addEventListener("transitionend", transitionEnd);
     page.ownerDocument.addEventListener("visibilitychange", hidden);
@@ -308,7 +328,7 @@ export default function ChatAppPager({
       page.removeEventListener("pointerdown", pointerStart);
       page.removeEventListener("pointermove", pointerMove);
       page.removeEventListener("pointerup", pointerEnd);
-      page.removeEventListener("pointercancel", cancel);
+      page.removeEventListener("pointercancel", pointerCancel);
       page.removeEventListener("click", click, true);
       page.removeEventListener("transitionend", transitionEnd);
       page.ownerDocument.removeEventListener("visibilitychange", hidden);

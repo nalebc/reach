@@ -523,7 +523,7 @@
 @media (max-width: 600px) {
   .claw-library .chat-card {
     min-height: 64px;
-    padding: 10px 4px;
+    padding: 10px 4px 10px 8px;
   }
   .claw-library .chat-entry-copy {
     gap: 3px;
