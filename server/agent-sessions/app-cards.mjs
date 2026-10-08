@@ -42,8 +42,14 @@ export function cardExpect(tool) {
   return key.trim() ? [key.trim()] : [];
 }
 
-async function helper(agent, args, { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "permission-card") } = {}) {
-  const file = await binary();
+async function helper(agent, args, { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "permission-card"), beforeDispatch = () => {} } = {}) {
+  let file;
+  try {
+    file = await binary();
+    beforeDispatch();
+  } catch (error) {
+    throw Object.assign(error, { notDispatched: true });
+  }
   const { stdout } = await run(file, ["--app", agent, ...args], { timeout: 20000 });
   try {
     return JSON.parse(String(stdout).trim().split("\n").at(-1));
@@ -104,6 +110,7 @@ export async function pressAppCard(agent, label, expect, options) {
 }
 
 export function createAppCards({
+  desktopAutomation = null,
   read,
   press,
   // Answers a question card in the app (answerAppQuestion).
@@ -142,15 +149,16 @@ export function createAppCards({
     if (busy) throw bad("Reach is already answering a request in the app.", 409);
     busy = true;
     try {
-      return await work();
+      return await (desktopAutomation ? desktopAutomation.run(work) : work(() => {}));
     } finally {
       busy = false;
     }
   };
   // The request still waiting, with its chat brought up in its app.
-  const show = async (agent, id, promptId) => {
+  const show = async (agent, id, promptId, guard) => {
     if (!APP[agent]) throw bad("That chat's app can't be answered from here.", 400);
     const asked = await pending(agent, id);
+    guard();
     if (!asked || (promptId && asked.id !== promptId)) throw bad("This request was already answered.", 409);
     if (!asked.expect?.length) throw bad(`Reach can't tell this request's card apart. Answer it on your ${computerWord(platform)}.`, 409);
     // Only the Codex app hides its window from Reach; the Claude app always
@@ -158,22 +166,28 @@ export function createAppCards({
     if (agent === "codex" && !asked.tty && ((await probe(agent).catch(() => null))?.elements ?? Infinity) < 50)
       // Nothing to read there: said at once, the app left where it is.
       throw bad(`The ${APP[agent]} app doesn't let Reach see its cards. Answer it on your ${computerWord(platform)}.`, 409);
+    guard();
     if (asked.tty) {
       if (!terminal) throw bad(`Answer it in the terminal on your ${computerWord(platform)}.`, 409);
     } else if (agent === "codex") {
-      await open(`codex://threads/${encodeURIComponent(id)}`);
+      await open(`codex://threads/${encodeURIComponent(id)}`, { background: true });
       await wait(switchMs);
     } else if (shown()[0]?.id !== id) {
       if (!asked.appSessionId) throw bad(`The Claude app doesn't list this chat. Answer it on your ${computerWord(platform)}.`, 409);
-      await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`);
+      await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`, { background: true });
       await wait(switchMs);
     }
+    guard();
+    if ((await pending(agent, id))?.id !== asked.id) throw bad("This request was already answered.", 409);
+    guard();
     return asked;
   };
-  const load = async (agent, id, promptId) => {
-    const asked = await show(agent, id, promptId);
+  const load = async (agent, id, promptId, guard) => {
+    const asked = await show(agent, id, promptId, guard);
     checkAttempt(agent, id, asked.id);
-    const card = asked.tty ? await terminal.read(asked.tty, asked.expect) : await read(agent, asked.expect);
+    guard();
+    const card = asked.tty ? await terminal.read(asked.tty, asked.expect, guard) : await read(agent, asked.expect, guard);
+    guard();
     if (card?.error) throw bad(`${card.error} Answer it on your ${computerWord(platform)}.`, 409);
     if (!card?.found)
       throw bad(asked.tty ? "The terminal isn't showing this request. Answer it there." : `The ${APP[agent]} app isn't showing this request. Answer it on your ${computerWord(platform)}.`, 409);
@@ -210,48 +224,68 @@ export function createAppCards({
     });
   };
   const answerQuestionNow = (agent, id, promptId, answers) =>
-    one(async () => {
+    one(async (guard) => {
       if (agent !== "claude") throw bad("That chat's app can't be answered from here.", 400);
       const asked = await pendingQuestion(agent, id);
+      guard();
       if (!asked || asked.id !== promptId) throw bad("This question was already answered.", 409);
       const picks = picksFor(asked.questions || [], answers);
       checkAttempt(agent, id, promptId);
       if (shown()[0]?.id !== id) {
         if (!asked.appSessionId) throw bad(`The Claude app doesn't list this chat. Answer it on your ${computerWord(platform)}.`, 409);
-        await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`);
+        guard();
+        await open(`claude://code/needs-input?session=${encodeURIComponent(asked.appSessionId)}`, { background: true });
         await wait(switchMs);
       }
+      guard();
+      if ((await pendingQuestion(agent, id))?.id !== promptId) throw bad("This question was already answered.", 409);
+      guard();
       attempted.set(`${agent}:${id}`, promptId);
-      await answerQuestion(agent, picks);
-      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
-        if ((await pendingQuestion(agent, id))?.id !== promptId) return { answered: true };
+      try {
+        await answerQuestion(agent, picks, guard);
+      } catch (error) {
+        if (error?.notDispatched === true) attempted.delete(`${agent}:${id}`);
+        throw error;
+      }
+      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150)) {
+        const current = await pendingQuestion(agent, id);
+        if (current?.id !== promptId) return { answered: true };
+      }
       throw bad(`The Claude app didn't take the answer. Answer it on your ${computerWord(platform)}.`, 409);
     });
   return {
     owns: (promptId) => typeof promptId === "string" && (promptId.startsWith("app-permission:") || promptId.startsWith("app-question:")),
     // The card as the app shows it, for the phone to draw.
-    card: (agent, id) => one(async () => (await load(agent, id)).card),
+    card: (agent, id) => one(async (guard) => (await load(agent, id, undefined, guard)).card),
     async answer(agent, id, promptId, { label, answers } = {}) {
       if (promptId.startsWith("app-question:")) return answerQuestionNow(agent, id, promptId, answers);
       if (typeof label !== "string" || !label) throw bad("Choose one of the card's buttons.", 400);
-      return one(async () => {
-        if (!read_.has(promptId)) await load(agent, id, promptId);
+      return one(async (guard) => {
+        if (!read_.has(promptId)) await load(agent, id, promptId, guard);
         const known = read_.get(promptId) || [];
         if (!known.includes(label)) throw bad(`The card doesn't offer "${label}".`, 400);
-        const asked = await show(agent, id, promptId);
+        const asked = await show(agent, id, promptId, guard);
         checkAttempt(agent, id, promptId);
+        guard();
         attempted.set(`${agent}:${id}`, promptId);
         if (attempted.size > 2000) attempted.delete(attempted.keys().next().value);
-        if (asked.tty) await terminal.press(asked.tty, label, asked.expect);
-        else await press(agent, label, asked.expect);
+        try {
+          if (asked.tty) await terminal.press(asked.tty, label, asked.expect, guard);
+          else await press(agent, label, asked.expect, guard);
+        } catch (error) {
+          if (error?.notDispatched === true) attempted.delete(`${agent}:${id}`);
+          throw error;
+        }
         read_.delete(promptId);
         if (agent === "codex") {
           // The helper saw the card go; the command may run a long while.
           markAnswered(promptId.slice("app-permission:codex:".length));
           return { answered: true };
         }
-        for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
-          if ((await pending(agent, id))?.id !== promptId) return { answered: true };
+        for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150)) {
+          const current = await pending(agent, id);
+          if (current?.id !== promptId) return { answered: true };
+        }
         throw bad(`The Claude app didn't take the answer. Answer it on your ${computerWord(platform)}.`, 409);
       });
     },

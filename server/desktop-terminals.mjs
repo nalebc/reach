@@ -113,45 +113,57 @@ export class DesktopTerminals {
       return { sessions, providers };
     }, background);
   }
-  async action(id, action, body, authorize, { background = false } = {}) {
-    if (!["read", "send", "focus", "close"].includes(action))
-      throw fail(400, "Unknown terminal action.");
-    if (
-      action === "send" &&
-      (typeof body?.text !== "string" ||
-        // "" is Return on its own (accepting a prompt, an empty line); a
-        // line of only spaces is more likely a slip.
-        (body.text !== "" && !body.text.trim()) ||
-        body.text.length > 16000 ||
-        /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body.text))
-    )
-      throw fail(
-        400,
-        "Send up to 16,000 characters of text, without control codes.",
-      );
-    if (action === "close" && body?.confirm !== true)
-      throw fail(
-        400,
-        "Confirm closing this terminal; running commands will stop.",
-      );
-    return this.exclusive(authorize, async () => {
-      const target = this.targets.get(id);
-      if (!target)
-        throw fail(404, "Terminal not found. Refresh the Mac terminal list.");
-      authorize();
-      const result = await this.run({
-        ...target,
-        action,
-        ...(action === "send" ? { text: body.text } : {}),
-        // Someone viewing the tab gets its scrollback, not just the screen.
-        ...(action === "read" && body?.scrollback === true
-          ? { scrollback: true }
-          : {}),
-      });
-      if (action === "close") this.targets.delete(id);
-      authorize();
-      return result;
-    }, background);
+  async action(id, action, body, authorize, { background = false, beforeDispatch } = {}) {
+    let dispatchStarted = false;
+    try {
+      if (!["read", "send", "focus", "close"].includes(action))
+        throw fail(400, "Unknown terminal action.");
+      if (
+        action === "send" &&
+        (typeof body?.text !== "string" ||
+          // "" is Return on its own (accepting a prompt, an empty line); a
+          // line of only spaces is more likely a slip.
+          (body.text !== "" && !body.text.trim()) ||
+          body.text.length > 16000 ||
+          /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body.text))
+      )
+        throw fail(
+          400,
+          "Send up to 16,000 characters of text, without control codes.",
+        );
+      if (action === "close" && body?.confirm !== true)
+        throw fail(
+          400,
+          "Confirm closing this terminal; running commands will stop.",
+        );
+      return await this.exclusive(authorize, async () => {
+        const target = this.targets.get(id);
+        if (!target)
+          throw fail(404, "Terminal not found. Refresh the Mac terminal list.");
+        authorize();
+        // Ownership is checked before input starts. Keep authority checks after
+        // the result separate so a completed action retains its acknowledgement.
+        beforeDispatch?.();
+        dispatchStarted = true;
+        const result = await this.run({
+          ...target,
+          action,
+          ...(action === "send" ? { text: body.text } : {}),
+          // Someone viewing the tab gets its scrollback, not just the screen.
+          ...(action === "read" && body?.scrollback === true
+            ? { scrollback: true }
+            : {}),
+        });
+        if (action === "close") this.targets.delete(id);
+        authorize();
+        return result;
+      }, background);
+    } catch (error) {
+      // A refused queued action never entered the native runner. Only an
+      // explicit ownership-aware caller uses this no-action retry contract.
+      if (beforeDispatch && !dispatchStarted) Object.assign(error, { notDispatched: true });
+      throw error;
+    }
   }
   async create(provider, authorize, command) {
     if (!terminalProviders.some((p) => p.id === provider))

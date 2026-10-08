@@ -53,14 +53,18 @@ export function parseTerminalMenu(text) {
 export function createTerminalCards({ terminals, wait = (ms) => new Promise((r) => setTimeout(r, ms)), confirmMs = 6000 }) {
   const allow = () => {};
   // The tab whose tty is the chat's (Apple Terminal or iTerm2).
-  const tab = async (tty) => {
-    const { sessions } = await terminals.list(allow);
+  const tab = async (tty, authorize = allow) => {
+    authorize();
+    const { sessions } = await terminals.list(authorize);
+    authorize();
     const found = sessions.find((s) => ttyName(s.tty) && ttyName(s.tty) === ttyName(tty));
     if (!found) throw Object.assign(new Error("Reach can't find the terminal this chat runs in. Answer it there."), { status: 409 });
     return found.id;
   };
-  const menuIn = async (id, expect) => {
-    const { text } = await terminals.action(id, "read", {}, allow);
+  const menuIn = async (id, expect, authorize = allow) => {
+    authorize();
+    const { text } = await terminals.action(id, "read", {}, authorize);
+    authorize();
     const menu = parseTerminalMenu(text);
     // Only the menu that asks about this request.
     if (!menu || !expect.every((e) => squeezed(menu.about).includes(squeezed(e)))) return null;
@@ -68,20 +72,28 @@ export function createTerminalCards({ terminals, wait = (ms) => new Promise((r) 
   };
   return {
     // The card as the terminal shows it: { found, texts, buttons }.
-    async read(tty, expect) {
-      const menu = await menuIn(await tab(tty), expect);
+    async read(tty, expect, guard = () => {}) {
+      const authorize = () => { allow(); guard(); };
+      const menu = await menuIn(await tab(tty, authorize), expect, authorize);
       if (!menu) return { found: false };
       return { found: true, texts: [menu.question], buttons: menu.options.map((o) => ({ label: o.label, menu: false })) };
     },
     // Types the number of the choice with exactly that label, then waits for
     // the menu to go.
-    async press(tty, label, expect) {
-      const id = await tab(tty);
-      const menu = await menuIn(id, expect);
-      if (!menu) throw Object.assign(new Error("This request was already answered."), { status: 409 });
-      const choice = menu.options.filter((o) => o.label === label);
-      if (choice.length !== 1) throw Object.assign(new Error(`The terminal no longer offers "${label}".`), { status: 409 });
-      await terminals.action(id, "send", { text: choice[0].key }, allow);
+    async press(tty, label, expect, guard = () => {}) {
+      const authorize = () => { allow(); guard(); };
+      let id, choice;
+      try {
+        id = await tab(tty, authorize);
+        const menu = await menuIn(id, expect, authorize);
+        if (!menu) throw Object.assign(new Error("This request was already answered."), { status: 409 });
+        choice = menu.options.filter((o) => o.label === label);
+        if (choice.length !== 1) throw Object.assign(new Error(`The terminal no longer offers "${label}".`), { status: 409 });
+        authorize();
+      } catch (error) { throw Object.assign(error, { notDispatched: true }); }
+      // The terminal queue checks ownership again at actual dispatch. Its
+      // existing authority checks remain independent of foreground changes.
+      await terminals.action(id, "send", { text: choice[0].key }, allow, { beforeDispatch: guard });
       for (const until = Date.now() + confirmMs; Date.now() < until; await wait(250)) if (!(await menuIn(id, expect))) return { pressed: label };
       throw Object.assign(new Error("The terminal didn't take the answer. Answer it there."), { status: 409 });
     },

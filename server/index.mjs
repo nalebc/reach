@@ -64,6 +64,7 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
@@ -325,14 +326,25 @@ export async function createReach(overrides = {}) {
     maxPayload: 65536,
     perMessageDeflate: false,
   });
+  const screenControl = new ScreenControl();
+  let agentDesktop = null, inputInFlight = false;
+  const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
+    blocked: () => paused || !transportAvailable || !!screenControl.holder() || screenControl.inputStopping() || inputInFlight ||
+      !!(agentDesktop && agentDesktop.automationBusy?.() !== false),
+  });
+  screenControl.onAcquire = () => {
+    for (const stopped of [desktopAutomation.interrupt(), agentDesktop?.yieldForOwner?.()])
+      if (stopped) screenControl.retireInput(stopped);
+  };
   // Every Codex and Claude Code session on this computer (Chat tab).
   const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
   // Chats move to and from OpenClaw too (agent-sessions/move.mjs).
   const agentSessions =
     overrides.agentSessions ||
-    createAgentSessions({
+    (overrides.agentSessionsFactory || createAgentSessions)({
       dataDir: config.dataDir,
       openClaw,
+      desktopAutomation,
       // A terminal's menu answered in its tab (read and typed into through
       // Reach's Mac terminals, made just below).
       terminals: {
@@ -358,7 +370,6 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.appShortcuts,
   });
-  const screenControl = new ScreenControl();
   // While macOS shows one of its own dialogs, only the owner's own devices
   // click or type on the screen (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
@@ -544,6 +555,7 @@ export async function createReach(overrides = {}) {
       settings.paused = value;
       atomicJson(settingsFile, settings);
       if (value) {
+        desktopAutomation.interrupt();
         browserApprovals.cancelPending();
         browserAppAccess.clear();
         browserSnapshots.clear();
@@ -579,7 +591,10 @@ export async function createReach(overrides = {}) {
     );
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
-  appThreads.onFrontmost = (bundle) => agentSessions.frontmost?.(bundle);
+  appThreads.onFrontmost = (bundle) => {
+    desktopAutomation.noteForeground(bundle);
+    agentSessions.frontmost?.(bundle);
+  };
   appThreads.onLaunched = (bundle) => agentSessions.launched?.(bundle);
   // Reach's item in the Mac's menu bar, with Pause and Resume. Tests never
   // start the real helper.
@@ -599,7 +614,6 @@ export async function createReach(overrides = {}) {
         ),
     );
   let captureInFlight;
-  let inputInFlight = false;
   const events = [];
   const record = (kind, title) => {
     events.unshift({ id: id(), kind, title, at: new Date().toISOString() });
@@ -618,11 +632,12 @@ export async function createReach(overrides = {}) {
   // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
   // Tests inject a stand-in; null means this Mac can't offer them, and the
   // screen presets refuse to be created.
-  const agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" ? createAgentDesktop(config, {
+  agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" || overrides.agentDesktopFactory ? (overrides.agentDesktopFactory || createAgentDesktop)(config, {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(), paused: () => paused, record,
+    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(),
+    automationControls: () => desktopAutomation.active(), onObservation: () => desktopAutomation.interrupt(), paused: () => paused, record,
   }) : null);
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
   const browserCapture = async (authorize, fresh = false) => {
@@ -4003,6 +4018,7 @@ export async function createReach(overrides = {}) {
       if (transportAvailable === value) return;
       transportAvailable = value;
       if (!value) {
+        desktopAutomation.interrupt();
         screenControl.clear();
         closeInput();
         // Disconnect access without killing terminals, chats or jobs.
@@ -4010,6 +4026,7 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
       notifications.close();

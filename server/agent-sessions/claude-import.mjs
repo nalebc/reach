@@ -188,6 +188,8 @@ export function createClaudeRefresh({
   awayMs = 2 * 60 * 1000,
   everyMs = 30 * 1000,
   settleMs = 4000,
+  wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+  desktopAutomation = null,
   resume = true,
 }) {
   let pending = new Set();
@@ -219,7 +221,7 @@ export function createClaudeRefresh({
     }, ms);
     timer.unref?.();
   };
-  async function round() {
+  async function round(guard) {
     if (!pending.size) return;
     // Closed: it reads every session afresh when it opens.
     const launched = await startedAt();
@@ -228,19 +230,25 @@ export function createClaudeRefresh({
     // Not shown since it opened: it reads it afresh when it shows it.
     if (!list.some((s) => pending.has(s.id) && s.at >= launched)) return done();
     const seconds = await Promise.resolve(idle()).catch(() => null);
-    if (seconds != null && seconds * 1000 < awayMs) return;
+    if (!Number.isFinite(seconds) || seconds * 1000 < awayMs) return;
     if (await asking()) return;
-    const before = list[0]?.at ? list[0].session : null;
+    const current = shown()[0];
+    const before = current?.at ? current.session : null;
+    if (closed) return;
+    guard();
     await reload();
     done();
-    await new Promise((r) => setTimeout(r, settleMs));
-    if (closed || !before) return;
-    // The reload opens a session of its own choosing: back to the one shown.
-    if (shown()[0]?.session !== before) await open(`claude://code/continue?session=${before}`);
+    // Only restore a post-reload session we actually observed. A later new
+    // selection (or unknown reload destination) is not ours to undo.
+    const reloaded = shown()[0]?.session;
+    await wait(settleMs);
+    if (closed || !before || !reloaded || reloaded === before || shown()[0]?.session !== reloaded) return;
+    guard();
+    await open(`claude://code/continue?session=${before}`, { background: true });
   }
   function check() {
     if (running) return running;
-    running = round()
+    running = (desktopAutomation ? desktopAutomation.run(round) : round(() => {}))
       .catch(() => {
         /* try again next round */
       })
@@ -380,6 +388,7 @@ export function createClaudeImports({
   settleMs = 4000,
   wait = (ms) => new Promise((r) => setTimeout(r, ms)),
   now = Date.now,
+  desktopAutomation = null,
   // Pick up imports left from before a restart.
   resume = true,
 }) {
@@ -416,14 +425,13 @@ export function createClaudeImports({
     }, ms);
     timer.unref?.();
   };
-  const away = async () => {
-    // No reading at all (never seen on macOS): import rather than never.
+  // Unknown physical-input activity never authorizes an automatic switch.
+  const clear = async () => {
     const seconds = await Promise.resolve(idle()).catch(() => null);
-    return seconds == null || seconds * 1000 >= awayMs;
+    if (!Number.isFinite(seconds) || seconds < 0) return false;
+    return (await Promise.resolve(frontmost()).catch(() => null)) === false || seconds * 1000 >= awayMs;
   };
-  // The app's window may switch now: it isn't in front, or nobody is there.
-  const clear = async () => (await Promise.resolve(frontmost()).catch(() => null)) === false || (await away());
-  async function one(id, entry) {
+  async function one(id, entry, guard) {
     if (held(id)) return "wait";
     if (imported(id)) {
       // The app's own record (its import, or it lists the chat): done.
@@ -449,11 +457,16 @@ export function createClaudeImports({
         return null;
       }
     })();
+    if (closed) return "wait";
+    guard();
     await open(`claude://resume?session=${id}`, { background: true });
     if (before && before !== `local_${id}`) {
       await wait(settleMs);
       try {
-        if (shown()[0]?.session !== before) await open(`claude://code/continue?session=${before}`, { background: true });
+        if (!closed && shown()[0]?.session === `local_${id}`) {
+          guard();
+          await open(`claude://code/continue?session=${before}`, { background: true });
+        }
       } catch {
         /* the window stays on the imported chat */
       }
@@ -468,7 +481,8 @@ export function createClaudeImports({
         if (closed) break;
         let result = "later";
         try {
-          result = await one(id, entry);
+          const work = (guard) => one(id, entry, guard);
+          result = await (desktopAutomation ? desktopAutomation.run(work) : work(() => {}));
         } catch {
           /* try again next round */
         }

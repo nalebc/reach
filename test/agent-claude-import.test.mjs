@@ -202,7 +202,7 @@ test("after Reach replies in a session the Claude app has shown, its window relo
   mac.asking = false;
   await waitUntil(() => opened.length === 1);
   assert.equal(reloads.length, 1);
-  assert.deepEqual(opened, [[`claude://code/continue?session=local_${B}`]]);
+  assert.deepEqual(opened, [[`claude://code/continue?session=local_${B}`, { background: true }]]);
   assert.deepEqual(refresh.pending(), []);
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), []);
   await settle(40);
@@ -410,7 +410,7 @@ test("a chat joins the app's list whatever happens: written for its next launch,
       open: async (...args) => {
         opened.push(args);
         // The import link switches the window to the chat it imports.
-        if (args[0].startsWith("claude://resume")) mac.shown = [{ session: `local_${A}` }];
+        if (args[0].startsWith("claude://resume")) mac.shown = [{ session: `local_${args[0].split("session=")[1]}` }];
       },
       idle: async () => mac.idle,
       appRunning: async () => mac.running,

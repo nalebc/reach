@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createTerminalCards, parseTerminalMenu } from "../server/agent-sessions/terminal-cards.mjs";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import { createClaudeHost } from "../server/agent-sessions/claude-host.mjs";
+import { DesktopTerminals } from "../server/desktop-terminals.mjs";
 
 // Claude Code in a terminal asking for permission could only be answered in
 // that terminal. Its menu (recorded from Claude Code 2.1.291 in a terminal)
@@ -115,4 +116,109 @@ test("a Claude Code chat waiting in a terminal gets the terminal's own choices o
   assert.deepEqual(await sessions.respond("claude", ID, "app-permission:toolu_w", { label: "Yes" }), { answered: true });
   assert.deepEqual(sent, ["1"]);
   sessions.close();
+});
+
+for (const phase of ["list", "read"]) test(`terminal approval ownership change during ${phase} prevents dispatch and remains retryable`, async () => {
+  let active = true, waitHere = true, sends = 0, waiting = true, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  let release;
+  const ready = new Promise(resolve => { release = resolve; });
+  const guard = () => { if (!active) throw Object.assign(Error("Desktop changed"), { status: 409 }); };
+  const terminals = {
+    list: async authorize => {
+      authorize();
+      if (phase === "list" && waitHere) { entered(); await ready; }
+      authorize();
+      return { sessions: [{ id: "tab", tty: "ttys001" }] };
+    },
+    action: async (_id, action, _body, authorize) => {
+      authorize();
+      if (action === "read") {
+        if (phase === "read" && waitHere) { entered(); await ready; }
+        authorize();
+        return { text: screen(waiting) };
+      }
+      sends++; waiting = false; return {};
+    },
+  };
+  const cards = createTerminalCards({ terminals, wait: async () => {} });
+  const answer = cards.press("ttys001", "No", ["hello.txt"], guard);
+  await started; active = false; release();
+  await assert.rejects(answer, e => e.status === 409 && e.notDispatched === true);
+  assert.equal(sends, 0);
+  active = true; waitHere = false;
+  assert.deepEqual(await cards.press("ttys001", "No", ["hello.txt"], guard), { pressed: "No" });
+  assert.equal(sends, 1);
+});
+
+test("terminal send failure after dispatch is never marked not-dispatched", async () => {
+  const cards = createTerminalCards({ terminals: {
+    list: async authorize => { authorize(); return { sessions: [{ id: "tab", tty: "ttys001" }] }; },
+    action: async (_id, action, _body, authorize) => {
+      authorize(); if (action === "read") return { text: screen() };
+      throw Error("Synthetic send acknowledgement lost");
+    },
+  } });
+  await assert.rejects(cards.press("ttys001", "No", ["hello.txt"], () => {}), e => /acknowledgement lost/.test(e.message) && e.notDispatched !== true);
+});
+
+test("actual terminal queue rechecks ownership before dispatch and keeps authority checks after acknowledgement", async () => {
+  let active = true, authorized = true, sends = 0, invalidateAuthority = false;
+  const guard = () => { if (!active) throw Object.assign(Error("Desktop changed"), { status: 409 }); };
+  const authorize = () => { if (!authorized) throw Object.assign(Error("Access revoked"), { status: 401 }); };
+  const terminals = new DesktopTerminals({ platform: "darwin", run: async () => {
+    sends++; active = false;
+    if (invalidateAuthority) authorized = false;
+    return { ok: true };
+  } });
+  terminals.targets.set("one", { provider: "terminal", target: { session: "one" } });
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const background = terminals.exclusive(authorize, () => blocked, true);
+  const pending = terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch: guard });
+  active = false; release(); await background;
+  await assert.rejects(pending, e => e.status === 409 && e.notDispatched === true);
+  assert.equal(sends, 0);
+  active = true;
+  assert.deepEqual(await terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch: guard }), { ok: true });
+  assert.equal(sends, 1, "ownership changes after acknowledged dispatch do not erase the receipt");
+  active = true; invalidateAuthority = true;
+  await assert.rejects(terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch: guard }), e => e.status === 401 && e.notDispatched !== true);
+  assert.equal(sends, 2, "existing post-dispatch authorization still refuses a revoked caller");
+});
+
+test("terminal card keeps an acknowledged answer when foreground ownership changes during native send", async () => {
+  let active = true, waiting = true, sends = 0;
+  const guard = () => { if (!active) throw Object.assign(Error("Desktop changed"), { status: 409 }); };
+  const terminals = new DesktopTerminals({ platform: "darwin", run: async payload => {
+    if (payload.action === "list") return { running: payload.provider === "terminal", sessions: payload.provider === "terminal" ? [{ name: "Test", tty: "ttys001", target: { session: "one" } }] : [] };
+    if (payload.action === "read") return { text: screen(waiting) };
+    assert.equal(payload.action, "send"); assert.equal(payload.text, "3");
+    sends++; waiting = false; active = false;
+    return { ok: true };
+  } });
+  const cards = createTerminalCards({ terminals, wait: async () => {} });
+  assert.deepEqual(await cards.press("ttys001", "No", ["hello.txt"], guard), { pressed: "No" });
+  assert.equal(sends, 1);
+  active = true;
+  await assert.rejects(cards.press("ttys001", "No", ["hello.txt"], guard), /already answered/);
+  assert.equal(sends, 1, "a confirmed answer is never repeated");
+});
+
+test("guarded terminal busy or stale-target refusal remains explicitly retryable before any native dispatch", async () => {
+  let sends = 0;
+  const terminals = new DesktopTerminals({ platform: "darwin", run: async () => { sends++; return { ok: true }; } });
+  terminals.targets.set("one", { provider: "terminal", target: { session: "one" } });
+  const authorize = () => {}, beforeDispatch = () => {};
+  terminals.busy = "user";
+  await assert.rejects(terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch }), e => e.status === 409 && e.notDispatched === true);
+  assert.equal(sends, 0);
+  terminals.busy = false;
+  await assert.rejects(terminals.action("missing", "send", { text: "1" }, authorize, { beforeDispatch }), e => e.status === 404 && e.notDispatched === true);
+  assert.equal(sends, 0);
+  assert.deepEqual(await terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch }), { ok: true });
+  assert.equal(sends, 1);
+  terminals.run = () => { sends++; throw Error("Synthetic acknowledgement unknown"); };
+  await assert.rejects(terminals.action("one", "send", { text: "1" }, authorize, { beforeDispatch }), e => /unknown/.test(e.message) && e.notDispatched !== true);
+  assert.equal(sends, 2, "a synchronous injected run failure is conservatively treated as dispatched");
 });
