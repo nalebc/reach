@@ -88,7 +88,7 @@ import { createNotificationActions, notificationPush, admissionNotification, pus
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
-import { ScreenBroadcast, createScreenSource } from "./screen-stream.mjs";
+import { ScreenBroadcast, createScreenSource, hostAppName } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
 import { startInTerminal } from "../scripts/stop.mjs";
@@ -100,7 +100,7 @@ import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
-import { createAgentImages } from "./agent-sessions/images.mjs";
+import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
@@ -1503,6 +1503,12 @@ export async function createReach(overrides = {}) {
   // One-time setup from your phone: the credential is checked with Tailscale
   // and kept on this computer only; it's never sent back.
   app.post("/api/guests/keys", async (req, res) => {
+    const authorize = () => {
+      const client = req.reauthorize();
+      if (client.kind !== "device" || !client.scopes.includes("admin"))
+        throw fail(403, "Only a paired owner device can set up invite links.");
+    };
+    authorize();
     if (!guestKeys)
       throw fail(404, "Invite links need Tailscale device approval here.");
     // The easy way: one access token (used once, never kept). Reach adds its
@@ -1513,6 +1519,8 @@ export async function createReach(overrides = {}) {
       const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
       const result = await guestKeys.setupFromAccessToken({
         accessToken: req.body.accessToken,
+        authorize,
+        narrowDefaultWildcard: req.body.narrowDefaultWildcard === true,
         addresses: [
           v4(st?.Self),
           ...(fleet?.links() || []).map((l) =>
@@ -1530,6 +1538,7 @@ export async function createReach(overrides = {}) {
     await guestKeys.setup({
       clientId: req.body?.clientId,
       clientSecret: req.body?.clientSecret,
+      authorize,
     });
     res.json({ configured: true });
   });
@@ -2447,6 +2456,11 @@ export async function createReach(overrides = {}) {
   const agentImages = createAgentImages({
     dir: path.join(config.dataDir, "agent-images"),
   });
+  const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
+  const fileUpload = multer({
+    dest: path.join(config.dataDir, "agent-files"),
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0, parts: 2, headerPairs: 32 },
+  });
   const imageUpload = multer({
     dest: path.join(config.dataDir, "agent-images"),
     limits: {
@@ -2465,6 +2479,8 @@ export async function createReach(overrides = {}) {
     codex: ["auto", "guardian-approvals", "full-access", "read-only"],
     claude: ["default", "auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"],
   };
+  const withFiles = (text, files, agent) =>
+    files.length ? [text.trim(), files.map((f) => (agent === "claude" ? `@${f}` : f)).join("\n")].filter(Boolean).join("\n\n") : text;
   const turnOptions = (body, agent) => {
     if (body.model !== undefined && body.model !== null && !MODEL.test(body.model))
       throw fail(400, "Unknown model.");
@@ -2476,7 +2492,9 @@ export async function createReach(overrides = {}) {
     if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
       throw fail(400, "Unknown speed.");
     return {
-      text: typeof body.text === "string" ? body.text : "",
+      // Files attached go as their paths, as each agent's composer names a
+      // file: @path for Claude Code, the path for Codex.
+      text: withFiles(typeof body.text === "string" ? body.text : "", agentFiles.paths(body.files), agent || body.agent),
       images: agentImages.paths(body.images),
       model: body.model || undefined,
       effort: body.effort || undefined,
@@ -2650,6 +2668,15 @@ export async function createReach(overrides = {}) {
     record("session", "Used a Codex rate-limit reset from the phone");
     res.json(result);
   });
+  // Any file for a message (images go as images, above).
+  app.post("/api/sessions/files", fileUpload.single("file"), async (req, res) => {
+    if (!req.file) throw fail(400, "Choose a file.");
+    res.json({ id: agentFiles.add(req.file.path, req.file.originalname), name: path.basename(req.file.originalname || "file") });
+  });
+  // Files in a chat's folder, for "@" in its composer.
+  app.get("/api/sessions/:agent/:id/files", async (req, res) =>
+    res.json({ files: await agentSessions.findFiles(req.params.agent, req.params.id, typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "") }),
+  );
   app.post(
     "/api/sessions/images",
     imageUpload.single("file"),
@@ -2694,6 +2721,10 @@ export async function createReach(overrides = {}) {
         ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body.skill)
           ? { skill: req.body.skill }
           : {}),
+        // An answer to what Codex asked: into its running turn, not the queue.
+        ...(req.params.agent === "codex" && req.body?.steer === true ? { steer: true } : {}),
+        // Codex's plan mode for this turn and on (the Codex app's Plan toggle).
+        ...(req.params.agent === "codex" && ["plan", "default"].includes(req.body?.collaboration) ? { collaboration: req.body.collaboration } : {}),
         owner: req.client.id,
       },
     );
@@ -2745,11 +2776,14 @@ export async function createReach(overrides = {}) {
   // owner's call (it changes what Claude may do without asking). Never Bypass.
   app.post("/api/sessions/:agent/:id/model", async (req, res) => {
     macOwner(req);
-    const { model, effort } = req.body || {};
+    const { model, effort, speed } = req.body || {};
     if (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f]/.test(model) ||
         (effort != null && (typeof effort !== "string" || !effort.trim() || effort.length > 80 || /[\x00-\x1f]/.test(effort))))
       throw fail(400, "Choose a model and thinking level.");
-    res.json(await agentSessions.model(req.params.agent, req.params.id, { model, effort }));
+    // Codex's speed (its service tier), changed mid-chat as in the Codex app.
+    if (speed != null && (req.params.agent !== "codex" || typeof speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(speed)))
+      throw fail(400, "Unknown speed.");
+    res.json(await agentSessions.model(req.params.agent, req.params.id, { model, effort, ...(speed ? { speed } : {}) }));
   });
   app.post("/api/sessions/:agent/:id/mode", async (req, res) => {
     macOwner(req);
@@ -2767,6 +2801,62 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/queue/order", async (req, res) =>
     res.json(await agentSessions.reorderQueued(req.params.agent, req.params.id, req.body?.order)),
   );
+  // Rewind to before a message (Claude Code's own rewind).
+  app.post("/api/sessions/:agent/:id/rewind", async (req, res) => {
+    const b = req.body || {};
+    if (typeof b.messageId !== "string") throw fail(400, "Choose a message.");
+    const result = await agentSessions.rewind(req.params.agent, req.params.id, {
+      messageId: b.messageId,
+      code: b.code === true,
+      conversation: b.conversation === true,
+      dryRun: b.dryRun === true,
+      authorize: () => req.reauthorize(),
+    });
+    if (!b.dryRun) record("session", `Rewound a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
+  // One sub-agent stopped, the chat going on.
+  app.post("/api/sessions/:agent/:id/subagents/:task/stop", async (req, res) => {
+    const result = await agentSessions.stopSubagent(req.params.agent, req.params.id, req.params.task);
+    record("session", `Stopped a ${agentLabel(req.params.agent)} sub-agent`);
+    res.json(result);
+  });
+  // A chat deleted, as in its app (Codex's delete; a Claude chat to the Trash).
+  app.delete("/api/sessions/:agent/:id", async (req, res) => {
+    macOwner(req);
+    const result = await agentSessions.deleteChat(req.params.agent, req.params.id);
+    record("session", `Deleted a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
+  // A chat renamed, as in its app.
+  app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
+    if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");
+    const result = await agentSessions.rename(req.params.agent, req.params.id, req.body.title);
+    record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
+    res.json(result);
+  });
+  // Answers to what Codex asked while it works, into that turn (as the Codex
+  // app answers them), never queued as a message.
+  app.post("/api/sessions/:agent/:id/questions/:item", async (req, res) => {
+    const { turnId, answers } = req.body || {};
+    const result = await agentSessions.answerQuestions(req.params.agent, req.params.id, { itemId: req.params.item, turnId, answers });
+    record("session", `Answered ${agentLabel(req.params.agent)} on the phone`);
+    res.json(result);
+  });
+  // Your last message edited and sent again (the Codex app's Edit).
+  app.post("/api/sessions/:agent/:id/edit-last", async (req, res) => {
+    const { turnId, text } = req.body || {};
+    if (typeof turnId !== "string" || typeof text !== "string") throw fail(400, "Write the message.");
+    const result = await agentSessions.editLast(req.params.agent, req.params.id, { turnId, text });
+    record("session", `Edited the last message in ${agentLabel(req.params.agent)}`);
+    res.json(result);
+  });
+  // A queued message's words changed where it waits (its pictures kept).
+  app.post("/api/sessions/:agent/:id/queue/:message/edit", async (req, res) => {
+    const text = req.body?.text;
+    if (typeof text !== "string" || text.length > 50000) throw fail(400, "Messages can be up to 50,000 characters.");
+    res.json(await agentSessions.editQueued(req.params.agent, req.params.id, req.params.message, text));
+  });
   app.post("/api/sessions/:agent/:id/queue/:message/cancel", async (req, res) =>
     res.json(await agentSessions.cancelQueued(req.params.agent, req.params.id, req.params.message)),
   );
@@ -3333,6 +3423,21 @@ export async function createReach(overrides = {}) {
     res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
   });
   serveBuild(app, express, dist);
+  // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,
+  // a disk: macOS's privacy settings, per app). "Your computer has not
+  // granted access" read on the phone as Reach refusing its owner (Oct 7):
+  // it names what to allow, and where.
+  const privacyRefusal = () => {
+    if (process.platform !== "darwin")
+      return "Your computer has not granted access to this location.";
+    let host = "";
+    try {
+      host = hostAppName();
+    } catch {
+      /* unknown: the generic wording */
+    }
+    return `macOS hasn't let Reach open this location. On your Mac, allow ${host || "the app running Reach, such as Terminal"} in System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then try again.`;
+  };
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     res
@@ -3354,10 +3459,11 @@ export async function createReach(overrides = {}) {
             : error.status
               ? error.message
               : error.code === "EACCES" || error.code === "EPERM"
-                ? "Your computer has not granted access to this location."
+                ? privacyRefusal()
                 : error.code === "EEXIST"
                   ? "That name is already in use."
                   : "Could not complete this action. Check the companion console.",
+        ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });

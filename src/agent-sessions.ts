@@ -3,6 +3,21 @@ import { post, request, type Peer } from "./api";
 
 // Every Codex and Claude Code session on the computer (server/agent-sessions).
 export type AgentName = "codex" | "claude" | "gemini";
+// A sub-agent a chat started (server/agent-sessions/subagents.mjs).
+export type Subagent = {
+  id: string;
+  toolUseId: string | null;
+  name: string;
+  type: string;
+  background: boolean;
+  status: "running" | "done" | "failed" | "stopped" | "quiet";
+  // It can be stopped from here (Reach runs the chat).
+  stoppable?: boolean;
+  activity: string;
+  result: string;
+  startedAt: number;
+  updatedAt: number;
+};
 export type AgentSession = {
   agent: AgentName;
   id: string;
@@ -20,6 +35,14 @@ export type AgentSession = {
   live?: { where: "claude-app" | "terminal" | "background"; pid: number; tty: string | null };
   // Filled when one session is read.
   model?: string | null;
+  // Its sub-agents, newest first.
+  subagents?: Subagent[];
+  // Rewound: shown as it stood then, until the next message goes on from there.
+  rewound?: boolean;
+  // How full its context is (tokens), as its agent counts them.
+  context?: { used: number; window: number | null };
+  // Claude's todo list as it stands.
+  todos?: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[];
   effort?: string | null;
   // Codex's speed (service tier) the chat runs at, when it says.
   speed?: string | null;
@@ -65,8 +88,15 @@ export type AgentAsking =
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
-  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output";
+  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output" | "agent";
   text: string;
+  // A sub-agent the chat started (kind "agent"): its kind, whether it runs
+  // in the background, and its status and doing now, from its own files.
+  agentType?: string;
+  background?: boolean;
+  agentId?: string;
+  agentStatus?: Subagent["status"];
+  activity?: string;
   detail?: string;
   status?: string;
   queued?: boolean;
@@ -74,8 +104,10 @@ export type SessionItem = {
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
-  // Codex can ask these while continuing to work; answers are chat replies.
-  questions?: { title: string; options: string[] }[];
+  // Codex can ask these while continuing to work; answered into that turn,
+  // each answer shown on its question (answer), as in the Codex app.
+  questions?: { title: string; options: string[]; answer?: string }[];
+  replies?: { questionItemId: string; question: string; answer: string }[];
   at?: number;
   turnId?: string;
 };
@@ -119,8 +151,10 @@ export type SessionPrompt = {
   attempted?: boolean;
   // Codex: command, file-change, permissions, question, elicitation.
   // Claude Code: tool (a permission request), question, dialog (answered on the Mac).
-  kind: "command" | "file-change" | "permissions" | "question" | "elicitation" | "tool" | "dialog" | "unknown";
+  kind: "command" | "file-change" | "permissions" | "question" | "elicitation" | "tool" | "dialog" | "plan" | "unknown";
   title: string;
+  // Claude Code's plan, ready to go (kind "plan"), as markdown.
+  plan?: string;
   command?: string;
   cwd?: string;
   reason?: string;
@@ -141,6 +175,7 @@ export type SessionPrompt = {
 // What Reach sees live for a session it drives (server/agent-sessions/codex-live).
 export type LiveView = {
   version: number;
+  turnId?: string | null;
   status: "running" | "waiting" | "idle" | null;
   error: string | null;
   prompts: SessionPrompt[];
@@ -478,7 +513,7 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string };
+export type Outgoing = { text: string; images: string[]; files?: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
 // Messages from the phone whose chat was deleted (server outbox.mjs): sent to
@@ -488,6 +523,36 @@ export const readStranded = (peer: Peer) =>
   request<{ messages: StrandedMessage[] }>(peer, "/api/sessions/stranded");
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
+// Rewind to before a message (Claude Code's own rewind).
+export type RewindPreview = { canRewind: boolean; error?: string; files: string[]; insertions: number; deletions: number };
+export const rewindSession = (
+  peer: Peer,
+  s: { agent: AgentName; id: string },
+  body: { messageId: string; code?: boolean; conversation?: boolean; dryRun?: boolean },
+) => post<RewindPreview & { rewound?: boolean }>(peer, `${sessionPath(s)}/rewind`, body);
+// One sub-agent stopped, the chat going on.
+export const stopSubagent = (peer: Peer, s: { agent: AgentName; id: string }, task: string) =>
+  post<{ stopped: true }>(peer, `${sessionPath(s)}/subagents/${encodeURIComponent(task)}/stop`);
+// A chat deleted, as in its app.
+export const deleteSession = (peer: Peer, s: { agent: AgentName; id: string }) =>
+  request<{ deleted: true }>(peer, sessionPath(s), { method: "DELETE" });
+// A chat renamed, as in its app.
+export const renameSession = (peer: Peer, s: { agent: AgentName; id: string }, title: string) =>
+  post<{ title: string }>(peer, `${sessionPath(s)}/rename`, { title });
+// Answers to what Codex asked while it works, into the turn that asked (the
+// Codex app's own answer, never a queued message). An empty answer skips one.
+export const answerCodexQuestions = (
+  peer: Peer,
+  s: { agent: AgentName; id: string },
+  item: string,
+  body: { turnId: string; answers: { index: number; answer: string }[] },
+) => post<{ answered: true }>(peer, `${sessionPath(s)}/questions/${encodeURIComponent(item)}`, body);
+// Your last message edited and sent again (the Codex app's Edit).
+export const editLastMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: { turnId: string; text: string }) =>
+  post<{ edited: true }>(peer, `${sessionPath(s)}/edit-last`, body);
+// A queued message's words changed where it waits (pictures kept).
+export const editQueued = (peer: Peer, s: { agent: AgentName; id: string }, id: string, text: string) =>
+  post<{ edited: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/edit`, { text });
 // Send now, as in the agent's app: first in line, in at once.
 export const sendQueuedNow = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ hurried: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/now`);
@@ -500,7 +565,7 @@ export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, 
 // app too (applied: false when it goes with the next message instead).
 export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
   post<{ mode: string; applied: boolean }>(peer, `${sessionPath(s)}/mode`, { mode });
-export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string }) =>
+export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string; speed?: string }) =>
   post<{ model: string; effort?: string; applied: boolean }>(peer, `${sessionPath(s)}/model`, choice);
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
   post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
@@ -575,8 +640,17 @@ export const appCard = (peer: Peer, s: { agent: AgentName; id: string }) =>
   request<AppCard>(peer, `${sessionPath(s)}/card`);
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back.
-export const moveSession = (peer: Peer, s: { agent: string; id: string }, to: string) =>
-  post<{ agent: string; id: string }>(peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to });
+export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string) => {
+  const moved = await post<{ agent?: unknown; id?: unknown } | null>(
+    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to },
+  );
+  // A successful HTTP status does not prove the destination is usable. Keep
+  // the source open on incompatible replies; the server may already have
+  // created the continuation, so never retry this mutation automatically.
+  if (moved?.agent !== to || typeof moved.id !== "string" || !moved.id.trim())
+    throw new Error("Reach could not confirm the continued chat. Your source chat is still here. Check the destination app before trying again.");
+  return { agent: to, id: moved.id };
+};
 // Archived (or back) in the chat's own app: it leaves Reach's list and the
 // app's alike (Codex's archive; the Claude app's own record).
 export const archiveSession = (peer: Peer, s: { agent: string; id: string }, archived = true) =>
@@ -617,6 +691,17 @@ export function listCommands(peer: Peer, agent: AgentName) {
   return commandCache.get(key)!;
 }
 
+// Any other file for a message; it goes to the agent as its path.
+export async function uploadFile(peer: Peer, file: Blob, name = "file") {
+  const form = new FormData();
+  form.append("file", file, name);
+  const r = await request<{ id: string; name: string }>(peer, "/api/sessions/files", {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(300000),
+  });
+  return r.id;
+}
 export async function uploadImage(peer: Peer, file: Blob, name = "image") {
   const form = new FormData();
   form.append("file", file, name);

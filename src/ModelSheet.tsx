@@ -55,7 +55,8 @@ function Sheet({ agent, label, className, onClose, children }: { agent: AgentNam
         {children}
       </div>
     </div>,
-    document.querySelector(".as-page, .chat-home") || document.body,
+    // A sheet open over a chat (a new chat's) first: the chat stays under it.
+    document.querySelector(".reach-chat-sheet") || document.querySelector(".as-page, .chat-home") || document.body,
   );
 }
 

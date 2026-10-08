@@ -106,7 +106,7 @@ const SIGN_IN_URL =
   "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback";
 
 test("Codex async questions show during work and send choices and free text without consuming the draft", async () => {
-  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", role: "assistant", kind: "text", text: "", questions: [
+  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [
     { title: "Which target?", options: ["Mac", "Phone"] }, { title: "Anything else?", options: [] },
   ] }];
   mac.live = { ...idleLive(), status: "running" };
@@ -119,11 +119,39 @@ test("Codex async questions show during work and send choices and free text with
   await click($$(".as-async-questions .as-choices button")[1]);
   await typeInto($(".as-async-questions input"), "Include offline mode");
   await click($(".as-async-questions .as-prompt-actions .primary"));
-  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/messages")));
-  const message = mac.sent.find((m) => m.route.endsWith("/messages"));
-  assert.equal(message.body.text, "Which target?\nPhone\n\nAnything else?\nInclude offline mode");
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/questions/async-q")));
+  const message = mac.sent.find((m) => m.route.endsWith("/questions/async-q"));
+  assert.deepEqual(message.body, { turnId: "turn-1", answers: [{ index: 0, answer: "Phone" }, { index: 1, answer: "Include offline mode" }] });
+  assert.ok(!mac.sent.some((m) => m.route.endsWith("/messages")));
+  assert.equal($$(".as-user.pending").length, 0);
   assert.equal($(".as-composer textarea").value, "Keep this draft");
-  await dom.waitFor(() => $(".as-async-questions").textContent.includes("Answer sent"));
+  await dom.waitFor(() => $$(".as-async-questions .as-answered").length === 2);
+  assert.deepEqual($$(".as-async-questions .as-answered").map((el) => el.textContent), ["Phone", "Include offline mode"]);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Codex async questions retain native answers after reload without message bubbles", async () => {
+  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [
+    { title: "Which target?", options: ["Mac", "Phone"], answer: "Phone" },
+  ] }];
+  mac.live = { ...idleLive(), status: "running", turnId: "turn-1" };
+  await open(codexSession({ status: "running" }));
+  await dom.waitFor(() => $(".as-async-questions .as-answered"));
+  assert.equal($(".as-answered").textContent, "Phone");
+  assert.equal($$(".as-async-questions button").length, 0);
+  assert.equal($$(".as-user").length, 0);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Codex async questions from a previous turn cannot be answered into the new turn", async () => {
+  mac.pages[`codex:${CODEX}`].items = [{ id: "async-q", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [
+    { title: "Which target?", options: ["Mac", "Phone"] },
+  ] }];
+  mac.live = { ...idleLive(), status: "running", turnId: "turn-2" };
+  await open(codexSession({ status: "running" }));
+  await dom.waitFor(() => $(".as-async-questions .as-asked"));
+  assert.equal($$(".as-async-questions button").length, 0);
+  assert.equal(mac.sent.length, 0);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -155,18 +183,27 @@ test("app-owned Codex turns have Stop; queued messages sit above the composer an
   const session = codexSession({ held: "codex-app", status: "running" });
   mac.pages[`codex:${CODEX}`].session = session;
   mac.live = { ...idleLive(), outbox: [{ id: "q-edit", text: "Then test", images: 0 }] };
-  const route = `/api/sessions/codex/${CODEX}/queue/q-edit/cancel`;
-  routes[route] = () => ({ deleted: true });
+  const route = `/api/sessions/codex/${CODEX}/queue/q-edit/edit`;
+  const edits = [];
+  routes[route] = (init) => (edits.push(JSON.parse(init.body)), { edited: true });
   await open(session);
   await dom.waitFor(() => $(".qm-row"));
   assert.ok(button("Stop"));
   assert.equal($(".as-scroll .qm"), null);
   assert.ok($(".as-composer .qm"));
-  // Edit is in the row's menu, as in the Codex app.
+  // Edit is in the row's menu, as in the Codex app, and changes it where it waits.
   await click(button("Queued message actions"));
   await click($('[role="menuitem"]'));
-  await dom.waitFor(() => $("textarea").value === "Then test");
-  assert.equal($(".qm-row"), null);
+  const box = $('textarea[aria-label="Edit queued message"]');
+  assert.equal(box.value, "Then test");
+  dom.update(() => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "Then test it all");
+    box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  await click($(".qm-edit button.primary"));
+  await dom.waitFor(() => edits.length === 1);
+  assert.deepEqual(edits, [{ text: "Then test it all" }]);
+  assert.ok($(".qm-row"), "still queued, edited where it waits");
   assert.deepEqual(dom.errors, []);
   delete routes[route];
 });
@@ -347,6 +384,7 @@ for (const agent of ["codex", "claude"])
     );
     for (const action of [
       "messages",
+      "questions/async-q",
       "model",
       "stop",
       "prompts/7",
@@ -395,6 +433,10 @@ const button = (label) =>
     (b) =>
       b.getAttribute("aria-label") === label || b.textContent.trim() === label,
   );
+// The permission menu's rows by name (the line under each aside).
+const modeNames = () => $$(".as-mode-menu-text > span").map((s) => s.textContent);
+const modeRow = (name) =>
+  $$(".as-mode-menu button").find((b) => b.querySelector(".as-mode-menu-text > span")?.textContent === name);
 const click = async (element) => {
   assert.ok(element, "button exists");
   element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -413,8 +455,6 @@ const open = async (session, health = signedIn, on = peer, extra = {}) => {
       ...extra,
     }),
   );
-  // Legacy protocol tests inspect model/mode controls; the rebuilt UI opens them explicitly.
-  await click(button("Chat settings"));
   return view;
 };
 const home = async (sessions, health = signedIn, extra = {}, on = peer) => {
@@ -538,7 +578,7 @@ test("a Codex chat reads like the Codex app", async () => {
   );
   assert.equal($("textarea").placeholder, "Do anything");
   await dom.waitFor(() => $(".as-model")?.textContent.includes("GPT-6 Astra"));
-  assert.equal($(".as-model span").textContent, "Medium");
+  assert.equal($(".as-model-effort").textContent, "Medium");
   assert.equal($(".as-mode").textContent, "Approve for me");
   // ChatGPT's header: round buttons floating over the chat, the title between.
   assert.equal($(".as-title strong").textContent, "Fix login");
@@ -1079,7 +1119,7 @@ test("Codex: the model and effort as words and dots over the composer, the model
   assert.deepEqual(dom.errors, []);
 });
 
-test("Codex: Speed in Configure uses the phone's own menu and goes with the next message", async (t) => {
+test("Codex: Speed in Configure uses the phone's own menu and changes the chat's speed at once, as in the Codex app", async (t) => {
   const astra = CODEX_OFFERS.models[0];
   const before = { ...astra };
   // As Codex really lists them: only the extra tier, no standard one.
@@ -1095,13 +1135,16 @@ test("Codex: Speed in Configure uses the phone's own menu and goes with the next
   assert.deepEqual([...select.options].map((o) => o.textContent), ["Standard", "Fast"]);
   select.value = "priority";
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  await dom.waitFor(() => /Fast/.test($(".ms-select .ms-value").textContent));
-  // Nothing sent yet: the speed rides on the next message.
-  assert.equal(mac.sent.length, 0);
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/model")));
+  // The chat's own speed, changed now (with its model), not on the next message.
+  const change = mac.sent.find((m) => m.route.endsWith("/model"));
+  assert.equal(change.route, `/api/sessions/codex/${CODEX}/model`);
+  assert.equal(change.body.speed, "priority");
+  assert.equal(typeof change.body.model, "string");
   await click($(".ms-done"));
   await typeInto($("textarea"), "go");
   await click(button("Send"));
-  assert.deepEqual(mac.sent.at(-1).body, { text: "go", images: [], speed: "priority" });
+  assert.equal(mac.sent.at(-1).body.speed, undefined);
 });
 
 test("Claude: Select model with what each is for, and Effort as its own row that opens the levels", async (t) => {
@@ -1728,7 +1771,7 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
   await click($(".qm-head"));
   await dom.waitFor(() => $$(".qm-row").length === 2);
   const [first, second] = $$(".qm-row");
-  assert.equal(first.querySelector(".qm-text p").textContent, "Run the tests");
+  assert.equal(first.querySelector(".qm-open").textContent, "Run the tests");
   assert.equal(first.querySelector(".qm-images").getAttribute("aria-label"), "1 image");
   assert.equal(second.querySelector(".qm-why").textContent, "Claude Code is signed out on your Mac.");
   // Handed over: it leaves the outbox (and shows from the transcript).
@@ -1860,6 +1903,37 @@ test("each app has its own chat space selected by its logo", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
+test("the phone chat list groups working and idle chats under their project", async () => {
+  await home([
+    codexSession({ id: CODEX, cwd: "/work/app", title: "Fix login", status: "running" }),
+    codexSession({ id: NEW, cwd: "/work/app", title: "Write tests", status: "idle", updatedAt: Date.now() - 1000 }),
+    codexSession({ id: "other", cwd: "/work/other", title: "Other project", status: "idle", updatedAt: Date.now() - 2000 }),
+  ]);
+  assert.equal($(".chat-projects-title").textContent, "Projects");
+  const app = $('[aria-label="app conversations"]');
+  assert.deepEqual([...app.querySelectorAll(".chat-card strong")].map((el) => el.textContent), ["Fix login", "Write tests"]);
+  assert.equal(app.querySelector(".chat-project-parent").textContent, "work");
+  assert.ok(app.querySelector(".chat-card.running .chat-row-status"));
+  assert.equal($$(".chat-project-group").length, 2);
+  assert.ok(button("New chat in app"));
+  assert.ok(button("New Codex chat"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("the phone list's app menu and search icon keep app switching and search available", async () => {
+  await home([codexSession(), claudeSession()]);
+  await click(button("Choose an app, Codex selected"));
+  await click($('[role=menuitemradio][aria-checked=false]'));
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "claude");
+  assert.equal($(".chat-card strong").textContent, "Refactor auth");
+  await click(button("Search chats"));
+  await typeInto($('.chat-library input[aria-label="Search chats"]'), "no match");
+  assert.match($(".chat-list-empty").textContent, /No conversations found/);
+  await click(button("Search chats"));
+  assert.equal($(".chat-card strong").textContent, "Refactor auth");
+  assert.deepEqual(dom.errors, []);
+});
+
 test("changing the new-chat app preserves the draft and remembers the app", async () => {
   await home([codexSession(), claudeSession()]);
   await click(button("New chat"));
@@ -1936,7 +2010,6 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
   await home([codexSession(), claudeSession({ cwd: "/work/site" })]);
   assert.equal($("textarea"), null);
   await click(button("New chat"));
-  await click(button("Chat settings"));
   const field = () => $("textarea[aria-label='New Codex chat']");
   assert.equal(dom.document.activeElement, field());
   assert.equal(field().placeholder, "What would you like to work on?");
@@ -1958,9 +2031,9 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
     ),
   );
   await click($(".as-mode-pick"));
-  // Codex's own menu as it reports it now.
+  // Codex's own menu as it reports it now, as in a chat.
   assert.deepEqual(
-    $$(".as-picker-row button").map((b) => b.textContent),
+    modeNames(),
     [
       "Ask for approval",
       "Approve for me",
@@ -1970,9 +2043,7 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
       "Custom (config.toml)",
     ],
   );
-  await click(
-    $$(".as-picker-row button").find((b) => b.textContent === "Approve for me"),
-  );
+  await click(modeRow("Approve for me"));
   await click(button("Start"));
   await dom.waitFor(() => $(".as-page"));
   assert.deepEqual(mac.sent[0], {
@@ -2049,7 +2120,6 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
     }),
   );
   await click(button("New chat"));
-  await click(button("Chat settings"));
   globalThis.fetch = fetch;
   const field = () => $("textarea[aria-label='New Claude Code chat']");
   assert.equal(field().placeholder, "What would you like to work on?");
@@ -2058,14 +2128,10 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
     $(".chat-model")?.textContent.includes("Default (recommended)"),
   );
   await click($(".as-mode-pick"));
-  // Claude Code's own modes, in its order and words, after the settings' default.
-  assert.deepEqual(
-    $$(".as-picker-row button").map((b) => b.textContent),
-    ["Default", "Manual", "Plan", "Accept edits", "Bypass Permissions", "Auto"],
-  );
-  await click(
-    $$(".as-picker-row button").find((b) => b.textContent === "Plan"),
-  );
+  // Claude Code's own modes, in the Claude app's order and words (as in a
+  // chat), after the settings' default.
+  assert.deepEqual(modeNames(), ["Default", "Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
+  await click(modeRow("Plan"));
   await click($(".chat-model"));
   await click(await dom.waitFor(() => modelRow("Fable 5.1")));
   await click($(".chat-model"));
@@ -2077,10 +2143,8 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
   );
   // A model that doesn't take Auto mode isn't offered it.
   await click($(".as-mode-pick"));
-  assert.ok(!$$(".as-picker-row button").some((b) => b.textContent === "Auto"));
-  await click(
-    $$(".as-picker-row button").find((b) => b.textContent === "Plan"),
-  );
+  assert.ok(!modeNames().includes("Auto"));
+  await click(modeRow("Plan"));
   await click(button("Start"));
   await dom.waitFor(() => $(".as-page.claude"));
   assert.deepEqual(mac.sent[0].body, {
@@ -3056,7 +3120,7 @@ test("Claude's new-chat button is the app's filled bubble", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
-test("the model stays out of the conversation until settings open; the permission mode is always in sight, as in the apps", async () => {
+test("the model and the permission mode are always in sight in the box, as in the apps", async () => {
   await mount(
     React.createElement(AgentSessionView, {
       peer,
@@ -3067,13 +3131,9 @@ test("the model stays out of the conversation until settings open; the permissio
       onBack() {},
     }),
   );
-  assert.ok(!$(".as-model"));
-  assert.equal($(".as-mode").textContent, "Approve for me");
-  await click(button("Chat settings"));
   await dom.waitFor(() => $(".as-model"));
-  await click(button("Chat settings"));
-  assert.ok(!$(".as-model"));
   assert.equal($(".as-mode").textContent, "Approve for me");
+  assert.ok(!button("Chat settings"));
   assert.deepEqual(dom.errors, []);
 });
 
@@ -3928,4 +3988,60 @@ test("a replaced chat credential drops a pending older page without blocking the
   assert.match(dom.document.body.textContent, /Fresh pairing content/);
   assert.doesNotMatch(dom.document.body.textContent, /Old pairing history/);
   assert.ok($(".as-older"), "the old page cannot replace the new pagination cursor");
+});
+
+test("an answered Codex question stays answered when its older page is loaded", async (t) => {
+  const route = `/api/sessions/codex/${CODEX}`;
+  const previous = routes[route];
+  t.after(() => { routes[route] = previous; });
+  const question = { id: "paged-question", turnId: "turn-1", role: "assistant", kind: "text", text: "", questions: [{ title: "Which target?", options: ["Mac", "Phone"] }] };
+  const reply = { id: "paged-answer", turnId: "turn-1", role: "user", kind: "text", text: "Phone", replies: [{ questionItemId: '["request_user_input_async","paged-question",0]', question: "Which target?", answer: "Phone" }] };
+  routes[route] = (init, url) => ({ session: codexSession({ status: "running" }), items: url.searchParams.get("before") ? [question] : [reply], before: url.searchParams.get("before") ? null : "older" });
+  mac.live = { ...idleLive(), status: "running", turnId: "turn-1" };
+  await open(codexSession({ status: "running" }));
+  await click(await dom.waitFor(() => $(".as-older")));
+  await dom.waitFor(() => $(".as-async-questions .as-answered"));
+  assert.equal($(".as-answered").textContent, "Phone");
+  assert.equal($$(".as-async-questions button").length, 0);
+  assert.equal($$(".as-user").length, 0, "no duplicate answer bubble remains");
+  assert.deepEqual(dom.errors, []);
+});
+
+for (const [context, label, text] of [
+  [{ used: 200001, window: null }, "200,001 tokens reported; context capacity unknown", "200,001 tokens"],
+  [{ used: 64000, window: 258000 }, "25% of context used", "25%"],
+]) test(`the context display reports ${label}`, async () => {
+  mac.pages[`claude:${CLAUDE}`].session.context = context;
+  await open(claudeSession({ context }));
+  const meter = await dom.waitFor(() => $(".as-context"));
+  assert.equal(meter.getAttribute("aria-label"), label);
+  assert.equal(meter.textContent, text);
+  assert.equal(!!meter.querySelector("svg"), context.window !== null);
+  assert.deepEqual(dom.errors, []);
+});
+
+for (const agent of ["codex", "claude"]) test(`${agent}: cancelling an acknowledged queue entry elsewhere removes its optimistic copy`, async (t) => {
+  const session = agent === "codex" ? codexSession({ status: "running" }) : claudeSession({ status: "running" });
+  mac.pages[`${agent}:${session.id}`].session = session;
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/${agent}/${session.id}/messages`, previous = routes[route];
+  let sends = 0;
+  routes[route] = () => {
+    sends++;
+    mac.bump({ outbox: [{ id: "native-queued", text: "Cancel me in the app", images: 0 }] });
+    return { queued: true, delivered: false, messageId: "native-queued" };
+  };
+  t.after(() => { routes[route] = previous; });
+  await open(session);
+  await dom.waitFor(() => $(".as-composer textarea"));
+  await typeInto($(".as-composer textarea"), "Cancel me in the app");
+  await click(button("Send"));
+  await dom.waitFor(() => $(".qm-row") || $(".qm-head"));
+  assert.equal(sends, 1);
+  mac.bump({ outbox: [] }); // authoritative external cancellation, no transcript message
+  await dom.waitFor(() => !$(".qm-row") && !$(".qm-head"));
+  assert.equal($$(".as-user.pending").length, 0, "the acknowledged queue owns the message; no ghost bubble survives cancellation");
+  assert.equal(mac.pages[`${agent}:${session.id}`].items.length, 0);
+  assert.equal(sends, 1, "cancellation must never resend");
+  assert.deepEqual(dom.errors, []);
 });

@@ -1,8 +1,9 @@
 // Reach's two lines in your Tailscale policy, added for you. The policy file
 // is HuJSON (JSON with comments and trailing commas); Reach reads it without
-// losing a character, and only ever inserts: its guest tag in tagOwners and
+// losing comments or formatting. It inserts its guest tag in tagOwners and
 // one grant (guest devices reach Reach's port on your computers, nothing
-// else). Your rules, comments and formatting stay exactly as they were.
+// else). Explicit approval can also narrow one exact default wildcard grant
+// to tailnet members; other existing rules remain unchanged.
 
 const PUNCT = new Set(["{", "}", "[", "]", ":", ","]);
 
@@ -162,12 +163,31 @@ export function guestPolicyRisks(policy, { tag, addresses, port }) {
 // What Reach needs in your policy, and the policy text with it added.
 // Returns { text, added: [lines], allowAll: [rules] }; `added` is empty
 // when everything is already there (nothing to write).
-export function addGuestRules(text, { tag, addresses, port }) {
+export function addGuestRules(text, { tag, addresses, port, narrowDefaultWildcard = false }) {
   const root = tree(tokenize(text));
   const policy = plain(root);
   const unit = indentUnit(text);
   const edits = [];
   const added = [];
+  const risks = guestPolicyRisks(policy, { tag, addresses, port });
+  const defaultGrants = (policy.grants || []).flatMap((grant, i) =>
+    Array.isArray(grant?.src) && grant.src.length === 1 && grant.src[0] === "*" &&
+    Array.isArray(grant.dst) && grant.dst.length === 1 && grant.dst[0] === "*" &&
+    Array.isArray(grant.ip) && grant.ip.length === 1 && grant.ip[0] === "*" &&
+    Object.keys(grant).every((key) => ["src", "dst", "ip"].includes(key))
+      ? [i]
+      : [],
+  );
+  const canNarrowDefault = defaultGrants.length === 1 &&
+    risks.length === 1 && risks[0] === `grants[${defaultGrants[0]}]`;
+  if (narrowDefaultWildcard && !canNarrowDefault)
+    throw Error("Reach can only narrow a single default all-access rule. Review the other Tailscale rules by hand.");
+  if (narrowDefaultWildcard) {
+    const src = entry(entry(root, "grants").items[defaultGrants[0]], "src");
+    edits.push({ at: src.items[0].token.start, end: src.items[0].token.end,
+      text: JSON.stringify("autogroup:member") });
+    added.push(`grants[${defaultGrants[0]}]: all devices → tailnet members`);
+  }
   const ownerValue = JSON.stringify(["autogroup:admin"]);
   const grant = { src: [tag], dst: addresses, ip: [`tcp:${port}`] };
   const grantText = `{"src": ${JSON.stringify(grant.src)}, "dst": ${JSON.stringify(grant.dst)}, "ip": ${JSON.stringify(grant.ip)}}`;
@@ -216,7 +236,9 @@ export function addGuestRules(text, { tag, addresses, port }) {
   // Apply from the end so earlier positions stay right.
   let out = text;
   for (const e of edits.sort((a, b) => b.at - a.at))
-    out = out.slice(0, e.at) + e.text + out.slice(e.at);
+    out = out.slice(0, e.at) + e.text + out.slice(e.end ?? e.at);
   if (added.length) parsePolicy(out); // never hand Tailscale something unreadable
-  return { text: out, added, allowAll: guestPolicyRisks(policy, { tag, addresses, port }) };
+  return { text: out, added,
+    allowAll: narrowDefaultWildcard ? guestPolicyRisks(parsePolicy(out), { tag, addresses, port }) : risks,
+    canNarrowDefault };
 }

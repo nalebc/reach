@@ -33,6 +33,7 @@ export function InviteLinksSetup({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [canNarrowDefault, setCanNarrowDefault] = useState(false);
   if (!open)
     return (
       <button type="button" className="ivt-setup-line" onClick={onOpen}>
@@ -52,17 +53,23 @@ export function InviteLinksSetup({
         onDone={onDone}
       />
     );
-  const connect = async () => {
+  const connect = async (narrowDefaultWildcard = false) => {
     setBusy(true);
     setError("");
+    setCanNarrowDefault(false);
     try {
       const result = await post<SetupResult>(peer, "/api/guests/keys", {
         accessToken: token.trim(),
+        ...(narrowDefaultWildcard ? { narrowDefaultWildcard: true } : {}),
       });
       setToken("");
       onDone(result || {});
     } catch (e) {
       setError((e as Error).message);
+      setCanNarrowDefault(
+        (e as Error & { body?: { canNarrowDefault?: boolean } }).body
+          ?.canNarrowDefault === true,
+      );
     } finally {
       setBusy(false);
     }
@@ -117,7 +124,36 @@ export function InviteLinksSetup({
       <small className="ivt-quiet">
         In Tailscale: Generate access token. One day is enough.
       </small>
-      {error && <p className="ivt-error">{error}</p>}
+      {error &&
+        (canNarrowDefault ? (
+          <div className="ivt-policy-fix" role="alert">
+            <strong>One Tailscale rule needs to change</strong>
+            <p>
+              Your default all-access rule also covers new guests. Reach can
+              limit that rule’s source from <code>*</code> to{" "}
+              <code>autogroup:member</code>, then add the Reach-only guest rule.
+            </p>
+            <p>
+              This may remove access that tagged devices or people using shared
+              devices currently get from the all-access rule.
+            </p>
+            <button
+              type="button"
+              className="ivt-primary small"
+              disabled={busy}
+              onClick={() => void connect(true)}
+            >
+              Limit rule and connect
+            </button>
+            <a href={ACCESS_CONTROLS} target="_blank" rel="noreferrer">
+              Review my Tailscale policy instead
+            </a>
+          </div>
+        ) : (
+          <p className="ivt-error" role="alert">
+            {error}
+          </p>
+        ))}
       <footer>
         <button
           type="button"

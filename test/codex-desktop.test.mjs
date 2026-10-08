@@ -217,3 +217,42 @@ test("desktop permission selection changes only the explicit next-turn policy", 
   assert.deepEqual(f.messages.at(-1).params, { conversationId: thread, threadSettings: settings });
   assert.equal(f.messages.at(-1).targetClientId, "desktop-owner");
 });
+
+test("Send now and answers steer through the app that owns the chat, as its own Steer", async () => {
+  const { desktop, messages } = fixture();
+  const input = [{ type: "text", text: "do it", text_elements: [] }];
+  const r = await desktop.steer(thread, { input, text: "do it", cwd: "/Users/me/reach", queued: "q1", clientUserMessageId: "m-1" });
+  assert.deepEqual(r, { steered: true, clientUserMessageId: "m-1" });
+  const steer = messages.find((m) => m.method === "thread-follower-steer-turn");
+  assert.equal(steer.version, 1);
+  assert.equal(steer.targetClientId, "desktop-owner");
+  assert.deepEqual(steer.params, {
+    conversationId: thread,
+    clientUserMessageId: "m-1",
+    input,
+    attachments: [],
+    restoreMessage: {
+      id: "m-1",
+      text: "do it",
+      cwd: "/Users/me/reach",
+      context: { workspaceRoots: ["/Users/me/reach"], collaborationMode: null },
+      serverQueuedMessageId: "q1",
+    },
+  });
+  await assert.rejects(desktop.steer(thread, { input: [] }), /stays queued/);
+});
+
+test("a steer with no answer after it's written is uncertain, never retried", async () => {
+  const { desktop, messages } = fixture((message) => message.method === "thread-follower-steer-turn");
+  await assert.rejects(desktop.steer(thread, { input: [{ type: "text", text: "x", text_elements: [] }] }), (e) => e.uncertain === true);
+  assert.equal(messages.filter((m) => m.method === "thread-follower-steer-turn").length, 1);
+});
+
+test("editing your last message asks the app that owns the chat, as its own Edit", async () => {
+  const { desktop, messages } = fixture();
+  assert.deepEqual(await desktop.editLast(thread, { turnId: "turn-2", message: "again" }), { edited: true });
+  const edit = messages.find((m) => m.method === "thread-follower-edit-last-user-turn");
+  assert.equal(edit.version, 2);
+  assert.equal(edit.targetClientId, "desktop-owner");
+  assert.deepEqual(edit.params, { conversationId: thread, turnId: "turn-2", message: "again" });
+});

@@ -50,9 +50,16 @@ function fakeClaude({ models = [], title = "Proposed title" } = {}) {
           const message = JSON.parse(line);
           proc.lines.push(message);
           const subtype = message.request?.subtype;
-          if (message.type === "control_request" && ["set_model", "interrupt"].includes(subtype))
+          if (message.type === "control_request" && ["set_model", "interrupt", "stop_task"].includes(subtype))
             queueMicrotask(() =>
               proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id } }),
+            );
+          if (message.type === "control_request" && subtype === "rewind_files")
+            queueMicrotask(() =>
+              proc.print({
+                type: "control_response",
+                response: { subtype: "success", request_id: message.request_id, response: { canRewind: true, filesChanged: ["src/a.ts", "src/b.ts"], insertions: 12, deletions: 4 } },
+              }),
             );
           if (message.type === "control_request" && subtype === "rename_session")
             queueMicrotask(() =>
@@ -550,7 +557,9 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     open: openLink,
     idle: async () => idle,
     appRunning: async () => true,
-    imported: () => false,
+    // The chat the Claude app holds is in its list; others aren't.
+    imported: (id) => id === ID,
+    write: null,
     resume: false,
   });
   const sessions = createAgentSessions({
@@ -1465,4 +1474,127 @@ test("Auto picked for a chat Reach runs stays Auto on its next messages", async 
   await sessions.send("claude", ID, { text: "third" });
   const args = claude.last().args;
   assert.equal(args[args.indexOf("--permission-mode") + 1], "acceptEdits");
+});
+
+test("one sub-agent stops, the chat going on, while Reach runs it (stop_task); otherwise it's stopped on the Mac", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  await assert.rejects(h.stopTask(ID, "a28230b100dfc3978"), (e) => e.status === 409 && /isn't running this chat/.test(e.message));
+  await h.send(ID, { text: "audit it", cwd: "/work/app" });
+  assert.deepEqual(await h.stopTask(ID, "a28230b100dfc3978"), { stopped: true });
+  assert.deepEqual(claude.last().lines.find((l) => l.request?.subtype === "stop_task").request, { subtype: "stop_task", task_id: "a28230b100dfc3978" });
+  await assert.rejects(h.stopTask(ID, "../x"), (e) => e.status === 404);
+});
+
+test("rewind, as Claude Code's own: what would change, the code back, and the conversation going on from before the message", async (t) => {
+  const claude = fakeClaude(), h = host(claude);
+  t.after(() => h.close());
+  const MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  // Nothing running: one is started to answer (resumed, never a new session).
+  assert.deepEqual(await h.rewindFiles(ID, { messageId: MSG, cwd: "/work/app", dryRun: true }), {
+    canRewind: true,
+    files: ["src/a.ts", "src/b.ts"],
+    insertions: 12,
+    deletions: 4,
+  });
+  const first = claude.last();
+  assert.deepEqual(first.args.slice(first.args.indexOf("--resume"), first.args.indexOf("--resume") + 2), ["--resume", ID]);
+  assert.deepEqual(first.lines.find((l) => l.request?.subtype === "rewind_files").request, { subtype: "rewind_files", user_message_id: MSG, dry_run: true });
+  await h.rewindFiles(ID, { messageId: MSG });
+  assert.equal(first.lines.filter((l) => l.request?.subtype === "rewind_files").at(-1).request.dry_run, undefined);
+  // The conversation: the running process ends; the next message resumes there.
+  assert.deepEqual(h.rewindConversation(ID, BEFORE), { rewound: true });
+  assert.equal(first.ended, true);
+  assert.equal(h.rewoundTo(ID), BEFORE);
+  await h.send(ID, { text: "do it differently" });
+  const next = claude.last();
+  assert.notEqual(next, first);
+  const at = next.args.indexOf("--resume-session-at");
+  assert.deepEqual(next.args.slice(at, at + 2), ["--resume-session-at", BEFORE]);
+  assert.equal(h.rewoundTo(ID), null, "done once the next message goes");
+  await assert.rejects(h.rewindFiles(ID, { messageId: "../x" }), (e) => e.status === 404);
+});
+
+test("a pending conversation rewind persists across restart and preview launches", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-persist-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json");
+  const BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const first = host(fakeClaude(), { rewindFile });
+  first.rewindConversation(ID, BEFORE);
+  first.close();
+  const fake = fakeClaude(), restored = host(fake, { rewindFile });
+  t.after(() => restored.close());
+  assert.equal(restored.rewoundTo(ID), BEFORE, "the accepted rewind survives restarting Reach");
+  await restored.rewindFiles(ID, { messageId: MSG, cwd: "/work/app", dryRun: true });
+  await restored.send(ID, { text: "continue from the chosen entry", cwd: "/work/app" });
+  const args = fake.last().args, at = args.indexOf("--resume-session-at");
+  assert.deepEqual(args.slice(at, at + 2), ["--resume-session-at", BEFORE], "preview launch cannot consume the pending target");
+  assert.equal(restored.rewoundTo(ID), null);
+  const after = host(fakeClaude(), { rewindFile });
+  t.after(() => after.close());
+  assert.equal(after.rewoundTo(ID), null, "accepted continuation consumes its pending target");
+});
+
+test("an uncertain rewind continuation stays blocked after restart instead of replaying", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-uncertain-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json"), BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const fake = fakeClaude();
+  const spawn = (...args) => {
+    const proc = fake.spawn(...args), write = proc.stdin.write.bind(proc.stdin);
+    proc.stdin.write = (line, done) => {
+      if (JSON.parse(line).type === "user") { done?.(Error("lost acknowledgement")); return; }
+      return write(line, done);
+    };
+    return proc;
+  };
+  const first = host(fake, { rewindFile, spawn });
+  first.rewindConversation(ID, BEFORE);
+  await assert.rejects(first.send(ID, { text: "change the implementation", cwd: "/work/app" }), e => e.uncertain === true);
+  first.close();
+  const secondFake = fakeClaude(), restored = host(secondFake, { rewindFile });
+  t.after(() => restored.close());
+  await assert.rejects(restored.send(ID, { text: "change the implementation", cwd: "/work/app" }), e => e.uncertain === true);
+  assert.equal(secondFake.runs.length, 0, "uncertain work is never relaunched after restart");
+});
+
+test("an unreadable pending rewind record refuses to resume without silently forgetting it", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-rewind-invalid-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rewindFile = path.join(dir, "rewinds.json");
+  fs.writeFileSync(rewindFile, "{truncated");
+  const fake = fakeClaude(), h = host(fake, { rewindFile });
+  t.after(() => h.close());
+  await assert.rejects(h.send(ID, { text: "continue", cwd: "/work/app" }), e => e.status === 503);
+  assert.equal(fake.runs.length, 0);
+  assert.equal(fs.readFileSync(rewindFile, "utf8"), "{truncated");
+});
+
+
+test("a rewind cannot race an accepted send while its provider is still starting", async (t) => {
+  let locate;
+  const ready = new Promise(resolve => { locate = resolve; });
+  const fake = fakeClaude(), h = host(fake, { locate: () => ready });
+  t.after(() => h.close());
+  const send = h.send(ID, { text: "send in progress", cwd: "/work/app" });
+  const BEFORE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assert.throws(() => h.rewindConversation(ID, BEFORE), { status: 409 });
+  await assert.rejects(h.rewindFiles(ID, { messageId: MSG }), { status: 409 });
+  locate("/usr/local/bin/claude");
+  await send;
+  assert.equal(h.rewoundTo(ID), null);
+});
+
+test("a send cannot overlap a file rewind while its provider starts", async (t) => {
+  let locate;
+  const ready = new Promise(resolve => { locate = resolve; });
+  const fake = fakeClaude(), h = host(fake, { locate: () => ready });
+  t.after(() => h.close());
+  const MSG = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const rewind = h.rewindFiles(ID, { messageId: MSG, cwd: "/work/app" });
+  await assert.rejects(h.send(ID, { text: "must not start" }), { status: 409 });
+  locate("/usr/local/bin/claude");
+  await rewind;
+  assert.equal(fake.last().lines.filter(row => row.type === "user").length, 0);
 });

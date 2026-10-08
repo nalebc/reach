@@ -170,7 +170,7 @@ test("/rename, /fork and /mcp are Codex's own calls; a fork is left to Codex, no
   );
 });
 
-test("/compact and /review run in the chat as a turn does; a chat the Codex app holds says so", async () => {
+test("/compact and /review run in the chat as a turn does; in a chat the Codex app holds, /compact goes through the app, /review says so", async () => {
   const daemon = fakeDaemon({ "review/start": { turn: { id: "turn-1" }, reviewThreadId: T } });
   const live = createCodexLive({ daemon, queues: false });
   const slash = createSlashCommands({ daemon, codex: codexAdapter, codexLive: live, codexMethods: everything });
@@ -181,9 +181,13 @@ test("/compact and /review run in the chat as a turn does; a chat the Codex app 
   ]);
   assert.equal(live.view(T).status, "running");
   const held = fakeDaemon({ "thread/resume": new Error("thread already has a live local writer") });
-  const busy = createSlashCommands({ daemon: held, codex: codexAdapter, codexLive: createCodexLive({ daemon: held, queues: false }), codexMethods: everything });
-  await assert.rejects(busy.run("codex", T, "compact"), (e) => e.status === 409 && /Codex app has this chat open/.test(e.message));
+  const compacted = [];
+  const desktop = { compact: async (id) => (compacted.push(id), { compacted: true }) };
+  const busy = createSlashCommands({ daemon: held, codex: codexAdapter, codexLive: createCodexLive({ daemon: held, queues: false, desktop }), codexMethods: everything });
+  await busy.run("codex", T, "compact");
+  assert.deepEqual(compacted, [T], "as the Codex app's own /compact");
   assert.ok(!held.calls.some(([m]) => m === "thread/compact/start"));
+  await assert.rejects(busy.run("codex", T, "review", "main"), (e) => e.status === 409 && /Codex app has this chat open/.test(e.message));
 });
 
 test("a skill goes with the message as Codex's skill input; its path is Codex's, never the phone's", async () => {
@@ -244,4 +248,15 @@ test("Claude Code's slash commands in a chat: the command as typed and what it p
   ];
   const next = parseClaudeTranscript(more.map((l) => JSON.stringify(l)).join("\n"));
   assert.deepEqual(next.items.map((i) => i.text), ["/rename Auth work", "Session renamed to: Auth work", "Thanks"]);
+});
+
+test("/fork from a chosen message forks through its turn", async () => {
+  const daemon = fakeDaemon({ "thread/fork": { thread: { id: "0199bbbb-cccc-7ddd-8eee-ffffffffffff" } } });
+  const slash = createSlashCommands({ daemon, codex: { ...codexAdapter, read: async (id) => ({ session: { agent: "codex", id } }) }, codexLive: createCodexLive({ daemon, queues: false }), codexMethods: everything });
+  const r = await slash.run("codex", T, "fork", "turn-0199-abcd");
+  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/fork")[1], { threadId: T, excludeTurns: true, lastTurnId: "turn-0199-abcd" });
+  assert.equal(r.session.id, "0199bbbb-cccc-7ddd-8eee-ffffffffffff");
+  // Typed words after /fork aren't a turn: the whole chat.
+  await slash.run("codex", T, "fork", "please");
+  assert.deepEqual(daemon.calls.filter(([m]) => m === "thread/fork")[1][1], { threadId: T, excludeTurns: true });
 });

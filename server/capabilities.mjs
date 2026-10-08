@@ -2,12 +2,42 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
+const APP_ROOTS = ["/Applications/ChatGPT.app", "/Applications/Codex.app"];
+// The desktop apps bundle the CLI; its location has moved between versions.
+export const BUNDLED_CODEX = [
+  "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+  "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex",
+  "/Applications/Codex.app/Contents/Resources/codex",
+];
+// Bundled CLIs, most likely first: the app's own package manifest names its
+// entry point (codex-cli/codex-package.json); the known paths follow.
+export async function bundledCodexPaths({ readFile = fs.readFile } = {}) {
+  const found = [];
+  // These describe macOS bundles even when discovery is tested on another OS.
+  const paths = path.posix;
+  for (const app of APP_ROOTS) {
+    const dir = paths.join(app, "Contents/Resources/codex-cli");
+    try {
+      const { entrypoint } = JSON.parse(await readFile(paths.join(dir, "codex-package.json"), "utf8"));
+      const file = typeof entrypoint === "string" && paths.resolve(dir, entrypoint);
+      if (file && !paths.isAbsolute(entrypoint) && file.startsWith(dir + paths.sep)) found.push(file);
+    } catch {}
+  }
+  return [...new Set([...found, ...BUNDLED_CODEX])];
+}
+
 // Inspect local executables only. Device discovery must not start an AI session.
+// REACH_CODEX first, then the CLI bundled with the desktop app (the one its
+// own daemon runs: a stale codex on PATH would talk to it across versions),
+// then PATH.
 export async function findCodexExecutable({
   platform = process.platform,
   env = process.env,
   access = fs.access,
   stat = fs.stat,
+  bundled = bundledCodexPaths,
 } = {}) {
   const windows = platform === "win32";
   const paths = windows ? path.win32 : path;
@@ -20,16 +50,8 @@ export async function findCodexExecutable({
     }
   };
   const command = env.REACH_CODEX || "codex";
-  if (!env.REACH_CODEX && platform === "darwin") {
-    // The desktop apps bundle the CLI; its location moved between versions.
-    for (const embedded of [
-      "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-      "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
-      "/Applications/ChatGPT.app/Contents/Resources/codex",
-      "/Applications/Codex.app/Contents/Resources/codex",
-    ])
-      if (await usable(embedded)) return embedded;
-  }
+  if (!env.REACH_CODEX && platform === "darwin")
+    for (const file of await bundled()) if (await usable(file)) return file;
   const candidates = /[/\\]/.test(command)
     ? [command]
     : (env.PATH || "")

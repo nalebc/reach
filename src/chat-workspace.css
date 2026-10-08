@@ -95,26 +95,11 @@
 .chat-new-app-row .chat-app-rail {
   width: 100%;
 }
-.chat-home .chat-new .as-box,
-.chat-redesign .as-box {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding: 4px 6px 6px;
-  border: 1px solid var(--as-composer-line);
-  border-radius: 14px;
-  background: var(--as-composer);
-  box-shadow: none;
-}
+/* The box, its chips, the model sheets and the mode menu are each app's own
+   (agent-session.css, model-sheet.css), not Reach's: only their fit is here. */
 /* Room to write, but never pushed under the keyboard: it gives way first. */
 .chat-home .chat-new textarea {
   min-height: min(112px, max(48px, calc(var(--sheet-height, 100dvh) - 330px)));
-}
-.chat-home .chat-new .as-field textarea,
-.chat-redesign .as-box .as-field textarea {
-  padding: 10px 8px;
-  font-size: 15px;
-  line-height: 1.5;
 }
 /* One row, always: the send button never drops to a line of its own; the
    model's name gives way (…) when the row is full. */
@@ -132,16 +117,17 @@
   flex: 1 1 0;
   min-width: 0;
 }
-/* A little less padding, so "Default" and "Opus 5.5 Medium" fit whole on a
-   375-point phone beside +, settings and send. */
-.chat-redesign .as-tools > button.as-mode,
-.chat-redesign .as-tools > .as-model {
-  padding-inline: 8px;
-}
+/* A narrow phone: tighter chips, so the mode and the model both read beside
+   + and send. */
 @media (max-width: 430px) {
   .chat-home .chat-new .as-tools,
   .chat-redesign .as-tools {
-    gap: 0;
+    gap: 4px;
+  }
+  .chat-home .chat-new .as-tools > .as-model,
+  .chat-redesign .as-tools > button.as-mode,
+  .chat-redesign .as-tools > .as-model {
+    padding-inline: 10px;
   }
 }
 .chat-home .chat-new .as-tools > .as-model,
@@ -152,6 +138,18 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* A narrow phone: a long mode ("Bypass permissions") gives way before the
+   model's name. */
+@media (max-width: 430px) {
+  .chat-home .chat-new .as-tools > .as-mode-pick,
+  .chat-redesign .as-tools > button.as-mode {
+    flex-shrink: 3;
+  }
+  .chat-home .chat-new .as-tools > .chat-model,
+  .chat-redesign .as-tools > .as-model {
+    flex-shrink: 0.2;
+  }
 }
 .chat-home .chat-new .as-picker {
   margin-bottom: 10px;
@@ -438,30 +436,6 @@
 .as-page.chat-redesign:not(.kb-open) .as-composer {
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
-.chat-redesign .as-tools .as-mode,
-.chat-redesign .as-tools .as-model,
-.chat-home .chat-new .as-tools .as-model {
-  min-height: 32px;
-  height: auto;
-  max-width: 230px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: none;
-  font-size: 13px;
-}
-/* One size across the composer's row (Default was 15px beside an 11px model). */
-.chat-redesign .as-tools > button.as-mode {
-  font-size: 13px;
-}
-.chat-redesign .as-tools .as-model > svg {
-  display: block;
-}
-.chat-home .chat-new .as-tools > .as-icon,
-.chat-redesign .as-tools > .as-icon {
-  width: 32px;
-  height: 32px;
-  background: none;
-}
 /* The agent's own card above the box, as its app shows it: no frame around it. */
 .chat-redesign .as-review-dock {
   flex: none;
@@ -562,21 +536,6 @@
   }
   .chat-redesign .as-review-dock {
     margin: 0 14px;
-  }
-  .chat-redesign .as-tools .as-mode,
-  .chat-redesign .as-tools .as-model,
-  .chat-home .chat-new .as-tools .as-model {
-    max-width: 100%;
-  }
-  .chat-home .chat-new .as-field textarea,
-  .chat-redesign .as-box .as-field textarea {
-    font-size: 16px;
-  }
-  .chat-redesign .as-tools > .as-icon,
-  .chat-home .chat-new .as-tools > .as-icon,
-  .chat-redesign .as-send {
-    width: 36px;
-    height: 36px;
   }
 }
 @media (max-width: 360px) {

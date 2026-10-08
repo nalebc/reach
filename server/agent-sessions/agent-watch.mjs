@@ -79,7 +79,10 @@ export function createAgentWatch({
   start(claudeProjects, { recursive: true }, (event, file) => {
     const name = path.basename(String(file || ""));
     if (!name.endsWith(".jsonl")) return;
-    const id = name.slice(0, -6);
+    // A sub-agent's own transcript (<session>/subagents/agent-….jsonl) is
+    // its chat changing: what the agent does shows there.
+    const parent = /([0-9a-f-]{36})[\\/]subagents[\\/][^\\/]+\.jsonl$/i.exec(String(file || ""))?.[1];
+    const id = parent || name.slice(0, -6);
     if (UUID.test(id)) tell(`claude:${id}`, { agent: "claude", kind: "history", id });
   });
   start(path.join(codexHome, "sessions"), { recursive: true }, (event, file) => {

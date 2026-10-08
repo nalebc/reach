@@ -9,7 +9,9 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  ChevronRight,
+  ChevronDown,
+  Laptop,
+  Menu,
   X,
   SquarePen,
   Archive,
@@ -223,6 +225,24 @@ export default function ChatList({
   );
   const filter = agent || localAgent;
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchField = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (searchOpen) searchField.current?.focus(); }, [searchOpen]);
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  useEffect(() => {
+    if (!appMenuOpen && !actionsOpen) return;
+    const close = (event: Event) => {
+      if (event.type === "keydown") {
+        if ((event as KeyboardEvent).key !== "Escape") return;
+      } else if ((event.target as HTMLElement)?.closest(".chat-list-top")) return;
+      setAppMenuOpen(false);
+      setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", close); };
+  }, [appMenuOpen, actionsOpen]);
   const [limit, setLimit] = useState(12);
   const [gone, setGone] = useState<Set<string>>(() => new Set());
   const all = useMemo(
@@ -249,10 +269,8 @@ export default function ChatList({
       Number(needsYou(a) || a.status === "running"),
   );
   const shown = found.slice(0, limit);
-  const active = shown.filter((s) => needsYou(s) || s.status === "running");
-  const recent = shown.filter((s) => !needsYou(s) && s.status !== "running");
   const projects = new Map<string, AgentSession[]>();
-  for (const s of recent) {
+  for (const s of shown) {
     const key = s.cwd || "";
     projects.set(key, [...(projects.get(key) || []), s]);
   }
@@ -325,7 +343,7 @@ export default function ChatList({
     },
   });
   useEffect(() => () => clearTimeout(held.current.timer), []);
-  const cards = (list: AgentSession[], showProject = false) => (
+  const cards = (list: AgentSession[]) => (
     <div className="chat-entries">
       {list.map((s) => (
         <button
@@ -352,46 +370,46 @@ export default function ChatList({
                 plainLine(s.preview || "") ||
                 (s.movedFrom ? `Continues “${s.movedFrom.title || "a chat"}”` : "No messages yet")}
             </span>
-            {showProject && (
-              <span className="chat-entry-context">
-                <span>{projectName(s.cwd) || "Workspace"}</span>
-                <span
-                  className={`chat-card-state ${needsYou(s) ? "waiting" : s.status}`}
-                >
-                  {needsYou(s) ? (
-                    <>
-                      <span className="chat-state-dot" /> Needs you
-                    </>
-                  ) : (
-                    <>
-                      <Loader2 size={11} className="spin" /> Working
-                    </>
-                  )}
-                </span>
-              </span>
-            )}
           </span>
           <span className="chat-entry-tail">
+            {needsYou(s) ? (
+              <span className="chat-row-status waiting" aria-label="Needs you" title="Needs you"><span className="chat-state-dot" /></span>
+            ) : s.status === "running" ? (
+              <Loader2 className="chat-row-status spin" size={17} aria-label="Working" />
+            ) : null}
             <time
               className="chat-card-time"
               dateTime={new Date(s.updatedAt).toISOString()}
             >
               {ago(s.updatedAt)}
             </time>
-            {s.status === "error" && !needsYou(s) ? (
-              <span className="chat-card-state error">Stopped</span>
-            ) : (
-              <ChevronRight className="chat-entry-arrow" size={15} />
-            )}
+            {s.status === "error" && !needsYou(s) && <span className="chat-card-state error">Stopped</span>}
           </span>
         </button>
       ))}
     </div>
   );
   return (
-    <div className={`chat-library ${compact ? "compact" : ""}`}>
+    <div className={`chat-library ${compact ? "compact" : ""} ${searchOpen ? "search-open" : ""}`}>
       {!compact && (
         <header className="chat-list-top">
+          <div className="chat-mobile-header">
+            <button className="chat-mobile-round" aria-label="Chat list menu" aria-expanded={actionsOpen} onClick={() => { setActionsOpen(!actionsOpen); setAppMenuOpen(false); }}><Menu size={22} /></button>
+            <button className="chat-app-current" aria-label={`Choose an app, ${picked?.name || agentLabel(filter)} selected`} aria-expanded={appMenuOpen} onClick={() => { setAppMenuOpen(!appMenuOpen); setActionsOpen(false); }}>
+              {picked?.name || agentLabel(filter)} <ChevronDown size={17} />
+            </button>
+            <button className="chat-mobile-round" aria-label="Search chats" aria-expanded={searchOpen} onClick={() => { if (searchOpen) setQuery(""); setSearchOpen(!searchOpen); setAppMenuOpen(false); setActionsOpen(false); }}><Search size={22} /></button>
+          </div>
+          {appMenuOpen && <div className="chat-mobile-menu chat-mobile-app-menu" role="menu" aria-label="Choose an app">
+            {apps.map((app) => <button key={app.agent} role="menuitemradio" aria-checked={app.agent === filter} onClick={() => { (onAgentChange || setLocalAgent)(app.agent); setLimit(12); setAppMenuOpen(false); }}>
+              <AgentLogo agent={app.agent} name={app.name} logos={logos} size={19} />{app.name}{!app.supported && <small>Coming soon</small>}
+            </button>)}
+          </div>}
+          {actionsOpen && <div className="chat-mobile-menu chat-mobile-actions" role="menu" aria-label="Chat actions">
+            {!upcoming && canStart && <button role="menuitem" onClick={() => { setActionsOpen(false); onNew(); }}><Plus size={18} /> New chat</button>}
+            {onRefresh && <button role="menuitem" onClick={() => { setActionsOpen(false); onRefresh(); }}><RefreshCw size={18} /> Refresh chats</button>}
+            {onConnectors && <button role="menuitem" onClick={() => { setActionsOpen(false); onConnectors(); }}><Cable size={18} /> Connectors</button>}
+          </div>}
           <div className="chat-list-heading">
             <h1>Chats</h1>
             <span className="chat-list-device">{peer.name}</span>
@@ -427,6 +445,7 @@ export default function ChatList({
           <label className="chat-list-search">
             <Search size={16} aria-hidden="true" />
             <input
+              ref={searchField}
               type="search"
               placeholder="Search chats"
               aria-label="Search chats"
@@ -444,6 +463,10 @@ export default function ChatList({
           </label>
         )}
       </div>
+      {!compact && <div className="chat-source-strip" aria-label="Chat source">
+        <span>All</span>
+        <span className="chat-source-device"><span className="chat-source-dot" /><Laptop size={16} />{peer.name}</span>
+      </div>}
       {setup}
       {!!pending && onReview && !compact && !found.length && (
         <button
@@ -492,7 +515,7 @@ export default function ChatList({
         <>
           {/* Nothing at work, but something waits: one row to review it,
               not a heading over an empty space. */}
-          {!active.length && !!pending && onReview && !compact && (
+          {!!pending && onReview && !compact && (
             <button className="chat-needs-row" onClick={onReview}>
               <ShieldCheck size={16} />
               <span>
@@ -503,33 +526,12 @@ export default function ChatList({
               </span>
             </button>
           )}
-          {active.length > 0 && (
-            <section
-              className="chat-group chat-active-group"
-              aria-label="In progress"
-            >
-              <div className="chat-group-heading">
-                <h2>
-                  In progress <span>{active.length}</span>
-                </h2>
-                {!!pending && onReview && !compact && (
-                  <button className="chat-review-link" onClick={onReview}>
-                    <ShieldCheck size={13} />
-                    <span>
-                      Review {pending} {pending === 1 ? "request" : "requests"}
-                    </span>
-                    <ArrowUpRight size={13} />
-                  </button>
-                )}
-              </div>
-              {cards(active, true)}
-            </section>
-          )}
-          {recent.length > 0 && (
+          {shown.length > 0 && (
             <section
               className="chat-projects"
-              aria-label="Recent conversations"
+              aria-label="Projects"
             >
+              <h2 className="chat-projects-title">Projects</h2>
               {[...projects.entries()].map(([cwd, list]) => (
                 <section
                   className="chat-group chat-project-group"
@@ -542,8 +544,9 @@ export default function ChatList({
                       <span className="chat-project-name">
                         {projectName(cwd) || "Workspace"}
                       </span>
-                      <span>{list.length}</span>
+                      {!!cwd && <span className="chat-project-parent">{cwd.split(/[\\/]/).filter(Boolean).at(-2) || ""}</span>}
                     </h2>
+                    {!compact && canStart && <button className="chat-folder-new" aria-label={`New chat in ${projectName(cwd) || "Workspace"}`} onClick={() => onNew(cwd || undefined)}><SquarePen size={19} /></button>}
                     {/* The whole folder, not only the chats shown (no search,
                         no "Show more"); chats at work stay out of it. */}
                     {!compact && (
@@ -608,6 +611,9 @@ export default function ChatList({
           }}
         />
       )}
+      {!compact && !upcoming && canStart && <button className="chat-quick-new" aria-label={`New ${picked?.name || agentLabel(filter)} chat`} onClick={() => onNew()}>
+        <Plus size={21} /><span>Ask {picked?.name || agentLabel(filter)}</span><span className="chat-quick-arrow"><ArrowUpRight size={22} /></span>
+      </button>}
       {/* On the page: the list contains its layout, which would pin it. */}
       {undo && createPortal(
         <div className="chat-undo" role="status">

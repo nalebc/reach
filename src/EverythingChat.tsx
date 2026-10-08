@@ -6,12 +6,11 @@ import {
   Loader2,
   Plus,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkle,
   X,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
-import AgentSessionView, { ModelPicker } from "./AgentSession";
+import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import OpenClawSpace from "./OpenClawSpace";
@@ -136,7 +135,6 @@ export function NewChat({
   const [effort, setEffort] = useState<string | null>(null);
   const [speed, setSpeed] = useState<string | null>(null);
   const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
-  const [settings, setSettings] = useState(false);
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
   const [busy, setBusy] = useState(false);
   // Taps in the same instant come before `busy` re-renders: one chat.
@@ -292,7 +290,7 @@ export function NewChat({
   );
   return (
     <section
-      className={`chat-new ${open ? "open" : ""}`}
+      className={`chat-new ${agent} ${open ? "open" : ""}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
       {problem && <p className="as-hint bad">{problem}</p>}
@@ -332,18 +330,21 @@ export function NewChat({
           )}
         </>
       )}
-      {panel === "mode" &&
-        choiceRow(
-          modeChoices.map((m) => ({ id: m.id, label: m.label })),
-          mode,
-          (id) => {
+      {/* The same menu as in a chat, in its place above the box. */}
+      {panel === "mode" && (
+        <ModeMenu
+          agent={agent}
+          choices={modeChoices}
+          current={mode}
+          anchor={null}
+          inline
+          onPick={(id) => {
             setMode(id);
             setPanel("");
-          },
-          agent === "codex"
-            ? "How should Codex actions be approved?"
-            : "Permissions",
-        )}
+          }}
+          onClose={() => setPanel("")}
+        />
+      )}
       {panel === "model" && (
         <ModelPicker
           agent={agent}
@@ -435,40 +436,28 @@ export function NewChat({
               <FolderOpen size={14} />
               <span>{cwd ? folderLabel(cwd, folders) : "Folder"}</span>
             </button>
-            {settings && (
-              <button
-                className="as-model as-mode-pick"
-                aria-expanded={panel === "mode"}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setPanel(panel === "mode" ? "" : "mode")}
-              >
-                {agent === "codex" && <ShieldCheck size={14} />}
-                <span>{modeName}</span>
-              </button>
-            )}
+            <button
+              className="as-model as-mode-pick"
+              aria-expanded={panel === "mode"}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setPanel(panel === "mode" ? "" : "mode")}
+            >
+              {agent === "codex" && <ShieldCheck size={14} />}
+              <span>{modeName}</span>
+            </button>
             <span className="as-spacer" />
-            {settings && current && (
+            {current && (
               <button
                 className="as-model chat-model"
                 aria-expanded={panel === "model"}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => setPanel(panel === "model" ? "" : "model")}
               >
-                {current.name} <span>{effortLabel(effort, agent)}</span>
+                <span className="as-model-name">{current.name}</span>{" "}
+                <span className="as-model-effort">{effortLabel(effort, agent)}</span>
                 <ChevronDown size={14} />
               </button>
             )}
-            <button
-              className="as-icon"
-              aria-label="Chat settings"
-              aria-expanded={settings}
-              onClick={() => {
-                setSettings(!settings);
-                setPanel("");
-              }}
-            >
-              <SlidersHorizontal size={18} />
-            </button>
             <button
               className={`as-send ${ready ? "ready" : ""}`}
               aria-label="Start"

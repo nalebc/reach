@@ -6,6 +6,7 @@ import path from "node:path";
 import ts from "typescript";
 import {
   findCodexExecutable,
+  bundledCodexPaths,
   createToolDetector,
   deviceCapabilities,
 } from "../server/capabilities.mjs";
@@ -233,4 +234,21 @@ test("More keeps Codex's row, waiting, while the computer checks it", () => {
     ),
     { places: ["files", "apps"], pending: [] },
   );
+});
+
+
+test("Codex discovery follows a relocated bundled entry point while rejecting manifest paths outside the app", async () => {
+  const allowed = path.posix.resolve("/Applications/ChatGPT.app/Contents/Resources/codex-cli", "new-layout/codex");
+  const paths = await bundledCodexPaths({ readFile: async file => JSON.stringify({ entrypoint: file.includes("ChatGPT.app") ? "new-layout/codex" : "../../outside" }) });
+  assert.equal(paths[0], allowed);
+  assert.equal(paths.some(file => file.includes("outside")), false);
+  const candidates = [];
+  const options = { platform: "darwin", env: { PATH: "/old-bin" }, bundled: async () => paths, access: async file => { candidates.push(file); }, stat: async () => ({ isFile: () => true }) };
+  assert.equal(await findCodexExecutable(options), allowed);
+  assert.deepEqual(candidates, [allowed], "the matching app CLI takes precedence over an older PATH CLI");
+  candidates.length = 0;
+  assert.equal(await findCodexExecutable({ ...options, env: { REACH_CODEX: "/explicit/codex" } }), "/explicit/codex");
+  assert.deepEqual(candidates, ["/explicit/codex"], "the explicit owner override remains authoritative");
+  const malformed = await bundledCodexPaths({ readFile: async () => '{"entrypoint":"/arbitrary/binary"}' });
+  assert.ok(!malformed.includes("/arbitrary/binary"));
 });

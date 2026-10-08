@@ -45,8 +45,23 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     FileHandle.standardOutput.write(Data(bytes: &size, count: 4))
     FileHandle.standardOutput.write(data)
   }
+  // Says what stopped capture. Only a refused permission says "Allow Screen
+  // Recording…": Reach stops retrying on that sentence. Sleep, lock and
+  // display changes stop capture too, and the phone reconnects after them.
+  func stopped(_ error: Error, _ what: String) -> Never {
+    let e = error as NSError
+    if (e.domain == SCStreamErrorDomain && e.code == SCStreamError.Code.userDeclined.rawValue)
+      || !CGPreflightScreenCaptureAccess()
+    {
+      failure("Allow Screen Recording for Reach’s screen helper in System Settings, then reconnect.")
+    }
+    if e.domain == "Display unavailable" {
+      failure("This display is unavailable. Select an available display and reconnect.")
+    }
+    failure("\(what): \(e.localizedDescription) (\(e.domain) \(e.code)).")
+  }
   func stream(_ stream: SCStream, didStopWithError error: Error) {
-    failure("Screen capture stopped. Check Screen Recording permission and reconnect.")
+    stopped(error, "Screen capture stopped")
   }
   func compressed(_ sample: CMSampleBuffer) {
     let attachments =
@@ -357,9 +372,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       if test { try capture.selfTest(w, h) } else { try await capture.start() }
       while true { try await Task.sleep(nanoseconds: 60_000_000_000) }
     } catch {
-      capture.failure(
-        "Allow Screen Recording for Reach’s screen helper in System Settings, or select an available display and reconnect."
-      )
+      capture.stopped(error, "Screen capture could not start")
     }
   }
 }

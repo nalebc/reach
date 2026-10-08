@@ -92,7 +92,10 @@ test("Claude Code's modes come from its own --help, in its order and words; Auto
   ]);
   // A mode Claude Code adds later shows under its own id.
   assert.deepEqual(claudeModes(HELP.replace('"plan")', '"plan", "review")')).at(-1), { id: "review", label: "review" });
-  assert.deepEqual(claudeModes("no such option"), []);
+  // Help worded otherwise one day: the modes Reach knows, never none.
+  assert.deepEqual(claudeModes("no such option").map((m) => m.id), ["manual", "plan", "acceptEdits", "bypassPermissions", "auto"]);
+  // Help that didn't run: none (asked again next time).
+  assert.deepEqual(claudeModes(""), []);
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: {},

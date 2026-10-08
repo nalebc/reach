@@ -497,6 +497,7 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
       health: async () => [],
       read: async (agent, id, { before }) => ({ session: { agent, id }, items: [{ id: before || "newest" }], before: "older" }),
       send: async (agent, id, body) => (seen.push(["send", agent, id, body]), { turnId: "t1" }),
+      answerQuestions: async (agent, id, body) => (seen.push(["answerQuestions", agent, id, body]), { answered: true }),
       start: async (agent, body) => (seen.push(["start", agent, body]), { threadId: T }),
       respond: async (agent, id, prompt, answer) => (seen.push(["respond", prompt, answer]), { answered: true }),
       stop: async () => ({ stopped: true }),
@@ -538,6 +539,10 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal((await call(`/api/sessions/claude/${T}/mode`, owner.token, { mode: "bypassPermissions" })).status, 400);
     assert.deepEqual(seen.filter(([kind]) => kind === "mode"), [["mode", "claude", "plan"]]);
     assert.equal((await call(`/api/sessions/codex/${T}/messages`, agent.token, { text: "hi" })).status, 403);
+    const reply = { turnId: "t1", answers: [{ index: 0, answer: "Phone" }] };
+    assert.equal((await call(`/api/sessions/codex/${T}/questions/q1`, agent.token, reply)).status, 403);
+    assert.deepEqual(await (await call(`/api/sessions/codex/${T}/questions/q1`, owner.token, reply)).json(), { answered: true });
+    assert.deepEqual(seen.filter(([kind]) => kind === "answerQuestions"), [["answerQuestions", "codex", T, { itemId: "q1", ...reply }]]);
     const sent = await call(`/api/sessions/codex/${T}/messages`, owner.token, {
       text: "look at this",
       images: [id],
@@ -896,4 +901,35 @@ test("a named native permission profile stays selected for the next Reach turn",
   assert.equal(params.permissions, "network-only");
   assert.equal(params.approvalPolicy, "on-request");
   assert.equal(params.approvalsReviewer, "user");
+});
+
+test("a Codex external cancellation during an in-flight queue read is not lost", async () => {
+  let finishFirst, reads = 0;
+  const daemon = fakeDaemon({ "thread/queue/list": () => ++reads === 1
+    ? new Promise(resolve => { finishFirst = resolve; })
+    : { data: [] } });
+  const live = createCodexLive({ daemon, queues: true });
+  live.view(T);
+  daemon.emit("thread/queue/changed", { threadId: T });
+  finishFirst({ data: [{ id: "cancelled", input: [{ type: "text", text: "Gone in Codex" }] }] });
+  await settled();
+  assert.equal(reads, 2, "a change during the read requires a fresh native snapshot");
+  assert.equal(live.view(T).outbox, undefined);
+  assert.ok(daemon.methods().every(method => method === "thread/queue/list"), "never replay cancelled input");
+});
+
+test("an unreadable Codex queue is not mistaken for cancellation and never resends", async () => {
+  let response = { data: [{ id: "kept", input: [{ type: "text", text: "Still unknown" }] }] };
+  const daemon = fakeDaemon({ "thread/queue/list": () => response });
+  const live = createCodexLive({ daemon, queues: true });
+  live.view(T);
+  await settled();
+  const expected = live.view(T).outbox;
+  for (const unknown of [new Error("connection gone"), {}]) {
+    response = unknown;
+    daemon.emit("thread/queue/changed", { threadId: T });
+    await settled();
+    assert.deepEqual(live.view(T).outbox, expected);
+  }
+  assert.ok(daemon.methods().every(method => method === "thread/queue/list"));
 });

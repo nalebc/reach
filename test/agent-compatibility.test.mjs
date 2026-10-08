@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import {
   createAgentProbe,
+  runToFile,
   validateQuestions,
   validateCodexResult,
 } from "../server/agent-sessions/compatibility.mjs";
@@ -40,6 +41,42 @@ test("CLI probes share work, expire, and detect replaced executables without sen
   await probe("claude", "/fake/claude");
   assert.equal(calls, 6);
 });
+test("a help text cut short is read again, and never makes the agent incompatible", async () => {
+  // Claude Code's --help came through a pipe as 8 or 16 KB of 22 KB, cut
+  // mid-line, about half the time: the flags past the cut read as missing.
+  const full = `${"-".repeat(5000)}\n${help}\n`;
+  const cut = full.slice(0, 4200);
+  let reads = 0;
+  const flaky = createAgentProbe({
+    stat: () => ({}),
+    run: async (_, args) => {
+      if (args[0] === "--version") return { stdout: "2.1.291 (Claude Code)" };
+      reads++;
+      return { stdout: reads === 1 ? cut : full };
+    },
+  });
+  assert.equal((await flaky("claude", "/fake")).status, "available");
+  assert.equal(reads, 2);
+  let now = 0;
+  const always = createAgentProbe({
+    now: () => now,
+    stat: () => ({}),
+    run: async (_, args) => ({ stdout: args[0] === "--version" ? "2.1.291" : cut }),
+  });
+  const first = await always("claude", "/fake");
+  assert.equal(first.status, "unavailable", "cut short three times: not known, not incompatible");
+  assert.match(first.reason, /Try again/);
+  // Looked at again soon, not after the usual minute.
+  now = 11000;
+  assert.equal((await always("claude", "/fake")).status, "unavailable");
+  // A whole text that lacks a flag is what incompatible means.
+  const whole = createAgentProbe({
+    stat: () => ({}),
+    run: async (_, args) => ({ stdout: args[0] === "--version" ? "2.1.291" : `${"-".repeat(5000)}\n--resume\n` }),
+  });
+  assert.equal((await whole("claude", "/fake")).status, "incompatible");
+});
+
 test("missing commands and failed version probes fail closed without exposing process output", async () => {
   const missing = createAgentProbe({
     run: async () => ({ stdout: "unexpected 9.0.0" }),
@@ -308,4 +345,65 @@ test("a refusal from the native helper is retried; the other chat it saw comes w
   const { readFileSync } = await import("node:fs");
   const helper = readFileSync(new URL("../scripts/native/claude-compose.swift", import.meta.url), "utf8");
   assert.match(helper, /if value\["error"\] != nil, !replyAction\.isEmpty, value\[replyAction\] == nil \{ value\[replyAction\] = false \}/);
+});
+
+
+test("file-backed CLI help is complete even when a child exits immediately after a large synchronous write", async () => {
+  const expected = "synthetic help ".repeat(9000) + "\n--resume --input-format\n";
+  const result = await runToFile(process.execPath, ["-e", "require('node:fs').writeSync(1,'synthetic help '.repeat(9000)+'\\n--resume --input-format\\n');process.exit(0)"]);
+  assert.equal(result.stdout, expected);
+});
+
+test("file-backed CLI probes reject oversized output instead of silently accepting a truncated prefix", async () => {
+  await assert.rejects(runToFile(process.execPath, ["-e", "require('node:fs').writeSync(1,'x'.repeat(65536));process.exit(0)"], { maxBuffer: 4096 }), /output.*limit/i);
+});
+
+test("a timed-out CLI probe retains its file until the child really exits and escalates an ignored TERM", async t => {
+  const { default: fs } = await import("node:fs");
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const child = new EventEmitter(), signals = [];
+  child.pid = 123456789; child.exitCode = null; child.signalCode = null;
+  child.kill = signal => { signals.push(signal); return true; };
+  let fd, settled = false;
+  const result = runToFile("inert-only", [], {
+    timeout: 10,
+    spawn: (_file, _args, options) => { fd = options.stdio[1]; return child; },
+  }).then(() => assert.fail("a timeout must reject"), error => { settled = true; return error; });
+  try {
+    t.mock.timers.tick(10);
+    await Promise.resolve();
+    assert.equal(settled, false, "sending TERM is not proof of process exit");
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.doesNotThrow(() => fs.fstatSync(fd), "do not remove the active writer's file early");
+    t.mock.timers.tick(1000);
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(settled, false);
+    child.exitCode = null; child.signalCode = "SIGKILL"; child.emit("exit", null, "SIGKILL");
+    assert.match((await result).message, /timed out/i);
+    assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    t.mock.timers.tick(10000);
+    assert.equal(signals.length, 2);
+  } finally {
+    child.exitCode = 0; child.emit("exit", 0);
+    await result;
+  }
+});
+
+
+test("a still-running noisy CLI probe is terminated at the observed output limit", async t => {
+  const { default: fs } = await import("node:fs");
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const child = new EventEmitter(), signals = [];
+  child.pid = 123456789;
+  child.kill = signal => { signals.push(signal); child.emit("exit", null, signal); return true; };
+  let fd;
+  const result = runToFile("inert-only", [], { maxBuffer: 1024, spawn: (_file, _args, options) => { fd = options.stdio[1]; return child; } });
+  const denied = assert.rejects(result, /output.*limit/i);
+  fs.writeSync(fd, Buffer.alloc(1025));
+  t.mock.timers.tick(25);
+  await denied;
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+  t.mock.timers.tick(10000);
+  assert.equal(signals.length, 1, "an exited child receives no late escalation");
 });

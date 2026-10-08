@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { claudeSubagents } from "./subagents.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -337,17 +338,47 @@ export function createClaudeSessions({
       }
       return out;
     },
-    async read(id, { before = null, limit = 200 } = {}) {
+    // The entry a rewind to this message continues from (its parent), if
+    // the message is the chat's: null for its first message.
+    async rewindPoint(id, messageId) {
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await parse(found.file, { full: true });
+      const t = cache.get(found.file)?.transcript;
+      if (!t?.has(messageId)) throw Object.assign(new Error("That message isn't in this chat."), { status: 404 });
+      return t.parentOf(messageId);
+    },
+    // at: show the conversation as it stood at that entry (a rewind waiting
+    // for the next message).
+    async read(id, { before = null, limit = 200, at = undefined } = {}) {
       const found = await locate(id);
       if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
       const byCli = await records();
-      const parsed = await parse(found.file, { full: true });
+      let parsed = await parse(found.file, { full: true });
+      if (at !== undefined) {
+        const t = cache.get(found.file)?.transcript;
+        parsed = at === null ? { ...parsed, items: [], context: null } : t?.has(at) ? { ...parsed, ...t.view({ from: at }) } : parsed;
+      }
       // Pages count back from the newest item; `before` is an item index.
       const end = before === null ? parsed.items.length : Math.max(0, Math.min(Number(before) || 0, parsed.items.length));
       const start = Math.max(0, end - Math.min(Math.max(limit, 1), 500));
+      // Its sub-agents, from their own files; each Agent call shows its own.
+      const subagents = await claudeSubagents({ transcript: found.file, sessionId: id, notes: parsed.tasks, items: parsed.items }).catch(() => []);
+      const byCall = new Map(subagents.filter((a) => a.toolUseId).map((a) => [a.toolUseId, a]));
+      const items = parsed.items.slice(start, end).map((item) => {
+        const agent = item.kind === "agent" && byCall.get(item.id);
+        return agent ? { ...item, agentId: agent.id, agentStatus: agent.status, activity: agent.activity } : item;
+      });
       return {
-        session: await summary(found, byCli.get(id)),
-        items: parsed.items.slice(start, end),
+        // Its todo list as Claude last left it (claude-transcript.mjs todoList).
+        session: {
+          ...(await summary(found, byCli.get(id))),
+          subagents,
+          todos: parsed.todos || [],
+          // The app's model naming a 1M window ("…[1m]") widens it.
+          ...(parsed.context ? { context: at === undefined && /\[1m\]/i.test(byCli.get(id)?.model || "") ? { ...parsed.context, window: 1000000 } : parsed.context } : {}),
+        },
+        items,
         before: start > 0 ? String(start) : null,
       };
     },
@@ -361,6 +392,10 @@ export function createClaudeSessions({
       const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
       if (!file) throw Object.assign(new Error("Only chats in the Claude app can be archived."), { status: 409 });
       const record = JSON.parse(await fs.readFile(file, "utf8"));
+      // Only a record kept the way Reach knows (isArchived on it): a Claude
+      // app that keeps it elsewhere would silently ignore the change.
+      if (typeof record?.isArchived !== "boolean")
+        throw Object.assign(new Error("This Claude app keeps archived chats differently. Archive it in the Claude app."), { status: 409 });
       record.isArchived = !!archived;
       const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
       const { mode } = await fs.stat(file);
@@ -368,6 +403,61 @@ export function createClaudeSessions({
       await fs.rename(temporary, file);
       recordCache.delete(file);
       return { archived: !!archived };
+    },
+    // Deleted: its transcript (and the Claude app's record of it) to the
+    // Trash, where it can still be found. appOpen: the Claude app is running;
+    // a chat it lists is deleted there then (it would write it back).
+    async remove(id, { appOpen = false, trash = path.join(os.homedir(), ".Trash") } = {}) {
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await records();
+      const record = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0] || null;
+      if (record && appOpen) throw Object.assign(new Error("The Claude app has this chat in its list: delete it there."), { status: 409 });
+      await fs.mkdir(trash, { recursive: true });
+      const away = async (file) => {
+        const to = path.join(trash, `${path.basename(file, path.extname(file))} ${new Date().toISOString().replace(/[:.]/g, "-")}${path.extname(file)}`);
+        try {
+          await fs.rename(file, to);
+        } catch (e) {
+          if (e.code !== "EXDEV") throw e;
+          await fs.copyFile(file, to);
+          await fs.rm(file);
+        }
+      };
+      await away(found.file);
+      if (record) {
+        await away(record);
+        recordCache.delete(record);
+      }
+      cache.delete(found.file);
+      return { deleted: true };
+    },
+    // Renamed as Claude Code renames a chat: a custom-title line in its
+    // transcript (what rename_session writes; appended whole, as one line);
+    // in the Claude app's list too, its record's title.
+    async rename(id, title) {
+      const name = String(title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
+      if (!name) throw Object.assign(new Error("Name the chat."), { status: 400 });
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      await fs.appendFile(found.file, JSON.stringify({ type: "custom-title", customTitle: name, sessionId: id }) + "\n");
+      await records();
+      const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
+      if (file) {
+        const record = JSON.parse(await fs.readFile(file, "utf8"));
+        // Only a record kept the way Reach knows; the transcript has it either way.
+        if (typeof record?.isArchived === "boolean") {
+          record.title = name;
+          record.titleSource = "user";
+          const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
+          const { mode } = await fs.stat(file);
+          await fs.writeFile(temporary, JSON.stringify(record), { mode });
+          await fs.rename(temporary, file);
+          recordCache.delete(file);
+        }
+      }
+      cache.delete(found.file);
+      return { title: name };
     },
     // Whether Claude Code still has this chat (deleted: no transcript).
     async exists(id) {

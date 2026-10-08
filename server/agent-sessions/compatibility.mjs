@@ -1,10 +1,74 @@
 // Compatibility is a capability check, not a promise about a version number.
 // Extra fields are tolerated; required fields and approval scope are not guessed.
 import fs from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { computerWord } from "../computer-word.mjs";
-const exec = promisify(execFile);
+// A command's output read from a file, not a pipe. Claude Code (2.1.291)
+// exits before a pipe has taken all of its --help: 8 or 16 KB of 22 KB came
+// through, cut mid-line, and the flags past the cut read as missing
+// ("Claude's CLI interface is incompatible with Reach", Oct 7). Writes to
+// a file complete before the process can exit.
+export async function runToFile(file, args, { timeout = 5000, maxBuffer = 256 * 1024, env, spawn: launch = spawn } = {}) {
+  if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 16 * 1024 * 1024)
+    throw Error("Invalid probe output limit.");
+  const tmp = path.join(os.tmpdir(), `reach-probe-${process.pid}-${crypto.randomUUID()}`);
+  const fd = fs.openSync(tmp, "wx+", 0o600);
+  try {
+    await new Promise((resolve, reject) => {
+      const child = launch(file, args, { env, stdio: ["ignore", fd, "ignore"], windowsHide: true });
+      let failure = null, force = null, finished = false;
+      const stop = error => {
+        if (failure || finished) return;
+        failure = error;
+        // Keep the output file until observed exit. A slow or TERM-resistant
+        // child must not continue writing an unlinked file after we return.
+        try { child.kill("SIGTERM"); } catch { /* force termination below */ }
+        if (finished) return;
+        force = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 1000);
+        force.unref?.();
+      };
+      const timer = setTimeout(() => stop(Error("Probe timed out.")), timeout);
+      // This limits ordinary runaway output promptly, with bounded reads
+      // below. It is not a filesystem quota or a sandbox for a hostile CLI.
+      const output = setInterval(() => {
+        try { if (fs.fstatSync(fd).size > maxBuffer) stop(Error("Probe output exceeded its limit.")); }
+        catch { stop(Error("Probe output could not be read.")); }
+      }, 25);
+      output.unref?.();
+      const done = (error = null) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer); clearTimeout(force); clearInterval(output);
+        if (failure || error) reject(failure || error); else resolve();
+      };
+      child.once("error", error => {
+        if (!child.pid) done(error); // failed to spawn: there is no writer
+        else stop(Error("Probe process failed."));
+      });
+      child.once("exit", code => done(code === 0 ? null : Error("Probe process failed.")));
+    });
+    // Never allocate/read the entire output and truncate it afterwards.
+    if (fs.fstatSync(fd).size > maxBuffer) throw Error("Probe output exceeded its limit.");
+    const data = Buffer.alloc(maxBuffer + 1);
+    let length = 0;
+    while (length < data.length) {
+      const read = fs.readSync(fd, data, length, data.length - length, length);
+      if (!read) break;
+      length += read;
+    }
+    if (length > maxBuffer) throw Error("Probe output exceeded its limit.");
+    return { stdout: data.subarray(0, length).toString("utf8") };
+  } finally {
+    fs.closeSync(fd);
+    fs.rmSync(tmp, { force: true });
+  }
+}
+// A help text that stopped mid-way (no final newline, after at least a
+// pipe's worth): what it lacks can't be held against the agent.
+export const cutShort = (text) => text.length >= 4096 && !text.endsWith("\n");
 export const object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 export const compatibilityError = (agent, feature, uncertain = false) =>
   Object.assign(
@@ -154,7 +218,9 @@ export function validateCodexResult(method, result) {
   if (valid && method === "thread/queue/delete") valid = typeof result.deleted === "boolean";
   if (valid && method === "turn/steer") valid = typeof result.turnId === "string" && !!result.turnId;
   if (valid && method === "thread/turns/list")
-    valid = result.data.every(t => object(t) && typeof t.id === "string" && !!t.id && ["inProgress", "completed", "interrupted", "failed"].includes(t.status));
+    // A status Codex adds later is a turn all the same (finished once it has
+    // an end time): never a reason to stop reading turns.
+    valid = result.data.every(t => object(t) && typeof t.id === "string" && !!t.id && typeof t.status === "string" && !!t.status);
   if (valid && method === "account/read")
     valid = result.account === null || object(result.account);
   if (!valid) throw compatibilityError("codex", method, !readOnlyRpc(method));
@@ -164,7 +230,7 @@ export function validateCodexResult(method, result) {
 // Bounded, account-free probes. Cache by executable metadata, so an in-place
 // upgrade is noticed even before the TTL expires. Failed probes expire sooner.
 export function createAgentProbe({
-  run = exec,
+  run = runToFile,
   stat = fs.statSync,
   now = Date.now,
   ttlMs = 60000,
@@ -201,12 +267,6 @@ export function createAgentProbe({
         version =
           String(v.stdout).match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0] ||
           null;
-        const h = await run(
-          file,
-          agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"],
-          options,
-        );
-        const help = String(h.stdout);
         const required =
           agent === "claude"
             ? [
@@ -217,7 +277,29 @@ export function createAgentProbe({
                 "--permission-mode",
               ]
             : ["start"];
-        const missing = required.filter((flag) => !help.includes(flag));
+        // Read again while the text looks cut short (see runToFile): only a
+        // whole reading may find the agent incompatible.
+        let help = "",
+          missing = required;
+        for (let attempt = 0; attempt < 3 && missing.length; attempt++) {
+          const h = await run(
+            file,
+            agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"],
+            options,
+          );
+          help = String(h.stdout);
+          missing = required.filter((flag) => !help.includes(flag));
+          if (missing.length && !cutShort(help)) break;
+        }
+        if (missing.length && cutShort(help)) {
+          entry.expires = now() + Math.min(ttlMs, 10000);
+          return {
+            version,
+            status: "unavailable",
+            reason:
+              "Could not read the agent's command list fully. Try again in a moment, or use the screen or terminal.",
+          };
+        }
         if (missing.length)
           return {
             version,

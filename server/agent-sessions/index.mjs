@@ -11,6 +11,8 @@ import { createCodexLive } from "./codex-live.mjs";
 import { createClaudeSessions } from "./claude.mjs";
 import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
+import { createConnectorLogos } from "./connector-logos.mjs";
+import { createFileSearch } from "./file-search.mjs";
 import { createConnectors } from "./connectors.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
@@ -126,7 +128,7 @@ export function createAgentSessions({
     daemon,
   }),
   // Replies to Claude Code sessions (claude-host.mjs).
-  claudeHost = createClaudeHost({ locate: () => locateClaude() }),
+  claudeHost = createClaudeHost({ locate: () => locateClaude(), rewindFile: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-rewinds.json") }),
   // How long one look at the running claude processes is shared.
   liveMs = 2500,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
@@ -136,6 +138,7 @@ export function createAgentSessions({
   // GitHub, Linear, … for each agent, in its own configuration
   // (connectors.mjs); none of this computer's in tests.
   connectors = createConnectors({
+    logos: process.env.NODE_TEST_CONTEXT ? null : createConnectorLogos({ dir: path.join(dataDir, "connector-logos") }),
     daemon,
     locate: process.env.NODE_TEST_CONTEXT
       ? {}
@@ -182,11 +185,7 @@ export function createAgentSessions({
   // Agents Reach knows of beyond the two it drives today.
   detect = detectAgents,
   // Sessions started here, waiting to join the Claude app's list (claude-import.mjs).
-  claudeImports = createClaudeImports({
-    file: path.join(dataDir, "claude-imports.json"),
-    open,
-    resume: !process.env.NODE_TEST_CONTEXT,
-  }),
+  claudeImports = null,
   // The Claude app's window, reloaded once nobody is at the Mac after Reach
   // replies in a session it has shown (claude-import.mjs); never in tests.
   claudeRefresh = process.env.NODE_TEST_CONTEXT
@@ -265,7 +264,30 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? { codexMethods: async () => new Set() } : { codexMethods: createCodexMethods() }),
   }),
 } = {}) {
+  // Chats joining the Claude app's list (claude-import.mjs): its record
+  // written, or its import link when the app is open and out of the way;
+  // never this Mac's app in tests.
+  claudeImports ??= createClaudeImports({
+    file: path.join(dataDir, "claude-imports.json"),
+    open,
+    resume: !process.env.NODE_TEST_CONTEXT,
+    held: (id) => claudeHost.drives(id),
+    frontmost: () => claudeFrontmost(),
+    describe: async (id) => {
+      const { session } = await claude.read(id, { limit: 1 });
+      return {
+        cwd: session.cwd,
+        title: session.title,
+        model: session.model,
+        mode: claudeHost.modeOf?.(id) || session.mode,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      };
+    },
+    ...(process.env.NODE_TEST_CONTEXT ? { write: null, appRunning: async () => false } : {}),
+  });
   const adapters = { codex, claude, gemini };
+  const fileSearch = createFileSearch();
   const adapter = (agent) => {
     const a = adapters[agent];
     if (!a) throw Object.assign(new Error("Unknown agent."), { status: 404 });
@@ -589,13 +611,14 @@ export function createAgentSessions({
   // Claude sessions started here join the Claude app's list once Reach lets
   // go of them, through the app's own import, when nobody is at the Mac (the
   // import switches the app's window), so they're there when you get to it.
-  const startedHere = new Set();
   // Sessions the app already lists get its window reloaded instead (it
   // doesn't see what Reach added otherwise).
   claudeHost.onRelease?.((id, { wrote } = {}) => {
     letGo.set(id, Date.now());
     if (letGo.size > 200) letGo.delete(letGo.keys().next().value);
-    if (startedHere.delete(id)) void claudeImports.add(id);
+    // One waiting to join the app's list goes now; one the app lists and
+    // Reach wrote to gets its window reloaded.
+    if (claudeImports.pending?.().includes(id)) void claudeImports.check?.();
     else if (wrote) void claudeRefresh.add(id);
   });
   // Who replies in each agent's chats from Reach. Gemini CLI's are read
@@ -1071,6 +1094,9 @@ export function createAgentSessions({
         void deliver(id);
         return { queued: true, delivered: false, messageId: queued.id };
       }
+      // A chat the Claude app doesn't list (Reach's, or one from a
+      // terminal): it joins the app's list once Reach lets go of it.
+      if (!session.inApp) void claudeImports.add(id);
       return claudeHost.send(id, message);
     },
     async start(agent, body) {
@@ -1082,13 +1108,13 @@ export function createAgentSessions({
       }
       await signedIn();
       const started = await claudeHost.start(body);
-      startedHere.add(started.threadId);
+      void claudeImports.add(started.threadId);
       return started;
     },
     // A permission mode picked on the phone for a chat the Claude app holds:
     // picked in the app's own menu, so both show it. Elsewhere (chats Reach
     // runs, Codex) it goes with the next message, as before.
-    async model(agent, id, { model, effort }) {
+    async model(agent, id, { model, effort, speed }) {
       adapter(agent);
       if (agent === "claude" && !claudeHost.drives(id) && claudeCompose && await claudeOpen()) {
         const { session } = await claude.read(id, { limit: 1 });
@@ -1122,7 +1148,7 @@ export function createAgentSessions({
         }
       }
       if (agent !== "codex") return { model, effort, applied: false };
-      return codexLive.model(id, { model, effort });
+      return codexLive.model(id, { model, effort, ...(speed ? { speed } : {}) });
     },
     async mode(agent, id, { mode }) {
       adapter(agent);
@@ -1167,11 +1193,10 @@ export function createAgentSessions({
       return current.stop(id);
     },
     // Send now, as the agents' apps have it: first in line and in at once
-    // (a Claude app chat switches to it even while the Mac is in use). Codex
-    // runs its own queue; Reach can't jump it.
+    // (a Claude app chat switches to it even while the Mac is in use; Codex
+    // steers it into the turn it's running, as the Codex app's Steer).
     async sendQueuedNow(agent, id, messageId) {
-      if (host(agent) === codexLive)
-        throw Object.assign(new Error("The Codex app runs its queue itself. Steer it from the Codex app."), { status: 409 });
+      if (host(agent) === codexLive) return codexLive.sendQueuedNow(id, messageId);
       const message = outbox.list(id).find((m) => m.id === messageId);
       if (!message) throw Object.assign(new Error("That message already left the queue."), { status: 409 });
       if (message.delivery) throw Object.assign(new Error("Delivery is in progress or uncertain. Check Claude before sending again."), { status: 409 });
@@ -1185,13 +1210,104 @@ export function createAgentSessions({
     // A new order for what waits, dragged on the phone (Claude's outbox only:
     // Codex keeps its own queue).
     async reorderQueued(agent, id, order) {
-      if (host(agent) === codexLive)
-        throw Object.assign(new Error("The Codex app keeps its own queue order."), { status: 409 });
+      if (host(agent) === codexLive) return codexLive.reorderQueued(id, order);
       if (!Array.isArray(order) || order.length > 100 || !order.every((m) => typeof m === "string"))
         throw Object.assign(new Error("Invalid order."), { status: 400 });
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
       return { reordered: true };
+    },
+    // Rewind to before a message, as Claude Code's own: what would change
+    // first (dryRun), then the code, the conversation, or both.
+    async rewind(agent, id, { messageId, code = false, conversation = false, dryRun = false, authorize = () => {} } = {}) {
+      authorize();
+      if (agent !== "claude") throw Object.assign(new Error("Codex rewinds from your last message: edit it."), { status: 409 });
+      const holder = await holderOf(id);
+      authorize();
+      if (holder && holder.where !== "reach") throw Object.assign(new Error(`Claude is running this chat in ${holder.where === "claude-app" ? "the Claude app" : "a terminal"}: rewind it there.`), { status: 409 });
+      const { session } = await claude.read(id, { limit: 1 });
+      authorize();
+      if (dryRun) return claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true, authorize });
+      if (!code && !conversation) throw Object.assign(new Error("Choose what to rewind."), { status: 400 });
+      const entry = conversation ? await claude.rewindPoint(id, messageId) : undefined;
+      authorize();
+      if (conversation && entry === null) throw Object.assign(new Error("That's the chat's first message: start a new chat instead."), { status: 409 });
+      const files = code ? await claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, authorize }) : null;
+      authorize();
+      if (files && !files.canRewind) throw Object.assign(new Error(files.error || "Claude Code can't restore the code from there."), { status: 409 });
+      if (conversation) claudeHost.rewindConversation(id, entry);
+      listChanged();
+      return { rewound: true, ...(files ? { files: files.files, insertions: files.insertions, deletions: files.deletions } : {}) };
+    },
+    // One sub-agent stopped, as the Claude app's stop on a task (stop_task).
+    async stopSubagent(agent, id, taskId) {
+      if (agent !== "claude") throw Object.assign(new Error("Stop it from Codex."), { status: 409 });
+      return claudeHost.stopTask(id, taskId);
+    },
+    // A chat deleted, as in its app: Codex's own delete; a Claude chat's
+    // transcript and record to the Trash (claude.mjs remove).
+    async deleteChat(agent, id) {
+      adapter(agent);
+      if (agent === "codex") {
+        await daemon.rpc("thread/delete", { threadId: id });
+        listChanged();
+        return { deleted: true };
+      }
+      if (agent !== "claude") throw Object.assign(new Error("This chat can't be deleted here."), { status: 409 });
+      if (claudeHost.drives(id)) throw Object.assign(new Error("Claude is working in this chat. Stop it first."), { status: 409 });
+      const done = await claude.remove(id, { appOpen: await claudeOpen() });
+      listChanged();
+      return done;
+    },
+    // Files in a chat's folder for "@" in its composer: Codex's own search
+    // for Codex, the folder's files for Claude Code (file-search.mjs).
+    async findFiles(agent, id, query) {
+      adapter(agent);
+      if (agent === "codex") {
+        const { thread } = await daemon.rpc("thread/read", { threadId: id, includeTurns: false });
+        if (!thread?.cwd) return [];
+        const r = await daemon.rpc("fuzzyFileSearch", { query: String(query || ""), roots: [thread.cwd], cancellationToken: null }).catch(() => null);
+        if (r && Array.isArray(r.files))
+          return r.files.slice(0, 30).map((f) => ({ path: String(f.path), name: String(f.file_name || path.basename(String(f.path))) }));
+        return fileSearch.search(thread.cwd, query);
+      }
+      const { session } = await adapters[agent].read(id, { limit: 1 });
+      return fileSearch.search(session.cwd, query);
+    },
+    // A chat renamed, as in its app: Codex's thread name, Claude Code's
+    // custom title (and the Claude app's record).
+    async rename(agent, id, title) {
+      adapter(agent);
+      const name = String(title ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
+      if (!name) throw Object.assign(new Error("Name the chat."), { status: 400 });
+      if (agent === "codex") {
+        await daemon.rpc("thread/name/set", { threadId: id, name });
+        listChanged();
+        return { title: name };
+      }
+      if (agent !== "claude") throw Object.assign(new Error("This chat can't be renamed here."), { status: 409 });
+      const done = await claude.rename(id, name);
+      listChanged();
+      return done;
+    },
+    // Answers to what Codex asked while working, as the Codex app sends them.
+    async answerQuestions(agent, id, body) {
+      if (host(agent) !== codexLive) throw Object.assign(new Error("Only Codex asks these."), { status: 400 });
+      return codexLive.answerQuestions(id, body);
+    },
+    // Your last message edited and sent again, as the Codex app's Edit.
+    async editLast(agent, id, body) {
+      if (host(agent) !== codexLive) throw Object.assign(new Error("Edit your last message from the Claude app."), { status: 409 });
+      return codexLive.editLast(id, body);
+    },
+    // A queued message edited where it waits, as in both apps.
+    async editQueued(agent, id, messageId, text) {
+      if (host(agent) === codexLive) return codexLive.editQueued(id, messageId, text);
+      if (deliveringMessage.get(id) === messageId)
+        throw Object.assign(new Error("That message is being sent. Wait for the chat to update."), { status: 409 });
+      if (!outbox.edit(id, messageId, text))
+        throw Object.assign(new Error("That message already left the queue."), { status: 409 });
+      return { edited: true };
     },
     async cancelQueued(agent, id, messageId) {
       if (host(agent) === codexLive) return codexLive.cancelQueued(id, messageId);
@@ -1410,11 +1526,19 @@ export function createAgentSessions({
         const start = Math.max(0, end - limit);
         return { items: items.slice(start, end), before: start > 0 ? `moved:${start}` : null };
       }
-      const result = await adapter(agent).read(id, options);
+      // A rewind waiting for its next message: the chat as it stood then.
+      const rewound = agent === "claude" ? claudeHost.rewoundTo?.(id) : null;
+      const result = await adapter(agent).read(id, rewound ? { ...options, at: rewound === "start" ? null : rewound } : options);
+      if (rewound && result.session) result.session.rewound = true;
       // What its next message will use, shown as its mode.
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
+      if (agent === "codex" && result.session && codexLive.contextOf?.(id)) result.session.context = codexLive.contextOf(id);
       if (agent === "claude" && result.session && claudeHost.modeOf?.(id) && (!result.session.inApp || claudeHost.drives(id)))
         result.session.mode = claudeHost.modeOf(id);
+      // Its sub-agents can be stopped one by one while Reach's own Claude
+      // Code runs the chat (stop_task).
+      if (agent === "claude" && result.session?.subagents?.length && claudeHost.drives(id))
+        result.session.subagents = result.session.subagents.map((s) => (s.status === "running" ? { ...s, stoppable: true } : s));
       if (origin?.to.hidden) {
         // Its first messages are the history written for it: shown once,
         // as the original chat's (Claude pages count from its start).

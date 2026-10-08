@@ -168,6 +168,7 @@ const clawSessions = [
   { key: "agent:work:discord:notes", title: "Ideas for the next release", agentId: "work", channel: "discord", canDeliver: true, updatedAt: Date.now() - 172800000, model: "Claude Sonnet", status: "idle" },
 ];
 const clawMessages: Record<string, any[]> = {};
+let moveNumber = 0;
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
   const url = new URL(
@@ -181,6 +182,44 @@ window.fetch = async (input, init = {}) => {
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
   const path = url.pathname;
   let data: unknown = {};
+  const move = path.match(/^\/api\/sessions\/(codex|claude|openclaw)\/([^/]+)\/move$/);
+  if (move && init.method === "POST") {
+    const from = move[1], sourceId = decodeURIComponent(move[2]);
+    const { to } = JSON.parse(String(init.body || "{}"));
+    const source = from === "openclaw"
+      ? clawSessions.find(s => s.key === sourceId)
+      : sessions.find(s => s.agent === from && s.id === sourceId);
+    if (!source) return Response.json({ error: "Sample chat not found." }, { status: 404 });
+    if (!["codex", "claude", "openclaw"].includes(to) || to === from)
+      return Response.json({ error: "Choose another sample app." }, { status: 400 });
+    const at = Date.now(), id = to === "openclaw"
+      ? `agent:main:reach:sample-move-${++moveNumber}` : `sample-move-${++moveNumber}`;
+    const history = from === "openclaw" ? clawMessages[sourceId] || [] : transcript[sourceId] || [];
+    if (to === "openclaw") {
+      clawSessions.unshift({ key: id, title: source.title, agentId: "main", channel: "webchat",
+        canDeliver: false, updatedAt: at, model: "Claude Sonnet", status: "idle" });
+      clawMessages[id] = history.map(item => ({ ...item, tool: false }));
+    } else {
+      const original = from === "openclaw" ? null : source as AgentSession;
+      const destination: AgentSession = {
+        ...sessions[0], ...original, agent: to, id, title: source.title,
+        status: "idle", held: "reach", prompts: undefined, asking: undefined, live: undefined,
+        model: to === "claude" ? "claude-opus-5-5" : "sample",
+        createdAt: at, updatedAt: at, movedTo: undefined,
+        movedFrom: { agent: from, id: sourceId, title: source.title },
+      };
+      sessions = [destination, ...sessions];
+      transcript[id] = [...history.map(item => ({ ...item, kind: item.kind || "text" })),
+        { id: `moved:${id}`, role: "system", kind: "notice", at,
+          text: `Continued with ${to === "claude" ? "Claude Code" : "Codex"} · earlier messages are from ${from}` }];
+    }
+    if (from !== "openclaw") {
+      const original = source as AgentSession;
+      original.movedTo = [...original.movedTo || [], { agent: to, id, at }];
+    }
+    window.dispatchEvent(new Event("reach-preview-refresh"));
+    return Response.json({ agent: to, id });
+  }
   if (path.startsWith("/api/sessions/openclaw/")) {
     const body = init.body ? JSON.parse(String(init.body)) : {};
     const key = url.searchParams.get("key") || body.key;

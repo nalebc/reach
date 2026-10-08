@@ -114,10 +114,27 @@ export class MacTerminalWatch {
       helper.on("event", (event) => {
         if (this.helper === helper) this.event(event);
       });
+      const upAt = Date.now();
       helper.on("exit", () => {
         if (this.helper !== helper) return;
-        // Back to asking, until the next phone connects.
         this.end();
+        // Phones still here: started again, a little later each time it
+        // falls over at once (1 s, 2 s … a minute); back to 1 s after a
+        // minute up. Meanwhile phones ask, as before.
+        if (Date.now() - upAt > 60000) this.restarts = 0;
+        if (!this.users) return;
+        const delay = Math.min(60000, 1000 * 2 ** (this.restarts || 0));
+        this.restarts = (this.restarts || 0) + 1;
+        clearTimeout(this.timers.restart);
+        const timer = setTimeout(() => {
+          // end() also cancels a crash restart. A queued stale callback must
+          // not resurrect the watch after shutdown or replace a newer timer.
+          if (this.timers.restart !== timer) return;
+          delete this.timers.restart;
+          if (this.users && !this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
+        }, delay);
+        this.timers.restart = timer;
+        timer.unref?.();
       });
       await this.refresh();
       if (this.helper !== helper) return;

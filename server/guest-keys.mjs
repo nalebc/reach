@@ -104,11 +104,15 @@ export function createGuestKeys({
     return cached.token;
   }
 
-  async function call(method, route, body, creds) {
+  async function call(method, route, body, creds, authorize = () => {}) {
+    authorize();
+    const access = await token(creds);
+    // Token refresh is asynchronous; authority may have ended while waiting.
+    authorize();
     const response = await request(`${api}/api/v2${route}`, {
       method,
       headers: {
-        Authorization: `Bearer ${await token(creds)}`,
+        Authorization: `Bearer ${access}`,
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -124,7 +128,7 @@ export function createGuestKeys({
     return response.status === 204 ? null : response.json().catch(() => null);
   }
 
-  const createKey = (expirySeconds, description, creds) =>
+  const createKey = (expirySeconds, description, creds, authorize) =>
     call(
       "POST",
       "/tailnet/-/keys",
@@ -145,11 +149,13 @@ export function createGuestKeys({
         description,
       },
       creds,
+      authorize,
     );
 
   // Check new credentials for real: get a token, list devices, make and
   // delete a short key. Saved only if all of that works.
-  async function setup({ clientId, clientSecret }) {
+  async function setup({ clientId, clientSecret, authorize = () => {} }) {
+    authorize();
     const creds = {
       clientId: String(clientId || "").trim(),
       clientSecret: String(clientSecret || "").trim(),
@@ -160,13 +166,14 @@ export function createGuestKeys({
         "Paste the OAuth client ID and its secret (it starts with tskey-client-).",
       );
     cached = null;
-    await call("GET", "/tailnet/-/devices", undefined, creds);
-    const probe = await createKey(300, "Reach setup check", creds);
+    await call("GET", "/tailnet/-/devices", undefined, creds, authorize);
+    const probe = await createKey(300, "Reach setup check", creds, authorize);
     if (!probe?.key?.startsWith?.("tskey-auth-"))
       throw fail(
         502,
         "Tailscale didn't return a key. Check the auth_keys scope and tag:reach-guest.",
       );
+    // Cleanup of the exact short-lived probe remains allowed after revocation.
     if (probe.id)
       await call(
         "DELETE",
@@ -174,21 +181,25 @@ export function createGuestKeys({
         undefined,
         creds,
       ).catch(() => {});
+    authorize();
     atomicJson(credentialFile, { version: 1, ...creds });
   }
 
   // The easy way: one Tailscale API access token, used once and never kept.
-  // Reach adds its tag and one grant to your policy (your comments and rules
-  // stay; Tailscale checks the result first; nothing is written if the policy
-  // changed meanwhile), then makes its own limited OAuth client (guest keys
+  // Reach adds its tag and one grant to your policy (comments and other rules
+  // stay; an explicitly approved default wildcard may be narrowed). Tailscale
+  // checks the result first; nothing is written if the policy changed meanwhile. Reach then makes its own limited OAuth client (guest keys
   // and guest devices only) and saves just that. `confirm(plan)` sees the
   // exact lines before anything changes.
   async function setupFromAccessToken({
     accessToken,
     addresses,
     port,
+    narrowDefaultWildcard = false,
     confirm = async () => true,
+    authorize = () => {},
   }) {
+    authorize();
     const secret = String(accessToken || "").trim();
     if (!/^tskey-api-[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(secret))
       throw fail(
@@ -197,7 +208,7 @@ export function createGuestKeys({
       );
     if (!addresses?.length || !Number.isInteger(port))
       throw fail(409, "This computer's Tailscale address isn't known yet.");
-    const as = (method, route, { body, type, headers = {} } = {}) =>
+    const requestAs = (method, route, { body, type, headers = {} } = {}) =>
       request(`${api}/api/v2${route}`, {
         method,
         headers: {
@@ -215,6 +226,12 @@ export function createGuestKeys({
               : JSON.stringify(body),
         signal: AbortSignal.timeout(15000),
       });
+    // This callback is supplied by the trusted HTTP route, never request data.
+    // Every remote step checks it after any preceding asynchronous work.
+    const as = (...args) => {
+      authorize();
+      return requestAs(...args);
+    };
     const reason = async (response) => {
       const detail = await response.json().catch(() => ({}));
       return String(detail.message || response.status).slice(0, 300);
@@ -240,13 +257,19 @@ export function createGuestKeys({
         tag: GUEST_TAG,
         addresses,
         port,
+        narrowDefaultWildcard,
       });
     } catch (error) {
       throw fail(409, error.message);
     }
     if (plan.allowAll.length)
-      throw fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`);
+      throw Object.assign(
+        fail(409, `Guest access is not isolated: ${plan.allowAll.join(", ")} may let enrolled guests reach more than Reach. Narrow those Tailscale rules to your members (for example autogroup:member), or restrict the guest tag to this computer’s Reach port before enabling invite links. Reach did not change your policy or create a key.`),
+        { canNarrowDefault: plan.canNarrowDefault },
+      );
     if (plan.added.length) {
+      if (typeof etag !== "string" || !etag.trim() || etag.trim() === "*")
+        throw fail(409, "Tailscale did not return a policy version (ETag). Nothing was changed; try again.");
       // 2. Tailscale checks the new policy (and your tests) first.
       const check = await as("POST", "/tailnet/-/acl/validate", {
         body: plan.text,
@@ -261,13 +284,14 @@ export function createGuestKeys({
           409,
           `Tailscale wouldn't accept the change, so nothing was changed: ${String(problem).slice(0, 300)}`,
         );
+      authorize();
       if (!(await confirm(plan)))
         throw fail(409, "Cancelled. Your Tailscale policy wasn't changed.");
       // 3. Written only if nobody changed the policy meanwhile.
       const put = await as("POST", "/tailnet/-/acl", {
         body: plan.text,
         type: "application/hujson",
-        headers: etag ? { "If-Match": etag } : {},
+        headers: { "If-Match": etag },
       });
       if (put.status === 412)
         throw fail(
@@ -296,10 +320,11 @@ export function createGuestKeys({
       );
     const client = await made.json();
     try {
-      await setup({ clientId: client.id, clientSecret: client.key });
+      await setup({ clientId: client.id, clientSecret: client.key, authorize });
     } catch (error) {
-      // Don't leave an unused credential behind.
-      await as(
+      // Cleanup is permitted even when the initiating owner was revoked.
+      // Only the exact client just created by this request can be removed.
+      await requestAs(
         "DELETE",
         `/tailnet/-/keys/${encodeURIComponent(client.id)}`,
       ).catch(() => {});

@@ -119,7 +119,9 @@ export function withoutHandover(hosts, state, read = (f) => fs.readFileSync(f, "
 }
 
 // When each started (one ps call for all of them).
-export function startTimes(pids, run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" })) {
+// (ps writes dates in the Mac's own language and order: the C locale's is the
+// one Date.parse reads.)
+export function startTimes(pids, run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C", LANG: "C" } })) {
   if (!pids.length) return new Map();
   try {
     const out = String(run("/bin/ps", ["-o", "pid=,lstart=", "-p", pids.join(",")]));

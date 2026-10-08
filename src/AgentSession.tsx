@@ -1,3 +1,4 @@
+import { withQuestionReplies } from "../server/agent-sessions/codex-questions.mjs";
 import { useWantedPrompt } from "./notification-focus";
 import { AccountUsage } from "./AccountUsage";
 import {
@@ -16,7 +17,6 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
-  SlidersHorizontal,
   ChevronRight,
   FileText,
   Globe,
@@ -30,6 +30,10 @@ import {
   Share,
   ShieldCheck,
   SquarePen,
+  ListChecks,
+  GitFork,
+  RotateCcw,
+  Trash2,
   Square,
   Terminal,
   TriangleAlert,
@@ -42,12 +46,14 @@ import { createDraftSync } from "./draft-sync";
 import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
+import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
+import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import MascotTyping from "./MascotTyping";
-import { SkillChip, SlashMenu, useSlashMenu } from "./SlashMenu";
+import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -55,6 +61,7 @@ import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
 import {
   agentLabel,
+  answerCodexQuestions,
   answerPrompt,
   appCard,
   sessionImage,
@@ -69,6 +76,13 @@ import {
   readSession,
   sendMessage,
   cancelQueuedMessage,
+  editLastMessage,
+  editQueued,
+  renameSession,
+  deleteSession,
+  stopSubagent,
+  rewindSession,
+  type RewindPreview,
   reorderQueued,
   sendQueuedNow,
   syncAgentDraft,
@@ -76,6 +90,7 @@ import {
   setAgentModel,
   stopSession,
   uploadImage,
+  uploadFile,
   usageLink,
   useSessionLive,
   whereLabel,
@@ -209,11 +224,20 @@ function Copyable({
   text,
   side,
   bare = false,
+  onEdit,
+  onFork,
+  onRewind,
   children,
 }: {
   text: string;
   side: "user" | "assistant";
   bare?: boolean;
+  // Your last message, edited and sent again (the Codex app's Edit).
+  onEdit?: () => void;
+  // A new chat with everything up to here (the Codex app's Fork).
+  onFork?: () => void;
+  // Back to before this message (Claude Code's rewind).
+  onRewind?: () => void;
   children: ReactNode;
 }) {
   const [shown, setShown] = useState(false);
@@ -245,9 +269,50 @@ function Copyable({
           >
             {copied ? <Check size={15} /> : <Copy size={15} />}
           </button>
+          {onEdit && (
+            <button className="as-icon" aria-label="Edit message" onClick={onEdit}>
+              <SquarePen size={15} />
+            </button>
+          )}
+          {onFork && (
+            <button className="as-icon" aria-label="Fork from here" onClick={onFork}>
+              <GitFork size={15} />
+            </button>
+          )}
+          {onRewind && (
+            <button className="as-icon" aria-label="Rewind to before this" onClick={onRewind}>
+              <RotateCcw size={15} />
+            </button>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+// How full the chat's context is, as both apps show it: a ring and the share.
+function ContextMeter({ used, window: size }: { used: number; window: number | null }) {
+  if (!Number.isFinite(used) || used < 0) return null;
+  if (size === null || !Number.isFinite(size) || size <= 0) {
+    const label = `${used.toLocaleString()} tokens reported; context capacity unknown`;
+    return <span className="as-context unknown" title={label} aria-label={label}>{used.toLocaleString()} tokens</span>;
+  }
+  const share = Math.min(1, used / size);
+  const percent = Math.round(share * 100);
+  const r = 7;
+  const around = 2 * Math.PI * r;
+  return (
+    <span
+      className={`as-context ${share >= 0.8 ? "full" : ""}`}
+      title={`${used.toLocaleString()} of ${size.toLocaleString()} tokens of context used`}
+      aria-label={`${percent}% of context used`}
+    >
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
+      </svg>
+      <span className="as-context-num">{percent}%</span>
+    </span>
   );
 }
 
@@ -393,6 +458,12 @@ function ToolStep({ item }: { item: SessionItem }) {
   );
 }
 
+// Claude Code's plan approvals, in its words.
+const PLAN_CHOICES: Record<string, string> = {
+  auto: "Yes, and use auto mode",
+  acceptEdits: "Yes, auto-accept edits",
+  default: "Yes, manually approve edits",
+};
 const decisionKey = (d: Decision) =>
   typeof d === "string" ? d : Object.keys(d)[0];
 
@@ -490,7 +561,7 @@ const CODEX_MODE_NOTES: Record<string, string> = {
   "full-access": "Unrestricted access to the internet and any file on your computer",
   custom: "Uses permissions defined in config.toml",
 };
-function ModeMenu({
+export function ModeMenu({
   agent,
   choices,
   current,
@@ -498,6 +569,7 @@ function ModeMenu({
   locked,
   busy = false,
   error,
+  inline = false,
   onPick,
   onClose,
 }: {
@@ -511,16 +583,21 @@ function ModeMenu({
   locked?: string;
   busy?: boolean;
   error?: string;
+  // A new chat's menu: drawn in its place above the box (a chat may be open
+  // under the sheet), its "Default" (your settings' own) first, as named.
+  inline?: boolean;
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
-  const rank = (id: string) => (CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length);
+  const settingsDefault = (id: string) => inline && id === "default";
+  const rank = (id: string) =>
+    settingsDefault(id) ? -1 : CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length;
   const list =
     agent === "claude"
-      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: modeLabel("claude", m.id) || m.label, note: "" }))
+      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: (!settingsDefault(m.id) && modeLabel("claude", m.id)) || m.label, note: "" }))
       : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
   return (
-    <ComposerMenu anchor={anchor} label="Permissions" className={agent} onClose={onClose}>
+    <ComposerMenu anchor={anchor} inline={inline} label="Permissions" className={agent} onClose={onClose}>
       {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
       {list.map((m) => (
         <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked || busy} onClick={() => onPick(m.id)}>
@@ -543,12 +620,14 @@ function ModeMenu({
 // sight), lined up with its button, closed by a tap outside or Escape.
 function ComposerMenu({
   anchor,
+  inline = false,
   label,
   className = "",
   onClose,
   children,
 }: {
   anchor: HTMLElement | null;
+  inline?: boolean;
   label: string;
   className?: string;
   onClose: () => void;
@@ -561,7 +640,7 @@ function ComposerMenu({
   }, [onClose]);
   // No button to open over (the model picked from "/model" while the model
   // button is hidden): over the composer.
-  const over = anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
+  const over = inline ? null : anchor ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>(".as-page .as-composer") : null);
   const page = over?.closest<HTMLElement>(".as-page") ?? null;
   const at = (() => {
     if (!over || !page) return undefined;
@@ -974,17 +1053,39 @@ function ConsentApp({
   );
 }
 
-function AsyncQuestions({ item, logos, word, onAnswer }: {
+// Codex's questions asked while it works, as the Codex app shows them:
+// answered here while the turn that asked still runs (into that turn, never
+// queued), then each answer on its question; once Codex moves on, only said.
+function AsyncQuestions({ item, logos, word, answerable, onAnswer }: {
   item: SessionItem;
   logos: AgentLogos;
   word: string;
-  onAnswer: (text: string) => Promise<void>;
+  answerable: boolean;
+  onAnswer: (answers: { index: number; answer: string }[]) => Promise<void>;
 }) {
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<string[] | null>(null);
   const [error, setError] = useState("");
   const sending = useRef(false);
   const questions = item.questions || [];
-  if (sent) return <p className="as-note">Answer sent</p>;
+  const answered = questions.some((q) => q.answer != null) || !!sent;
+  if (answered || !answerable)
+    return (
+      <section className="as-prompt question elsewhere">
+        {questions.map((q, i) => {
+          const answer = q.answer ?? sent?.[i];
+          return (
+            <div className="as-question" key={i}>
+              <p>{q.title}</p>
+              {answer ? (
+                <p className="as-answered">{answer}</p>
+              ) : !answered && q.options.length ? (
+                <p className="as-asked">{q.options.join(" · ")}</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </section>
+    );
   return <>
     <PromptCard
       agent="codex" logos={logos} word={word}
@@ -998,9 +1099,9 @@ function AsyncQuestions({ item, logos, word, onAnswer }: {
         sending.current = true;
         setError("");
         try {
-          const text = questions.map((q, i) => `${q.title}\n${(answers?.[String(i)] || []).join(", ")}`).join("\n\n");
-          await onAnswer(text);
-          setSent(true);
+          const picked = questions.map((_, i) => (answers?.[String(i)] || []).join(", ").trim());
+          await onAnswer(picked.map((answer, index) => ({ index, answer })));
+          setSent(picked);
         } catch (e) {
           setError((e as Error).message);
         } finally {
@@ -1012,7 +1113,7 @@ function AsyncQuestions({ item, logos, word, onAnswer }: {
   </>;
 }
 
-function PromptCard({
+export function PromptCard({
   prompt,
   agent,
   logos,
@@ -1028,9 +1129,12 @@ function PromptCard({
   onAnswer: (answer: {
     decision?: string;
     answers?: Record<string, string[]>;
+    message?: string;
   }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
+  // What to change in a plan sent back (Claude's "No, keep planning").
+  const [feedback, setFeedback] = useState("");
   const answering = useRef(false);
   // Picked choices per question, and what was typed instead ("Something else").
   const [picked, setPicked] = useState<Record<string, string[]>>(initialAnswers);
@@ -1063,7 +1167,7 @@ function PromptCard({
   };
   const act = async (
     key: string,
-    answer: { decision?: string; answers?: Record<string, string[]> },
+    answer: { decision?: string; answers?: Record<string, string[]>; message?: string },
   ) => {
     if (answering.current || prompt.attempted) return;
     answering.current = true;
@@ -1097,7 +1201,48 @@ function PromptCard({
       {prompt.message && <p>{prompt.message}</p>}
       {prompt.reason && <p className="as-prompt-reason">{prompt.reason}</p>}
       {prompt.attempted && <p className="as-prompt-reason" role="status">The previous answer could not be confirmed. Check {agentLabel(agent)} on your {word} before answering again.</p>}
-      {prompt.kind === "question" ? (
+      {prompt.kind === "plan" ? (
+        <>
+          {prompt.plan && (
+            <div className="as-plan">
+              <AgentMarkdown text={prompt.plan} />
+            </div>
+          )}
+          <div className="as-prompt-actions as-plan-actions">
+            {decisions
+              .filter((key) => key.startsWith("plan:"))
+              .map((key, i) => (
+                <button
+                  key={key}
+                  className={i === 0 ? "primary" : ""}
+                  disabled={!!busy || prompt.attempted}
+                  onClick={() => void act(key, { decision: key })}
+                >
+                  {busy === key ? <Loader2 size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
+                </button>
+              ))}
+          </div>
+          {decisions.includes("keepPlanning") && (
+            <form
+              className="as-plan-feedback"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act("keepPlanning", { decision: "keepPlanning", message: feedback.trim() });
+              }}
+            >
+              <input
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="No, keep planning: tell Claude what to change"
+                aria-label="What to change in the plan"
+              />
+              <button type="submit" disabled={!!busy || prompt.attempted}>
+                {busy === "keepPlanning" ? <Loader2 size={14} className="spin" /> : "Keep planning"}
+              </button>
+            </form>
+          )}
+        </>
+      ) : prompt.kind === "question" ? (
         <>
           {questions.length > 1 && (
             <nav className="as-steps" aria-label="Questions">
@@ -1215,7 +1360,8 @@ function PromptCard({
   );
 }
 
-type Attachment = { key: number; url: string; id?: string; error?: string };
+// A picture (url: its preview), or any other file (file: its name).
+type Attachment = { key: number; url: string; id?: string; error?: string; file?: string };
 let attachmentSeq = 0;
 
 // A new chat's model and effort: the same pickers as in a chat (ModelSheet.tsx).
@@ -1310,7 +1456,6 @@ export default function AgentSessionView({
   }, [peer.url, peer.token, initial.id, agent, initial.inApp]);
   const [queueBusy, setQueueBusy] = useState<string | null>(null);
   const [removedQueue, setRemovedQueue] = useState<string[]>([]);
-  const [settings, setSettings] = useState(false);
   const [reviewId, setReviewId] = useState("");
   useWantedPrompt(initial.agent, initial.id, setReviewId);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1377,6 +1522,28 @@ export default function AgentSessionView({
   const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
+  // "@" typed last in the box: the files to pick from (MentionMenu).
+  const mentionQuery = /(?:^|\s)@([^\s@]{0,80})$/.exec(text)?.[1] ?? null;
+  // The chat's new name, while it's being typed (⋯ → its pencil).
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
+  // phone; once touched, each message says whether it's on.
+  const planKey = `reach:codex-plan:${initial.id}`;
+  const [planMode, setPlanMode] = useState<"plan" | "default" | null>(() => {
+    try {
+      const saved = localStorage.getItem(planKey);
+      return saved === "plan" || saved === "default" ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+  const togglePlan = () => {
+    const next = planMode === "plan" ? "default" : "plan";
+    setPlanMode(next);
+    try {
+      localStorage.setItem(planKey, next);
+    } catch {}
+  };
 
   // The version of the newest page we hold; unchanged polls cost no render.
   const known = useRef("");
@@ -1433,13 +1600,13 @@ export default function AgentSessionView({
           return;
         }
         // A question answered elsewhere is simply gone from the new read.
-        setInfo((old) => ({ ...old, asking: undefined, ...r.session }));
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ...r.session }));
         setItems((current) => {
-          if (!current || first) return r.items;
+          if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
           const oldest = r.items[0]?.id;
           const at = oldest ? current.findIndex((i) => i.id === oldest) : -1;
-          return [...(at >= 0 ? current.slice(0, at) : []), ...r.items];
+          return withQuestionReplies([...(at >= 0 ? current.slice(0, at) : []), ...r.items]);
         });
         if (first) setBefore(r.before);
         setLoadError("");
@@ -1554,7 +1721,7 @@ export default function AgentSessionView({
       setReadingHistory(true);
       const el = scroller.current;
       if (el) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
-      setItems((current) => [...r.items, ...(current || [])]);
+      setItems((current) => withQuestionReplies([...r.items, ...(current || [])]));
       setBefore(r.before);
     } catch (e) {
       if (current()) setLoadError((e as Error).message);
@@ -1568,13 +1735,16 @@ export default function AgentSessionView({
     const out: (
       | { type: "item"; item: SessionItem }
       | { type: "tools"; items: SessionItem[] }
+      | { type: "agent"; item: SessionItem }
     )[] = [];
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.skills?.length) continue;
       const last = out[out.length - 1];
-      if (item.role === "tool") {
+      // A sub-agent stands on its own, not folded into the steps.
+      if (item.kind === "agent") out.push({ type: "agent", item });
+      else if (item.role === "tool") {
         if (last?.type === "tools") last.items.push(item);
         else out.push({ type: "tools", items: [item] });
       } else out.push({ type: "item", item });
@@ -1705,8 +1875,16 @@ export default function AgentSessionView({
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
-      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name))
+      // Not a picture: sent as a file, the agent reads it by its path.
+      if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) {
+        const key = ++attachmentSeq;
+        setAttachments((list) => [...list, { key, url: "", file: file.name || "file" }]);
+        uploadFile(peer, file, file.name || "file").then(
+          (id) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, id } : a))),
+          (e) => setAttachments((list) => list.map((a) => (a.key === key ? { ...a, error: (e as Error).message } : a))),
+        );
         continue;
+      }
       const key = ++attachmentSeq;
       setAttachments((list) => [
         ...list,
@@ -1729,7 +1907,7 @@ export default function AgentSessionView({
   const removeAttachment = (key: number) =>
     setAttachments((list) => {
       const gone = list.find((a) => a.key === key);
-      if (gone) URL.revokeObjectURL(gone.url);
+      if (gone?.url) URL.revokeObjectURL(gone.url);
       return list.filter((a) => a.key !== key);
     });
   const uploading = attachments.some((a) => !a.id && !a.error);
@@ -1799,22 +1977,21 @@ export default function AgentSessionView({
       await draftSync.current?.settle();
       const r = await sendMessage(peer, initial, {
         text: message.text,
-        images: ready.map((a) => a.id!),
+        images: ready.filter((a) => !a.file).map((a) => a.id!),
+        ...(ready.some((a) => a.file) ? { files: ready.filter((a) => a.file).map((a) => a.id!) } : {}),
         ...(!heldByApp && choice.model ? { model: choice.model } : {}),
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
         ...(!heldByApp && choice.speed ? { speed: choice.speed } : {}),
         ...(!heldByApp && choice.mode ? { mode: choice.mode } : {}),
         ...(skill ? { skill: skill.name } : {}),
+        ...(agent === "codex" && planMode ? { collaboration: planMode } : {}),
       });
       if (skill) slashMenu.clearSkill();
       sentUrls.current.push(...ready.map((a) => a.url));
-      // Waiting in the Mac's outbox: shown from there from now on (it outlives this page).
-      if (r.messageId)
-        setPending((list) =>
-          list.map((p) =>
-            p === message ? { ...p, messageId: r.messageId } : p,
-          ),
-        );
+      // The acknowledged queue now owns this message. Keep no optimistic
+      // copy: cancelling it in the native app does not create a transcript
+      // message, so a copy waiting for that transcript would survive forever.
+      if (r.messageId) setPending((list) => list.filter((p) => p !== message));
       setChoice({});
       setNote("");
       void load(false);
@@ -1838,22 +2015,65 @@ export default function AgentSessionView({
       setStopping(false);
     }
   };
-  const answerAsyncQuestion = async (text: string) => {
-    if (sendingNow.current) throw new Error("A message is being sent. Try again in a moment.");
-    sendingNow.current = true;
-    setSending(true);
+  // Your last message, editable as in the Codex app: the most recent one,
+  // while Codex isn't working.
+  const [editingLast, setEditingLast] = useState<{ id: string; turnId: string; text: string; busy: boolean } | null>(null);
+  const lastEditable = useMemo(() => {
+    if (agent !== "codex" || info.status === "running" || info.status === "waiting") return null;
+    const last = [...(items || [])].reverse().find((i) => i.role === "user");
+    return last?.turnId && !last.slash ? last.id : null;
+  }, [agent, info.status, items]);
+  // Rewind, as Claude Code's own: what would change, then which to restore.
+  const [rewinding, setRewinding] = useState<{ item: SessionItem; preview: RewindPreview | null; busy: string; error: string } | null>(null);
+  const openRewind = async (item: SessionItem) => {
+    setRewinding({ item, preview: null, busy: "preview", error: "" });
     try {
-      const r = await sendMessage(peer, initial, { text, images: [] });
-      setPending((list) => [...list, {
-        id: `pending-${Date.now()}`, text, images: 0, urls: [], at: Date.now(),
-        seen: (items || []).filter((i) => i.role === "user" && i.text.trim() === text.trim()).length,
-        ...(r.messageId ? { messageId: r.messageId } : {}),
-      }]);
-      void load(false);
-    } finally {
-      sendingNow.current = false;
-      setSending(false);
+      const preview = await rewindSession(peer, initial, { messageId: item.id, dryRun: true });
+      setRewinding((r) => (r?.item.id === item.id ? { ...r, preview, busy: "" } : r));
+    } catch (e) {
+      setRewinding((r) => (r?.item.id === item.id ? { ...r, busy: "", error: (e as Error).message } : r));
     }
+  };
+  const doRewind = async (what: { code: boolean; conversation: boolean }, key: string) => {
+    if (!rewinding || rewinding.busy) return;
+    setRewinding({ ...rewinding, busy: key, error: "" });
+    try {
+      await rewindSession(peer, initial, { messageId: rewinding.item.id, ...what });
+      // As in Claude Code: the message is back in the box, to send again or change.
+      if (what.conversation) setText(visibleUserText(rewinding.item.text));
+      setRewinding(null);
+      void load(false);
+    } catch (e) {
+      setRewinding((r) => (r ? { ...r, busy: "", error: (e as Error).message } : r));
+    }
+  };
+  // A new chat with everything up to this message (the Codex app's Fork).
+  const forkFrom = async (turnId: string) => {
+    try {
+      const r = await runSlashCommand(peer, initial, "fork", turnId);
+      if (r.session) onSelect(r.session as AgentSession);
+    } catch (e) {
+      setProblem((e as Error).message);
+    }
+  };
+  const saveLastEdit = async () => {
+    if (!editingLast || editingLast.busy) return;
+    setEditingLast({ ...editingLast, busy: true });
+    try {
+      await editLastMessage(peer, initial, { turnId: editingLast.turnId, text: editingLast.text });
+      setEditingLast(null);
+      void load(false);
+    } catch (e) {
+      setProblem((e as Error).message);
+      setEditingLast((old) => (old ? { ...old, busy: false } : old));
+    }
+  };
+  // Into the turn that asked, as the Codex app answers: shown on the
+  // question, not as a message of its own.
+  const answerAsyncQuestion = async (item: SessionItem, answers: { index: number; answer: string }[]) => {
+    if (!item.turnId) throw new Error("Codex has moved on from this question. Send your answer as a message.");
+    await answerCodexQuestions(peer, initial, item.id, { turnId: item.turnId, answers });
+    void load(false);
   };
   const grow = () => {
     const el = field.current;
@@ -1869,6 +2089,8 @@ export default function AgentSessionView({
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
+  // The turn Codex is on: only its questions can still be answered.
+  const lastTurnId = live.turnId || [...(items || [])].reverse().find((i) => i.turnId)?.turnId;
   // A message just sent goes straight into the conversation, as in the
   // agents' own apps: it shows in the queue only when it has to wait (the
   // agent is working, or something holds it up, saying what).
@@ -1991,11 +2213,57 @@ export default function AgentSessionView({
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
             <div className="as-details-head">
-              <strong className="as-details-title">{info.title}</strong>
+              {renaming !== null && (agent === "claude" || agent === "codex") ? (
+                <form
+                  className="as-rename"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!renaming.trim()) return;
+                    try {
+                      const r = await renameSession(peer, initial, renaming);
+                      setInfo((old) => ({ ...old, title: r.title }));
+                      setRenaming(null);
+                    } catch (error) {
+                      setProblem((error as Error).message);
+                    }
+                  }}
+                >
+                  <input autoFocus aria-label="Chat name" value={renaming} maxLength={200} onChange={(e) => setRenaming(e.target.value)} />
+                  <button type="submit" disabled={!renaming.trim()}>Save</button>
+                </form>
+              ) : (
+                <strong className="as-details-title">
+                  {info.title}
+                  {(agent === "claude" || agent === "codex") && (
+                    <button className="as-icon" aria-label="Rename chat" onClick={() => setRenaming(info.title || "")}>
+                      <SquarePen size={14} />
+                    </button>
+                  )}
+                </strong>
+              )}
               <small>
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>
+            {(agent === "claude" || agent === "codex") && (
+              <button
+                className="as-details-delete"
+                role="menuitem"
+                onClick={async () => {
+                  if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
+                    return;
+                  try {
+                    await deleteSession(peer, initial);
+                    setDetails(false);
+                    onBack();
+                  } catch (error) {
+                    setProblem((error as Error).message);
+                  }
+                }}
+              >
+                <Trash2 size={15} /> Delete chat
+              </button>
+            )}
             {/* Continue this chat in the other app. */}
             <MoveItems
               peer={peer}
@@ -2011,6 +2279,49 @@ export default function AgentSessionView({
           </div>
         </>
       )}
+      {rewinding && (
+        <>
+          <div className="as-details-scrim" aria-hidden="true" onClick={() => !rewinding.busy && setRewinding(null)} />
+          <div className="as-rewind" role="dialog" aria-label="Rewind">
+            <strong>Rewind to before this message?</strong>
+            <p className="as-rewind-quote">{visibleUserText(rewinding.item.text).slice(0, 200)}</p>
+            {rewinding.busy === "preview" ? (
+              <p>
+                <Loader2 size={14} className="spin" /> Checking what would change…
+              </p>
+            ) : rewinding.preview && rewinding.preview.files.length ? (
+              <p>
+                {rewinding.preview.files.length} file{rewinding.preview.files.length === 1 ? "" : "s"} will change{" "}
+                <b className="plus">+{rewinding.preview.insertions}</b> <b className="minus">-{rewinding.preview.deletions}</b>
+              </p>
+            ) : rewinding.preview ? (
+              <p>No code changed since then.</p>
+            ) : null}
+            {rewinding.error && <p className="bad">{rewinding.error}</p>}
+            <div className="as-rewind-actions">
+              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
+                <button className="primary" disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: true }, "both")}>
+                  {rewinding.busy === "both" ? <Loader2 size={14} className="spin" /> : "Restore code and conversation"}
+                </button>
+              )}
+              <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || rewinding.busy === "preview"} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
+                {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
+              </button>
+              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
+                <button disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: false }, "code")}>
+                  {rewinding.busy === "code" ? <Loader2 size={14} className="spin" /> : "Restore code only"}
+                </button>
+              )}
+              <button className="quiet" disabled={!!rewinding.busy && rewinding.busy !== "preview"} onClick={() => setRewinding(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      {info.rewound && <p className="as-note as-rewound">Rewound. Your next message continues from here.</p>}
+      {/* Its sub-agents at a glance, above the conversation. */}
+      {!!info.subagents?.length && <SubagentStrip agents={info.subagents} />}
       <div
         className="as-scroll"
         ref={scroller}
@@ -2046,8 +2357,55 @@ export default function AgentSessionView({
           placeMoves(blocks.map((b, i) =>
             b.type === "tools" ? (
               <ToolRun key={`tools-${b.items[0].id}`} items={b.items} />
+            ) : b.type === "agent" ? (
+              <SubagentCard
+                key={b.item.id}
+                item={b.item}
+                agent={info.subagents?.find((a) => a.toolUseId === b.item.id || a.id === b.item.agentId)}
+                onStop={async (task) => {
+                  try {
+                    await stopSubagent(peer, initial, task);
+                    void load(false);
+                  } catch (e) {
+                    setProblem((e as Error).message);
+                  }
+                }}
+              />
+            ) : b.item.role === "user" && editingLast?.id === b.item.id ? (
+              <form
+                key={b.item.id}
+                className="as-edit-last"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void saveLastEdit();
+                }}
+              >
+                <textarea
+                  autoFocus
+                  aria-label="Edit your message"
+                  value={editingLast.text}
+                  rows={Math.min(10, Math.max(3, editingLast.text.split("\n").length + 1))}
+                  onChange={(e) => setEditingLast({ ...editingLast, text: e.target.value })}
+                />
+                <span className="as-edit-actions">
+                  <button type="button" disabled={editingLast.busy} onClick={() => setEditingLast(null)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="primary" disabled={editingLast.busy || !editingLast.text.trim()}>
+                    {editingLast.busy ? <Loader2 size={14} className="spin" /> : "Send"}
+                  </button>
+                </span>
+              </form>
             ) : b.item.role === "user" ? (
-              <Copyable key={b.item.id} text={b.item.text} side="user" bare={!b.item.text.trim()}>
+              <Copyable
+                key={b.item.id}
+                text={b.item.text}
+                side="user"
+                bare={!b.item.text.trim()}
+                onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
+                onFork={agent === "codex" && b.item.turnId ? () => void forkFrom(b.item.turnId!) : undefined}
+                onRewind={agent === "claude" && !b.item.slash && info.status !== "running" && info.status !== "waiting" ? () => void openRewind(b.item) : undefined}
+              >
               <div className="as-user">
                 {b.item.queued && (
                   <span className="as-tag">Sent while working</span>
@@ -2079,7 +2437,7 @@ export default function AgentSessionView({
             ) : b.item.questions?.length ? (
               <div key={b.item.id} className="as-async-questions">
                 {b.item.text && b.item.text !== b.item.questions.map((q) => [q.title, ...q.options.map((o) => `- ${o}`)].join("\n")).join("\n\n") && <AgentMarkdown text={b.item.text} />}
-                <AsyncQuestions item={b.item} logos={logos} word={word} onAnswer={answerAsyncQuestion} />
+                <AsyncQuestions item={b.item} logos={logos} word={word} answerable={working && !!b.item.turnId && b.item.turnId === lastTurnId} onAnswer={(answers) => answerAsyncQuestion(b.item, answers)} />
               </div>
             ) : b.item.kind === "output" ? (
               <div key={b.item.id} className="as-output">
@@ -2392,12 +2750,9 @@ export default function AgentSessionView({
             onRetry={() => setModelReload((n) => n + 1)}
             onClose={() => setPicking(false)}
             onPick={async (next, stay) => {
-              // The speed goes with the next message (Codex has no other way
-              // to change a chat's speed).
-              if (next.speed) {
-                setChoice((previous) => ({ ...previous, speed: next.speed }));
-                return;
-              }
+              // The speed changes the chat's own setting at once, as in the
+              // Codex app (thread settings; the app's when it holds the chat).
+              if (next.speed && !next.model) next = { ...next, model: modelId || info.model || undefined };
               if (savingModel.current) return;
               savingModel.current = true;
               setModelSaving(true);
@@ -2424,22 +2779,21 @@ export default function AgentSessionView({
             }}
           />
         )}
+        {/* Claude's todo list, pinned above the composer as in the Claude app. */}
+        {!!info.todos?.length && info.todos.some((t) => t.status !== "completed") && <TodoStrip todos={info.todos} />}
         {/* Right on top of the message box, as both apps put their queue. */}
         {!!queued.length && (
           <QueuedMessages
             agent={agent}
             messages={queued}
             busy={queueBusy}
-            canEdit={!queueBusy && !text.trim()}
-            onEdit={async (m) => {
+            canEdit={!queueBusy}
+            onEdit={async (m, words) => {
               setQueueBusy(m.id);
               try {
-                await cancelQueuedMessage(peer, initial, m.id);
-                setRemovedQueue((old) => [...old, m.id]);
-                setPending((old) => old.filter((p) => p.messageId !== m.id && p.text !== m.text));
-                setText(visibleUserText(m.text));
-                field.current?.focus({ preventScroll: true });
-              } catch (error) { setProblem((error as Error).message); }
+                await editQueued(peer, initial, m.id, words);
+                void load(false);
+              } catch (error) { setProblem((error as Error).message); throw error; }
               finally { setQueueBusy(null); }
             }}
             onRemove={async (m) => {
@@ -2451,14 +2805,15 @@ export default function AgentSessionView({
               } catch (error) { setProblem((error as Error).message); }
               finally { setQueueBusy(null); }
             }}
-            {...(agent === "claude" && {
-              onSendNow: async (m: OutboxMessage) => {
-                setQueueBusy(m.id);
-                try {
-                  await sendQueuedNow(peer, initial, m.id);
-                } catch (error) { setProblem((error as Error).message); }
-                finally { setQueueBusy(null); }
-              },
+            onSendNow={async (m: OutboxMessage) => {
+              setQueueBusy(m.id);
+              try {
+                await sendQueuedNow(peer, initial, m.id);
+                void load(false);
+              } catch (error) { setProblem((error as Error).message); }
+              finally { setQueueBusy(null); }
+            }}
+            {...((agent === "claude" || agent === "codex") && {
               onReorder: async (ids: string[]) => {
                 try {
                   await reorderQueued(peer, initial, ids);
@@ -2479,12 +2834,18 @@ export default function AgentSessionView({
                     className={`as-thumb ${a.error ? "bad" : ""}`}
                     title={a.error}
                   >
-                    <img src={a.url} alt="" />
+                    {a.file ? (
+                      <span className="as-file-chip">
+                        <FileText size={14} aria-hidden="true" /> {a.file}
+                      </span>
+                    ) : (
+                      <img src={a.url} alt="" />
+                    )}
                     {!a.id && !a.error && (
                       <Loader2 size={16} className="spin" />
                     )}
                     <button
-                      aria-label="Remove image"
+                      aria-label={a.file ? "Remove file" : "Remove image"}
                       onClick={() => removeAttachment(a.key)}
                     >
                       <X size={12} />
@@ -2494,6 +2855,20 @@ export default function AgentSessionView({
               </div>
             )}
             <SkillChip menu={slashMenu} />
+            {(agent === "claude" || agent === "codex") && mentionQuery !== null && (
+              <MentionMenu
+                peer={peer}
+                session={initial}
+                query={mentionQuery}
+                onPick={(file) => {
+                  // As each agent names a file: @path for Claude Code, the path for Codex.
+                  const next = text.replace(/@([^\s@]{0,80})$/, `${agent === "claude" ? "@" : ""}${file} `);
+                  setText(next);
+                  draftSync.current?.update(next);
+                  field.current?.focus({ preventScroll: true });
+                }}
+              />
+            )}
             <textarea
               ref={field}
               aria-label="Message"
@@ -2533,7 +2908,6 @@ export default function AgentSessionView({
             <input
               ref={picker}
               type="file"
-              accept="image/*"
               multiple
               hidden
               onChange={(e) => {
@@ -2557,8 +2931,20 @@ export default function AgentSessionView({
                 <span>{modeShown ? modeName(modeShown) : "Default"}</span>
               </button>
             )}
+            {agent === "codex" && (
+              <button
+                className={`as-plan-toggle ${planMode === "plan" ? "on" : ""}`}
+                aria-pressed={planMode === "plan"}
+                title={heldByApp ? "The Codex app has this chat open: turn Plan on there" : "Plan before doing, as the Codex app's Plan"}
+                onClick={togglePlan}
+              >
+                <ListChecks size={14} /> Plan
+              </button>
+            )}
             <span className="as-spacer" />
-            {settings && (agent === "codex" || agent === "claude") && (
+            {info.context && <ContextMeter used={info.context.used} window={info.context.window} />}
+            {/* Always in sight, as both apps keep their model by the box. */}
+            {(agent === "codex" || agent === "claude") && (
               <button
                 ref={modelButton}
                 className="as-model"
@@ -2568,23 +2954,11 @@ export default function AgentSessionView({
                   setPicking(!picking);
                 }}
               >
-                {modelLabel || "Model"}{" "}
-                <span>{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
+                <span className="as-model-name">{modelLabel || "Model"}</span>{" "}
+                <span className="as-model-effort">{effortLabel(effort || (models.find((m) => m.id === modelId) || models.find((m) => m.isDefault))?.defaultEffort, agent)}</span>
                 <ChevronDown size={14} />
               </button>
             )}
-            <button
-              className="as-icon"
-              aria-label="Chat settings"
-              aria-expanded={settings}
-              onClick={() => {
-                setSettings(!settings);
-                setPicking(false);
-                setChoosingMode(false);
-              }}
-            >
-              <SlidersHorizontal size={18} />
-            </button>
             {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
             {working && !text.trim() ? (

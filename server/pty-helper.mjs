@@ -14,12 +14,12 @@ export function ensurePtyHelper({
   if (platform !== "darwin") return null;
   let helper;
   try {
-    helper = path.join(
-      path.dirname(resolve("node-pty/package.json")),
-      "prebuilds",
-      `darwin-${arch}`,
-      "spawn-helper",
-    );
+    const root = path.dirname(resolve("node-pty/package.json"));
+    // Where node-pty keeps it: its prebuilt helper, or one built here (a
+    // version laying it out otherwise has terminals say so, not fail silently).
+    const places = [path.join(root, "prebuilds", `darwin-${arch}`, "spawn-helper"), path.join(root, "build", "Release", "spawn-helper")];
+    helper = places.find((p) => fs.existsSync(p));
+    if (!helper) return `Terminals can't start: node-pty's spawn-helper isn't in ${places.join(" or ")}. Reinstall Reach's dependencies (npm install).`;
     const { mode } = fs.statSync(helper);
     if ((mode & 0o111) !== 0o111) fs.chmodSync(helper, mode | 0o755);
     return null;

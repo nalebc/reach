@@ -68,3 +68,35 @@ export function createAgentImages({ dir, run = exec }) {
     },
   };
 }
+
+// Any file attached to a message from the phone (a PDF, a log, a zip): kept
+// privately under an id Reach made, with its own name, and handed to the
+// agent as a path, as each agent's composer references a file.
+const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^/\\\0]{1,120}$/;
+export const safeFileName = (name) =>
+  String(name || "file")
+    .replace(/[\x00-\x1f\x7f/\\:]+/g, "-")
+    .replace(/^\.+/, "")
+    .trim()
+    .slice(0, 120) || "file";
+export function createAgentFiles({ dir }) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return {
+    add(temporary, name) {
+      const id = `${crypto.randomUUID()}/${safeFileName(name)}`;
+      fs.mkdirSync(path.join(dir, path.dirname(id)), { recursive: true, mode: 0o700 });
+      fs.renameSync(temporary, path.join(dir, id));
+      return id;
+    },
+    paths(ids) {
+      if (ids === undefined || ids === null) return [];
+      if (!Array.isArray(ids) || ids.length > 10) throw bad("Attach up to 10 files.");
+      return ids.map((id) => {
+        if (typeof id !== "string" || !FILE_ID.test(id)) throw bad("Unknown file.");
+        const file = path.join(dir, id);
+        if (!fs.existsSync(file)) throw bad("That file is gone. Attach it again.");
+        return file;
+      });
+    },
+  };
+}

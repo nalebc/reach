@@ -21,6 +21,7 @@ import { codexArchive } from "./portable-history.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
 import { codexMode } from "./codex.mjs";
+import { questionKey, questionReply, readQuestionReply } from "./codex-questions.mjs";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 import { computerWord } from "../computer-word.mjs";
@@ -171,6 +172,8 @@ export function activityFor(item) {
       return "Thinking";
     case "contextCompaction":
       return "Compacting context";
+    case "collabAgentToolCall":
+      return item.tool === "spawnAgent" ? "Starting an agent" : "Working with agents";
     default:
       return null;
   }
@@ -293,11 +296,20 @@ export function createCodexLive({
   // text and a count of pictures, as the phone shows it.
   const readQueue = (id) => {
     const t = state(id);
+    if (t.queueReading) {
+      // Native cancellation can arrive while an older snapshot is on its
+      // way. Read again after it; never publish that known-stale result.
+      t.queueAgain = true;
+      return t.queueReading;
+    }
+    t.queueAgain = false;
     t.queueAt = now();
-    t.queueReading ||= daemon
+    t.queueReading = daemon
       .rpc("thread/queue/list", { threadId: id })
       .then((r) => {
-        const next = (r?.data || []).map((q) => ({
+        if (!Array.isArray(r?.data)) throw compatibilityError("codex", "queued messages");
+        if (t.queueAgain) return;
+        const next = r.data.map((q) => ({
           id: String(q.id),
           text: visibleUserText((q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
           images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length,
@@ -310,11 +322,22 @@ export function createCodexLive({
       .catch(() => {})
       .finally(() => {
         t.queueReading = null;
+        if (t.queueAgain) return readQueue(id);
       });
     return t.queueReading;
   };
+  // How full each chat's context is, as Codex reports it.
+  const contexts = new Map();
   daemon.onNotification((m) => {
     const p = m.params || {};
+    if (m.method === "thread/tokenUsage/updated" && typeof p.threadId === "string") {
+      const used = Number(p.tokenUsage?.last?.totalTokens) || 0;
+      const window = Number(p.tokenUsage?.modelContextWindow) || 0;
+      if (used > 0 && window > 0) {
+        contexts.set(p.threadId, { used, window });
+        if (contexts.size > 500) contexts.delete(contexts.keys().next().value);
+      }
+    }
     // Some resolved notifications identify only the server request. Clear the
     // original card even without a threadId (or with a string request id).
     if (m.method === "serverRequest/resolved") {
@@ -449,6 +472,26 @@ export function createCodexLive({
     void taken(threadId, queued, input);
     return { queued: true, delivered: false, ...(queued ? { messageId: String(queued) } : {}) };
   }
+  // Into a turn the Codex app runs, as its own Steer does: through the app,
+  // which holds the thread. queued: the queued message it takes out of line.
+  // text: what the app puts back in its box should the steer fail.
+  async function steerElsewhere(threadId, input, { queued = null, text = input.filter((i) => i?.type === "text").map((i) => i.text).join("\n") } = {}) {
+    const read = await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null);
+    const r = await desktop.steer(threadId, { input, text, cwd: read?.thread?.cwd || null, queued });
+    const t = state(threadId);
+    t.items++;
+    changed(threadId);
+    return r;
+  }
+  // A message in Codex's queue, as Codex keeps it (its input, pictures too).
+  async function queuedOne(threadId, messageId) {
+    if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
+      throw bad("Unknown queued message.", 404);
+    const list = await daemon.rpc("thread/queue/list", { threadId });
+    const found = (list?.data || []).find((q) => String(q.id) === messageId);
+    if (!found || !Array.isArray(found.input)) throw bad("That message already left the queue.", 409);
+    return found;
+  }
   async function taken(threadId, queued, input) {
     try {
       const deadline = now() + deliverMs;
@@ -528,8 +571,16 @@ export function createCodexLive({
       try {
         await attach(threadId);
       } catch (e) {
-        if (WRITER_HELD.test(e.message))
+        if (WRITER_HELD.test(e.message)) {
+          // Compacting goes through the Codex app itself, as its /compact.
+          if (method === "thread/compact/start") {
+            const done = await desktop.compact(threadId);
+            state(threadId).items++;
+            changed(threadId);
+            return done;
+          }
           throw bad("The Codex app has this chat open, so it runs this there. Run it in the Codex app, or close the chat there and try again.", 409);
+        }
         throw e;
       }
       t.error = null;
@@ -556,9 +607,10 @@ export function createCodexLive({
       }
       return r || {};
     },
-    async model(threadId, { model, effort } = {}) {
+    // speed: Codex's service tier, changed mid-chat as in the Codex app.
+    async model(threadId, { model, effort, speed } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
-      const params = { threadId, model, ...(effort ? { effort } : {}) };
+      const params = { threadId, model, ...(effort ? { effort } : {}), ...(speed ? { serviceTier: speed } : {}) };
       // A chat already loaded by the shared engine can be changed without
       // taking it over, even while another client is running its turn.
       try {
@@ -569,7 +621,7 @@ export function createCodexLive({
           await attach(threadId);
         } catch (e) {
           if (WRITER_HELD.test(e.message)) {
-            const result = await desktop.model(threadId, { model, effort });
+            const result = await desktop.model(threadId, { model, effort, ...(speed ? { serviceTier: speed } : {}) });
             state(threadId).items++;
             changed(threadId);
             return result;
@@ -581,7 +633,7 @@ export function createCodexLive({
       }
       state(threadId).items++;
       changed(threadId);
-      return { model, ...(effort ? { effort } : {}), applied: true };
+      return { model, ...(effort ? { effort } : {}), ...(speed ? { speed } : {}), applied: true };
     },
     async mode(threadId, mode) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
@@ -608,7 +660,11 @@ export function createCodexLive({
       changed(threadId);
       return { mode, applied: true };
     },
-    async send(threadId, { text, images, model, effort, speed, mode, skill } = {}) {
+    // steer: an answer to what Codex asked, into the running turn at once
+    // (as the Codex app does), never behind the queue.
+    // collaboration: Codex's plan mode ("plan") or not ("default"), as the
+    // Codex app's Plan toggle sends it with a turn.
+    async send(threadId, { text, images, model, effort, speed, mode, skill, steer = false, collaboration = null } = {}) {
       if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
       const input = codexInput({ text, images, skill });
       const t = state(threadId);
@@ -620,16 +676,42 @@ export function createCodexLive({
       try {
         await attach(threadId);
       } catch (e) {
-        if (WRITER_HELD.test(e.message)) return queueElsewhere(threadId, input);
-        throw e;
+        if (!WRITER_HELD.test(e.message)) throw e;
+        if (collaboration === "plan")
+          throw bad("The Codex app has this chat open: turn Plan on there, or close the chat in the Codex app.", 409);
+        if (steer && (await runningOnDisk(threadId))) {
+          try {
+            return { ...(await steerElsewhere(threadId, input)), delivered: true };
+          } catch (error) {
+            // Uncertain: it may be in; never sent twice. Refused: it waits its turn.
+            if (error.uncertain) throw error;
+          }
+        }
+        return queueElsewhere(threadId, input);
       }
       t.error = null;
       let r;
       try {
+        // Plan mode names the model it runs with: the one picked, or the chat's.
+        const planned =
+          collaboration === "plan" || collaboration === "default"
+            ? {
+                collaborationMode: {
+                  mode: collaboration,
+                  settings: {
+                    model: model || (await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null))?.thread?.model || "",
+                    reasoning_effort: effort || null,
+                    developer_instructions: null,
+                  },
+                },
+              }
+            : {};
+        if (planned.collaborationMode && !planned.collaborationMode.settings.model) throw bad("Pick a model for plan mode.", 409);
         r = await daemon.rpc("turn/start", {
           threadId,
           input,
           clientUserMessageId: randomUUID(),
+          ...planned,
           ...(model ? { model } : {}),
           ...(effort ? { effort } : {}),
           // The speed too, for this turn and the ones after, as in the app.
@@ -643,6 +725,78 @@ export function createCodexLive({
       }
       begin(threadId, r.turn);
       return { turnId: r.turn?.id || null };
+    },
+    // Answers to the questions Codex asked while it works, as the Codex app
+    // sends them: into the turn that asked (never the queue, never a new
+    // turn), in the app's own envelope, so both show them as answers.
+    // answers: [{ index, answer }] for the question message itemId.
+    async answerQuestions(threadId, { itemId, turnId, answers } = {}) {
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      if (typeof itemId !== "string" || !itemId || itemId.length > 128 || typeof turnId !== "string" || !turnId || turnId.length > 128)
+        throw bad("Unknown question.", 404);
+      if (!Array.isArray(answers) || !answers.length || answers.length > 20) throw bad("Answer the question.");
+      const moved = () => bad("Codex has moved on from this question. Send your answer as a message.", 409);
+      let asked, cursor = null;
+      const cursors = new Set();
+      const answered = new Set();
+      do {
+        const r = await daemon.rpc("thread/items/list", { threadId, limit: 100, sortDirection: "desc", ...(cursor ? { cursor } : {}) });
+        for (const entry of r?.data || []) {
+          const item = entry?.item;
+          if (item?.type !== "userMessage" || item.content?.length !== 1 || item.content[0]?.type !== "text") continue;
+          for (const reply of readQuestionReply(item.content[0].text) || []) answered.add(reply.questionItemId);
+        }
+        asked = (r?.data || []).find((entry) => entry?.item?.id === itemId && entry.item.type === "agentMessage");
+        cursor = r?.nextCursor;
+        if (cursors.has(cursor)) break;
+        cursors.add(cursor);
+      } while (!asked && cursor);
+      const questions = Array.isArray(asked?.item?.questions) ? asked.item.questions : [];
+      if (!questions.length) throw bad("Unknown question.", 404);
+      if (questions.some((_, index) => answered.has(questionKey(itemId, index)))) throw bad("This question was already answered. Refresh the chat.", 409);
+      if (asked.turnId !== turnId) throw moved();
+      const replies = [];
+      const indices = new Set();
+      for (const a of answers) {
+        const q = questions[a?.index];
+        if (!Number.isInteger(a?.index) || a.index < 0 || !q || typeof q.title !== "string" || indices.has(a.index) || typeof a.answer !== "string" || a.answer.length > 2000) throw bad("Answer the question.");
+        indices.add(a.index);
+        // An empty answer skips that question, as in the app.
+        if (a.answer.trim()) replies.push({ questionItemId: questionKey(itemId, a.index), question: String(q.title ?? ""), answer: a.answer.trim() });
+      }
+      if (!replies.length) throw bad("Answer the question.");
+      const input = [{ type: "text", text: questionReply(replies), text_elements: [] }];
+      const t = state(threadId);
+      t.questionReplies ||= new Map();
+      const previous = t.questionReplies.get(itemId);
+      if (previous) throw bad(previous === "sending" ? "This answer is already being sent." : previous === "answered" ? "This question was already answered. Refresh the chat." : "Codex didn't confirm this answer. Check the Codex app before answering again.", 409);
+      t.questionReplies.set(itemId, "sending");
+      try {
+        if (subscribed.has(threadId) && t.turnId) {
+          if (t.turnId !== turnId || t.status === "idle") throw moved();
+          await daemon.rpc("turn/steer", { threadId, expectedTurnId: turnId, input });
+        } else {
+          const latest = (await daemon
+            .rpc("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" })
+            .catch(() => null))?.data?.[0];
+          if (!latest || finished(latest) || latest.id !== turnId) throw moved();
+          try {
+            await steerElsewhere(threadId, input, { text: replies.map((x) => x.answer).join("\n\n") });
+          } catch (error) {
+            if (error.uncertain) throw error;
+            throw bad(`Codex couldn't take the answer now. Try again, or answer in the Codex app on your ${computerWord(platform)}.`, 409);
+          }
+        }
+        t.questionReplies.set(itemId, "answered");
+        t.items++;
+        changed(threadId);
+        return { answered: true };
+      } catch (error) {
+        if (error.uncertain) t.questionReplies.set(itemId, "uncertain");
+        throw error;
+      } finally {
+        if (t.questionReplies.get(itemId) === "sending") t.questionReplies.delete(itemId);
+      }
     },
     async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
@@ -732,6 +886,98 @@ export function createCodexLive({
       await daemon.rpc("turn/interrupt", { threadId, turnId });
       return { stopped: true };
     },
+    // Send now, as the Codex app's Steer on a queued message: into the turn
+    // Codex is running (the app's own when it holds the chat), or started
+    // now when nothing runs.
+    async sendQueuedNow(threadId, messageId) {
+      const q = await queuedOne(threadId, messageId);
+      const t = state(threadId);
+      if (await runningOnDisk(threadId)) {
+        if (subscribed.has(threadId) && t.turnId) {
+          const removed = await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId });
+          if (removed?.deleted !== true) throw bad("That message already left the queue.", 409);
+          try {
+            await daemon.rpc("turn/steer", { threadId, expectedTurnId: t.turnId, input: q.input });
+          } catch (e) {
+            if (e.uncertain) {
+              // The steer may already have run. Re-adding it would submit it
+              // a second time after this turn; leave the outcome for review.
+              t.error = uncertainDelivery("codex").message;
+              changed(threadId);
+            } else {
+              // Definitely refused: back in line, so nothing is lost.
+              await daemon.rpc("thread/queue/add", { threadId, clientUserMessageId: randomUUID(), input: q.input }).catch(() => {});
+            }
+            await readQueue(threadId);
+            throw e;
+          }
+        } else {
+          await steerElsewhere(threadId, q.input, { queued: messageId });
+          // The app takes it out of its queue; made sure of here.
+          await daemon.rpc("thread/queue/delete", { threadId, queuedSubmissionId: messageId }).catch(() => {});
+        }
+      } else {
+        await daemon.rpc("thread/queue/start", { threadId, queuedSubmissionId: messageId });
+      }
+      await readQueue(threadId);
+      return { sent: true };
+    },
+    // The last message edited and sent again, as the Codex app's Edit: only
+    // the most recent one, never while Codex works; its pictures kept. When
+    // the Codex app holds the chat, the app does it.
+    async editLast(threadId, { turnId, text } = {}) {
+      if (!UUID.test(threadId) || typeof turnId !== "string" || !turnId || turnId.length > 128) throw bad("Unknown message.", 404);
+      const words = String(text ?? "");
+      if (!words.trim()) throw bad("Write the message.");
+      if (words.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+      if (await runningOnDisk(threadId)) throw bad("Codex is working. Stop it first to edit your last message.", 409);
+      try {
+        await attach(threadId);
+      } catch (e) {
+        if (!WRITER_HELD.test(e.message)) throw e;
+        const done = await desktop.editLast(threadId, { turnId, message: words });
+        state(threadId).items++;
+        changed(threadId);
+        return done;
+      }
+      try {
+        const r = await daemon.rpc("thread/items/list", { threadId, limit: 50, sortDirection: "desc" });
+        const latest = (r?.data || []).find((entry) => entry?.item?.type === "userMessage");
+        if (!latest || latest.turnId !== turnId) throw bad("Only your most recent message can be edited.", 409);
+        const content = Array.isArray(latest.item.content) ? latest.item.content : [];
+        const at = content.findIndex((c) => c?.type === "text");
+        const input =
+          at < 0
+            ? [{ type: "text", text: words, text_elements: [] }, ...content]
+            : content.map((c, i) => (i === at ? { ...c, text: words, text_elements: [] } : c));
+        await daemon.rpc("thread/revert", { threadId, beforeTurnId: turnId });
+        const started = await daemon.rpc("turn/start", { threadId, input, clientUserMessageId: randomUUID() });
+        begin(threadId, started.turn);
+        return { edited: true, turnId: started.turn?.id || null };
+      } catch (e) {
+        release(threadId);
+        throw e;
+      }
+    },
+    // A new order for what waits, as dragged in the Codex app.
+    async reorderQueued(threadId, order) {
+      if (!UUID.test(threadId) || !Array.isArray(order) || order.length > 100 || !order.every((id) => typeof id === "string" && id && id.length <= 128))
+        throw bad("Invalid order.");
+      await daemon.rpc("thread/queue/reorder", { threadId, queuedSubmissionIds: order });
+      await readQueue(threadId);
+      return { reordered: true };
+    },
+    // A queued message's words changed in place, its pictures kept.
+    async editQueued(threadId, messageId, text) {
+      const q = await queuedOne(threadId, messageId);
+      const words = String(text ?? "");
+      if (words.length > 50000) throw bad("Messages can be up to 50,000 characters.");
+      const input = [...(words.trim() ? [{ type: "text", text: words, text_elements: [] }] : []), ...q.input.filter((i) => i?.type !== "text")];
+      if (!input.length) throw bad("Write a message or keep its pictures.");
+      await daemon.rpc("thread/queue/update", { threadId, queuedSubmissionId: messageId, input });
+      await readQueue(threadId);
+      return { edited: true };
+    },
     async cancelQueued(threadId, messageId) {
       if (!UUID.test(threadId) || typeof messageId !== "string" || !messageId || messageId.length > 128)
         throw bad("Unknown queued message.", 404);
@@ -771,6 +1017,7 @@ export function createCodexLive({
         prompt.replying = false;
       }
     },
+    contextOf: (threadId) => contexts.get(threadId) || null,
     view(threadId) {
       // The phone is looking: what waits in Codex's queue, if not read lately.
       // The Codex app takes queued messages without a notice to Reach, but

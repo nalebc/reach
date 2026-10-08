@@ -64,6 +64,21 @@ test("the default policy: tag and grant added, every comment kept, allow-all fla
   assert.match(out.text, /\n\t\t\{"src": \["tag:reach-guest"\]/);
 });
 
+test("an explicitly approved fix narrows only the single default wildcard grant", () => {
+  const preview = addGuestRules(DEFAULT_POLICY, opts);
+  assert.equal(preview.canNarrowDefault, true);
+  const fixed = addGuestRules(DEFAULT_POLICY, { ...opts, narrowDefaultWildcard: true });
+  const policy = parsePolicy(fixed.text);
+  assert.deepEqual(fixed.allowAll, []);
+  assert.deepEqual(policy.grants[0], GRANT);
+  assert.deepEqual(policy.grants[1], { src: ["autogroup:member"], dst: ["*"], ip: ["*"] });
+  assert.match(fixed.text, /\/\/ Allow all connections/);
+  assert.deepEqual(parsePolicy(DEFAULT_POLICY).grants[0].src, ["*"], "preview leaves the input untouched");
+  assert.throws(() => addGuestRules(`{"grants":[{"src":["*"],"dst":["tag:server"],"ip":["*"]}]}`, {
+    ...opts, narrowDefaultWildcard: true,
+  }), /only narrow a single default/);
+});
+
 test("existing tagOwners and old-style acls: inserted into tagOwners, grants added", () => {
   const before = `{
   "tagOwners": {

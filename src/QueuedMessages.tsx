@@ -16,9 +16,11 @@ import "./queued-messages.css";
 // show them (read from the Claude and Codex apps on the Mac):
 // - one line each, its start only, pictures as a small count;
 // - Claude's: a stack that opens on a tap; each row has Send now (into the
-//   chat at once), Edit in composer, remove, and a handle to drag it up or down;
-// - Codex's: a plain list; Edit and remove (the Codex app runs its own queue,
-//   so its order and Steer stay in the Codex app).
+//   chat at once), Edit, remove, and a handle to drag it up or down;
+// - Codex's: a plain list; Send now (its Steer: into the turn it's running),
+//   Edit, remove, and a new order (Codex's own thread/queue/reorder).
+// A row opens on a tap to show all of it; Edit changes it where it waits,
+// pictures kept.
 export default function QueuedMessages({
   agent,
   messages,
@@ -34,15 +36,19 @@ export default function QueuedMessages({
   // The message an action is running for.
   busy: string | null;
   canEdit: boolean;
-  onEdit: (m: OutboxMessage) => void;
+  onEdit: (m: OutboxMessage, text: string) => Promise<void>;
   onRemove: (m: OutboxMessage) => void;
-  // Only where Reach can do it (a Claude app chat).
+  // Where Reach can do it (a Claude app chat, any Codex chat).
   onSendNow?: (m: OutboxMessage) => void;
   onReorder?: (ids: string[]) => void;
 }) {
   const claude = agent === "claude";
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState<string | null>(null);
+  // The one shown whole, and the one being edited (its words so far).
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   // While a row is dragged: the order shown, sent once the finger lifts.
   const [order, setOrder] = useState<string[] | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -55,7 +61,7 @@ export default function QueuedMessages({
     .map((id) => byId.get(id))
     .filter(Boolean) as OutboxMessage[];
   const stacked = claude && messages.length > 1 && !open;
-  const sortable = claude && !!onReorder && messages.length > 1 && !stacked;
+  const sortable = !!onReorder && messages.length > 1 && !stacked;
   const label = (m: OutboxMessage) =>
     visibleUserText(m.text) ||
     (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message");
@@ -136,8 +142,48 @@ export default function QueuedMessages({
           {m.images > 1 && <small>{m.images}</small>}
         </span>
       )}
-      <div className="qm-text">
-        <p title={label(m)}>{label(m)}</p>
+      <div className={`qm-text ${expanded === m.id ? "whole" : ""}`}>
+        {editing?.id === m.id ? (
+          <form
+            className="qm-edit"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (saving) return;
+              setSaving(true);
+              try {
+                await onEdit(m, editing.text);
+                setEditing(null);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            <textarea
+              autoFocus
+              aria-label="Edit queued message"
+              value={editing.text}
+              rows={Math.min(8, Math.max(2, editing.text.split("\n").length))}
+              onChange={(e) => setEditing({ id: m.id, text: e.target.value })}
+            />
+            <span className="qm-edit-actions">
+              <button type="button" onClick={() => setEditing(null)} disabled={saving}>
+                Cancel
+              </button>
+              <button type="submit" className="primary" disabled={saving || (!editing.text.trim() && !m.images)}>
+                Save
+              </button>
+            </span>
+          </form>
+        ) : (
+          <button
+            className="qm-open"
+            aria-expanded={expanded === m.id}
+            title={expanded === m.id ? "Show less" : "Show all"}
+            onClick={() => setExpanded(expanded === m.id ? null : m.id)}
+          >
+            {label(m)}
+          </button>
+        )}
         {m.sending ? (
           <small>Sending…</small>
         ) : m.error ? (
@@ -146,7 +192,7 @@ export default function QueuedMessages({
           </small>
         ) : null}
       </div>
-      {onSendNow && m.via === "app" && !m.sending && (
+      {onSendNow && (!claude || m.via === "app") && !m.sending && editing?.id !== m.id && (
         <button
           className="qm-now"
           aria-label="Send now"
@@ -157,7 +203,7 @@ export default function QueuedMessages({
           <ArrowUp size={15} />
         </button>
       )}
-      {!m.images && (
+      {editing?.id !== m.id && (
         <span className="qm-menu">
           <button
             aria-label="Queued message actions"
@@ -171,14 +217,14 @@ export default function QueuedMessages({
             <div className="qm-popover" role="menu">
               <button
                 role="menuitem"
-                disabled={!canEdit}
+                disabled={!canEdit || !!m.sending}
                 onClick={() => {
                   setMenu(null);
-                  onEdit(m);
+                  setExpanded(null);
+                  setEditing({ id: m.id, text: visibleUserText(m.text) });
                 }}
               >
-                <SquarePen size={14} />{" "}
-                {claude ? "Edit in composer" : "Edit message"}
+                <SquarePen size={14} /> Edit message
               </button>
             </div>
           )}

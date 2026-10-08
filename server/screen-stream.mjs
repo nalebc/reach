@@ -18,6 +18,11 @@ export function permissionHint(app = appOf()) {
     ? `Reach is running inside ${app}, which has no Screen Recording permission. On your Mac, run ./reach restart in Terminal.`
     : "";
 }
+// The Mac app Reach runs inside (Terminal, iTerm, an agent's app): the one
+// macOS asks about in its privacy settings. "" when it can't be told.
+export function hostAppName() {
+  return appOf();
+}
 function appOf() {
   if (process.platform !== "darwin") return "";
   try {
@@ -99,7 +104,7 @@ export class NativeScreenSource {
         () =>
           this.stop(
             Error(
-              "Live screen capture timed out. Check Screen Recording permission and reconnect.",
+              "Live screen capture didn’t answer in time. Reconnecting…",
             ),
           ),
         15000,

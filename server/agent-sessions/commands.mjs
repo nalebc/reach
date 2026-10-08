@@ -228,7 +228,9 @@ export function createSlashCommands({
           return { ok: true, title: text.slice(0, 120) };
         }
         case "fork": {
-          const r = await daemon.rpc("thread/fork", { threadId: id, excludeTurns: true });
+          // From a chosen message: through its turn (thread/fork's lastTurnId).
+          const through = typeof args === "string" && /^[\w-]{8,128}$/.test(args.trim()) ? args.trim() : null;
+          const r = await daemon.rpc("thread/fork", { threadId: id, excludeTurns: true, ...(through ? { lastTurnId: through } : {}) });
           const forked = r?.thread?.id;
           if (!forked) throw bad("Codex didn't make the fork.", 502);
           // Like a chat Reach moves: the fork is Codex's, not held here.

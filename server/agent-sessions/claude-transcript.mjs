@@ -100,8 +100,12 @@ function toolItem(block, result, cwd) {
         ...base,
         kind: "file-change",
         text: relative(input.file_path ?? input.notebook_path ?? "", cwd),
-        detail: block.name === "Write" ? "Wrote file" : "Edited file",
+        detail: editDiff(block.name, input, cwd) || (block.name === "Write" ? "Wrote file" : "Edited file"),
       };
+    case "TodoWrite":
+    case "TaskCreate":
+    case "TaskUpdate":
+      return { ...base, kind: "tool", text: block.name === "TaskCreate" ? `Added a task: ${String(input.subject ?? "")}`.trim() : "Updated the todo list" };
     case "Read":
       return { ...base, kind: "tool", text: `Read ${relative(input.file_path ?? "", cwd)}` };
     case "Grep":
@@ -132,7 +136,16 @@ function toolItem(block, result, cwd) {
     }
     case "Task":
     case "Agent":
-      return { ...base, kind: "tool", text: String(input.description ?? block.name), detail: output };
+      // A sub-agent: its status and what it's doing join from its own files
+      // (subagents.mjs); a background one's call returns at once.
+      return {
+        ...base,
+        kind: "agent",
+        text: String(input.description ?? block.name),
+        agentType: String(input.subagent_type || "general-purpose").slice(0, 60),
+        background: input.run_in_background === true,
+        detail: output,
+      };
     default:
       return {
         ...base,
@@ -147,9 +160,15 @@ function toolItem(block, result, cwd) {
 // whole file, an Edit's old and new text): kept per line as it is read.
 const KEEP = {
   Bash: ["command"],
-  Edit: ["file_path"],
-  MultiEdit: ["file_path"],
-  Write: ["file_path"],
+  // What an edit changed, for its diff (cut short: a transcript can hold
+  // whole files).
+  Edit: ["file_path", "old_string", "new_string"],
+  MultiEdit: ["file_path", "edits"],
+  Write: ["file_path", "content"],
+  // The todo list, as Claude keeps it.
+  TodoWrite: ["todos"],
+  TaskCreate: ["subject", "description", "activeForm"],
+  TaskUpdate: ["taskId", "status", "subject", "activeForm"],
   NotebookEdit: ["notebook_path"],
   Read: ["file_path"],
   Grep: ["pattern"],
@@ -157,14 +176,64 @@ const KEEP = {
   WebFetch: ["url"],
   WebSearch: ["query"],
   AskUserQuestion: ["questions"],
-  Task: ["description"],
-  Agent: ["description"],
+  Task: ["description", "subagent_type", "run_in_background"],
+  Agent: ["description", "subagent_type", "run_in_background"],
 };
 function slimToolUse(b) {
   const input = b.input && typeof b.input === "object" ? b.input : {};
   const keep = KEEP[b.name] || (consentOf(b.name, input) ? ["apps", "reason", "path"] : null);
   if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600) };
-  return { type: "tool_use", id: b.id, name: b.name, input: Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, input[k]])) };
+  const short = (v) => (typeof v === "string" ? clip(v, EDIT_MAX) : v);
+  const kept = Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, short(input[k])]));
+  if (Array.isArray(kept.edits))
+    kept.edits = kept.edits.slice(0, 30).map((e) => ({ old_string: short(e?.old_string ?? ""), new_string: short(e?.new_string ?? "") }));
+  return { type: "tool_use", id: b.id, name: b.name, input: kept };
+}
+const EDIT_MAX = 12000;
+
+// An edit as a unified diff, as Codex reports its own (the phone draws it
+// and counts its lines).
+export function editDiff(name, input = {}, cwd = "") {
+  const file = String(input.file_path ?? input.notebook_path ?? "");
+  const shown = relative(file, cwd) || "file";
+  const lines = (text) => (String(text ?? "") === "" ? [] : String(text).replace(/\n$/, "").split("\n"));
+  const hunk = (before, after) => [`@@`, ...lines(before).map((l) => `-${l}`), ...lines(after).map((l) => `+${l}`)];
+  const body =
+    name === "Write"
+      ? hunk("", input.content)
+      : name === "MultiEdit"
+        ? (Array.isArray(input.edits) ? input.edits : []).flatMap((e) => hunk(e.old_string, e.new_string))
+        : input.old_string !== undefined || input.new_string !== undefined
+          ? hunk(input.old_string, input.new_string)
+          : [];
+  return body.length ? [`--- a/${shown}`, `+++ b/${shown}`, ...body].join("\n") : "";
+}
+
+// Claude's todo list as it stands after these calls: TodoWrite gives the
+// whole list; TaskCreate adds one (its id in the result), TaskUpdate changes
+// one. [{ id, text, status: pending|in_progress|completed }]
+export function todoList(calls) {
+  let list = [];
+  const status = (s) => (["pending", "in_progress", "completed"].includes(s) ? s : "pending");
+  for (const { name, input = {}, result } of calls) {
+    if (name === "TodoWrite" && Array.isArray(input.todos))
+      list = input.todos
+        .filter((t) => t && typeof t.content === "string")
+        .slice(0, 100)
+        .map((t, i) => ({ id: String(t.id ?? i), text: clip(t.status === "in_progress" && t.activeForm ? t.activeForm : t.content, 300), status: status(t.status) }));
+    else if (name === "TaskCreate" && typeof input.subject === "string") {
+      const id = String(String(result ?? "").match(/#?(\d+)/)?.[1] ?? list.length + 1);
+      list = [...list.filter((t) => t.id !== id), { id, text: clip(input.subject, 300), status: "pending" }];
+    } else if (name === "TaskUpdate" && input.taskId != null) {
+      const id = String(input.taskId);
+      if (input.status === "deleted") list = list.filter((t) => t.id !== id);
+      else
+        list = list.map((t) =>
+          t.id === id ? { ...t, status: input.status ? status(input.status) : t.status, text: input.status === "in_progress" && input.activeForm ? clip(input.activeForm, 300) : input.subject ? clip(input.subject, 300) : t.text } : t,
+        );
+    }
+  }
+  return list;
 }
 // Claude Code records a slash command as <command-name>/x</command-name>
 // <command-message>…</command-message><command-args>…</command-args>, and
@@ -212,6 +281,14 @@ function slimEntry(e, results, maxOutput) {
       }
     }
     out.message = { content: kept, ...(e.message.model ? { model: e.message.model } : {}) };
+    // Keep bounded usage on its own entry so rewinds and alternate branches
+    // report the selected history, not whichever reply was last in the file.
+    if (e.type === "assistant" && !e.isSidechain && e.message.usage && e.message.model !== "<synthetic>") {
+      const u = e.message.usage;
+      const used = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens, u.output_tokens]
+        .reduce((sum, n) => sum + (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0), 0);
+      if (used > 0 && Number.isFinite(used)) out.context = { used, window: /\[1m\]/i.test(e.message.model || "") ? 1000000 : null };
+    }
   }
   return out;
 }
@@ -220,9 +297,31 @@ function slimEntry(e, results, maxOutput) {
 // written), view() is the conversation so far. Reading only what was
 // appended keeps a 70 MB transcript of a working session from being parsed
 // again on every change.
+// Claude Code's notes of a background task's end, in the chat:
+// <task-notification><task-id>…</task-id><tool-use-id>…</tool-use-id>
+// <status>completed</status><summary>…</summary>… (verified with 2.1.291).
+export function taskNotes(content) {
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => (typeof b === "string" ? b : b?.text || "")).join("\n") : "";
+  const notes = [];
+  for (const m of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
+    const all = (name) => [...m[1].matchAll(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "g"))].map((t) => t[1].trim());
+    // One note can tell of several (agents stopped together).
+    const ids = all("task-id");
+    const calls = all("tool-use-id");
+    const status = (all("status")[0] || "").toLowerCase();
+    const summary = clip(all("summary")[0] || "", 300);
+    ids.forEach((id, i) => {
+      if (/^[\w-]{1,80}$/.test(id)) notes.push({ id, toolUseId: calls[i] || "", status, summary });
+    });
+  }
+  return notes;
+}
+
 export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   const byId = new Map();
   const results = new Map();
+  // Background sub-agents' ends, by agent id (subagents.mjs taskNotes).
+  const tasks = new Map();
   // mode: the permission mode its latest message was sent in (Claude Code
   // writes it on each of your messages), to resume it in the same one.
   const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "", mode: "" };
@@ -248,6 +347,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           continue; /* A torn final line while the app is writing: skip it. */
         }
         if (!e || typeof e !== "object") continue;
+        if (line.includes("<task-notification>"))
+          for (const note of taskNotes(e.content ?? e.attachment?.prompt ?? e.message?.content))
+            if (!tasks.has(note.id) || e.timestamp >= (tasks.get(note.id).timestamp || "")) tasks.set(note.id, { ...note, timestamp: e.timestamp || "" });
         if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
         if (e.cwd) meta.cwd = e.cwd;
         if (e.gitBranch) meta.gitBranch = e.gitBranch;
@@ -278,10 +380,15 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       }
     },
     imageLine: (uuid) => imageLines.get(uuid) || null,
-    view() {
+    // The entry before a message (where a rewind to it continues from).
+    parentOf: (uuid) => byId.get(uuid)?.parentUuid ?? null,
+    has: (uuid) => byId.has(uuid),
+    // from: the conversation as it stood at that entry (a rewind waiting for
+    // its next message); otherwise as it stands.
+    view({ from = null } = {}) {
       const chain = [];
       const seen = new Set();
-      for (let cur = last; cur && !seen.has(cur.uuid); ) {
+      for (let cur = from ? byId.get(from) : last; cur && !seen.has(cur.uuid); ) {
         seen.add(cur.uuid);
         chain.push(cur);
         cur = cur.parentUuid
@@ -292,12 +399,16 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       }
       chain.reverse();
       const items = [];
+      // Todo list calls, in order (todoList).
+      const todoCalls = [];
       let model = null; // the latest model that answered
       let firstUser = "";
       // What Claude remembers of the chat: its latest summary (written when it
       // compacted) and the items since (moving a chat carries this; move.mjs).
       let memory = null;
+      let context = null;
       for (const e of chain) {
+        if (e.context) context = e.context;
         const at = e.timestamp ? Date.parse(e.timestamp) : undefined;
         if (e.type === "system" && e.subtype === "compact_boundary") {
           items.push({ id: e.uuid, role: "system", kind: "compaction", text: "Context compacted", at });
@@ -390,7 +501,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           for (const b of content) {
             if (b?.type === "text" && b.text?.trim())
               items.push({ id: `${e.uuid}:${items.length}`, role: "assistant", kind: "text", text: b.text, at });
-            else if (b?.type === "tool_use") items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+            else if (b?.type === "tool_use") {
+              items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+              if (b.name === "TodoWrite" || b.name === "TaskCreate" || b.name === "TaskUpdate")
+                todoCalls.push({ name: b.name, input: b.input || {}, result: results.get(b.id)?.output });
+            }
           }
         }
       }
@@ -404,6 +519,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         updatedAt: updatedAt ? Date.parse(updatedAt) : 0,
         usage,
         ...(memory ? { memory } : {}),
+        tasks: [...tasks.values()],
+        todos: todoList(todoCalls),
+        // Token usage cannot establish a model's capacity. Only explicit
+        // capacity metadata permits a percentage; otherwise show the count.
+        ...(context ? { context } : {}),
         items,
       };
     },

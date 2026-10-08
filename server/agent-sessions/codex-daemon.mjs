@@ -26,6 +26,7 @@ export function createCodexDaemon({
   let seq = 0;
   const pending = new Map();
   const listeners = new Set();
+  const deprecations = new Set();
   const closeListeners = new Set();
   let requestHandler = null;
   // Set when Reach quits; nothing reconnects after that.
@@ -128,6 +129,12 @@ export function createCodexDaemon({
             .then(() => handler(message, (result) => reply({ result }), (error) => reply({ error })))
             .catch(() => reply({ error: { code: -32603, message: "Reach could not answer." } }).catch(() => {}));
       } else if (message.method) {
+        // Codex saying something Reach uses is going away: in Reach's log
+        // once each, ahead of the update that removes it.
+        if (message.method === "deprecationNotice" && typeof message.params?.summary === "string" && !deprecations.has(message.params.summary)) {
+          deprecations.add(message.params.summary);
+          console.warn(`Codex deprecation: ${message.params.summary}${message.params.details ? ` (${message.params.details})` : ""}`);
+        }
         for (const listener of listeners) {
           try { listener(message); }
           catch { issues.set("notifications", compatibilityError("codex", "notifications")); }

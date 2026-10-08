@@ -214,3 +214,17 @@ test("the terminal helper is made executable on start", () => {
     fs.rmSync(pkg, { recursive: true, force: true });
   }
 });
+
+
+test("source-built node-pty helpers work when prebuilds are absent, and missing helpers are reported", () => {
+  const pkg = temp("pty-source");
+  try {
+    const resolve = () => path.join(pkg, "package.json");
+    assert.match(ensurePtyHelper({ platform: "darwin", arch: "arm64", resolve }), /spawn-helper.*Reinstall/);
+    const helper = path.join(pkg, "build", "Release", "spawn-helper");
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    fs.writeFileSync(helper, "", { mode: 0o644 });
+    assert.equal(ensurePtyHelper({ platform: "darwin", arch: "arm64", resolve }), null);
+    if (process.platform !== "win32") assert.equal(fs.statSync(helper).mode & 0o777, 0o755);
+  } finally { fs.rmSync(pkg, { recursive: true, force: true }); }
+});

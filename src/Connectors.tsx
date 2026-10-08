@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, Loader2, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Plus, RefreshCw, Search, X } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { agentLabel } from "./agent-sessions";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
+import { BRAND_MARKS } from "./brand-marks";
 import { computerWord } from "./pause";
 import { ErrorLine, Spinner } from "./ui";
 import "./connectors.css";
@@ -17,16 +18,10 @@ type Native = {
   description?: string | null;
   enabled?: boolean;
   connectUrl?: string | null;
+  logo?: string | null;
 };
-type Server = { name: string; url: string | null; remote: boolean; state: State };
-type CatalogEntry = {
-  id: string;
-  name: string;
-  description: string;
-  url: string;
-  auth: "token" | "oauth";
-  tokenUrl?: string;
-};
+type Server = { name: string; url: string | null; remote: boolean; state: State; logo?: string | null };
+type CatalogEntry = { id: string; name: string; description: string; url: string; auth: "token" | "oauth"; tokenUrl?: string };
 type AgentConnectors = {
   agent: ConnectorAgent;
   installed: boolean;
@@ -36,39 +31,32 @@ type AgentConnectors = {
   catalog: CatalogEntry[];
   signIn?: boolean;
 };
-type LoginView = {
-  state: "idle" | "starting" | "link" | "checking" | "done" | "failed" | "cancelled";
-  url: string | null;
-  error: string | null;
-};
+type LoginView = { state: "idle" | "starting" | "link" | "checking" | "done" | "failed" | "cancelled"; url: string | null; error: string | null };
 type AddResult = { name: string; results: { agent: ConnectorAgent; ok: boolean; error?: string }[] };
 
-// One agent's side of a connector: a server in its settings, one of the
+// One agent's side of a service: a server in its settings, one of the
 // claude.ai account's connectors, or one of ChatGPT's apps (Codex).
 type Cell =
   | { kind: "server"; name: string; state: State; remote: boolean }
   | { kind: "native"; name: string; state: State }
   | { kind: "app"; id: string; state: State; enabled: boolean; connectUrl: string | null };
 // A service (GitHub, Linear, …) across the agents.
-type Item = {
+export type Item = {
   key: string;
   name: string;
   detail: string | null;
   entry: CatalogEntry | null;
+  logo: string | null;
   cells: Partial<Record<ConnectorAgent, Cell>>;
 };
 
 const AGENTS: ConnectorAgent[] = ["claude", "codex", "gemini"];
-const STATE_WORDS: Record<State, string> = {
-  connected: "Connected",
-  "needs-auth": "Sign in",
-  failed: "Can't connect",
-  off: "Off",
-  added: "Added",
-  available: "Not connected",
-};
 const route = (path: string, params: Record<string, string>) => `${path}?${new URLSearchParams(params).toString()}`;
 const keyOf = (name: string) => name.trim().toLowerCase();
+const slugOf = (name: string) => name.toLowerCase().replace(/^claude\.ai\s+/, "").replace(/[^a-z0-9]/g, "");
+const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] || "");
+const usable = (c?: Cell) => !!c && (c.state === "connected" || c.state === "added");
+const missing = (c?: Cell) => !c || c.state === "available";
 
 // Every agent's connectors folded into one list of services: the catalog's,
 // then whatever the agents already have, matched by name.
@@ -76,13 +64,16 @@ export function connectorItems(data: Partial<Record<ConnectorAgent, AgentConnect
   const items = new Map<string, Item>();
   const catalog = AGENTS.map((a) => data[a]?.catalog).find(Boolean) || [];
   for (const entry of catalog)
-    items.set(entry.id, { key: entry.id, name: entry.name, detail: entry.description, entry, cells: {} });
+    items.set(entry.id, { key: entry.id, name: entry.name, detail: entry.description, entry, logo: null, cells: {} });
   const find = (name: string) =>
-    items.get(keyOf(name)) || [...items.values()].find((i) => keyOf(i.name) === keyOf(name));
-  const item = (name: string, detail: string | null) => {
+    items.get(keyOf(name)) || [...items.values()].find((i) => keyOf(i.name) === keyOf(name) || slugOf(i.name) === slugOf(name));
+  const item = (name: string, detail: string | null, logo?: string | null) => {
     const found = find(name);
-    if (found) return found;
-    const made: Item = { key: keyOf(name), name, detail, entry: null, cells: {} };
+    if (found) {
+      found.logo ||= logo || null;
+      return found;
+    }
+    const made: Item = { key: keyOf(name), name, detail, entry: null, logo: logo || null, cells: {} };
     items.set(made.key, made);
     return made;
   };
@@ -90,63 +81,100 @@ export function connectorItems(data: Partial<Record<ConnectorAgent, AgentConnect
     const info = data[agent];
     if (!info?.installed) continue;
     for (const n of info.native) {
-      // ChatGPT's apps not linked yet count only for the catalog's services.
+      // ChatGPT's apps not linked yet count only for services listed here.
       if (n.state === "available" && !find(n.name)) continue;
-      const it = item(n.name, n.description || null);
+      const it = item(n.name, n.description || null, n.logo);
       it.cells[agent] =
         agent === "codex"
           ? { kind: "app", id: n.id, state: n.state, enabled: n.enabled !== false, connectUrl: n.connectUrl || null }
           : { kind: "native", name: n.id, state: n.state };
     }
-    // A server of the same name as a native one is the agent's own choice;
-    // the server is what Reach manages.
     for (const s of info.servers) {
-      const it = item(s.name, s.url);
+      const it = item(s.name, s.url, s.logo);
       const had = it.cells[agent];
       if (!had || had.state === "available") it.cells[agent] = { kind: "server", name: s.name, state: s.state, remote: s.remote };
     }
   }
-  const used = (i: Item) => Object.values(i.cells).some((c) => c && c.state !== "available");
-  return [...items.values()].sort(
-    (a, b) => Number(used(b)) - Number(used(a)) || Number(!!b.entry) - Number(!!a.entry) || a.name.localeCompare(b.name),
+  return [...items.values()];
+}
+
+// The service's own mark (shipped with Reach), else the logo the computer
+// fetched for it, else its first letter.
+export function ConnectorLogo({ name, logo, size = 34 }: { name: string; logo?: string | null; size?: number }) {
+  const mark = BRAND_MARKS[slugOf(name)];
+  if (mark) {
+    const rgb = parseInt(mark.hex, 16);
+    const light = ((rgb >> 16) & 255) * 0.299 + ((rgb >> 8) & 255) * 0.587 + (rgb & 255) * 0.114 > 186;
+    return (
+      <span className="cn-logo" style={{ width: size, height: size, background: `#${mark.hex}` }} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={size * 0.56} height={size * 0.56} fill={light ? "#111" : "#fff"}>
+          <path d={mark.path} />
+        </svg>
+      </span>
+    );
+  }
+  if (logo && /^data:image\//.test(logo))
+    return (
+      <span className="cn-logo image" style={{ width: size, height: size }} aria-hidden="true">
+        <img src={logo} alt="" width={size * 0.64} height={size * 0.64} />
+      </span>
+    );
+  return (
+    <span className="cn-logo letter" style={{ width: size, height: size }} aria-hidden="true">
+      {name.trim().slice(0, 1).toUpperCase() || "?"}
+    </span>
   );
 }
 
-// Connectors: GitHub, Linear, … for Claude Code, Codex and Gemini CLI at once,
-// each kept in that agent's own settings on the computer (so its app and
-// terminal have them too). An agent with its own version (ChatGPT's GitHub
-// app for Codex) keeps it.
+// Connectors: connect a service once and every agent on the computer can use
+// it, each kept in that agent's own settings (so its app and terminal have it
+// too). An agent with its own version (ChatGPT's GitHub app for Codex) keeps it.
 export default function Connectors({ peer, logos }: { peer: Peer; logos: AgentLogos }) {
   const word = computerWord(peer.platform);
   const [data, setData] = useState<Partial<Record<ConnectorAgent, AgentConnectors>>>({});
   const [errors, setErrors] = useState<Partial<Record<ConnectorAgent, string>>>({});
   const [open, setOpen] = useState<string | null>(null);
-  const [signIn, setSignIn] = useState<{ agent: ConnectorAgent; name: string } | null>(null);
+  // Agents being signed in to a service, kept here: once connected, its row
+  // moves to Connected (a new row), and the steps go on there.
+  const [signing, setSigning] = useState<{ key: string; agents: ConnectorAgent[] } | null>(null);
+  const [query, setQuery] = useState("");
   const [note, setNote] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const load = (which: ConnectorAgent, fresh = false) =>
-    request<AgentConnectors>(peer, route("/api/sessions/connectors", { agent: which, ...(fresh ? { fresh: "1" } : {}) }))
+  // Answers for a computer no longer shown are dropped.
+  const generation = useRef(0);
+  const load = (which: ConnectorAgent, fresh = false) => {
+    const mine = generation.current;
+    return request<AgentConnectors>(peer, route("/api/sessions/connectors", { agent: which, ...(fresh ? { fresh: "1" } : {}) }))
       .then((r) => {
+        if (mine !== generation.current) return;
         setData((d) => ({ ...d, [which]: r }));
         setErrors((e) => ({ ...e, [which]: "" }));
       })
-      .catch((e) => setErrors((all) => ({ ...all, [which]: (e as Error).message })));
-  const reload = async (fresh = true, which: ConnectorAgent[] = AGENTS) => {
+      .catch((e) => {
+        if (mine === generation.current) setErrors((all) => ({ ...all, [which]: (e as Error).message }));
+      });
+  };
+  const reload = async (which: ConnectorAgent[] = AGENTS, fresh = true) => {
     await Promise.all(which.map((a) => load(a, fresh)));
   };
   useEffect(() => {
+    generation.current++;
     setData({});
     setErrors({});
-    void reload(false);
+    setOpen(null);
+    setSigning(null);
+    void reload(AGENTS, false);
   }, [peer.id, peer.url, peer.token]);
   const installed = AGENTS.filter((a) => data[a]?.installed);
   const checking = AGENTS.filter((a) => !data[a] && !errors[a]);
   const items = useMemo(() => connectorItems(data), [data]);
-  const used = items.filter((i) => installed.some((a) => i.cells[a] && i.cells[a]!.state !== "available"));
-  const more = items.filter((i) => !used.includes(i));
+  const q = query.trim().toLowerCase();
+  const shown = items.filter((i) => !q || i.name.toLowerCase().includes(q) || (i.detail || "").toLowerCase().includes(q));
+  const connected = shown.filter((i) => installed.some((a) => !missing(i.cells[a]))).sort((a, b) => a.name.localeCompare(b.name));
+  const available = shown.filter((i) => !connected.includes(i) && i.entry);
 
   const row = (it: Item) => (
-    <ConnectorRow
+    <Service
       key={it.key}
       peer={peer}
       word={word}
@@ -156,98 +184,126 @@ export default function Connectors({ peer, logos }: { peer: Peer; logos: AgentLo
       data={data}
       open={open === it.key}
       onToggle={() => setOpen(open === it.key ? null : it.key)}
-      signIn={signIn}
-      setSignIn={setSignIn}
+      onOpen={() => setOpen(it.key)}
+      signing={signing?.key === it.key ? signing.agents : []}
+      setSigning={(agents) => setSigning(agents.length ? { key: it.key, agents } : null)}
       onChanged={async (message, which) => {
-        if (message) setNote(message);
-        await reload(true, which);
+        setNote(message);
+        await reload(which);
       }}
     />
   );
 
   return (
-    <div className="connectors">
-      <p className="connectors-intro">
-        Add a service once and{" "}
-        {installed.length > 1 ? installed.map(agentLabel).join(", ").replace(/, ([^,]*)$/, " and $1") : "your agents"} can
-        all use it. It's saved in each agent's own settings on your {word}, so its app and terminal have it too.
-      </p>
+    <div className="cn">
+      <div className="cn-top">
+        <p className="cn-intro">Connect a service once and {installed.length > 1 ? listed(installed.map(agentLabel)) : "your agents"} can all use it.</p>
+        <span className="cn-agents">
+          {installed.map((a) => (
+            <AgentLogo key={a} agent={a} logos={logos} size={20} />
+          ))}
+          {checking.length > 0 && <Loader2 size={14} className="spin" aria-label="Checking agents" />}
+          <button
+            className="cn-icon-btn"
+            aria-label="Check again"
+            disabled={refreshing}
+            onClick={async () => {
+              setRefreshing(true);
+              await reload();
+              setRefreshing(false);
+            }}
+          >
+            <RefreshCw size={15} className={refreshing ? "spin" : undefined} />
+          </button>
+        </span>
+      </div>
+      {installed.length > 0 && (
+        <label className="cn-search">
+          <Search size={15} aria-hidden="true" />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search services" aria-label="Search services" />
+          {query && (
+            <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      )}
       {checking.length > 0 && !installed.length && <Spinner label="Looking for agents…" />}
       {!checking.length && !installed.length && (
-        <p className="connectors-empty">
-          Claude Code, Codex or Gemini CLI isn't installed on this {word}. Set one up from Chat first.
-        </p>
+        <p className="cn-empty">Claude Code, Codex or Gemini CLI isn't installed on this {word}. Set one up from Chat first.</p>
       )}
       {AGENTS.filter((a) => errors[a]).map((a) => (
         <ErrorLine key={a} error={`${agentLabel(a)}: ${errors[a]}`} />
       ))}
       {note && (
-        <p className="connectors-flash" role="status">
-          {note}
+        <p className="cn-flash" role="status">
+          <span>{note}</span>
+          <button aria-label="Dismiss" onClick={() => setNote("")}>
+            <X size={14} />
+          </button>
         </p>
       )}
       {installed.length > 0 && (
         <>
-          <section className="connectors-group" aria-label="Connected">
-            <h2>
-              Connected
-              {checking.length > 0 && (
-                <span className="connectors-checking">
-                  <Loader2 size={12} className="spin" /> Checking {checking.map(agentLabel).join(", ")}…
-                </span>
+          {connected.length > 0 && (
+            <section className="cn-group" aria-label="Connected">
+              <h2>Connected</h2>
+              <ul className="cn-list">{connected.map(row)}</ul>
+            </section>
+          )}
+          <section className="cn-group" aria-label="Add a service">
+            <h2>{connected.length ? "Add more" : "Add a service"}</h2>
+            <ul className="cn-list">
+              {available.map(row)}
+              {!q && (
+                <CustomService
+                  peer={peer}
+                  word={word}
+                  agents={installed}
+                  open={open === "+custom"}
+                  onToggle={() => setOpen(open === "+custom" ? null : "+custom")}
+                  onAdded={async (message) => {
+                    setOpen(null);
+                    setNote(message);
+                    await reload();
+                  }}
+                />
               )}
-              <button
-                className="connectors-refresh"
-                aria-label="Check again"
-                disabled={refreshing}
-                onClick={async () => {
-                  setRefreshing(true);
-                  await reload(true);
-                  setRefreshing(false);
-                }}
-              >
-                <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
-              </button>
-            </h2>
-            {used.length ? <ul className="connectors-list">{used.map(row)}</ul> : <p className="connectors-empty">Nothing yet. Add one below.</p>}
-          </section>
-          <section className="connectors-group" aria-label="Add a connector">
-            <h2>Add</h2>
-            <ul className="connectors-list">
-              {more.map(row)}
-              <CustomServer
-                peer={peer}
-                word={word}
-                logos={logos}
-                agents={installed}
-                open={open === "+custom"}
-                onToggle={() => setOpen(open === "+custom" ? null : "+custom")}
-                onAdded={async (message) => {
-                  setOpen(null);
-                  setNote(message);
-                  await reload(true);
-                }}
-              />
             </ul>
-            {data.codex?.installed && <AppSearch peer={peer} />}
-            <div className="connectors-links">
-              {installed.map((a) =>
-                data[a]?.manageUrl ? (
-                  <a key={a} href={data[a]!.manageUrl!} target="_blank" rel="noopener noreferrer">
-                    {a === "claude" ? "More on claude.ai" : "All ChatGPT apps"} <ExternalLink size={11} />
-                  </a>
-                ) : null,
-              )}
-            </div>
-            <p className="connectors-note">New chats have them. A chat that's already open picks them up once restarted.</p>
+            {q.length >= 2 && data.codex?.installed && <AppSearch peer={peer} query={q} />}
+            {q && !connected.length && !available.length && !data.codex?.installed && (
+              <p className="cn-empty">Nothing by that name. Clear the search to add it by its address.</p>
+            )}
           </section>
+          <p className="cn-foot">
+            New chats have them; one already open picks them up once restarted.
+            {installed.map((a) =>
+              data[a]?.manageUrl ? (
+                <a key={a} href={data[a]!.manageUrl!} target="_blank" rel="noopener noreferrer">
+                  {a === "claude" ? "More on claude.ai" : "All ChatGPT apps"} <ExternalLink size={11} />
+                </a>
+              ) : null,
+            )}
+          </p>
         </>
       )}
     </div>
   );
 }
 
-function ConnectorRow({
+// What a service says at a glance: who has it, or what it waits for.
+export function summary(item: Item, agents: ConnectorAgent[]) {
+  const have = agents.filter((a) => usable(item.cells[a]));
+  const needs = agents.filter((a) => item.cells[a]?.state === "needs-auth");
+  const broken = agents.filter((a) => item.cells[a]?.state === "failed");
+  if (needs.length) return { tone: "warn", text: `Sign in for ${listed(needs.map(agentLabel))}` };
+  if (broken.length) return { tone: "bad", text: `Can't connect in ${listed(broken.map(agentLabel))}` };
+  if (have.length && have.length === agents.length) return { tone: "ok", text: agents.length > 1 ? "All agents" : agentLabel(have[0]) };
+  if (have.length) return { tone: "ok", text: listed(have.map(agentLabel)) };
+  return { tone: "", text: item.detail || "" };
+}
+
+function Service({
   peer,
   word,
   logos,
@@ -256,8 +312,9 @@ function ConnectorRow({
   data,
   open,
   onToggle,
-  signIn,
-  setSignIn,
+  onOpen,
+  signing,
+  setSigning,
   onChanged,
 }: {
   peer: Peer;
@@ -268,16 +325,24 @@ function ConnectorRow({
   data: Partial<Record<ConnectorAgent, AgentConnectors>>;
   open: boolean;
   onToggle: () => void;
-  signIn: { agent: ConnectorAgent; name: string } | null;
-  setSignIn: (v: { agent: ConnectorAgent; name: string } | null) => void;
+  onOpen: () => void;
+  // Agents being signed in, agent by agent, after connecting or when asked.
+  signing: ConnectorAgent[];
+  setSigning: (agents: ConnectorAgent[]) => void;
   onChanged: (message: string, which?: ConnectorAgent[]) => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  // Agents without it, that Reach can add it to (Codex's own app comes from ChatGPT).
-  const missing = agents.filter((a) => !item.cells[a]);
-  const addable = item.entry ? missing : [];
-  const act = async (key: string, work: () => Promise<unknown>) => {
+  const toAdd = item.entry ? agents.filter((a) => !item.cells[a]) : [];
+  const anyUsed = agents.some((a) => !missing(item.cells[a]));
+  const { tone, text } = summary(item, agents);
+  const nameIn = (a: ConnectorAgent) => {
+    const c = item.cells[a];
+    return c && c.kind !== "app" ? c.name : null;
+  };
+  const needsSignIn = agents.filter((a) => item.cells[a]?.state === "needs-auth" && a !== "gemini" && data[a]?.signIn && nameIn(a));
+  const act = async (key: string, work: () => Promise<void>) => {
+    if (busy) return;
     setBusy(key);
     setError("");
     try {
@@ -288,149 +353,139 @@ function ConnectorRow({
       setBusy("");
     }
   };
-  const remove = (agent: ConnectorAgent, name: string) =>
-    act(`rm:${agent}`, async () => {
-      if (!confirm(`Remove ${item.name} from ${agentLabel(agent)}?`)) return;
-      await request(peer, route("/api/sessions/connectors", { agent, name }), { method: "DELETE" });
-      await onChanged(`${item.name} removed from ${agentLabel(agent)}.`, [agent]);
+  const removeAll = () =>
+    act("remove", async () => {
+      const servers = agents.filter((a) => {
+        const c = item.cells[a];
+        return c?.kind === "server" && c.remote;
+      });
+      if (!servers.length || !window.confirm(`Remove ${item.name} from ${listed(servers.map(agentLabel))}?`)) return;
+      const failed: string[] = [];
+      for (const a of servers) {
+        const c = item.cells[a] as Extract<Cell, { kind: "server" }>;
+        await request(peer, route("/api/sessions/connectors", { agent: a, name: c.name }), { method: "DELETE" }).catch((e) =>
+          failed.push(`${agentLabel(a)}: ${(e as Error).message}`),
+        );
+      }
+      await onChanged(failed.length ? failed.join(" ") : `${item.name} removed.`, servers);
     });
   const toggleApp = (cell: Extract<Cell, { kind: "app" }>) =>
     act("app", async () => {
       await post(peer, "/api/sessions/connectors/apps", { id: cell.id, enabled: !cell.enabled });
       await onChanged("", ["codex"]);
     });
-  const signInName = (agent: ConnectorAgent) => {
-    const cell = item.cells[agent];
-    return cell?.kind === "server" || cell?.kind === "native" ? cell.name : null;
-  };
+  // The one thing to do now, on the row itself.
+  const action = needsSignIn.length && !signing.length
+    ? { label: "Sign in", tone: "warn", run: () => (onOpen(), setSigning(needsSignIn)) }
+    : !anyUsed && toAdd.length && !open
+      ? { label: "Connect", tone: "primary", run: onOpen }
+      : null;
 
   return (
-    <li className={`connectors-item ${open ? "open" : ""}`}>
-      <button className="connectors-row" aria-expanded={open} onClick={onToggle}>
-        <span className="connectors-mark" aria-hidden="true">
-          {item.name.slice(0, 1).toUpperCase()}
-        </span>
-        <span className="connectors-text">
-          <strong>{item.name}</strong>
-          {item.detail && <small>{item.detail}</small>}
-        </span>
-        <span className="connectors-chips">
-          {agents.map((a) => {
-            const cell = item.cells[a];
-            const state = cell?.state;
-            return (
-              <span
-                key={a}
-                className={`connectors-chip ${state || "missing"}`}
-                title={`${agentLabel(a)}: ${state ? STATE_WORDS[state] : "Not added"}`}
-              >
-                <AgentLogo agent={a} logos={logos} size={16} />
-                <span className="sr-only">
-                  {agentLabel(a)}: {state ? STATE_WORDS[state] : "Not added"}
-                </span>
-              </span>
-            );
-          })}
-        </span>
-      </button>
+    <li className={`cn-item ${open ? "open" : ""}`}>
+      <div className="cn-row">
+        <button className="cn-row-main" aria-expanded={open} onClick={onToggle}>
+          <ConnectorLogo name={item.name} logo={item.logo} />
+          <span className="cn-text">
+            <strong>{item.name}</strong>
+            <small className={tone}>
+              {tone === "ok" && <Check size={11} aria-hidden="true" />} {text}
+            </small>
+          </span>
+          {!action && (open ? <ChevronDown size={15} className="cn-chev" /> : <ChevronRight size={15} className="cn-chev" />)}
+        </button>
+        {action && (
+          <button className={`cn-btn ${action.tone}`} onClick={action.run}>
+            {action.label}
+          </button>
+        )}
+      </div>
       {open && (
-        <div className="connectors-detail">
-          <ul className="connectors-agents">
-            {agents.map((a) => {
-              const cell = item.cells[a];
-              const name = signInName(a);
-              return (
-                <li key={a}>
-                  <span className="connectors-agent">
+        <div className="cn-detail">
+          {anyUsed && (
+            <ul className="cn-agent-list">
+              {agents.map((a) => {
+                const c = item.cells[a];
+                return (
+                  <li key={a}>
                     <AgentLogo agent={a} logos={logos} size={18} />
-                    {agentLabel(a)}
-                  </span>
-                  <span className={`connectors-state ${cell?.state || "missing"}`}>
-                    {!cell
-                      ? "Not added"
-                      : cell.kind === "app" && cell.state === "available"
-                        ? "ChatGPT app, not connected"
-                        : cell.kind === "app"
-                          ? `ChatGPT app · ${cell.enabled ? "On" : "Off"}`
-                          : cell.kind === "native"
-                            ? `claude.ai · ${STATE_WORDS[cell.state]}`
-                            : STATE_WORDS[cell.state]}
-                  </span>
-                  <span className="connectors-action">
-                    {cell?.kind === "app" && cell.state === "available" && cell.connectUrl && (
-                      <a className="connectors-btn" href={cell.connectUrl} target="_blank" rel="noopener noreferrer">
-                        Connect <ExternalLink size={12} />
+                    <span className="cn-agent-name">{agentLabel(a)}</span>
+                    <span className={`cn-state ${c?.state || "missing"}`}>
+                      {!c
+                        ? "Not added"
+                        : c.kind === "app"
+                          ? c.state === "available"
+                            ? "ChatGPT app · not connected"
+                            : `ChatGPT app · ${c.enabled ? "on" : "off"}`
+                          : c.state === "needs-auth"
+                            ? "Needs sign-in"
+                            : c.state === "failed"
+                              ? "Can't connect"
+                              : c.state === "off"
+                                ? "Off"
+                                : c.kind === "native"
+                                  ? "From claude.ai"
+                                  : "Connected"}
+                    </span>
+                    {c?.kind === "app" && c.state === "available" && c.connectUrl && (
+                      <a className="cn-link" href={c.connectUrl} target="_blank" rel="noopener noreferrer">
+                        Connect <ExternalLink size={11} />
                       </a>
                     )}
-                    {cell?.kind === "app" && cell.state !== "available" && (
-                      <button className="connectors-btn" disabled={busy === "app"} onClick={() => void toggleApp(cell)}>
-                        {cell.enabled ? "Turn off" : "Turn on"}
+                    {c?.kind === "app" && c.state !== "available" && (
+                      <button className="cn-link" disabled={!!busy} onClick={() => void toggleApp(c)}>
+                        Turn {c.enabled ? "off" : "on"}
                       </button>
                     )}
-                    {cell && cell.kind !== "app" && cell.state === "needs-auth" && name && data[a]?.signIn && (
-                      <button className="connectors-btn primary" onClick={() => setSignIn({ agent: a, name })}>
-                        Sign in
-                      </button>
+                    {c?.state === "needs-auth" && a === "gemini" && nameIn(a) && (
+                      <p className="cn-note">
+                        Gemini CLI signs in itself: on your {word}, run <code>gemini</code>, then <code>/mcp auth {nameIn(a)}</code>.
+                      </p>
                     )}
-                    {cell?.kind === "server" && cell.remote && (
-                      <button
-                        className="connectors-icon"
-                        aria-label={`Remove ${item.name} from ${agentLabel(a)}`}
-                        disabled={busy === `rm:${a}`}
-                        onClick={() => void remove(a, cell.name)}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    )}
-                  </span>
-                  {cell?.state === "needs-auth" && a === "gemini" && name && (
-                    <p className="connectors-note">
-                      Gemini CLI signs in itself: on your {word}, run <code>gemini</code>, then <code>/mcp auth {name}</code> (a Reach terminal works).
-                    </p>
-                  )}
-                  {cell?.kind === "app" && cell.state === "available" && (
-                    <p className="connectors-note">Connect it on ChatGPT, then check again here.</p>
-                  )}
-                  {signIn?.agent === a && name && signIn.name === name && (
-                    <ConnectorSignIn
-                      peer={peer}
-                      agent={a}
-                      name={name}
-                      word={word}
-                      onDone={() => {
-                        setSignIn(null);
-                        void onChanged(`${agentLabel(a)} is signed in to ${item.name}.`, [a]);
-                      }}
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          <ErrorLine error={error} />
-          {item.entry && addable.length > 0 && (
-            <AddForm
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {signing.length > 0 && (
+            <SignInSteps
+              peer={peer}
+              word={word}
+              logos={logos}
+              steps={signing.map((a) => ({ agent: a, name: nameIn(a) || item.entry?.id || item.key }))}
+              onFinished={async () => {
+                setSigning([]);
+                await onChanged(`${item.name} is ready.`);
+              }}
+            />
+          )}
+          {!signing.length && toAdd.length > 0 && item.entry && (
+            <ConnectForm
               peer={peer}
               word={word}
               entry={item.entry}
-              agents={addable}
+              agents={toAdd}
+              codexApp={agents.includes("codex") && item.cells.codex?.kind === "app"}
               onAdded={async (r) => {
                 const ok = r.results.filter((x) => x.ok).map((x) => x.agent);
                 const bad = r.results.filter((x) => !x.ok);
                 await onChanged(
-                  [
-                    ok.length ? `${item.name} added to ${ok.map(agentLabel).join(", ")}.` : "",
-                    ...bad.map((x) => `${agentLabel(x.agent)}: ${x.error}`),
-                  ]
+                  [ok.length ? `${item.name} added for ${listed(ok.map(agentLabel))}.` : "", ...bad.map((x) => `${agentLabel(x.agent)}: ${x.error}`)]
                     .filter(Boolean)
                     .join(" "),
                   ok,
                 );
                 // Signing in comes next, one agent at a time.
-                const first = ok.find((a) => a !== "gemini");
-                if (item.entry?.auth === "oauth" && first) setSignIn({ agent: first, name: r.name });
+                const next = ok.filter((a) => a !== "gemini" && data[a]?.signIn);
+                if (item.entry?.auth === "oauth" && next.length) setSigning(next);
               }}
             />
+          )}
+          <ErrorLine error={error} />
+          {anyUsed && !signing.length && agents.some((a) => item.cells[a]?.kind === "server") && (
+            <button className="cn-remove" disabled={!!busy} onClick={() => void removeAll()}>
+              {busy === "remove" ? <Loader2 size={13} className="spin" /> : null} Remove from all
+            </button>
           )}
         </div>
       )}
@@ -438,39 +493,39 @@ function ConnectorRow({
   );
 }
 
-// Adding a service to several agents in one go: the catalog gives its
-// address; a token where it needs one (pasted, or the GitHub CLI's on the
-// computer), sent once.
-function AddForm({
+// Connecting a service to every agent that doesn't have it yet; a token
+// where it needs one (pasted, or the GitHub CLI's on the computer), sent once.
+function ConnectForm({
   peer,
   word,
   entry,
   agents,
+  codexApp,
   onAdded,
 }: {
   peer: Peer;
   word: string;
   entry: CatalogEntry | null;
   agents: ConnectorAgent[];
+  codexApp?: boolean;
   onAdded: (r: AddResult) => Promise<void>;
 }) {
-  const [picked, setPicked] = useState<ConnectorAgent[]>(agents);
   const [name, setName] = useState(entry?.id || "");
   const [url, setUrl] = useState(entry?.url || "");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const needsToken = entry?.auth === "token";
-  const targets = picked.filter((a) => agents.includes(a));
   const add = async (tokenFrom?: "gh") => {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
       const r = await post<AddResult>(peer, "/api/sessions/connectors", {
-        agents: targets,
-        name,
-        url,
-        ...(tokenFrom ? { tokenFrom } : token.trim() ? { token } : {}),
+        agents,
+        name: name.trim(),
+        url: url.trim(),
+        ...(tokenFrom ? { tokenFrom } : token.trim() ? { token: token.trim() } : {}),
       });
       setToken("");
       await onAdded(r);
@@ -480,46 +535,28 @@ function AddForm({
       setBusy(false);
     }
   };
+  const ready = !!agents.length && !!name.trim() && !!url.trim() && (!needsToken || !!token.trim());
   return (
     <form
-      className="connectors-form"
+      className="cn-form"
       onSubmit={(e) => {
         e.preventDefault();
-        void add();
+        if (ready) void add();
       }}
     >
-      {agents.length > 1 && (
-        <fieldset className="connectors-targets">
-          <legend>Add to</legend>
-          {agents.map((a) => (
-            <label key={a}>
-              <input
-                type="checkbox"
-                checked={picked.includes(a)}
-                onChange={(e) => setPicked(e.target.checked ? [...picked, a] : picked.filter((x) => x !== a))}
-              />
-              {agentLabel(a)}
-            </label>
-          ))}
-        </fieldset>
-      )}
+      <p className="cn-note">
+        For {listed(agents.map(agentLabel))}
+        {codexApp ? ". Codex uses its ChatGPT app." : "."}
+      </p>
       {!entry && (
         <>
           <label>
-            <span>Name</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-server" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+            <span>Address</span>
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/mcp" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
           </label>
           <label>
-            <span>Address</span>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://…/mcp"
-              inputMode="url"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-            />
+            <span>Name</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-service" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
           </label>
         </>
       )}
@@ -539,32 +576,21 @@ function AddForm({
         </label>
       )}
       {needsToken && entry?.tokenUrl && (
-        <p className="connectors-note">
+        <p className="cn-note">
           <a href={entry.tokenUrl} target="_blank" rel="noopener noreferrer">
             Create a token on {entry.name} <ExternalLink size={11} />
           </a>{" "}
-          with access to the repositories you want. It's saved in each agent's settings on your {word}, nowhere else.
-        </p>
-      )}
-      {entry?.auth === "oauth" && (
-        <p className="connectors-note">
-          You'll sign in to {entry.name} next
-          {targets.includes("gemini") ? `; for Gemini CLI, run gemini on your ${word}, then /mcp auth ${entry.id}` : ""}.
+          for the repositories you want. It's kept in the agents' settings on your {word}, nowhere else.
         </p>
       )}
       <ErrorLine error={error} />
-      <div className="connectors-form-actions">
-        <button
-          type="submit"
-          className="connectors-btn primary"
-          disabled={busy || !targets.length || (needsToken && !token.trim()) || !name.trim() || !url.trim()}
-        >
-          {busy ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}{" "}
-          {targets.length === agents.length && agents.length > 1 ? "Add to all" : "Add"}
+      <div className="cn-form-actions">
+        <button type="submit" className="cn-btn primary" disabled={busy || !ready}>
+          {busy ? <Loader2 size={13} className="spin" /> : null} Connect
         </button>
         {needsToken && entry?.id === "github" && (
-          <button type="button" className="connectors-btn" disabled={busy || !targets.length} onClick={() => void add("gh")}>
-            Use the GitHub CLI's sign-in on your {word}
+          <button type="button" className="cn-btn" disabled={busy} onClick={() => void add("gh")}>
+            Use the GitHub CLI's sign-in
           </button>
         )}
       </div>
@@ -572,10 +598,9 @@ function AddForm({
   );
 }
 
-function CustomServer({
+function CustomService({
   peer,
   word,
-  logos,
   agents,
   open,
   onToggle,
@@ -583,33 +608,28 @@ function CustomServer({
 }: {
   peer: Peer;
   word: string;
-  logos: AgentLogos;
   agents: ConnectorAgent[];
   open: boolean;
   onToggle: () => void;
   onAdded: (message: string) => Promise<void>;
 }) {
   return (
-    <li className={`connectors-item ${open ? "open" : ""}`}>
-      <button className="connectors-row" aria-expanded={open} onClick={onToggle}>
-        <span className="connectors-mark" aria-hidden="true">
-          <Plus size={15} />
-        </span>
-        <span className="connectors-text">
-          <strong>Another service</strong>
-          <small>Any MCP server, by its https:// address</small>
-        </span>
-        <span className="connectors-chips">
-          {agents.map((a) => (
-            <span key={a} className="connectors-chip missing">
-              <AgentLogo agent={a} logos={logos} size={16} />
-            </span>
-          ))}
-        </span>
-      </button>
+    <li className={`cn-item ${open ? "open" : ""}`}>
+      <div className="cn-row">
+        <button className="cn-row-main" aria-expanded={open} onClick={onToggle}>
+          <span className="cn-logo letter" style={{ width: 34, height: 34 }} aria-hidden="true">
+            <Plus size={16} />
+          </span>
+          <span className="cn-text">
+            <strong>Another service</strong>
+            <small>Any MCP server, by its https:// address</small>
+          </span>
+          {open ? <ChevronDown size={15} className="cn-chev" /> : <ChevronRight size={15} className="cn-chev" />}
+        </button>
+      </div>
       {open && (
-        <div className="connectors-detail">
-          <AddForm
+        <div className="cn-detail">
+          <ConnectForm
             peer={peer}
             word={word}
             entry={null}
@@ -617,12 +637,53 @@ function CustomServer({
             onAdded={async (r) => {
               const ok = r.results.filter((x) => x.ok).map((x) => agentLabel(x.agent));
               const bad = r.results.filter((x) => !x.ok).map((x) => `${agentLabel(x.agent)}: ${x.error}`);
-              await onAdded([ok.length ? `${r.name} added to ${ok.join(", ")}.` : "", ...bad].filter(Boolean).join(" "));
+              await onAdded([ok.length ? `${r.name} added for ${listed(ok)}.` : "", ...bad].filter(Boolean).join(" "));
             }}
           />
         </div>
       )}
     </li>
+  );
+}
+
+// Signing each agent in, one after the other.
+function SignInSteps({
+  peer,
+  word,
+  logos,
+  steps,
+  onFinished,
+}: {
+  peer: Peer;
+  word: string;
+  logos: AgentLogos;
+  steps: { agent: ConnectorAgent; name: string }[];
+  onFinished: () => void;
+}) {
+  const [at, setAt] = useState(0);
+  const finished = useRef(onFinished);
+  finished.current = onFinished;
+  useEffect(() => {
+    if (at >= steps.length) finished.current();
+  }, [at, steps.length]);
+  return (
+    <ol className="cn-steps">
+      {steps.map((s, i) => (
+        <li key={`${s.agent}:${s.name}`} className={i < at ? "done" : i === at ? "now" : ""}>
+          <span className="cn-step-head">
+            <AgentLogo agent={s.agent} logos={logos} size={18} />
+            <span>{agentLabel(s.agent)}</span>
+            {i < at && <Check size={14} aria-label="Done" />}
+            {i === at && (
+              <button className="cn-link" onClick={() => setAt(at + 1)}>
+                Skip
+              </button>
+            )}
+          </span>
+          {i === at && <ConnectorSignIn peer={peer} agent={s.agent} name={s.name} word={word} onDone={() => setAt(i + 1)} />}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -676,55 +737,52 @@ function ConnectorSignIn({
   }, [view?.state]);
 
   return (
-    <div className="sign-in connectors-sign-in" role="group" aria-label={`Sign ${agentLabel(agent)} in to ${name}`}>
+    <div className="cn-signin" role="group" aria-label={`Sign ${agentLabel(agent)} in to ${name}`}>
       {(!view || view.state === "starting") && !error && (
         <p>
-          <Loader2 size={13} className="spin" /> Starting sign-in on your {word}…
+          <Loader2 size={13} className="spin" /> Starting on your {word}…
         </p>
       )}
       {view?.state === "link" && view.url && (
-        <ol>
-          <li>
-            <a className="sign-in-open" href={view.url} target="_blank" rel="noopener noreferrer">
-              Open the sign-in page <ExternalLink size={13} />
-            </a>
-          </li>
-          <li>
-            <span>Approve it. The page it then opens won't load here: copy its address and paste it</span>
-            <span className="sign-in-code">
-              <input
-                value={pasted}
-                placeholder="http://localhost:…"
-                aria-label="Address after signing in"
-                inputMode="url"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                onChange={(e) => setPasted(e.target.value)}
-              />
-              <button
-                disabled={busy || !pasted.trim()}
-                onClick={() =>
-                  void act(() =>
-                    post<LoginView>(peer, "/api/sessions/connectors/login/callback", { agent, name, url: pasted }),
-                  ).then(() => setPasted(""))
-                }
-              >
-                Continue
-              </button>
-            </span>
-          </li>
-        </ol>
+        <>
+          <a className="cn-btn primary" href={view.url} target="_blank" rel="noopener noreferrer">
+            Open the sign-in page <ExternalLink size={13} />
+          </a>
+          <p className="cn-note">After approving, the page it lands on won't load here. Copy its address and paste it:</p>
+          <span className="cn-paste">
+            <input
+              value={pasted}
+              placeholder="http://localhost:…"
+              aria-label="Address after signing in"
+              inputMode="url"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(e) => setPasted(e.target.value)}
+            />
+            <button
+              className="cn-btn"
+              disabled={busy || !pasted.trim()}
+              onClick={() =>
+                void act(() => post<LoginView>(peer, "/api/sessions/connectors/login/callback", { agent, name, url: pasted.trim() })).then(() =>
+                  setPasted(""),
+                )
+              }
+            >
+              Continue
+            </button>
+          </span>
+        </>
       )}
       {view?.state === "checking" && (
         <p>
           <Loader2 size={13} className="spin" /> Signing in…
         </p>
       )}
-      {(view?.state === "failed" || (error && !active)) && (
+      {(view?.state === "failed" || view?.state === "cancelled" || (error && !active)) && (
         <p className="bad">
-          {view?.error || error || "Sign-in didn't finish."}{" "}
-          <button className="sign-in-start" disabled={busy} onClick={() => void start()}>
+          {view?.state === "cancelled" ? "Cancelled." : view?.error || error || "Sign-in didn't finish."}{" "}
+          <button className="cn-link" disabled={busy} onClick={() => void start()}>
             Try again
           </button>
         </p>
@@ -732,12 +790,8 @@ function ConnectorSignIn({
       {error && active && <p className="bad">{error}</p>}
       {active && (
         <button
-          className="sign-in-cancel"
-          onClick={() =>
-            void act(() =>
-              request<LoginView>(peer, route("/api/sessions/connectors/login", { agent, name }), { method: "DELETE" }),
-            )
-          }
+          className="cn-link"
+          onClick={() => void act(() => request<LoginView>(peer, route("/api/sessions/connectors/login", { agent, name }), { method: "DELETE" }))}
         >
           Cancel
         </button>
@@ -747,53 +801,54 @@ function ConnectorSignIn({
 }
 
 // ChatGPT's other apps, found by name, for Codex.
-function AppSearch({ peer }: { peer: Peer }) {
-  const [q, setQ] = useState("");
+function AppSearch({ peer, query }: { peer: Peer; query: string }) {
   const [found, setFound] = useState<Native[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    const query = q.trim();
-    if (query.length < 2) {
-      setFound(null);
-      return;
-    }
+    let live = true;
     const timer = setTimeout(() => {
       request<AgentConnectors>(peer, route("/api/sessions/connectors", { agent: "codex", q: query }))
         .then((r) => {
+          if (!live) return;
           setFound(r.native);
           setError("");
         })
-        .catch((e) => setError((e as Error).message));
+        .catch((e) => live && setError((e as Error).message));
     }, 300);
-    return () => clearTimeout(timer);
-  }, [q, peer.url, peer.token]);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [query, peer.url, peer.token]);
+  if (!found?.length && !error) return null;
   return (
-    <div className="connectors-search">
-      <label>
-        <Search size={14} aria-hidden="true" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a ChatGPT app for Codex" aria-label="Find a ChatGPT app for Codex" />
-      </label>
+    <div className="cn-apps">
+      <h3>ChatGPT apps for Codex</h3>
       <ErrorLine error={error} />
-      {found && !found.length && <p className="connectors-empty">No app by that name.</p>}
-      {found && found.length > 0 && (
-        <ul className="connectors-results">
-          {found.map((a) => (
-            <li key={a.id}>
-              <span className="connectors-text">
-                <strong>{a.name}</strong>
-                {a.description && <small>{a.description}</small>}
+      <ul className="cn-list">
+        {(found || []).map((a) => (
+          <li key={a.id} className="cn-item">
+            <div className="cn-row">
+              <span className="cn-row-main static">
+                <ConnectorLogo name={a.name} logo={a.logo} />
+                <span className="cn-text">
+                  <strong>{a.name}</strong>
+                  {a.description && <small>{a.description}</small>}
+                </span>
               </span>
               {a.state === "available" && a.connectUrl ? (
-                <a className="connectors-btn" href={a.connectUrl} target="_blank" rel="noopener noreferrer">
-                  Connect <ExternalLink size={12} />
+                <a className="cn-btn primary" href={a.connectUrl} target="_blank" rel="noopener noreferrer">
+                  Connect
                 </a>
               ) : (
-                <span className={`connectors-state ${a.state}`}>{STATE_WORDS[a.state]}</span>
+                <span className="cn-state connected">
+                  <Check size={12} /> Connected
+                </span>
               )}
-            </li>
-          ))}
-        </ul>
-      )}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
