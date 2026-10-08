@@ -28,7 +28,7 @@ const waitUntil = async (ready) => {
 const link = (id) => [`claude://resume?session=${id}`, { background: true }];
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-"));
 
-test("a session started from Reach joins the Claude app only while nobody is at the Mac and the app is open", async () => {
+test("a session started from Reach joins the Claude app only while nobody is at the Mac and the app is open", async (t) => {
   const file = path.join(tmp(), "claude-imports.json");
   const mac = { idle: 5, running: true, inApp: new Set() };
   const opened = [];
@@ -38,9 +38,14 @@ test("a session started from Reach joins the Claude app only while nobody is at 
     idle: async () => mac.idle,
     appRunning: async () => mac.running,
     imported: (id) => mac.inApp.has(id),
+    // Link-only fixture: never read the live Claude window's records or
+    // trigger its four-second restore path. Restore is tested below.
+    shown: () => [],
+    write: null,
     everyMs: 15,
     resume: false,
   });
+  t.after(() => { imports.close(); fs.rmSync(path.dirname(file), { recursive: true, force: true }); });
   // In use: it waits, and is written down.
   await imports.add(A);
   assert.deepEqual(opened, []);
@@ -68,7 +73,7 @@ test("a session started from Reach joins the Claude app only while nobody is at 
   imports.close();
 });
 
-test("waiting imports survive a restart, and stop when Reach quits", async () => {
+test("waiting imports survive a restart, and stop when Reach quits", async (t) => {
   const file = path.join(tmp(), "claude-imports.json");
   fs.writeFileSync(file, JSON.stringify([C, "not-an-id"]));
   const opened = [];
@@ -78,7 +83,10 @@ test("waiting imports survive a restart, and stop when Reach quits", async () =>
     idle: async () => 600,
     appRunning: async () => true,
     imported: () => false,
+    shown: () => [],
+    write: null,
   });
+  t.after(() => imports.close());
   await waitUntil(() => opened.length === 1);
   assert.deepEqual(opened, [link(C)]);
   imports.close();
@@ -91,8 +99,11 @@ test("waiting imports survive a restart, and stop when Reach quits", async () =>
     idle: async () => (looks++, 5),
     appRunning: async () => true,
     imported: () => false,
+    shown: () => [],
+    write: null,
     everyMs: 5,
   });
+  t.after(() => { quitting.close(); fs.rmSync(path.dirname(file), { recursive: true, force: true }); });
   quitting.close();
   await settle(30);
   assert.equal(looks, 0);
