@@ -191,6 +191,9 @@ export function createClaudeHost({
   rewindFile = null,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // More flags for a session on every launch (a team's lead: its tools and
+  // standing instructions, teams.mjs); false when it must have none any more.
+  extraArgs = () => null,
 }) {
   const sessions = new Map();
   const rewinds = createClaudeRewinds({ file: rewindFile });
@@ -471,6 +474,12 @@ export function createClaudeHost({
       ...(s.settings.model ? ["--model", s.settings.model] : []),
       ...(s.settings.effort ? ["--effort", s.settings.effort] : []),
       ...(mode ? ["--permission-mode", mode] : []),
+      // The hook knows (a team's lead now; false: its team stopped); what
+      // the start gave covers its first launch.
+      ...((() => {
+        const hooked = extraArgs(s.id);
+        return hooked === false ? [] : hooked || s.settings.extra || [];
+      })()),
     ];
     const proc = spawn(claude, args, { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
@@ -640,13 +649,13 @@ export function createClaudeHost({
       s.settings.mode = mode;
       return true;
     },
-    async start({ cwd, text, images, model, effort, mode }) {
+    async start({ cwd, text, images, model, effort, mode, extra }) {
       if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
       const input = claudeContent({ text, images }, readFile);
       const id = randomUUID();
       const s = state(id);
       s.cwd = cwd;
-      s.settings = { model: model || null, effort: effort || null, mode: mode || null };
+      s.settings = { model: model || null, effort: effort || null, mode: mode || null, ...(Array.isArray(extra) ? { extra } : {}) };
       await launch(s, { resume: false });
       await turn(s, input);
       s.naming = name(s, text).finally(() => (s.naming = null));

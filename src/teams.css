@@ -1,0 +1,158 @@
+/* Team chats (Teams.tsx), in Reach's own look (relays.css sets the colours
+   on .reach-native). */
+.team-picker {
+  margin: 0 0 6px;
+}
+.team-say {
+  margin: -4px 0 10px;
+  color: var(--reach-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+.team-mode {
+  display: inline-flex;
+  align-self: center;
+  margin: 0 auto 10px;
+  padding: 2px;
+  border: 1px solid #2b332d;
+  border-radius: 999px;
+  background: #101512;
+}
+.team-mode > button {
+  min-height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: #93a096;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.team-mode > button[aria-pressed="true"] {
+  background: #b9efd4;
+  color: #16362a;
+}
+
+/* Above the lead's message box. */
+.team-strip {
+  margin: 0 6px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--reach-line);
+  border-radius: 14px;
+  background: var(--reach-bg);
+  color: var(--reach-ink);
+  font-size: 13px;
+}
+.team-strip > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.team-strip-crew {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.team-strip-crew > i {
+  width: 10px;
+  border-top: 2px dashed color-mix(in srgb, var(--reach-mint) 70%, transparent);
+}
+.team-strip > header > small {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--reach-muted);
+  font-size: 12px;
+}
+.team-strip-stop,
+.team-strip-confirm > button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--reach-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.team-strip-confirm {
+  display: inline-flex;
+  gap: 2px;
+}
+.team-strip-confirm > .danger {
+  background: #3a1d1d;
+  color: #f7c1c1;
+}
+.team-strip-note {
+  margin: 6px 0 0;
+  color: var(--reach-muted);
+  font-size: 12px;
+}
+.team-strip-note.bad {
+  color: #f09595;
+}
+.team-strip ul {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.team-strip li button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--reach-line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.team-task-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-task-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--reach-muted);
+  font-size: 12px;
+}
+.team-task-state.working {
+  color: var(--reach-mint);
+}
+
+/* Under a helper chat's header. */
+.team-helper-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 10px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--reach-line);
+  border-radius: 12px;
+  background: var(--reach-bg);
+  color: var(--reach-ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.team-helper-badge > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.team-helper-badge > small {
+  color: var(--reach-mint);
+  font-weight: 600;
+}

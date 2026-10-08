@@ -33,6 +33,9 @@ import {
   SquarePen,
   ListChecks,
   GitFork,
+  AtSign,
+  SearchCheck,
+  Workflow,
   RotateCcw,
   Trash2,
   Square,
@@ -44,15 +47,17 @@ import {
 import type { Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { createDraftSync } from "./draft-sync";
-import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
+import { mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
-import { ContinuedIn, MoveHint, MoveItems } from "./MoveChat";
+import { ContinuedIn, MoveHint, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
+import { RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
+import { HelperBadge, TeamStrip, teamHelping, teamLedBy, teamToolLabel } from "./Teams";
 import MascotTyping from "./MascotTyping";
 import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
@@ -72,6 +77,7 @@ import {
   listModels,
   modeLabel,
   modesFor,
+  moveSession,
   CODEX_MODE_CHOICES,
   projectName,
   resetTime,
@@ -110,6 +116,8 @@ import {
   type SessionPage,
   type SessionPrompt,
   type OutboxMessage,
+  type Relay,
+  type Team,
 } from "./agent-sessions";
 import "./agent-session.css";
 import "./chat-home.css";
@@ -181,9 +189,14 @@ const SKIN = {
 function ReplyActions({
   text,
   disclaimer,
+  onSecondOpinion,
+  onRelay,
 }: {
   text: string;
   disclaimer: string;
+  // Another agent reviews this reply's turn, or carries it on (Relays.tsx).
+  onSecondOpinion?: () => void;
+  onRelay?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const canShare =
@@ -215,6 +228,12 @@ function ReplyActions({
             <Share size={19} />
           </button>
         )}
+        {onSecondOpinion && <SecondOpinionButton labelled onClick={onSecondOpinion} />}
+        {onRelay && (
+          <button className="relay-opinion" aria-label="Relay this reply" onClick={onRelay}>
+            <Workflow size={17} /> <span>Relay</span>
+          </button>
+        )}
       </div>
       {disclaimer && <p className="as-disclaimer">{disclaimer}</p>}
     </div>
@@ -230,6 +249,7 @@ function Copyable({
   onEdit,
   onFork,
   onRewind,
+  onSecondOpinion,
   children,
 }: {
   text: string;
@@ -241,6 +261,8 @@ function Copyable({
   onFork?: () => void;
   // Back to before this message (Claude Code's rewind).
   onRewind?: () => void;
+  // Another agent reviews this reply's turn (Relays.tsx).
+  onSecondOpinion?: () => void;
   children: ReactNode;
 }) {
   const [shown, setShown] = useState(false);
@@ -287,6 +309,7 @@ function Copyable({
               <RotateCcw size={15} />
             </button>
           )}
+          {onSecondOpinion && <SecondOpinionButton onClick={onSecondOpinion} />}
         </div>
       )}
     </div>
@@ -396,8 +419,11 @@ function runSummary(items: SessionItem[]) {
   ];
   const commands = items.filter((i) => i.kind === "command").length;
   const web = items.filter((i) => i.kind === "web").length;
-  const other = items.filter((i) => i.kind === "tool").length;
+  // A team's lead handing work to helpers (Teams.tsx), said as such.
+  const handed = items.filter((i) => i.kind === "tool" && /team_delegate$/.test(i.text)).length;
+  const other = items.filter((i) => i.kind === "tool" && !/team_delegate$/.test(i.text)).length;
   const parts = [
+    handed && plural(handed, "handed off a task", "handed off # tasks"),
     files.length &&
       (files.length === 1
         ? `edited ${base(files[0])}`
@@ -454,7 +480,7 @@ function ToolStep({ item }: { item: SessionItem }) {
         aria-expanded={open}
       >
         <Icon size={13} />
-        <code>{item.text || "(step)"}</code>
+        <code>{teamToolLabel(item.text || "") || item.text || "(step)"}</code>
       </button>
       {open && item.detail && <pre>{item.detail}</pre>}
     </div>
@@ -1421,6 +1447,10 @@ export default function AgentSessionView({
   deviceRequests = 0,
   onReviewDevice,
   onScreen,
+  relays = [],
+  teams = [],
+  everyone = [],
+  onRelaysChanged,
 }: {
   peer: Peer;
   session: AgentSession;
@@ -1435,6 +1465,12 @@ export default function AgentSessionView({
   deviceRequests?: number;
   onReviewDevice?: () => void;
   onScreen?: () => void;
+  // Relays and teams on this computer (Relays.tsx, Teams.tsx), and every
+  // agent's chats (one to relay to).
+  relays?: Relay[];
+  teams?: Team[];
+  everyone?: AgentSession[];
+  onRelaysChanged?: () => void;
 }) {
   const agent = initial.agent;
   const siblings = useMemo(
@@ -1540,8 +1576,10 @@ export default function AgentSessionView({
   const runningElsewhere = !runningHere && (info.status === "running" || info.status === "waiting");
   const working = runningHere || runningElsewhere;
   const heldByApp = info.held === "codex-app";
-  // "@" typed last in the box: the files to pick from (MentionMenu).
+  // "@" typed last in the box: the chats and files to pick from (MentionMenu).
   const mentionQuery = /(?:^|\s)@([^\s@]{0,80})$/.exec(text)?.[1] ?? null;
+  // Chats mentioned in the message being written (three at most).
+  const [mentions, setMentions] = useState<AgentSession[]>([]);
   // The chat's new name, while it's being typed (⋯ → its pencil).
   const [renaming, setRenaming] = useState<string | null>(null);
   // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
@@ -1651,7 +1689,7 @@ export default function AgentSessionView({
           list.filter(
             (p) =>
               r.items.filter(
-                (i) => i.role === "user" && i.text.trim() === p.text.trim(),
+                (i) => i.role === "user" && visibleUserText(i.text).trim() === p.text.trim(),
               ).length <= p.seen,
           ),
         );
@@ -1774,7 +1812,7 @@ export default function AgentSessionView({
     )[] = [];
     for (const raw of items || []) {
       // Also normalize older companions until their server has restarted.
-      const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text) } : raw;
+      const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text), mentions: mentionedChats(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.skills?.length && !item.attachments?.length) continue;
       const last = out[out.length - 1];
       // A sub-agent stands on its own, not folded into the steps.
@@ -1874,6 +1912,30 @@ export default function AgentSessionView({
       : "";
   const lastItem = items?.at(-1);
   const limitShown = lastItem?.kind === "error" && lastItem.text === claudeLimit;
+  // The chat itself stopped on a used-up limit: lately (the Mac's health is
+  // read once a minute), or while its agent is still out.
+  const stoppedOnLimit =
+    !working &&
+    lastItem?.kind === "error" &&
+    !!usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) &&
+    (health.find((h) => h.agent === agent)?.usable !== true || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
+  // Agents with usage that can take the chat on from here (MoveChat.tsx).
+  const continueIn =
+    outOfUsage || claudeLimit || stoppedOnLimit
+      ? moveTargets(agent, health)
+          .filter((to) => to !== "openclaw" && !moveBlocked(to, health, word))
+          .map((to) => ({ agent: to, name: agentLabel(to) }))
+      : [];
+  // Moved there with its history, and told to keep going; the new chat opens.
+  // If that message couldn't go, it waits in the new chat's box instead.
+  const continueElsewhere = async (to: string) => {
+    const moved = await moveSession(peer, info, to, { resume: true });
+    if (moved.resumeError)
+      try {
+        sessionStorage.setItem(`reach-chat-draft:${peer.id}:${to}:${moved.id}`, "Continue where you left off.");
+      } catch {}
+    onSelect(movedChat(info, moved));
+  };
   // Spends the account's rate-limit reset, only after the person confirms.
   const useReset = async () => {
     try {
@@ -2020,7 +2082,7 @@ export default function AgentSessionView({
     const skill = slashMenu.skill;
     const ready = attachments.filter((a) => a.id);
     const seen = (items || []).filter(
-      (i) => i.role === "user" && i.text.trim() === text.trim(),
+      (i) => i.role === "user" && visibleUserText(i.text).trim() === text.trim(),
     ).length;
     const message = {
       id: `pending-${Date.now()}`,
@@ -2030,13 +2092,14 @@ export default function AgentSessionView({
       seen,
       at: Date.now(),
     };
-    const keep = { text, attachments };
+    const keep = { text, attachments, mentions };
     sendingNow.current = true;
     setSending(true);
     setProblem("");
     setPending((list) => [...list, message]);
     setText("");
     setAttachments([]);
+    setMentions([]);
     atBottom.current = true;
     try {
       await draftSync.current?.settle();
@@ -2044,6 +2107,7 @@ export default function AgentSessionView({
         text: message.text,
         images: ready.filter((a) => !a.file).map((a) => a.id!),
         ...(ready.some((a) => a.file) ? { files: ready.filter((a) => a.file).map((a) => a.id!) } : {}),
+        ...(keep.mentions.length ? { chats: keep.mentions.map((m) => ({ agent: m.agent, id: m.id })) } : {}),
         ...(!heldByApp && choice.model ? { model: choice.model } : {}),
         ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}),
         ...(!heldByApp && choice.speed ? { speed: choice.speed } : {}),
@@ -2064,6 +2128,7 @@ export default function AgentSessionView({
       setPending((list) => list.filter((p) => p !== message));
       setText(keep.text);
       setAttachments(keep.attachments);
+      setMentions(keep.mentions);
       setProblem((e as Error).message);
     } finally {
       sendingNow.current = false;
@@ -2153,6 +2218,40 @@ export default function AgentSessionView({
   );
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
+  // A second opinion on a reply, or a relay for when this chat's agent
+  // finishes (Relays.tsx). One just set up shows at once, before the list has it.
+  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" }>(null);
+  const [ownRelays, setOwnRelays] = useState<Relay[]>([]);
+  const shownRelays = useMemo(() => {
+    const byId = new Map(ownRelays.map((r) => [r.id, r]));
+    for (const r of relays) byId.set(r.id, r);
+    return [...byId.values()];
+  }, [relays, ownRelays]);
+  // The team this chat leads, or works in as a helper (Teams.tsx).
+  const ledTeam = teamLedBy(teams, initial);
+  const helping = ledTeam ? null : teamHelping(teams, initial);
+  const relayStarted = ({ relay }: RelayStarted) => {
+    setOwnRelays((list) => [...list.filter((r) => r.id !== relay.id), relay]);
+    setRelaySheet(null);
+    onRelaysChanged?.();
+  };
+  // A chat a relay went to, as the list has it (or enough to open it).
+  const chatOf = (c: { agent: string; id: string; title?: string }): AgentSession =>
+    everyone.find((s) => s.agent === c.agent && s.id === c.id) ||
+    ({
+      agent: c.agent as AgentName,
+      id: c.id,
+      title: c.title || "",
+      cwd: info.cwd,
+      branch: "",
+      origin: "reach",
+      inApp: false,
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
+      status: "idle",
+      preview: "",
+      archived: false,
+    } as AgentSession);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
   // The turn Codex is on: only its questions can still be answered.
   const lastTurnId = live.turnId || [...(items || [])].reverse().find((i) => i.turnId)?.turnId;
@@ -2268,7 +2367,8 @@ export default function AgentSessionView({
           </button>
         </span>
       </header>
-      {items && items.length > 2 && (
+      {helping && <HelperBadge team={helping.team} task={helping.task} logos={logos} onOpen={(c) => onSelect(chatOf(c))} />}
+      {items && items.length > 2 && !helping && !ledTeam && (
         <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
       )}
       <AccountUsage health={health.find((h) => h.agent === agent)} />
@@ -2341,6 +2441,37 @@ export default function AgentSessionView({
                 onSelect(s);
               }}
             />
+            {/* Its work goes on to another agent (Relays.tsx). */}
+            <button
+              className="relay-menu-item"
+              role="menuitem"
+              onClick={() => {
+                setDetails(false);
+                setRelaySheet({ mode: "relay" });
+              }}
+            >
+              <Workflow size={18} />
+              <span className="move-item-text">
+                <span>Relay when done</span>
+                <small>Another agent builds or reviews this</small>
+              </span>
+            </button>
+            {!!lastReply && (
+              <button
+                className="relay-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setDetails(false);
+                  setRelaySheet({ mode: "opinion" });
+                }}
+              >
+                <SearchCheck size={18} />
+                <span className="move-item-text">
+                  <span>Second opinion</span>
+                  <small>Another agent reviews the last reply</small>
+                </span>
+              </button>
+            )}
           </div>
         </>
       )}
@@ -2497,6 +2628,11 @@ export default function AgentSessionView({
                     {label === "Voice message" ? <Mic size={13} /> : <FileText size={13} />} {label}
                   </span>
                 ))}
+                {b.item.mentions?.map((m, i) => (
+                  <span key={`m${i}`} className="as-tag as-attachment" title={m.from}>
+                    <AtSign size={13} /> {m.chat || m.from}
+                  </span>
+                ))}
                 {b.item.slash ? (
                   <code className="as-slash">{b.item.text}</code>
                 ) : (
@@ -2530,7 +2666,13 @@ export default function AgentSessionView({
               </p>
             ) : (
               // The newest reply has its own copy and share row beneath.
-              <Copyable key={b.item.id} text={b.item.text} side="assistant" bare={i === blocks.length - 1 && replyActions}>
+              <Copyable
+                key={b.item.id}
+                text={b.item.text}
+                side="assistant"
+                bare={i === blocks.length - 1 && replyActions}
+                onSecondOpinion={b.item.kind === "text" && b.item.text.trim() ? () => setRelaySheet({ mode: "opinion", item: b.item.id }) : undefined}
+              >
                 <div className="as-assistant">
                   <AgentMarkdown text={b.item.text} />
                 </div>
@@ -2539,7 +2681,12 @@ export default function AgentSessionView({
           ))
         )}
         {replyActions && (
-            <ReplyActions text={lastReply} disclaimer={skin.disclaimer} />
+            <ReplyActions
+              text={lastReply}
+              disclaimer={skin.disclaimer}
+              onSecondOpinion={() => setRelaySheet({ mode: "opinion", ...(lastBlock?.type === "item" ? { item: lastBlock.item.id } : {}) })}
+              onRelay={() => setRelaySheet({ mode: "relay" })}
+            />
           )}
         {pending
           .filter(
@@ -2734,26 +2881,33 @@ export default function AgentSessionView({
       )}
       <footer className="as-composer">
 
-        {/* Out of usage: one slim line, with the way to more (the other app is in ⋯). */}
-        {(outOfUsage || claudeLimit) && (
+        {/* Out of usage: one slim line, with the way to more, and the way on
+            in another agent that has usage. */}
+        {(outOfUsage || claudeLimit || stoppedOnLimit) && (
           <UsageStrip
             agent={agent}
             text={
               outOfUsage
                 ? `Out of Codex usage${codexHealth?.resetsAt ? ` until ${resetTime(codexHealth.resetsAt, false)}` : ""}`
-                : claudeHealth?.resetsAt
-                  ? `Out of Claude usage until ${resetTime(claudeHealth.resetsAt, false)}`
-                  : claudeLimit
+                : claudeLimit
+                  ? claudeHealth?.resetsAt
+                    ? `Out of Claude usage until ${resetTime(claudeHealth.resetsAt, false)}`
+                    : claudeLimit
+                  : `${agentLabel(agent)} is out of usage`
             }
             upgrade={
               outOfUsage
                 ? usageLink("codex", { detail: "usageLimitExceeded" })
-                : limitShown
+                : limitShown || stoppedOnLimit
                   ? null
                   : usageLink("claude", { text: claudeLimit, detail: "rate_limit" })
             }
             resets={outOfUsage ? codexHealth?.resetCredits || 0 : 0}
             onReset={useReset}
+            from={agentLabel(agent)}
+            continueIn={continueIn}
+            onContinue={continueElsewhere}
+            logos={logos}
           />
         )}
         {(problem || note || blocked) && (
@@ -2860,6 +3014,28 @@ export default function AgentSessionView({
             }}
           />
         )}
+        {/* While it works: what happens when it's done (Relays.tsx), unless
+            a relay already waits on this chat. */}
+        {working &&
+          (agent === "codex" || agent === "claude") &&
+          !shownRelays.some((r) => r.state === "waiting" && r.chain.at(-1)?.agent === agent && r.chain.at(-1)?.id === initial.id) && (
+            <button className="relay-when-chip" aria-label="Relay when done" onClick={() => setRelaySheet({ mode: "relay" })}>
+              <Workflow size={14} /> When done, relay…
+            </button>
+          )}
+        {/* The team this chat leads (Teams.tsx). */}
+        {ledTeam && (
+          <TeamStrip peer={peer} team={ledTeam} logos={logos} onOpen={(c) => onSelect(chatOf(c))} onChanged={onRelaysChanged} />
+        )}
+        {/* Relays this chat is part of: what's set up, and where it stands. */}
+        <RelayStrip
+          peer={peer}
+          relays={shownRelays}
+          here={initial}
+          logos={logos}
+          onOpen={(c) => onSelect(chatOf(c))}
+          onChanged={onRelaysChanged}
+        />
         {/* Claude's todo list, pinned above the composer as in the Claude app. */}
         {!!info.todos?.length && info.todos.some((t) => t.status !== "completed") && <TodoStrip todos={info.todos} />}
         {/* Right on top of the message box, as both apps put their queue. */}
@@ -2871,8 +3047,11 @@ export default function AgentSessionView({
             canEdit={!queueBusy}
             onEdit={async (m, words) => {
               setQueueBusy(m.id);
+              // What Reach put ahead of the words (chats mentioned) stays with them.
+              const shown = visibleUserText(m.text);
+              const ahead = shown && m.text.endsWith(shown) ? m.text.slice(0, m.text.length - shown.length) : "";
               try {
-                await editQueued(peer, initial, m.id, words);
+                await editQueued(peer, initial, m.id, ahead + words);
                 void load(false);
               } catch (error) { setProblem((error as Error).message); throw error; }
               finally { setQueueBusy(null); }
@@ -2939,11 +3118,37 @@ export default function AgentSessionView({
               </div>
             )}
             <SkillChip menu={slashMenu} />
+            {mentions.length > 0 && (
+              <div className="as-attachments as-mentioned" aria-label="Chats mentioned">
+                {mentions.map((m) => (
+                  <span key={`${m.agent}:${m.id}`} className="as-file-chip as-mention-chip">
+                    <AgentLogo agent={m.agent} logos={logos} size={14} /> {m.title || "Untitled"}
+                    <button
+                      aria-label={`Don't mention ${m.title || "this chat"}`}
+                      onClick={() => setMentions((list) => list.filter((x) => !(x.agent === m.agent && x.id === m.id)))}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             {(agent === "claude" || agent === "codex") && mentionQuery !== null && (
               <MentionMenu
                 peer={peer}
                 session={initial}
                 query={mentionQuery}
+                chats={everyone}
+                logos={logos}
+                onPickChat={(chat) => {
+                  setMentions((list) =>
+                    list.some((m) => m.agent === chat.agent && m.id === chat.id) ? list : [...list, chat].slice(-3),
+                  );
+                  const next = text.replace(/@([^\s@]{0,80})$/, "");
+                  setText(next);
+                  draftSync.current?.update(next);
+                  field.current?.focus({ preventScroll: true });
+                }}
                 onPick={(file) => {
                   // As each agent names a file: @path for Claude Code, the path for Codex.
                   const next = text.replace(/@([^\s@]{0,80})$/, `${agent === "claude" ? "@" : ""}${file} `);
@@ -3095,6 +3300,30 @@ export default function AgentSessionView({
         </div>
         )}
       </footer>
+      {relaySheet?.mode === "opinion" && (
+        <SecondOpinionSheet
+          peer={peer}
+          session={info}
+          item={relaySheet.item}
+          health={health}
+          logos={logos}
+          onClose={() => setRelaySheet(null)}
+          onStarted={relayStarted}
+        />
+      )}
+      {relaySheet?.mode === "relay" && (
+        <RelaySheet
+          peer={peer}
+          session={info}
+          working={working}
+          hasReply={!!lastReply}
+          sessions={everyone}
+          health={health}
+          logos={logos}
+          onClose={() => setRelaySheet(null)}
+          onStarted={relayStarted}
+        />
+      )}
     </div>
   );
 }

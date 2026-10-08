@@ -103,6 +103,8 @@ export type SessionItem = {
   images?: number;
   // Pieces sent as they are, by what they are: "Voice message", "PDF"…
   attachments?: string[];
+  // Chats mentioned with "@", by name (shown on the phone, not sent by the agent).
+  mentions?: { from: string; chat: string }[];
   // A slash command as typed ("/context"); Codex skills sent with a message.
   slash?: boolean;
   skills?: string[];
@@ -244,7 +246,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw" })[agent] || agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw", all: "All" })[agent] || agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -365,11 +367,75 @@ export const CODEX_MODE_CHOICES = [
 
 export type AgentFeed = ReturnType<typeof useAgentSessions>;
 
+// A relay (server/agent-sessions/relays.mjs): what one agent did goes on to
+// another, a step at a time. build: a new chat that carries it out; review: a
+// new chat that reads it and changes nothing; send: into a chat you picked;
+// back: the review returns to the chat that was reviewed.
+export type RelayStep = {
+  kind: "build" | "review" | "send" | "back";
+  agent?: string;
+  to?: { agent: string; id: string; title?: string };
+  instructions?: string;
+};
+export type Relay = {
+  id: string;
+  state: "waiting" | "sending" | "done" | "stopped" | "uncertain";
+  problem: string;
+  createdAt: number;
+  updatedAt: number;
+  // The step that goes next (all done when it's steps.length).
+  next: number;
+  steps: RelayStep[];
+  // The chats so far: where it began, then each one a step went to.
+  chain: { agent: string; id: string; title: string }[];
+  // queued: taken in line in that chat, going in when it's free.
+  sent: { kind: string; to: { agent: string; id: string }; at: number; queued?: boolean }[];
+};
+// now: at once, from the reply already there (item: one further up); else
+// when the chat's agent next finishes. opened: the chat it went to.
+export const startRelay = (
+  peer: Peer,
+  body: { from: { agent: string; id: string }; steps: RelayStep[]; now?: boolean; item?: string },
+) => post<{ relay: Relay; opened?: { agent: string; id: string } }>(peer, "/api/sessions/relays", body);
+export const cancelRelay = (peer: Peer, id: string) =>
+  post<{ cancelled: boolean }>(peer, `/api/sessions/relays/${encodeURIComponent(id)}/cancel`);
+// A team chat (server/agent-sessions/teams.mjs): a lead that hands work to
+// helpers, each in its own chat, and is woken with their results.
+export type TeamTask = {
+  id: string;
+  helper: string;
+  kind: "build" | "review";
+  title: string;
+  chat: { agent: string; id: string; title?: string };
+  state: "working" | "done" | "stopped";
+  problem?: string;
+  startedAt: number;
+  updatedAt: number;
+};
+export type Team = {
+  id: string;
+  state: "active" | "stopped";
+  lead: { agent: string; id: string };
+  helpers: string[];
+  cwd: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  // Hand-offs and follow-ups left.
+  left: number;
+  tasks: TeamTask[];
+};
+export const startTeam = (peer: Peer, body: Outgoing & { lead: AgentName; helpers: string[]; cwd: string; mode?: string }) =>
+  post<{ team: Team; threadId: string }>(peer, "/api/sessions/teams", body);
+export const stopTeam = (peer: Peer, id: string) => post<{ stopped: boolean }>(peer, `/api/sessions/teams/${encodeURIComponent(id)}/stop`);
+
 type SessionList = {
   sessions: AgentSession[];
   errors: Record<string, string>;
   projects?: { codex?: AgentProject[] };
   macPrompts?: MacPrompt[];
+  relays?: Relay[];
+  teams?: Team[];
   version: string;
 };
 
@@ -383,6 +449,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [macPrompts, setMacPrompts] = useState<MacPrompt[]>([]);
+  const [relays, setRelays] = useState<Relay[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
   const [failure, setFailure] = useState("");
   // Bumped when the feed stops or restarts: answers to requests sent
@@ -429,6 +497,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       setErrors(r.errors || {});
       setProjects(r.projects?.codex || []);
       setMacPrompts(r.macPrompts || []);
+      setRelays(r.relays || []);
+      setTeams(r.teams || []);
     } catch (e) {
       if (mine !== run.current) return;
       failures.current++;
@@ -442,6 +512,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     setSessions(null);
     setErrors({});
     setHealth([]);
+    setRelays([]);
+    setTeams([]);
     known.current = "";
     held.current = false;
     failures.current = 0;
@@ -492,7 +564,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     seenRevision.current = revision;
     void load();
   }, [revision, load]);
-  return { sessions, errors, health, failure, projects, macPrompts, reload: () => load(true), recheck: () => recheck.current() };
+  return { sessions, errors, health, failure, projects, macPrompts, relays, teams, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -517,7 +589,8 @@ export function readSession(
 export const openInApp = (peer: Peer, s: { agent: AgentName; id: string }) =>
   post(peer, `${sessionPath(s)}/open`);
 
-export type Outgoing = { text: string; images: string[]; files?: string[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
+// chats: other chats mentioned with "@" (their latest exchange goes along).
+export type Outgoing = { text: string; images: string[]; files?: string[]; chats?: { agent: string; id: string }[]; model?: string; effort?: string; speed?: string; mode?: string; skill?: string; steer?: boolean; collaboration?: "plan" | "default" };
 export const cancelQueuedMessage = (peer: Peer, s: { agent: AgentName; id: string }, id: string) =>
   post<{ deleted: true }>(peer, `${sessionPath(s)}/queue/${encodeURIComponent(id)}/cancel`);
 // Messages from the phone whose chat was deleted (server outbox.mjs): sent to
@@ -649,17 +722,22 @@ export const appCard = (peer: Peer, s: { agent: AgentName; id: string }, bring =
 export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>
   request<SessionPage>(peer, `${sessionPath(s)}?limit=20`).then((page) => page.session?.asking ?? null);
 // Continues a chat with the other agent, as if forked in the same app: the
-// new chat's address comes back.
-export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string) => {
-  const moved = await post<{ agent?: unknown; id?: unknown } | null>(
-    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to },
+// new chat's address comes back. resume: the new agent is told to keep going
+// (resumeError: moved, but that message couldn't go).
+export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string, { resume = false } = {}) => {
+  const moved = await post<{ agent?: unknown; id?: unknown; resumed?: unknown; resumeError?: unknown } | null>(
+    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to, ...(resume ? { resume: true } : {}) },
   );
   // A successful HTTP status does not prove the destination is usable. Keep
   // the source open on incompatible replies; the server may already have
   // created the continuation, so never retry this mutation automatically.
   if (moved?.agent !== to || typeof moved.id !== "string" || !moved.id.trim())
     throw new Error("Reach could not confirm the continued chat. Your source chat is still here. Check the destination app before trying again.");
-  return { agent: to, id: moved.id };
+  return {
+    agent: to,
+    id: moved.id,
+    ...(typeof moved.resumeError === "string" ? { resumeError: moved.resumeError } : {}),
+  };
 };
 // Archived (or back) in the chat's own app: it leaves Reach's list and the
 // app's alike (Codex's archive; the Claude app's own record).

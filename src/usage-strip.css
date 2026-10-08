@@ -39,6 +39,35 @@
   background: var(--as-text);
   color: var(--as-float, #000);
 }
+/* Under it: continue in an agent that has usage (two taps, as a move). */
+.usage-continue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: -4px 6px 8px;
+  padding: 0 4px 0 10px;
+  color: var(--as-muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.usage-continue-text {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+.usage-continue-offer {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px 0 8px;
+  border: 1px solid color-mix(in srgb, var(--as-text) 18%, transparent);
+  border-radius: 999px;
+  background: none;
+  color: var(--as-text);
+  font: inherit;
+  font-weight: 600;
+}
 
 /* "Your Mac needs you" (AgentSession.tsx): a small sign in the chat's header. */
 .as-page .as-bar-pill .as-icon.as-mac-needs {

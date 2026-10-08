@@ -1679,3 +1679,25 @@ test("a send cannot overlap a file rewind while its provider starts", async (t) 
   await rewind;
   assert.equal(fake.last().lines.filter(row => row.type === "user").length, 0);
 });
+
+test("a team lead's flags go with every launch, and none once its team has stopped", async (t) => {
+  const claude = fakeClaude();
+  let hooked = null;
+  const h = host(claude, { extraArgs: () => hooked });
+  t.after(() => h.close());
+  const team = ["--mcp-config", "{}", "--allowedTools", "mcp__reach_team"];
+  const { threadId } = await h.start({ cwd: "/work/app", text: "lead", extra: team });
+  assert.deepEqual(claude.last().args.slice(-4), team, "the start's own, before the team is known");
+  const relaunch = async (text) => {
+    const proc = claude.last();
+    proc.print({ type: "result", subtype: "success", is_error: false, result: "Done" });
+    proc.exit(0);
+    await settle(20);
+    await h.send(threadId, { text, cwd: "/work/app" });
+    return claude.last().args;
+  };
+  hooked = ["--mcp-config", '{"x":1}'];
+  assert.deepEqual((await relaunch("more")).slice(-2), hooked, "the team's, on a resume");
+  hooked = false;
+  assert.equal((await relaunch("again")).includes("--mcp-config"), false, "a stopped team's lead is an ordinary chat");
+});

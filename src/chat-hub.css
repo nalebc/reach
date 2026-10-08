@@ -1,0 +1,254 @@
+/* The All page (ChatHub.tsx): every agent's chats at once, in the chat
+   list's own look (chat-list.css), with its few cards of its own. */
+.chat-hub .hub-lead {
+  margin: 2px 16px 12px;
+  color: var(--chat-muted);
+  font-size: 13.5px;
+}
+.chat-hub .hub-search {
+  margin: 0 16px 12px;
+}
+.chat-hub .hub-search .chat-list-search {
+  width: 100%;
+}
+.hub-results {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0 0;
+  border: 1px solid var(--chat-line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.hub-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--chat-line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.hub-hit:last-child {
+  border-bottom: 0;
+}
+.hub-hit > .agent-logo,
+.hub-hit > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.hub-hit-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.hub-hit-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hub-hit-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--chat-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.hub-hit > time {
+  flex: 0 0 auto;
+  color: var(--chat-muted);
+  font-size: 12px;
+}
+.hub-note {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--chat-muted);
+  font-size: 12.5px;
+}
+.hub-note.bad {
+  color: var(--danger, #e5534b);
+}
+
+.hub-card {
+  margin: 0 16px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--chat-line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--chat-ink) 4%, transparent);
+}
+.hub-card > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.hub-card h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+.hub-card header small {
+  color: var(--chat-muted);
+  font-size: 12px;
+}
+.hub-away-sum {
+  margin: 0 0 6px;
+  color: var(--chat-muted);
+  font-size: 13px;
+}
+.hub-away ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hub-away li button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+}
+.hub-away li button > span {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.hub-away li.usage,
+.hub-away li.failed,
+.hub-away li.relay-stopped {
+  color: var(--warning, #d6c38f);
+}
+.hub-got-it {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 4px 0 0;
+  padding: 0 12px;
+  border: 1px solid var(--chat-line);
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.hub-relays .relay-row {
+  margin: 0 0 6px;
+}
+.hub-relay-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.hub-relay-text strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hub-relay-text span {
+  color: var(--chat-muted);
+  font-size: 12.5px;
+}
+.hub-project-agents {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.hub-overlap {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning, #d6c38f) 14%, transparent);
+  color: var(--chat-ink);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.hub-overlap > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warning, #d6c38f);
+}
+/* What a chat changed lately shows under its name here (the list keeps
+   phones to one line; this line is what the All page is for). */
+.chat-hub .chat-card-preview.hub-changed {
+  display: block;
+}
+/* Teams at work (Teams.tsx): the lead, its route, its helpers. */
+.hub-team {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 0;
+  border: 0;
+  border-top: 1px solid var(--chat-line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.hub-team:first-of-type {
+  border-top: 0;
+}
+.hub-team-crew {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+.hub-team-crew > i {
+  width: 10px;
+  border-top: 2px dashed color-mix(in srgb, #b9efd4 70%, transparent);
+}
+.hub-team-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.hub-team-copy strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hub-team-copy small {
+  color: var(--chat-muted);
+  font-size: 12px;
+}

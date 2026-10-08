@@ -32,6 +32,9 @@ import ChatSheet from "./ChatSheet";
 import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
+import ChatHub from "./ChatHub";
+import { relayAgents } from "./Relays";
+import { TeamPicker } from "./Teams";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
   useAgentLogos,
@@ -50,6 +53,7 @@ import {
   projectName,
   resetTime,
   startSession,
+  startTeam,
   uploadImage,
   usageLink,
   useAgentSessions,
@@ -108,6 +112,9 @@ export function NewChat({
   onStarted,
   autoFocus = false,
   folder = "",
+  health = [],
+  logos = {},
+  onAgent,
 }: {
   peer: Peer;
   agent: AgentName;
@@ -116,6 +123,10 @@ export function NewChat({
   autoFocus?: boolean;
   // Where to start (a chat's menu on the list: "New chat in reach").
   folder?: string;
+  // For a team (Teams.tsx): the agents here, their logos, and switching the lead.
+  health?: AgentHealth[];
+  logos?: AgentLogos;
+  onAgent?: (agent: AgentName) => void;
 }) {
   const folders = useMemo(() => chatFolders(sessions), [sessions]);
   const [cwd, setCwd] = useState(folder);
@@ -147,6 +158,16 @@ export function NewChat({
   const [speed, setSpeed] = useState<string | null>(null);
   const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
+  // A team (docs/ACROSS_AGENTS.md): this agent leads, helpers take tasks.
+  const teamAgents = relayAgents(health);
+  const canTeam = (agent === "codex" || agent === "claude") && teamAgents.length > 0;
+  const [teamMode, setTeamMode] = useState(false);
+  const [helpers, setHelpers] = useState<string[]>([]);
+  useEffect(() => {
+    if (helpers.length || !teamAgents.length) return;
+    setHelpers([teamAgents.find((a) => a !== agent) || teamAgents[0]]);
+  }, [teamAgents.join(), agent]);
+  const team = teamMode && canTeam;
   const [busy, setBusy] = useState(false);
   // Taps in the same instant come before `busy` re-renders: one chat.
   const startingNow = useRef(false);
@@ -270,8 +291,7 @@ export function NewChat({
     setProblem("");
     try {
       const first = text.trim().split("\n")[0].slice(0, 80);
-      const r = await startSession(peer, {
-        agent,
+      const body = {
         cwd,
         text,
         images: images.filter((i) => i.id).map((i) => i.id!),
@@ -281,7 +301,10 @@ export function NewChat({
         ...(effort ? { effort } : {}),
         ...(speed ? { speed } : {}),
         ...(mode !== "default" ? { mode } : {}),
-      });
+      };
+      const r = team
+        ? await startTeam(peer, { ...body, lead: agent, helpers })
+        : await startSession(peer, { ...body, agent });
       for (const i of images) URL.revokeObjectURL(i.url);
       setText("");
       setImages([]);
@@ -334,6 +357,26 @@ export function NewChat({
       className={`chat-new ${agent}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
+      {canTeam && (
+        <div className="team-mode" role="group" aria-label="Solo or team">
+          <button aria-pressed={!teamMode} disabled={busy} onClick={() => setTeamMode(false)}>
+            Solo
+          </button>
+          <button aria-pressed={teamMode} disabled={busy} onClick={() => setTeamMode(true)}>
+            Team
+          </button>
+        </div>
+      )}
+      {team && (
+        <TeamPicker
+          lead={agent}
+          helpers={helpers}
+          available={teamAgents}
+          logos={logos}
+          onLead={(next) => onAgent?.(next as AgentName)}
+          onHelpers={setHelpers}
+        />
+      )}
       <button
         className="chat-new-context chat-folder"
         aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
@@ -454,8 +497,8 @@ export function NewChat({
             ref={input}
             rows={3}
             value={text}
-            placeholder="What would you like to work on?"
-            aria-label={`New ${agentLabel(agent)} chat`}
+            placeholder={team ? "What should the team do?" : "What would you like to work on?"}
+            aria-label={team ? `New team led by ${agentLabel(agent)}` : `New ${agentLabel(agent)} chat`}
             disabled={busy}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
@@ -520,7 +563,7 @@ export function NewChat({
           <span className="as-spacer" />
           <button
             className={`as-send ${ready ? "ready" : ""}`}
-            aria-label="Start"
+            aria-label={team ? "Start team" : "Start"}
             disabled={!ready}
             onClick={() => void start()}
           >
@@ -715,6 +758,9 @@ export default function EverythingChat({
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
+  // Relays and teams on this computer (Relays.tsx, Teams.tsx), with the chat list.
+  const relays = (shared || own).relays || [];
+  const teams = (shared || own).teams || [];
   const macPrompts = (shared || own).macPrompts || [];
   const notificationCounts = useAppNotifications(peer);
   const logos = useAgentLogos(peer);
@@ -735,9 +781,17 @@ export default function EverythingChat({
           supported: item.agent === "openclaw" || !!item.supported,
         });
     }
+    // With more than one agent here: every agent's chats together, first
+    // (ChatHub.tsx, docs/ACROSS_AGENTS.md).
+    const here = list.filter((a) => a.supported && health.some((h) => h.agent === a.agent && h.installed));
+    if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
   }, [health]);
+  // The apps a new chat can be started in (not All).
+  const startApps = apps.filter((app) => app.agent !== "all");
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
+  // The app a new chat starts in: the one shown, or from All, the first.
+  const newApp = picked.agent === "all" ? apps.find((app) => app.agent !== "all") || picked : picked;
   useEffect(() => {
     if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent("codex");
   }, [health, apps, savedAgent]);
@@ -824,6 +878,7 @@ export default function EverythingChat({
   });
   const needs = allNeeds.filter(
     (item) =>
+      picked.agent === "all" ||
       item.key.startsWith(picked.agent + ":") ||
       (picked.supported && item.key.startsWith("mac:")),
   );
@@ -832,13 +887,62 @@ export default function EverythingChat({
       app.agent,
       // Both feeds describe the same requests. Keep live session updates
       // immediate without counting the inbox's copy a second time.
-      Math.max(notificationCounts[app.agent] || 0,
-        allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length),
+      app.agent === "all"
+        ? allNeeds.length
+        : Math.max(notificationCounts[app.agent] || 0,
+            allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length),
     ]),
   );
   const status = health.find((h) => h.agent === current);
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
+  // A chat the All page points at, as the list has it (or enough to open it).
+  const openRef = (ref: { agent: string; id: string; title?: string }) =>
+    openChat(
+      (sessions || []).find((s) => s.agent === ref.agent && s.id === ref.id) ||
+        ({
+          agent: ref.agent as AgentName,
+          id: ref.id,
+          title: ref.title || "",
+          cwd: "",
+          branch: "",
+          origin: "reach",
+          inApp: ref.agent === "codex",
+          updatedAt: Date.now(),
+          createdAt: Date.now(),
+          status: "idle",
+          preview: "",
+          archived: false,
+        } as AgentSession),
+    );
   const library = (app: ChatAppChoice, active: boolean) => {
+    if (app.agent === "all")
+      return (
+        <div className="chat-workspace">
+          {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
+          <ChatHub
+            peer={peer}
+            sessions={sessions}
+            relays={relays}
+            teams={teams}
+            logos={logos}
+            apps={apps}
+            appPending={appPending}
+            pending={allNeeds.length}
+            onAgentChange={setAgent}
+            onOpen={openRef}
+            onNew={() => {
+              setNewFolder("");
+              setSheet("new");
+            }}
+            onRefresh={() => {
+              recheck();
+              void reload();
+            }}
+            onReview={() => setSheet("review")}
+            onRelaysChanged={() => void reload()}
+          />
+        </div>
+      );
     if (app.agent === "openclaw")
       return <OpenClawSpace peer={peer} apps={apps} logos={logos}
         onScreen={onScreen}
@@ -893,6 +997,10 @@ export default function EverythingChat({
             deviceRequests={macPrompts.length}
             onReviewDevice={() => setSheet("review")}
             onScreen={onScreen}
+            relays={relays}
+            teams={teams}
+            everyone={sessions || []}
+            onRelaysChanged={() => void reload()}
             onSignedIn={recheck}
             onSelect={openChat}
             onBack={() => {
@@ -915,8 +1023,8 @@ export default function EverythingChat({
         <ChatSheet title="New conversation" className="chat-create-sheet" leading={<BrandCourier active />} onClose={() => setSheet("")}>
           <div className="chat-new-app-row">
             <ChatAppPicker
-              apps={apps}
-              value={picked.agent}
+              apps={startApps}
+              value={newApp.agent}
               onChange={setAgent}
               logos={logos}
               pending={appPending}
@@ -926,7 +1034,7 @@ export default function EverythingChat({
             <Laptop size={16} />
             <span>{peer.name}</span>
           </div>
-          {picked.agent === "openclaw" ? (
+          {newApp.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat
               key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
@@ -938,16 +1046,16 @@ export default function EverythingChat({
                 setClawOpen(key);
               }}
             />
-          ) : !picked.supported ? (
-            <ChatComingSoon app={picked} logos={logos} />
-          ) : picked.agent === "gemini" ? (
+          ) : !newApp.supported ? (
+            <ChatComingSoon app={newApp} logos={logos} />
+          ) : newApp.agent === "gemini" ? (
             // Its chats are read here; it no longer answers personal accounts,
             // and a new one was refused only after Start.
             <ChatComingSoon
-              app={picked}
+              app={newApp}
               logos={logos}
               label="Read only"
-              text={`Reach shows your ${picked.name} chats. To start a new one, pick another app above.`}
+              text={`Reach shows your ${newApp.name} chats. To start a new one, pick another app above.`}
             />
           ) : (
             <>
@@ -967,6 +1075,9 @@ export default function EverythingChat({
                   sessions={sessions || []}
                   onStarted={openChat}
                   autoFocus
+                  health={health}
+                  logos={logos}
+                  onAgent={setAgent}
                 />
               )}
             </>

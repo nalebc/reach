@@ -1,0 +1,386 @@
+/* Second opinions and relays (Relays.tsx): Reach's own look, not either
+   app's. Forest green, mint, and the courier's dashed route between agents,
+   as Home draws the way between devices. */
+.reach-native,
+.relay-strip {
+  --reach-bg: #101512;
+  --reach-panel: #171e19;
+  --reach-line: #2b332d;
+  --reach-route: #3a4a3f;
+  --reach-muted: #93a096;
+  --reach-ink: #eef4ef;
+  --reach-mint: #b9efd4;
+  --reach-mint-ink: #16362a;
+}
+/* The sheet itself takes Reach's colours (its frame reads --as-*). */
+.reach-chat-sheet.reach-native {
+  --as-bg: var(--reach-bg);
+  --as-text: var(--reach-ink);
+  --as-muted: var(--reach-muted);
+  --as-line: var(--reach-line);
+  color: var(--reach-ink);
+}
+
+/* The route: the chat it starts from, then a tile per step. */
+.relay-route {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  margin: 4px 0 14px;
+}
+.relay-route-part {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: flex-start;
+  min-width: 0;
+}
+.relay-route-line {
+  flex: 0 1 34px;
+  width: 34px;
+  min-width: 14px;
+  margin-top: 23px;
+  border-top: 2px dashed var(--reach-route);
+}
+.relay-route-line.on {
+  border-top-color: color-mix(in srgb, var(--reach-mint) 70%, transparent);
+}
+.relay-node {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 66px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--reach-ink);
+  font: inherit;
+}
+.relay-node-tile {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--reach-line);
+  border-radius: 15px;
+  background: var(--reach-panel);
+}
+.relay-node.dim .relay-node-tile {
+  opacity: 0.7;
+}
+.relay-node.picked .relay-node-tile,
+.relay-node:not(.dim):not(.add):active .relay-node-tile {
+  border: 2px solid var(--reach-mint);
+}
+.relay-node.add .relay-node-tile {
+  border-style: dashed;
+  border-color: var(--reach-route);
+  background: none;
+  color: var(--reach-muted);
+}
+.relay-node:disabled {
+  opacity: 1;
+}
+.relay-node-label {
+  font-size: 12px;
+  line-height: 1.2;
+}
+.relay-node.dim .relay-node-label,
+.relay-node.add .relay-node-label {
+  color: var(--reach-muted);
+}
+
+.relay-when-line {
+  margin: -8px 0 16px;
+  color: var(--reach-muted);
+  font-size: 13.5px;
+}
+.relay-say {
+  margin: 0 0 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--reach-line);
+  border-radius: 14px;
+  background: var(--reach-panel);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.relay-hint {
+  margin: -4px 2px 10px;
+  color: var(--reach-muted);
+  font-size: 12px;
+}
+.relay-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 12px;
+}
+.relay-edit > button,
+.relay-extras > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--reach-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--reach-muted);
+  font: inherit;
+  font-size: 12.5px;
+}
+.relay-edit > button[aria-pressed="true"] {
+  border-color: var(--reach-mint);
+  color: var(--reach-ink);
+}
+.relay-edit > .relay-remove {
+  margin-left: auto;
+  border-color: transparent;
+}
+.relay-extras {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.relay-instructions {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--reach-line);
+  border-radius: 12px;
+  background: var(--reach-panel);
+  color: var(--reach-ink);
+  font: inherit;
+  font-size: 16px; /* no zoom on iPhone */
+}
+.relay-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 2px 12px;
+  font-size: 13.5px;
+}
+.relay-switch input {
+  accent-color: var(--reach-mint);
+}
+.relay-when {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.relay-when > button {
+  flex: 1 1 0;
+  min-height: 36px;
+  border: 1px solid var(--reach-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--reach-muted);
+  font: inherit;
+  font-size: 13px;
+}
+.relay-when > button[aria-checked="true"] {
+  border-color: var(--reach-mint);
+  color: var(--reach-ink);
+}
+.relay-rules {
+  margin: 2px 0 12px;
+  color: var(--reach-muted);
+  font-size: 12px;
+}
+.relay-rules > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.relay-rules p {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+.relay-chats {
+  display: flex;
+  flex-direction: column;
+  max-height: 32vh;
+  margin: -4px 0 12px;
+  overflow-y: auto;
+  border: 1px solid var(--reach-line);
+  border-radius: 12px;
+}
+.relay-chat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--reach-line);
+  background: none;
+  color: var(--reach-ink);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+}
+.relay-chat:last-child {
+  border-bottom: 0;
+}
+.relay-chat > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-chat > small {
+  flex: 0 0 auto;
+  color: var(--reach-muted);
+}
+.relay-chat[aria-selected="true"] {
+  background: color-mix(in srgb, var(--reach-mint) 12%, transparent);
+}
+.relay-go {
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--reach-mint);
+  color: var(--reach-mint-ink);
+  font: inherit;
+  font-weight: 600;
+}
+.relay-go:disabled {
+  opacity: 0.45;
+}
+.relay-problem {
+  margin: 0 2px 10px;
+  color: #f09595;
+  font-size: 12.5px;
+}
+
+/* Above the message box: each relay this chat is part of. */
+.relay-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 6px 8px;
+}
+.relay-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--reach-line, #2b332d);
+  border-radius: 12px;
+  background: var(--reach-bg, #101512);
+  color: var(--reach-ink, #eef4ef);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.relay-row.stopped,
+.relay-row.uncertain {
+  color: var(--reach-muted, #93a096);
+}
+.relay-mini-route {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+.relay-mini-route > i {
+  width: 14px;
+  border-top: 2px dashed color-mix(in srgb, var(--reach-mint, #b9efd4) 70%, transparent);
+}
+.relay-mini-route > i.moving {
+  animation: relay-dash 0.8s linear infinite;
+}
+@keyframes relay-dash {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-mini-route > i.moving {
+    animation: none;
+  }
+}
+.relay-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.relay-row-action {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--reach-mint, #b9efd4);
+  font: inherit;
+  font-weight: 600;
+}
+
+/* Under the newest reply, by copy and share; the chip while it works. */
+.relay-opinion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--as-muted, inherit);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.relay-opinion:active {
+  background: #ffffff10;
+}
+.relay-opinion > svg,
+.relay-when-chip > svg {
+  color: #b9efd4;
+}
+.relay-when-chip {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0 6px 8px;
+  padding: 0 12px;
+  border: 1px solid #2b332d;
+  border-radius: 999px;
+  background: #101512;
+  color: #eef4ef;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* In the chat's ⋯ menu, under Continue in…: as its rows (move-chat.css). */
+.relay-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.relay-menu-item:active {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+.relay-menu-item > svg {
+  flex: 0 0 auto;
+  margin: 0 1px;
+}
