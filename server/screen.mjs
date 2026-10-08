@@ -21,6 +21,9 @@ export class ScreenControl {
     this.now = now;
   }
   lease = null;
+  // Trusted server hook: reserve a barrier before a newly enabled controller
+  // can dispatch native input over a background desktop transaction.
+  onAcquire = () => {};
   // Leases kept a moment for a control connection on its way back.
   pending = new Map();
   // Native input ownership outlives a closed socket until its process exits.
@@ -86,6 +89,7 @@ export class ScreenControl {
         );
       taken = held.clientId;
     }
+    this.onAcquire();
     // Only a successful new grant supersedes the old grace period. Failed
     // takeovers leave the current holder's pending expiry unchanged.
     if (this.lease) this.keep(this.lease.clientId);

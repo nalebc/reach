@@ -5,8 +5,8 @@
 // from Reach's own process instead, it never showed in the app's window.)
 // The window shows one chat at a time: the message goes in when that chat is
 // on screen; when you're in another app (or away from the Mac), Reach opens
-// the chat in the background, sends, and puts the window back, never bringing
-// Claude forward. It waits, saying why, while you use the Claude app itself.
+// the chat with a background request, sends, and restores its own selection
+// only while the desktop transaction still owns it. It waits during control.
 import fs from "node:fs";
 import path from "node:path";
 import { object, uncertainDelivery } from "./compatibility.mjs";
@@ -57,10 +57,13 @@ export const APP_EFFORTS = { low: "Low", medium: "Medium", high: "High", xhigh: 
 // show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
   { title, session, waitMs, text = "", images = [], draft, expected, stop, effort, model, keep },
-  { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose") } = {},
+  { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose"), beforeDispatch = () => {} } = {},
 ) {
   const file = await binary();
   const json = draft || expected !== undefined || keep;
+  // Helper preparation can await compilation. Ownership must still hold at
+  // the actual subprocess dispatch, before any uncertain native side effect.
+  try { beforeDispatch(); } catch (e) { throw Object.assign(e, { notDispatched: true }); }
   let call;
   try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || effort ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
@@ -160,6 +163,7 @@ export function createClaudeCompose({
   // tests that don't say: the one the app's records name first.
   onScreen = async () => shown()[0]?.session ?? null,
   store = null,
+  desktopAutomation = null,
 }) {
   const link = (session) => `claude://code/continue?session=${session}`;
   const drafts = new Map(
@@ -182,24 +186,25 @@ export function createClaudeCompose({
   const held = new Map();
   let tail = Promise.resolve();
   const serial = (work) => {
-    const result = tail.then(work);
+    const result = tail.then(() => desktopAutomation ? desktopAutomation.run(work) : work(() => {}));
     tail = result.catch(() => {});
     return result;
   };
   return {
     draft(id, { title, text, owner }) {
-      return serial(async () => {
+      return serial(async (guard) => {
         if (!(await appRunning()) || shown()[0]?.id !== id)
           throw waiting("Draft stays on your phone until this chat is visible in Claude.");
         const previous = drafts.get(id);
         if (previous && previous.owner !== owner) throw waiting("Another device is editing this draft.");
         if (!previous && drafts.size >= 128) throw waiting("Too many drafts are open.");
         let result;
+        guard();
         try {
-          result = await type({ title, session: sessionOf(id), waitMs: 0, text, draft: true, expected: previous ? known(previous) : [""] });
+          result = await type({ title, session: sessionOf(id), waitMs: 0, text, draft: true, expected: previous ? known(previous) : [""] }, guard);
         } catch (e) {
           // Any failure but a box holding someone else's text: it may be in.
-          if (!e?.occupied && (text || previous)) {
+          if (!e?.occupied && !e?.notDispatched && (text || previous)) {
             const maybe = [...new Set([...(previous?.maybe || []), text])].slice(-8);
             drafts.set(id, { owner, text: previous?.text ?? "", maybe });
             keep();
@@ -214,9 +219,10 @@ export function createClaudeCompose({
       });
     },
     stop(id, { title }) {
-      return serial(async () => {
+      return serial(async (guard) => {
         if (!(await appRunning()) || shown()[0]?.id !== id) throw waiting("Open this chat in Claude to stop it.");
-        const result = await type({ title, session: sessionOf(id), waitMs: 0, stop: true });
+        guard();
+        const result = await type({ title, session: sessionOf(id), waitMs: 0, stop: true }, guard);
         if (result?.stopped !== true) throw waiting("Claude didn't confirm Stop.");
         return { stopped: true };
       });
@@ -224,13 +230,14 @@ export function createClaudeCompose({
     // The catalog resolves an API model id to the exact name in the app's menu.
     // Never switch chats for a setting or accept an unconfirmed native click.
     model(id, { title, model }) {
-      return serial(async () => {
+      return serial(async (guard) => {
         if (typeof model !== "string" || !/^[A-Za-z][A-Za-z0-9 .()-]{0,79}$/.test(model))
           throw Object.assign(new Error("Reach can't identify that model in the Claude app."), { status: 400 });
         const session = sessionOf(id);
         if (!session || !(await appRunning()) || await screen() !== session)
           throw waiting("Open this chat in the Claude app on your Mac to change its model from here.");
-        const result = await type({ title, session, waitMs: 0, model });
+        guard();
+        const result = await type({ title, session, waitMs: 0, model }, guard);
         if (result?.model !== model || result.unconfirmed)
           throw waiting("Claude didn't confirm the model change. Check the model in Claude before trying again.");
         return { model };
@@ -239,20 +246,21 @@ export function createClaudeCompose({
     // An effort level picked on the phone, picked in the app's own menu (so
     // both show the same one) while the chat is on screen there.
     effort(id, { title, effort }) {
-      return serial(async () => {
+      return serial(async (guard) => {
         const label = APP_EFFORTS[effort];
         if (!label) throw Object.assign(new Error("Reach can't pick that effort level in the Claude app."), { status: 400 });
         const session = sessionOf(id);
         if (!session || !(await appRunning()) || await screen() !== session)
           throw waiting("Open this chat in the Claude app on your Mac to change its effort from here.");
-        const result = await type({ title, session, waitMs: 0, effort: label });
+        guard();
+        const result = await type({ title, session, waitMs: 0, effort: label }, guard);
         return { effort, unconfirmed: !!result.unconfirmed };
       });
     },
     // `now`: sent with Send now from the phone, so it goes in even while
     // someone uses the Mac (the Claude window switches to this chat).
     deliver(id, { title, text = "", images = [], owner, now = false }) {
-      return serial(async () => {
+      return serial(async (guard) => {
       if (!(await appRunning())) throw Object.assign(waiting("Goes in when the Claude app is open on your Mac."), { appClosed: true });
       const list = shown();
       const target = list.find((s) => s.id === id);
@@ -270,8 +278,10 @@ export function createClaudeCompose({
       // forward over it, is just as much in their way. The same goes for
       // setting aside text typed in the chat's box.
       const seconds = now ? Infinity : await Promise.resolve(idle()).catch(() => null);
-      const away = seconds != null && seconds * 1000 >= awayMs;
-      const awayIn = seconds == null ? {} : { retryMs: Math.max(0, awayMs - seconds * 1000) };
+      // Unknown physical-input activity never counts as away.
+      const measured = Number.isFinite(seconds) && seconds >= 0;
+      const away = now || (measured && seconds * 1000 >= awayMs);
+      const awayIn = measured ? { retryMs: Math.max(0, awayMs - seconds * 1000) } : {};
       if (showing !== target.session) {
         if (!now && (held.get(id) ?? 0) > clock())
           throw waiting("The Claude app didn't open this chat; trying again in a few minutes. Send now puts it in at once.");
@@ -281,8 +291,12 @@ export function createClaudeCompose({
             // Tried again once you'd count as away (no input for awayMs).
             { inApp: true, ...awayIn },
           );
+        if (await screen() !== showing)
+          throw waiting("The Claude app changed chats before this message was sent. Trying again later.");
         back = showing || list[0]?.session || null;
-        // In the background: Claude never comes forward over what you're doing.
+        // Request background navigation. If the app still changes foreground,
+        // the shared guard prevents the next native action or restoration.
+        guard();
         await open(link(target.session), { background: true });
         switched = true;
       }
@@ -297,7 +311,8 @@ export function createClaudeCompose({
         // Text typed on the Mac in its box is set aside and put back after
         // Send, only while nobody is at the Mac (or with Send now).
         const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}), ...(away ? { keep: true } : {}) };
-        const result = await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) });
+        guard();
+        const result = await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) }, guard);
         if (typeof result?.kept === "string") keepText(id, result.kept);
         held.delete(id);
         if (drafts.delete(id)) keep();
@@ -315,7 +330,17 @@ export function createClaudeCompose({
         if (switched && e?.otherChat) throw waiting("The Claude app didn't open this chat; trying again.");
         throw e;
       } finally {
-        if (back) await open(link(back), { background: true }).catch(() => {});
+        // Restore only the window this transaction still owns. A foreground
+        // change or another chat selected during native work takes precedence.
+        // Losing ownership after Send must not turn success into a retry.
+        if (back) {
+          try {
+            if (await screen() === target.session) {
+              guard();
+              await open(link(back), { background: true });
+            }
+          } catch { /* leave the new foreground/chat alone */ }
+        }
       }
       // The app cleared its box after Send: taken. The transcript says so
       // shortly (never sent twice either way).

@@ -239,7 +239,7 @@ export function browserToolRequest(name, args, access) {
     case "reach_shortcuts": return get(`/api/browser/shortcuts${input.query ? `?${new URLSearchParams({ query: input.query })}` : ""}`);
     case "reach_record_shortcut": return { route: "/api/browser/shortcuts/record", method: "POST", body: input, response: "json" };
     case "reach_save_shortcut": return { route: "/api/browser/shortcuts/save", method: "POST", body: input, response: "json" };
-    case "reach_discard_shortcut": return { route: "/api/browser/shortcuts/record", method: "DELETE", body: input, response: "json" };
+    case "reach_discard_shortcut": return { route: "/api/browser/shortcuts/record", method: "DELETE", response: "json" };
     case "reach_run_shortcut": return { route: "/api/browser/shortcuts/run", method: "POST", body: input, response: "json" };
     case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 2560) })}`, "image");
     case "reach_front": return get("/api/browser/desktop/front");

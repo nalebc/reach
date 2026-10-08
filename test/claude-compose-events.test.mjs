@@ -69,8 +69,8 @@ test("a switch to the chat is known when the Claude app's records change, not on
     appNews: (ms) => app.wait(ms),
   });
   assert.deepEqual(await compose.deliver(A, { title: "Fix", text: "hi" }), { delivered: true });
-  // One look before the switch, one when the records changed: none on a beat.
-  assert.ok(looks <= 3, `looked ${looks} times`);
+  // Source/target ownership checks around the switch, never a polling beat.
+  assert.ok(looks <= 4, `looked ${looks} times`);
 });
 
 test("a message waiting for its chat to show tries again the moment the Claude app's records change", async () => {

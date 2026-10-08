@@ -64,6 +64,7 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
 import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
@@ -337,6 +338,16 @@ export async function createReach(overrides = {}) {
     maxPayload: 65536,
     perMessageDeflate: false,
   });
+  const screenControl = new ScreenControl();
+  let agentDesktop = null, inputInFlight = false;
+  const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
+    blocked: () => paused || !transportAvailable || !!screenControl.holder() || screenControl.inputStopping() || inputInFlight ||
+      !!(agentDesktop && agentDesktop.automationBusy?.() !== false),
+  });
+  screenControl.onAcquire = () => {
+    for (const stopped of [desktopAutomation.interrupt(), agentDesktop?.yieldForOwner?.()])
+      if (stopped) screenControl.retireInput(stopped);
+  };
   // Every Codex and Claude Code session on this computer (Chat tab).
   const openClaw = overrides.openClaw || createOpenClaw({ dataDir: config.dataDir });
   // Chats move to and from OpenClaw too (agent-sessions/move.mjs).
@@ -345,9 +356,10 @@ export async function createReach(overrides = {}) {
   let teams = null;
   const agentSessions =
     overrides.agentSessions ||
-    createAgentSessions({
+    (overrides.agentSessionsFactory || createAgentSessions)({
       dataDir: config.dataDir,
       openClaw,
+      desktopAutomation,
       keepOut: (agent, id) => !!teams?.inTeam(agent, id),
       teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
     });
@@ -369,7 +381,6 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.appShortcuts,
   });
-  const screenControl = new ScreenControl();
   // While macOS shows one of its own dialogs, only the owner's own devices
   // click or type on the screen (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
@@ -699,6 +710,7 @@ export async function createReach(overrides = {}) {
       settings.paused = value;
       atomicJson(settingsFile, settings);
       if (value) {
+        desktopAutomation.interrupt();
         browserApprovals.cancelPending();
         browserAppAccess.clear();
         browserSnapshots.clear();
@@ -734,7 +746,10 @@ export async function createReach(overrides = {}) {
     );
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
-  appThreads.onFrontmost = (bundle) => agentSessions.frontmost?.(bundle);
+  appThreads.onFrontmost = (bundle) => {
+    desktopAutomation.noteForeground(bundle);
+    agentSessions.frontmost?.(bundle);
+  };
   appThreads.onLaunched = (bundle) => agentSessions.launched?.(bundle);
   // Reach's item in the Mac's menu bar, with Pause and Resume. Tests never
   // start the real helper.
@@ -754,7 +769,6 @@ export async function createReach(overrides = {}) {
         ),
     );
   let captureInFlight;
-  let inputInFlight = false;
   const events = [];
   const record = (kind, title) => {
     events.unshift({ id: id(), kind, title, at: new Date().toISOString() });
@@ -773,11 +787,12 @@ export async function createReach(overrides = {}) {
   // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
   // Tests inject a stand-in; null means this Mac can't offer them, and the
   // screen presets refuse to be created.
-  const agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" ? createAgentDesktop(config, {
+  agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" || overrides.agentDesktopFactory ? (overrides.agentDesktopFactory || createAgentDesktop)(config, {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(), paused: () => paused, record,
+    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(),
+    automationControls: () => desktopAutomation.active(), onObservation: () => desktopAutomation.interrupt(), paused: () => paused, record,
   }) : null);
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
   const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
@@ -2826,7 +2841,7 @@ export async function createReach(overrides = {}) {
     dir: path.join(config.dataDir, "agent-images"),
   });
   const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
-  const voice = createVoice({ config });
+  const voice = (overrides.voiceFactory || createVoice)({ config });
   // Five minutes of the phone's 16 kHz WAV is under 10 MB.
   const voiceUpload = multer({
     dest: path.join(config.dataDir, "agent-files"),
@@ -2983,18 +2998,23 @@ export async function createReach(overrides = {}) {
   // can't become words, the recording itself to attach.
   app.post("/api/sessions/voice", voiceUpload.single("file"), async (req, res) => {
     if (!req.file) throw fail(400, "Record a memo.");
-    const kind = audioKind(readHead(req.file.path));
-    if (!kind) {
-      fs.rmSync(req.file.path, { force: true });
-      throw fail(400, "That isn't a recording.");
+    let retained = false;
+    try {
+      req.reauthorize();
+      const kind = audioKind(readHead(req.file.path));
+      if (!kind) throw fail(400, "That isn't a recording.");
+      const heard = await voice.transcribe(req.file.path, { locale: req.query.locale, authorize: () => req.reauthorize() });
+      req.reauthorize();
+      if (heard.text) return res.json({ text: heard.text });
+      const name = memoName(kind);
+      const id = agentFiles.add(req.file.path, name);
+      retained = true;
+      res.json({ problem: heard.problem, file: { id, name } });
+    } finally {
+      // Only this request's temporary upload is removed. A successfully
+      // registered fallback has already moved to its own attachment path.
+      if (!retained) fs.rmSync(req.file.path, { force: true });
     }
-    const heard = await voice.transcribe(req.file.path, { locale: req.query.locale });
-    if (heard.text) {
-      fs.rmSync(req.file.path, { force: true });
-      return res.json({ text: heard.text });
-    }
-    const name = memoName(kind);
-    res.json({ problem: heard.problem, file: { id: agentFiles.add(req.file.path, name), name } });
   });
   // Files in a chat's folder, for "@" in its composer.
   app.get("/api/sessions/:agent/:id/files", async (req, res) =>
@@ -4423,6 +4443,7 @@ export async function createReach(overrides = {}) {
       if (transportAvailable === value) return;
       transportAvailable = value;
       if (!value) {
+        desktopAutomation.interrupt();
         screenControl.clear();
         closeInput();
         // Disconnect access without killing terminals, chats or jobs.
@@ -4430,6 +4451,7 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
       notifications.close();

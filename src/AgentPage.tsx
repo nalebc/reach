@@ -1313,6 +1313,7 @@ function AppsCard({
   ended: (e: unknown) => void;
 }) {
   const [apps, setApps] = useState<DesktopApp[] | null>(null);
+  const [pollError, setPollError] = useState("");
   const [query, setQuery] = useState("");
   const search = query.trim().toLowerCase();
   const matchingApps =
@@ -1324,12 +1325,15 @@ function AppsCard({
   const load = useCallback(
     () =>
       request<{ apps: DesktopApp[] }>(peer, "/api/browser/desktop/apps")
-        .then((value) => setApps(value.apps))
+        .then((value) => {
+          setApps(value.apps);
+          setPollError("");
+        })
         .catch((e) => {
           ended(e);
-          tell(`Not done: ${(e as Error).message}`, "is-blocked");
+          setPollError((e as Error).message);
         }),
-    [peer, ended, tell],
+    [peer, ended],
   );
   useEffect(() => {
     void load();
@@ -1354,7 +1358,7 @@ function AppsCard({
           { status: response.status, body: value },
         );
       tell(
-        `Done: ${value.app || app?.name || "the app"} is in front. The screen above is updating.`,
+        `Open request completed for ${value.app || app?.name || "the app"}. Check the screen to verify it is in front.`,
         "is-done",
       );
       setTimeout(() => void load(), 1500);
@@ -1384,6 +1388,11 @@ function AppsCard({
             : "Password apps and Reach are never listed."}
         </p>
       </div>
+      {pollError && (
+        <p className="ap-status is-blocked" role="alert">
+          {pollError}
+        </p>
+      )}
       {apps === null ? (
         <p className="ap-quiet">Loading apps…</p>
       ) : apps.length ? (

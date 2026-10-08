@@ -64,6 +64,9 @@ export function useVoiceMemo(onMemo: (memo: Blob) => Promise<void>, onProblem: (
   const [seconds, setSeconds] = useState(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const keep = useRef(true);
+  const generation = useRef(0);
+  // Ref closes the gap before React renders or microphone permission resolves.
+  const pending = useRef(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const release = () => {
@@ -74,21 +77,31 @@ export function useVoiceMemo(onMemo: (memo: Blob) => Promise<void>, onProblem: (
   };
   // Leaving the chat stops the microphone; nothing is sent.
   useEffect(
-    () => () => {
-      keep.current = false;
-      if (recorder.current?.state === "recording") recorder.current.stop();
-      release();
+    () => {
+      generation.current++;
+      return () => {
+        generation.current++;
+        pending.current = false;
+        keep.current = false;
+        if (recorder.current?.state === "recording") recorder.current.stop();
+        release();
+      };
     },
     [],
   );
 
   const start = async () => {
-    if (state !== "idle") return;
+    if (state !== "idle" || pending.current) return;
     if (!canRecord()) return onProblem("This browser can't record. Use your keyboard's dictation instead.");
+    pending.current = true;
+    const attempt = generation.current;
+    const current = () => generation.current === attempt;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      if (!current()) return;
+      pending.current = false;
       const name = (e as Error)?.name;
       return onProblem(
         name === "NotAllowedError" || name === "SecurityError"
@@ -98,29 +111,41 @@ export function useVoiceMemo(onMemo: (memo: Blob) => Promise<void>, onProblem: (
             : "The microphone couldn't start. Use your keyboard's dictation instead.",
       );
     }
+    if (!current()) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
     let rec: MediaRecorder;
     try {
       const type = pickType();
       rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
     } catch {
+      pending.current = false;
       stream.getTracks().forEach((t) => t.stop());
       return onProblem("This browser can't record. Use your keyboard's dictation instead.");
     }
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     rec.onstop = async () => {
-      release();
+      // An older recorder must never release a newer recording's resources.
+      if (recorder.current === rec) release();
+      if (!current()) return;
       if (!keep.current || !chunks.length) {
+        pending.current = false;
         setState("idle");
         return;
       }
       setState("working");
       try {
-        await onMemo(await toWav(new Blob(chunks, { type: rec.mimeType || chunks[0].type })));
+        const memo = await toWav(new Blob(chunks, { type: rec.mimeType || chunks[0].type }));
+        if (current() && keep.current) await onMemo(memo);
       } catch (e) {
-        onProblem((e as Error).message || "The memo couldn't be sent to the Mac.");
+        if (current()) onProblem((e as Error).message || "The memo couldn't be sent to the Mac.");
       } finally {
-        setState("idle");
+        if (current()) {
+          pending.current = false;
+          setState("idle");
+        }
       }
     };
     recorder.current = rec;
@@ -132,8 +157,16 @@ export function useVoiceMemo(onMemo: (memo: Blob) => Promise<void>, onProblem: (
       setSeconds(s);
       if (s >= MAX_SECONDS && rec.state === "recording") rec.stop();
     }, 250);
-    rec.start(1000);
-    setState("recording");
+    try {
+      rec.start(1000);
+      setState("recording");
+    } catch {
+      keep.current = false;
+      release();
+      pending.current = false;
+      setState("idle");
+      onProblem("The microphone couldn't start recording. Try again, or use your keyboard's dictation.");
+    }
   };
   const stop = () => {
     if (recorder.current?.state === "recording") recorder.current.stop();

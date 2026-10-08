@@ -19,9 +19,15 @@ export const CONSENT_CHOICES = { deny: "Deny", allow: "Allow for this session" }
 // request's card is pressed.
 export async function pressClaudeConsent(
   choice,
-  { dataDir, expect = [], run = exec, binary = () => desktopBinary({ dataDir }, "claude-consent") } = {},
+  { dataDir, expect = [], run = exec, binary = () => desktopBinary({ dataDir }, "claude-consent"), beforeDispatch = () => {} } = {},
 ) {
-  const file = await binary();
+  let file;
+  try {
+    file = await binary();
+    beforeDispatch();
+  } catch (error) {
+    throw Object.assign(error, { notDispatched: true });
+  }
   const { stdout } = await run(file, ["--press", choice, ...expect.flatMap((text) => ["--expect", text])], { timeout: 20000 });
   let result = {};
   try {
@@ -37,6 +43,7 @@ export async function pressClaudeConsent(
 }
 
 export function createClaudeConsent({
+  desktopAutomation = null,
   press,
   open,
   // The consent card a session waits on now ({ id }), or null.
@@ -53,6 +60,7 @@ export function createClaudeConsent({
   let busy = false;
   // Each pressed request: "answered" once confirmed, else "pressed".
   const attempted = new Map();
+  const run = (work) => desktopAutomation ? desktopAutomation.run(work) : work(() => {});
   return {
     owns: (promptId) => typeof promptId === "string" && promptId.startsWith("consent:"),
     async answer(id, promptId, { decision } = {}) {
@@ -65,32 +73,40 @@ export function createClaudeConsent({
       if (before) throw bad(`Reach already pressed an answer in the Claude app but couldn't confirm it. Check the card on your ${computerWord(platform)}.`, 409);
       busy = true;
       try {
+      return await run(async (guard) => {
       const asked = await pending(id);
+      guard();
       if (asked?.id !== promptId) throw bad("This request was already answered.", 409);
       // Drawn in its session's view: show that session first.
       const list = shown();
       if (list[0]?.id !== id) {
         const record = list.find((s) => s.id === id);
         if (!record) throw bad(`The Claude app doesn't list this session. Answer it on your ${computerWord(platform)}.`, 409);
-        await open(`claude://code/continue?session=${record.session}`);
+        guard();
+        await open(`claude://code/continue?session=${record.session}`, { background: true });
         await wait(switchMs);
+        guard();
       }
       if ((await pending(id))?.id !== promptId) throw bad("This request was already answered.", 409);
       if (shown()[0]?.id !== id) throw bad(`The Claude app is not showing this request. Answer it on your ${computerWord(platform)}.`, 409);
+      guard();
       attempted.set(`${id}:${promptId}`, "pressed");
       // The card says what Reach expects: "Allow Claude to use" and each app.
       try {
-        await press(choice, ["Allow Claude to use", ...(asked.apps || [])]);
+        await press(choice, ["Allow Claude to use", ...(asked.apps || [])], guard);
       } catch (e) {
-        if (e?.retry) attempted.delete(`${id}:${promptId}`);
+        if (e?.notDispatched === true || e?.retry) attempted.delete(`${id}:${promptId}`);
         throw e;
       }
-      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150))
-        if ((await pending(id))?.id !== promptId) {
+      for (const until = Date.now() + confirmMs; Date.now() < until; await wait(150)) {
+        const current = await pending(id);
+        if (current?.id !== promptId) {
           attempted.set(`${id}:${promptId}`, "answered");
           return { answered: true };
         }
+      }
       throw bad(`The Claude app did not confirm the answer. Answer it on your ${computerWord(platform)}.`, 409);
+      });
       } finally { busy = false; }
     },
   };

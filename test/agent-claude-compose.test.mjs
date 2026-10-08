@@ -99,12 +99,12 @@ test("another chat on screen: it waits while someone uses the Mac, then opens th
   assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
 });
 
-test("nothing is typed unless the window really shows the chat; a switch that doesn't land is undone and retried later", async () => {
+test("nothing is typed unless the window really shows the chat; a switch that doesn't land is retried without another navigation", async () => {
   const m = mac({ onScreen: B, lands: false });
   await assert.rejects(compose(m).deliver(A, message), (e) => e.waiting && /didn.t open this chat/.test(e.message));
   assert.deepEqual(m.typed, []);
-  assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`, `claude://code/continue?session=local_${B}`]);
-  // The helper's own refusal (another chat, a draft) keeps it waiting, and the window goes back.
+  assert.deepEqual(m.opened, [`claude://code/continue?session=local_${A}`]);
+  // A refusal before the target appears keeps it waiting without redundant navigation.
   const draft = mac({ onScreen: B });
   const refusing = compose(draft, {
     type: async () => {
@@ -112,7 +112,8 @@ test("nothing is typed unless the window really shows the chat; a switch that do
     },
   });
   await assert.rejects(refusing.deliver(A, message), /draft/);
-  assert.equal(draft.opened.at(-1), `claude://code/continue?session=local_${B}`);
+  assert.deepEqual(draft.opened, [`claude://code/continue?session=local_${A}`]);
+  assert.equal(draft.onScreen, B, "the failed target switch never replaced the original chat");
 });
 
 test("a box with text typed on the Mac never holds a message: set aside and put back once nobody is at the Mac, or with Send now", async () => {

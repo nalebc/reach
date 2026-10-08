@@ -184,6 +184,8 @@ export function createAgentSessions({
   detect = detectAgents,
   // Sessions started here, waiting to join the Claude app's list (claude-import.mjs).
   claudeImports = null,
+  // Shared with agent/phone desktop control and all background Claude UI work.
+  desktopAutomation = null,
   // The Claude app's window, reloaded once nobody is at the Mac after Reach
   // replies in a session it has shown (claude-import.mjs); never in tests.
   claudeRefresh = process.env.NODE_TEST_CONTEXT
@@ -191,6 +193,7 @@ export function createAgentSessions({
     : createClaudeRefresh({
         file: path.join(dataDir, "claude-refresh.json"),
         open,
+        desktopAutomation,
         asking: () => [...readSessionRegistry().values()].some((e) => e.where === "claude-app" && e.waiting),
       }),
   // Pressing a button on the Claude app's own consent card (claude-consent.mjs); never in tests.
@@ -198,7 +201,7 @@ export function createAgentSessions({
     ? async () => {
         throw Object.assign(new Error("Not in tests."), { status: 409 });
       }
-    : (choice, expect) => pressClaudeConsent(choice, { dataDir, expect }),
+    : (choice, expect, guard) => pressClaudeConsent(choice, { dataDir, expect, beforeDispatch: guard }),
   claudeShown,
   // Messages waiting for a busy Claude app session, kept until handed over
   // The chats the Claude app lists, the one on screen first (claude-import.mjs).
@@ -259,6 +262,7 @@ export function createAgentSessions({
     : createClaudeImports({
         file: path.join(dataDir, "claude-imports.json"),
         open,
+        desktopAutomation,
         resume: true,
         held: (id) => claudeHost.drives(id),
         describe: async (id) => {
@@ -297,6 +301,7 @@ export function createAgentSessions({
   // The Claude app's own consent card, answered from the phone when the app
   // holds the session and its transcript still waits on the card.
   const claudeConsent = createClaudeConsent({
+    desktopAutomation,
     press: pressConsent,
     platform,
     open,
@@ -500,9 +505,10 @@ export function createAgentSessions({
     (process.env.NODE_TEST_CONTEXT
       ? null
       : createClaudeCompose({
-          type: (message) => typeIntoClaude(message, { dataDir }),
+          type: (message, guard) => typeIntoClaude(message, { dataDir, beforeDispatch: guard }),
           onScreen: () => claudeOnScreen({ dataDir }),
           open,
+          desktopAutomation,
           arrived: (id, text, since, sent) => claude.arrived(id, text, since, sent),
           // Woken by the agents' files (agent-watch), with a slow look in
           // case a write goes unnoticed.
@@ -1765,13 +1771,20 @@ export function createAgentSessions({
     async openInApp(agent, id) {
       if (keepOut(agent, id))
         throw blocked("This chat is part of a team at work, and the team works only in Reach. Stop the team to open it in its app.");
-      const { session } = await adapter(agent).read(id, { limit: 1 });
-      // One writer at a time: Reach lets go before the Claude app takes it.
-      if (agent === "claude") claudeHost.release(id);
-      const url = nativeLink(session);
-      if (!url) throw Object.assign(new Error("This session cannot be opened in its app."), { status: 400 });
-      await open(url);
-      return { opened: url.split(":")[0] };
+      const work = async (guard) => {
+        const { session } = await adapter(agent).read(id, { limit: 1 });
+        const url = nativeLink(session);
+        if (!url) throw Object.assign(new Error("This session cannot be opened in its app."), { status: 400 });
+        guard();
+        // One writer at a time: Reach lets go before the Claude app takes it.
+        if (agent === "claude") claudeHost.release(id);
+        guard();
+        await open(url);
+        // Opening the requested app is intentional. A resulting foreground
+        // change must not erase the completed navigation acknowledgement.
+        return { opened: url.split(":")[0] };
+      };
+      return desktopAutomation ? desktopAutomation.run(work) : work(() => {});
     },
   };
 }

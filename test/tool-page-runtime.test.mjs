@@ -193,7 +193,7 @@ test("structured browser setup errors retain their code and service status", asy
     (error) =>
       error.status === 503 &&
       error.code === "setup_required" &&
-      error.uncertain === false,
+      error.uncertain !== true && /owner needs to enable/.test(error.message),
   );
 });
 

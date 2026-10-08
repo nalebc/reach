@@ -10,6 +10,14 @@ import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
 
 const run = promisify(execFile);
+// Only fixed helper diagnostics may cross into a chat response. Other stderr
+// can contain filenames, URLs or speech framework exception details.
+const KNOWN_PROBLEMS = new Set([
+  "Transcribing needs macOS 26 or later.",
+  "This Mac has no speech model for this language.",
+  "This recording's format can't be read on the Mac.",
+]);
+const TRANSCRIPTION_PROBLEM = "This Mac couldn't transcribe the memo. Keep the recording attached, or try again on macOS 26 or later.";
 const LOCALE = /^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8}){0,3}$/;
 
 // What the recording is, from its first bytes (the name and type a phone
@@ -34,7 +42,8 @@ export const memoName = (kind, now = new Date()) =>
 export function createVoice({ config, platform = process.platform, binary = (signal) => desktopBinary(config, "transcribe", { signal }), exec = run } = {}) {
   return {
     // { text } with the words, or { problem } saying why there are none.
-    async transcribe(file, { locale } = {}) {
+    async transcribe(file, { locale, authorize = () => {} } = {}) {
+      authorize();
       if (platform !== "darwin") return { problem: "Voice memos turn into words on a Mac." };
       let helper;
       try {
@@ -42,20 +51,29 @@ export function createVoice({ config, platform = process.platform, binary = (sig
       } catch {
         return { problem: "This Mac couldn't prepare voice transcription. Install Apple Command Line Tools." };
       }
+      // Compilation can take time. Do not start native work after the request
+      // has expired, disconnected or been revoked; never turn this into a
+      // fallback attachment by swallowing the authority refusal.
+      authorize();
+      const args = [file, ...(typeof locale === "string" && LOCALE.test(locale) ? [locale] : [])];
+      let stdout;
       try {
-        const args = [file, ...(typeof locale === "string" && LOCALE.test(locale) ? [locale] : [])];
         // The first memo in a language downloads its model: give it time.
-        const { stdout } = await exec(helper, args, { timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+        ({ stdout } = await exec(helper, args, { timeout: 180000, maxBuffer: 4 * 1024 * 1024 }));
+      } catch (error) {
+        authorize();
+        const said = String(error?.stderr || "").trim().split("\n").pop();
+        return { problem: error?.killed
+          ? "Transcribing took too long. Keep the recording attached or try a shorter memo."
+          : KNOWN_PROBLEMS.has(said) ? said : TRANSCRIPTION_PROBLEM };
+      }
+      authorize();
+      try {
         const out = JSON.parse(String(stdout).trim().split("\n").pop() || "{}");
         const text = typeof out.text === "string" ? out.text.trim() : "";
         return text ? { text } : { problem: "No words were heard in that memo." };
-      } catch (error) {
-        const said = String(error?.stderr || "").trim().split("\n").pop();
-        return {
-          problem: error?.killed
-            ? "Transcribing took too long."
-            : said || "This Mac couldn't transcribe the memo. It needs macOS 26 or later.",
-        };
+      } catch {
+        return { problem: TRANSCRIPTION_PROBLEM };
       }
     },
   };

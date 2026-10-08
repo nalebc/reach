@@ -539,7 +539,9 @@ test("owner stop targets a run instance, and disable remains stopped after quick
       release = () => resolve({ ok: true, bundle: chrome.bundleId });
       entered();
     });
-  const firstDispatched = new Promise((resolve) => { entered = resolve; });
+  const firstDispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   const first = f.shortcuts.run(f.authorize, saved.id);
   await firstDispatched;
   const firstId = f.shortcuts.ownerList().running.runId;
@@ -547,7 +549,9 @@ test("owner stop targets a run instance, and disable remains stopped after quick
   f.shortcuts.cancel(firstId);
   release();
   assert.equal((await first).status, "stopped");
-  const secondDispatched = new Promise((resolve) => { entered = resolve; });
+  const secondDispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   const second = f.shortcuts.run(f.authorize, saved.id);
   await secondDispatched;
   const secondId = f.shortcuts.ownerList().running.runId;
@@ -568,7 +572,9 @@ test("an owner disable is sticky even when re-enabled before the awaited action 
   const saved = f.shortcuts.save(f.authorize);
   let release;
   let entered;
-  const dispatched = new Promise((resolve) => { entered = resolve; });
+  const dispatched = new Promise((resolve) => {
+    entered = resolve;
+  });
   f.desktop.open = () =>
     new Promise((resolve) => {
       release = () => resolve({ ok: true, bundle: chrome.bundleId });

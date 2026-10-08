@@ -7,6 +7,37 @@ import { toolPageOperation } from "./tool-page-runtime.mjs";
 const script = fileURLToPath(
   new URL("../scripts/native/tool-browser.js", import.meta.url),
 );
+// Native stderr and page exceptions may contain URLs, fields or local paths.
+// Keep only protocol codes and fixed guidance across this trust boundary.
+const ERRORS = {
+  setup_required: [503, "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."],
+  unavailable: [503, "The browser helper could not start or stay connected. Inspect the browser before continuing."],
+  browser_changed: [409, "The browser command failed or its target changed. Inspect the browser before continuing."],
+  browser_window_required: [503, "The owner needs to open a browser window in the intended profile before running this tool."],
+  browser_closed: [409, "The selected browser is not running."],
+  cancelled: [409, "The browser run was cancelled. Inspect any completed effects."],
+  uncertain: [504, "The browser did not acknowledge this command. Inspect it before continuing."],
+  result_limit: [413, "The browser result exceeds its size limit."],
+  loading: [409, "The requested browser page is still loading."],
+  wrong_site: [409, "The page left the tool's allowed websites."],
+  protected: [403, "This browser page or field is protected."],
+  stale: [409, "The selected browser document or item changed. Obtain a new handle before continuing."],
+  invalid_selector: [409, "The declared selector is invalid."],
+  ambiguous: [409, "More than one target matches. Inspect the page before continuing."],
+  missing: [409, "The expected target is missing."],
+  limit: [409, "This page reached the tool operation limit."],
+  unexpected: [409, "An existing dialog or target must be resolved before continuing."],
+  unsupported: [409, "The browser result or target could not be verified."],
+  verification: [409, "The browser did not confirm the expected result. Inspect any completed effects."],
+  disabled: [409, "The expected control is disabled."],
+  invalid: [409, "The browser operation is invalid."],
+  download_failed: [409, "The browser could not download this attachment."],
+};
+const browserError = (code, uncertain = false, fallback = "unsupported") => {
+  const safeCode = typeof code === "string" && Object.hasOwn(ERRORS, code) ? code : fallback;
+  const [status, message] = ERRORS[safeCode];
+  return Object.assign(fail(status, message), { code: safeCode, ...(uncertain ? { uncertain: true } : {}) });
+};
 export function nativeToolProcess(
   command,
   args,
@@ -15,7 +46,7 @@ export function nativeToolProcess(
 ) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(signal.reason);
+      reject(browserError("cancelled", true));
       return;
     }
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -64,26 +95,23 @@ export function nativeToolProcess(
         ),
       timeoutMs,
     );
-    child.on("error", () =>
-      finish(
-        Object.assign(
-          fail(
-            503,
-            "The browser helper could not start. The owner should check Reach’s browser setup.",
-          ),
-          { code: "setup_required" },
-        ),
-      ),
-    );
+    child.on("error", () => {
+      const error = browserError("unavailable", true);
+      // A failed spawn has no process to retire. Any existing child must
+      // still close before its caller can release desktop ownership.
+      if (!child.pid) finish(error);
+      else stop(error);
+    });
     child.stdin.on("error", () => {});
     child.stdout.on("data", (chunk) => {
       size += chunk.length;
       if (size > maxBytes)
-        stop(fail(413, "The browser result exceeds its size limit."));
+        stop(browserError("result_limit", true));
       else output.push(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      if (errors.reduce((n, c) => n + c.length, 0) < 8192) errors.push(chunk);
+      const left = 8192 - errors.reduce((n, c) => n + c.length, 0);
+      if (left > 0) errors.push(chunk.subarray(0, left));
     });
     child.on("close", (code) => {
       if (stopped) {
@@ -101,16 +129,17 @@ export function nativeToolProcess(
             fail(
               setup ? 503 : 409,
               setup
-                ? "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach’s Terminal to control it in macOS Automation settings."
-                : [
+                ? ERRORS.setup_required[1]
+                : // Reach's own fixed words for the target it lost, never
+                  // the browser's text (it can hold URLs or paths).
+                  [
                     "The target browser window is gone.",
                     "The target tab is gone.",
                     "The target tab changed. No action was taken.",
                     "The target document changed. No action was taken.",
                     "The new browser window has not acknowledged creation. Inspect it before continuing.",
                     "The browser returned an unexpected result.",
-                  ].find((detail) => message.includes(detail)) ||
-                    "The browser command failed. Check browser setup with the owner, or continue in Screen.",
+                  ].find((detail) => message.includes(detail)) || ERRORS.browser_changed[1],
             ),
             { code: setup ? "setup_required" : "browser_changed" },
           ),
@@ -131,7 +160,8 @@ export function createToolBrowserDriver({
           fail(503, "Deterministic browser tools require macOS."),
           { code: "setup_required" },
         );
-      const raw = await process(
+      let raw;
+      try { raw = await process(
         "/usr/bin/osascript",
         ["-l", "JavaScript", script],
         JSON.stringify({
@@ -140,7 +170,9 @@ export function createToolBrowserDriver({
           ...(options?.appPath ? { appPath: options.appPath } : {}),
         }),
         options,
-      );
+      ); } catch (error) {
+        throw browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain");
+      }
       let result;
       try {
         result = JSON.parse(raw);
@@ -151,13 +183,10 @@ export function createToolBrowserDriver({
         );
       }
       if (result?.error)
-        throw Object.assign(
-          fail(result.code === "setup_required" ? 503 : 409, result.error),
-          {
-            code: result.code,
-            uncertain: result.uncertain === true,
-          },
-        );
+        throw browserError(result.code, result.uncertain === true);
+      // Download errors are nested status results, not ordinary page errors.
+      // Their fetch/stream exception text is untrusted diagnostic data too.
+      if (result?.state === "failed") throw browserError("download_failed");
       return result;
     },
     async page(browser, target, request, options) {

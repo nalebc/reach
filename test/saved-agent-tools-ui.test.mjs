@@ -431,3 +431,138 @@ for (const replacement of [false, true])
     }
     assert.equal(runs, 1, "rerender never repeats a dispatched action");
   });
+
+for (const failedRoute of ["/api/browser", "/api/browser/shortcuts"])
+  test(`saved polling clears recovered 429 from ${failedRoute}`, async (t) => {
+    const polls = [];
+    let rejected = true;
+    const interval = globalThis.setInterval;
+    t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+      if (ms === 3000) {
+        polls.push(callback);
+        return interval(() => {}, 3600000);
+      }
+      return interval(callback, ms, ...args);
+    });
+    const calls = mock();
+    const fetch = globalThis.fetch;
+    globalThis.fetch = dom.window.fetch = (url, init) =>
+      rejected && new URL(url).pathname === failedRoute
+        ? Promise.resolve(
+            Response.json(
+              { error: "Too many agent requests. Wait briefly and retry." },
+              { status: 429 },
+            ),
+          )
+        : fetch(url, init);
+    const c = await render();
+    await dom.waitFor(() => c.textContent.includes("Too many agent requests"));
+    rejected = false;
+    for (const poll of polls) poll();
+    await dom.waitFor(() => button(c, "Open Gmail"));
+    await settle();
+    assert.doesNotMatch(c.textContent, /Too many agent requests/);
+    assert.equal(calls.filter((call) => call.method !== "GET").length, 0);
+  });
+
+for (const partial of [false, true])
+  test(`saved polling recovery preserves ${partial ? "partial completion" : "unknown action outcome"} without replay`, async (t) => {
+    const polls = [];
+    let throttled = false,
+      runs = 0;
+    const interval = globalThis.setInterval;
+    t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+      if (ms === 3000) {
+        polls.push(callback);
+        return interval(() => {}, 3600000);
+      }
+      return interval(callback, ms, ...args);
+    });
+    const calls = mock();
+    const fetch = globalThis.fetch;
+    globalThis.fetch = dom.window.fetch = (url, init = {}) => {
+      const route = new URL(url).pathname;
+      if (route.endsWith("/run")) {
+        runs++;
+        return Promise.resolve(
+          partial
+            ? reply({
+                status: "stopped",
+                completedSteps: 1,
+                totalSteps: 2,
+                error: "Focus changed.",
+              })
+            : Response.json(
+                {
+                  error:
+                    "Completion unknown. Inspect the screen before retrying.",
+                },
+                { status: 503 },
+              ),
+        );
+      }
+      if (throttled && route === "/api/browser/shortcuts")
+        return Promise.resolve(
+          Response.json(
+            { error: "Too many agent requests. Wait briefly and retry." },
+            { status: 429 },
+          ),
+        );
+      return fetch(url, init);
+    };
+    const c = await render();
+    await dom.waitFor(() => button(c, "Open Gmail"));
+    button(c, "Open Gmail").click();
+    const outcome = partial ? "Stopped after 1/2 steps" : "Completion unknown";
+    await dom.waitFor(() => c.textContent.includes(outcome));
+    await settle();
+    throttled = true;
+    for (const poll of polls) poll();
+    await dom.waitFor(() => c.textContent.includes("Too many agent requests"));
+    assert.ok(
+      c.textContent.includes(outcome),
+      "polling failure must not overwrite the action outcome",
+    );
+    throttled = false;
+    for (const poll of polls) poll();
+    await settle();
+    assert.doesNotMatch(c.textContent, /Too many agent requests/);
+    assert.ok(
+      c.textContent.includes(outcome),
+      "polling recovery must not dismiss the action outcome",
+    );
+    assert.equal(runs, 1, "background recovery never repeats a write");
+  });
+
+test("Discard recording uses the bodyless shared plan and clears recording controls", async () => {
+  mock({
+    saved: [],
+    recording: { name: "Synthetic recording", stepCount: 1, error: "" },
+  });
+  const fallback = globalThis.fetch;
+  let discarded = false,
+    deletes = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/browser/shortcuts/record" && init.method === "DELETE") {
+      deletes++;
+      assert.equal(
+        init.body,
+        undefined,
+        "Funnel does not permit a DELETE body",
+      );
+      discarded = true;
+      return reply({ ok: true });
+    }
+    if (discarded && route === "/api/browser/shortcuts")
+      return reply({ shortcuts: [], recording: null });
+    return fallback(url, init);
+  };
+  const c = await render();
+  await dom.waitFor(() => button(c, "Discard recording"));
+  button(c, "Discard recording").click();
+  await dom.waitFor(() => c.textContent.includes("Recording discarded."));
+  await dom.waitFor(() => !button(c, "Discard recording"));
+  assert.ok(button(c, "Record new tool"));
+  assert.equal(deletes, 1);
+});

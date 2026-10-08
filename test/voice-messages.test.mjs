@@ -112,8 +112,8 @@ test("a memo never fails: words, or the reason there are none", async () => {
   assert.match((await createVoice({ platform: "win32" }).transcribe("/a.wav")).problem, /on a Mac/);
 });
 
-const macOS = process.platform === "darwin" ? Number(execFileSync("sw_vers", ["-productVersion"]).toString().split(".")[0]) : 0;
-test("on this Mac, a spoken memo becomes its words", { skip: (macOS < 26 && "needs macOS 26") || (process.env.CI && "downloads a speech model"), timeout: 300000 }, async () => {
+const macOS = process.env.REACH_TEST_VOICE_NATIVE === "1" && !process.env.CI && process.platform === "darwin" ? Number(execFileSync("sw_vers", ["-productVersion"]).toString().split(".")[0]) : 0;
+test("on this Mac, a spoken memo becomes its words", { skip: process.env.REACH_TEST_VOICE_NATIVE !== "1" ? "set REACH_TEST_VOICE_NATIVE=1 for native speech/model access" : (macOS < 26 && "needs macOS 26") || (process.env.CI && "downloads a speech model"), timeout: 300000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-voice-"));
   try {
     const aiff = path.join(dir, "memo.aiff");

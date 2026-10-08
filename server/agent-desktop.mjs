@@ -184,15 +184,19 @@ export function createAgentDesktop(config, {
   home = os.homedir(),
   verifyClient = () => undefined,
   phoneControls = () => false,
+  automationControls = () => false,
+  onObservation = () => {},
   paused = () => false,
   onActivity = () => {},
   record = () => {},
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
+  observationMs = 30000,
 } = {}) {
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
+  const observations = new Map(); // recent authorized desktop use, separate from agent input ownership
   const shots = new Map();    // clientId -> recent screenshot times
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
@@ -256,6 +260,7 @@ export function createAgentDesktop(config, {
   const checkInputAllowed = (client) => {
     if (pausedAgents.has(client.id)) throw Object.assign(fail(409, "The owner paused this agent. It can look, not touch, until they resume it."), { kind: "paused" });
     if (phoneControls()) throw Object.assign(fail(409, "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
+    if (automationControls()) throw Object.assign(fail(409, "A chat is updating its desktop app. Wait for that operation to finish, then check the screen."), { kind: "busy", holder: "Desktop automation", retryInMs: 1000 });
   };
   // One agent at a time on the Mac. Holding it is short: each action extends it.
   const take = (client) => {
@@ -291,6 +296,27 @@ export function createAgentDesktop(config, {
     return pending ? { clientId: pending.client.id, name: String(pending.client.name || "Another agent").slice(0, 80) }
       : lease.until > now() ? { clientId: lease.holder, name: lease.name } : null;
   };
+  const observe = (client) => {
+    observations.set(client.id, { until: Math.min(client.expiresAt, now() + observationMs), fingerprint: fingerprint(client) });
+    onObservation();
+  };
+  const automationBusy = () => {
+    // Pending native input remains authoritative even after revocation or an
+    // expired idle lease, until the old helper has actually exited.
+    if (currentHolder()) return true;
+    for (const [id, entry] of observations) {
+      let client;
+      try { client = verifyClient(id); } catch { return true; }
+      if (entry.until <= now() || !client || client.kind !== "agent" || client.status !== "accepted" ||
+          client.policy?.browser !== true || client.policy.preset === undefined || !client.scopes?.includes("browser:screen") ||
+          client.expiresAt <= now() || fingerprint(client) !== entry.fingerprint) {
+        observations.delete(id);
+        continue;
+      }
+      return true;
+    }
+    return false;
+  };
   const note = (client, kind, result) => {
     const previous = activity.get(client.id);
     const entry = { at: now(), kind, app: String(result?.app || "").slice(0, 100), bundle: String(result?.bundle || "").slice(0, 200), name: client.name };
@@ -300,6 +326,20 @@ export function createAgentDesktop(config, {
   };
   return {
     available,
+    automationBusy,
+    // Owner control interrupts queued/current agent input, but receives an
+    // actual process-exit barrier rather than the promptly rejected request.
+    yieldForOwner() {
+      const pending = [...pendingInputs];
+      const helpers = [...new Set(pending.map(entry => entry.helper))];
+      if (!helpers.length) return null;
+      return Promise.all([...pending.flatMap(entry => entry.finished ? [entry.finished] : []), ...helpers.map(helper => {
+        try { helper.stop(); } catch { return Promise.reject(fail(503, "The previous agent input helper could not be stopped.")); }
+        return helper.terminated && typeof helper.terminated.then === "function"
+          ? helper.terminated
+          : Promise.reject(fail(503, "The previous agent input helper termination could not be verified."));
+      })]);
+    },
     normalizeAction,
     /** Every app on this Mac, for the owner's picker: {id, name, bundleId, running}. */
     async catalog(authorize = () => {}) {
@@ -330,6 +370,7 @@ export function createAgentDesktop(config, {
       if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
+      observe(latest);
       return { jpeg, width: result.width, height: result.height, hidden: result.hidden || 0 };
     },
     /** What is in front: the app, its window title, whether it takes commands or a password, and why it is closed to the agent if it is. */
@@ -340,6 +381,7 @@ export function createAgentDesktop(config, {
       const result = answer(await state.helper.send({ op: "front" }));
       checkState(client, authorize, "browser:screen", state);
       const holder = currentHolder();
+      observe(latest);
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),
@@ -366,6 +408,7 @@ export function createAgentDesktop(config, {
         const result = answer(await dispatchInput(latest, state, { op: "act", action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
+        observe(latest);
         note(latest, action.type, result);
         return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
       } catch (error) {
@@ -384,6 +427,7 @@ export function createAgentDesktop(config, {
       const result = answer(await dispatchInput(latest, state, { op: "open", app: appPath }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
+      observe(latest);
       note(latest, "open", result);
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
     },
@@ -395,7 +439,11 @@ export function createAgentDesktop(config, {
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
       take(latest);
-      const pending = { client: latest, helper: state.helper };
+      // Browser effects run in a separate process from this policy-check
+      // helper. Owner takeover must wait for both, including a rejected run.
+      let finish;
+      const finished = new Promise(resolve => { finish = resolve; });
+      const pending = { client: latest, helper: state.helper, finished };
       pendingInputs.add(pending);
       const guard = async () => {
         checkState(client, authorize, "browser:control", state);
@@ -426,6 +474,7 @@ export function createAgentDesktop(config, {
       } finally {
         if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
         pendingInputs.delete(pending);
+        finish();
       }
     },
     /** Who holds the Mac and what each agent last did, for the owner. */
@@ -444,6 +493,7 @@ export function createAgentDesktop(config, {
       sessions.delete(id);
       activity.delete(id);
       shots.delete(id);
+      observations.delete(id);
       pausedAgents.delete(id);
       release(id);
     },
@@ -451,6 +501,7 @@ export function createAgentDesktop(config, {
       closed = true;
       for (const state of sessions.values()) state.helper.stop();
       sessions.clear();
+      observations.clear();
       utility?.stop(); utility = null; clearTimeout(utilityIdle);
     },
   };
