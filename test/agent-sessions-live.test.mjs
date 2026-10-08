@@ -933,3 +933,175 @@ test("an unreadable Codex queue is not mistaken for cancellation and never resen
   }
   assert.ok(daemon.methods().every(method => method === "thread/queue/list"));
 });
+
+function nativeOwnerFixture(daemon, options = {}) {
+  let request, rawRequests;
+  const owned = new Set(), settings = [];
+  const live = createCodexLive({ daemon, ...options, ownerFactory(config) {
+    request = config.handleRequest; rawRequests = config.requests;
+    return {
+      async claim(id) { owned.add(id); }, has: id => owned.has(id), hasFollowers: () => true,
+      settings: (id, value) => settings.push([id, value]), update() {}, forget: id => owned.delete(id),
+      reset: () => owned.clear(), close: () => owned.clear(),
+    };
+  } });
+  return { live, request: (...args) => request(...args), rawRequests: (...args) => rawRequests(...args), settings };
+}
+
+test("Codex desktop starts the next turn on Reach's same writer between completed turns", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "native-turn" } } });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "first" });
+  daemon.emit("turn/completed", { threadId: T, turn: { id: "native-turn", status: "completed" } });
+  assert.equal(f.live.drives(T), true);
+  assert.equal(daemon.methods().includes("thread/unsubscribe"), false);
+  const result = await f.request("thread-follower-start-turn", {
+    conversationId: T, turnStart: { request: { threadId: "another-task", input: [{ type: "text", text: "desktop", text_elements: [] }], clientUserMessageId: "native-message", model: "gpt-6-luna" } },
+  });
+  assert.equal(result.result.turn.id, "native-turn");
+  assert.deepEqual(daemon.calls.at(-1), ["turn/start", { threadId: T, input: [{ type: "text", text: "desktop", text_elements: [] }], clientUserMessageId: "native-message", model: "gpt-6-luna" }]);
+  assert.equal(daemon.methods().filter(m => m === "thread/resume").length, 1);
+  assert.equal(daemon.methods().some(m => /thread\/(start|fork)/.test(m)), false);
+});
+
+test("native desktop queue edits retain newer Reach messages and preserve context on reorders", async () => {
+  let queue = [
+    { id: "old", input: [{ type: "text", text: "old", text_elements: [] }] },
+    { id: "kept", input: [{ type: "text", text: "<ide_context>code</ide_context>\nKeep", text_elements: [] }, { type: "skill", name: "example", path: "/tmp/skill" }] },
+    { id: "new-reach", input: [{ type: "text", text: "new", text_elements: [] }] },
+  ];
+  const original = structuredClone(queue[1].input);
+  const daemon = fakeDaemon({
+    "turn/start": { turn: { id: "t1" } }, "thread/queue/list": () => ({ data: queue }),
+    "thread/queue/delete": p => { queue = queue.filter(q => q.id !== p.queuedSubmissionId); return { deleted: true }; },
+    "thread/queue/reorder": p => { queue = p.queuedSubmissionIds.map(id => queue.find(q => q.id === id)); return {}; },
+  });
+  const f = nativeOwnerFixture(daemon); await f.live.send(T, { text: "go" });
+  await f.request("thread-follower-set-queued-follow-ups-state", { conversationId: T, state: { [T]: [{ id: "kept", text: "Keep" }] } }, { queueIds: ["old", "kept"] });
+  assert.deepEqual(queue.map(q => q.id), ["kept", "new-reach"]);
+  assert.deepEqual(queue[0].input, original);
+  assert.equal(daemon.methods().includes("thread/queue/update"), false);
+  const before = daemon.calls.length;
+  await assert.rejects(f.request("thread-follower-set-queued-follow-ups-state", { conversationId: T, state: { [T]: [{ id: "kept", text: "x".repeat(50001) }] } }, { queueIds: ["new-reach"] }), /50,000 characters/);
+  assert.equal(daemon.calls.slice(before).some(([m]) => ["thread/queue/delete", "thread/queue/update", "thread/queue/reorder"].includes(m)), false);
+});
+
+test("a native desktop answer resolves Reach's same pending approval exactly once", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "t1" } } });
+  const f = nativeOwnerFixture(daemon); await f.live.send(T, { text: "go" });
+  const params = { threadId: T, command: "example", turnId: "t1", itemId: "tool" };
+  const response = daemon.ask(42, "item/commandExecution/requestApproval", params);
+  assert.deepEqual(f.rawRequests(T), [{ id: 42, method: "item/commandExecution/requestApproval", params }]);
+  await f.request("thread-follower-command-approval-decision", { conversationId: T, requestId: 42, decision: "accept" });
+  assert.deepEqual(await response, { decision: "accept" });
+  assert.deepEqual(f.rawRequests(T), []);
+  assert.equal(f.live.view(T).prompts.length, 0);
+  await assert.rejects(f.request("thread-follower-command-approval-decision", { conversationId: T, requestId: 42, decision: "accept" }), /already answered/);
+});
+
+test("Reach sends to a desktop-owned task without another resume or fork", async () => {
+  const daemon = fakeDaemon({ "thread/turns/list": { data: [] } });
+  const calls = [];
+  const live = createCodexLive({ daemon, nativeTurns: true, desktop: { async startTurn(id, request) { calls.push([id, request]); return { turnId: "desktop-turn" }; } } });
+  assert.deepEqual(await live.send(T, { text: "hello", model: "gpt-6-luna", collaboration: "plan" }), { turnId: "desktop-turn", delivered: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], T);
+  assert.equal(calls[0][1].input[0].text, "hello");
+  assert.equal(calls[0][1].collaborationMode.mode, "plan");
+  assert.equal(daemon.methods().some(m => /thread\/(resume|start|fork)|turn\/start/.test(m)), false);
+});
+
+test("an uncertain desktop send never falls back to another writer", async () => {
+  const daemon = fakeDaemon({ "thread/turns/list": { data: [] } });
+  const live = createCodexLive({ daemon, nativeTurns: true, desktop: { async startTurn() { throw Object.assign(Error("delivery uncertain"), { uncertain: true }); } } });
+  await assert.rejects(live.send(T, { text: "hello" }), /delivery uncertain/);
+  assert.equal(daemon.methods().includes("thread/resume"), false);
+});
+
+test("an unavailable desktop owner lets Reach resume the original task", async () => {
+  const daemon = fakeDaemon({ "thread/turns/list": { data: [] }, "turn/start": { turn: { id: "t1" } } });
+  const live = createCodexLive({ daemon, nativeTurns: true, desktop: { async startTurn() { throw Object.assign(Error("owner unavailable"), { ownerUnavailable: true }); } } });
+  assert.deepEqual(await live.send(T, { text: "hello" }), { turnId: "t1" });
+  assert.equal(daemon.calls.find(([m]) => m === "thread/resume")[1].threadId, T);
+  assert.equal(daemon.methods().some(m => /thread\/(start|fork)/.test(m)), false);
+});
+
+test("a stale native queue edit cannot recreate a message cancelled elsewhere", async () => {
+  const daemon = fakeDaemon({
+    "turn/start": { turn: { id: "t1" } },
+    "thread/queue/list": { data: [] },
+    "thread/queue/add": { queuedSubmission: { id: "resurrected" } },
+  });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "fixture" });
+  for (const context of [{ queueIds: ["cancelled"] }, { queueIds: [], knownQueueIds: ["cancelled"] }]) {
+    const before = daemon.calls.length;
+    await assert.rejects(f.request("thread-follower-set-queued-follow-ups-state", {
+      conversationId: T, state: { [T]: [{ id: "cancelled", text: "Do not replay" }] },
+    }, context), /no longer.*queue|queued message.*changed/i);
+    assert.ok(daemon.calls.slice(before).every(([m]) => m === "thread/queue/list"), "refuse stale state before any queue mutation");
+  }
+});
+
+
+test("native follower queue writes refuse unavailable inventory before mutating anything", async () => {
+  for (const response of [{}, { data: null }]) {
+    const daemon = fakeDaemon({ "turn/start": { turn: { id: "t1" } }, "thread/queue/list": response });
+    const f = nativeOwnerFixture(daemon);
+    await f.live.send(T, { text: "fixture" });
+    for (const [method, params] of [
+      ["thread-follower-set-queued-follow-ups-state", { state: { [T]: [{ id: "new", text: "Do not invent inventory" }] } }],
+      ["thread-follower-clear-queued-messages", {}],
+      ["thread-follower-remove-queued-message", { messageId: "old" }],
+    ]) {
+      const before = daemon.calls.length;
+      await assert.rejects(f.request(method, { conversationId: T, ...params }));
+      assert.ok(daemon.calls.slice(before).every(([m]) => m === "thread/queue/list"));
+    }
+  }
+});
+
+test("native desktop answers the same Reach-owned question without adding a message or queue entry", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "t1" } } });
+  const f = nativeOwnerFixture(daemon);
+  await f.live.send(T, { text: "Ask a synthetic question" });
+  const pending = daemon.ask(43, "item/tool/requestUserInput", {
+    threadId: T, turnId: "t1", itemId: "question-tool",
+    questions: [{ id: "color", question: "Which color?", options: [{ label: "Blue" }, { label: "Amber" }] }],
+  });
+  const response = { answers: { color: { answers: ["Blue"] } } };
+  const before = daemon.calls.length;
+  await f.request("thread-follower-submit-user-input", { conversationId: T, requestId: 43, response });
+  assert.deepEqual(await pending, response);
+  assert.deepEqual(f.rawRequests(T), []);
+  assert.equal(f.live.view(T).prompts.length, 0);
+  assert.deepEqual(daemon.calls.slice(before), [], "resolve the original request, never start, steer or queue a message");
+  await assert.rejects(f.request("thread-follower-submit-user-input", { conversationId: T, requestId: 43, response }), /already answered/);
+});
+
+
+for (const operation of ["steer", "queue"])
+  for (const loss of ["close", "connection"])
+    test(`native ${operation} stops when ${loss} changes during its authoritative read`, async () => {
+      let finish, read;
+      const reading = new Promise(resolve => { read = resolve; });
+      const readMethod = operation === "steer" ? "thread/turns/list" : "thread/queue/list";
+      const daemon = fakeDaemon({
+        "turn/start": { turn: { id: "t1" } },
+        [readMethod]: () => new Promise(resolve => { finish = resolve; read(); }),
+      });
+      const f = nativeOwnerFixture(daemon);
+      await f.live.send(T, { text: "fixture" });
+      let connected = true;
+      const context = { authorize() { if (!connected) throw Error("Original connection ended"); } };
+      const before = daemon.calls.length;
+      const work = f.request(operation === "steer" ? "thread-follower-steer-turn" : "thread-follower-clear-queued-messages", {
+        conversationId: T, input: [{ type: "text", text: "Do not dispatch" }],
+      }, context);
+      await reading;
+      if (loss === "close") f.live.close();
+      else connected = false;
+      finish({ data: operation === "steer" ? [{ id: "t1", status: "running" }] : [{ id: "q1", input: [{ type: "text", text: "queued" }] }] });
+      await assert.rejects(work, /no longer owns|connection ended/i);
+      assert.deepEqual(daemon.calls.slice(before).map(([m]) => m), [readMethod], "no side effect after the awaited read");
+    });

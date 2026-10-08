@@ -12,11 +12,11 @@ test("pointer actions use the checked target and clicks report that identity", a
   const source = await fs.readFile(sourceUrl, "utf8");
   const click = source.split('case "click":')[1]?.split('case "drag":')[0];
   assert.ok(click);
-  assert.match(click, /let target = try checkPoint\(p, rules\)/);
+  assert.match(click, /let target = try checkPoint\(p, rules, expected\)/);
   assert.match(click, /"app": target\.name, "bundle": target\.bundle/);
   assert.doesNotMatch(click, /windowAt\(/, "a compositor queried after dispatch is not the checked app");
   const actions = source.split('case "drag":')[1]?.split('case "scroll":')[0];
-  assert.match(actions, /try checkPoint\(from, rules\)[\s\S]*try checkPoint\(to, rules\)/, "drag checks both endpoints");
+  assert.match(actions, /try checkPoint\(from, rules, expected\)[\s\S]*try checkPoint\(to, rules, expected\)/, "drag checks both endpoints");
 });
 
 // Compile the actual window/point policy with inert CG and AX fixtures. This
@@ -76,6 +76,7 @@ func appInfo(_ pid: pid_t) -> (String, String, String) {
   case 2: return ("com.reach.app", "Reach", "/Applications/Reach.app")
   case 3: return ("com.apple.Safari", "Safari", "/Applications/Safari.app")
   case 4: return ("com.apple.MobileSMS", "Messages", "/System/Applications/Messages.app")
+  case 5: return ("com.google.Chrome", "Chrome", "/Applications/Google Chrome.app")
   default: return ("", "Window Server", "")
   }
 }
@@ -89,10 +90,10 @@ func windowTitleReason(_ title: String, _ bundle: String, _ path: String, _ pid:
 `;
     const harness = String.raw`
 func window(_ pid: pid_t, _ title: String = "") -> [String: Any] { [kCGWindowBounds: ["X":CGFloat(0),"Y":CGFloat(0),"Width":CGFloat(500),"Height":CGFloat(500)], kCGWindowAlpha:Double(1), kCGWindowOwnerPID:pid, kCGWindowName:title, kCGWindowOwnerName:appInfo(pid).1] }
-func expect(_ label: String, _ entries: [[String:Any]], _ element: Int?, _ rules: Rules, _ status: String, _ app: String = "") {
+func expect(_ label: String, _ entries: [[String:Any]], _ element: Int?, _ rules: Rules, _ status: String, _ app: String = "", _ expected: [String:String]? = nil) {
   windows = entries; ax = element
   do {
-    let target = try checkPoint(CGPoint(x:100,y:100),rules)
+    let target = try checkPoint(CGPoint(x:100,y:100),rules,expected)
     if status != "allowed" || target.name != app { print("FAILED: " + label + " allowed " + target.name); exit(1) }
   } catch let error as Refusal {
     if error.kind != status { print("FAILED: " + label + " " + error.kind); exit(1) }
@@ -119,6 +120,19 @@ expect("known checked CG fallback", [window(3)], nil, full, "allowed", "Safari")
 expect("AX without CG", [], 3, full, "allowed", "Safari")
 expect("selected app", [window(3)], 3, apps, "allowed", "Safari")
 expect("selected apps retain unknown compositor refusal", [window(1),window(3)], 3, apps, "blocked")
+let recorded = ["bundle":"com.apple.Safari", "title":"Interaction Lab"]
+expect("recorded Full target through compositor", [window(1),window(3)], 3, full, "allowed", "Safari", recorded)
+expect("recorded Apps retains compositor refusal", [window(1),window(3)], 3, apps, "blocked", "", recorded)
+expect("recorded matching known CG target", [window(3,"Interaction Lab")], nil, full, "allowed", "Safari", recorded)
+expect("recorded target missing all identity", [window(1)], nil, full, "retry", "", recorded)
+expect("recorded changed CG app before correct AX", [window(5)], 3, full, "retry", "", recorded)
+expect("recorded changed AX app through compositor", [window(1)], 5, full, "retry", "", recorded)
+expect("recorded changed CG title", [window(3,"Different window")], 3, full, "retry", "", recorded)
+axTitle = "Different window"
+expect("recorded changed AX title", [window(1)], 3, full, "retry", "", recorded)
+axTitle = "Interaction Lab"
+expect("recorded protected CG never bypassed", [window(2)], 3, full, "blocked", "", recorded)
+expect("recorded protected AX never bypassed", [window(1)], 2, full, "blocked", "", recorded)
 if pointerIdentityKnown("com.apple.WindowServer", "Other", "/System/Library/WindowServer", 1) || pointerIdentityKnown("", "Window Server", "/System/Library/WindowServer", 1) || pointerIdentityKnown("com.apple.Safari", "Safari", "/Applications/Safari.app", 0) { print("FAILED: unknown identity"); exit(1) }
 print("OK")
 `;

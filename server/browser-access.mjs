@@ -14,6 +14,7 @@ import { parseBrowserMutation, validateBrowserMutation } from "./browser-mutatio
 import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-command-records.mjs";
 import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
 import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
+import { savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
@@ -76,7 +77,7 @@ export function browserAccessRoutes(
     // Screen, input, app list and shell for preset invitations
     // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
     // can't offer them.
-    desktop = null, shell = null,
+    desktop = null, shell = null, shortcuts = null,
   },
 ) {
   const owner = (req) => {
@@ -261,6 +262,10 @@ export function browserAccessRoutes(
         roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
         terminals: selected,
         ...presetAccess(client),
+        ...(shortcuts && ["full", "apps"].includes(client.policy.preset) ? {
+          savedToolHint: SAVED_TOOLS_HINT,
+          savedTools: shortcuts.list(() => browser(req)).shortcuts.map(item => ({ ...item, tool: savedToolName(item) })),
+        } : {}),
       });
     }
     res.json({
@@ -593,7 +598,7 @@ export function browserAccessRoutes(
     needDesktop();
     const body = req.body;
     if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "action")) throw fail(400, "Send one action.");
-    await answer(res, () => desktop.act(client, body.action, () => presetClient(req, "browser:control")));
+    await answer(res, () => (shortcuts || desktop).act(client, body.action, () => presetClient(req, "browser:control")));
   });
   app.get("/api/browser/desktop/apps", async (req, res) => {
     const client = presetClient(req, "browser:open");
@@ -614,7 +619,7 @@ export function browserAccessRoutes(
     needDesktop();
     const body = req.body;
     if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "app")) throw fail(400, "Choose one app by its path.");
-    await answer(res, () => desktop.open(client, body.app, () => presetClient(req, "browser:open")));
+    await answer(res, () => (shortcuts || desktop).open(client, body.app, () => presetClient(req, "browser:open")));
   });
   // The shell (Full control): one command, as the owner, checked against the
   // deny list and logged. Not confined: Full control is full control.

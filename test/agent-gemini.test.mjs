@@ -195,3 +195,27 @@ test("a Gemini CLI chat continues in Codex with its conversation, shown there as
   assert.equal(page.session.movedFrom.agent, "gemini");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("Gemini CLI writes wake Reach's open chat and reread the same native session", async t => {
+  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
+  const dir = home();
+  let changed;
+  const sessions = createAgentSessions({
+    gemini: createGeminiSessions({ home: dir, locate: async () => "/bin/gemini" }),
+    codex: { list: async () => [] },
+    claude: { list: async () => [], starts: async () => [] },
+    live: async () => new Map(), dataDir: dir,
+    agentWatch: { onChange(listener) { changed = listener; return () => {}; }, close() {} },
+  });
+  t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const before = sessions.view("gemini", ID).version;
+  const wait = sessions.changes("gemini", ID, before, 5000);
+  const file = fs.readdirSync(path.join(dir, "tmp/app/chats")).find(f => f.endsWith(`${ID.slice(0, 8)}.jsonl`));
+  fs.appendFileSync(path.join(dir, "tmp/app/chats", file), line({ id: "m3", type: "gemini", content: "New native answer" }) + "\n");
+  changed({ agent: "gemini", kind: "history" });
+  await Promise.race([wait, new Promise((_, reject) => { const timer = setTimeout(() => reject(Error("Native write did not wake Reach")), 250); timer.unref(); })]);
+  assert.ok(sessions.view("gemini", ID).version > before);
+  const read = await sessions.read("gemini", ID, {});
+  assert.equal(read.session.id, ID);
+  assert.equal(read.items.at(-1).text, "New native answer");
+});

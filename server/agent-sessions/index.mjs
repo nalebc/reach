@@ -698,6 +698,8 @@ export function createAgentSessions({
     } else if (news.agent === "claude" && news.id && !claudeHost.drives(news.id)) {
       // A Claude Code transcript: unless Reach is the one writing it.
       touch("claude", news.id);
+    } else if (news.agent === "gemini") {
+      touchOpen("gemini");
     }
   });
   // Each agent's working/waiting status, from what its host knows.
@@ -1464,6 +1466,7 @@ export function createAgentSessions({
       claudeRefresh?.close?.();
       macPrompts?.close?.();
       agentWatch?.close?.();
+      codexLive.close?.();
       daemon.close?.();
     },
     // The list as last built while nothing changed, or while its rebuild is

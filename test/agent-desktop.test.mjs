@@ -62,6 +62,17 @@ test("action shapes are exact", () => {
     assert.throws(() => normalizeAction(bad), (error) => error.status === 400, JSON.stringify(bad));
 });
 
+test("saved actions carry their window expectation to the native dispatch", async () => {
+  const w = world(), client = w.make("muse", "apps");
+  const expected = { bundle: chrome.bundleId, title: "Amazon", layout: "100,60|0,0,100,60" };
+  w.setFront({ path: chrome.id, layout: expected.layout });
+  const front = await w.desktop.front(client, authorize(client));
+  assert.equal(front.path, chrome.id); assert.equal(front.layout, expected.layout);
+  await w.desktop.act(client, { type: "click", x: 0.5, y: 0.5 }, authorize(client), { expected });
+  assert.deepEqual(w.helpers[0].requests.find(request => request.op === "act").expected, expected);
+  w.desktop.close();
+});
+
 test("a helper per session, started with the preset's rules; a changed policy restarts it", async () => {
   const w = world();
   const full = w.make("muse", "full", { hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] });

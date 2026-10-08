@@ -19,6 +19,8 @@ const terminalAction = object({
   command: { ...string(2000), description: "Use pwd, cd, ls, cat, head, tail, wc or grep. Each action supplies its own cwd; cd does not change later actions. A restricted read-only command. The host validates commands and paths and asks the owner before running." },
 }, ["type", "root", "command"]);
 const definition = (name, title, description, inputSchema, example, extra = {}) => ({ name, title, description, inputSchema, example, ...extra });
+export const savedToolName = item => `reach_saved_${item.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 12) || "task"}_${item.id.replace(/-/g, "")}`;
+export const SAVED_TOOLS_HINT = "Before starting a laptop task, check Saved tools in the workspace or your MCP tool list for a matching task. Select its button or call its reach_saved_* tool to execute it. Use reach_shortcuts to search or inspect saved steps before repeating the task manually.";
 const location = { root, path: relativePath };
 const requestsAllowed = (access) => access.screen === "apps" || access.restrictedTerminal === true || access.commandRequests === true;
 const terminalAllowed = (access) => access.restrictedTerminal === true && !!access.roots?.length;
@@ -36,18 +38,30 @@ const desktopActions = [
 ];
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
-  const tools = [definition("reach_access", "Access", "Read this session's preset, what it may do, its shared folders and when it ends.", object(), {})];
+  const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
   if (access.screen) tools.push(
     definition("reach_screenshot", "Screenshot", "The Mac's screen now, as {image: base64 JPEG, mimeType}, at the display's own resolution up to maxWidth pixels (default 2560; use up to 3840 to read small controls). Reach's own windows, password apps and apps the owner hid are left out; in the Apps preset only the chosen apps appear. Coordinates for actions are fractions of this image.", object({ maxWidth: integer(320, 3840) }), { maxWidth: 2560 }),
     definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
   );
   if (access.control) tools.push(
-    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
+    definition("reach_act", "Act on the screen", "Before repeating a laptop task, check reach_shortcuts or the reach_saved_* tools for a saved method. One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
   );
   if (access.open) tools.push(
     definition("reach_desktop_apps", "Apps you may use", "The apps this session may open or bring forward, with whether each is running.", object(), {}),
     definition("reach_open_app", "Open an app", "Open or bring forward one of those apps by its path, then take a screenshot.", object({ app: string(4096) }, ["app"]), { app: access.apps?.[0]?.id || "/Applications/Safari.app" }),
   );
+  if (access.control && access.open && access.screen) tools.push(
+    definition("reach_shortcuts", "Saved shortcuts", "Check here before app tasks. Find reusable tasks and required inputs within your current access. Without query, returns a compact catalog. Search by task name to inspect up to ten matching shortcuts' exact steps before running one. Also reports your current recording.", object({ query: string(160) }), { query: "Gmail" }),
+    definition("reach_record_shortcut", "Record a shortcut", "Before doing a reusable task with no matching shortcut, record your successful reach_act and reach_open_app calls under a clear task name. Form text becomes an input supplied at replay; passwords and screenshots are never saved. Use Type for form text; text-producing key presses stop recording. Cmd+L, an HTTPS origin landing page (no path, query or fragment), Enter becomes a stable Open website step. Other addresses stay per-run inputs.", object({ name: string(80) }, ["name"]), { name: "Open Gmail" }),
+    definition("reach_save_shortcut", "Save recorded shortcut", "After verifying the task succeeded, save its recording as a reusable local shortcut. Future agents can discover and replay it immediately within their own current app permissions. Saving needs no extra owner step. Discard failed or incomplete tasks instead.", object(), {}),
+    definition("reach_discard_shortcut", "Discard recording", "Discard your current shortcut recording without undoing completed actions.", object(), {}),
+    definition("reach_run_shortcut", "Run saved shortcut", "Run one enabled shortcut by ID in a single call, with your current permissions checked before every step. Text inputs are never stored. Stops at changed windows, password fields, owner activity, pause or revoked access. Inspect status and completedSteps; stopped steps are not rolled back. Never blindly retry a partially completed task. Take a screenshot after completion to verify the result.", object({ id: string(128), values: { type: "object", maxProperties: 60, additionalProperties: string(2000) } }, ["id"]), { id: "shortcut-id-from-reach_shortcuts" }),
+  );
+  if (access.control && access.open && access.screen) for (const item of access.savedTools || []) {
+    if (typeof item.name !== "string" || !/^[a-f0-9-]{36}$/.test(item.id) || !Array.isArray(item.inputs) || item.inputs.some(key => !/^text[1-9][0-9]*$/.test(key))) continue;
+    const properties = Object.fromEntries(item.inputs.map(key => [key, { ...string(2000), description: "Text for this run only; never persisted. Password fields remain blocked." }]));
+    tools.push(definition(savedToolName(item), item.name, `Execute the saved task “${item.name}” (${item.stepCount} steps) immediately, using your current app access. Stops if the app/window changes or the owner takes control. Check the returned progress and take a screenshot to verify the result; never blindly retry a partially completed task.`, object(properties, item.inputs), {}));
+  }
   if (access.roots?.length) tools.push(
     definition("reach_list_files", "List files", "List one shared folder.", object(location, ["root"]), { root: firstRoot, path: "" }),
     definition("reach_search_files", "Find files", "Find files by name inside one shared folder.", object({ root, query: string(160) }, ["root", "query"]), { root: firstRoot, query: "readme" }),
@@ -111,11 +125,13 @@ function validate(schema, value, label = "arguments") {
   }
   if (schema.type === "object") {
     if (!plain(value)) invalid(`${label} must be an object.`);
+    if (schema.maxProperties !== undefined && Reflect.ownKeys(value).length > schema.maxProperties) invalid(`${label} has too many fields.`);
     for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== "string" || !Object.hasOwn(schema.properties, key)) invalid(`${label} contains an unsupported field.`);
+      const property = typeof key === "string" && (Object.hasOwn(schema.properties || {}, key) ? schema.properties[key] : schema.additionalProperties && typeof schema.additionalProperties === "object" && /^text[1-9][0-9]*$/.test(key) ? schema.additionalProperties : null);
+      if (!property) invalid(`${label} contains an unsupported field.`);
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !Object.hasOwn(descriptor, "value")) invalid(`${label} must contain only plain values.`);
-      validate(schema.properties[key], descriptor.value, `${label}.${key}`);
+      validate(property, descriptor.value, `${label}.${key}`);
     }
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) invalid(`${label}.${key} is required.`);
   } else if (schema.type === "array") {
@@ -150,6 +166,8 @@ export function browserToolRequest(name, args, access) {
   validate(tool.inputSchema, args);
   // Copy before the asynchronous request; later mutations cannot change approval content.
   const input = JSON.parse(JSON.stringify(args));
+  const saved = (access.savedTools || []).find(item => savedToolName(item) === name);
+  if (saved) return { route: "/api/browser/shortcuts/run", method: "POST", body: { id: saved.id, values: input }, response: "json" };
   if (Object.hasOwn(input, "root")) rootAllowed(access, input.root);
   pathAllowed(input.path);
   const actions = name === "reach_request_batch" ? input.actions : name === "reach_request_action" ? [input.action] : [];
@@ -167,6 +185,11 @@ export function browserToolRequest(name, args, access) {
   if (name === "reach_shell") { rootAllowed(access, input.root); pathAllowed(input.cwd); }
   switch (name) {
     case "reach_access": return get("/api/browser");
+    case "reach_shortcuts": return get(`/api/browser/shortcuts${input.query ? `?${new URLSearchParams({ query: input.query })}` : ""}`);
+    case "reach_record_shortcut": return { route: "/api/browser/shortcuts/record", method: "POST", body: input, response: "json" };
+    case "reach_save_shortcut": return { route: "/api/browser/shortcuts/save", method: "POST", body: input, response: "json" };
+    case "reach_discard_shortcut": return { route: "/api/browser/shortcuts/record", method: "DELETE", body: input, response: "json" };
+    case "reach_run_shortcut": return { route: "/api/browser/shortcuts/run", method: "POST", body: input, response: "json" };
     case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 2560) })}`, "image");
     case "reach_front": return get("/api/browser/desktop/front");
     case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };

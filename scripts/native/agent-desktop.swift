@@ -279,13 +279,23 @@ func windowAt(_ point: CGPoint) -> Seen? {
 // Center reach everywhere. Full control may use them (except where Reach is);
 // the Apps preset may not.
 let systemSurfaces = ["com.apple.dock", "com.apple.spotlight", "com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.notificationcenterui", "com.apple.windowmanager"]
-func checkPoint(_ point: CGPoint, _ rules: Rules) throws -> Seen {
+func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? = nil) throws -> Seen {
+  // Match the same identified observations that authorize the input. A
+  // compositor without an app identity is not a conflicting target; Full
+  // control still needs a verified AX app (Apps keeps its stricter refusal).
+  func checkExpected(_ target: Seen) throws {
+    guard let expected, pointerIdentityKnown(target.bundle, target.name, target.path, Int(target.pid)) else { return }
+    if target.bundle != expected["bundle"] || (expected["title"] != nil && !target.title.isEmpty && String(target.title.prefix(200)) != expected["title"]) {
+      try refuse("The shortcut's target window changed. Look again before continuing.", "retry")
+    }
+  }
   let window = windowAt(point)
   if let window {
     if rules.mode == "apps", systemSurfaces.contains(lower(window.bundle)) || window.bundle.isEmpty { try refuse(notAllowedReason) }
     if systemSurfaces.contains(lower(window.bundle)) {
       if mentionsReach(window.title, rules) { try refuse(reachReason) }
     } else { try check(window, rules) }
+    try checkExpected(window)
   }
   var element: AXUIElement?
   if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element) == .success, let element {
@@ -300,7 +310,7 @@ func checkPoint(_ point: CGPoint, _ rules: Rules) throws -> Seen {
       try check(s, rules)
       if s.title.isEmpty, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
     }
-    if pointerIdentityKnown(s.bundle, s.name, s.path, Int(s.pid)) { return s }
+    if pointerIdentityKnown(s.bundle, s.name, s.path, Int(s.pid)) { try checkExpected(s); return s }
   }
   if let window, pointerIdentityKnown(window.bundle, window.name, window.path, Int(window.pid)) { return window }
   try refuse("The app at this point could not be verified. Look again and retry.", "retry")
@@ -362,24 +372,31 @@ func flags(_ mods: [String]) -> CGEventFlags {
 let browserIds = ["com.apple.safari", "com.google.chrome", "org.chromium", "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser", "com.operasoftware", "com.vivaldi", "com.duckduckgo", "com.kagi"]
 func isBrowser(_ bundle: String) -> Bool { let id = lower(bundle); return browserIds.contains(where: { id.hasPrefix($0) }) }
 
-func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws -> [String: Any] {
+func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expected: [String: String]? = nil) throws -> [String: Any] {
   if rules.mode == "view" { try refuse("This agent can only look. It has no mouse or keyboard here.") }
   let type = action["type"] as? String ?? ""
   func point(_ x: String, _ y: String) throws -> CGPoint {
     guard let nx = action[x] as? Double, let ny = action[y] as? Double, (0...1).contains(nx), (0...1).contains(ny) else {
       try refuse("Choose a point on the screen.", "invalid")
     }
-    return CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
+    let p = CGPoint(x: display.minX + nx * display.width, y: display.minY + ny * display.height)
+    return p
+  }
+  if let expected {
+    let current = front(rules)
+    if expected.contains(where: { (current[$0.key] as? String) != $0.value }) || current["secure"] as? Bool == true || !(current["blocked"] as? String ?? "").isEmpty {
+      try refuse("The shortcut's app, window or focused field changed. Look again before continuing.", "retry")
+    }
   }
   var reached: [String: Any] = [:]
   switch type {
   case "move":
     let p = try point("x", "y")
-    _ = try checkPoint(p, rules)
+    _ = try checkPoint(p, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
   case "click":
     let p = try point("x", "y")
-    let target = try checkPoint(p, rules)
+    let target = try checkPoint(p, rules, expected)
     let right = action["button"] as? String == "right"
     let count = max(1, min(3, action["count"] as? Int ?? 1))
     let (down, up): (CGEventType, CGEventType) = right ? (.rightMouseDown, .rightMouseUp) : (.leftMouseDown, .leftMouseUp)
@@ -396,8 +413,8 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
     reached = ["app": target.name, "bundle": target.bundle]
   case "drag":
     let from = try point("x", "y"), to = try point("toX", "toY")
-    _ = try checkPoint(from, rules)
-    _ = try checkPoint(to, rules)
+    _ = try checkPoint(from, rules, expected)
+    _ = try checkPoint(to, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left))
     for step in 1...12 {
       let t = CGFloat(step) / 12
@@ -407,7 +424,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules) throws 
     post(CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left))
   case "scroll":
     let p = try point("x", "y")
-    _ = try checkPoint(p, rules)
+    _ = try checkPoint(p, rules, expected)
     let dx = Int32(max(-2000, min(2000, action["dx"] as? Double ?? 0)))
     let dy = Int32(max(-2000, min(2000, action["dy"] as? Double ?? 0)))
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
@@ -555,8 +572,23 @@ func front(_ rules: Rules) -> [String: Any] {
     let element = seen(focused); s.url = element.url; s.secure = element.secure
   }
   let blocked = appReason(bundle, name, path, rules) ?? windowTitleReason(s.title, bundle, path, s.pid, rules) ?? urlReason(s.url, rules)
+  // Geometry and focus identity, without field values, let saved actions stop
+  // when the window moves or the focused control changes.
+  var layout = ""
+  func geometry(_ element: AXUIElement) -> String {
+    var p = CGPoint.zero, size = CGSize.zero
+    if let value = attr(element, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgPoint, &p) }
+    if let value = attr(element, kAXSizeAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgSize, &size) }
+    return "\(Int(p.x)),\(Int(p.y)),\(Int(size.width)),\(Int(size.height))"
+  }
+  let display = CGDisplayBounds(CGMainDisplayID())
+  layout = "\(Int(display.width)),\(Int(display.height))"
+  if let window = elementAttr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute) { layout += "|" + geometry(window) }
+  if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute), pidOf(focused) == app.processIdentifier {
+    layout += "|" + geometry(focused) + "|" + string(focused, kAXRoleAttribute) + "|" + string(focused, kAXIdentifierAttribute)
+  }
   return ["ok": true, "app": name, "bundle": bundle, "title": blocked == nil ? String(s.title.prefix(200)) : "",
-    "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? ""]
+    "terminalLike": terminalLikeApp(bundle, name, path, rules), "secure": s.secure, "blocked": blocked ?? "", "path": path, "layout": String(layout.prefix(2000))]
 }
 
 func rules(from request: [String: Any]) -> Rules {
@@ -607,7 +639,7 @@ func rules(from request: [String: Any]) -> Rules {
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
           try checkOwner(Date().timeIntervalSince(lastPosted))
-          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules))
+          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules, request["expected"] as? [String: String]))
         case "open":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           try checkOwner(Date().timeIntervalSince(lastPosted))

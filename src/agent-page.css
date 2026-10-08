@@ -65,3 +65,9 @@
 .ap-zoom-frame canvas.can-act { cursor: crosshair; }
 .ap-screen:fullscreen, .ap-screen.is-fullscreen { overflow: auto; background: #0b0d10; color: #e5e7eb; border: 0; border-radius: 0; }
 .ap-screen:fullscreen .ap-frame img { max-height: 82vh; width: auto; max-width: 100%; margin: 0 auto; }
+.ap-saved-list { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.ap-saved-tool { display: grid; align-content: start; gap: 8px; }
+.ap-saved-tool label { display: grid; gap: 5px; font-size: 13px; }
+.ap-saved-record { margin-top: 14px; }
+.ap-saved-record input { flex: 1; min-width: 160px; }
+.ap-saved-recording { margin-top: 14px; }

@@ -26,6 +26,7 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
     claudeProjects,
     claudeSessions: path.join(root, "claude-sessions"),
     claudeAppRecords: path.join(root, "claude-app-records"),
+    geminiHome: path.join(root, "gemini"),
     debounceMs: 40,
   });
   const news = [];
@@ -65,6 +66,7 @@ test("an agent that isn't installed is simply not watched", () => {
       claudeProjects: path.join(root, "claude"),
       claudeSessions: path.join(root, "claude-sessions"),
       claudeAppRecords: path.join(root, "claude-app-records"),
+      geminiHome: path.join(root, "gemini"),
     });
     watch.onChange(() => {});
     watch.close();
@@ -115,4 +117,24 @@ test("the Codex app saving its choices (the permission mode it's in) is news", (
   listeners.get("/c")("change", ".codex-global-state.json");
   assert.deepEqual(news, [{ agent: "codex", kind: "settings" }]);
   watch.close();
+});
+
+test("Gemini JSON and JSONL writes and project changes wake histories in one burst", async () => {
+  const callbacks = new Map(), news = [];
+  const watcher = createAgentWatch({
+    geminiHome: "/g", debounceMs: 20,
+    watch: (dir, options, listener) => (callbacks.set(dir, listener), { close() {} }),
+  });
+  watcher.onChange(n => news.push(n));
+  callbacks.get("/g/tmp")("change", "app/chats/session-2026-10-08T00-00-11111111.jsonl");
+  assert.deepEqual(news, [{ agent: "gemini", kind: "history" }]);
+  callbacks.get("/g/tmp")("rename", "app/chats/session-2026-10-08T00-00-22222222.json");
+  callbacks.get("/g/tmp")("change", "app/logs.json");
+  callbacks.get("/g")("change", "oauth_creds.json");
+  assert.equal(news.length, 1);
+  await new Promise(r => setTimeout(r, 35));
+  assert.equal(news.length, 2);
+  callbacks.get("/g")("change", "projects.json");
+  assert.deepEqual(news.at(-1), { agent: "gemini", kind: "projects" });
+  watcher.close();
 });

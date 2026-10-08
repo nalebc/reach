@@ -248,6 +248,24 @@ test("a steer with no answer after it's written is uncertain, never retried", as
   assert.equal(messages.filter((m) => m.method === "thread-follower-steer-turn").length, 1);
 });
 
+test("messages start through the native owner with one task id and no writer takeover", async () => {
+  const f = fixture((m, { reply }) => {
+    if (m.method !== "thread-follower-start-turn") return false;
+    reply(m, { result: { result: { turn: { id: "native-turn" } } } }); return true;
+  });
+  const request = { input: [{ type: "text", text: "Continue", text_elements: [] }], clientUserMessageId: "msg" };
+  assert.deepEqual(await f.desktop.startTurn(thread, request), { turnId: "native-turn" });
+  const sent = f.messages.find(m => m.method === "thread-follower-start-turn");
+  assert.equal(sent.targetClientId, "desktop-owner"); assert.equal(sent.version, 2);
+  assert.deepEqual(sent.params.turnStart.request, { ...request, threadId: thread });
+});
+
+test("an unconfirmed native send is uncertain and never replayed", async () => {
+  const f = fixture(m => m.method === "thread-follower-start-turn");
+  await assert.rejects(f.desktop.startTurn(thread, { input: [{ type: "text", text: "Continue", text_elements: [] }] }), error => error.uncertain === true);
+  assert.equal(f.messages.filter(m => m.method === "thread-follower-start-turn").length, 1);
+});
+
 test("editing your last message asks the app that owns the chat, as its own Edit", async () => {
   const { desktop, messages } = fixture();
   assert.deepEqual(await desktop.editLast(thread, { turnId: "turn-2", message: "again" }), { edited: true });

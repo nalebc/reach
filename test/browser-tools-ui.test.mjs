@@ -103,3 +103,34 @@ test("desktop screenshot and input preserve unavailable diagnostics without retr
     assert.equal(calls, 2, "one request per tool; neither is retried");
   } finally { session.dispose(); }
 });
+
+for (const dynamic of [false, true]) test(`saved shortcut ${dynamic ? "named" : "generic"} call can receive its bounded result after the ordinary deadline`, async (t) => {
+  const timers = [], realTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 35000 || ms === 70000) {
+      timers.push({ ms, fire: () => callback(...args) });
+      return realTimeout(callback, 10000, ...args);
+    }
+    return realTimeout(callback, ms, ...args);
+  });
+  const id = "12345678-1234-4321-8123-123456789abc";
+  const current = { ...access, preset: "apps", screen: true, control: true, open: true,
+    savedTools: [{ id, name: "Open sample", stepCount: 2, inputs: [], apps: ["com.apple.Safari"] }] };
+  let requests = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init) => {
+    if (new URL(url).pathname === "/api/browser") return reply(current);
+    assert.equal(new URL(url).pathname, "/api/browser/shortcuts/run");
+    requests++;
+    timers.filter(timer => timer.ms <= 35000).forEach(timer => timer.fire());
+    if (init.signal.aborted) throw Error("fixture replay aborted before its permitted result");
+    return reply({ status: "completed", completedSteps: 2, totalSteps: 2 });
+  };
+  const session = installBrowserTools(peer);
+  try {
+    const name = dynamic ? "reach_saved_open_sample_12345678123443218123123456789abc" : "reach_run_shortcut";
+    const result = await session.bridge.callTool(name, dynamic ? {} : { id });
+    assert.equal(result.status, "completed");
+    assert.equal(requests, 1, "no automatic replay");
+    assert.ok(timers.length && timers.every(timer => timer.ms === 70000));
+  } finally { session.dispose(); }
+});

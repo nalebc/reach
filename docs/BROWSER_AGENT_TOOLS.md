@@ -69,6 +69,16 @@ The stdio MCP adapter advertises the same tools for a compatible credential. The
 - **Files.** Files-with-editing uses the sandboxed helper (`browser-files.swift`: descriptor traversal, `O_NOFOLLOW`, kernel sandbox, private names denied). Full control's file API checks shared/private paths too; its separate unsandboxed shell is not confined by that API boundary.
 - **Host guard.** While a Full control or Apps session exists, Reach answers only the approving phone (`browser-host-guard.mjs`).
 
+## Saved agent tools
+
+Full control and Apps agents can record a task through `reach_record_shortcut({name})`, perform normal app/screen actions, verify the result, then call `reach_save_shortcut({})`. `reach_discard_shortcut({})` drops an unfinished recording. `reach_shortcuts({query})` finds and inspects permitted tasks. Each enabled task also appears as a named `reach_saved_*` tool in the browser and MCP catalogs; `reach_run_shortcut({id, values})` runs the same recipe directly. MCP emits `notifications/tools/list_changed` after a successful save. Tools created in one admitted session can be reused by another only when all their apps remain permitted.
+
+Typed text is supplied again through required `text1`, `text2`, … arguments. A plain HTTPS origin landing page can be recorded as navigation; paths, queries and fragments stay inputs. Text-producing key recording is refused so literal typed characters are not retained. Saved window title/layout fingerprints avoid persisting their raw values; fresh matching context is checked again by the native input helper. Fingerprints are not encryption. Task names and app identities remain visible to agents that can use the task.
+
+A recipe has at most 60 steps; the store holds at most 100 recipes. Replay checks its 25-second budget and current authorization between operations. An in-flight native operation can still take time to drain; clients allow a 70-second response budget. A stopped response reports confirmed progress. Observe the screen and continue from that state rather than automatically repeating the recipe. Completed actions cannot be undone by cancellation.
+
+The owner can inspect, disable or delete tasks in **Agents → Agent shortcuts**, and stop a specific active replay. Stop is bound to the displayed run ID, so a stale control cannot cancel a later run. Permission changes, revocation, expiry, pause and protected-target checks continue to apply. A recorded task is not a broader grant or an exemption from normal app restrictions.
+
 ## Earlier invitations
 
 Invitations made with the earlier form (view-only app windows, read-only commands, per-change approvals) keep working until they end. Their routes, approvals and sandboxed scripts remain as described in `SECURITY.md`; new invitations are presets only.

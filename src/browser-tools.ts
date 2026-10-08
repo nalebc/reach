@@ -83,7 +83,7 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
         throw agentRequestError(response.status, body);
       }
       return screenResult(response);
-    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : "", "POST")),
+    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : name === "reach_run_shortcut" || name.startsWith("reach_saved_") ? "/api/browser/shortcuts/run" : "", "POST")),
   });
   function dispose() {
     disposed = true;
