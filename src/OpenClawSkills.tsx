@@ -190,11 +190,6 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                       {skill.state === "setup" && skill.keyName && data?.canToggle && (
                         <KeyField peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
                       )}
-                      {skill.state === "setup" && data?.canSetup && skill.missing.env
-                        .filter((name) => name !== skill.keyName)
-                        .map((name) => (
-                          <KeyField key={name} peer={peer} skill={skill} envName={name} onSaved={() => setRevision((n) => n + 1)} />
-                        ))}
                       {skill.state === "setup" && data?.canSetup && skill.missing.env.some((name) => name !== skill.keyName) && (
                         <SkillValues peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
                       )}
