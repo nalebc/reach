@@ -12,7 +12,7 @@ How it differs from what's already in Chat ([Working across agents](ACROSS_AGENT
 ## What a workflow holds
 
 - A **name**, and the **folder** on this computer where every task's chat starts.
-- **Tasks**, in steps. Each task has a name, **what to do** (the full instructions its agent gets), an **agent** (Codex or Claude Code) and a kind: **Build** (may change files) or **Review** (reads only, and reports what it found).
+- **Tasks**, in steps. Each task has a name, **what to do** (the full instructions its agent gets), an **agent** (Codex, Claude Code, or OpenClaw when Reach has its Gateway) and a kind: **Build** (may change files) or **Review** (reads only, and reports what it found).
 - A step starts when the one above has finished. A task set **With previous** joins the step above and starts with it.
 
 ## Making one
@@ -21,13 +21,14 @@ How it differs from what's already in Chat ([Working across agents](ACROSS_AGENT
 
 A plan can set only the tasks: their names, what to do, agent, kind and steps. It never picks the folder, a permission mode or a model; those stay yours. A reply with no plan Reach can use says why on the page, and the draft stays as it was.
 
-**Written yourself.** In New chat on Workflow, **Write tasks myself**. An empty draft offers starting points (**Build, then review**, **Build, review, fix**, **Two reviews**) or an empty task. Tap a task to edit it: its name, what to do, and chips for the agent, Build or Review, With previous, moving it and removing it. Everything is saved as you type.
+**Written yourself.** In New chat on Workflow, **Write tasks myself**. An empty draft offers starting points (**Research, then build** when OpenClaw is here, **Build, then review**, **Build, review, fix**, **Two reviews**) or an empty task. Tap a task to edit it: its name, what to do, and chips for the agent, Build or Review, With previous, moving it and removing it. Everything is saved as you type.
 
 ## Running
 
 Tap **Run**. Each task starts when its step comes, as a new chat in the folder named `Workflow · <task name>`:
 - **Build** tasks start the way relay and team builders do: Codex in **Approve for me** (or **Ask for approval** when that's off), Claude Code in **Accept edits**.
 - **Review** tasks only read: Codex's read-only sandbox, Claude Code in Manual.
+- **OpenClaw** tasks start as a new OpenClaw chat of Reach's own, outside the folder, with OpenClaw's own tool rules (Reach has no mode to set there). The message says it isn't in the folder and that its reply stays here, never to a channel. It doesn't hold the folder, so it can run beside a build. See [OpenClaw in relays and workflows](ACROSS_AGENTS.md#openclaw-in-relays-and-workflows).
 - A task also gets what the steps before it finished with: the last replies and changed files, clipped like a relay's, inside a marked block introduced as material, not instructions.
 
 A task is done when its chat ends with a reply and is still idle a few seconds later, the same check relays use. The next step then starts on its own: a workflow keeps going until it's finished or something goes wrong.
@@ -46,7 +47,7 @@ The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) o
 - **Nothing starts without you.** A planned workflow is a proposal until you tap Run, and every task's full text is on its page. Once you run it, its tasks are your instructions.
 - **The planner reads; you decide.** The planner can't change files, and its plan can't choose a folder, mode or model. A file in the project written to steer the planner can, at worst, propose tasks you see before running, and they start at the middle permission level, never Full access or Bypass.
 - **No new permission.** Builders and reviewers start like relay steps. Anything more asks you on the phone.
-- **One builder in a folder at a time**, across all workflows, so two agents never edit the same files at once. Reviews can run together, and beside a build.
+- **One builder in a folder at a time**, across all workflows, so two agents never edit the same files at once. Reviews and OpenClaw tasks can run together, and beside a build.
 - **Another agent's words are material, not orders.** What one task finished with reaches the next inside a marked block.
 - **Bounded.** At most 20 tasks in a workflow, and at most 3 workflow tasks at work at once on a computer. Each task starts once; a retry is your tap. A task that hasn't finished after a day stops, and the workflow pauses.
 - **It stops when access does.** Before each task starts, Reach checks that the phone that ran the workflow is still an approved owner device and that Reach isn't paused. Otherwise the workflow pauses and says why.
@@ -55,7 +56,8 @@ The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) o
 ## Limits (first version)
 
 - One computer: a workflow's tasks run on the computer it was made on.
-- Codex and Claude Code only, as planners and as task agents. Gemini CLI and OpenClaw chats can't take messages from Reach yet.
+- Planners are Codex or Claude Code: a planner must look through the project and only read, and OpenClaw can do neither in the folder. A planner may give tasks to OpenClaw when it's here (research or writing that doesn't need the code). Gemini CLI chats can't take messages from Reach yet.
+- OpenClaw can't be kept to reading by Reach: a review task asks it to only check. Its exec approvals still ask you.
 - A later task can't continue in an earlier task's chat (as a relay's fix step goes back to the builder). It gets that task's reply and changed files instead.
 - No schedules or triggers. A workflow runs when you tap Run.
 - The All page's **While you were away** doesn't list workflows yet (Reach records when one pauses or ends); your phone's notification does, and opens the task's chat.
@@ -66,6 +68,7 @@ The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) o
 October 8, 2026. Automated results against stand-ins; nothing here has run against a live Codex or Claude Code turn.
 
 - **Automated:** `test/workflows.test.mjs` (the engine with the real relay engine: drafts and plans checked, steps, one builder per folder, three at work, pausing, Retry, Skip, Mark done, lost access, the restart rule, Stop, Run again), `test/workflows-routes.test.mjs` (the HTTP routes: owner devices only, the folder check, run once, the planner read-only whatever mode is asked) and `test/workflows-ui.test.mjs` (each phone flow through the real components). The relay engine's own tests pass with its new step.
+- **OpenClaw** (stand-ins): `test/workflows-openclaw.test.mjs` (OpenClaw researching before Claude Code builds, beside a Codex build, its reply passed on; an error paused in Reach's words; Retry with a new request id; Stop; lost access; never a planner). Needs `openClaw` passed to the engines in `server/index.mjs` and OpenClaw in the phone's agent list.
 - **Not yet run live:** a real planner turn (how reliably each agent ends its reply with the plan), real task turns and their finish detection, the notifications, and a physical phone.
 - **Suggested first live check, after restarting Reach:** a two-task workflow on a throwaway folder (Build, then review), and watch it finish.
 

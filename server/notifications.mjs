@@ -26,6 +26,8 @@ export async function readAttention({
   accessRequests,
   restartRequests = () => [],
   terminalCount = () => 0,
+  // OpenClaw's background work (openclaw-watch.mjs): pushed, not listed.
+  background = () => [],
 }) {
   const [agents, claw] = await Promise.allSettled([
     Promise.resolve().then(() => agentSessions.list()),
@@ -130,6 +132,9 @@ export async function readAttention({
     );
   for (const r of restartRequests())
     items.push(restartNotification(r, terminalCount()));
+  try {
+    items.push(...background());
+  } catch {}
   return { items, unavailable: [...unavailable] };
 }
 
@@ -194,7 +199,9 @@ export function createNotifications({
         try {
           const result = await notify({
             ...notificationPush(item),
-            category: ["mac", "restart"].includes(item.source) ? "computer" : "chat",
+            category:
+              item.category ||
+              (["mac", "restart"].includes(item.source) ? "computer" : "chat"),
             tag: `need-${key.slice(0, 24)}`,
           });
           if (result?.sent > 0 || result?.suppressed > 0) {
@@ -207,7 +214,10 @@ export function createNotifications({
       }
       if (changed) save();
       cached = {
-        items: snapshot.items.map(publicNotification),
+        // Push-only alerts (bell: false) were deduplicated above.
+        items: snapshot.items
+          .filter((item) => item.bell !== false)
+          .map(publicNotification),
         unavailable: snapshot.unavailable,
       };
       checkedAt = Date.now();

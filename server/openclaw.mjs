@@ -13,9 +13,10 @@ import * as schedulesFeature from "./openclaw-schedules.mjs";
 import * as watchFeature from "./openclaw-watch.mjs";
 import * as agentsFeature from "./openclaw-agents.mjs";
 import * as skillsFeature from "./openclaw-skills.mjs";
+import * as onboardFeature from "./openclaw-onboard.mjs";
 
 // Features in files of their own, each adding its routes.
-export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature];
+export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the
@@ -282,6 +283,7 @@ export function createOpenClaw({
     listAt = 0,
     listing,
     methods,
+    serverVersion = "",
     redact = publicGatewayError;
   const pending = new Map(),
     runs = new Map(),
@@ -521,6 +523,10 @@ export function createOpenClaw({
                       /invalid chat\.inject params/i.test(
                         String(frame.error?.message || ""),
                       ),
+                    // Any method: it exists here, only the params were wrong.
+                    invalidParams: /invalid \S+ params/i.test(
+                      String(frame.error?.message || ""),
+                    ),
                   },
                 ),
               );
@@ -572,6 +578,10 @@ export function createOpenClaw({
               },
             }).then((hello) => {
               if (socket !== ws) return finish(connectionError());
+              serverVersion =
+                typeof hello?.server?.version === "string"
+                  ? hello.server.version.slice(0, 40)
+                  : "";
               methods = Array.isArray(hello?.features?.methods)
                 ? new Set(hello.features.methods)
                 : null;
@@ -628,7 +638,17 @@ export function createOpenClaw({
   // add: "invalid chat.inject params" means it's there, anything else not.
   let injectable = null;
   let injectProbe = Promise.resolve();
+  // sessions.usage likewise (2026.3.13 handles it, lists it nowhere): a
+  // chat's spend (openclaw-usage.mjs).
+  let usageable = null;
+  let usageProbe = Promise.resolve();
   const probeInject = () => {
+    usageable = null;
+    if (methods && !methods.has("sessions.usage"))
+      usageProbe = request("sessions.usage", { limit: 0 }).then(
+        () => (usageable = true),
+        (e) => (usageable = e?.invalidParams === true),
+      );
     injectable = null;
     if (!methods || methods.has("chat.inject")) return;
     injectProbe = request("chat.inject", {}).then(
@@ -653,11 +673,13 @@ export function createOpenClaw({
       await connect();
       check();
       if (method === "chat.inject") await injectProbe;
+      if (method === "sessions.usage") await usageProbe;
       check();
       if (
         methods &&
         !methods.has(method) &&
-        !(method === "chat.inject" && injectable === true)
+        !(method === "chat.inject" && injectable === true) &&
+        !(method === "sessions.usage" && usageable === true)
       )
         throw fail(
           409,
@@ -670,7 +692,11 @@ export function createOpenClaw({
     // No await between the final live authorization and socket dispatch.
     return request(method, params, completion, waitMs);
   };
-  const can = (method) => !methods || methods.has(method);
+  const can = (method) =>
+    !methods ||
+    methods.has(method) ||
+    (method === "chat.inject" && injectable === true) ||
+    (method === "sessions.usage" && usageable === true);
   const updateRun = (event, p) => {
     if (typeof p.runId !== "string" || !p.runId) return;
     if (terminalRuns.has(p.runId)) return;
@@ -1183,7 +1209,9 @@ export function createOpenClaw({
           error: redact(j.state?.lastError || ""),
           delivery:
             j.delivery?.mode === "announce"
-              ? j.delivery.channel || "Last channel"
+              ? j.delivery.channel && j.delivery.channel !== "last"
+                ? j.delivery.channel
+                : "Last channel"
               : j.delivery?.mode === "webhook"
                 ? "Webhook"
                 : "No external delivery",
@@ -1350,6 +1378,8 @@ export function createOpenClaw({
       return () => eventListeners.delete(listener);
     },
     redact: (value) => redact(value),
+    // The connected Gateway's own version ("" before connecting).
+    server: () => ({ version: serverVersion }),
     // Approvals came or went (notifications look then, not on a beat).
     onApprovalsChange(listener) {
       approvalListeners.add(listener);

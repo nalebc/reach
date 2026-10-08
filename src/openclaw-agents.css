@@ -1,0 +1,224 @@
+/* Agents tab (OpenClawAgents.tsx): one rounded group of rows, an agent per
+   row (avatar, name, model, pills), tap for its sub-agents and chats; then
+   the approval rules as pills and rows. */
+.claw-agents-group {
+  overflow: hidden;
+  margin: 0 0 24px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel);
+}
+.claw-agents-item + .claw-agents-item {
+  border-top: 1px solid var(--border);
+}
+.claw-agents-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 14px;
+  border: 0;
+  background: none;
+  color: var(--text-strong);
+  text-align: left;
+}
+.claw-agents-row:active {
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+}
+.claw-agents-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  font-size: 17px;
+  color: var(--muted);
+}
+.claw-agents-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.claw-agents-title,
+.claw-agents-sub,
+.claw-agents-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claw-agents-title {
+  font-size: 15px;
+}
+.claw-agents-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-agents-pills {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 45%;
+}
+.claw-agents-pill {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.claw-agents-pill.running {
+  color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 12%, transparent);
+}
+.claw-agents-pill.waiting {
+  color: var(--danger, #e5a18b);
+  background: color-mix(in srgb, var(--danger, #e5a18b) 12%, transparent);
+}
+.claw-agents-chevron {
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.claw-agents-item.open .claw-agents-chevron {
+  transform: rotate(180deg);
+}
+.claw-agents-body {
+  padding: 0 14px 12px 58px;
+}
+.claw-agents-label {
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.claw-agents-body > .claw-agents-label:first-child {
+  margin-top: 0;
+}
+.claw-agents-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.claw-agents-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+.claw-agents-line {
+  min-width: 0;
+}
+.claw-agents-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 550;
+}
+.claw-agents-rules {
+  margin: 0 0 28px;
+}
+.claw-agents-rules .claw-channels {
+  margin-bottom: 8px;
+}
+.claw-agents-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.claw-agents-modes button {
+  min-height: 34px;
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+.claw-agents-modes button[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--text-strong);
+  color: var(--panel);
+}
+.claw-agents-modes button.confirm,
+.claw-agents-remove.confirm {
+  border-color: var(--danger, #e5a18b);
+  color: var(--danger, #e5a18b);
+}
+.claw-agents-modes button:disabled:not([aria-pressed="true"]) {
+  opacity: 0.6;
+}
+.claw-agents-allow {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.claw-agents-allow li {
+  padding: 4px 6px 4px 12px;
+}
+.claw-agents-allow li + li {
+  border-top: 1px solid var(--border);
+}
+.claw-agents-allow code {
+  font-size: 12px;
+}
+.claw-agents-none {
+  color: var(--muted) !important;
+}
+.claw-agents-remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.claw-agents-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.claw-agents-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--text-strong);
+  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.claw-agents-add button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-strong);
+  color: var(--panel);
+}
+.claw-agents-add button:disabled {
+  opacity: 0.4;
+}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, Loader2, Pause, Plus, RotateCcw, SkipForward, Trash2, Workflow as WorkflowIcon, Wrench } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, Loader2, Pause, Plus, RotateCcw, Search, SkipForward, Trash2, Workflow as WorkflowIcon, Wrench } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -163,16 +163,29 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
 const toDraft = ({ id, title, agent, kind, task, together }: WorkflowTask): TaskDraft => ({ id, title, agent, kind, task: task || "", together });
 // The tasks that have started, and those before them, stay as they are.
 const lockedCount = (w: Workflow) => (w.state === "draft" ? 0 : w.tasks.reduce((n, t, i) => (t.state !== "waiting" ? i + 1 : n), 0));
-// The next of the agents here for a task (Codex ⇄ Claude Code).
+// The next of the agents here for a task (Codex → Claude Code → OpenClaw).
 const nextAgent = (agent: string, agents: string[]) => agents[(agents.indexOf(agent) + 1) % agents.length] || agent;
 
 // Starting points for a draft with no tasks yet: the agents placed, what to
-// build left for you to say.
+// build left for you to say. Codex and Claude Code take the code; OpenClaw,
+// when it's here, the cheap research first.
 function starters(agents: string[]) {
-  const a = agents[0] || "codex";
-  const b = agents.find((x) => x !== a) || a;
+  const coders = agents.filter((x) => x !== "openclaw");
+  const a = coders[0] || agents[0] || "codex";
+  const b = coders.find((x) => x !== a) || a;
   const task = (agent: string, kind: "build" | "review", title: string, words = "", together = false): TaskDraft => ({ title, agent, kind, task: words, together });
   return [
+    ...(agents.includes("openclaw")
+      ? [
+          {
+            key: "research",
+            icon: <Search size={18} />,
+            title: "Research, then build",
+            line: `${agentLabel("openclaw")} researches · ${agentLabel(a)} builds`,
+            tasks: [task("openclaw", "build", "Research"), task(a, "build", "Build", "Build it, using the research above.")],
+          },
+        ]
+      : []),
     {
       key: "review",
       icon: <Hammer size={18} />,

@@ -26,8 +26,10 @@ type ChatRef = { agent: string; id: string; title?: string };
 export type RelayStarted = { relay: Relay; opened?: { agent: string; id: string } };
 
 // The agents that can take a step now: installed, signed in, with usage.
-export const relayAgents = (health: AgentHealth[]) =>
-  ["codex", "claude"].filter((a) => health.some((h) => h.agent === a && h.installed && h.signedIn && h.usable !== false));
+// OpenClaw takes relays, reviews and workflow tasks, never a team (teams:
+// docs/ACROSS_AGENTS.md).
+export const relayAgents = (health: AgentHealth[], { openclaw = true } = {}) =>
+  ["codex", "claude", ...(openclaw ? ["openclaw"] : [])].filter((a) => health.some((h) => h.agent === a && h.installed && h.signedIn && h.usable !== false));
 // The other agent first (the point of a second opinion), then the same one.
 const othersFirst = (agent: string, agents: string[]) => [...agents.filter((a) => a !== agent), ...agents.filter((a) => a === agent)];
 

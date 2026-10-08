@@ -15,8 +15,10 @@ import { turnOutcome } from "./turn-watch.mjs";
 import { CODEX_MODES } from "./codex.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { backMessage, relayMessage, reportMessage, reviewMessage, turnMaterial } from "./chat-context.mjs";
+import { clipMiddle } from "./move.mjs";
 
 // Who can receive (new chats, messages); whose chats can be read to send on.
+// OpenClaw joins both when Reach has its Gateway (agentChats below).
 export const RELAY_AGENTS = ["codex", "claude"];
 const SOURCES = ["codex", "claude", "gemini"];
 const KINDS = ["build", "review", "send", "back", "report", "record"];
@@ -25,6 +27,79 @@ export const MAX_STEPS = 3;
 export const WAIT_MS = 24 * 60 * 60 * 1000;
 const BUSY = new Set(["running", "waiting"]);
 const ID = /^[\w-]{1,80}$/;
+
+// OpenClaw (../openclaw.mjs): cheap, always on, reached from WhatsApp or
+// Telegram, but not in the folder and with no mode Reach can set. Its
+// client writes only in chats Reach made (agent:<id>:reach-…, webchat,
+// nothing behind them) and never asks OpenClaw to post to a channel; so a
+// relay or a workflow task gets a new Reach chat, and a chat picked to send
+// to must be one of Reach's. Any OpenClaw chat can be read to send on.
+export const CLAW_KEY = /^agent:[\w-]{1,80}:reach-[\w-]{1,80}$/;
+const CLAW_ANY = /^agent:[^\x00-\x1f\s]{1,300}$/;
+const chatId = (agent, id) => typeof id === "string" && (agent === "openclaw" ? CLAW_ANY.test(id) : ID.test(id));
+// The message's last words to OpenClaw: where it stands, and that what it
+// finishes with stays here (no channel, nobody else).
+export const CLAW_NOTE =
+  "(From Reach. You're in OpenClaw, not in that folder: if you can't open its files, work from the material above and your own tools. Reply here; Reach passes your reply on. Don't send anything to WhatsApp, Telegram or any other channel or person because of this message.)";
+// OpenClaw takes at most 100,000 characters a message.
+const CLAW_ROOM = 99_000;
+// OpenClaw puts the time before a message it's sent ("[Thu 2026-10-08
+// 14:02 GMT+2] …", gateway injectTimestamp); the message is what follows.
+const stamped = /^\[[A-Za-z]{2,4},? \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]{0,40}\]\s*/;
+
+// The chats (agent-sessions/index.mjs), with OpenClaw's through its client:
+// read as the others' items, started and sent to with a request id (once
+// each) and live authorization (body.authorize). A run that ended on an
+// error, or that OpenClaw never confirmed, ends on an error item.
+export function agentChats(sessions, openClaw) {
+  if (!openClaw) return sessions;
+  const claw = (agent) => agent === "openclaw";
+  const read = async (key, options = {}) => {
+    const h = await openClaw.history(key, Math.min(Math.max(Number(options?.limit) || 200, 1), 1000));
+    const items = (h.items || []).map((m) => ({
+      id: String(m.id),
+      role: m.tool ? "tool" : ["user", "assistant"].includes(m.role) ? m.role : "system",
+      kind: m.tool ? "tool" : ["user", "assistant"].includes(m.role) ? "text" : "notice",
+      text: m.role === "user" ? String(m.text || "").replace(stamped, "") : String(m.text || ""),
+      ...(m.at ? { at: m.at } : {}),
+    }));
+    const status = h.session?.status;
+    if (status === "error" || status === "unknown")
+      items.push({
+        id: `openclaw-${status}:${items.at(-1)?.id || "start"}`,
+        role: "system",
+        kind: "error",
+        text:
+          status === "unknown"
+            ? "OpenClaw hasn't confirmed how this run ended."
+            : String((h.error && openClaw.redact?.(h.error)) || "OpenClaw ended on an error."),
+      });
+    return {
+      session: {
+        title: h.session?.title || "",
+        cwd: "",
+        model: h.session?.model || "",
+        status: BUSY.has(status) ? status : "idle",
+        writable: h.session?.writable === true,
+      },
+      items,
+      memory: null,
+    };
+  };
+  return Object.assign(Object.create(sessions), {
+    read: (agent, id, options) => (claw(agent) ? read(id, options) : sessions.read(agent, id, options)),
+    async start(agent, body) {
+      if (!claw(agent)) return sessions.start(agent, body);
+      const { key } = await openClaw.start({ text: clipMiddle(body.text, CLAW_ROOM), requestId: body.requestId }, body.authorize);
+      return { threadId: key };
+    },
+    send(agent, id, body) {
+      if (!claw(agent)) return sessions.send(agent, id, body);
+      return openClaw.send({ key: id, text: clipMiddle(body.text, CLAW_ROOM), requestId: body.requestId }, body.authorize);
+    },
+    stop: (agent, id) => (claw(agent) ? openClaw.stop(id) : sessions.stop?.(agent, id)),
+  });
+}
 
 // The permissions a step's new chat starts with, never more. A reviewer
 // reads only: Codex's read-only sandbox, Claude Code in Manual (it asks you
@@ -36,6 +111,8 @@ export const REVIEW_MODES = {
   claude: { mode: "manual" },
 };
 export async function startMode(step, offered = async () => []) {
+  // OpenClaw has no mode Reach sets: its own tool rules and approvals apply.
+  if (step.agent === "openclaw") return {};
   if (step.kind === "review") return REVIEW_MODES[step.agent];
   if (step.agent === "claude") return { mode: "acceptEdits" };
   const ids = await Promise.resolve()
@@ -52,24 +129,29 @@ const clean = (text, max) => String(text ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-
 // needs a chat before the one it follows. "report" (a helper's result to its
 // team's lead, teams.mjs) and "record" (how a workflow's task ended,
 // workflows.mjs) are Reach's own: never ones the phone sets up.
-export function checkSteps(steps, from) {
+// OpenClaw may be a step's agent when Reach has its Gateway (`agents`); a
+// chat picked to send to, or sent back to, must then be one Reach made.
+export function checkSteps(steps, from, agents = RELAY_AGENTS) {
+  const named = agents.includes("openclaw") ? "Choose Codex, Claude Code or OpenClaw." : "Choose Codex or Claude Code.";
   if (!Array.isArray(steps) || !steps.length || steps.length > MAX_STEPS) throw bad(`Choose one to ${MAX_STEPS} steps.`);
   return steps.map((step, n) => {
     const kind = step?.kind;
     if (!KINDS.includes(kind)) throw bad("Unknown step.");
     const instructions = clean(step.instructions, 4000);
     if (kind === "build" || kind === "review") {
-      if (!RELAY_AGENTS.includes(step.agent)) throw bad("Choose Codex or Claude Code.");
+      if (!agents.includes(step.agent)) throw bad(named);
       return { kind, agent: step.agent, ...(instructions ? { instructions } : {}) };
     }
     if (kind === "report" || kind === "record") throw bad("Unknown step.");
     if (kind === "send") {
       const to = { agent: step.to?.agent, id: step.to?.id };
-      if (!RELAY_AGENTS.includes(to.agent) || typeof to.id !== "string" || !ID.test(to.id)) throw bad("Pick a Codex or Claude Code chat.");
+      if (!agents.includes(to.agent) || !chatId(to.agent, to.id)) throw bad(agents.includes("openclaw") ? "Pick a Codex, Claude Code or OpenClaw chat." : "Pick a Codex or Claude Code chat.");
+      if (to.agent === "openclaw" && !CLAW_KEY.test(to.id)) throw bad("Reach writes only in OpenClaw chats it made. Pick one of those.");
       if (n === 0 && to.agent === from.agent && to.id === from.id) throw bad("Pick another chat.");
       return { kind, to, ...(instructions ? { instructions } : {}) };
     }
     if (n === 0) throw bad("There's no chat to send back to yet.");
+    if (n === 1 && from.agent === "openclaw" && !CLAW_KEY.test(from.id)) throw bad("Reach writes only in OpenClaw chats it made, so the review can't go back to this one.");
     return { kind };
   });
 }
@@ -83,7 +165,10 @@ const internal = (r) => r.steps.some((s) => s.kind === "record");
 
 export function createRelays({
   // The chats (agent-sessions/index.mjs): list, read, send, start.
-  sessions,
+  sessions: chats,
+  // OpenClaw's client (../openclaw.mjs), when Reach has its Gateway: its
+  // chats join as sources and destinations (agentChats above).
+  openClaw = null,
   file = null,
   // (owner) → why it can't send now ("" when it can).
   authorized = () => "",
@@ -99,6 +184,15 @@ export function createRelays({
   setEvery = setInterval,
   clearEvery = clearInterval,
 } = {}) {
+  const sessions = agentChats(chats, openClaw);
+  const agents = openClaw ? [...RELAY_AGENTS, "openclaw"] : RELAY_AGENTS;
+  const sources = openClaw ? [...SOURCES, "openclaw"] : SOURCES;
+  // OpenClaw's client asks again before each Gateway call: the phone that
+  // set this up must still be allowed.
+  const allowed = (owner) => () => {
+    const reason = authorized(owner);
+    if (reason) throw bad(reason, 403);
+  };
   let relays = [];
   if (file)
     try {
@@ -201,11 +295,13 @@ export function createRelays({
       let text;
       let queued = false;
       if (step.kind === "build" || step.kind === "review") {
-        const dir = folder(cwd);
+        if (!cwd && step.agent !== "openclaw") throw bad("There's no folder to work in. Set it up again from a chat in one.");
+        const dir = cwd ? folder(cwd) : "";
         text =
           step.kind === "review"
             ? reviewMessage({ from, title, cwd: dir, material })
             : relayMessage({ from, title, cwd: dir, material, instructions: step.instructions, build: true });
+        if (step.agent === "openclaw") text = `${text}\n\n${CLAW_NOTE}`;
         const name = step.kind === "review" ? `Review: ${title || from}` : title;
         const started = await sessions.start(step.agent, {
           cwd: dir,
@@ -213,6 +309,7 @@ export function createRelays({
           images: [],
           ...(await startMode(step, modes)),
           ...(step.agent === "codex" && name ? { name: name.slice(0, 120) } : {}),
+          ...(step.agent === "openclaw" ? { requestId: `relay-${r.id}-${r.next}`, authorize: allowed(r.owner) } : {}),
         });
         to = { agent: step.agent, id: started.threadId, title: name, cwd: dir };
       } else {
@@ -223,11 +320,18 @@ export function createRelays({
             : step.kind === "back"
               ? backMessage({ from, title, material })
               : relayMessage({ from, title, cwd, material, instructions: step.instructions });
-        const result = await sessions.send(target.agent, target.id, { text, images: [], owner: r.owner });
+        if (target.agent === "openclaw") text = `${text}\n\n${CLAW_NOTE}`;
+        const result = await sessions.send(target.agent, target.id, {
+          text,
+          images: [],
+          owner: r.owner,
+          ...(target.agent === "openclaw" ? { requestId: `relay-${r.id}-${r.next}`, authorize: allowed(r.owner) } : {}),
+        });
         // Taken in line, not yet in the chat (a Claude app chat at work, or
         // you at the Mac): it goes in when that chat is free.
         queued = result?.queued === true && result?.delivered === false;
-        to = { agent: target.agent, id: target.id, title: target.title || "", cwd: target.cwd || "" };
+        // An OpenClaw chat isn't in a folder: the work's stays with it.
+        to = { agent: target.agent, id: target.id, title: target.title || "", cwd: target.cwd || (target.agent === "openclaw" ? cwd : "") };
       }
       r.sent.push({ kind: step.kind, to: { agent: to.agent, id: to.id }, at: now(), ...(queued ? { queued: true } : {}) });
       if (step.kind === "report") r.outcome = outcome.kind;
@@ -351,11 +455,16 @@ export function createRelays({
     // Set up from the phone: what to send on, to whom, and when (at once,
     // from a reply already there; or when the chat's agent next finishes).
     // A relay that starts at once answers with the chat it went to.
-    async start({ owner, from, steps, now: atOnce = false, item = null }) {
-      if (!SOURCES.includes(from?.agent) || typeof from?.id !== "string" || !ID.test(from.id)) throw bad("Unknown chat.", 404);
-      const checked = checkSteps(steps, from);
+    // An OpenClaw chat isn't in a folder: a build or review from it needs
+    // one picked (`cwd`, checked as a new chat's).
+    async start({ owner, from, steps, now: atOnce = false, item = null, cwd = "" }) {
+      if (!sources.includes(from?.agent) || !chatId(from.agent, from?.id)) throw bad("Unknown chat.", 404);
+      const checked = checkSteps(steps, from, agents);
       const reason = authorized(owner);
       if (reason) throw bad(reason, 403);
+      const dir = from.agent === "openclaw" && cwd ? folder(cwd) : "";
+      if (from.agent === "openclaw" && !dir && ["build", "review"].includes(checked[0].kind) && checked[0].agent !== "openclaw")
+        throw bad("Pick the folder to work in.");
       if (relays.some((r) => r.state === "waiting" && r.chain.length === 1 && r.chain[0].agent === from.agent && r.chain[0].id === from.id && !atOnce))
         throw bad("This chat already has a relay waiting. Cancel it first.", 409);
       const page = await sessions.read(from.agent, from.id, { limit: 200 });
@@ -365,6 +474,7 @@ export function createRelays({
         if (step.kind === "send") {
           const target = await sessions.read(step.to.agent, step.to.id, { limit: 1 }).catch(() => null);
           if (!target?.session) throw bad("That chat isn't on this computer any more.", 404);
+          if (step.to.agent === "openclaw" && !target.session.writable) throw bad("Reach writes only in OpenClaw chats it made. Pick one of those.");
           step.to = { ...step.to, title: target.session.title || "", cwd: target.session.cwd || "" };
         }
       const r = {
@@ -375,7 +485,7 @@ export function createRelays({
         waitingSince: now(),
         steps: checked,
         next: 0,
-        chain: [{ agent: from.agent, id: from.id, title: page.session?.title || "", cwd: page.session?.cwd || "" }],
+        chain: [{ agent: from.agent, id: from.id, title: page.session?.title || "", cwd: page.session?.cwd || dir }],
         // Waiting: a reply newer than the chat's end now (any reply ending
         // the turn it's in, when it's working now).
         since: BUSY.has(page.session?.status) ? null : items.at(-1)?.id || null,
@@ -461,6 +571,8 @@ export function createRelays({
       save();
       return { cancelled: true };
     },
+    // The agents a step can go to here.
+    agents: () => [...agents],
     check,
     stop: () => clearEvery(timer),
   };

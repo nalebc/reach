@@ -166,7 +166,7 @@ export function NewChat({
   const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
   // A team (docs/ACROSS_AGENTS.md): this agent leads, helpers take tasks.
-  const teamAgents = relayAgents(health);
+  const teamAgents = relayAgents(health, { openclaw: false });
   const canTeam = (agent === "codex" || agent === "claude") && teamAgents.length > 0;
   const [teamMode, setTeamMode] = useState(false);
   const [helpers, setHelpers] = useState<string[]>([]);

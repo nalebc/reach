@@ -51,7 +51,7 @@ const claudeWith = (session, extra = {}) => {
     signIn: {},
     ...(extra.claudeCompose ? { claudeCompose: extra.claudeCompose } : {}),
     claudeImports: { add: async () => {}, close() {} },
-    agentAsks: { close() {} },
+    agentAsks: extra.agentAsks || { close() {} },
     processes: async () => [],
   });
   return { sessions, sent, modes };
@@ -74,16 +74,21 @@ test("a mode picked on the phone for a chat Reach runs changes its Claude Code a
 
 // "Changing permission no longer works in this chat": a chat in the Claude
 // app but not on its screen refused the pick, so the phone dropped it.
-test("a Claude app chat not on screen keeps the pick for its next message; a real failure still says so", async () => {
+// A Claude app chat's mode is never picked in the app's menu: Claude Code
+// takes it with the next request the phone allows there (its hook's setMode).
+test("a Claude app chat's mode goes with Claude Code's next request, never through the app's menu", async () => {
   const session = { agent: "claude", id: ID, cwd: "/work/app", inApp: true, appTitle: "Chat", mode: "default" };
-  const waiting = Object.assign(new Error("Changes in the Claude app when this chat is open there, or with your next message."), { waiting: true, status: 409 });
-  const away = claudeWith(session, { claudeCompose: { mode: async () => { throw waiting; } } });
-  assert.deepEqual(await away.sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: false });
-  away.sessions.close();
-  const unknown = Object.assign(new Error("Claude didn't confirm the permission mode."), { status: 409, uncertain: true });
-  const broken = claudeWith(session, { claudeCompose: { mode: async () => { throw unknown; } } });
-  await assert.rejects(broken.sessions.mode("claude", ID, { mode: "auto" }), /didn't confirm/);
-  broken.sessions.close();
+  const queued = [];
+  const clicked = [];
+  const { sessions } = claudeWith(session, {
+    claudeCompose: { mode: async (...a) => clicked.push(a) },
+    agentAsks: { close() {}, queueMode: (...a) => queued.push(a) },
+  });
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: false, next: "request" });
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "manual" }), { mode: "manual", applied: false, next: "request" });
+  assert.deepEqual(queued, [["claude", ID, "auto"], ["claude", ID, "default"]]);
+  assert.deepEqual(clicked, []);
+  sessions.close();
 });
 
 test("a Codex mode picked on the phone is kept at once: the chat's next message from Reach goes in it", async () => {

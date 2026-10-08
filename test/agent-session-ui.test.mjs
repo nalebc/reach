@@ -440,7 +440,6 @@ for (const agent of ["codex", "claude"])
       "prompts/7",
       "prompts/8",
       "prompts/consent%3Atoolu_1",
-      "prompts/app-permission%3Atoolu_9",
       "prompts/app-permission%3Acodex%3Ac7",
     ])
       routes[`/api/sessions/${agent}/${id}/${action}`] = record(
@@ -3883,62 +3882,55 @@ test("while the agent works, a message waits in the queue, as in the agent's app
   assert.deepEqual(dom.errors, []);
 });
 
-// A Claude app chat's permission card said "Open screen to answer": the phone
-// couldn't allow it. Now it's drawn as the app draws it, read from the app
-// (its words, its buttons, in order), and answered with those same buttons;
-// a terminal's request is still answered there.
-test("a Claude app permission card shows as the app draws it and is answered with its own buttons", async (t) => {
-  const route = `/api/sessions/claude/${CLAUDE}/card`;
+// Claude Code in the Claude app or a terminal is answered from the phone only
+// through its own hook (its requests come as the usual prompt cards). Without
+// the hook the request is said here, nothing in the app is pressed, and one
+// tap puts Reach's hook in Claude Code's settings.
+test("a Claude Code request without Reach's hook offers one tap to answer it from the phone, never an app click", async (t) => {
+  const route = "/api/agents/claude/phone-answers";
   t.after(() => delete routes[route]);
-  routes[route] = () => ({
-    id: "app-permission:toolu_9",
-    texts: ["Allow Claude to run this command?", "npm run build"],
-    buttons: ["Deny", "Always allow for this project", "Allow once"],
-  });
-  const asking = { kind: "permission", text: "npm run build", command: true, id: "app-permission:toolu_9" };
-  const session = claudeSession({ status: "waiting", asking, live: { where: "claude-app", busy: false, waiting: "permission prompt" } });
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { state: "on", changed: true });
+  const sentBefore = mac.sent.length;
+  const asking = { kind: "permission", text: "npm run build", command: true };
+  const session = claudeSession({ status: "waiting", asking, phoneAnswers: "off", live: { where: "claude-app", busy: false, waiting: "permission prompt" } });
   mac.pages[`claude:${CLAUDE}`].session = session;
   await open(session);
-  const card = await dom.waitFor(() => $(".as-prompt.elsewhere .as-app-card") && $(".as-prompt.elsewhere"));
-  assert.equal(card.querySelector(".as-app-card-title").textContent, "Allow Claude to run this command?");
+  const card = await dom.waitFor(() => $(".as-prompt.elsewhere"));
   assert.equal(card.querySelector(".as-prompt-command").textContent, "npm run build");
-  const buttons = [...card.querySelectorAll(".as-prompt-actions button")];
-  // The app's own buttons, in its order, its main one first in weight.
-  assert.deepEqual(buttons.map((b) => b.textContent), ["Deny", "Always allow for this project", "Allow once"]);
-  assert.deepEqual(buttons.map((b) => b.classList.contains("primary")), [false, false, true]);
-  assert.equal($$("button").filter((b) => b.textContent === "Open screen to answer").length, 0);
-  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ status: "running" });
-  await click(buttons[1]);
-  await dom.waitFor(() => mac.sent.length === 1);
-  assert.deepEqual(mac.sent, [
-    { route: `/api/sessions/claude/${CLAUDE}/prompts/app-permission%3Atoolu_9`, body: { label: "Always allow for this project" } },
-  ]);
-  await dom.waitFor(() => !$(".as-prompt.elsewhere"));
+  // Nothing to press in the app: no Allow or Deny of its own.
+  assert.equal([...card.querySelectorAll("button")].filter((b) => /^(Allow|Deny)/.test(b.textContent)).length, 0);
+  const enable = [...card.querySelectorAll("button")].find((b) => b.textContent === "Answer Claude from your phone");
+  assert.ok(enable);
+  await click(enable);
+  await dom.waitFor(() => mac.sent.length > sentBefore);
+  assert.deepEqual(mac.sent.slice(sentBefore), [{ route, body: { on: true } }]);
+  await dom.waitFor(() => ![...$$("button")].some((b) => b.textContent === "Answer Claude from your phone"));
   for (const view of views.splice(0)) await view.unmount();
-  // A terminal's request (no id): said here, answered there.
+  // With the hook on (nothing said), a request not held for the phone is
+  // answered on the Mac.
   const terminal = claudeSession({ status: "waiting", asking: { kind: "permission", text: "npm test", command: true }, live: { where: "terminal", busy: false, waiting: "permission prompt" } });
   mac.pages[`claude:${CLAUDE}`].session = terminal;
   await open(terminal);
   const said = await dom.waitFor(() => $(".as-prompt.elsewhere"));
-  assert.equal([...said.querySelectorAll("button")].filter((b) => /Allow|Deny/.test(b.textContent)).length, 0);
+  assert.equal([...said.querySelectorAll("button")].filter((b) => /Allow|Deny|Answer Claude/.test(b.textContent)).length, 0);
   assert.match(said.textContent, /Answer it on your Mac/);
   assert.deepEqual(dom.errors, []);
 });
 
 test("an unconfirmed app-card answer removes its approval buttons and explains the failure", async (t) => {
-  const route = `/api/sessions/claude/${CLAUDE}/card`;
-  const answerRoute = `/api/sessions/claude/${CLAUDE}/prompts/app-permission%3Ap1`;
+  const route = `/api/sessions/codex/${CODEX}/card`;
+  const answerRoute = `/api/sessions/codex/${CODEX}/prompts/app-permission%3Acodex%3Ap1`;
   t.after(() => { delete routes[route]; delete routes[answerRoute]; });
-  routes[route] = () => ({ id: "app-permission:p1", texts: ["Run example?"], buttons: ["Allow once", "Deny"] });
+  routes[route] = () => ({ id: "app-permission:codex:p1", texts: ["Run example?"], buttons: ["Allow once", "Deny"] });
   let attempts = 0;
-  routes[answerRoute] = () => { attempts++; return Response.json({ error: "Answer delivery unknown. Check Claude." }, { status: 409 }); };
-  const session = claudeSession({ status: "waiting", asking: { kind: "permission", text: "example", id: "app-permission:p1" } });
-  mac.pages[`claude:${CLAUDE}`].session = session;
+  routes[answerRoute] = () => { attempts++; return Response.json({ error: "The Codex app didn't confirm the answer. Check the chat in Codex before answering again." }, { status: 409 }); };
+  const session = codexSession({ status: "waiting", held: "codex-app", asking: { kind: "permission", text: "example", id: "app-permission:codex:p1" } });
+  mac.pages[`codex:${CODEX}`].session = session;
   await open(session);
   const approve = await dom.waitFor(() => $(".as-app-card-actions button"));
   await click(approve);
   await dom.waitFor(() => !$(".as-app-card-actions"));
-  assert.match($(".as-prompt.elsewhere").textContent, /Answer delivery unknown/);
+  assert.match($(".as-prompt.elsewhere").textContent, /didn.t confirm the answer/);
   assert.equal(attempts, 1);
 });
 
@@ -4008,37 +4000,23 @@ test("an open chat's read that fails for a moment is tried again by itself, with
 // Oct 6: Claude's questions in the Claude app said "Answer it on your Mac
 // through live screen". Their options are tapped here now, one question per
 // page, and answered in the app.
-test("Claude's question in the Claude app is answered here: options tapped, then Submit", async (t) => {
-  const answerRoute = `/api/sessions/claude/${CLAUDE}/prompts/${encodeURIComponent("app-question:toolu_q")}`;
-  const sent = [];
-  t.after(() => { delete routes[answerRoute]; });
-  routes[answerRoute] = (init) => (sent.push(JSON.parse(init.body)), { answered: true });
+// Claude's question in the Claude app comes to the phone as a prompt through
+// Claude Code's hook; without the hook it's said here and answered there,
+// with nothing pressed in the app.
+test("Claude's question in the Claude app is said here without the hook, never pressed in the app", async () => {
   const asking = {
     kind: "question",
-    id: "app-question:toolu_q",
-    questions: [
-      { question: "How should an agent get your folders?", options: [{ label: "Real folder, read-only (Recommended)" }, { label: "Keep private copy only" }] },
-      { question: "Which layout for the new invite screen?", multiSelect: true, options: [{ label: "One page, 3 switches (Recommended)" }, { label: "Step by step" }] },
-    ],
+    questions: [{ question: "How should an agent get your folders?", options: [{ label: "Real folder, read-only (Recommended)" }, { label: "Keep private copy only" }] }],
   };
-  const session = claudeSession({ status: "waiting", asking, live: { where: "claude-app", busy: false, waiting: "input needed" } });
+  const session = claudeSession({ status: "waiting", asking, phoneAnswers: "off", live: { where: "claude-app", busy: false, waiting: "input needed" } });
   mac.pages[`claude:${CLAUDE}`].session = session;
   await open(session);
-  const card = await dom.waitFor(() => $(".as-prompt.question"));
-  assert.equal($(".as-prompt.elsewhere"), null, "no live-screen card");
-  assert.doesNotMatch(card.textContent, /live screen/);
-  const choice = (label) => $$(".as-choices button").find((b) => b.textContent.includes(label));
-  await click(choice("Real folder, read-only (Recommended)"));
-  // Next page: several may be picked.
-  await click(await dom.waitFor(() => choice("Step by step")));
-  await click(choice("One page, 3 switches (Recommended)"));
-  await click($$(".as-prompt-actions button").find((b) => b.textContent === "Submit"));
-  await dom.waitFor(() => sent.length === 1);
-  assert.deepEqual(sent[0], {
-    answers: { q0: ["Real folder, read-only (Recommended)"], q1: ["Step by step", "One page, 3 switches (Recommended)"] },
-  });
+  const card = await dom.waitFor(() => $(".as-prompt.question.elsewhere"));
+  assert.match(card.textContent, /How should an agent get your folders\?/);
+  assert.equal($$(".as-choices button").length, 0);
+  assert.ok([...card.querySelectorAll("button")].some((b) => b.textContent === "Answer Claude from your phone"));
+  assert.deepEqual(dom.errors, []);
 });
-
 
 for (const outcome of ["failure", "success"]) test(`a linked chat ignores a departed transcript ${outcome} and its queued reread`, async (t) => {
   const local = "local_4ff35923-e6eb-432e-9e43-ba980333dcde";

@@ -45,7 +45,7 @@ export function sealNotification(item, binding) {
     _binding: binding,
   };
 }
-export function publicNotification({ _binding, signature, push, ...item }) {
+export function publicNotification({ _binding, signature, push, bell, category, ...item }) {
   return item;
 }
 export function chatNotifications(session) {
@@ -398,7 +398,18 @@ function otherPush(item) {
     body: pushLine(item.title, 180) || "A system dialog needs your response on the live screen.",
   };
 }
+// OpenClaw's background work (openclaw-watch.mjs): its own fixed words.
+function backgroundPush(item) {
+  return {
+    title: pushLine(item.title, 100) || "OpenClaw",
+    body: pushLine(item.detail, 200),
+    icon: "openclaw",
+    url: targetUrl(item.target),
+    actions: [{ action: "open", title: "Open" }],
+  };
+}
 export function notificationPush(item) {
+  if (item.source === "openclaw-watch") return backgroundPush(item);
   const open = item.target?.page === "screen" ? "Open live screen"
     : item.kind === "connection" ? "Review access"
     : item.kind === "question" ? "Reply"

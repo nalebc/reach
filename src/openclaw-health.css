@@ -1,0 +1,178 @@
+/* The Gateway's health: a pill on OpenClaw's status line and its sheet. */
+.claw-health-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.claw-health-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--lime);
+}
+.claw-health-pill.slow .claw-health-dot {
+  background: #d6b25e;
+}
+.claw-health-pill.attention {
+  color: var(--danger, #e5a18b);
+}
+.claw-health-pill.attention .claw-health-dot {
+  background: var(--danger, #e5a18b);
+}
+
+.claw-health {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.claw-health-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+}
+.claw-health-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.claw-health-row + .claw-health-row {
+  border-top: 1px solid var(--border);
+}
+.claw-health-row > span {
+  color: var(--muted);
+}
+.claw-health-row > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-strong);
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.claw-health-word.ok {
+  color: var(--lime);
+}
+.claw-health-word.slow {
+  color: #d6b25e;
+}
+.claw-health-word.attention {
+  color: var(--danger, #e5a18b);
+}
+
+.claw-health-actions {
+  display: flex;
+  gap: 8px;
+}
+.claw-health-actions > button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+}
+.claw-health-actions > button.armed {
+  color: var(--danger, #e5a18b);
+  border-color: currentColor;
+}
+.claw-health-note {
+  margin: 0;
+}
+
+.claw-health-logs {
+  min-width: 0;
+}
+.claw-health-logs > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.claw-health-logs h3 {
+  flex: 1;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 550;
+}
+.claw-health-filter {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.claw-health-filter > button {
+  min-height: 26px;
+  padding: 2px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+.claw-health-filter > button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--lime) 12%, var(--panel));
+  color: var(--text-strong);
+}
+.claw-health-refresh {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+}
+.claw-health-lines {
+  max-height: 46vh;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overscroll-behavior: contain;
+}
+.claw-health-lines > li {
+  padding: 2px 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.claw-health-lines > li.warn {
+  color: #d6b25e;
+}
+.claw-health-lines > li.error,
+.claw-health-lines > li.fatal {
+  color: var(--danger, #e5a18b);
+}
+.claw-health-lines time {
+  margin-right: 8px;
+  opacity: 0.6;
+}

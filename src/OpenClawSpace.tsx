@@ -39,6 +39,7 @@ import { ClawHealthPill } from "./OpenClawHealth";
 import { ClawScheduleMore } from "./OpenClawScheduleMore";
 import { ClawAgentsPanel } from "./OpenClawAgents";
 import { ClawSkills } from "./OpenClawSkills";
+import { ClawOnboard } from "./OpenClawOnboard";
 import "./openclaw.css";
 
 const base = "/api/sessions/openclaw";
@@ -347,7 +348,7 @@ function Conversation({
             </div>
             <ChevronDown size={15} />
           </button>
-          <ClawChatCost peer={peer} sessionKey={current.key} />
+          <ClawChatCost peer={peer} sessionKey={current.key} refresh={current.updatedAt} />
         </div>
         {current.writable === true && (
           <button
@@ -924,7 +925,11 @@ function ClawWorkspacePanel({
                 <dt>Delivery</dt>
                 <dd>{channelName(job.delivery)}</dd>
               </dl>
-              {job.error && <p className="claw-error">{job.error}</p>}
+              {/* A failure in the last day shows in ClawScheduleMore instead. */}
+              {job.error &&
+                !(job.status === "error" && Date.now() - job.lastRunAt < 86400000) && (
+                  <p className="claw-error">{job.error}</p>
+                )}
               <ClawScheduleMore
                 peer={peer}
                 job={job}
@@ -1187,12 +1192,11 @@ export default function OpenClawSpace({
               ? `${sessions.length} chats · Gateway connected`
               : "Gateway offline"}
           </span>
-          {data?.connected && (
-            <>
-              <ClawHealthPill peer={peer} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />
-              <ClawSpendPill peer={peer} refresh={refresh} />
-            </>
+          {/* Installed, even stopped: Restart and Doctor matter most then. */}
+          {(data?.connected || data?.canStart) && (
+            <ClawHealthPill peer={peer} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />
           )}
+          {data?.connected && <ClawSpendPill peer={peer} refresh={refresh} />}
           {!!deviceRequests && (
             <button className="chat-review-link" onClick={onReviewDevice}>
               <ShieldCheck size={13} />
@@ -1226,6 +1230,9 @@ export default function OpenClawSpace({
             {starting ? <Loader2 size={14} className="spin" /> : null}
             {starting ? "Starting OpenClaw…" : `Start OpenClaw on ${peer.name}`}
           </button>
+        )}
+        {data && !data.connected && !data.canStart && (
+          <ClawOnboard peer={peer} onDone={() => setRefresh((n) => n + 1)} />
         )}
         {startProblem && (
           <p className="claw-error" role="alert">

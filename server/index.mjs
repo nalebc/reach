@@ -87,6 +87,7 @@ import { AgentApps } from "./agent-apps.mjs";
 import { AgentInputHelper } from "./agent-input.mjs";
 import { createPush } from "./push.mjs";
 import { createNotifications, readAttention } from "./notifications.mjs";
+import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
@@ -527,6 +528,7 @@ export async function createReach(overrides = {}) {
     overrides.relays ||
     createRelays({
       sessions: agentSessions,
+      openClaw,
       file: process.env.NODE_TEST_CONTEXT && !overrides.relayFile ? null : overrides.relayFile || path.join(config.dataDir, "agent-relays.json"),
       authorized: (owner) =>
         paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that set this up no longer has access.",
@@ -593,6 +595,7 @@ export async function createReach(overrides = {}) {
     overrides.workflows ||
     createWorkflows({
       sessions: agentSessions,
+      openClaw,
       relays,
       file: process.env.NODE_TEST_CONTEXT && !overrides.workflowFile ? null : overrides.workflowFile || path.join(config.dataDir, "agent-workflows.json"),
       authorized: (owner) =>
@@ -2672,6 +2675,8 @@ export async function createReach(overrides = {}) {
       steps: b.steps,
       now: b.now === true,
       item: typeof b.item === "string" && b.item.length <= 200 ? b.item : null,
+      // From an OpenClaw chat (no folder of its own): where the work happens.
+      ...(typeof b.cwd === "string" && b.cwd ? { cwd: b.cwd } : {}),
     });
     record("session", b.now === true ? "Started a second opinion or relay" : "Set up a relay for when a chat finishes");
     res.json(result);
@@ -3518,8 +3523,11 @@ export async function createReach(overrides = {}) {
   app.get("/api/handoffs", (req, res) => {
     res.set("Cache-Control", "no-store").json(agentApps.pending());
   });
+  // OpenClaw's schedules and sub-agents finishing, failing or gone quiet.
+  const openClawWatch = createOpenClawWatch({ client: openClaw });
   const readNotificationState = () => readAttention({
     agentSessions, openClaw,
+    background: () => openClawWatch.items(),
     handoffs: () => agentApps.pending(),
     browserRequests: () => browserApprovals.listOwner(),
     admissions: () => auth.listAgentAdmissions(),
@@ -3575,6 +3583,7 @@ export async function createReach(overrides = {}) {
   agentSessions.onListChange?.(() => notifications.wake?.());
   presenceNudges.add(() => notifications.wake?.());
   openClaw.onApprovalsChange?.(() => notifications.wake?.());
+  openClawWatch.onChange(() => notifications.wake?.());
   app.get("/api/notifications", async (req, res) => {
     res.set("Cache-Control", "no-store").json(await notifications.refresh());
   });
