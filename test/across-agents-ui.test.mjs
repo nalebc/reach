@@ -868,20 +868,20 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
     delete routes["/api/sessions/relays"];
     delete routes["/api/sessions/relays/r1/cancel"];
   });
-  mac.answers["/api/sessions/relays"] = { relay: relayOf({ trigger: "usage" }) };
+  mac.answers["/api/sessions/relays"] = { relay: relayOf({ trigger: "usage", priority: ["codex", "claude", "gemini", "openclaw"] }) };
   mac.answers["/api/sessions/relays/r1/cancel"] = { cancelled: true };
   await open(codexSession(), both());
   await click(await dom.waitFor(() => button("More")));
   await click($$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
-  assert.match(sheet.textContent, /24 hours and switches once/);
+  assert.match(sheet.textContent, /24 hours, uses each provider once/);
   assert.equal(mac.sent.length, 0);
-  await click(button("Enable auto-continue in Claude Code"));
+  await click(button("Enable auto-continue"));
   await dom.waitFor(() => $(".relay-strip"));
   assert.deepEqual(mac.sent[0], { route: "/api/sessions/relays", body: {
-    from: { agent: "codex", id: CODEX }, steps: [{ kind: "build", agent: "claude" }], trigger: "usage",
+    from: { agent: "codex", id: CODEX }, priority: ["codex", "claude", "gemini", "openclaw"], trigger: "usage",
   } });
-  assert.match($(".relay-strip").textContent, /Auto-continue in Claude Code if usage runs out/);
+  assert.match($(".relay-strip").textContent, /Auto-continue: Codex → Claude Code → Gemini CLI → OpenClaw/);
   await click(button("Cancel relay"));
   await dom.waitFor(() => !$(".relay-row"));
   assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
