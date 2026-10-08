@@ -151,7 +151,7 @@ test('native helper preparation rechecks the coordinator before spawning', async
   assert.equal(calls, 0);
 });
 
-for (const method of ['draft', 'stop', 'mode', 'model', 'effort']) test(`${method} waits for desktop control before native mutation`, async t => {
+for (const method of ['draft', 'stop', 'model', 'effort']) test(`${method} waits for desktop control before native mutation`, async t => {
   const arbiter = coordinator(); arbiter.setBlocked(true);
   const { compose, ui } = fixture(t, { desktopAutomation: arbiter });
   await assert.rejects(compose[method](B, { title: 'Synthetic', text: 'draft', owner: 'owner', mode: 'manual', model: 'Sonnet 5.5', effort: 'high' }), e => e.waiting);
@@ -238,18 +238,17 @@ test('unknown foreground is not treated as permission to switch away from an act
   assert.deepEqual(ui.calls, []);
 });
 
-test('control acquired during mode preparation prevents the following message dispatch', async t => {
-  const arbiter = coordinator();
-  const { composeOptions, ui } = fixture(t, { desktopAutomation: arbiter });
+test('mode travels through the hook and does not trigger native mode selection', async t => {
+  const { composeOptions } = fixture(t);
   const typed = [];
   const compose = createClaudeCompose({ ...composeOptions, type: async call => {
-    typed.push(call); arbiter.setBlocked(true); return { mode: 'Manual' };
+    typed.push(call); return { sent: true };
   } });
-  await assert.rejects(compose.deliver(A, { title: 'Synthetic', text: 'marker', mode: 'manual' }), e => e.waiting);
-  assert.equal(typed.length, 1); assert.equal(typed[0].mode, 'Manual');
-  assert.equal(ui.calls.length, 1, 'no restoration after losing control');
+  assert.deepEqual(await compose.deliver(A, { title: 'Synthetic', text: 'marker', mode: 'manual' }), { delivered: true });
+  assert.equal(typed.length, 1);
+  assert.equal(typed[0].text, 'marker');
+  assert.equal(typed[0].mode, undefined);
 });
-
 
 test('a chat changed during compose idle inspection is not overwritten by the target switch', async t => {
   const { composeOptions, ui } = fixture(t);

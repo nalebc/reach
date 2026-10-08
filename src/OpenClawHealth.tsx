@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2, RotateCw } from "lucide-react";
+import { Activity, Loader2, RotateCw } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
+import { ClawRow } from "./OpenClawRow";
 import "./openclaw-health.css";
 
 // The Gateway's health, a pill on the status line; opens logs and fixes.
@@ -43,10 +44,13 @@ export function ClawHealthPill({
   peer,
   refresh,
   onChanged,
+  row = false,
 }: {
   peer: Peer;
   refresh?: number;
   onChanged?: () => void;
+  // A row on Customize instead of a pill.
+  row?: boolean;
 }) {
   const [health, setHealth] = useState<Health | null>(null);
   const [open, setOpen] = useState(false);
@@ -72,19 +76,27 @@ export function ClawHealthPill({
     return () => clearInterval(timer);
   }, [load]);
   if (!health) return null;
+  const show = () => {
+    setOpen(true);
+    void load(true);
+  };
   return (
     <>
-      <button
-        type="button"
-        className={`claw-health-pill ${health.status}`}
-        onClick={() => {
-          setOpen(true);
-          void load(true);
-        }}
-      >
-        <span className="claw-health-dot" />
-        {WORD[health.status] || WORD.attention}
-      </button>
+      {row ? (
+        <ClawRow
+          icon={<Activity size={19} />}
+          tint="teal"
+          label="Gateway"
+          value={WORD[health.status] || WORD.attention}
+          tone={health.status === "ok" ? "" : "alert"}
+          onClick={show}
+        />
+      ) : (
+        <button type="button" className={`claw-health-pill ${health.status}`} onClick={show}>
+          <span className="claw-health-dot" />
+          {WORD[health.status] || WORD.attention}
+        </button>
+      )}
       {open && (
         <ChatSheet title="Gateway" className="claw-health-sheet" onClose={() => setOpen(false)}>
           <HealthSheet

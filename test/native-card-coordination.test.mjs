@@ -1,15 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createClaudeConsent, pressClaudeConsent } from "../server/agent-sessions/claude-consent.mjs";
-import { createAppCards, readAppCard, pressAppCard, answerAppQuestion } from "../server/agent-sessions/app-cards.mjs";
+import { createAppCards } from "../server/agent-sessions/app-cards.mjs";
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const stopped = () => Object.assign(Error("Desktop ownership changed; inspect before retrying."), { status: 409 });
 
 for (const [name, call] of [
   ["consent", opts => pressClaudeConsent("Deny", opts)],
-  ["permission read", opts => readAppCard("claude", ["fixture"], opts)],
-  ["permission press", opts => pressAppCard("claude", "Deny", ["fixture"], opts)],
-  ["question answer", opts => answerAppQuestion("claude", [{ question: "Fixture?", picks: ["Yes"] }], opts)],
 ]) test(`${name} rechecks desktop ownership after native helper preparation`, async () => {
   const preparing = deferred(), ready = deferred();
   let valid = true, runs = 0;
@@ -53,20 +50,10 @@ function fixture(kind, { blocked = false, uncertain = false, switchChat = false,
       press: (choice, expect, guard) => pressClaudeConsent(choice, { ...options(guard), expect }),
     });
     invoke = () => c.answer("chat", "consent:one", { decision: "deny" });
-  } else {
-    const promptId = kind === "question" ? "app-question:one" : "app-permission:one";
-    const c = createAppCards({ ...common,
-      pending: async () => pending ? { id: promptId, expect: ["Fixture"], appSessionId: "local_chat" } : null,
-      pendingQuestion: async () => pending ? { id: promptId, appSessionId: "local_chat", questions: [{ question: "Fixture?", options: [{ label: "Yes" }] }] } : null,
-      read: async () => ({ found: true, texts: ["Fixture"], buttons: [{ label: "Deny" }] }),
-      press: (agent, label, expect, guard) => pressAppCard(agent, label, expect, options(guard)),
-      answerQuestion: (agent, answers, guard) => answerAppQuestion(agent, answers, options(guard)),
-    });
-    invoke = () => c.answer("claude", "chat", promptId, kind === "question" ? { answers: { q0: ["Yes"] } } : { label: "Deny" });
   }
   return { invoke, preparing, ready, links, invalidate: () => { active = false; }, restore: () => { active = true; }, count: () => presses, transactions: () => transactions };
 }
-for (const kind of ["consent", "permission", "question"]) {
+for (const kind of ["consent"]) {
   test(`${kind} refusal before helper dispatch stays manually retryable`, async () => {
     const f = fixture(kind, { switchChat: true });
     const answer = f.invoke();
@@ -99,33 +86,7 @@ for (const kind of ["consent", "permission", "question"]) {
   });
 }
 
-test("card reading rechecks after asynchronous preparation before opening a target chat", async () => {
-  let active = true, opens = 0, reads = 0;
-  const started = deferred(), ready = deferred();
-  const c = createAppCards({
-    desktopAutomation: { run: work => work(() => { if (!active) throw stopped(); }) },
-    pending: async () => { started.resolve(); await ready.promise; return { id: "app-permission:one", expect: ["Fixture"], appSessionId: "local_chat" }; },
-    shown: () => [],
-    open: async () => { opens++; }, read: async () => { reads++; return {}; },
-  });
-  const result = c.card("claude", "chat");
-  await started.promise; active = false; ready.resolve();
-  await assert.rejects(result, e => e.status === 409);
-  assert.equal(opens, 0); assert.equal(reads, 0);
-});
-
-test("a replaced question after app switching cannot receive the old answers", async () => {
-  let current = "app-question:one", answers = 0;
-  const c = createAppCards({
-    pendingQuestion: async () => ({ id: current, appSessionId: "local_chat", questions: [{ question: "Fixture?", options: [{ label: "Yes" }] }] }),
-    shown: () => [], open: async () => {}, wait: async () => { current = "app-question:two"; },
-    answerQuestion: async () => { answers++; }, confirmMs: 0,
-  });
-  await assert.rejects(c.answer("claude", "chat", "app-question:one", { answers: { q0: ["Yes"] } }), /already answered/);
-  assert.equal(answers, 0);
-});
-
-for (const kind of ["consent", "permission", "question"]) test(`${kind} acknowledged dispatch survives foreground interruption without replay`, async () => {
+for (const kind of ["consent"]) test(`${kind} acknowledged dispatch survives foreground interruption without replay`, async () => {
   const f = fixture(kind, { interruptOnSuccess: true });
   const answer = f.invoke();
   await f.preparing.promise; f.ready.resolve();
@@ -135,20 +96,43 @@ for (const kind of ["consent", "permission", "question"]) test(`${kind} acknowle
   assert.equal(f.count(), 1);
 });
 
-test("Codex acknowledged permission is marked answered after foreground interruption", async () => {
-  let active = true, presses = 0;
-  const marked = [];
-  const c = createAppCards({
-    desktopAutomation: { run: work => work(() => { if (!active) throw stopped(); }) },
-    pending: async () => ({ id: "app-permission:codex:one", expect: ["Fixture"] }),
-    open: async () => {}, wait: async () => {},
-    read: async () => ({ found: true, texts: ["Fixture"], buttons: [{ label: "Deny" }] }),
-    press: async () => { presses++; active = false; return { pressed: "Deny" }; },
-    markAnswered: id => marked.push(id),
+// The former screen-card path also prevented uncertain replay. The IPC path
+// retains that guarantee without acquiring or moving the desktop.
+test("Codex IPC approvals never replay an uncertain or acknowledged answer", async () => {
+  for (const uncertain of [false, true]) {
+    let calls = 0, requestId = 1;
+    const cards = createAppCards({
+      pending: async () => ({ id: "app-permission:codex:call", callId: "call" }),
+      desktop: {
+        requests: async () => [{ id: requestId, method: "item/commandExecution/requestApproval", params: { threadId: "chat", itemId: "call", command: "fixture" } }],
+        answer: async () => { calls++; if (uncertain) throw Object.assign(Error("Unknown delivery"), { uncertain: true }); },
+      },
+      markAnswered: () => {},
+    });
+    const reply = () => cards.answer("codex", "chat", "app-permission:codex:call", { label: "Allow once" });
+    if (uncertain) await assert.rejects(reply(), /Unknown delivery/);
+    else assert.deepEqual(await reply(), { answered: true });
+    await assert.rejects(reply(), /already attempted/);
+    assert.equal(calls, 1);
+    requestId++;
+    if (uncertain) await assert.rejects(reply(), /Unknown delivery/);
+    else await reply();
+    assert.equal(calls, 2, "a new native request remains answerable");
+  }
+});
+
+test("Codex IPC approval refused before delivery is retryable", async () => {
+  let calls = 0;
+  const cards = createAppCards({
+    pending: async () => ({ id: "app-permission:codex:call", callId: "call" }),
+    desktop: {
+      requests: async () => [{ id: 1, method: "item/commandExecution/requestApproval", params: { threadId: "chat", itemId: "call" } }],
+      answer: async () => { if (++calls === 1) throw Object.assign(Error("Unavailable"), { notDispatched: true }); },
+    },
+    markAnswered: () => {},
   });
-  assert.deepEqual(await c.answer("codex", "chat", "app-permission:codex:one", { label: "Deny" }), { answered: true });
-  assert.deepEqual(marked, ["one"]);
-  active = true;
-  await assert.rejects(c.answer("codex", "chat", "app-permission:codex:one", { label: "Deny" }), /already attempted/);
-  assert.equal(presses, 1);
+  const reply = () => cards.answer("codex", "chat", "app-permission:codex:call", { label: "Deny" });
+  await assert.rejects(reply(), /Unavailable/);
+  assert.deepEqual(await reply(), { answered: true });
+  assert.equal(calls, 2);
 });

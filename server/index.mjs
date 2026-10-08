@@ -113,7 +113,9 @@ import { createOverlaps } from "./agent-sessions/overlaps.mjs";
 import { createSearch } from "./agent-sessions/search.mjs";
 import { agentName } from "./agent-sessions/move.mjs";
 import { createAgentFonts } from "./agent-sessions/fonts.mjs";
-import { createAgentImages, createAgentFiles } from "./agent-sessions/images.mjs";
+import { createAgentImages, createAgentFiles, imageSize, imageTokens } from "./agent-sessions/images.mjs";
+import { createImageRepeats, repeatNote } from "./agent-sessions/image-repeats.mjs";
+import { createSavings } from "./savings.mjs";
 import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voice.mjs";
 import { CODEX_MODES } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
@@ -2587,7 +2589,11 @@ export async function createReach(overrides = {}) {
     versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
   );
   app.get("/api/sessions/health", async (req, res) =>
-    res.json({ agents: await agentSessions.health({ fresh: req.query.fresh === "1" }) }),
+    res.json({
+      agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) =>
+        savings.totals(a.agent).tokens ? { ...a, savings: savings.totals(a.agent) } : a,
+      ),
+    }),
   );
   // The Claude app's own typefaces from the app on this Mac (none without
   // it), ahead of the session routes below that would take /fonts/<name>.
@@ -2677,6 +2683,8 @@ export async function createReach(overrides = {}) {
       item: typeof b.item === "string" && b.item.length <= 200 ? b.item : null,
       // From an OpenClaw chat (no folder of its own): where the work happens.
       ...(typeof b.cwd === "string" && b.cwd ? { cwd: b.cwd } : {}),
+      // The answer back to the WhatsApp or Telegram chat that asked (relays.mjs).
+      ...(b.postBack === true ? { postBack: true } : {}),
     });
     record("session", b.now === true ? "Started a second opinion or relay" : "Set up a relay for when a chat finishes");
     res.json(result);
@@ -2841,6 +2849,18 @@ export async function createReach(overrides = {}) {
     dir: path.join(config.dataDir, "agent-images"),
   });
   const agentFiles = createAgentFiles({ dir: path.join(config.dataDir, "agent-files") });
+  const imageRepeats = createImageRepeats({ file: path.join(config.dataDir, "image-repeats.json") });
+  const savings = createSavings({ file: path.join(config.dataDir, "savings.json") });
+  // Pictures the chat already has go as a note, not again (image-repeats.mjs);
+  // what that saved goes in the savings ledger once the chat took the message.
+  const imageSaving = (agent, files) =>
+    files.reduce((sum, file) => {
+      try {
+        return sum + imageTokens(imageSize(fs.readFileSync(file)), agent);
+      } catch {
+        return sum;
+      }
+    }, 0);
   const voice = (overrides.voiceFactory || createVoice)({ config });
   // Five minutes of the phone's 16 kHz WAV is under 10 MB.
   const voiceUpload = multer({
@@ -3051,6 +3071,7 @@ export async function createReach(overrides = {}) {
       ...(agent === "codex" && body.mode ? { modeName: body.mode } : {}),
       name: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
     });
+    if (typeof result?.threadId === "string" && Array.isArray(body.images)) imageRepeats.add(agent, result.threadId, body.images);
     record("session", `Started a ${agentLabel(agent)} session from Reach`);
     res.json(result);
   });
@@ -3071,9 +3092,15 @@ export async function createReach(overrides = {}) {
     return blocks;
   };
   app.post("/api/sessions/:agent/:id/messages", async (req, res) => {
-    const options = turnOptions(req.body || {}, req.params.agent);
+    const { agent, id } = req.params;
+    const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
+    const options = turnOptions({ ...(req.body || {}), images: fresh }, agent);
+    const repeatFiles = agentImages.paths(repeated);
     const chats = await mentioned(req.body?.chats, req.params);
     if (chats.length) options.text = withMentions(options.text, chats);
+    // Outermost, so every reader of the message strips it (message-text.mjs).
+    const note = repeatFiles.length ? repeatNote(repeatFiles) : "";
+    if (note) options.text = `${note}\n\n${options.text}`;
     const result = await agentSessions.send(
       req.params.agent,
       req.params.id,
@@ -3090,6 +3117,13 @@ export async function createReach(overrides = {}) {
         owner: req.client.id,
       },
     );
+    // Only once the chat has it: a queued message can still fail or be
+    // discarded, and its pictures then go again next time.
+    if (!result?.queued) {
+      imageRepeats.add(agent, id, Array.isArray(fresh) ? fresh : []);
+      // Less the note itself (about a token per four characters).
+      if (note) savings.record({ agent, kind: "image-repeat", tokens: imageSaving(agent, repeatFiles) - Math.ceil(note.length / 4), count: repeatFiles.length });
+    }
     record("session", `Sent a message to ${agentLabel(req.params.agent)}`);
     res.json(result);
   });
@@ -3571,6 +3605,8 @@ export async function createReach(overrides = {}) {
           state: config.dataDir,
           args: "restart --yes",
         })),
+    // The Claude chats a restart would cut off mid-step.
+    working: () => agentSessions.working?.() || [],
     // Asked or answered: the list re-reads and phones hear of it at once.
     onChange: () => {
       void notifications.refresh({ fresh: true }).catch(() => {});

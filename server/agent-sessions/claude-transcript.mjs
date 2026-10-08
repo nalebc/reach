@@ -8,7 +8,7 @@
 // - Messages typed while a turn runs are "queued_command" attachments.
 // Nothing here executes or follows paths from the transcript.
 
-import { visibleUserText } from "./message-text.mjs";
+import { repeatedImages, visibleUserText } from "./message-text.mjs";
 import { partLabel, partLabels } from "./message-parts.mjs";
 
 const clip = (text, max) => {
@@ -432,11 +432,13 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             // Typed while it worked; with a picture, its words and pictures
             // come as pieces (it showed "[object Object],[object Object]").
             const pieces = Array.isArray(a.prompt) ? a.prompt : [{ type: "text", text: String(a.prompt) }];
-            const words = visibleUserText(pieces.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n"));
+            const raw = pieces.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
+            const words = visibleUserText(raw);
             const pictures = pieces.filter((b) => b?.type === "image").length;
+            const repeats = repeatedImages(raw);
             const attachments = partLabels(pieces);
-            if (words || pictures || attachments.length)
-              items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), ...(attachments.length ? { attachments } : {}), queued: true, at });
+            if (words || pictures || repeats || attachments.length)
+              items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), ...(repeats ? { repeats } : {}), ...(attachments.length ? { attachments } : {}), queued: true, at });
           }
         } else if (e.type === "user") {
           if (e.isCompactSummary) {
@@ -451,12 +453,13 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
           // Without what an app put ahead of the person's words (the Claude
           // app's <system-reminder> when a chat moves into it).
-          const text = visibleUserText(
-            blocks
-              .filter((b) => b && b.type === "text" && typeof b.text === "string" && b.text)
-              .map((b) => b.text)
-              .join("\n"),
-          );
+          const said = blocks
+            .filter((b) => b && b.type === "text" && typeof b.text === "string" && b.text)
+            .map((b) => b.text)
+            .join("\n");
+          const text = visibleUserText(said);
+          // Pictures the chat already had, sent as a note (image-repeats.mjs).
+          const repeats = repeatedImages(said);
           const images = blocks.filter((b) => b?.type === "image").length;
           // A voice note or document it took as is (slimmed to its label).
           const attachments = blocks.map((b) => (b?.type === "attachment" ? b.label : partLabel(b))).filter(Boolean);
@@ -485,7 +488,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });
             continue;
           }
-          if (!text && !images && !attachments.length) continue;
+          if (!text && !images && !repeats && !attachments.length) continue;
           if (!firstUser && text) firstUser = text;
           items.push({
             id: e.uuid,
@@ -493,6 +496,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             kind: "text",
             text: text || "",
             ...(images ? { images } : {}),
+            ...(repeats ? { repeats } : {}),
             ...(attachments.length ? { attachments } : {}),
             at,
           });

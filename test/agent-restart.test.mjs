@@ -140,3 +140,33 @@ test("a fresh Reach drops the restart that was asked for, and its watch never ho
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+test("a restart names the Claude chats it would cut off and can wait for them to finish", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-restart-wait-"));
+  const { restartRequests } = await import("../server/restart-requests.mjs");
+  const { restartNotification } = await import("../server/notification-items.mjs");
+  let working = [{ id: "a", title: "Claw UI rebuild" }];
+  let restarted = 0;
+  const restarts = restartRequests({ dataDir: dir, restart: () => restarted++, working: () => working, watch: () => ({ close() {} }), everyMs: 10 });
+  askRestart(dir, { app: "Claude" });
+  let [request] = restarts.list();
+  let card = restartNotification(request);
+  assert.match(card.summary, /^Claw UI rebuild is still working\./);
+  assert.deepEqual(card.actions.map((a) => a.id), ["after", "restart", "deny"]);
+  assert.deepEqual(restarts.decide(request.id, "after"), { status: "waiting" });
+  [request] = restarts.list();
+  card = restartNotification(request);
+  assert.equal(card.title, "Reach restarts when chats finish");
+  assert.deepEqual(card.actions.map((a) => a.id), ["restart", "deny"]);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(restarted, 0);
+  working = [];
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(restarted, 1);
+  assert.equal(fs.existsSync(restartRequestFile(dir)), false);
+  // Nothing working: the card is as before.
+  askRestart(dir, { app: "Claude" });
+  assert.deepEqual(restartNotification(restarts.list()[0]).actions.map((a) => a.id), ["restart", "deny"]);
+  restarts.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -150,13 +150,13 @@ test("a chat the app didn't open isn't switched to again for a few minutes", asy
   const later = compose(lost, { clock: () => at, heldMs: 1000 });
   await assert.rejects(later.deliver(A, message), /didn.t open this chat/);
   await assert.rejects(later.deliver(A, message), /few minutes/);
-  assert.equal(lost.opened.length, 2);
+  assert.equal(lost.opened.length, 1, "no restore when the target never opened");
   at = 1001;
   await assert.rejects(later.deliver(A, message), /didn.t open this chat/);
-  assert.equal(lost.opened.length, 4);
+  assert.equal(lost.opened.length, 2);
   // Send now still switches at once.
   await assert.rejects(later.deliver(A, { ...message, now: true }), /didn.t open this chat/);
-  assert.equal(lost.opened.length, 6);
+  assert.equal(lost.opened.length, 3);
 });
 
 test("the Claude app closed, or not listing the chat: it waits, saying so; taken but not yet in the transcript is never sent twice", async () => {

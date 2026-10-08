@@ -69,6 +69,9 @@ export function createAppCards({
     if (!request) throw bad(`Reach can't tell which request this is. ${there()}`, 409);
     return { asked, request };
   };
+  // Keep the old card path's no-replay guarantee across phones, now keyed
+  // by the native request so a later request in the same chat can proceed.
+  const attempted = new Set();
   let busy = false;
   return {
     owns: (promptId) => typeof promptId === "string" && promptId.startsWith("app-permission:codex:"),
@@ -85,11 +88,20 @@ export function createAppCards({
       busy = true;
       try {
         const { asked, request } = await find(id, promptId);
+        const key = JSON.stringify([id, request.method, request.id]);
+        if (attempted.has(key)) throw bad("This answer was already attempted. Check the Codex app before answering again.", 409);
+        if ((await pending("codex", id))?.id !== asked.id) throw bad("This request was already answered.", 409);
         const { prompt } = codexCard(promptId, request);
         const decision = prompt.decisions.map(decisionKey).find((k) => LABELS[k] === label);
         if (!decision) throw bad(`The request doesn't offer "${label}".`, 400);
         const response = answerFor(prompt, { decision });
-        await desktop.answer(id, { id: request.id, method: request.method, response });
+        attempted.add(key);
+        try {
+          await desktop.answer(id, { id: request.id, method: request.method, response });
+        } catch (error) {
+          if (error?.uncertain !== true) attempted.delete(key);
+          throw error;
+        }
         // An allowed command runs on and writes nothing until it ends.
         markAnswered(asked.callId);
         return { answered: true };
