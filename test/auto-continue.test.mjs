@@ -89,3 +89,124 @@ test("auto-continue validates its destination and trigger", async t => {
   for (const extra of [{ trigger: "oops" }, { now: true }, { steps: [{ kind: "build", agent: "claude" }] }, { steps: [{ kind: "review", agent: "codex" }] }])
     await assert.rejects(h.relays.start({ ...h.body, ...extra }), { status: 400 });
 });
+
+function priorityStage(t, { priority = ["codex", "claude", "gemini", "openclaw"], source = "codex", health: offered } = {}) {
+  const h = setup(t);
+  const pages = Object.fromEntries(["codex", "claude", "openclaw"].map(agent => [agent, {
+    session: { title: "Work", cwd: "/work", status: "idle" },
+    items: [{ id: `${agent}-u`, role: "user", kind: "text", text: "Finish" }],
+  }]));
+  const health = offered || ["codex", "claude", "gemini", "openclaw"].map(agent => ({ agent, installed: true, signedIn: true, usable: true, connected: true, canTakeMoves: true }));
+  const moves = [], sends = [];
+  h.options.sessions = {
+    list: async () => ({ sessions: [] }),
+    health: async () => health,
+    read: async (agent) => structuredClone(pages[agent]),
+    move: async (agent, id, options) => {
+      options.authorize();
+      moves.push({ agent, options });
+      return { agent: options.to, id: `${options.to}-new`, resumed: options.resume };
+    },
+    send: async (agent, id, body) => { body.authorize(); sends.push({ agent, id, body }); },
+  };
+  const relays = createRelays(h.options);
+  const body = { owner: "phone", from: { agent: source, id: "original" }, trigger: "usage", priority };
+  const limit = (agent) => pages[agent].items.push({ id: `${agent}-limit`, kind: "error", role: "system", text: "You've hit your usage limit." });
+  return { ...h, relays, pages, health, moves, sends, body, limit, settle: () => h.settle(relays) };
+}
+
+test("priority continues through multiple providers, skips read-only Gemini, and never loops", async t => {
+  const h = priorityStage(t);
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  assert.deepEqual(h.moves.map(m => m.options.to), ["claude"]);
+  assert.equal(h.relays.list()[0].state, "waiting");
+  h.limit("claude");
+  await h.settle();
+  assert.deepEqual(h.moves.map(m => m.options.to), ["claude", "openclaw"]);
+  assert.equal(h.sends.length, 1);
+  assert.match(h.sends[0].body.text, /Don't send anything to WhatsApp/);
+  assert.equal(h.relays.list()[0].state, "done");
+  h.limit("openclaw");
+  await h.settle();
+  assert.equal(h.moves.length, 2);
+});
+
+test("custom order is honored and availability is rechecked when usage runs out", async t => {
+  const h = priorityStage(t, { priority: ["codex", "openclaw", "claude", "gemini"] });
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  assert.equal(h.moves[0].options.to, "openclaw");
+  // Claude loses its sign-in after the watch was enabled.
+  h.health.find(x => x.agent === "claude").signedIn = false;
+  h.limit("openclaw");
+  await h.settle();
+  assert.equal(h.moves.length, 1);
+  assert.equal(h.relays.list()[0].state, "stopped");
+  assert.match(h.relays.list()[0].problem, /No unused provider/);
+});
+
+test("unavailable providers are skipped without creating a chat", async t => {
+  const h = priorityStage(t);
+  h.health.find(x => x.agent === "claude").usable = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  assert.deepEqual(h.moves.map(m => m.options.to), ["openclaw"]);
+});
+
+test("priority is preserved across a restart between fallback hops", async t => {
+  const h = priorityStage(t);
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  const restored = createRelays(h.options);
+  assert.deepEqual(restored.list()[0].priority, h.body.priority);
+  h.limit("claude");
+  await restored.check();
+  h.advance(11);
+  await restored.check();
+  assert.deepEqual(h.moves.map(m => m.options.to), ["claude", "openclaw"]);
+});
+
+for (const action of ["cancel", "revoke"]) test(`${action} while checking availability prevents a move`, async t => {
+  const h = priorityStage(t);
+  const { relay } = await h.relays.start(h.body);
+  h.options.sessions.health = async () => {
+    if (action === "cancel") h.relays.cancel(relay.id);
+    else h.revoke();
+    return h.health;
+  };
+  h.limit("codex");
+  await h.settle();
+  assert.equal(h.moves.length, 0);
+  assert.equal(h.relays.list()[0].state, "stopped");
+});
+
+test("malformed, duplicate, unsupported, or ambiguous priorities are rejected", async t => {
+  const h = priorityStage(t);
+  for (const priority of [[], ["codex"], ["codex", "codex"], ["codex", "unknown"], ["claude", "gemini"], ["codex", "gemini"]])
+    await assert.rejects(h.relays.start({ ...h.body, priority }), { status: 400 });
+  await assert.rejects(h.relays.start({ ...h.body, steps: [{ kind: "build", agent: "claude" }] }), { status: 400 });
+});
+
+test("a later move out of OpenClaw keeps the original project folder", async t => {
+  const h = priorityStage(t, { priority: ["codex", "openclaw", "claude"] });
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  h.limit("openclaw");
+  await h.settle();
+  assert.equal(h.moves[1].options.to, "claude");
+  assert.equal(h.moves[1].options.cwd, "/work");
+});
+
+test("simultaneous enables create only one priority watch", async t => {
+  const h = priorityStage(t);
+  const results = await Promise.allSettled([h.relays.start(h.body), h.relays.start(h.body)]);
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+  assert.equal(results.find(r => r.status === "rejected").reason.status, 409);
+  assert.equal(h.relays.list().length, 1);
+});

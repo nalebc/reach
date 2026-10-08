@@ -292,6 +292,7 @@ export function createRelays({
       try {
         const moved = await sessions.move(src.agent, src.id, {
           to: step.agent, resume: step.agent !== "openclaw", owner: r.owner, authorize: allowed(r.owner),
+          ...(src.agent === "openclaw" && src.cwd ? { cwd: folder(src.cwd) } : {}),
         });
         if (step.agent === "openclaw") {
           try {
@@ -585,6 +586,10 @@ export function createRelays({
           if (step.to.agent === "openclaw" && !target.session.writable) throw bad("Reach writes only in OpenClaw chats it made. Pick one of those.");
           step.to = { ...step.to, title: target.session.title || "", cwd: target.session.cwd || "" };
         }
+      const denied = authorized(owner);
+      if (denied) throw bad(denied, 403);
+      if (!atOnce && relays.some((r) => ["waiting", "sending"].includes(r.state) && r.chain.some((c) => c.agent === from.agent && c.id === from.id)))
+        throw bad("This chat already has a relay waiting. Cancel it first.", 409);
       const r = {
         id: randomUUID(),
         owner,

@@ -50,10 +50,17 @@ const samples: Record<string, Workflow> = {
     })),
   },
 };
-const sample = samples[view] || samples.draft;
+let sample = samples[view] || samples.draft;
 window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-  if (url.pathname.startsWith("/api/sessions/workflows/")) return Response.json(init.method === "POST" ? { workflow: sample } : { ...sample, version: "v1" });
+  if (url.pathname.startsWith("/api/sessions/workflows/")) {
+    if (init.method === "POST") {
+      const body = JSON.parse(String(init.body || "{}"));
+      sample = { ...sample, ...body, updatedAt: Date.now(), ...(url.pathname.endsWith("/run") ? { state: "running" as const } : {}) };
+      return Response.json({ workflow: sample });
+    }
+    return Response.json({ ...sample, version: String(sample.updatedAt) });
+  }
   if (url.pathname === "/api/sessions/models") return Response.json({ models: [], modes: [], mode: null });
   return Response.json({});
 };

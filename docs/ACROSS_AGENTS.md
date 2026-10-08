@@ -4,7 +4,7 @@ Reach's Chat holds every agent's chats on this computer: Codex, Claude Code, Gem
 
 ## The features
 
-**1. Keep going when an agent runs out of usage.** When Codex or Claude Code hits its usage limit, the line above the message box offers **Continue in** the other agent. One tap shows what happens; a second tap moves the chat with its history (the same move as ⋯ → Continue in) and tells the new agent to pick up where the chat stopped. Your phone is notified when a chat stops on a usage limit. Reach never moves a chat by itself.
+**1. Keep going when an agent runs out of usage.** When Codex or Claude Code hits its usage limit, the line above the message box offers **Continue in** the other agent. One tap shows what happens; a second tap moves the chat with its history (the same move as ⋯ → Continue in) and tells the new agent to pick up where the chat stopped. Your phone is notified when a chat stops on a usage limit. For automatic fallback, choose **⋯ → Auto-continue** and set the provider priority with the up/down arrows and checkboxes. The default order is Codex → Claude Code → Gemini CLI → OpenClaw, remembered on this device. Once enabled, Reach watches for 24 hours: on each usage limit it picks the first available provider not already used in the chain, moves the history, and resumes. Unavailable providers are skipped; Gemini is currently read-only in Reach. OpenClaw needs a connected Gateway with chat-transfer support and uses its own tools. Cancel above the message box at any time while waiting.
 
 **2. Second opinion.** Under an agent's reply, **Second opinion** asks the other agent to review that turn: what you asked, what it answered, and the diffs of the files it changed. The reviewer starts as a new chat in the same folder. It can read; anything more asks you first. Codex reviews in its read-only sandbox, and Claude Code in Manual mode, which asks before any edit or command. You can have the review sent back to the original chat when it's done (a relay).
 
@@ -31,7 +31,7 @@ With more than one computer, each row shows which computer it's on, and the same
 
 ## Rules Reach follows
 
-- **Nothing starts or sends without you.** Moves, reviews and relays begin with your tap. A relay sends only for the turn it was set up for.
+- **Nothing starts or sends without you.** Moves, reviews and relays begin with your tap. A relay sends only for the turn it was set up for; an enabled auto-continue watch follows usage limits for up to 24 hours.
 - **A finished turn is checked, not guessed.** Before a relay sends, Reach reads the chat. It must end with a reply that came after your last message (not an error, not a Stop), and still be idle a few seconds later.
 - **No new permission.** Reviewers read; anything more asks you. Builders start in Codex's **Approve for me** (or **Ask for approval** when that's off) or Claude Code's **Accept edits**, never Full access or Bypass. Sending to an existing chat uses the same path as typing there from the phone, including its wait while you use the Claude app.
 - **Another agent's words are material, not orders.** What one agent wrote reaches the next inside a marked block, introduced as material to work with, not instructions.

@@ -1041,8 +1041,8 @@ export function createAgentSessions({
     // resume: the new agent is also told to keep going (an agent out of
     // usage, continued in another with one tap); a move that worked stays
     // done if that message can't go, and says why.
-    async move(agent, id, { to, authorize = () => {}, resume = false, owner } = {}) {
-      const moved = await this.moveOnly(agent, id, { to, authorize });
+    async move(agent, id, { to, authorize = () => {}, resume = false, owner, cwd = "" } = {}) {
+      const moved = await this.moveOnly(agent, id, { to, authorize, cwd });
       if (!resume || (to !== "codex" && to !== "claude")) return moved;
       try {
         authorize();
@@ -1052,7 +1052,7 @@ export function createAgentSessions({
         return { ...moved, resumed: false, resumeError: e?.message || "The message to continue couldn't be sent." };
       }
     },
-    async moveOnly(agent, id, { to, authorize = () => {} } = {}) {
+    async moveOnly(agent, id, { to, authorize = () => {}, cwd = "" } = {}) {
       authorize();
       if (!movable().includes(agent)) adapter(agent);
       if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
@@ -1063,7 +1063,10 @@ export function createAgentSessions({
         if (agent === "codex") codexWhole.delete(id);
         const source = await history(agent, id);
         authorize();
-        const { session, items, memory } = source;
+        const { items, memory } = source;
+        // A priority continuation remembers the original project even while
+        // passing through OpenClaw, whose chats have no project folder.
+        const session = agent === "openclaw" && cwd ? { ...source.session, cwd } : source.session;
         const from = agentName(agent);
         const title = session.title || "";
         // A Codex thread doesn't list the history it was given: a chat moved
