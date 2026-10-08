@@ -2,7 +2,8 @@
 // the same Accessibility input Reach's screen control uses, and nothing else:
 //
 //   --press --window <id> --button <title>
-//       Presses that exact button (by Accessibility, never a blind click) on
+//       Presses that exact button (by Accessibility, with a hit-tested mouse
+//       fallback when AXPress is unsupported or has no effect) on
 //       that exact dialog, if the dialog still has it; then reports whether
 //       the dialog closed (macOS may refuse input from apps on some dialogs).
 //       Only dialogs macOS itself shows (its own processes, signed by Apple).
@@ -96,7 +97,7 @@ func buttons(of d: Dialog) -> [String: AXUIElement] {
   let match = windows.first { w in
     let f = frame(w)
     return abs(f.minX - d.frame.minX) < 3 && abs(f.minY - d.frame.minY) < 3 && abs(f.width - d.frame.width) < 3 && abs(f.height - d.frame.height) < 3
-  } ?? (windows.count == 1 ? windows[0] : nil)
+  }
   guard let window = match else { return [:] }
   var found: [String: AXUIElement] = [:]
   var queue = [window]
@@ -111,6 +112,59 @@ func buttons(of d: Dialog) -> [String: AXUIElement] {
     queue.append(contentsOf: children(e))
   }
   return found
+}
+
+// A reused system window/button must not turn the fallback into an answer
+// to the next question. Remember only static dialog text, never field values.
+func buttonContext(_ button: AXUIElement) -> [String]? {
+  var node = button
+  for _ in 0..<20 {
+    if str(node, kAXRoleAttribute) == (kAXWindowRole as String) {
+      var queue = [node], texts: [String] = []
+      var i = 0
+      while i < queue.count, i < 2000 {
+        let e = queue[i]
+        i += 1
+        if str(e, kAXRoleAttribute) == (kAXStaticTextRole as String) { texts.append(str(e, kAXValueAttribute)) }
+        queue.append(contentsOf: children(e))
+      }
+      return i == queue.count && texts.contains(where: { !$0.isEmpty }) ? texts : nil
+    }
+    guard let parent = attr(node, kAXParentAttribute) else { return nil }
+    node = parent as! AXUIElement
+  }
+  return nil
+}
+
+// Some system dialogs expose buttons but don't implement AXPress. Use the
+// same ordinary mouse input as the live screen, only if Accessibility's
+// hit test still identifies the exact button in the exact dialog. macOS
+// can reject this too; never report success until the dialog closes.
+func clickButton(_ button: AXUIElement, title: String, context: [String], dialog d: Dialog, id: CGWindowID) -> Bool {
+  guard let current = dialog(id), current.pid == d.pid, current.owner == d.owner, current.frame == d.frame,
+    let fresh = buttons(of: current)[title], CFEqual(fresh, button), buttonContext(fresh) == context,
+    (attr(fresh, kAXEnabledAttribute) as? Bool) == true,
+    let position = attr(fresh, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
+    let size = attr(fresh, kAXSizeAttribute), CFGetTypeID(size) == AXValueGetTypeID()
+  else { return false }
+  var p = CGPoint.zero, s = CGSize.zero
+  guard AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &s),
+    p.x.isFinite, p.y.isFinite, s.width.isFinite, s.height.isFinite, s.width > 0, s.height > 0
+  else { return false }
+  let rect = CGRect(origin: p, size: s)
+  guard d.frame.contains(rect) else { return false }
+  let point = CGPoint(x: rect.midX, y: rect.midY)
+  var hit: AXUIElement?
+  guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success,
+    let hit, CFEqual(hit, fresh), let source = CGEventSource(stateID: .hidSystemState),
+    let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+    let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+  else { return false }
+  down.flags = []
+  up.flags = []
+  down.post(tap: .cghidEventTap)
+  up.post(tap: .cghidEventTap)
+  return true
 }
 
 // Where the keyboard is, asked live each time (never remembered): the
@@ -179,11 +233,14 @@ struct MacAnswer {
       guard presenters.contains(d.owner), signedByApple(d.pid) else { out(["error": "That isn't one of your Mac's own dialogs."]) }
       // Re-read right before pressing: only a button the dialog has now.
       guard let button = buttons(of: d)[title] else { out(["error": "That button isn't on the dialog any more."]) }
-      guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
-        out(["error": "macOS didn't take the press from Reach. Answer it at the Mac.", "refused": true])
-      }
+      let context = buttonContext(button)
+      let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
       if gone(id, within: 2.5) { out(["pressed": title]) }
-      out(["error": "macOS didn't take the press from Reach. Answer it at the Mac.", "refused": true])
+      // A timeout/cannotComplete is ambiguous: do not send another answer.
+      if result == .success || result == .actionUnsupported {
+        if let context, clickButton(button, title: title, context: context, dialog: d, id: id), gone(id, within: 2.5) { out(["pressed": title]) }
+      }
+      out(["error": "macOS didn't confirm the press from Reach. Answer this dialog on the Mac.", "refused": true, "axError": result.rawValue])
     }
 
     if args.contains("--password") {

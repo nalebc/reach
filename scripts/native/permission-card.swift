@@ -101,6 +101,9 @@ func findCard(_ app: AXUIElement, expect: [String]) -> Card? {
     for _ in 0..<8 {
       guard let parent = up.flatMap({ attr($0, kAXParentAttribute) }) else { break }
       let box = parent as! AXUIElement
+      // Never match request text elsewhere in the chat against these buttons.
+      let boxRole = str(box, kAXRoleAttribute)
+      if ["AXWindow", "AXWebArea", "AXApplication", "AXScrollArea"].contains(boxRole) { break }
       var card = Card()
       var stack = [box]
       var seen = 0
@@ -119,7 +122,13 @@ func findCard(_ app: AXUIElement, expect: [String]) -> Card? {
       }
       if card.buttons.count >= 2 && card.buttons.contains(where: { starts($0.label, "Allow") }) {
         let all = squeezed(card.texts.joined())
-        return expect.allSatisfy({ all.contains(squeezed($0)) }) ? card : nil
+        // The first parent is often just the footer. Keep walking to the
+        // card's body, but never combine buttons from separate requests.
+        if card.buttons.filter({ starts($0.label, "Deny") }).count != 1 { break }
+        if seen < 800 && stack.isEmpty && expect.allSatisfy({ all.contains(squeezed($0)) }) { return card }
+        // A body with different request text is a different card. Only an
+        // empty button footer may expand to its enclosing body.
+        if !card.texts.isEmpty { break }
       }
       up = box
     }
@@ -339,11 +348,12 @@ struct PermissionCard {
       }
       if !ready { usleep(250_000) }
     }
-    guard ready, let choice = press else { out(read ? ["found": false, "ms": ms()] : ["error": "The app isn't showing that request."]) }
-    // Pressed, then gone: answered. Still there: once more, then say so.
-    for attempt in 0..<2 {
+    guard ready, let choice = press else { out(read ? ["found": false, "ms": ms()] : ["error": "The app isn't showing that request.", "untouched": true]) }
+    // Exactly one answer: a delayed acknowledgement must not approve the
+    // next request when it happens to show the same command.
+    do {
       guard let card = look() else {
-        out(attempt == 0 ? ["error": "This request was already answered."] : ["pressed": choice, "ms": ms()])
+        out(["error": "This request was already answered.", "untouched": true])
       }
       // Exactly the button chosen: one with that label, never a menu; else
       // the menu's choice with that label, the menu opened first.
@@ -359,14 +369,14 @@ struct PermissionCard {
         let items = menuItems(app).filter { $0.label == choice && !before.contains($0.label) }
         guard items.count == 1 else {
           escape(running.processIdentifier)
-          out(["error": "The card no longer offers \"\(choice)\"."])
+          out(["error": "The card no longer offers \"\(choice)\".", "untouched": true])
         }
         guard AXUIElementPerformAction(items[0].item, kAXPressAction as CFString) == .success
         else { escape(running.processIdentifier); out(["error": "Couldn't press it in the app."]) }
       } else {
-        out(["error": "The card no longer offers \"\(choice)\".", "buttons": card.buttons.map { $0.label }])
+        out(["error": "The card no longer offers \"\(choice)\".", "buttons": card.buttons.map { $0.label }, "untouched": true])
       }
-      for _ in 0..<10 {
+      for _ in 0..<20 {
         usleep(200_000)
         if look() == nil { out(["pressed": choice, "ms": ms()]) }
       }

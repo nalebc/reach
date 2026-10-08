@@ -55,7 +55,9 @@ func findCard(_ app: AXUIElement, expect: [String], budget: inout Int) -> [Strin
     for _ in 0..<8 {
       guard let parent = up.flatMap({ attr($0, kAXParentAttribute) }) else { break }
       let box = parent as! AXUIElement
+      if ["AXWindow", "AXWebArea", "AXApplication", "AXScrollArea"].contains(str(box, kAXRoleAttribute)) { break }
       var found: [String: AXUIElement] = [:]
+      var matches = 0
       var text = ""
       var stack = [box]
       var seen = 0
@@ -63,6 +65,7 @@ func findCard(_ app: AXUIElement, expect: [String], budget: inout Int) -> [Strin
         seen += 1
         let role = str(next, kAXRoleAttribute)
         if role == (kAXButtonRole as String) {
+          if says(next, choices[0]) { matches += 1 }
           for choice in choices where says(next, choice) && found[choice] == nil { found[choice] = next }
         } else if role == (kAXStaticTextRole as String) {
           text += str(next, kAXValueAttribute)
@@ -71,7 +74,9 @@ func findCard(_ app: AXUIElement, expect: [String], budget: inout Int) -> [Strin
       }
       if found.count == choices.count {
         let all = squeezed(text)
-        return expect.allSatisfy({ all.contains(squeezed($0)) }) ? found : nil
+        if matches != 1 { break }
+        if seen < 400 && stack.isEmpty && expect.allSatisfy({ all.contains(squeezed($0)) }) { return found }
+        if !text.isEmpty { break }
       }
       up = box
     }

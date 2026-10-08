@@ -99,7 +99,8 @@ export async function answerAppQuestion(agent, answers, options) {
 }
 export async function pressAppCard(agent, label, expect, options) {
   const result = await helper(agent, ["--press", label, ...expecting(expect)], options);
-  if (result.error) throw bad(`${result.error} Answer it on your Mac.`, 409);
+  if (result.error) throw Object.assign(bad(`${result.error} Answer it on your Mac.`, 409), { retry: result.untouched === true });
+  if (result.pressed !== label) throw bad("The app didn't confirm which answer was pressed. Check it on your Mac.", 409);
   return result;
 }
 
@@ -242,8 +243,17 @@ export function createAppCards({
         checkAttempt(agent, id, promptId);
         attempted.set(`${agent}:${id}`, promptId);
         if (attempted.size > 2000) attempted.delete(attempted.keys().next().value);
-        if (asked.tty) await terminal.press(asked.tty, label, asked.expect);
-        else await press(agent, label, asked.expect);
+        try {
+          if (asked.tty) await terminal.press(asked.tty, label, asked.expect);
+          else await press(agent, label, asked.expect);
+        } catch (error) {
+          // Only retry when the app helper guarantees no answer was pressed.
+          if (!asked.tty && error?.retry === true) {
+            attempted.delete(`${agent}:${id}`);
+            read_.delete(promptId);
+          }
+          throw error;
+        }
         read_.delete(promptId);
         if (agent === "codex") {
           // The helper saw the card go; the command may run a long while.
