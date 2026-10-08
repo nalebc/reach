@@ -233,6 +233,18 @@ Owner devices only, like every `/api/sessions` route. What each feature does, an
 - `GET /api/sessions/journal?since=<ms>` returns `{events, waiting, now}`. `events` lists ended turns (`finished` with `files` changed, `failed`, `usage`, `stopped`) and relay steps (`relayed`, `relay-stopped`) after `since`, newest first, kept seven days. `waiting` lists the chats waiting on you now.
 - `GET /api/sessions/search?q=` returns `{results, partial}`: messages from Codex and Claude Code history files containing every word, newest first, three per chat at most, each `{agent, id, role, at, snippet, title, cwd, listed}`. `partial` means older files were still being read; they finish in the background.
 
+## Workflows
+
+Owner devices only, like every `/api/sessions` route; every write also needs the owner's own device (`kind: "device"`). What a workflow is, and its rules, is in [Workflows](WORKFLOWS.md).
+
+- `GET /api/sessions/workflows` lists workflows (`{workflows}`): running and paused ones, and drafts and finished ones from the last week. Each is `{id, state, title, cwd, problem, createdAt, updatedAt, planner?, tasks}`, each task `{id, title, agent, kind, together, state, chat?, problem?}` without its text. `GET /api/sessions` carries the same list as `workflows`, and the presence socket's `sessions` revision changes with them. `state` is `draft`, `running`, `paused`, `done` or `stopped`; a task's is `waiting`, `starting`, `working`, `done`, `stopped`, `skipped` or `uncertain`.
+- `GET /api/sessions/workflows/:id` reads one in full, versioned like a chat (`?known=<version>` answers `{unchanged, version}`): each task adds `task` (what to do), `summary` and `files` once done; a draft adds `edited` and, when its planner has a newer plan than your edits, `proposal: {title, tasks}`.
+- `POST /api/sessions/workflows` makes a draft: `{title, cwd, tasks}`. Each task is `{title, agent: "codex" | "claude", kind: "build" | "review", task, together}`, at most 20; a draft's task may leave `task` empty until Run. `cwd` is checked as a new chat's folder. The answer is `{workflow}`.
+- `POST /api/sessions/workflows/plan` makes a draft its planner fills: `{agent: "codex" | "claude", cwd, text, images, model, effort, speed}`. The planner starts as a new chat in the folder that only reads, whatever mode is sent, and its plan becomes the draft's tasks when its reply ends with one in a JSON block. The answer is `{workflow, threadId}`. Refused while Reach is paused.
+- `POST /api/sessions/workflows/:id` edits: `{title?, cwd?, tasks?}` (the whole list, each task with its `id` when it has one). A draft takes anything; a running or paused one only the tasks after the last that started (those keep their place, 409 otherwise), and each must say what to do.
+- `POST /api/sessions/workflows/:id/run` runs a draft (each task must say what to do), from the device that sends it; each task start checks that device again. `…/resume` goes on after a pause that no stopped task explains. `…/stop` stops the tasks at work (`{stopped}`). `…/proposal` takes the planner's newer plan. `…/again` copies one as a new draft. `…/remove` deletes a draft or a finished one (409 while it runs). Run, resume and retry are refused while Reach is paused.
+- `POST /api/sessions/workflows/:id/tasks/:task/retry` starts a stopped task again in a new chat; `…/skip` goes on without it; `…/done` counts it done with what its chat ends on (409 without a reply). Each answers `{workflow}`.
+
 ## Other route families
 
 Routes the sections above do not describe, one line each; the named source file is the reference. Every route keeps its own scope, ownership and identity checks.

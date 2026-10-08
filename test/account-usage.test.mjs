@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { codexUsage, claudeUsage, createClaudeAccountUsage } from '../server/agent-sessions/account-usage.mjs';
 test('Codex reports each native limit window, credits and reset times', () => {
   const usage = codexUsage({ rateLimits: { planType: 'pro', credits: { balance: '2', unlimited: false } }, rateLimitsByLimitId: { codex: { primary: { usedPercent: 78, windowDurationMins: 10080, resetsAt: 1900000000 }, secondary: { usedPercent: 95, windowDurationMins: 300 } } } }, 10);
-  assert.deepEqual(usage.windows.map(w => [w.label,w.usedPercent,w.severity]), [['Weekly',78,'normal'],['5 hours',95,'warning']]);
+  assert.deepEqual(usage.windows.map(w => [w.label,w.usedPercent,w.severity]), [['Weekly',78,'normal'],['5 hours',95,'critical']]);
   assert.equal(usage.windows[0].resetsAt,1900000000000);
   assert.equal(usage.credits.balance,'2');
   assert.equal(codexUsage(null).available,false);

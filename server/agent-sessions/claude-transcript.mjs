@@ -250,6 +250,12 @@ export function commandOutput(value) {
   const parts = [...text.matchAll(/<local-command-(?:stdout|stderr)>([\s\S]*?)(?:<\/local-command-(?:stdout|stderr)>|$)/g)].map((m) => m[1].trim());
   return (parts.length ? parts.filter(Boolean).join("\n\n") : text).replace(/\x1b\[[0-9;]*m/g, "").trim();
 }
+// The pictures a line holds: a message's, or those of one typed while Claude
+// worked (a queued command keeps them in its prompt, not in a message).
+export function imageBlocks(e) {
+  const pieces = e?.type === "attachment" ? e.attachment?.prompt : e?.message?.content;
+  return Array.isArray(pieces) ? pieces.filter((b) => b?.type === "image") : [];
+}
 const FIELDS = ["uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "isSidechain", "isMeta", "isCompactSummary", "isApiErrorMessage", "error", "timestamp"];
 // One transcript line as the conversation needs it; tool results go to
 // `results` by their call's id (already cut to what's shown), images stay
@@ -360,7 +366,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (e.entrypoint && !meta.entrypoint) meta.entrypoint = e.entrypoint;
         const slim = slimEntry(e, results, maxOutput);
         if (slim.uuid) byId.set(slim.uuid, slim);
-        if (at !== null && slim.uuid && Array.isArray(slim.message?.content) && slim.message.content.some((b) => b.type === "image"))
+        if (at !== null && slim.uuid && imageBlocks(slim).length)
           imageLines.set(slim.uuid, { offset: at, length: Buffer.byteLength(line) });
         // A command's output can be the newest message too.
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;

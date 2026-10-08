@@ -84,3 +84,4 @@ October 7, 2026. These are automated results against stand-ins, plus measurement
 - Server: `server/agent-sessions/relays.mjs` (relays, second opinions, helpers' reports), `teams.mjs`, `team-tools.mjs` and `team-bridge.mjs` (team chats; the lead's bridge is `scripts/team-mcp.mjs`), `turn-watch.mjs` (finished turns), `journal.mjs` (how each turn ended, kept a week; the phone no longer shows it), `overlaps.mjs` (projects), `search.mjs`, `chat-context.mjs` (what goes between agents).
 - Phone: `src/ChatHub.tsx` (the All page), `src/fleet-chats.ts` (asking every paired computer), `src/Relays.tsx` (second opinion, relays, the route drawing), `src/Teams.tsx` (team chats), `src/MentionMenu.tsx`, `src/UsageStrip.tsx`.
 - API: [the HTTP API reference](API.md#working-across-agents).
+- Workflows (a plan of tasks for several agents, run in order) have their own page: [Workflows](WORKFLOWS.md).

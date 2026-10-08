@@ -537,6 +537,47 @@ test("the lead's chat shows its team at work, a helper's chat the way back, and 
   assert.deepEqual(dom.errors, []);
 });
 
+test("usage on the All page: a ring at the top, one row when an agent is close, its limits a tap away, and an agent with room to start in", async () => {
+  const soon = Date.now() + 3 * 3600 * 1000;
+  const usage = (percent) => ({ available: true, updatedAt: Date.now(), windows: [{ id: "w", label: "Weekly", usedPercent: percent, resetsAt: soon, severity: "normal" }] });
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  await home([codexSession(), claudeSession()], both({ usage: usage(30) }, { usage: usage(92) }));
+  await dom.waitFor(() => $(".chat-hub"));
+  // Below 80% an agent says nothing; Claude at 92% gets the row.
+  const row = await dom.waitFor(() => $(".usage-row"));
+  assert.ok(row.classList.contains("warning"));
+  assert.match(row.textContent, /Claude Code 92% · resets/);
+  // The ring at the top is the agent closest to its limit, said in words to a screen reader.
+  const ring = $$(".usage-button").find((b) => b.closest(".chat-mobile-tools"));
+  assert.match(ring.getAttribute("aria-description"), /^Claude, 92% of Weekly used, resets/);
+  assert.ok(ring.classList.contains("warning"));
+  // The row opens each agent's limits.
+  await click(row.querySelector(".usage-row-main"));
+  const sheet = await dom.waitFor(() => $(".usage-sheet"));
+  assert.deepEqual([...sheet.querySelectorAll(".usage-sheet-agent h3")].map((h) => h.textContent), ["Codex", "Claude"]);
+  await click(sheet.querySelector(".chat-sheet-close"));
+  // Use Codex: a new chat, in Codex.
+  await click([...row.querySelectorAll("button")].find((b) => /Use Codex/.test(b.textContent)));
+  const create = await dom.waitFor(() => $(".chat-create-sheet"));
+  const tokens = [...create.querySelectorAll(".chat-app-token")];
+  assert.equal(tokens.find((b) => b.getAttribute("aria-pressed") === "true")?.getAttribute("aria-label"), "Codex");
+  // Each agent's ring in New chat, so a long task starts where there's room.
+  assert.match(tokens.find((b) => b.getAttribute("aria-label") === "Codex").getAttribute("aria-description"), /30% of Weekly used/);
+  assert.equal(create.querySelectorAll(".usage-ring.warning").length, 1);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("an agent out of usage is Out on its ring, whatever its percent", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  await home([claudeSession()], both({}, { usable: false, resetsAt: Date.now() + 3600000, usage: { available: true, windows: [{ id: "w", label: "Weekly", usedPercent: 40, resetsAt: null, severity: "normal" }] } }));
+  const ring = await dom.waitFor(() => $$(".usage-button").find((b) => b.closest(".chat-mobile-tools")));
+  assert.ok(ring.classList.contains("out"));
+  assert.equal(ring.querySelector(".usage-pill").textContent, "Out");
+  // Out, not when it comes back (that's for almost out): said in words instead.
+  assert.match(ring.getAttribute("aria-description"), /out of usage, resets/);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("the All page lists teams at work, and their reports stay out of Relays", async () => {
   dom.window.localStorage.setItem("reach.chatAgent", "all");
   const report = { ...relayOf({ id: "r9", steps: [{ kind: "report", to: { agent: "codex", id: CODEX } }], chain: [{ agent: "claude", id: CLAUDE, title: "Team · Add pagination" }] }) };
@@ -681,7 +722,7 @@ test("the All page covers every paired computer: one search and one projects lis
   assert.ok(requests.some((r) => r.origin === studio.url) && requests.some((r) => r.origin === attic.url) && requests.some((r) => r.origin === lab.url));
   assert.ok(!requests.some((r) => r.origin === office.url));
   // Lab said no once per question, and wasn't asked again; no computer was asked for a journal.
-  assert.ok(requests.filter((r) => r.origin === lab.url).length <= 2, "Lab: asked once each for its list and activity");
+  assert.ok(requests.filter((r) => r.origin === lab.url).length <= 3, "Lab: asked once each for its list, activity and usage");
   assert.ok(!requests.some((r) => r.path === "/api/sessions/journal"));
   assert.deepEqual(dom.errors, []);
 });

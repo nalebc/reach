@@ -4,10 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { agentCommand } from "../app-shortcuts.mjs";
 import { createCodexDaemon } from "./codex-daemon.mjs";
 import { createCodexSessions } from "./codex.mjs";
 import { createCodexLive } from "./codex-live.mjs";
+import { createCodexDesktop } from "./codex-desktop.mjs";
 import { createClaudeSessions } from "./claude.mjs";
 import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
@@ -17,8 +19,9 @@ import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
-import { answerAppQuestion, cardExpect, cardId, createAppCards, pressAppCard, probeApp, questionId, readAppCard } from "./app-cards.mjs";
-import { createTerminalCards } from "./terminal-cards.mjs";
+import { createAppCards } from "./app-cards.mjs";
+import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
+import { agentHookCommand, claudeHookState, installClaudeHook, uninstallClaudeHook } from "./agent-hook-install.mjs";
 import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
 import { CLAUDE_BUNDLE, claudeFrontmost, claudeOnScreen, createClaudeCompose, draftFile, typeIntoClaude } from "./claude-compose.mjs";
@@ -110,7 +113,10 @@ export function createAgentSessions({
   teamExtras = () => null,
   daemon = createCodexDaemon(),
   codex = createCodexSessions({ daemon }),
-  codexLive = createCodexLive({ daemon, resumeExtras: (id) => teamExtras("codex", id) }),
+  // The Codex app's own IPC (codex-desktop.mjs): settings, turns and its
+  // approvals for chats it holds.
+  codexDesktop = createCodexDesktop(),
+  codexLive = createCodexLive({ daemon, desktop: codexDesktop, resumeExtras: (id) => teamExtras("codex", id) }),
   claude = createClaudeSessions({ locateCli: () => locateClaude() }),
   // Gemini CLI's sessions, read from its own files (gemini.mjs); none of
   // this Mac's in tests.
@@ -196,29 +202,7 @@ export function createAgentSessions({
         throw Object.assign(new Error("Not in tests."), { status: 409 });
       }
     : (choice, expect, guard) => pressClaudeConsent(choice, { dataDir, expect, beforeDispatch: guard }),
-  // Reading the Claude app's or the Codex app's permission card, and
-  // pressing one of its buttons on the person's tap (app-cards.mjs); never
-  // in tests.
-  readCard = process.env.NODE_TEST_CONTEXT
-    ? async () => {
-        throw Object.assign(new Error("Not in tests."), { status: 409 });
-      }
-    : (agent, expect, guard) => readAppCard(agent, expect, { dataDir, beforeDispatch: guard }),
-  pressCard = process.env.NODE_TEST_CONTEXT
-    ? async () => {
-        throw Object.assign(new Error("Not in tests."), { status: 409 });
-      }
-    : (agent, label, expect, guard) => pressAppCard(agent, label, expect, { dataDir, beforeDispatch: guard }),
-  // Claude's questions in the Claude app, answered on the person's taps.
-  answerQuestion = process.env.NODE_TEST_CONTEXT
-    ? async () => {
-        throw Object.assign(new Error("Not in tests."), { status: 409 });
-      }
-    : (agent, answers, guard) => answerAppQuestion(agent, answers, { dataDir, beforeDispatch: guard }),
   claudeShown,
-  // Reach's Mac terminals (desktop-terminals.mjs): a terminal's menu is read
-  // and answered there.
-  terminals = null,
   // Messages waiting for a busy Claude app session, kept until handed over
   // The chats the Claude app lists, the one on screen first (claude-import.mjs).
   appShown = claudeAppShown,
@@ -231,6 +215,15 @@ export function createAgentSessions({
   claudeCompose: givenCompose = null,
   claudeOpen = claudeAppRunning,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
+  // Claude Code's permissions and questions held for the phone by its own
+  // PermissionRequest hook (agent-asks.mjs); made below when not given.
+  agentAsks: givenAsks = null,
+  // Where Claude Code keeps the user's settings (Reach's hook goes there),
+  // and Reach's hook script.
+  claudeSettingsPath = path.join(os.homedir(), ".claude", "settings.json"),
+  hookScript = fileURLToPath(new URL("../../scripts/agent-hook.mjs", import.meta.url)),
+  // Claude Code's registry of running sessions (processes.mjs).
+  registry = readSessionRegistry,
   // Whether the Claude app is installed and signed in (it signs in apart
   // from the CLI Reach replies through).
   claudeApp = () => claudeAppAccess({ registry: readSessionRegistry }),
@@ -319,55 +312,57 @@ export function createAgentSessions({
       return running.get(id)?.where === "claude-app" ? session.consent : null;
     },
   });
-  // A permission card the Claude app or the Codex app shows for one of its
-  // chats, answered from the phone on the person's tap (app-cards.mjs).
+  // The Codex app's approvals, answered from the phone through its IPC
+  // (app-cards.mjs): the request a chat waits on is read from its file.
   const appCards = createAppCards({
-    desktopAutomation,
-    read: readCard,
+    desktop: codexDesktop,
     platform,
-    press: pressCard,
-    answerQuestion,
-    // The question a Claude app chat waits on (Claude's AskUserQuestion).
-    pendingQuestion: async (agent, id) => {
-      if (agent !== "claude") return null;
-      const live = (await liveNow().catch(() => new Map())).get(id);
-      if (live?.where !== "claude-app" || !live.waiting) return null;
-      const { items } = await claude.read(id, { limit: 20 });
-      const tool = [...(items || [])].reverse().find((i) => i.role === "tool");
-      if (tool?.status !== "running" || !tool.questions?.length) return null;
-      return { id: questionId(tool.id), questions: tool.questions, appSessionId: live.appSessionId || null };
-    },
-    ...(process.env.NODE_TEST_CONTEXT ? {} : { probe: (agent) => probeApp(agent, { dataDir }) }),
-    terminal: terminals ? createTerminalCards({ terminals }) : null,
-    open,
-    ...(process.env.NODE_TEST_CONTEXT ? {} : {
-      frontmost: () => (front === null ? claudeFrontmost() : front === CLAUDE_BUNDLE),
-      idle: () => idleSeconds(),
-    }),
-    ...(claudeShown ? { shown: claudeShown } : {}),
     pending: async (agent, id) => {
-      if (agent === "codex") {
-        // Read from the chat's file while the Codex app holds it (codex.mjs).
-        const { session } = await codex.read(id, { limit: 1 });
-        const asked = session?.asking;
-        if (session?.held !== "codex-app" || asked?.kind !== "permission" || !asked.id || !asked.match) return null;
-        return { id: asked.id, expect: cardExpect({ kind: "command", text: asked.match }) };
-      }
-      if (agent !== "claude") return null;
-      const live = (await liveNow().catch(() => new Map())).get(id);
-      const inTerminal = live?.where === "terminal" && !!live.tty && !!terminals;
-      if ((live?.where !== "claude-app" && !inTerminal) || live.waiting !== "permission prompt") return null;
-      const { items } = await claude.read(id, { limit: 20 });
-      const tool = [...(items || [])].reverse().find((i) => i.role === "tool");
-      if (tool?.status !== "running" || tool.consent || tool.questions) return null;
-      return {
-        id: cardId(tool.id),
-        expect: cardExpect(tool),
-        appSessionId: live.appSessionId || null,
-        ...(inTerminal ? { tty: live.tty } : {}),
-      };
+      if (agent !== "codex") return null;
+      const { session } = await codex.read(id, { limit: 1 });
+      const asked = session?.asking;
+      if (session?.held !== "codex-app" || asked?.kind !== "permission" || !asked.id || !asked.callId) return null;
+      return { id: asked.id, callId: asked.callId };
     },
   });
+  // Claude Code's permissions and questions in the Claude app and terminals,
+  // held for the phone by Claude Code's own PermissionRequest hook
+  // (agent-asks.mjs) while Claude Code shows its dialog on the Mac. Headless
+  // runs and sessions Reach drives itself step aside at once.
+  const hookCommand = () =>
+    agentHookCommand({ script: hookScript, agent: "claude", socketPath: agentAskSocket(dataDir) });
+  const agentAsks =
+    givenAsks ||
+    createAgentAsks({
+      socketPath: agentAskSocket(dataDir),
+      platform,
+      skip: (agent, id) => !!hosts[agent]?.drives(id),
+      shows: async (agent, id) => {
+        if (agent !== "claude") return false;
+        const where = registry().get(id)?.where;
+        return where === "claude-app" || where === "terminal";
+      },
+      // Claude Code's registry says at once when it stops waiting (the Mac
+      // answered: busy again within a moment, verified with 2.1.293).
+      waiting: async (agent, id) => {
+        const entry = registry().get(id);
+        return entry ? !!entry.waiting : false;
+      },
+    });
+  if (listenForAsks) agentAsks.listen?.().catch(() => {});
+  // Whether Claude Code runs Reach's hook ("on", "outdated": an old command,
+  // "off", or "unsupported" without Unix sockets), read from its settings at
+  // most every few seconds.
+  let hookSeen = { at: 0, state: "off" };
+  const phoneAnswersState = () => {
+    if (Date.now() - hookSeen.at > 5000)
+      hookSeen = {
+        at: Date.now(),
+        state: process.platform === "win32" ? "unsupported" : claudeHookState({ settingsPath: claudeSettingsPath, command: hookCommand() }),
+      };
+    return hookSeen.state;
+  };
+  const hookBackups = path.join(dataDir, "settings-backups");
   // Approval cards come only from live agent protocol requests. Desktop waits
   // without a reply connection are detected from agent state and use the screen.
   if (listenForAsks) macPrompts.start?.();
@@ -377,6 +372,10 @@ export function createAgentSessions({
   // Claude sessions whose process Reach let go of, and when.
   const letGo = new Map();
   const claudeStatus = (s) => {
+    if (agentAsks.has?.("claude", s.id)) {
+      s.status = "waiting";
+      return;
+    }
     if (claudeHost.running(s.id)) {
       s.status = claudeHost.view(s.id).status === "waiting" ? "waiting" : "running";
       return;
@@ -573,7 +572,15 @@ export function createAgentSessions({
           deliveringMessage.set(id, next.id);
           if (next.via === "app") {
             if (!outbox.begin(id, next.id)) break;
-            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}), ...(next.mode ? { mode: next.mode } : {}) });
+            // A mode sent with it goes with Claude Code's next request (its
+            // hook), never picked in the app's menu.
+            if (next.mode)
+              try {
+                agentAsks.queueMode?.("claude", id, next.mode === "manual" ? "default" : next.mode);
+              } catch {
+                /* a mode the hook can't switch to (Bypass) stays as it is */
+              }
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}) });
             outbox.remove(id, next.id);
             wentIn = true;
             continue;
@@ -736,7 +743,7 @@ export function createAgentSessions({
   const waitingSince = new Map();
   const settleWaiting = (s) => {
     const key = `${s.agent}:${s.id}`;
-    if (s.status !== "waiting" || hosts[s.agent]?.drives(s.id)) return void waitingSince.delete(key);
+    if (s.status !== "waiting" || hosts[s.agent]?.drives(s.id) || agentAsks.has?.(s.agent, s.id)) return void waitingSince.delete(key);
     // Counted from when the agent began waiting, when it says (a Codex
     // request read from its file has already waited out its own settle).
     const since = Math.min(waitingSince.get(key) ?? Date.now(), s.waitingSince || Infinity);
@@ -955,7 +962,7 @@ export function createAgentSessions({
     // and pre-review checks never become actionable approval cards.
     for (const s of sessions) {
       const driven = !!hosts[s.agent]?.drives(s.id);
-      const asked = driven ? hosts[s.agent].view(s.id).prompts || [] : [];
+      const asked = [...(driven ? hosts[s.agent].view(s.id).prompts || [] : []), ...(agentAsks.prompts?.(s.agent, s.id) || [])];
       if (asked.length) s.prompts = asked;
     }
     try {
@@ -1196,17 +1203,13 @@ export function createAgentSessions({
       }
       // A chat Reach runs: changed in its Claude Code right away.
       if (agent === "claude" && (await claudeHost.mode?.(id, mode))) return { mode, applied: true };
-      if (agent !== "claude" || !claudeCompose?.mode) return { mode, applied: false };
-      const { session } = await claude.read(id, { limit: 1 });
-      if (!session.inApp || claudeHost.drives(id)) return { mode, applied: false };
-      try {
-        return { ...(await claudeCompose.mode(id, { title: session.appTitle || "Untitled", mode })), applied: true };
-      } catch (error) {
-        // Not on screen in the Claude app: the phone keeps the pick and it
-        // goes in with the chat's next message (claudeCompose.deliver).
-        if (error?.waiting) return { mode, applied: false };
-        throw error;
-      }
+      if (agent !== "claude") return { mode, applied: false };
+      // The Claude app or a terminal: Claude Code takes a mode from outside
+      // only with a hook's answer (setMode), so it's switched with the next
+      // request the phone allows there. Never by clicking the app's menu.
+      const target = mode === "manual" ? "default" : mode;
+      agentAsks.queueMode?.("claude", id, target);
+      return { mode, applied: false, next: "request" };
     },
     async draft(agent, id, { text, owner }) {
       adapter(agent);
@@ -1411,23 +1414,49 @@ export function createAgentSessions({
       if (agent !== "claude") throw Object.assign(new Error("That picture isn't in this session."), { status: 404 });
       return claude.image(id, item, n);
     },
-    // A permission card as its app shows it (its words and buttons), for the
-    // phone to draw; brings that chat up in the app (app-cards.mjs).
-    card: (agent, id, options) => appCards.card(agent, id, options),
+    // A Codex app approval as the phone draws it (its words and buttons),
+    // read through the Codex app's IPC (app-cards.mjs).
+    card: (agent, id) => appCards.card(agent, id),
+    // Claude Code's permissions and questions answered from the phone: Reach's
+    // PermissionRequest hook in Claude Code's user settings (agent-asks.mjs),
+    // put there or taken out on the owner's tap; other hooks stay as they are
+    // and a copy of the file is kept first.
+    phoneAnswers: {
+      state: () => phoneAnswersState(),
+      enable() {
+        if (phoneAnswersState() === "unsupported")
+          throw Object.assign(new Error(`Answering Claude Code from the phone isn't available on this ${computerWord(platform)}.`), { status: 501 });
+        const result = installClaudeHook({ settingsPath: claudeSettingsPath, backupDir: hookBackups, command: hookCommand() });
+        hookSeen.at = 0;
+        listChanged();
+        return { ...result, state: phoneAnswersState() };
+      },
+      disable() {
+        const result = uninstallClaudeHook({ settingsPath: claudeSettingsPath, backupDir: hookBackups });
+        hookSeen.at = 0;
+        listChanged();
+        return { ...result, state: phoneAnswersState() };
+      },
+    },
     respond: async (agent, id, promptId, answer) =>
-      agent === "claude" && claudeConsent.owns(promptId)
+      agent === "claude" && agentAsks.owns?.(promptId)
+        ? agentAsks.answer(agent, id, promptId, answer)
+        : agent === "claude" && claudeConsent.owns(promptId)
           ? claudeConsent.answer(id, promptId, answer)
-          : (agent === "claude" || agent === "codex") && appCards.owns(promptId)
+          : agent === "codex" && appCards.owns(promptId)
             ? appCards.answer(agent, id, promptId, answer)
             : host(agent).respond(id, promptId, answer),
     view(agent, id) {
       const view = liveHost(agent).view(id);
       const writes = touched.get(`${agent}:${id}`) || 0;
+      // Asked through Claude Code's hook (agent-asks.mjs): the same cards.
+      const asked = agentAsks.prompts?.(agent, id) || [];
       return {
         ...view,
+        ...(asked.length ? { status: "waiting", prompts: [...(view.prompts || []), ...asked] } : {}),
         // One version for all, so the long poll wakes on any; a write on the
         // Mac counts as something new to read.
-        version: view.version + outbox.version() + writes,
+        version: view.version + outbox.version() + writes + (agentAsks.version?.(agent, id) || 0),
         items: (view.items || 0) + writes,
         ...(agent === "claude"
           ? {
@@ -1454,7 +1483,7 @@ export function createAgentSessions({
       polled.delete(key);
       polled.set(key, Date.now());
       if (polled.size > 200) polled.delete(polled.keys().next().value);
-      if (hostVersion + outbox.version() + (touched.get(key) || 0) !== Number(since)) return Promise.resolve();
+      if (hostVersion + outbox.version() + (touched.get(key) || 0) + (agentAsks.version?.(agent, id) || 0) !== Number(since)) return Promise.resolve();
       return new Promise((resolve) => {
         const stops = [];
         const done = () => {
@@ -1468,6 +1497,7 @@ export function createAgentSessions({
           if (!waiting.size) touchWaiters.delete(key);
         });
         stops.push(outbox.onChange((sessionId) => agent === "claude" && sessionId === id && done()));
+        if (agentAsks.onChange) stops.push(agentAsks.onChange((a, sessionId) => a === agent && sessionId === id && done()));
         liveHost(agent).changes(id, hostVersion, ms, signal).then(done);
       });
     },
@@ -1507,7 +1537,7 @@ export function createAgentSessions({
       if (listenForAsks && process.platform === "darwin")
         setTimeout(() => {
           if (closed) return;
-          for (const kind of ["permission-card", "claude-consent"]) desktopBinary({ dataDir }, kind, { signal: preparingHelpers.signal }).catch(() => {});
+          for (const kind of ["claude-consent"]) desktopBinary({ dataDir }, kind, { signal: preparingHelpers.signal }).catch(() => {});
         }, 2000).unref?.();
       return this.list().catch(() => null);
     },
@@ -1521,6 +1551,7 @@ export function createAgentSessions({
       claudeImports?.close?.();
       claudeRefresh?.close?.();
       macPrompts?.close?.();
+      agentAsks?.close?.();
       agentWatch?.close?.();
       codexLive.close?.();
       daemon.close?.();
@@ -1638,40 +1669,30 @@ export function createAgentSessions({
             : {}),
           ...(options ? { options } : {}),
         };
-      } else if (agent === "claude" && newest && result.session.held !== "reach" && result.session.live?.waiting) {
+      } else if (
+        agent === "claude" &&
+        newest &&
+        result.session.held !== "reach" &&
+        result.session.live?.waiting &&
+        !agentAsks.has?.("claude", id)
+      ) {
         const tool = [...(result.items || [])].reverse().find((i) => i.role === "tool");
         // What Claude Code says it waits on: "permission prompt", "input
         // needed" (a question), or "dialog open" (something else of its own,
         // a notice to acknowledge), never shown as a permission for a tool.
+        // Answered from the phone only through Claude Code's hook (the
+        // prompts above): never by pressing or typing in the app.
         if (result.session.live.waiting === "dialog open")
           result.session.asking = { kind: "dialog", text: "Claude Code has something open for you to answer." };
         else if (tool?.status === "running")
           result.session.asking = tool.questions
-            ? {
-                kind: "question",
-                questions: tool.questions,
-                // In the Claude app: answered from the phone, its options
-                // pressed there (app-cards.mjs).
-                ...(result.session.live.where === "claude-app" ? { id: questionId(tool.id) } : {}),
-              }
-            : {
-                kind: "permission",
-                text: tool.text,
-                command: tool.kind === "command",
-                // The Claude app's card, answered from the phone (Allow once
-                // or Deny): its id names this request.
-                ...((result.session.live.where === "claude-app" ||
-                  (result.session.live.where === "terminal" && result.session.live.tty && terminals)) &&
-                result.session.live.waiting === "permission prompt" &&
-                cardExpect(tool).length
-                  ? { id: cardId(tool.id) }
-                  : {}),
-              };
+            ? { kind: "question", questions: tool.questions }
+            : { kind: "permission", text: tool.text, command: tool.kind === "command" };
+        // Not answerable from the phone yet: Reach's hook isn't in Claude
+        // Code's settings (or points at an old place); one tap puts it there.
+        const hook = result.session.asking && result.session.asking.kind !== "dialog" ? phoneAnswersState() : "on";
+        if (hook !== "on") result.session.phoneAnswers = hook;
       }
-      // A card answerable from the phone: its helper built while it's read,
-      // so the tap is quick (not at start: the compiler would hold up quitting).
-      if (newest && result.session.asking?.id?.startsWith?.("app-permission:") && listenForAsks && process.platform === "darwin")
-        desktopBinary({ dataDir }, "permission-card", { signal: preparingHelpers.signal }).catch(() => {});
       if (newest) settleWaiting(result.session);
       return result;
     },

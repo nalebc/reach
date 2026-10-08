@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const percent = n => typeof n === 'number' && Number.isFinite(n) ? Math.max(0, n) : null;
 const date = x => typeof x === 'number' ? x * 1000 : (Date.parse(x) || null);
-const severity = n => n >= 100 ? 'critical' : n >= 90 ? 'warning' : 'normal';
+// The same points the phone uses (src/usage.ts): amber from 80%, red from 95%.
+const severity = n => n >= 95 ? 'critical' : n >= 80 ? 'warning' : 'normal';
 export function codexUsage(data, now = Date.now()) {
   if (!data) return { available: false, windows: [], error: 'Codex usage is temporarily unavailable.' };
   const snapshots = Object.values(data.rateLimitsByLimitId || {});

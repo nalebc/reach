@@ -170,6 +170,17 @@ test("a picture sent in a Claude session is read back from its own line, the tra
   assert.equal((await claude.read(ID)).items.at(-1).images, 2);
   assert.deepEqual(await claude.image(ID, "u2", 0), { type: "image/png", data: png });
   assert.deepEqual(await claude.image(ID, "u2", 1), { type: "image/jpeg", data: jpeg });
+  // Sent while Claude worked: its pictures sit in the queued command's prompt.
+  const webp = Buffer.from([0x52, 0x49, 0x46, 0x46, 7]);
+  await fs.appendFile(
+    file,
+    line({ ...base, type: "attachment", uuid: "q1", parentUuid: "u2", timestamp: at(3), attachment: { type: "queued_command", humanTurn: true, prompt: [picture(webp, "image/webp"), { type: "text", text: "more" }] } }) + "\n" +
+      line({ ...base, type: "assistant", uuid: "a3", parentUuid: "q1", timestamp: at(4), message: { content: [{ type: "text", text: "Seen." }] } }) + "\n",
+  );
+  const queued = (await claude.read(ID)).items.find((i) => i.id === "q1");
+  assert.equal(queued.queued, true);
+  assert.equal(queued.images, 1);
+  assert.deepEqual(await claude.image(ID, "q1", 0), { type: "image/webp", data: webp });
   // Nothing else is served: no such picture, a line without one, a made-up id.
   await assert.rejects(claude.image(ID, "u2", 2), (e) => e.status === 404);
   await assert.rejects(claude.image(ID, "u1", 0), (e) => e.status === 404);

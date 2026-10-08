@@ -32,16 +32,13 @@ export async function claudeFrontmost(run = exec) {
   return String(stdout).includes(`"${CLAUDE_BUNDLE}"`);
 }
 
-// Claude Code's permission modes as the Claude app's menu names them; the ones
-// Reach may pick there (never Bypass permissions, turned on at the Mac).
-export const APP_MODES = { manual: "Manual", default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto" };
 // Claude Code's effort levels as the Claude app's menu names them.
 export const APP_EFFORTS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 // session: the chat by the app's own id (local_…), which the window must
 // show (by its title only without one); waitMs: how long it's given to.
 export async function typeIntoClaude(
-  { title, session, waitMs, text = "", images = [], draft, expected, stop, mode, effort, model },
+  { title, session, waitMs, text = "", images = [], draft, expected, stop, effort, model },
   { dataDir, run = exec, binary = () => desktopBinary({ dataDir }, "claude-compose"), beforeDispatch = () => {} } = {},
 ) {
   const file = await binary();
@@ -50,7 +47,7 @@ export async function typeIntoClaude(
   // the actual subprocess dispatch, before any uncertain native side effect.
   try { beforeDispatch(); } catch (e) { throw Object.assign(e, { notDispatched: true }); }
   let call;
-  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : mode ? ["--mode", mode] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || mode || effort ? [] : images.flatMap((image) => ["--image", image]))], {
+  try { call = run(file, ["--title", title, ...(session ? ["--session", session] : []), ...(waitMs != null ? ["--wait", String(waitMs)] : []), ...(model ? ["--model", model] : effort ? ["--effort", effort] : stop ? ["--stop"] : json ? ["--json"] : ["--text", text]), ...(model || effort ? [] : images.flatMap((image) => ["--image", image]))], {
     timeout: 30000,
   }); } catch { throw uncertainDelivery("claude"); }
   if (json && call.child?.stdin) {
@@ -66,11 +63,6 @@ export async function typeIntoClaude(
   if (model) {
     if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
     if (result.model !== model || result.unconfirmed) throw settingUnknown("Claude didn't confirm the model change. Check the model in Claude before trying again.");
-    return result;
-  }
-  if (mode) {
-    if (typeof result.error === "string") throw (result.unconfirmed ? settingUnknown(result.error) : waiting(result.error));
-    if (result.mode !== mode || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
     return result;
   }
   // An effort the app's menu didn't offer says so; nothing was changed.
@@ -205,22 +197,6 @@ export function createClaudeCompose({
         return { stopped: true };
       });
     },
-    // A permission mode picked on the phone, picked in the app's own menu (so
-    // both show the same one) when the chat is on screen; otherwise it goes
-    // in with the chat's next message.
-    mode(id, { title, mode }) {
-      return serial(async (guard) => {
-        const label = APP_MODES[mode];
-        if (!label) throw Object.assign(new Error("Reach can't pick that mode in the Claude app."), { status: 400 });
-        const session = sessionOf(id);
-        if (!session || !(await appRunning()) || await screen() !== session)
-          throw waiting("Changes in the Claude app when this chat is open there, or with your next message.");
-        guard();
-        const result = await type({ title, session, waitMs: 0, mode: label }, guard);
-        if (result?.mode !== label || result.unconfirmed) throw settingUnknown("Claude didn't confirm the permission mode. Check it in Claude before trying again.");
-        return { mode };
-      });
-    },
     // The catalog resolves an API model id to the exact name in the app's menu.
     // Never switch chats for a setting or accept an unconfirmed native click.
     model(id, { title, model }) {
@@ -253,7 +229,7 @@ export function createClaudeCompose({
     },
     // `now`: sent with Send now from the phone, so it goes in even while
     // someone uses the Mac (the Claude window switches to this chat).
-    deliver(id, { title, text = "", images = [], owner, now = false, mode = null }) {
+    deliver(id, { title, text = "", images = [], owner, now = false }) {
       return serial(async (guard) => {
       if (!(await appRunning())) throw Object.assign(waiting("Goes in when the Claude app is open on your Mac."), { appClosed: true });
       const list = shown();
@@ -290,15 +266,11 @@ export function createClaudeCompose({
       try {
         const draft = drafts.get(id);
         if (draft && draft.owner !== owner) throw waiting("Another device is editing this draft.");
-        // The mode picked on the phone first, as one picked in the app's
-        // composer applies to the message sent after it.
         // Typed only while the window shows this very chat, by its id; just
-        // switched to, it's given switchMs to get there.
+        // switched to, it's given switchMs to get there. A mode picked on the
+        // phone isn't picked here: it goes with Claude Code's next request
+        // (agent-asks.mjs).
         const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}) };
-        if (APP_MODES[mode]) {
-          guard();
-          await type({ ...into, mode: APP_MODES[mode] }, guard);
-        }
         guard();
         await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) }, guard);
         if (drafts.delete(id)) keep();

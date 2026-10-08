@@ -104,6 +104,7 @@ import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
+import { createWorkflows } from "./agent-sessions/workflows.mjs";
 import { createTeamBridge } from "./agent-sessions/team-bridge.mjs";
 import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
 import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
@@ -360,12 +361,6 @@ export async function createReach(overrides = {}) {
       desktopAutomation,
       keepOut: (agent, id) => !!teams?.inTeam(agent, id),
       teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
-      // A terminal's menu answered in its tab (read and typed into through
-      // Reach's Mac terminals, made just below).
-      terminals: {
-        list: (...a) => desktopTerminals.list(...a),
-        action: (...a) => desktopTerminals.action(...a),
-      },
     });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
   // (node --test) never reach for the real agents.
@@ -589,6 +584,50 @@ export async function createReach(overrides = {}) {
   });
   // Phones hear of a relay's progress as they hear of the chat list's.
   relays.onChange?.(() => {
+    for (const nudge of presenceNudges) nudge();
+  });
+  // Workflows (agent-sessions/workflows.mjs): a plan of tasks for a folder,
+  // run in order. Each task starts as a relay's step does, and only while the
+  // phone that ran it still may; a pause or the end tells your phone.
+  const workflows =
+    overrides.workflows ||
+    createWorkflows({
+      sessions: agentSessions,
+      relays,
+      file: process.env.NODE_TEST_CONTEXT && !overrides.workflowFile ? null : overrides.workflowFile || path.join(config.dataDir, "agent-workflows.json"),
+      authorized: (owner) =>
+        paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that ran this workflow no longer has access.",
+      folder: (cwd) => sessionFolder(cwd),
+      modes: async (agent) => ((await agentSessions.models(agent))?.modes || []).map((m) => m.id),
+      notify: ({ workflow, title, body }) => {
+        const task = workflow.tasks.find((t) => t.state === "stopped" || t.state === "uncertain") || workflow.tasks.findLast((t) => t.chat);
+        // The phone is told first; noting it for the away report can't stop that.
+        const sent = notify({
+          category: "done",
+          title: pushLine(title, 90),
+          body: pushLine(body, 180),
+          icon: task?.agent || "agent",
+          actions: [{ action: "open", title: "Open conversation" }],
+          tag: `workflow-${workflow.id.slice(0, 8)}`,
+          ...(task?.chat && { url: `/?page=sessions&agent=${encodeURIComponent(task.chat.agent)}&id=${encodeURIComponent(task.chat.id)}` }),
+        });
+        try {
+          journal.add({
+            kind: workflow.state === "done" ? "workflow-done" : "workflow-paused",
+            agent: task?.agent || "",
+            chat: task?.chat?.id || "",
+            title: String(workflow.title || "").slice(0, 200),
+            text: pushLine(body, 200),
+            at: Date.now(),
+          });
+        } catch {
+          /* told already */
+        }
+        return sent;
+      },
+    });
+  agentSessions.onListChange?.(() => void workflows.sync());
+  workflows.onChange?.(() => {
     for (const nudge of presenceNudges) nudge();
   });
   // Tag in: agents use apps on their own hidden displays and hand them to
@@ -2526,7 +2565,7 @@ export async function createReach(overrides = {}) {
     res.json({ ...plan, terminal });
   });
   app.get("/api/sessions", async (req, res) =>
-    versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list() }),
+    versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
   );
   app.get("/api/sessions/health", async (req, res) =>
     res.json({ agents: await agentSessions.health({ fresh: req.query.fresh === "1" }) }),
@@ -2661,6 +2700,80 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/teams/:id/stop", async (req, res) => {
     macOwner(req);
     res.json(await teams.stop(req.params.id));
+  });
+  // Workflows: written, planned, run and stopped from the owner's own devices
+  // (agent-sessions/workflows.mjs). A planner starts as a reviewer does,
+  // reading only; a task starts as a relay's step does.
+  app.get("/api/sessions/workflows", (req, res) => res.json({ workflows: workflows.list() }));
+  app.post("/api/sessions/workflows", (req, res) => {
+    macOwner(req);
+    const body = req.body || {};
+    res.json(workflows.create({ owner: req.client.id, title: body.title, cwd: body.cwd, tasks: Array.isArray(body.tasks) ? body.tasks : [] }));
+  });
+  app.post("/api/sessions/workflows/plan", async (req, res) => {
+    macOwner(req);
+    notPaused();
+    const body = req.body || {};
+    const options = turnOptions(body);
+    const result = await workflows.plan({
+      owner: req.client.id,
+      agent: String(body.agent || ""),
+      cwd: body.cwd,
+      text: options.text,
+      start: {
+        images: options.images,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.effort ? { effort: options.effort } : {}),
+        ...(options.speed ? { speed: options.speed } : {}),
+      },
+    });
+    record("session", `Asked ${agentLabel(String(body.agent || ""))} to plan a workflow`);
+    res.json(result);
+  });
+  app.get("/api/sessions/workflows/:id", (req, res) => versioned(req, res, workflows.get(req.params.id)));
+  app.post("/api/sessions/workflows/:id", (req, res) => {
+    macOwner(req);
+    const body = req.body || {};
+    res.json(workflows.update(req.params.id, { title: body.title, cwd: body.cwd, tasks: body.tasks }));
+  });
+  app.post("/api/sessions/workflows/:id/run", (req, res) => {
+    macOwner(req);
+    notPaused();
+    const result = workflows.run(req.params.id, req.client.id);
+    record("session", "Ran a workflow");
+    res.json(result);
+  });
+  app.post("/api/sessions/workflows/:id/resume", (req, res) => {
+    macOwner(req);
+    notPaused();
+    res.json(workflows.resume(req.params.id, req.client.id));
+  });
+  app.post("/api/sessions/workflows/:id/stop", async (req, res) => {
+    macOwner(req);
+    res.json(await workflows.stop(req.params.id));
+  });
+  app.post("/api/sessions/workflows/:id/proposal", (req, res) => {
+    macOwner(req);
+    res.json(workflows.useProposal(req.params.id));
+  });
+  app.post("/api/sessions/workflows/:id/again", (req, res) => {
+    macOwner(req);
+    res.json(workflows.again(req.params.id, req.client.id));
+  });
+  app.post("/api/sessions/workflows/:id/remove", (req, res) => {
+    macOwner(req);
+    res.json(workflows.remove(req.params.id));
+  });
+  app.post("/api/sessions/workflows/:id/tasks/:task/:action", async (req, res) => {
+    macOwner(req);
+    const { id, task, action } = req.params;
+    if (action === "retry") {
+      notPaused();
+      return res.json(workflows.retry(id, task, req.client.id));
+    }
+    if (action === "skip") return res.json(workflows.skip(id, task, req.client.id));
+    if (action === "done") return res.json(await workflows.done(id, task, req.client.id));
+    throw fail(404, "Unknown action.");
   });
   app.get("/api/sessions/:agent/:id", async (req, res) => {
     const before =
@@ -2959,10 +3072,23 @@ export async function createReach(overrides = {}) {
     record("session", `Sent a message to ${agentLabel(req.params.agent)}`);
     res.json(result);
   });
-  // A permission card the Claude app or the Codex app shows, as it shows it:
-  // read when the phone opens it (that chat is brought up in its app).
+  // A Codex app approval as the phone draws it, read through the Codex app's
+  // IPC when the phone opens it (nothing is brought up or clicked).
   app.get("/api/sessions/:agent/:id/card", async (req, res) => {
-    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id, { bring: req.query.bring === "1" }));
+    res.set("Cache-Control", "no-store").json(await agentSessions.card(req.params.agent, req.params.id));
+  });
+  // Claude Code's permissions and questions answered from the phone: Reach's
+  // hook in Claude Code's settings, put there or taken out by the owner (it
+  // changes how Claude Code asks on this Mac).
+  app.get("/api/agents/claude/phone-answers", (req, res) => {
+    res.set("Cache-Control", "no-store").json({ state: agentSessions.phoneAnswers?.state() || "unsupported" });
+  });
+  app.post("/api/agents/claude/phone-answers", (req, res) => {
+    macOwner(req);
+    if (!agentSessions.phoneAnswers) throw fail(501, "Not available here.");
+    const result = req.body?.on === false ? agentSessions.phoneAnswers.disable() : agentSessions.phoneAnswers.enable();
+    record("session", req.body?.on === false ? "Stopped answering Claude Code from the phone" : "Answers Claude Code from the phone");
+    res.json(result);
   });
   app.post("/api/sessions/:agent/:id/prompts/:prompt", async (req, res) => {
     const result = await agentSessions.respond(
@@ -3811,7 +3937,9 @@ export async function createReach(overrides = {}) {
             // when this changes, instead of asking every few seconds.
             ...(scopes.includes("admin") &&
               client.kind !== "guest" &&
-              agentSessions.listRevision && { sessions: String(agentSessions.listRevision() + (relays.revision?.() ?? 0) + (teams.revision?.() ?? 0)) }),
+              agentSessions.listRevision && {
+                sessions: String(agentSessions.listRevision() + (relays.revision?.() ?? 0) + (teams.revision?.() ?? 0) + (workflows.revision?.() ?? 0)),
+              }),
             ...(scopes.includes("admin") && {
               activity: digest(events[0]?.id ?? ""), // newest first
               requests: digest(
@@ -4341,6 +4469,7 @@ export async function createReach(overrides = {}) {
       doneWatch.stop();
       turnWatch.stop();
       relays.stop?.();
+      workflows.stopTimer?.();
       teamBridge.close();
       search.stop?.();
       journal.flush?.();

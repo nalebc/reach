@@ -1931,14 +1931,64 @@ export async function startOpenClawGateway({
   }
 }
 
+// Channels a phone can add with a bot token, through OpenClaw's own
+// `openclaw channels add` (its checks, its config; the Gateway then starts
+// the channel). Tokens go to OpenClaw only: never stored or echoed by Reach.
+export const TOKEN_CHANNELS = {
+  telegram: ["token"],
+  discord: ["token"],
+  slack: ["botToken", "appToken"],
+};
+const tokenShape = /^[\x21-\x7e]{8,4096}$/;
+export async function addOpenClawChannel(
+  { channel, token, botToken, appToken, name } = {},
+  {
+    run = promisify(execFile),
+    env = process.env,
+    platform = process.platform,
+    authorize = () => {},
+  } = {},
+) {
+  authorize();
+  const fields = TOKEN_CHANNELS[channel];
+  if (!fields || !Object.hasOwn(TOKEN_CHANNELS, channel))
+    throw fail(400, "Choose Telegram, Discord or Slack.");
+  const values = { token, botToken, appToken };
+  for (const field of fields)
+    if (typeof values[field] !== "string" || !tokenShape.test(values[field].trim()))
+      throw fail(400, field === "appToken" ? "Paste the Slack app token (xapp-…)." : field === "botToken" ? "Paste the Slack bot token (xoxb-…)." : "Paste the bot token.");
+  if (name !== undefined && name !== "" && (typeof name !== "string" || name.length > 80 || /[\u0000-\u001f]/.test(name)))
+    throw fail(400, "Choose a shorter account name.");
+  if (platform === "win32") throw fail(409, "On Windows, add channels in OpenClaw on this computer.");
+  // OpenClaw copies the token into its own config (a --token-file would be
+  // kept as a path to that file instead).
+  const args = ["channels", "add", "--channel", channel];
+  if (channel === "slack")
+    args.push("--bot-token", values.botToken.trim(), "--app-token", values.appToken.trim());
+  else args.push("--token", values.token.trim());
+  if (name) args.push("--name", name.trim());
+  authorize();
+  try {
+    // "$@": the tokens are arguments, never shell text.
+    await run(env.SHELL || "/bin/sh", ["-lc", 'exec openclaw "$@"', "openclaw", ...args], { timeout: 60000 });
+  } catch {
+    throw fail(409, "OpenClaw didn't accept this channel. Check the token and try again.");
+  }
+  return { added: true };
+}
+
 export const SETUP_SECTIONS = ["model", "channels"];
 export function openClawRoutes(
   app,
   client,
-  { startGateway = startOpenClawGateway, settleMs = 500, openSetup } = {},
+  { startGateway = startOpenClawGateway, settleMs = 500, openSetup, addChannel = addOpenClawChannel } = {},
 ) {
   const base = "/api/sessions/openclaw";
   const authorize = (req) => () => req.reauthorize();
+  app.post(`${base}/channels/add`, async (req, res) => {
+    const added = await addChannel(req.body || {}, { authorize: authorize(req) });
+    res.json(added);
+  });
   // Only fixed sections of `openclaw configure`, never the phone's text.
   app.post(`${base}/setup`, async (req, res) => {
     const section = req.body?.section;

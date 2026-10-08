@@ -83,6 +83,21 @@ export function installClaudeHook({
   });
 }
 
+// Whether Claude Code runs Reach's hook: "on" (this command), "outdated"
+// (Reach's entry, another command: Node or Reach moved), or "off".
+export function claudeHookState({ settingsPath = path.join(os.homedir(), ".claude", "settings.json"), command }) {
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8") || "{}");
+  } catch {
+    return "off";
+  }
+  const list = settings?.hooks?.PermissionRequest;
+  const ours = Array.isArray(list) ? list.filter(isReach) : [];
+  if (!ours.length) return "off";
+  return ours.some((e) => (e.hooks || []).some((h) => h?.command === command)) ? "on" : "outdated";
+}
+
 export function uninstallClaudeHook({ settingsPath = path.join(os.homedir(), ".claude", "settings.json"), backupDir }) {
   return edit(settingsPath, backupDir, (settings) => {
     const list = settings.hooks?.PermissionRequest;

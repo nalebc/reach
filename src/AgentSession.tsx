@@ -1,6 +1,7 @@
 import { withQuestionReplies } from "../server/agent-sessions/codex-questions.mjs";
 import { useWantedPrompt } from "./notification-focus";
-import { AccountUsage } from "./AccountUsage";
+import { UsageSheet } from "./UsageRing";
+import { NEAR_AT, shortReset, usageOf } from "./usage";
 import {
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Gauge,
   Globe,
   Info,
   Copy,
@@ -780,6 +782,7 @@ function SentImages({
     };
   }, [peer.url, peer.token, session.agent, session.id, item, shownCount, urls]);
   const sources = urls || loaded;
+  const [open, setOpen] = useState<number | null>(null);
   // Gone from the Mac (a temporary file the app attached): said, not blank.
   if (!urls && loaded.length && loaded.every((l) => !l))
     return (
@@ -791,15 +794,113 @@ function SentImages({
     <div className="as-user-images">
       {Array.from({ length: shownCount }, (_, n) =>
         sources[n] ? (
-          <img key={n} src={sources[n]!} alt="" />
+          <button key={n} type="button" className="as-image-open" aria-label={`Open image ${n + 1} of ${count}`} onClick={() => setOpen(n)}>
+            <img src={sources[n]!} alt="" />
+          </button>
         ) : (
           <span key={n} className="as-image-wait" aria-hidden="true" />
         ),
       )}
       {count > shownCount && (
-        <span className="as-tag">+{count - shownCount}</span>
+        <button type="button" className="as-tag as-image-more" aria-label={`Open image ${shownCount + 1} of ${count}`} onClick={() => setOpen(shownCount)}>
+          +{count - shownCount}
+        </button>
+      )}
+      {open !== null && (
+        <ImageViewer
+          count={urls ? urls.length : count}
+          at={open}
+          onMove={setOpen}
+          onClose={() => setOpen(null)}
+          source={(n) => (urls ? Promise.resolve(urls[n]) : item ? sessionImage(peer, session, item, n) : Promise.reject())}
+        />
       )}
     </div>
+  );
+}
+
+// A sent picture full screen, to look at closely: the others a swipe or an
+// arrow away; closed by its X, the dark around it, or Escape.
+function ImageViewer({
+  count,
+  at,
+  onMove,
+  onClose,
+  source,
+}: {
+  count: number;
+  at: number;
+  onMove: (n: number) => void;
+  onClose: () => void;
+  source: (n: number) => Promise<string>;
+}) {
+  const [shown, setShown] = useState<{ n: number; url: string | null } | null>(null);
+  const touch = useRef<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    source(at).then(
+      (url) => active && setShown({ n: at, url }),
+      () => active && setShown({ n: at, url: null }),
+    );
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [at]);
+  const move = (by: number) => {
+    const n = at + by;
+    if (n >= 0 && n < count) onMove(n);
+  };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") move(-1);
+      else if (e.key === "ArrowRight") move(1);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  });
+  const current = shown?.n === at ? shown : null;
+  return createPortal(
+    <div
+      className="as-viewer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Image ${at + 1} of ${count}`}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        if (touch.current === null) return;
+        const dx = e.changedTouches[0].clientX - touch.current;
+        touch.current = null;
+        if (Math.abs(dx) > 50) move(dx < 0 ? 1 : -1);
+      }}
+    >
+      <button type="button" className="as-viewer-close" aria-label="Close" onClick={onClose}>
+        <X size={22} />
+      </button>
+      {count > 1 && <span className="as-viewer-count">{at + 1} / {count}</span>}
+      {!current ? (
+        <span className="as-viewer-wait" aria-label="Loading">
+          <Loader2 size={26} className="spin" />
+        </span>
+      ) : current.url ? (
+        <img src={current.url} alt="" />
+      ) : (
+        <span className="as-viewer-gone">This picture isn't on the Mac anymore.</span>
+      )}
+      {at > 0 && (
+        <button type="button" className="as-viewer-arrow left" aria-label="Previous image" onClick={() => move(-1)}>
+          <ChevronLeft size={26} />
+        </button>
+      )}
+      {at < count - 1 && (
+        <button type="button" className="as-viewer-arrow right" aria-label="Next image" onClick={() => move(1)}>
+          <ChevronRight size={26} />
+        </button>
+      )}
+    </div>,
+    document.body,
   );
 }
 
@@ -1919,6 +2020,12 @@ export default function AgentSessionView({
     lastItem?.kind === "error" &&
     !!usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) &&
     (health.find((h) => h.agent === agent)?.usable !== true || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
+  // Close to its limit (90% and up) and not out yet: said above the message
+  // box before it runs out; a tap shows its limits. Out, the strip below
+  // says so instead.
+  const nearLimit = usageOf(health.find((h) => h.agent === agent));
+  const nearShown = !!nearLimit && nearLimit.level !== "out" && nearLimit.percent >= NEAR_AT && !nearLimit.stale;
+  const [usageOpen, setUsageOpen] = useState(false);
   // Agents with usage that can take the chat on from here (MoveChat.tsx).
   const continueIn =
     outOfUsage || claudeLimit || stoppedOnLimit
@@ -2371,7 +2478,6 @@ export default function AgentSessionView({
       {items && items.length > 2 && !helping && !ledTeam && (
         <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
       )}
-      <AccountUsage health={health.find((h) => h.agent === agent)} />
       {details && (
         <>
           {/* A tap anywhere else closes the menu. */}
@@ -2469,6 +2575,23 @@ export default function AgentSessionView({
                 <span className="move-item-text">
                   <span>Second opinion</span>
                   <small>Another agent reviews the last reply</small>
+                </span>
+              </button>
+            )}
+            {/* Its account's limits (UsageRing.tsx), as on the chat list. */}
+            {nearLimit && (
+              <button
+                className="relay-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setDetails(false);
+                  setUsageOpen(true);
+                }}
+              >
+                <Gauge size={18} />
+                <span className="move-item-text">
+                  <span>Usage</span>
+                  <small>{nearLimit.level === "out" ? "Out of usage" : `${nearLimit.percent}% used`}{nearLimit.resetsAt ? ` · resets ${shortReset(nearLimit.resetsAt)}` : ""}</small>
                 </span>
               </button>
             )}
@@ -2604,7 +2727,7 @@ export default function AgentSessionView({
               >
               <div className="as-user">
                 {b.item.queued && (
-                  <span className="as-tag">Sent while working</span>
+                  <span className="as-tag as-queued">Sent while working</span>
                 )}
                 {b.item.images ? (
                   agent === "claude" || agent === "codex" ? (
@@ -2909,6 +3032,15 @@ export default function AgentSessionView({
             onContinue={continueElsewhere}
             logos={logos}
           />
+        )}
+        {nearShown && !(outOfUsage || claudeLimit || stoppedOnLimit) && (
+          <button className={`usage-near ${nearLimit!.level}`} onClick={() => setUsageOpen(true)}>
+            {agentLabel(agent)} {nearLimit!.percent}% used
+            {nearLimit!.resetsAt ? ` · resets ${shortReset(nearLimit!.resetsAt)}` : ""}
+          </button>
+        )}
+        {usageOpen && (
+          <UsageSheet health={health.filter((h) => h.agent === agent)} logos={logos} onClose={() => setUsageOpen(false)} />
         )}
         {(problem || note || blocked) && (
           <p className={`as-hint ${problem ? "bad" : ""}`}>

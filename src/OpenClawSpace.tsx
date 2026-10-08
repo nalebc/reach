@@ -26,7 +26,7 @@ import {
   type ChatAppChoice,
 } from "./ChatList";
 import { ClawSessionSettings } from "./OpenClawControls";
-import { OpenSetup, ScheduleForm, WhatsAppLink } from "./OpenClawSetup";
+import { AddChannelForm, OpenSetup, ScheduleForm, WhatsAppLink } from "./OpenClawSetup";
 import { useViewportBox } from "./useViewportBox";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
@@ -682,6 +682,7 @@ function ClawWorkspacePanel({
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState("");
   const [linking, setLinking] = useState<"" | "link" | "relink">("");
+  const [addingChannel, setAddingChannel] = useState(false);
   const [ran, setRan] = useState("");
   useEffect(() => {
     if (!removing) return;
@@ -759,7 +760,7 @@ function ClawWorkspacePanel({
             : "Connection status for the messaging apps in your Gateway."}
         </p>
         <div className="claw-panel-actions">
-          {view === "automations" && data?.canAdd && !adding && (
+          {view === "automations" && data?.canAdd && !adding && jobs.length > 0 && (
             <button className="claw-secondary" onClick={() => setAdding(true)}>
               New schedule
             </button>
@@ -836,12 +837,27 @@ function ClawWorkspacePanel({
               </button>
             </>
           )}
-          <p className="claw-note">
-            Discord, Telegram, Slack and others need a bot token, typed into OpenClaw's own setup.
-          </p>
-          <OpenSetup peer={peer} section="channels">
-            Add another channel
-          </OpenSetup>
+          {addingChannel ? (
+            <AddChannelForm
+              peer={peer}
+              onCancel={() => setAddingChannel(false)}
+              onAdded={() => {
+                setAddingChannel(false);
+                setRevision((n) => n + 1);
+              }}
+            />
+          ) : (
+            <>
+              <p className="claw-note">Add Telegram, Discord or Slack with its bot token.</p>
+              <button className="claw-secondary" onClick={() => setAddingChannel(true)}>
+                Add a messaging app
+              </button>
+              <p className="claw-note">Signal, Matrix, iMessage and others are set up in OpenClaw's own setup.</p>
+              <OpenSetup peer={peer} section="channels">
+                Other apps
+              </OpenSetup>
+            </>
+          )}
         </div>
       )}
       {view === "channels"

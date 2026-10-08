@@ -229,3 +229,44 @@
   color: var(--chat-muted);
   font-size: 12px;
 }
+
+/* An agent close to its limit (usage.ts): one row, the way to its limits,
+   and an agent with room to start in instead. */
+.chat-needs-row.usage-row {
+  padding: 0 14px 0 0;
+  border-color: color-mix(in srgb, var(--usage-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--usage-warn) 7%, transparent);
+}
+.chat-needs-row.usage-row.critical,
+.chat-needs-row.usage-row.out {
+  border-color: color-mix(in srgb, var(--usage-out) 32%, transparent);
+  background: color-mix(in srgb, var(--usage-out) 8%, transparent);
+}
+.usage-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 0 0 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.usage-row-main {
+  padding-block: 8px;
+}
+.usage-row-main > span {
+  min-width: 0;
+  line-height: 1.35;
+}
+.usage-row .chat-needs-row-go {
+  flex: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}

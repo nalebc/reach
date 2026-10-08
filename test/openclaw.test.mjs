@@ -1684,3 +1684,24 @@ test("a send denied at RPC preflight can be explicitly retried with the same ID 
   assert.equal(history.streaming, "Fresh reply");
   assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 1);
 });
+
+test("a messaging app is added through OpenClaw's own command, its token an argument and never shell text", async () => {
+  const { addOpenClawChannel } = await import("../server/openclaw.mjs");
+  const ran = [];
+  const run = async (...args) => (ran.push(args), { stdout: "" });
+  assert.deepEqual(await addOpenClawChannel({ channel: "telegram", token: " 123:ABC$(id);`x`|y " }, { run, env: { SHELL: "/bin/zsh" }, platform: "darwin" }), { added: true });
+  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token", "123:ABC$(id);`x`|y"]]);
+  await addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678", appToken: "xapp-12345678", name: "Work" }, { run, platform: "darwin", env: {} });
+  assert.deepEqual(ran[1][1].slice(3), ["channels", "add", "--channel", "slack", "--bot-token", "xoxb-12345678", "--app-token", "xapp-12345678", "--name", "Work"]);
+  await assert.rejects(addOpenClawChannel({ channel: "whatsapp", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
+  await assert.rejects(addOpenClawChannel({ channel: "__proto__", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "short" }, { run }), /bot token/);
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "has space inside" }, { run }), /bot token/);
+  await assert.rejects(addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678" }, { run }), /app token/);
+  // OpenClaw's own output (which could echo a token) never reaches the phone.
+  const refused = async () => { throw Object.assign(new Error("bad token MTA-secret"), { stderr: "MTA-secret" }); };
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run: refused, platform: "darwin" }), (e) => !/MTA-secret/.test(e.message) && /didn't accept/.test(e.message));
+  let checks = 0;
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run, authorize: () => { if (++checks > 1) throw new Error("revoked"); } }), /revoked/);
+  assert.equal(ran.length, 2, "a revoked phone adds nothing");
+});

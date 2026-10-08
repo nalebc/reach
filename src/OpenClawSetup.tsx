@@ -410,3 +410,130 @@ export function WhatsAppLink({
     </div>
   );
 }
+
+// A messaging app added by its bot token, in Reach: OpenClaw checks it,
+// keeps it, and starts the channel. Other apps (Signal, Matrix, iMessage…)
+// still use OpenClaw's own setup.
+const TOKEN_APPS = {
+  telegram: {
+    name: "Telegram",
+    how: "In Telegram, message @BotFather, send /newbot, and copy the token it gives you.",
+    fields: [["token", "Bot token", "123456789:AA…"]],
+  },
+  discord: {
+    name: "Discord",
+    how: "In the Discord Developer Portal: your app → Bot → Reset Token, and turn on Message Content Intent.",
+    fields: [["token", "Bot token", "MTA…"]],
+  },
+  slack: {
+    name: "Slack",
+    how: "In your Slack app: turn on Socket Mode, then copy the Bot User OAuth Token and an app-level token with connections:write.",
+    fields: [
+      ["botToken", "Bot token", "xoxb-…"],
+      ["appToken", "App token", "xapp-…"],
+    ],
+  },
+} as const;
+type TokenApp = keyof typeof TOKEN_APPS;
+
+export function AddChannelForm({
+  peer,
+  onAdded,
+  onCancel,
+}: {
+  peer: Peer;
+  onAdded: () => void;
+  onCancel: () => void;
+}) {
+  const [app, setApp] = useState<TokenApp>("telegram");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const [added, setAdded] = useState("");
+  const spec = TOKEN_APPS[app];
+  const ready = spec.fields.every(([key]) => (values[key] || "").trim().length >= 8);
+  if (added)
+    return (
+      <div className="claw-missing" role="status">
+        <p>{added} is added. OpenClaw is connecting it now; Refresh in a moment to see it connected.</p>
+        <div className="claw-settings-actions">
+          <button type="button" className="claw-primary" onClick={onAdded}>
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  return (
+    <form
+      className="claw-settings claw-schedule-form claw-channel-form"
+      aria-label="Add a messaging app to OpenClaw"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!ready || busy) return;
+        setBusy(true);
+        setProblem("");
+        try {
+          await post(peer, `${clawBase}/channels/add`, {
+            channel: app,
+            ...Object.fromEntries(spec.fields.map(([key]) => [key, (values[key] || "").trim()])),
+          });
+          setValues({});
+          setAdded(spec.name);
+        } catch (e) {
+          setProblem((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="claw-app-choice" role="radiogroup" aria-label="Messaging app">
+        {(Object.keys(TOKEN_APPS) as TokenApp[]).map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="radio"
+            aria-checked={app === key}
+            className={app === key ? "on" : ""}
+            onClick={() => {
+              setApp(key);
+              setValues({});
+              setProblem("");
+            }}
+          >
+            {TOKEN_APPS[key].name}
+          </button>
+        ))}
+      </div>
+      <p className="claw-note">{spec.how}</p>
+      {spec.fields.map(([key, label, placeholder]) => (
+        <label key={key}>
+          {label}
+          <input
+            aria-label={`${spec.name} ${label.toLowerCase()}`}
+            type="password"
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            placeholder={placeholder}
+            value={values[key] || ""}
+            onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+          />
+        </label>
+      ))}
+      <p className="claw-note">The token goes to OpenClaw on your computer. Reach doesn't keep it.</p>
+      {problem && (
+        <p className="claw-error" role="alert">
+          {problem}
+        </p>
+      )}
+      <div className="claw-settings-actions">
+        <button type="button" className="claw-secondary" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="claw-primary" disabled={!ready || busy}>
+          {busy ? <Loader2 size={15} className="spin" /> : null}Add {spec.name}
+        </button>
+      </div>
+    </form>
+  );
+}

@@ -1,19 +1,30 @@
-// Claude PermissionRequest hooks hold real questions/permissions for the phone.
-// Codex pre-review hooks must step aside; actual Codex client requests are
-// handled by codex-live.mjs after its own approval policy has run.
+// Claude Code's permissions and questions, in the Claude app or a terminal,
+// answered from the phone through Claude Code's own PermissionRequest hook
+// (scripts/agent-hook.mjs, in ~/.claude/settings.json): no button pressed, no
+// key typed. Claude Code shows its dialog on the Mac and runs the hook at the
+// same time; whichever answers first decides (verified Oct 8, 2.1.293: the
+// hook's allow closes the dialog and runs the tool; once the Mac has
+// answered, a later hook answer is ignored, allow or deny). So every ask is
+// held for the phone, with nothing taken from the Mac. Claude Code doesn't
+// end the hook when the Mac answers: Reach ends the ask itself once Claude
+// Code no longer waits on a permission (its session registry), and the hook
+// exits with no answer.
+// Codex is not answered here: its PermissionRequest hook runs before its own
+// review (not a person's decision); the Codex app's approvals are answered
+// through its IPC (codex-desktop.mjs).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { claudeAnswer, describeClaudePrompt } from "./claude-host.mjs";
-import { idleSeconds } from "./claude-import.mjs";
 import { computerWord } from "../computer-word.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Old hook processes may still contact this socket. Codex's pre-review hook
-// is not evidence of a human decision: leave its normal review flow untouched.
 const AGENTS = new Set(["claude"]);
+// Claude Code's modes the phone may switch a session to with a hook's setMode
+// (as its plan answers do: Manual is "default" there). Never Bypass.
+const MODES = new Set(["default", "acceptEdits", "plan", "auto"]);
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 const key = (agent, sessionId) => `${agent}:${sessionId}`;
 
@@ -28,37 +39,33 @@ export function agentAskSocket(dataDir) {
 
 export function createAgentAsks({
   socketPath,
-  // Seconds since the last keyboard or mouse input on the Mac (null: unknown).
-  idle = idleSeconds,
-  // Nobody at the Mac for this long: the phone answers.
-  awayMs = 60 * 1000,
-  // How often a held ask checks whether the Mac has been used.
+  // How often a held ask checks whether Claude Code still waits on it.
   everyMs = 1000,
-  watchGraceMs = 5000,
+  // Claude Code's registry says it waits a moment after the hook starts: an
+  // ask it hasn't been seen waiting on ends only after this long not waiting.
+  unseenMs = 10 * 1000,
   // (agent, session): prompts already reaching the phone another way (Reach's own sessions).
   skip = () => false,
-  // (agent, session): a phone has this session open right now.
-  watching = () => false,
-  // (agent, session): the phone can show this session (an app's or a
-  // terminal's, not a headless run). Anything else is never held.
+  // (agent, session): the phone can show this session (the Claude app's or a
+  // terminal's, not a headless run or a subagent). Anything else steps aside.
   shows = async () => true,
+  // (agent, session): Claude Code still waits on a permission or question
+  // there (true), no longer (false), or can't tell (null).
+  waiting = async () => null,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
 }) {
   const asks = new Map(); // id -> ask
   const ended = new Map(); // id -> why, for a late answer from the phone
   const versions = new Map(); // agent:session -> changes
+  // A mode picked on the phone for a session Reach doesn't run, switched to
+  // with the next answer the phone gives there (agent:session -> mode).
+  const modes = new Map();
   const listeners = new Set();
   const changed = (agent, sessionId) => {
     versions.set(key(agent, sessionId), (versions.get(key(agent, sessionId)) || 0) + 1);
     for (const listener of listeners) listener(agent, sessionId);
   };
-  // Seconds since the Mac was last used; null when unknown, which counts as
-  // someone there (the agent shows its dialog on the Mac).
-  const idleNow = () =>
-    Promise.resolve()
-      .then(idle)
-      .catch(() => null);
   const remember = (id, why) => {
     ended.set(id, why);
     if (ended.size > 200) ended.delete(ended.keys().next().value);
@@ -69,7 +76,8 @@ export function createAgentAsks({
     let buffer = "";
     let ask = null;
     let done = false;
-    // Ends the ask once: a decision for the agent, or none (its dialog shows).
+    // Ends the ask once: a decision for the agent, or none (answered on the
+    // Mac, or the hook gone).
     const finish = (decision, why) => {
       if (done) return;
       done = true;
@@ -109,41 +117,40 @@ export function createAgentAsks({
         skip(agent, input.session_id)
       )
         return finish(null);
-      if (!watching(agent, input.session_id)) {
-        const shown = await Promise.resolve()
-          .then(() => shows(agent, input.session_id))
-          .catch(() => false);
-        if (!shown) return finish(null);
-        const seconds = await idleNow();
-        if (seconds == null || seconds * 1000 < awayMs) return finish(null);
-      }
-      if (done) return;
+      const shown = await Promise.resolve()
+        .then(() => shows(agent, input.session_id))
+        .catch(() => false);
+      if (!shown || done) return finish(null);
       const id = crypto.randomBytes(6).toString("hex");
       const tool_input = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
       let prompt;
-      try { prompt = describeClaudePrompt(id, { tool_name: input.tool_name, input: tool_input }); }
-      catch { return finish(null, "mac"); }
-      ask = {
-        id,
-        agent,
-        sessionId: input.session_id,
-        prompt: { ...prompt, canAnswerOnMac: true },
-        finish,
-        at: Date.now(),
-        lastWatched: watching(agent, input.session_id) ? Date.now() : null,
-      };
+      try {
+        prompt = describeClaudePrompt(id, {
+          tool_name: input.tool_name,
+          input: tool_input,
+          ...(Array.isArray(input.permission_suggestions) ? { permission_suggestions: input.permission_suggestions } : {}),
+        });
+      } catch {
+        return finish(null, "mac");
+      }
+      ask = { id, agent, sessionId: input.session_id, prompt, finish, at: Date.now(), seen: false };
       asks.set(id, ask);
       changed(agent, ask.sessionId);
-      // Keep the phone answerable while it is reading this session. Mac input
-      // (including Reach screen control) must not silently steal its question.
+      // Answered on the Mac: Claude Code stops waiting, and says so.
+      let checking = false;
       ask.watch = setInterval(async () => {
-        if (watching(agent, ask.sessionId)) {
-          ask.lastWatched = Date.now();
-          return;
+        if (checking || done) return;
+        checking = true;
+        try {
+          const now = await Promise.resolve()
+            .then(() => waiting(agent, ask.sessionId))
+            .catch(() => null);
+          if (done) return;
+          if (now === true) ask.seen = true;
+          else if (now === false && (ask.seen || Date.now() - ask.at > unseenMs)) finish(null, "mac");
+        } finally {
+          checking = false;
         }
-        if (ask.lastWatched != null && Date.now() - ask.lastWatched < watchGraceMs) return;
-        const seconds = await idleNow();
-        if (!done && (seconds == null || seconds * 1000 < Date.now() - ask.at)) finish(null, "mac");
       }, everyMs);
       ask.watch.unref?.();
     });
@@ -177,18 +184,32 @@ export function createAgentAsks({
           ended.get(String(promptId)) === "mac" ? `Answered on your ${computerWord(platform)}.` : "This prompt was already answered.",
           409,
         );
-      if (answer?.decision === "answerOnMac" || answer?.answerOnMac === true) {
-        ask.finish(null, "mac"); return { handedOff: true };
+      const decision = claudeAnswer(ask.prompt, answer, platform); // 400 for anything not offered
+      // A mode picked on the phone goes in with this answer (Claude Code
+      // takes setMode only with an allow). A plan's own pick wins.
+      const mode = modes.get(key(agent, sessionId));
+      if (mode && decision.behavior === "allow" && !decision.updatedPermissions?.some((p) => p?.type === "setMode")) {
+        decision.updatedPermissions = [...(decision.updatedPermissions || []), { type: "setMode", mode, destination: "session" }];
+        modes.delete(key(agent, sessionId));
       }
-      ask.finish(claudeAnswer(ask.prompt, answer, platform), "phone"); // 400 for anything not offered
+      ask.finish(decision, "phone");
       return { answered: true };
     },
+    // A mode for a session Reach doesn't run: Claude Code has no way in for it
+    // but a hook's answer, so it's switched with the phone's next allow there.
+    queueMode(agent, sessionId, mode) {
+      if (!AGENTS.has(agent) || !UUID.test(String(sessionId)) || !MODES.has(mode)) throw bad("Reach can't pick that mode.", 400);
+      modes.set(key(agent, sessionId), mode);
+      if (modes.size > 500) modes.delete(modes.keys().next().value);
+      changed(agent, sessionId);
+    },
+    queuedMode: (agent, sessionId) => modes.get(key(agent, sessionId)) || null,
     version: (agent, sessionId) => versions.get(key(agent, sessionId)) || 0,
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    // Reach is quitting: every held ask goes back to the Mac's dialog.
+    // Reach is quitting: every held ask stays with the Mac's dialog.
     close() {
       for (const ask of [...asks.values()]) ask.finish(null, "mac");
       if (listening) {

@@ -2,8 +2,10 @@ import { useMemo, useRef, useState, type RefObject } from "react";
 import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, cancelRelay, projectName, type AgentSession, type Relay, type Team } from "./agent-sessions";
-import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice } from "./ChatList";
+import { agentLabel, cancelRelay, projectName, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
+import { UsageSheet } from "./UsageRing";
+import { mergeHealth, shortReset, usageOf } from "./usage";
+import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
 import { relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
 import {
@@ -199,6 +201,8 @@ export default function ChatHub({
   onRefresh,
   onReview,
   onRelaysChanged,
+  workflows,
+  health = [],
 }: {
   peer: Peer;
   // Every computer this phone is paired with, and their live connections
@@ -220,6 +224,10 @@ export default function ChatHub({
   onRefresh?: () => void;
   onReview?: () => void;
   onRelaysChanged?: () => void;
+  // The Workflows icon at the top (Workflows.tsx).
+  workflows?: WorkflowsEntry;
+  // This computer's agents (the live feed); the others' are asked here.
+  health?: AgentHealth[];
 }) {
   const field = useRef<HTMLInputElement>(null);
   // This computer first, then the others (when a chat there can be opened).
@@ -237,6 +245,26 @@ export default function ChatHub({
     nudge: (p) => presence(connections?.[p.id]),
   });
   const activityOf = (computer: Peer) => activities[computer.id]?.value;
+  // Usage is the account's, not the computer's: each agent as the fullest
+  // reading any computer has (usage.ts).
+  const healths = useEveryComputer<{ agents?: AgentHealth[] }>(others, () => "/api/sessions/health", 60000, {
+    connections,
+    nudge: (p) => presence(connections?.[p.id]),
+  });
+  const usage = useMemo(
+    () => mergeHealth([health, ...others.map((c) => (Array.isArray(healths[c.id]?.value?.agents) ? healths[c.id].value!.agents! : []))]),
+    [health, healths],
+  );
+  const [usageOpen, setUsageOpen] = useState(false);
+  // An agent close to its limit (80% and up), the fullest first; and one
+  // with room to start in instead.
+  const near = usage
+    .map((h) => ({ h, u: usageOf(h) }))
+    .filter((x) => x.u && x.u.level !== "rest" && apps.some((a) => a.agent === x.h.agent))
+    .sort((a, b) => (b.u!.level === "out" ? 1000 : b.u!.percent) - (a.u!.level === "out" ? 1000 : a.u!.percent))[0];
+  const roomy = near
+    ? apps.find((a) => a.agent !== near.h.agent && a.agent !== "all" && a.supported && usage.some((h) => h.agent === a.agent && h.signedIn && h.usable !== false && usageOf(h)?.level === "rest"))
+    : undefined;
   // The computers whose chats aren't here, and why (one still being asked
   // isn't said: its chats usually follow in a moment).
   const absent = others.flatMap((computer) => {
@@ -314,6 +342,8 @@ export default function ChatHub({
         onChange={onAgentChange}
         onNew={onNew ? () => onNew() : undefined}
         onRefresh={onRefresh}
+        workflows={workflows}
+        health={usage}
         searchOpen={false}
         onSearch={() => field.current?.focus()}
       />
@@ -335,6 +365,23 @@ export default function ChatHub({
           </span>
         </button>
       )}
+      {near && (
+        <div className={`chat-needs-row usage-row ${near.u!.level}`}>
+          <button className="usage-row-main" onClick={() => setUsageOpen(true)}>
+            <AgentLogo agent={near.h.agent} logos={logos} size={18} />
+            <span>
+              {agentLabel(near.h.agent)} {near.u!.level === "out" ? "is out" : `${near.u!.percent}%`}
+              {near.u!.resetsAt ? ` · resets ${shortReset(near.u!.resetsAt)}` : ""}
+            </span>
+          </button>
+          {roomy && onNew && (
+            <button className="chat-needs-row-go" onClick={() => (onAgentChange(roomy.agent), onNew())}>
+              Use {roomy.name} <ArrowUpRight size={14} />
+            </button>
+          )}
+        </div>
+      )}
+      {usageOpen && <UsageSheet health={usage.filter((h) => usageOf(h))} logos={logos} onClose={() => setUsageOpen(false)} />}
       {crews.length > 0 && (
         <section className="hub-card hub-teams" aria-label="Teams">
           <header>

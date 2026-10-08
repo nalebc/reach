@@ -196,17 +196,27 @@ test("Codex async questions from a previous turn cannot be answered into the new
   assert.deepEqual(dom.errors, []);
 });
 
-test("account usage displays actual windows, reset times and native warnings separately from approvals", async () => {
+test("close to its limit, a chat says so above the message box, and a tap shows each window and its reset", async () => {
   await open(codexSession(), [{ ...signedIn[0], usage: { available: true, updatedAt: Date.now(), windows: [
     { id: "weekly", label: "Weekly", usedPercent: 78, resetsAt: Date.now() + 60000, severity: "normal" },
     { id: "session", label: "5 hours", usedPercent: 95, resetsAt: Date.now() + 120000, severity: "warning" },
   ] } }]);
-  await dom.waitFor(() => $(".as-account-usage"));
-  assert.match($(".as-usage-summary").textContent, /95% used/);
+  await dom.waitFor(() => $(".usage-near"));
+  assert.match($(".usage-near").textContent, /95% used · resets/);
+  assert.ok($(".usage-near").classList.contains("critical"));
+  await click($(".usage-near"));
+  await dom.waitFor(() => $(".usage-sheet"));
   assert.equal($$(".as-usage-window progress").length, 2);
   assert.match($(".as-usage-windows").textContent, /5% remaining/);
   assert.match($(".as-usage-windows").textContent, /Resets/);
   assert.ok(!$(".as-review-dock"));
+  // Below 90% too, its limits are in the chat's menu.
+  await click($(".usage-sheet .chat-sheet-close"));
+  await click($("[aria-label='More']"));
+  const item = await dom.waitFor(() => $$(".as-details .relay-menu-item").find((b) => /^Usage/.test(b.textContent)));
+  assert.match(item.textContent, /95% used · resets/);
+  await click(item);
+  assert.ok(await dom.waitFor(() => $(".usage-sheet")));
 });
 
 test("approval cards keep app images icon-sized instead of filling the sheet", async () => {
@@ -1819,6 +1829,17 @@ test("pictures sent in a Claude session show in their message, above its text, a
     "fetched with this device's key",
   );
   assert.equal($(".as-user .as-tag"), null, "pictures, not a count");
+  // Tapped: full screen, the next one an arrow away, closed by Escape.
+  await click($(".as-image-open"));
+  await dom.waitFor(() => $(".as-viewer img"));
+  assert.equal($(".as-viewer").getAttribute("aria-label"), "Image 1 of 2");
+  assert.equal($(".as-viewer img").getAttribute("src"), $$(".as-user-images img")[0].getAttribute("src"));
+  await click($("[aria-label='Next image']"));
+  await dom.waitFor(() => $(".as-viewer").getAttribute("aria-label") === "Image 2 of 2");
+  assert.equal($("[aria-label='Next image']"), null, "the last one");
+  dom.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await settle();
+  assert.equal($(".as-viewer"), null);
   assert.deepEqual(dom.errors, []);
 });
 

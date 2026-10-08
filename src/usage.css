@@ -1,0 +1,161 @@
+/* Usage (UsageRing.tsx, usage.ts): a ring around an agent's logo, a pill
+   under it when it's close, and each agent's limits in a sheet. */
+.usage-ring {
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  transform: rotate(-90deg);
+  pointer-events: none;
+  overflow: visible;
+}
+.usage-ring circle {
+  fill: none;
+  stroke-width: 1.5;
+}
+.usage-ring-track {
+  stroke: #ffffff12;
+}
+.usage-ring-fill {
+  stroke: #ffffff38;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.4s ease;
+}
+.usage-ring.warning .usage-ring-fill {
+  stroke: var(--usage-warn);
+}
+.usage-ring.critical .usage-ring-fill,
+.usage-ring.out .usage-ring-fill {
+  stroke: var(--usage-out);
+}
+.usage-ring.warning circle,
+.usage-ring.critical circle,
+.usage-ring.out circle {
+  stroke-width: 2.5;
+}
+.usage-pill {
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%);
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--usage-out);
+  color: #2a1612;
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-ring-fill {
+    transition: none;
+  }
+}
+
+/* The round button at the top of a chat list. */
+.usage-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--panel);
+  cursor: pointer;
+}
+.usage-button .usage-ring {
+  inset: 1px;
+  width: 40px;
+  height: 40px;
+}
+.usage-button .usage-pill {
+  bottom: -5px;
+}
+
+/* A logo with its ring: on the app rail and in the app menu. */
+.usage-logo {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+/* The Usage sheet: each agent, then its limits. */
+.usage-sheet .usage-sheet-agent {
+  padding: 4px 18px 6px;
+}
+.usage-sheet .usage-sheet-agent + .usage-sheet-agent {
+  border-top: 1px solid var(--border);
+}
+.usage-sheet h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.as-usage-windows {
+  display: grid;
+  gap: 12px;
+  padding: 10px 0 14px;
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+.as-usage-window > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.as-usage-window strong {
+  color: #e9eee9;
+  font-weight: 500;
+}
+.as-usage-window progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 7px 0;
+  accent-color: #ffffff80;
+}
+.as-usage-window.warning progress {
+  accent-color: var(--usage-warn);
+}
+.as-usage-window.critical progress {
+  accent-color: var(--usage-out);
+}
+.as-usage-window.warning [role="status"] {
+  color: var(--usage-warn);
+}
+.as-usage-window.critical [role="status"] {
+  color: var(--usage-out);
+}
+.as-usage-windows p {
+  margin: 4px 0;
+}
+.as-usage-windows a {
+  color: inherit;
+}
+
+/* Above the message box, from 90% until it's out. */
+.usage-near {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--usage-warn) 10%, transparent);
+  color: var(--usage-warn);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: center;
+  cursor: pointer;
+}
+.usage-near.critical {
+  background: color-mix(in srgb, var(--usage-out) 10%, transparent);
+  color: var(--usage-out);
+}

@@ -1553,7 +1553,92 @@ button.as-mode:disabled {
   object-fit: cover;
 }
 .as-image-wait {
-  background: #ffffff14;
+  background: linear-gradient(90deg, #ffffff10 0%, #ffffff24 45%, #ffffff10 90%);
+  background-size: 200% 100%;
+  animation: as-shimmer 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .as-image-wait {
+    animation: none;
+  }
+}
+.as-image-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+.as-image-open img {
+  display: block;
+}
+button.as-image-more {
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  cursor: pointer;
+}
+/* A sent picture full screen. */
+.as-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(56px, env(safe-area-inset-top)) 12px max(24px, env(safe-area-inset-bottom));
+  background: #000000eb;
+  touch-action: pan-y pinch-zoom;
+}
+.as-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.as-viewer-close,
+.as-viewer-arrow {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: #ffffff1f;
+  color: #fff;
+  cursor: pointer;
+}
+.as-viewer-close {
+  top: max(10px, env(safe-area-inset-top));
+  right: 12px;
+}
+.as-viewer-arrow {
+  top: 50%;
+  transform: translateY(-50%);
+}
+.as-viewer-arrow.left {
+  left: 10px;
+}
+.as-viewer-arrow.right {
+  right: 10px;
+}
+.as-viewer-count {
+  position: absolute;
+  top: max(22px, calc(env(safe-area-inset-top) + 12px));
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 13px;
+  color: #ffffffb3;
+}
+.as-viewer-wait,
+.as-viewer-gone {
+  color: #ffffffb3;
+  font-size: 14px;
+}
+/* Its own line, so the next tag ("5 images") doesn't run into it. */
+.as-user > .as-queued {
+  display: block;
 }
 /* A narrow phone keeps one row: the effort word goes (it's in the sheet),
    the context shows as its ring, Codex's permission chip as its shield (the
@@ -1740,16 +1825,6 @@ button.as-mode:disabled {
   transform: rotate(180deg);
 }
 /* The model menu's thinking levels, under its models. */
-
-.as-account-usage { flex: none; margin: 0 max(20px, calc((100% - 724px) / 2)); font-size: 12px; color: var(--muted, #888); }
-.as-usage-summary { cursor: pointer; padding: 7px 0; }
-.as-usage-summary span { margin-left: 8px; }
-.as-account-usage.warning > summary { color: #c49444; }
-.as-usage-windows { max-height: 32dvh; overflow-y: auto; padding: 10px 0 14px; display: grid; gap: 12px; }
-.as-usage-window > div { display: flex; justify-content: space-between; gap: 12px; }
-.as-usage-window progress { display: block; width: 100%; height: 6px; margin: 7px 0; accent-color: currentColor; }
-.as-usage-windows p { margin: 4px 0; }
-.as-usage-windows a { color: inherit; }
 
 /* Claude's plan, ready to go: the whole plan, then how to start or what to change. */
 .as-prompt .as-plan {
