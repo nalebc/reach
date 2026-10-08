@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bot, Check, ChevronDown, ChevronRight, Circle, CircleSlash, ListTodo, Loader2, Moon, Square, X } from "lucide-react";
 import type { AgentSession, SessionItem, Subagent } from "./agent-sessions";
 import AgentMarkdown from "./AgentMarkdown";
@@ -76,15 +76,26 @@ export function SubagentCard({ item, agent, onStop }: { item: SessionItem; agent
   );
 }
 
-// The chat's sub-agents at a glance: how many still run, and each one's
-// status; tapping one goes to where the chat started it.
+// The chat's running sub-agents at a glance, while their cards are out of
+// sight (on screen, the cards say it already); tapping one goes to its card.
 export function SubagentStrip({ agents }: { agents: Subagent[] }) {
   const [open, setOpen] = useState(false);
-  if (!agents.length) return null;
+  const [cardsInSight, setCardsInSight] = useState(false);
   const running = agents.filter((a) => a.status === "running").length;
-  const label = running
-    ? `${running} agent${running === 1 ? "" : "s"} running`
-    : `${agents.length} agent${agents.length === 1 ? "" : "s"}`;
+  const cardIds = agents.filter((a) => a.status === "running" && a.toolUseId).map((a) => `subagent-${a.toolUseId}`).join(" ");
+  useEffect(() => {
+    const cards = cardIds.split(" ").map((id) => id && document.getElementById(id)).filter((el): el is HTMLElement => !!el);
+    if (!cards.length || typeof IntersectionObserver === "undefined") return setCardsInSight(false);
+    const seen = new Set<Element>();
+    const watch = new IntersectionObserver((entries) => {
+      for (const e of entries) e.isIntersecting ? seen.add(e.target) : seen.delete(e.target);
+      setCardsInSight(seen.size > 0);
+    });
+    cards.forEach((card) => watch.observe(card));
+    return () => watch.disconnect();
+  }, [cardIds, agents]);
+  if (!running || (cardsInSight && !open)) return null;
+  const label = `${running} agent${running === 1 ? "" : "s"} running`;
   return (
     <div className={`sa-strip ${running ? "busy" : ""} ${open ? "open" : ""}`}>
       <button className="sa-strip-head" onClick={() => setOpen(!open)} aria-expanded={open}>

@@ -224,6 +224,7 @@ export function createClaudeHost({
         settings: {},
         pending: new Map(),
         idle: null,
+        background: 0,
       });
     return sessions.get(id);
   };
@@ -270,12 +271,13 @@ export function createClaudeHost({
       });
     });
   // Let the process go after a quiet while; the next message resumes it.
+  // Never while its background agents work: they end with it.
   const rest = (s) => {
     clearTimeout(s.idle);
-    if (!s.proc || s.turns) return;
+    if (!s.proc || s.turns || s.background) return;
     // Still naming the session: its name goes in first.
     if (s.naming) return void s.naming.then(() => rest(s));
-    s.idle = setTimeout(() => !s.turns && end(s), s.waiters.size ? idleMs : graceMs);
+    s.idle = setTimeout(() => !s.turns && !s.background && end(s), s.waiters.size ? idleMs : graceMs);
     s.idle.unref?.();
   };
   const released = new Set();
@@ -289,6 +291,7 @@ export function createClaudeHost({
     s.pending.clear();
     s.prompts.clear();
     s.turns = 0;
+    s.background = 0;
     s.unread = 0;
     s.status = "idle";
     s.streaming = "";
@@ -373,7 +376,15 @@ export function createClaudeHost({
       }
       case "system":
         if (m.subtype === "status" && m.permissionMode) s.settings.mode = m.permissionMode;
-        else if (m.subtype !== "init") return;
+        else if (m.subtype === "background_tasks_changed" && Array.isArray(m.tasks)) {
+          // Every live background task (agents, shells), the whole set each
+          // time (2.1.291). Ambient ones (monitors) last the session; they
+          // don't keep it.
+          s.background = m.tasks.filter((t) => t && !t.ambient).length;
+          if (s.background) clearTimeout(s.idle);
+          else rest(s);
+          return;
+        } else if (m.subtype !== "init") return;
         break;
       case "stream_event": {
         const e = m.event || {};
@@ -606,7 +617,7 @@ export function createClaudeHost({
       if (cwd) s.cwd = cwd;
       if (effort) s.settings.effort = effort;
       // A thinking level is a launch setting: change it between turns.
-      if (s.proc && !s.turns && effort && effort !== s.launchedEffort) end(s);
+      if (s.proc && !s.turns && !s.background && effort && effort !== s.launchedEffort) end(s);
       if (!s.proc) {
         if (model) s.settings.model = model;
         if (mode) s.settings.mode = mode;

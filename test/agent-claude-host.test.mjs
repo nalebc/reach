@@ -1226,6 +1226,22 @@ test("Reach lets go of Claude Code soon after a turn, later only while the phone
 });
 
 
+test("Reach keeps Claude Code while its background agents work, so they aren't stopped with it", async () => {
+  const claude = fakeClaude();
+  const h = host(claude, { graceMs: 20, idleMs: 120 });
+  await h.send(ID, { text: "research this", cwd: "/w" });
+  claude.last().print({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Research" }] });
+  claude.last().print({ type: "result", is_error: false });
+  await settle(40);
+  assert.equal(h.drives(ID), true, "kept while an agent runs");
+  assert.equal(claude.last().ended, false);
+  // A monitor lasts the session: it doesn't hold it.
+  claude.last().print({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "m1", task_type: "monitor", description: "Watch", ambient: true }] });
+  await settle(40);
+  assert.equal(h.drives(ID), false, "let go once the agents are done");
+  assert.equal(claude.last().ended, true);
+});
+
 test("watching a Claude session survives long-poll gaps but expires after leaving", async () => {
   let now = 1000;
   const h = host(fakeClaude(), { now: () => now, graceMs: 5000 });
