@@ -142,6 +142,11 @@ export function ClawRelayAction({
     else setStarted(true);
   };
   const folders = chatFolders([...(cwd ? [{ cwd }] : []), ...(sessions || [])]);
+  // A person's one-to-one WhatsApp or Telegram chat: its answer can be posted
+  // back there (never a group or channel; the Mac checks again).
+  const postTo = { whatsapp: "WhatsApp", telegram: "Telegram" }[
+    /^agent:[\w-]+:(whatsapp|telegram):direct:/.exec(sessionKey)?.[1] || ""
+  ];
   // The OpenClaw chat as the sheets take it.
   const source = {
     agent: "openclaw" as AgentName,
@@ -215,6 +220,7 @@ export function ClawRelayAction({
           session={source}
           item={item}
           cwd={cwd}
+          postTo={postTo}
           health={agents}
           logos={logos}
           onClose={() => setSheet(null)}
@@ -231,6 +237,7 @@ export function ClawRelayAction({
           cwd={cwd}
           // An older reply goes on from itself, now.
           item={latest ? undefined : item}
+          postTo={postTo}
           health={agents}
           logos={logos}
           onClose={() => setSheet(null)}

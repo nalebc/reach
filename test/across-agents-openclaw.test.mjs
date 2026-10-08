@@ -51,6 +51,14 @@ export function fakeOpenClaw() {
       c.items.push({ id: `${key}-u${c.items.length}`, role: "user", text: stamp(text) });
       return { runId: requestId, status: "running" };
     },
+    // Post-back: OpenClaw's own `send` to the chat's one-to-one destination
+    // (the real one refuses groups and channels: test/openclaw.test.mjs).
+    async post({ key, text, requestId }, authorize) {
+      authorize();
+      authorizedCalls.push("post");
+      calls.push({ method: "post", key, text, requestId });
+      return { posted: true, channel: "whatsapp" };
+    },
     async stop(key) {
       calls.push({ method: "stop", key });
       chats[key].session.status = "idle";
@@ -239,4 +247,44 @@ test("lost access stops an OpenClaw step before its client is called", async () 
     }),
     /no longer has access/,
   );
+});
+
+// Post-back (Oct 8): a WhatsApp ask, Claude Code's answer posted back to it.
+test("post-back: Claude Code's answer goes to the WhatsApp chat that asked, once, after its reply", async () => {
+  const { relays, openClaw, pages, settle } = stage();
+  const from = { agent: "openclaw", id: WHATSAPP };
+  // Only from an OpenClaw chat, and only as a yes.
+  await assert.rejects(
+    relays.start({ owner: "phone", from: { agent: "codex", id: CODEX }, steps: [{ kind: "review", agent: "claude" }], now: true, postBack: true }),
+    /Only a WhatsApp or Telegram chat/,
+  );
+  await assert.rejects(relays.start({ owner: "phone", from, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app", postBack: "yes" }), /Only a WhatsApp/);
+  // The phone can't ask for a "post" step itself.
+  assert.throws(() => checkSteps([{ kind: "post" }], from, ["codex", "claude", "openclaw"]), /Unknown step/);
+  const { relay, opened } = await relays.start({ owner: "phone", from, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app", postBack: true });
+  assert.equal(relays.list()[0].state, "waiting");
+  // Still working: nothing posted.
+  await settle();
+  assert.equal(openClaw.calls.filter((c) => c.method === "post").length, 0);
+  pages[`claude:${opened.id}`].session.status = "idle";
+  pages[`claude:${opened.id}`].items.push(reply("c-r1", "Fixed: Safari blocked the third-party cookie."));
+  await settle();
+  const posts = openClaw.calls.filter((c) => c.method === "post");
+  assert.deepEqual(posts, [{ method: "post", key: WHATSAPP, text: "Fixed: Safari blocked the third-party cookie.", requestId: `relay-${relay.id}-post` }]);
+  assert.equal(relays.list()[0].state, "done");
+  // Seen again: never posted twice.
+  await settle();
+  assert.equal(openClaw.calls.filter((c) => c.method === "post").length, 1);
+});
+
+test("post-back stops when access is gone, before anything is posted", async () => {
+  let reason = "";
+  const { relays, openClaw, pages, settle } = stage({ authorized: () => reason });
+  const { opened } = await relays.start({ owner: "phone", from: { agent: "openclaw", id: WHATSAPP }, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app", postBack: true });
+  reason = "The phone that set this up no longer has access.";
+  pages[`claude:${opened.id}`].session.status = "idle";
+  pages[`claude:${opened.id}`].items.push(reply("c-r1", "Done."));
+  await settle();
+  assert.equal(openClaw.calls.filter((c) => c.method === "post").length, 0);
+  assert.equal(relays.list()[0].state, "stopped");
 });

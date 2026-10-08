@@ -174,3 +174,18 @@ test("the Mac's error shows in the sheet", async () => {
   assert.equal(alert.textContent, "Pick the folder to work in.");
   assert.deepEqual(dom.errors, []);
 });
+
+test("a WhatsApp chat offers to post the answer back, off until chosen", async () => {
+  dom.window.localStorage.setItem("reach-claw-relay-folder:mac", "/Users/me/app");
+  await mount();
+  await click(button("Second opinion", $$(".claw-relay")[1]));
+  await dom.waitFor(() => $(".relay-go"));
+  const toggle = [...dom.document.querySelectorAll(".relay-switch")].find((l) => /Post the answer on WhatsApp/.test(l.textContent));
+  assert.ok(toggle);
+  assert.equal(toggle.querySelector("input").checked, false);
+  await click(toggle.querySelector("input"));
+  await click($(".relay-go"));
+  await dom.waitFor(() => mac.sent.length === 1);
+  assert.equal(mac.sent[0].postBack, true);
+  assert.deepEqual(dom.errors, []);
+});

@@ -1,41 +1,39 @@
-/* Agents tab (OpenClawAgents.tsx): one rounded group of rows, an agent per
-   row (avatar, name, model, pills), tap for its sub-agents and chats; then
-   the approval rules as pills and rows. */
+/* Agents and approval rules share the OpenClaw page tokens. */
 .claw-agents-group {
   overflow: hidden;
-  margin: 0 0 24px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: var(--panel);
+  margin: 0 0 32px;
+  border: 1px solid var(--claw-line, #ffffff14);
+  border-radius: 26px;
+  background: var(--claw-group, #ffffff0b);
 }
 .claw-agents-item + .claw-agents-item {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--claw-line, #ffffff14);
 }
 .claw-agents-row {
   display: flex;
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 58px;
-  padding: 8px 14px;
+  min-height: 76px;
+  padding: 14px 16px;
   border: 0;
   background: none;
-  color: var(--text-strong);
+  color: var(--claw-ink, #ececec);
   text-align: left;
 }
 .claw-agents-row:active {
-  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  background: var(--claw-press, #ffffff12);
 }
 .claw-agents-avatar {
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
-  font-size: 17px;
-  color: var(--muted);
+  background: color-mix(in srgb, var(--claw-muted, #a1a1a1) 12%, transparent);
+  font-size: 20px;
+  color: var(--claw-muted, #a1a1a1);
 }
 .claw-agents-copy {
   display: flex;
@@ -51,11 +49,11 @@
   white-space: nowrap;
 }
 .claw-agents-title {
-  font-size: 15px;
+  font-size: 17px;
 }
 .claw-agents-sub {
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--claw-muted, #a1a1a1);
+  font-size: 13px;
 }
 .claw-agents-pills {
   display: flex;
@@ -68,35 +66,35 @@
 .claw-agents-pill {
   flex: none;
   padding: 3px 8px;
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
-  color: var(--muted);
-  font-size: 11px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--claw-muted, #a1a1a1) 12%, transparent);
+  color: var(--claw-muted, #a1a1a1);
+  font-size: 12px;
   white-space: nowrap;
 }
 .claw-agents-pill.running {
-  color: var(--lime);
-  background: color-mix(in srgb, var(--lime) 12%, transparent);
+  color: var(--claw-ink, #ececec);
+  background: var(--claw-field, #ffffff10);
 }
 .claw-agents-pill.waiting {
-  color: var(--danger, #e5a18b);
-  background: color-mix(in srgb, var(--danger, #e5a18b) 12%, transparent);
+  color: var(--claw-danger, #f28b82);
+  background: color-mix(in srgb, var(--claw-danger, #f28b82) 12%, transparent);
 }
 .claw-agents-chevron {
   flex: none;
-  color: var(--muted);
+  color: var(--claw-muted, #a1a1a1);
   transition: transform 0.15s;
 }
 .claw-agents-item.open .claw-agents-chevron {
   transform: rotate(180deg);
 }
 .claw-agents-body {
-  padding: 0 14px 12px 58px;
+  padding: 0 16px 18px 64px;
 }
 .claw-agents-label {
-  margin: 12px 0 6px;
-  color: var(--muted);
-  font-size: 12px;
+  margin: 20px 0 10px;
+  color: var(--claw-muted, #a1a1a1);
+  font-size: 13px;
   font-weight: 600;
 }
 .claw-agents-body > .claw-agents-label:first-child {
@@ -112,9 +110,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 34px;
+  min-height: 44px;
   font-size: 13px;
-  color: var(--text-strong);
+  color: var(--claw-ink, #ececec);
 }
 .claw-agents-line {
   min-width: 0;
@@ -124,101 +122,160 @@
   align-items: center;
   gap: 8px;
   margin: 0 0 12px;
-  color: var(--text-strong);
-  font-size: 16px;
+  color: var(--claw-ink, #ececec);
+  font-size: 17px;
   font-weight: 550;
 }
 .claw-agents-rules {
   margin: 0 0 28px;
 }
 .claw-agents-rules .claw-channels {
-  margin-bottom: 8px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 3px;
+  margin: 0 -3px 22px;
+}
+.claw-agents-rules .claw-channels button {
+  flex: none;
+  white-space: nowrap;
 }
 .claw-agents-modes {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
+.claw-agents-rules .claw-channels button,
 .claw-agents-modes button {
-  min-height: 34px;
-  padding: 6px 13px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid var(--claw-line, #ffffff14);
+  border-radius: 999px;
   background: transparent;
-  color: var(--muted);
+  color: var(--claw-muted, #a1a1a1);
   font-size: 13px;
 }
+.claw-agents-rules .claw-channels button[aria-pressed="true"],
 .claw-agents-modes button[aria-pressed="true"] {
   border-color: transparent;
-  background: var(--text-strong);
-  color: var(--panel);
+  background: var(--claw-white, #f3f3f3);
+  color: var(--claw-white-ink, #0d0d0d);
 }
 .claw-agents-modes button.confirm,
 .claw-agents-remove.confirm {
-  border-color: var(--danger, #e5a18b);
-  color: var(--danger, #e5a18b);
+  border-color: var(--claw-danger, #f28b82);
+  color: var(--claw-danger, #f28b82);
 }
 .claw-agents-modes button:disabled:not([aria-pressed="true"]) {
   opacity: 0.6;
 }
 .claw-agents-allow {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--panel);
+  border: 1px solid var(--claw-line, #ffffff14);
+  border-radius: 24px;
+  background: var(--claw-group, #ffffff0b);
 }
 .claw-agents-allow li {
-  padding: 4px 6px 4px 12px;
+  padding: 6px 8px 6px 16px;
 }
 .claw-agents-allow li + li {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--claw-line, #ffffff14);
 }
 .claw-agents-allow code {
-  font-size: 12px;
+  font-size: 13px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .claw-agents-none {
-  color: var(--muted) !important;
+  color: var(--claw-muted, #a1a1a1) !important;
 }
 .claw-agents-remove {
   display: grid;
   flex: none;
   place-items: center;
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 20px;
+  border-radius: 999px;
   background: none;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--claw-muted, #a1a1a1);
+  font-size: 13px;
 }
 .claw-agents-add {
   display: flex;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 12px;
 }
 .claw-agents-add input {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 40px;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--panel);
-  color: var(--text-strong);
-  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 46px;
+  padding: 14px 16px;
+  border: 1px solid var(--claw-line, #ffffff14);
+  border-radius: 999px;
+  background: var(--claw-group, #ffffff0b);
+  color: var(--claw-ink, #ececec);
+  font:
+    16px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .claw-agents-add button {
   display: grid;
   flex: none;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   border: 0;
   border-radius: 50%;
-  background: var(--text-strong);
-  color: var(--panel);
+  background: var(--claw-white, #f3f3f3);
+  color: var(--claw-white-ink, #0d0d0d);
 }
 .claw-agents-add button:disabled {
   opacity: 0.4;
+}
+
+.claw-agents button {
+  cursor: pointer;
+}
+.claw-agents button:disabled {
+  cursor: default;
+}
+.claw-agents-add input::placeholder {
+  color: var(--claw-muted, #a1a1a1);
+}
+.claw-agents-add input:focus-visible {
+  outline: 2px solid var(--claw-blue, #5ea9ff);
+  outline-offset: 2px;
+}
+@media (max-width: 420px) {
+  .claw-agents-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .claw-agents-copy {
+    flex-basis: calc(100% - 74px);
+  }
+  .claw-agents-chevron {
+    order: 1;
+  }
+  .claw-agents-pills {
+    order: 2;
+    max-width: none;
+    margin-left: 46px;
+    justify-content: flex-start;
+  }
+  .claw-agents-pills:empty {
+    display: none;
+  }
+  .claw-agents-body {
+    padding-left: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .claw-agents-chevron {
+    transition: none;
+  }
 }

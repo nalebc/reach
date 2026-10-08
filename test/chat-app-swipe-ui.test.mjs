@@ -347,14 +347,10 @@ test("app rails, fields, menus, and new-chat sheets keep their gestures", async 
   assert.ok($('[role="dialog"]'));
 });
 
-test("OpenClaw channel filters scroll separately; provider swipes return after closing a conversation", async () => {
+test("an OpenClaw conversation keeps its swipes; provider swipes return after closing it", async () => {
   await mount("openclaw");
-  await dom.waitFor(() => $(".claw-channels"));
-  const filter = $(".claw-channels button");
-  assert.equal(swipe(filter).move.defaultPrevented, false);
-  await settle();
-  assert.equal(selected(), "openclaw");
-  $(".claw-library .chat-card").click();
+  await dom.waitFor(() => $(".claw-library .claw-chat"));
+  $(".claw-library .claw-chat").click();
   await dom.waitFor(() => $(".claw-conversation"));
   swipe($(".claw-conversation"), 130, 0, 100);
   await settle();

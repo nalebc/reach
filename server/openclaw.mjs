@@ -13,10 +13,11 @@ import * as schedulesFeature from "./openclaw-schedules.mjs";
 import * as watchFeature from "./openclaw-watch.mjs";
 import * as agentsFeature from "./openclaw-agents.mjs";
 import * as skillsFeature from "./openclaw-skills.mjs";
+import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 
 // Features in files of their own, each adding its routes.
-export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature];
+export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature, wizardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Gateway errors can embed downstream provider credentials, not just the

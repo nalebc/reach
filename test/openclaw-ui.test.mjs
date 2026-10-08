@@ -308,9 +308,12 @@ test("auto discovery is app-separated, searchable, and reads no messages until s
   await mount();
   assert.equal(dom.document.body.textContent.includes("Only Codex"), false);
   assert.equal(reads.length, 0);
-  await click("Discord");
+  // A messaging app's name finds its chats (no filter chips: ChatGPT has none).
+  await typeInto(dom.document.querySelector("input[type=search]"), "Discord");
+  await settle();
   assert.equal(dom.document.body.textContent.includes("Weekend plans"), false);
-  await click("All channels");
+  assert.ok(dom.document.body.textContent.includes("Launch notes"));
+  await click("Clear search");
   await typeInto(dom.document.querySelector("input[type=search]"), "Weekend");
   await settle();
   assert.equal(dom.document.body.textContent.includes("Launch notes"), false);
@@ -324,18 +327,17 @@ test("failed send retains draft and reuses id; nothing offers to post to WhatsAp
   // Oct 5, a "reply via WhatsApp" reached a WhatsApp group of friends.
   await dom.waitFor(() => dom.document.body.textContent.includes("Posted earlier."));
   assert.equal(dom.document.querySelectorAll("select").length, 0);
-  assert.match(dom.document.body.textContent, /OpenClaw · sent to WhatsApp/);
+  assert.match(dom.document.body.textContent, /Sent to WhatsApp/);
   // A WhatsApp group's chat: shown, never written to from Reach (a message
   // there runs the agent inside that group's context).
   assert.equal(dom.document.querySelector("textarea"), null);
   assert.equal(button("Send to OpenClaw"), undefined);
-  assert.match(dom.document.querySelector(".claw-readonly").textContent, /belongs to Weekend plans\. Reach shows it but doesn’t write in it, so nothing reaches WhatsApp from here\./);
+  assert.match(dom.document.querySelector(".claw-readonly").textContent, /Read only\. Reach doesn’t write in this WhatsApp chat\./);
   await view.unmount();
   await mount();
   // A chat Reach made: written to, replies stay in Reach.
   await click("Login page");
   await dom.waitFor(() => dom.document.querySelector("textarea"));
-  assert.match(dom.document.body.textContent, /No reply is forwarded to another app/);
   await typeInto(dom.document.querySelector("textarea"), "Please continue");
   fail = true;
   await click("Send to OpenClaw");
@@ -608,11 +610,14 @@ test("new chats expose configured agents and carry model and thinking choices wi
 
 test("schedules show delivery and run timing, pause and resume; channels show connection errors", async () => {
   await mount();
-  await click("Schedules");
+  await click("Scheduled");
+  await dom.waitFor(() => button("Morning briefing"));
+  // A task opens in a sheet: its facts, then its actions.
+  await click("Morning briefing");
   await dom.waitFor(() => button("Pause Morning briefing"));
   assert.match(
-    dom.document.body.textContent,
-    /Next run.*Last run.*Delivery.*WhatsApp/,
+    dom.document.querySelector('[role="dialog"]').textContent,
+    /Repeats.*Daily at.*Next run.*Last run.*Sends to.*WhatsApp/,
   );
   await click("Pause Morning briefing");
   await dom.waitFor(() => button("Resume Morning briefing"));
@@ -620,16 +625,22 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await click("Resume Morning briefing");
   await dom.waitFor(() => button("Pause Morning briefing"));
   assert.deepEqual(scheduleChanges.at(-1), { id: "daily", enabled: true });
-  await click("Channels");
+  await click("Close morning briefing");
+  await click("Back to OpenClaw");
+  await click("Customize");
   await dom.waitFor(() =>
     dom.document.body.textContent.includes("Personal account"),
   );
   assert.match(
-    dom.document.body.textContent,
-    /Connected.*Disconnected.*Reconnect in OpenClaw/,
+    dom.document.querySelector('[aria-label="Messaging apps"]').textContent,
+    /WhatsApp.*Personal account.*Connected.*Discord.*Work server.*Disconnected/,
   );
+  await click("Discord");
+  assert.match(dom.document.querySelector('[role="dialog"]').textContent, /Reconnect in OpenClaw/);
+  await click("Close discord");
   assert.equal(sent.length, 0);
   assert.equal(reads.length, 0);
+  await click("Back to OpenClaw");
   await click("Choose an app, OpenClaw selected");
   dom.document.querySelector("[role=menuitemradio][aria-label=Codex]").click();
   await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
@@ -638,10 +649,12 @@ test("schedules show delivery and run timing, pause and resume; channels show co
 test("missing things are asked for: a schedule is added, run and deleted; a channel and a model open OpenClaw's setup; WhatsApp links by QR", async () => {
   setupCalls = [];
   await mount();
-  await click("Schedules");
-  await dom.waitFor(() => button("New schedule"));
-  assert.ok(!button("Add a schedule"), "one way to add, not two");
-  await click("New schedule");
+  await click("Scheduled");
+  await dom.waitFor(() => button("New task"));
+  // Suggestions start from their words; one already scheduled isn't offered.
+  assert.ok(button("Inbox check") && button("Weekly plan"));
+  assert.equal(dom.document.querySelectorAll(".claw-task.suggested").length, 2);
+  await click("New task");
   await typeInto(dom.document.querySelector('[aria-label="Schedule name"]'), "Evening recap");
   await typeInto(dom.document.querySelector('[aria-label="What OpenClaw does each time"]'), "Recap my day");
   await click("Add schedule");
@@ -650,6 +663,8 @@ test("missing things are asked for: a schedule is added, run and deleted; a chan
   assert.equal(made.expr, "0 9 * * *");
   assert.equal(made.name, "Evening recap");
   assert.equal(made.announce, false);
+  await dom.waitFor(() => !dom.document.querySelector('[role="dialog"]'));
+  await click("Morning briefing");
   await dom.waitFor(() => button("Run Morning briefing now"));
   await click("Run Morning briefing now");
   await dom.waitFor(() => setupCalls.some(([k]) => k === "run"));
@@ -660,12 +675,16 @@ test("missing things are asked for: a schedule is added, run and deleted; a chan
   const opened = [];
   dom.window.addEventListener("reach:open-terminal", (e) => opened.push(e.detail));
   whatsappStatus = "unconfigured";
-  await click("Channels");
+  await dom.waitFor(() => !dom.document.querySelector('[role="dialog"]'));
+  await click("Back to OpenClaw");
+  await click("Customize");
   await dom.waitFor(() => button("Connect WhatsApp"));
+  await click("Add a messaging app");
   await click("Other apps");
   await dom.waitFor(() => opened.length > 0);
   assert.deepEqual(setupCalls.find(([k]) => k === "setup")[1], { section: "channels" });
   assert.equal(opened[0], "term-1");
+  await click("Close add a messaging app");
   await click("Connect WhatsApp");
   await dom.waitFor(() => dom.document.querySelector('img[alt="WhatsApp link QR code"]') || dom.document.body.textContent.includes("is linked"));
   assert.deepEqual(setupCalls.find(([k]) => k === "link")[1], {});
@@ -763,7 +782,7 @@ test("closing a pending OpenClaw start and switching apps cannot be undone by it
 test("a messaging app is added in Reach by its bot token, not in a terminal", async () => {
   setupCalls = [];
   await mount();
-  await click("Channels");
+  await click("Customize");
   await dom.waitFor(() => button("Add a messaging app"));
   await click("Add a messaging app");
   await dom.waitFor(() => dom.document.querySelector('[aria-label="Telegram bot token"]'));
