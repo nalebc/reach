@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
-  Cable,
   ArrowUpRight,
   RefreshCw,
   FolderOpen,
@@ -188,7 +187,6 @@ export default function ChatList({
   setup,
   canStart = true,
   onRefresh,
-  onConnectors,
   health = [],
   onSectionMoved,
   onArchived,
@@ -212,8 +210,6 @@ export default function ChatList({
   setup?: ReactNode;
   canStart?: boolean;
   onRefresh?: () => void;
-  // Services the agents can use (Connectors.tsx).
-  onConnectors?: () => void;
   // The apps found on the Mac: a folder's chats can move to another one.
   health?: AgentHealth[];
   onSectionMoved?: (to: string) => void;
@@ -408,7 +404,6 @@ export default function ChatList({
           {actionsOpen && <div className="chat-mobile-menu chat-mobile-actions" role="menu" aria-label="Chat actions">
             {!upcoming && canStart && <button role="menuitem" onClick={() => { setActionsOpen(false); onNew(); }}><Plus size={18} /> New chat</button>}
             {onRefresh && <button role="menuitem" onClick={() => { setActionsOpen(false); onRefresh(); }}><RefreshCw size={18} /> Refresh chats</button>}
-            {onConnectors && <button role="menuitem" onClick={() => { setActionsOpen(false); onConnectors(); }}><Cable size={18} /> Connectors</button>}
           </div>}
           <div className="chat-list-heading">
             <h1>Chats</h1>
@@ -416,7 +411,6 @@ export default function ChatList({
           </div>
           <div className="chat-heading-actions">
           {onRefresh && <button className="chat-refresh" aria-label="Refresh apps and chats" onClick={onRefresh}><RefreshCw size={16} /></button>}
-          {onConnectors && <button className="chat-refresh" aria-label="Connectors" title="Connectors" onClick={onConnectors}><Cable size={16} /></button>}
           {!upcoming && canStart && (
             <button
               className="chat-create"
