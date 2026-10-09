@@ -78,9 +78,12 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   assert.match(text, /^Open this temporary Reach link in your browser/);
   assert.match(text, /Preset: Full control\./);
   assert.match(text, /Full control is not sandboxed/);
-  assert.match(text, /password fields and password apps/);
+  assert.match(text, /Stay out of password apps/);
   assert.match(text, /Reach and Tailscale/);
   assert.match(text, /One agent acts on the Mac at a time/);
+  assert.match(text, /numbered label/);
+  assert.match(text, /fill from your own vault with Sign in/);
+  assert.doesNotMatch(text, /Saved tools|hands come first/, "nothing outdated");
   assert.match(text, /Never invite anyone, delegate access, or share this link/);
   assert.ok(text.split("\n\n")[0].split(/\s+/).length <= 190, "short enough to read");
   assert.equal(text.split("\n").at(-1), `https://mac.tail.ts.net/agent-browser#invite=${secret}`);

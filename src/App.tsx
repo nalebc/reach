@@ -246,6 +246,7 @@ function ReachWorkspace() {
   const [chatTarget, setChatTarget] = useState<{
     agent: AgentName | "openclaw";
     id: string;
+    compose?: boolean;
   } | null>(null);
   const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
@@ -865,6 +866,15 @@ function ReachWorkspace() {
                       pageAccessible("sessions", features)
                         ? (s) => {
                             setChatTarget({ agent: s.agent, id: s.id });
+                            navigate("sessions");
+                          }
+                        : undefined
+                    }
+                    agentHealth={agentFeed.health}
+                    compose={
+                      pageAccessible("sessions", features)
+                        ? (agent) => {
+                            setChatTarget({ agent, id: "", compose: true });
                             navigate("sessions");
                           }
                         : undefined

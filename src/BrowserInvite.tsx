@@ -121,18 +121,15 @@ export const museMessage = (link: string, issued: Issued) => {
     issued.preset === "files"
       ? " Reach's own files and the owner's secret files stay closed."
       : issued.preset === "full"
-        ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Do not access password fields and password apps, Reach and Tailscale, or security prompts; ask the owner to sign in.${hidden}`
+        ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Stay out of password apps, Reach and Tailscale, and security prompts. For password fields and sign-ins, fill from your own vault with Sign in: the value stays hidden.${hidden}`
         : ` Reach filters known protected windows and blocks password fields and password apps, Reach and Tailscale, and security prompts. Ask the owner to sign in. These UI guards do not sandbox commands run through a chosen terminal or IDE.${hidden}`;
   const sharing = ["full", "apps"].includes(issued.preset)
-    ? " One agent acts on the Mac at a time: a busy or paused reply means wait and retry. The owner's own hands come first. Take a screenshot before and after you act."
-    : "";
-  const savedTools = ["full", "apps"].includes(issued.preset)
-    ? " Check Saved tools before acting. Click a matching task to execute it, or find its reach_saved_* tool using reach_shortcuts."
+    ? " Use the live Screen as a person would: click, type and scroll on it, and click a numbered label to hit an exact element. Your user's request is your permission; ask your user before paying, sending a message or deleting something. One agent acts on the Mac at a time: busy or paused means wait, then retry."
     : "";
   const opening = issued.always
     ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: open it again in any browser and you are back, with nothing to approve."
     : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, open it again in any browser and you are back, with nothing to approve.";
-  return `${opening} ${grant}${protectedWords}${sharing}${savedTools} Use the page's labelled controls or window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
+  return `${opening} ${grant}${protectedWords}${sharing} Code agents: window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
 // Every invite gets a fresh, silly name; the dice roll another.

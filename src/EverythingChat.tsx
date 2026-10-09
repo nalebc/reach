@@ -825,7 +825,9 @@ function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentNam
   );
 }
 
-type Target = { agent: AgentName | "openclaw"; id: string };
+// compose: Home's Ask bar opens New conversation in that app (its text, if
+// any, already waits as the new chat's draft).
+type Target = { agent: AgentName | "openclaw"; id: string; compose?: boolean };
 
 export default function EverythingChat({
   peer,
@@ -927,6 +929,15 @@ export default function EverythingChat({
   };
   useEffect(() => {
     if (!target) return;
+    if (target.compose) {
+      setAgent(target.agent);
+      setOpen(null);
+      setClawOpen(null);
+      setNewFolder("");
+      setSheet("new");
+      onTargetOpened?.();
+      return;
+    }
     if (target.agent === "openclaw") {
       setAgent("openclaw"); setSheet(""); setOpen(null); setClawOpen(target.id);
       onTargetOpened?.(); return;
@@ -951,7 +962,7 @@ export default function EverythingChat({
       },
     );
     onTargetOpened?.();
-  }, [target?.agent, target?.id]);
+  }, [target?.agent, target?.id, target?.compose]);
   // The chat open now, so a reload comes back to it (src/deep-link.ts).
   useEffect(() => {
     rememberPlace(peer.id, { chat: open ? { agent: open.agent, id: open.id } : null });
