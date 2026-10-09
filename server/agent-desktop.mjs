@@ -480,7 +480,7 @@ export function createAgentDesktop(config, {
       extend(latest);
       observe(latest);
       note(latest, "open", result);
-      return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
+      return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** Keep the Mac's input lease for a whole declarative browser operation. */
     async withBrowser(client, appPath, authorize, work) {

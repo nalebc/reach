@@ -102,7 +102,7 @@ final class CGEvent {
   func setIntegerValueField(_ field: CGEventField, value: Int64) {}
   func keyboardSetUnicodeString(stringLength: Int, unicodeString: [UInt16]) {}
 }
-func post(_ event: CGEvent?) { if event != nil { events += 1 } }
+func post(_ event: CGEvent?, pause: UInt32 = 0) { if event != nil { events += 1 } }
 `;
     const harness = String.raw`
 var failures = [String]()

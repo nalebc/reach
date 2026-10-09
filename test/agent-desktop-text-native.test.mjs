@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-test("native keyboard events preserve Unicode at every chunk boundary", {
+test("native keyboard events carry one whole character each, preserving Unicode", {
   skip: process.platform !== "darwin" || process.env.REACH_TEST_APP_NATIVE !== "1",
 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agent-keyboard-text-"));
@@ -26,6 +26,8 @@ for padding in 0...33 {
   }
 }
 check(keyboardChunks("").isEmpty, "empty text emits no events")
+check(keyboardChunks("7*3") == [[55], [42], [51]], "one character per event")
+check(keyboardChunks("e\u{301}x").count == 2, "a combined character stays one event")
 print("Unicode keyboard chunks passed")
 `;
     const main = path.join(directory, "main.swift"), binary = path.join(directory, "keyboard-text");

@@ -164,14 +164,22 @@ func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
 // BEGIN PURE DESKTOP TEXT
 // Each keyboard event must contain complete UTF-16 surrogate pairs. Splitting
 // an emoji between events can insert two replacement characters in the app.
+// One character (grapheme) per event: some apps (Calculator, SwiftUI
+// fields) read only the first character of a key event, so "7*3" in one
+// event typed "7". A character longer than 16 units splits by scalar.
 func keyboardChunks(_ text: String) -> [[UInt16]] {
-  var result: [[UInt16]] = [], chunk: [UInt16] = []
-  for scalar in text.unicodeScalars {
-    let units = Array(String(scalar).utf16)
-    if chunk.count + units.count > 16 { result.append(chunk); chunk = [] }
-    chunk.append(contentsOf: units)
+  var result: [[UInt16]] = []
+  for character in text {
+    let units = Array(String(character).utf16)
+    if units.count <= 16 { result.append(units); continue }
+    var chunk: [UInt16] = []
+    for scalar in String(character).unicodeScalars {
+      let part = Array(String(scalar).utf16)
+      if chunk.count + part.count > 16 { result.append(chunk); chunk = [] }
+      chunk.append(contentsOf: part)
+    }
+    if !chunk.isEmpty { result.append(chunk) }
   }
-  if !chunk.isEmpty { result.append(chunk) }
   return result
 }
 // END PURE DESKTOP TEXT
@@ -378,7 +386,7 @@ let keyCodes: [String: CGKeyCode] = [
 ]
 let source = CGEventSource(stateID: .privateState)
 var lastPosted = Date.distantPast
-func post(_ event: CGEvent?) { event?.post(tap: .cghidEventTap); lastPosted = Date(); usleep(8000) }
+func post(_ event: CGEvent?, pause: useconds_t = 8000) { event?.post(tap: .cghidEventTap); lastPosted = Date(); if pause > 0 { usleep(pause) } }
 func flags(_ mods: [String]) -> CGEventFlags {
   var value: CGEventFlags = []
   for mod in mods {
@@ -482,10 +490,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
         post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false))
       }
       for chunk in keyboardChunks(line.element) {
+        // A character at a time, quickly: down and up, then a short breath.
         for down in [true, false] {
           let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
           event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-          post(event)
+          post(event, pause: down ? 0 : 3000)
         }
       }
     }
@@ -596,11 +605,25 @@ func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
   configuration.activates = true
   let done = DispatchSemaphore(value: 0)
   var failure: Error?
-  NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: configuration) { _, error in failure = error; done.signal() }
+  var opened: NSRunningApplication?
+  NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: configuration) { app, error in opened = app; failure = error; done.signal() }
   if done.wait(timeout: .now() + 8) == .timedOut { try refuse("The app is taking too long to open.", "retry") }
   if failure != nil { try refuse("The app couldn't be opened.", "unavailable") }
   lastPosted = Date()
-  return ["ok": true, "app": name, "bundle": bundleId]
+  // "Opened" means in front: the agent's next click or key goes there.
+  // macOS may hold a background helper's activation back, so ask once more
+  // through Accessibility, and wait for it to land before answering.
+  let front = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleId }
+  let deadline = Date().addingTimeInterval(1.5)
+  var nudged = false
+  while !front() && Date() < deadline {
+    if !nudged, Date() > deadline.addingTimeInterval(-1.2), let app = opened ?? NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+      AXUIElementSetAttributeValue(AXUIElementCreateApplication(app.processIdentifier), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+      nudged = true
+    }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+  }
+  return ["ok": true, "app": name, "bundle": bundleId, "front": front()]
 }
 // What is in front right now: for the owner's "using X" line and for the
 // server's check of typed text (a terminal takes commands).
