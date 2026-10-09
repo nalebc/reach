@@ -666,11 +666,16 @@ func elements(_ rules: Rules) throws -> [String: Any] {
   AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
   let display = CGDisplayBounds(CGMainDisplayID())
   var found: [(AXUIElement, String, String, Bool, CGRect)] = []
+  // The screen as text too: what a person reads there, in the same walk.
+  var texts: [(String, CGRect)] = [], headings: [CGRect] = [], values: [Int: String] = [:]
+  var textChars = 0
   var roots: [AXUIElement] = []
+  var windowTitle = ""
   if let window = elementAttr(app, kAXFocusedWindowAttribute) ?? elementAttr(app, kAXMainWindowAttribute) {
     var s = Seen(bundle: bundle, name: name, path: path, pid: front.processIdentifier)
     s.title = string(window, kAXTitleAttribute)
     try check(s, rules)
+    windowTitle = String(s.title.prefix(200))
     roots.append(window)
   }
   if let menu = elementAttr(app, kAXMenuBarAttribute) { roots.append(menu) }
@@ -684,10 +689,29 @@ func elements(_ rules: Rules) throws -> [String: Any] {
     if role == "AXMenu" { continue } // closed menus' items are not on screen
     let subrole = string(node, kAXSubroleAttribute)
     let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    if role == "AXHeading", let rect = frameOf(node) { headings.append(rect) }
+    if role == "AXStaticText", texts.count < 500, textChars < 20000 {
+      let words = (string(node, kAXValueAttribute).isEmpty ? string(node, kAXTitleAttribute) : string(node, kAXValueAttribute))
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+      if !words.isEmpty, let rect = frameOf(node), rect.width >= 1, rect.height >= 1 {
+        let visible = rect.intersection(display)
+        if !visible.isNull, visible.height >= 2 {
+          let line = String(words.prefix(300))
+          texts.append((line, visible))
+          textChars += line.count
+        }
+      }
+      continue
+    }
     if labelRoles.contains(role) || secure {
       if let rect = frameOf(node), rect.width >= 4, rect.height >= 4 {
         let visible = rect.intersection(display)
         if !visible.isNull, visible.width >= 2, visible.height >= 2, attr(node, kAXEnabledAttribute) as? Bool != false {
+          // What a field holds is on screen already; a password field's never.
+          if !secure, ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
+            let value = string(node, kAXValueAttribute).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if !value.isEmpty { values[found.count] = String(value.prefix(120)) }
+          }
           found.append((node, role, labelName(node, role, secure: secure), secure, visible))
         }
       }
@@ -697,20 +721,34 @@ func elements(_ rules: Rules) throws -> [String: Any] {
     if let children = attr(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed()) }
   }
   // Reading order: rows from the top, left to right inside a row.
-  found.sort { a, b in
-    let ay = (a.4.midY / 12).rounded(), by = (b.4.midY / 12).rounded()
-    return ay != by ? ay < by : a.4.minX < b.4.minX
+  let order = { (a: CGRect, b: CGRect) -> Bool in
+    let ay = (a.midY / 12).rounded(), by = (b.midY / 12).rounded()
+    return ay != by ? ay < by : a.minX < b.minX
   }
+  let indexed = found.enumerated().map { ($0.offset, $0.element) }.sorted { order($0.1.4, $1.1.4) }
+  found = indexed.map { $0.1 }
+  let foundValues = Dictionary(uniqueKeysWithValues: indexed.enumerated().compactMap { position, entry in values[entry.0].map { (position, $0) } })
+  texts.sort { order($0.1, $1.1) }
   let kept = Array(found.prefix(250))
   let id = UUID().uuidString.prefix(8).lowercased()
   snapshots.append((id: String(id), elements: kept.map { $0.0 }))
   if snapshots.count > 4 { snapshots.removeFirst(snapshots.count - 4) }
-  let items: [[String: Any]] = kept.enumerated().map { index, item in
-    ["n": index + 1, "role": String(item.1.dropFirst(2)), "name": item.2, "secure": item.3,
-     "x": Double((item.4.minX - display.minX) / display.width), "y": Double((item.4.minY - display.minY) / display.height),
-     "w": Double(item.4.width / display.width), "h": Double(item.4.height / display.height)]
+  let place = { (rect: CGRect) -> [String: Any] in
+    ["x": Double((rect.minX - display.minX) / display.width), "y": Double((rect.minY - display.minY) / display.height),
+     "w": Double(rect.width / display.width), "h": Double(rect.height / display.height)]
   }
-  return ["ok": true, "snapshot": String(id), "app": name, "items": items, "truncated": found.count > kept.count || visited >= 6000]
+  let items: [[String: Any]] = kept.enumerated().map { index, item in
+    var entry: [String: Any] = ["n": index + 1, "role": String(item.1.dropFirst(2)), "name": item.2, "secure": item.3]
+    if let value = foundValues[index] { entry["value"] = value }
+    return entry.merging(place(item.4)) { first, _ in first }
+  }
+  let lines: [[String: Any]] = texts.map { text, rect in
+    var entry: [String: Any] = ["text": text]
+    if headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
+    return entry.merging(place(rect)) { first, _ in first }
+  }
+  return ["ok": true, "snapshot": String(id), "app": name, "title": windowTitle, "items": items, "texts": lines,
+          "truncated": found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000]
 }
 
 func front(_ rules: Rules) -> [String: Any] {

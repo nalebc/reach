@@ -430,8 +430,18 @@ export function createAgentDesktop(config, {
       const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
         .filter((item) => Number.isInteger(item?.n))
         .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
+          // What a field holds is on screen already; never a password field's.
+          ...(typeof item.value === "string" && item.value && item.secure !== true ? { value: item.value.slice(0, 120) } : {}),
           x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
-      return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100), items, truncated: result.truncated === true };
+      // The window's visible text, in reading order: what a person reads there.
+      let budget = 20000;
+      const texts = (Array.isArray(result.texts) ? result.texts : []).slice(0, 500)
+        .filter((line) => typeof line?.text === "string" && line.text)
+        .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
+          x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
+        .filter((line) => (budget -= line.text.length) >= 0);
+      return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
+        title: String(result.title || "").slice(0, 200), items, texts, truncated: result.truncated === true || budget < 0 };
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {
