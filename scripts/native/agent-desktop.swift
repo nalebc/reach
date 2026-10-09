@@ -417,6 +417,19 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     let p = try point("x", "y")
     _ = try checkPoint(p, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
+  case "element":
+    // A numbered label: its live center, then an ordinary checked click.
+    guard let snap = action["snapshot"] as? String, let n = action["n"] as? Int,
+      let list = snapshots.last(where: { $0.id == snap })?.elements, n >= 1, n <= list.count else {
+      try refuse("That label is from an older look. Look at the labels again.", "retry")
+    }
+    guard let rect = frameOf(list[n - 1]), rect.width > 0, rect.height > 0 else { try refuse("That element is gone. Look again.", "retry") }
+    let visible = rect.intersection(display)
+    guard !visible.isNull, visible.width >= 1, visible.height >= 1 else { try refuse("That element is out of view. Scroll to it first.", "retry") }
+    var click: [String: Any] = ["type": "click", "x": Double((visible.midX - display.minX) / display.width), "y": Double((visible.midY - display.minY) / display.height)]
+    if let button = action["button"] { click["button"] = button }
+    if let count = action["count"] { click["count"] = count }
+    return try perform(click, display, rules, expected)
   case "click":
     let p = try point("x", "y")
     let target = try checkPoint(p, rules, expected)
@@ -591,6 +604,92 @@ func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
 }
 // What is in front right now: for the owner's "using X" line and for the
 // server's check of typed text (a terminal takes commands).
+
+// Numbered elements: what can be clicked in the front window, read from the
+// accessibility tree. The agent picks one by number; the click lands at its
+// live center through the same checks as any click (perform "element").
+var snapshots: [(id: String, elements: [AXUIElement])] = []
+let labelRoles: Set<String> = ["AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
+  "AXComboBox", "AXTextField", "AXTextArea", "AXSecureTextField", "AXSearchField", "AXMenuItem", "AXMenuBarItem",
+  "AXTab", "AXDisclosureTriangle", "AXIncrementor", "AXSlider", "AXSwitch", "AXToggle", "AXDockItem"]
+func frameOf(_ element: AXUIElement) -> CGRect? {
+  var p = CGPoint.zero, size = CGSize.zero
+  guard let position = attr(element, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
+    let extent = attr(element, kAXSizeAttribute), CFGetTypeID(extent) == AXValueGetTypeID(),
+    AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(extent as! AXValue, .cgSize, &size) else { return nil }
+  return CGRect(origin: p, size: size)
+}
+func labelName(_ element: AXUIElement, _ role: String, secure: Bool) -> String {
+  var parts = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)]
+  if role == "AXTextField" || role == "AXTextArea" || role == "AXSearchField" || role == "AXComboBox" || secure {
+    parts.append(string(element, kAXPlaceholderValueAttribute))
+  } else if ["AXButton", "AXLink", "AXPopUpButton", "AXMenuButton", "AXTab", "AXRadioButton", "AXCheckBox"].contains(role) {
+    parts.append(string(element, kAXValueAttribute))
+  }
+  let known = ["AXCloseButton": "Close window", "AXMinimizeButton": "Minimize", "AXZoomButton": "Zoom window",
+    "AXFullScreenButton": "Full screen", "AXToolbarButton": "Toolbar"]
+  if let named = known[string(element, kAXSubroleAttribute)] { parts.insert(named, at: 0) }
+  parts.append(string(element, kAXHelpAttribute))
+  let name = parts.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.first { !$0.isEmpty } ?? ""
+  return String(name.prefix(60))
+}
+func elements(_ rules: Rules) throws -> [String: Any] {
+  if rules.mode == "view" { try refuse("This agent can only look.") }
+  guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is in front.", "retry") }
+  let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
+  if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
+  let app = AXUIElementCreateApplication(front.processIdentifier)
+  // Chromium and Electron build their web trees only for assistive apps.
+  AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+  let display = CGDisplayBounds(CGMainDisplayID())
+  var found: [(AXUIElement, String, String, Bool, CGRect)] = []
+  var roots: [AXUIElement] = []
+  if let window = elementAttr(app, kAXFocusedWindowAttribute) ?? elementAttr(app, kAXMainWindowAttribute) {
+    var s = Seen(bundle: bundle, name: name, path: path, pid: front.processIdentifier)
+    s.title = string(window, kAXTitleAttribute)
+    try check(s, rules)
+    roots.append(window)
+  }
+  if let menu = elementAttr(app, kAXMenuBarAttribute) { roots.append(menu) }
+  var stack = roots.reversed() as [AXUIElement]
+  var visited = 0
+  let deadline = Date().addingTimeInterval(0.8)
+  while let node = stack.popLast(), visited < 6000, found.count < 400, Date() < deadline {
+    visited += 1
+    let role = string(node, kAXRoleAttribute)
+    if role == "AXWebArea", urlReason(string(node, "AXURL"), rules) != nil { continue }
+    if role == "AXMenu" { continue } // closed menus' items are not on screen
+    let subrole = string(node, kAXSubroleAttribute)
+    let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    if labelRoles.contains(role) || secure {
+      if let rect = frameOf(node), rect.width >= 4, rect.height >= 4 {
+        let visible = rect.intersection(display)
+        if !visible.isNull, visible.width >= 2, visible.height >= 2, attr(node, kAXEnabledAttribute) as? Bool != false {
+          found.append((node, role, labelName(node, role, secure: secure), secure, visible))
+        }
+      }
+      // A control's own parts (a link's text, a button's image) are the control.
+      if role != "AXMenuBarItem" { continue }
+    }
+    if let children = attr(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed()) }
+  }
+  // Reading order: rows from the top, left to right inside a row.
+  found.sort { a, b in
+    let ay = (a.4.midY / 12).rounded(), by = (b.4.midY / 12).rounded()
+    return ay != by ? ay < by : a.4.minX < b.4.minX
+  }
+  let kept = Array(found.prefix(250))
+  let id = UUID().uuidString.prefix(8).lowercased()
+  snapshots.append((id: String(id), elements: kept.map { $0.0 }))
+  if snapshots.count > 4 { snapshots.removeFirst(snapshots.count - 4) }
+  let items: [[String: Any]] = kept.enumerated().map { index, item in
+    ["n": index + 1, "role": String(item.1.dropFirst(2)), "name": item.2, "secure": item.3,
+     "x": Double((item.4.minX - display.minX) / display.width), "y": Double((item.4.minY - display.minY) / display.height),
+     "w": Double(item.4.width / display.width), "h": Double(item.4.height / display.height)]
+  }
+  return ["ok": true, "snapshot": String(id), "app": name, "items": items, "truncated": found.count > kept.count || visited >= 6000]
+}
+
 func front(_ rules: Rules) -> [String: Any] {
   guard let app = NSWorkspace.shared.frontmostApplication else { return ["ok": true, "app": "", "bundle": ""] }
   let bundle = app.bundleIdentifier ?? "", name = app.localizedName ?? "", path = app.bundleURL.map(canonical) ?? ""
@@ -672,6 +771,9 @@ func rules(from request: [String: Any]) -> Rules {
           out(try open(request["app"] as? String ?? "", rules))
         case "front":
           out(front(rules))
+        case "elements":
+          guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
+          out(try elements(rules))
         case "browser-check":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           let path = request["app"] as? String ?? ""

@@ -9,6 +9,7 @@ import {
   KeyRound,
   Keyboard,
   Command,
+  Hash,
   Maximize,
   Minimize,
   MoreHorizontal,
@@ -127,7 +128,10 @@ const chord = (event: React.KeyboardEvent, letter: boolean) => {
   ].filter(Boolean) as string[];
 };
 const pointerAction = (action: Action) =>
-  action.type === "click" || action.type === "drag";
+  action.type === "click" || action.type === "drag" || action.type === "element";
+type Element = { n: number; role: string; name: string; secure?: boolean; x: number; y: number; w: number; h: number };
+type Labels = { snapshot: string; items: Element[] };
+const LABELS_MS = 1500;
 
 export default function AgentScreen({
   peer,
@@ -161,6 +165,12 @@ export default function AgentScreen({
   // A page layer, not the browser's Fullscreen API, which agents' browsers
   // may refuse; Esc on the page itself goes to the Mac, so a button exits.
   const [full, setFull] = useState(false);
+  // Numbered labels over the picture, from the Mac's accessibility tree: a
+  // click on one presses that exact element, however small it looks here.
+  const [labelsOn, setLabelsOn] = useState(true);
+  const [labels, setLabels] = useState<Labels | null>(null);
+  const labelsBusy = useRef(false);
+  const labelsWake = useRef<(() => void) | null>(null);
   const [panel, setPanel] = useState<null | "shortcuts" | "more">(null);
   const userRef = useRef<HTMLInputElement | null>(null);
   const passRef = useRef<HTMLInputElement | null>(null);
@@ -337,6 +347,55 @@ export default function AgentScreen({
       ended(e);
     }
   }, [peer, ended]);
+  const showLabels = control && labelsOn && active;
+  useEffect(() => {
+    if (!showLabels) {
+      setLabels(null);
+      return;
+    }
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      clearTimeout(timer);
+      if (!alive) return;
+      if (!labelsBusy.current && !running.current && !document.hidden) {
+        labelsBusy.current = true;
+        try {
+          const value = await request<Labels>(peer, "/api/browser/desktop/elements");
+          if (alive && mounted.current)
+            setLabels((old) =>
+              old && JSON.stringify(old.items) === JSON.stringify(value.items) ? old : value,
+            );
+        } catch (e) {
+          if (alive && mounted.current) setLabels(null);
+          ended(e);
+        } finally {
+          labelsBusy.current = false;
+        }
+      }
+      if (alive) timer = setTimeout(() => void load(), LABELS_MS);
+    };
+    labelsWake.current = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void load(), 250);
+    };
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      labelsWake.current = null;
+    };
+  }, [showLabels, peer, ended]);
+  const pressLabel = (item: Element, snapshot: string) => {
+    held.current = null;
+    setLastClick({ x: item.x + item.w / 2, y: item.y + item.h / 2, at: Date.now() });
+    enqueue([
+      {
+        action: { type: "element", snapshot, n: item.n },
+        words: `clicked ${item.n}${item.name ? ` (${item.name})` : ""}`,
+      },
+    ]);
+  };
   const pictured = !!imageUrl;
   useEffect(() => {
     if (pictured && control) void lookFront();
@@ -427,6 +486,7 @@ export default function AgentScreen({
       running.current = false;
       if (mounted.current) setActionBusy(false);
       wake.current?.();
+      labelsWake.current?.();
     }
   };
   const enqueue = (group: Step[]) => {
@@ -951,6 +1011,28 @@ export default function AgentScreen({
             </div>
           )}
           {zoom && imageUrl && <canvas ref={canvasRef} aria-hidden="true" />}
+          {labels && !zoom && !zoomPick &&
+            labels.items.map((item) => (
+              <button
+                key={`${labels.snapshot}-${item.n}`}
+                type="button"
+                className={`ap-label${item.secure ? " is-secure" : ""}`}
+                style={{ left: `${item.x * 100}%`, top: `${item.y * 100}%` }}
+                aria-label={`${item.n}${item.name ? `: ${item.name}` : ""}`}
+                title={item.name || item.role}
+                disabled={actionBusy}
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerUp={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  pressLabel(item, labels.snapshot);
+                }}
+              >
+                {item.n}
+              </button>
+            ))}
           {marker && (
             <span
               className="ap-mark-ring"
@@ -999,6 +1081,17 @@ export default function AgentScreen({
           )}
         </p>
         <div className="screen-bar" role="toolbar" aria-label="Screen controls">
+          {control && (
+            <button
+              type="button"
+              aria-label="Labels"
+              title={labelsOn ? "Hide numbered labels" : "Show numbered labels"}
+              aria-pressed={labelsOn}
+              onClick={() => setLabelsOn((value) => !value)}
+            >
+              <Hash size={18} />
+            </button>
+          )}
           {control && (
             <button
               type="button"
@@ -1169,6 +1262,7 @@ export default function AgentScreen({
                   Your user's request is your permission: go ahead without asking at each step.
                 </li>
                 {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
+                <li>Numbered labels mark what you can click. Click a label to press that exact thing; it beats aiming at small targets.</li>
                 <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
                 <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
                 <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>

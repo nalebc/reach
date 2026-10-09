@@ -105,3 +105,9 @@
 .ap-screen.is-full { --ap-chrome: 8px; }
 .ap-keys-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
 .ap-options { display: grid; gap: 8px; margin-bottom: 12px; }
+
+/* Numbered labels: one per clickable thing, at its top-left corner. */
+.ap-label { position: absolute; z-index: 2; transform: translate(-2px, -2px); min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid rgb(0 0 0 / 0.55); border-radius: 6px; background: #ffd21e; color: #111; font: 700 11px/16px -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; cursor: pointer; box-shadow: 0 1px 3px rgb(0 0 0 / 0.45); }
+.ap-label.is-secure { background: #b9efd4; }
+.ap-label:hover, .ap-label:focus-visible { background: #fff; outline: 2px solid #ffd21e; z-index: 3; }
+.ap-label:disabled { opacity: 0.6; }

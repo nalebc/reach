@@ -11,6 +11,7 @@ const kinds = (value) => ({ type: "string", enum: Array.isArray(value) ? value :
 const screenActions = [
   object({ type: kinds("click"), x: point, y: point, button: kinds(["left", "right"]), count: { ...integer(1, 2), enum: [1, 2] } }, ["type", "x", "y"]),
   object({ type: kinds("text"), text: string(2000) }, ["type", "text"]),
+  object({ type: kinds("element"), snapshot: { ...string(40), description: "The snapshot from reach_elements." }, n: { ...integer(1, 500), description: "The element's number from reach_elements: clicked at its live center, exactly." }, button: kinds(["left", "right"]), count: integer(1, 3) }, ["type", "snapshot", "n"]),
   object({ type: kinds("key"), key: kinds(["enter", "backspace", "tab", "escape", "left", "right", "up", "down"]) }, ["type", "key"]),
   object({ type: kinds("scroll"), direction: kinds(["up", "down"]), amount: integer(1, 5) }, ["type", "direction"]),
 ];
@@ -59,6 +60,7 @@ function presetTools(access) {
     definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
   );
   if (access.control) tools.push(
+    definition("reach_elements", "Numbered elements", "What can be clicked in the front window, from the Mac's accessibility tree: {snapshot, app, items: [{n, role, name, x, y, w, h}]} (fractions of the screen). Click one exactly with reach_act {type: \"element\", snapshot, n}; prefer it over x/y for small targets. Look again after the screen changes.", object(), {}),
     definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
   );
   if (access.open) tools.push(
@@ -263,6 +265,7 @@ export function browserToolRequest(name, args, access) {
     case "reach_run_shortcut": return { route: "/api/browser/shortcuts/run", method: "POST", body: input, response: "json" };
     case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 2560) })}`, "image");
     case "reach_front": return get("/api/browser/desktop/front");
+    case "reach_elements": return get("/api/browser/desktop/elements");
     case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };
     case "reach_desktop_apps": return get("/api/browser/desktop/apps");
     case "reach_open_app": return { route: "/api/browser/desktop/open", method: "POST", body: { app: input.app }, response: "json" };

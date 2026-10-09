@@ -75,7 +75,16 @@ export function normalizeAction(value) {
       if (!KEYS.has(key)) throw fail(400, "Unknown key.");
       return { type: "key", key, modifiers: modifiers() };
     }
-    default: throw fail(400, "Choose one action: click, move, drag, scroll, type or key.");
+    // A numbered label from elements(): clicked at its live center natively.
+    case "element": {
+      only("type", "snapshot", "n", "button", "count");
+      if (typeof value.snapshot !== "string" || !/^[a-z0-9-]{1,40}$/i.test(value.snapshot)) throw fail(400, "Look at the labels again.");
+      if (!Number.isInteger(value.n) || value.n < 1 || value.n > 500) throw fail(400, "Choose a label number.");
+      if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
+      if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
+      return { type: "element", snapshot: value.snapshot, n: value.n, ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}) };
+    }
+    default: throw fail(400, "Choose one action: click, move, drag, scroll, type, key or element.");
   }
 }
 
@@ -409,6 +418,20 @@ export function createAgentDesktop(config, {
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),
         holder: holder && holder.clientId !== latest.id ? holder.name : "" };
+    },
+    /** What can be clicked in the front window, numbered, from the accessibility tree. */
+    async elements(client, authorize) {
+      const latest = live(client, authorize, "browser:control");
+      const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      const result = answer(await state.helper.send({ op: "elements" }));
+      checkState(client, authorize, "browser:control", state);
+      const fraction = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+      const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
+        .filter((item) => Number.isInteger(item?.n))
+        .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
+          x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
+      return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100), items, truncated: result.truncated === true };
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {

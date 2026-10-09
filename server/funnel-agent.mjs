@@ -100,7 +100,7 @@ function permittedPath(method, value) {
         "/api/browser/apps", "/api/browser/apps/windows", "/api/browser/apps/screen",
         // Preset sessions (agent-presets.mjs): the screen, what is in front,
         // the apps it may open, its command history.
-        "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/apps", "/api/browser/shell/history",
+        "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/elements", "/api/browser/desktop/apps", "/api/browser/shell/history",
         "/api/browser/shortcuts",
         "/api/browser/tools", "/api/browser/tools/protocol",
         "/api/browser/services",

@@ -600,6 +600,11 @@ export function browserAccessRoutes(
     needDesktop();
     await answer(res, () => desktop.front(client, () => presetClient(req, "browser:screen")));
   });
+  app.get("/api/browser/desktop/elements", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    await answer(res, () => desktop.elements(client, () => presetClient(req, "browser:control")));
+  });
   app.post("/api/browser/desktop/input", async (req, res) => {
     const client = presetClient(req, "browser:control");
     needDesktop();

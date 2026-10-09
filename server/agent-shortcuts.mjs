@@ -180,6 +180,12 @@ export function createAgentShortcuts({
       const entry = recordings.get(client.id);
       // A password is never part of a saved tool.
       if (!entry || entry.error || action.secret) return operation();
+      // A label number belongs to one look at the screen; a saved tool
+      // replayed later can't aim with it.
+      if (action.type === "element") {
+        entry.error = "Recording stopped: label clicks can't be replayed. Discard it and record with clicks on the picture.";
+        return operation();
+      }
       // Read before the action, append only after its confirmed success.
       let front;
       if (action.type !== "open")

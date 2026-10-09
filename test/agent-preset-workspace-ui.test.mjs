@@ -91,6 +91,16 @@ function mock(
     if (route === "/api/browser/shortcuts")
       return reply({ shortcuts: [], recording: null });
     if (route === "/api/browser/desktop/screen") return jpeg();
+    if (route === "/api/browser/desktop/elements")
+      return reply({
+        snapshot: "snap1",
+        app: "Google Chrome",
+        truncated: false,
+        items: [
+          { n: 1, role: "Link", name: "Uber Eats", x: 0.1, y: 0.1, w: 0.05, h: 0.02 },
+          { n: 2, role: "Button", name: "Add to cart", x: 0.6, y: 0.4, w: 0.08, h: 0.03 },
+        ],
+      });
     if (route === "/api/browser/desktop/front")
       return reply({
         app: front,
@@ -258,7 +268,7 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
   assert.equal(c.querySelector(".ap-brief"), null, "the screen alone, How to use under More");
   assert.deepEqual(
     [...c.querySelectorAll('[aria-label="Screen controls"] button')].map((item) => item.getAttribute("aria-label")),
-    ["Type text", "Shortcuts", "Full screen", "Screen options"],
+    ["Labels", "Type text", "Shortcuts", "Full screen", "Screen options"],
     "the owner's bar: icons only",
   );
   await click(button(c, "Screen options"));
@@ -1210,4 +1220,20 @@ test("Full screen fills the window with the Mac and a button brings the page bac
   await click(button(c, "Exit full screen"));
   assert.ok(!card.classList.contains("is-full"));
   assert.equal(inputs(calls).length, 0, "the button never touches the Mac");
+});
+
+test("numbered labels sit over the picture and a click on one presses that exact element", async () => {
+  const { c, calls } = await open(full);
+  await screen(c);
+  const label = await dom.waitFor(() => c.querySelector('.ap-label[aria-label="2: Add to cart"]'));
+  assert.equal(label.style.left, "60%");
+  assert.equal(label.style.top, "40%");
+  await click(label);
+  await dom.waitFor(() => inputs(calls).length === 1);
+  assert.deepEqual(inputs(calls)[0], { type: "element", snapshot: "snap1", n: 2 }, "the label, not a guessed point");
+  await settle(200);
+  assert.equal(inputs(calls).length, 1, "the picture under the label is not clicked too");
+  await dom.waitFor(() => /Done: clicked 2 \(Add to cart\)/.test(c.textContent));
+  await click(button(c, "Labels"));
+  assert.equal(c.querySelector(".ap-label"), null, "Labels hides them");
 });

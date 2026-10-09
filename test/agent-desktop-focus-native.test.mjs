@@ -54,6 +54,9 @@ final class NSRunningApplication {
 }
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: NSRunningApplication? = nil }
 typealias AXUIElement = Int
+// Numbered labels (perform "element"): none in these keyboard cases.
+var snapshots: [(id: String, elements: [AXUIElement])] = []
+func frameOf(_ element: AXUIElement) -> CGRect? { nil }
 let kAXFocusedWindowAttribute = "window", kAXFocusedUIElementAttribute = "focus", kAXTitleAttribute = "title"
 var focusedPid: pid_t? = 42, observedPid: pid_t = 42
 var pidLookupSucceeded = true

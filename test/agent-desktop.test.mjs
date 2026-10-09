@@ -26,6 +26,8 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
         beforeSend?.();
         this.requests.push(request);
         if (request.op === "front") return front;
+        if (request.op === "elements") return { ok: true, snapshot: "ab12cd34", app: "Google Chrome", truncated: false,
+          items: [{ n: 1, role: "Button", name: "Add to cart", secure: false, x: 0.5, y: 0.25, w: 0.1, h: 0.04 }, { n: 2, role: "Link", name: "x".repeat(90), x: 2, y: -1, w: 0.1, h: 0.1 }, { role: "junk" }] };
         if (request.op === "shot") return { ok: true, jpeg, width: 100, height: 60, hidden: 2 };
         if (request.op === "act") return actAnswer(request.action);
         if (request.op === "open") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
@@ -178,6 +180,22 @@ test("typing asks what is in front first: terminals take the deny list, password
   // Clicks and keys go straight to the checker.
   await w.desktop.act(full, { type: "key", key: "enter" }, authorize(full));
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
+});
+
+test("numbered elements need control, come back clean, and a label click goes to the helper as one action", async () => {
+  const w = world();
+  const ro = w.make("ro", "readonly");
+  await rejects(() => w.desktop.elements(ro, authorize(ro)), 403);
+  const full = w.make("muse", "full");
+  const found = await w.desktop.elements(full, authorize(full));
+  assert.equal(found.snapshot, "ab12cd34");
+  assert.deepEqual(found.items.map((item) => item.n), [1, 2], "malformed entries are dropped");
+  assert.equal(found.items[1].name.length, 60);
+  assert.deepEqual([found.items[1].x, found.items[1].y], [1, 0], "positions stay on the screen");
+  await w.desktop.act(full, { type: "element", snapshot: "ab12cd34", n: 1 }, authorize(full));
+  assert.deepEqual(w.helpers.at(-1).requests.find((request) => request.op === "act").action, { type: "element", snapshot: "ab12cd34", n: 1 });
+  for (const bad of [{ type: "element", snapshot: "../x", n: 1 }, { type: "element", snapshot: "ab", n: 0 }, { type: "element", snapshot: "ab", n: 1, x: 0.5 }])
+    await rejects(() => w.desktop.act(full, bad, authorize(full)), 400);
 });
 
 test("requests arriving during a capture share it instead of queueing more", async () => {
