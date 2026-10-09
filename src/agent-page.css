@@ -53,6 +53,9 @@
 .ap-typing strong { color: var(--ag-ink, #e9eee9); font-weight: 600; }
 .ap-screen-foot .ap-status { flex: 1 1 260px; padding: 5px 10px; font-size: 13px; }
 @media (max-width: 600px) { .ap-screen { --ap-chrome: 170px; } }
+/* Full screen: above the header and tabs, the picture as large as the window. */
+.ap-screen.is-full { position: fixed; inset: 0; z-index: 50; --ap-chrome: 52px; border-radius: 0; padding: 4px; background: #0b0d10; overflow: auto; }
+.ap-screen.is-full .ap-stage { border-radius: 0; }
 .ap-placeholder { display: grid; place-items: center; gap: 8px; padding: 40px 16px; color: #c9cdd3; text-align: center; font-size: 14px; }
 .ap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ap-row-label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; min-width: 128px; }

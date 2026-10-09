@@ -1185,3 +1185,16 @@ test("Sign in fills from the agent's vault without the value ever showing", asyn
   assert.doesNotMatch(c.innerHTML, /hunter2-secret|me@example\.com/, "the page never shows a vault value");
   assert.match(c.textContent, /hidden/);
 });
+
+test("Full screen fills the window with the Mac and a button brings the page back", async () => {
+  const { c, calls } = await open(full);
+  await screen(c);
+  const card = c.querySelector(".ap-screen");
+  assert.ok(!card.classList.contains("is-full"));
+  await click(button(c, "Full screen"));
+  assert.ok(card.classList.contains("is-full"));
+  assert.ok(c.querySelector('[aria-label^="Mac screen. Click"]'), "the screen stays usable in full screen");
+  await click(button(c, "Exit full screen"));
+  assert.ok(!card.classList.contains("is-full"));
+  assert.equal(inputs(calls).length, 0, "the button never touches the Mac");
+});

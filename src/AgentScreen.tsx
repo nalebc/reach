@@ -9,6 +9,8 @@ import {
   KeyRound,
   Keyboard,
   TextCursorInput,
+  Maximize2,
+  Minimize2,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -152,6 +154,10 @@ export default function AgentScreen({
   const [actionBusy, setActionBusy] = useState(false);
   const [front, setFront] = useState("");
   const [sheet, setSheet] = useState<"" | "keys" | "type" | "signin">("");
+  // Full screen: the Mac fills the whole browser window, nothing else shown.
+  // A page layer, not the browser's Fullscreen API, which agents' browsers
+  // may refuse; Esc on the page itself goes to the Mac, so a button exits.
+  const [full, setFull] = useState(false);
   const userRef = useRef<HTMLInputElement | null>(null);
   const passRef = useRef<HTMLInputElement | null>(null);
   const [text, setText] = useState("");
@@ -825,7 +831,7 @@ export default function AgentScreen({
       : "Live";
   return (
     <section
-      className={`ap-card ap-screen${control ? "" : " is-look"}`}
+      className={`ap-card ap-screen${control ? "" : " is-look"}${full ? " is-full" : ""}`}
       aria-label="The Mac's screen"
     >
       <div className="ap-screen-bar">
@@ -846,6 +852,15 @@ export default function AgentScreen({
           <p className="ap-hint">Look only. Nothing on this page clicks or types on the Mac.</p>
         )}
         <div className="ap-pills">
+          <button
+            type="button"
+            className="ap-pill"
+            aria-pressed={full}
+            onClick={() => setFull((value) => !value)}
+          >
+            {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            {full ? "Exit full screen" : "Full screen"}
+          </button>
           <button
             type="button"
             className="ap-pill"
