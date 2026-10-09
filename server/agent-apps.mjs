@@ -353,7 +353,9 @@ export class AgentApps {
       throw fail(409, "That app is still opening. Try again in a moment.");
     // Starting an app can bring it to the front (Chrome does, even when asked
     // not to): never while someone is using the Mac. One already running
-    // only lends or opens a window, which stays out of their way.
+    // opens a window of its own for the agent, out of their way; one that
+    // would lend its existing window (Notes) waits, since that window may be
+    // the one they're using.
     const now = await this.situation({ id: "", name: "" });
     if (now.wait) throw now.wait;
     if (!now.alone) {
@@ -368,7 +370,17 @@ export class AgentApps {
     }
     this.opening.add(appId);
     try {
-      const thread = await this.threads.open(appId, AGENT_PHONE);
+      let thread;
+      try {
+        thread = await this.threads.open(appId, AGENT_PHONE, {
+          lend: now.alone === true,
+        });
+      } catch (e) {
+        if (e.code !== "lend") throw e;
+        throw waiting(
+          `${now.why}, and opening that app would take their window. Try again ${now.retry}.`,
+        );
+      }
       this.owners.set(thread.id, {
         clientId: client.id,
         agent: client.name || "An agent",

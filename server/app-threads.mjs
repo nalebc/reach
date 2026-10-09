@@ -440,7 +440,9 @@ export class AppThreads {
     });
     if (result.minimum?.w > 0) this.minimums[t.appId] = result.minimum;
   }
-  async open(appId, viewport) {
+  // `lend: false` (an agent while someone is at the Mac): only a window of
+  // its own; the helper refuses with code "lend" rather than take theirs.
+  async open(appId, viewport, { lend = true } = {}) {
     if (this.platform !== "darwin")
       throw fail(501, "Apps on your phone need a Mac for now.");
     if (this.paused) throw fail(423, pausedMessage(this.platform));
@@ -454,6 +456,7 @@ export class AppThreads {
     }
     if (t?.state === "starting") throw fail(409, `${t.name} is still opening.`);
     if (t?.state === "closed") await this.release(t);
+    const created = !t;
     if (!t) {
       if (this.threads.size >= MAX_THREADS) {
         // Make room by forgetting the oldest paused thread.
@@ -490,6 +493,7 @@ export class AppThreads {
         path: app.id,
         phone: { w: phone.width, h: phone.height },
         ...(this.minimums[appId] && { minimum: this.minimums[appId] }),
+        ...(lend === false && { lend: false }),
       });
       this.started(t, result);
       t.phone = phone;
@@ -497,6 +501,13 @@ export class AppThreads {
       this.onChange(t, "opened");
       return this.view(t);
     } catch (e) {
+      // Nothing opened and nothing moved: the thread never was.
+      if (e.code === "lend" && created) {
+        this.threads.delete(t.id);
+        this.save();
+        this.onChange(t, "removed");
+        throw e;
+      }
       this.pause(t);
       this.save();
       this.onChange(t, "failed");

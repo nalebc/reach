@@ -97,6 +97,10 @@ function fakeHelper() {
       stopped: false,
       async request(cmd, payload = {}) {
         fake.requests.push({ cmd, ...payload });
+        // As the real helper: rather than lend a window of an app that has
+        // windows (Notes), `lend: false` is refused with code "lend".
+        if (cmd === "open" && payload.lend === false && fake.lends?.has(payload.path))
+          throw Object.assign(new Error("That app would lend a window someone may be using."), { status: 409, code: "lend" });
         if (cmd === "open")
           return {
             thread: payload.thread,
@@ -1064,6 +1068,56 @@ test("starting an app that isn't running waits while you're at the Mac; one alre
   });
   assert.equal(r.status, 201);
   assert.equal(fake.requests.filter((x) => x.cmd === "open").length, 1);
+});
+
+test("while you're at the Mac, an app that would lend its window waits; a browser opens a window of its own", async (t) => {
+  const { state, fake, call, agent } = await start(t, {
+    idle: 60,
+    inApp: (c) =>
+      c.cmd === "running" ? { done: true, running: true } : { done: true },
+  });
+  fake.lends = new Set([NOTES]);
+  state.lastInput = Date.now() - 3000;
+  let r = await agent("/api/drive/apps", {
+    method: "POST",
+    body: { appId: NOTES },
+  });
+  assert.equal(r.status, 409);
+  assert.deepEqual(r.body, {
+    waiting: true,
+    error:
+      "Someone is using the Mac, and opening that app would take their window. Try again in 12 s.",
+  });
+  const opens = () => fake.requests.filter((x) => x.cmd === "open");
+  assert.equal(opens().at(-1).lend, false);
+  // Nothing is left behind: not on the phone, not in the agent's way.
+  assert.deepEqual((await call("/api/screen/apps")).body, []);
+  assert.deepEqual((await agent("/api/drive/apps")).body.open, []);
+  // A browser gets a fresh window, so it opens alongside the person.
+  r = await agent("/api/drive/apps", {
+    method: "POST",
+    body: { appId: CHROME },
+  });
+  assert.equal(r.status, 201);
+  assert.equal(opens().at(-1).lend, false);
+  // The refused try left nothing that blocks the next one.
+  fake.lends.clear();
+  r = await agent("/api/drive/apps", {
+    method: "POST",
+    body: { appId: NOTES },
+  });
+  assert.equal(r.status, 201);
+  // When nobody is at the Mac, Notes may lend its window, as before.
+  const alone = await start(t, { idle: 60 });
+  r = await alone.agent("/api/drive/apps", {
+    method: "POST",
+    body: { appId: NOTES },
+  });
+  assert.equal(r.status, 201);
+  assert.equal(
+    "lend" in alone.fake.requests.filter((x) => x.cmd === "open").at(-1),
+    false,
+  );
 });
 
 test("menus wait while you're at the Mac", async (t) => {

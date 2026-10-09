@@ -29,6 +29,9 @@ extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
 
 static const int MAX_THREADS = 4;
 static NSString *const PAUSED = @"Reach is paused on this Mac.";
+// An agent while someone is at the Mac gets only a window of its own: an app
+// that would lend its existing window (maybe the one they're using) is refused.
+static NSDictionary *lendRefused(void) { return @{@"error": @"That app would lend a window someone may be using.", @"code": @"lend"}; }
 // macOS only runs a desktop on modes of at least 640×600 points, and only
 // starts a display in Retina (2x) by itself from 800 points wide; narrower ones
 // came up at 1x, streaming blurry. A phone-width window therefore sits inside a
@@ -630,6 +633,8 @@ static id commandN(NSArray *items, int depth) {
     for (id w in windowsOf(app)) [before addObject:@(windowNumber(w))];
   }
   BOOL hadWindows = before.count > 0;
+  BOOL mayLend = ![request[@"lend"] isEqual:@NO];
+  if (!mayLend && hadWindows && ![newWindowApps containsObject:(running.bundleIdentifier ?: bundleID ?: @"")]) return lendRefused();
   if (!running || !hadWindows) {
     __block NSRunningApplication *launched = nil;
     __block BOOL finished = NO;
@@ -680,6 +685,12 @@ static id commandN(NSArray *items, int depth) {
       window = [self appWindow:app excluding:before timeout:5];
       t.created = window != nil;
     }
+  }
+  // No window of its own (a menu of an app in the background can do nothing):
+  // refused before its existing window is touched.
+  if (!window && hadWindows && !mayLend) {
+    [self destroy:t];
+    return lendRefused();
   }
   if (!window) {
     window = attr(app, kAXMainWindowAttribute) ?: attr(app, kAXFocusedWindowAttribute);
