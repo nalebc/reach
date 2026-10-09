@@ -8,13 +8,16 @@ import {
   Eye,
   KeyRound,
   Keyboard,
-  TextCursorInput,
-  Maximize2,
-  Minimize2,
+  Command,
+  Maximize,
+  Minimize,
+  MoreHorizontal,
   ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import { peerFetch, request, type Peer } from "./api";
+import ScreenActions from "./ScreenActions";
+import ScreenPopup from "./ScreenPopup";
+import "./screen-bar.css";
 import type { PresetAccess } from "./AgentPage";
 
 // The Mac's screen as the agent's own: pictures follow each other as fast as
@@ -153,11 +156,12 @@ export default function AgentScreen({
   const [screenError, setScreenError] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [front, setFront] = useState("");
-  const [sheet, setSheet] = useState<"" | "keys" | "type" | "signin">("");
+  const [sheet, setSheet] = useState<"" | "type" | "signin">("");
   // Full screen: the Mac fills the whole browser window, nothing else shown.
   // A page layer, not the browser's Fullscreen API, which agents' browsers
   // may refuse; Esc on the page itself goes to the Mac, so a button exits.
   const [full, setFull] = useState(false);
+  const [panel, setPanel] = useState<null | "shortcuts" | "more">(null);
   const userRef = useRef<HTMLInputElement | null>(null);
   const passRef = useRef<HTMLInputElement | null>(null);
   const [text, setText] = useState("");
@@ -753,7 +757,7 @@ export default function AgentScreen({
       ...(enter ? [{ action: { type: "key", key: "enter" }, words: "pressed Enter" }] : []),
     ]);
   };
-  const toggleSheet = (next: "keys" | "type" | "signin") => {
+  const toggleSheet = (next: "type" | "signin") => {
     setSheet((current) => (current === next ? "" : next));
     if (sheet === next) keysRef.current?.focus({ preventScroll: true });
   };
@@ -834,163 +838,10 @@ export default function AgentScreen({
       className={`ap-card ap-screen${control ? "" : " is-look"}${full ? " is-full" : ""}`}
       aria-label="The Mac's screen"
     >
-      <div className="ap-screen-bar">
-        <p
-          className="ap-live"
-          aria-live="off"
-          title={hiddenCount ? `${hiddenCount} protected ${hiddenCount === 1 ? "window" : "windows"} left out` : undefined}
-        >
-          <span className={`ap-dot${stale || !imageAt ? " is-busy" : ""}`} />
-          {live}
-          {control && (
-            <span className="ap-typing">
-              {" · "}Typing goes to <strong>{front || "the app in front"}</strong>
-            </span>
-          )}
-        </p>
-        {!control && (
-          <p className="ap-hint">Look only. Nothing on this page clicks or types on the Mac.</p>
-        )}
-        <div className="ap-pills">
-          <button
-            type="button"
-            className="ap-pill"
-            aria-pressed={full}
-            onClick={() => setFull((value) => !value)}
-          >
-            {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            {full ? "Exit full screen" : "Full screen"}
-          </button>
-          <button
-            type="button"
-            className="ap-pill"
-            aria-pressed={zoomPick || !!zoom}
-            disabled={!imageUrl}
-            onClick={toggleZoom}
-          >
-            {zoomPick || zoom ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
-            {zoomPick || zoom ? "Zoom out" : "Zoom in"}
-          </button>
-          {zoom && (
-            <span className="ap-pan" role="group" aria-label="Move the zoomed view">
-              {(
-                [
-                  ["left", -0.1, 0, ArrowLeft],
-                  ["up", 0, -0.1, ArrowUp],
-                  ["down", 0, 0.1, ArrowDown],
-                  ["right", 0.1, 0, ArrowRight],
-                ] as const
-              ).map(([name, dx, dy, Icon]) => (
-                <button
-                  key={name}
-                  type="button"
-                  className="ap-pill"
-                  aria-label={`Move zoom ${name}`}
-                  onClick={() => pan(dx, dy)}
-                >
-                  <Icon size={14} />
-                </button>
-              ))}
-            </span>
-          )}
-          {control && (
-            <>
-              <button
-                type="button"
-                className="ap-pill"
-                aria-pressed={sheet === "keys"}
-                onClick={() => toggleSheet("keys")}
-              >
-                <Keyboard size={15} /> Keys
-              </button>
-              <button
-                type="button"
-                className="ap-pill"
-                aria-pressed={sheet === "type"}
-                onClick={() => toggleSheet("type")}
-              >
-                <TextCursorInput size={15} /> Type text
-              </button>
-              <button
-                type="button"
-                className="ap-pill"
-                aria-pressed={sheet === "signin"}
-                onClick={() => toggleSheet("signin")}
-              >
-                <KeyRound size={15} /> Sign in
-              </button>
-            </>
-          )}
-        </div>
-        {control && (
-          // Read by the agent, not the owner: what it may do and how, once.
-          <details className="ap-brief">
-            <summary>How to use</summary>
-            <ul>
-              <li>
-                {access.preset === "apps"
-                  ? `You may use only the apps the owner chose on ${peer.name}.`
-                  : `You have full control of ${peer.name}.`}{" "}
-                Your user's request is your permission: go ahead without asking at each step.
-              </li>
-              {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
-              <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
-              <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
-              <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
-              <li>"Not done" says why. Try another way. Small text: Zoom in.</li>
-              <li>Ask your user before you pay, send a message or delete something.</li>
-              <li>Always closed: password managers, Reach itself, security settings. If the owner pauses you, wait.</li>
-            </ul>
-          </details>
-        )}
-      </div>
+      {!control && (
+        <p className="ap-hint">Look only. Nothing on this page clicks or types on the Mac.</p>
+      )}
       <div className="ap-stage" ref={stageRef}>
-        {control && sheet === "keys" && (
-          <div className="ap-sheet" role="group" aria-label="Keys">
-            {KEYS.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className="ap-pill"
-                disabled={!canAct || actionBusy}
-                onClick={() =>
-                  void runActions([
-                    {
-                      action: { type: "key", key: item.key },
-                      words: `pressed ${item.label}`,
-                    },
-                  ])
-                }
-              >
-                {item.label}
-              </button>
-            ))}
-            <form
-              className="ap-inline"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void pressShortcut();
-              }}
-            >
-              <input
-                aria-label="Shortcut"
-                placeholder="cmd+l"
-                value={shortcut}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                onChange={(event) => setShortcut(event.target.value)}
-              />
-              <button
-                className="ap-pill"
-                type="submit"
-                disabled={!shortcut || !canAct || actionBusy}
-              >
-                Press
-              </button>
-            </form>
-          </div>
-        )}
         {control && sheet === "signin" && (
           <form
             className="ap-sheet ap-type"
@@ -1126,17 +977,209 @@ export default function AgentScreen({
           )}
         </div>
       </div>
-      <div className="ap-screen-foot">
+      {/* The owner's Screen bar, for the agent: icons in one small bar at
+          the bottom, status in a caption above it, the rest one tap away. */}
+      <div className="ap-dock">
         {status.text && (
-          <p
-            className={`ap-status ${status.tone}`}
-            role="status"
-            aria-live="polite"
-          >
+          <p className={`ap-status ${status.tone}`} role="status" aria-live="polite">
             {status.text}
           </p>
         )}
+        <p
+          className="ap-live"
+          aria-live="off"
+          title={hiddenCount ? `${hiddenCount} protected ${hiddenCount === 1 ? "window" : "windows"} left out` : undefined}
+        >
+          <span className={`ap-dot${stale || !imageAt ? " is-busy" : ""}`} />
+          {live}
+          {control && (
+            <span className="ap-typing">
+              {" · "}Typing goes to <strong>{front || "the app in front"}</strong>
+            </span>
+          )}
+        </p>
+        <div className="screen-bar" role="toolbar" aria-label="Screen controls">
+          {control && (
+            <button
+              type="button"
+              aria-label="Type text"
+              title="Type text"
+              aria-pressed={sheet === "type"}
+              onClick={() => toggleSheet("type")}
+            >
+              <Keyboard size={19} />
+            </button>
+          )}
+          {control && (
+            <button
+              type="button"
+              aria-label="Shortcuts"
+              title="Shortcuts"
+              aria-haspopup="dialog"
+              onClick={() => {
+                setSheet("");
+                setPanel("shortcuts");
+              }}
+            >
+              <Command size={18} />
+            </button>
+          )}
+          {(zoomPick || zoom) && (
+            <button
+              type="button"
+              className="screen-bar-text"
+              aria-pressed="true"
+              onClick={toggleZoom}
+            >
+              Zoom out
+            </button>
+          )}
+          {zoom &&
+            (
+              [
+                ["left", -0.1, 0, ArrowLeft],
+                ["up", 0, -0.1, ArrowUp],
+                ["down", 0, 0.1, ArrowDown],
+                ["right", 0.1, 0, ArrowRight],
+              ] as const
+            ).map(([name, dx, dy, Icon]) => (
+              <button
+                key={name}
+                type="button"
+                aria-label={`Move zoom ${name}`}
+                onClick={() => pan(dx, dy)}
+              >
+                <Icon size={17} />
+              </button>
+            ))}
+          <button
+            type="button"
+            aria-label={full ? "Exit full screen" : "Full screen"}
+            title={full ? "Exit full screen" : "Full screen"}
+            aria-pressed={full}
+            onClick={() => setFull((value) => !value)}
+          >
+            {full ? <Minimize size={18} /> : <Maximize size={18} />}
+          </button>
+          <button
+            type="button"
+            aria-label="Screen options"
+            title="More"
+            aria-haspopup="dialog"
+            onClick={() => setPanel("more")}
+          >
+            <MoreHorizontal size={20} />
+          </button>
+        </div>
       </div>
+      {panel === "shortcuts" && control && (
+        <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)}>
+          <ScreenActions
+            platform="darwin"
+            disabled={!canAct || actionBusy}
+            run={({ keys, action }) => {
+              setPanel(null);
+              void runActions([{ action: action as Action, words: `pressed ${keys}` }]);
+            }}
+          />
+          <section className="ap-keys-row" role="group" aria-label="Keys">
+            {KEYS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className="ap-pill"
+                disabled={!canAct || actionBusy}
+                onClick={() =>
+                  void runActions([
+                    {
+                      action: { type: "key", key: item.key },
+                      words: `pressed ${item.label}`,
+                    },
+                  ])
+                }
+              >
+                {item.label}
+              </button>
+            ))}
+            <form
+              className="ap-inline"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void pressShortcut();
+              }}
+            >
+              <input
+                aria-label="Shortcut"
+                placeholder="cmd+l"
+                value={shortcut}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                onChange={(event) => setShortcut(event.target.value)}
+              />
+              <button
+                className="ap-pill"
+                type="submit"
+                disabled={!shortcut || !canAct || actionBusy}
+              >
+                Press
+              </button>
+            </form>
+          </section>
+        </ScreenPopup>
+      )}
+      {panel === "more" && (
+        <ScreenPopup title="Screen options" onClose={() => setPanel(null)}>
+          <div className="ap-options">
+            {!(zoomPick || zoom) && (
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!imageUrl}
+                onClick={() => {
+                  setPanel(null);
+                  toggleZoom();
+                }}
+              >
+                <ZoomIn size={17} /> Zoom in
+              </button>
+            )}
+            {control && (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => {
+                  setPanel(null);
+                  setSheet("signin");
+                }}
+              >
+                <KeyRound size={17} /> Sign in
+              </button>
+            )}
+          </div>
+          {control && (
+            // Read by the agent, not the owner: what it may do and how.
+            <details className="ap-brief" open>
+              <summary>How to use</summary>
+              <ul>
+                <li>
+                  {access.preset === "apps"
+                    ? `You may use only the apps the owner chose on ${peer.name}.`
+                    : `You have full control of ${peer.name}.`}{" "}
+                  Your user's request is your permission: go ahead without asking at each step.
+                </li>
+                {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
+                <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
+                <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
+                <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
+                <li>"Not done" says why. Try another way. Small text: Zoom in.</li>
+                <li>Ask your user before you pay, send a message or delete something.</li>
+                <li>Always closed: password managers, Reach itself, security settings. If the owner pauses you, wait.</li>
+              </ul>
+            </details>
+          )}
+        </ScreenPopup>
+      )}
     </section>
   );
 }

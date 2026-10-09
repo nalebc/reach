@@ -94,3 +94,14 @@
 .ap-saved-record { margin-top: 14px; }
 .ap-saved-record input { flex: 1; min-width: 160px; }
 .ap-saved-recording { margin-top: 14px; }
+
+/* The owner's Screen bar for the agent: under the picture, or floating over
+   it in full screen. Caption lines sit just above it. */
+.ap-dock { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.ap-dock .ap-live { font-size: 12px; }
+.ap-dock .ap-status { max-width: min(560px, 100%); padding: 5px 12px; border-radius: 999px; font-size: 13px; }
+.ap-screen .screen-bar { --lime-ink: #10221a; }
+.ap-screen.is-full .ap-dock { position: fixed; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 51; max-width: calc(100% - 24px); }
+.ap-screen.is-full { --ap-chrome: 8px; }
+.ap-keys-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.ap-options { display: grid; gap: 8px; margin-bottom: 12px; }

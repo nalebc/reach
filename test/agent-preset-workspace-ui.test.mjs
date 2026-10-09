@@ -30,6 +30,8 @@ before(async () => {
   React = dom.React;
   dom.window.URL.createObjectURL ||= () => "blob:screen";
   dom.window.URL.revokeObjectURL ||= () => {};
+  dom.window.HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close ??= function () { this.open = false; };
   ({ default: BrowserWorkspace } = await dom.load("/src/BrowserWorkspace.tsx"));
 });
 afterEach(async () => {
@@ -253,10 +255,18 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
   await dom.waitFor(() => /Live/.test(c.querySelector(".ap-live")?.textContent || ""));
   await dom.waitFor(() => /1 protected window left out/.test(c.querySelector(".ap-live")?.title || ""));
   assert.equal(c.querySelector(".ap-hint"), null, "the full screen carries no hint text");
+  assert.equal(c.querySelector(".ap-brief"), null, "the screen alone, How to use under More");
+  assert.deepEqual(
+    [...c.querySelectorAll('[aria-label="Screen controls"] button')].map((item) => item.getAttribute("aria-label")),
+    ["Type text", "Shortcuts", "Full screen", "Screen options"],
+    "the owner's bar: icons only",
+  );
+  await click(button(c, "Screen options"));
   const brief = c.querySelector(".ap-brief");
-  assert.ok(brief && !brief.open, "How to use is one tap away, folded");
+  assert.ok(brief?.open);
   assert.match(brief.textContent, /You have full control of My Mac\. Your user's request is your permission/);
   assert.match(brief.textContent, /Ask your user before you pay, send a message or delete something/);
+  await click(c.querySelector('dialog[aria-label="Screen options"] [aria-label="Close panel"]'));
   await dom.waitFor(() => /Typing goes to Google Chrome/.test(c.textContent));
   assert.equal(nav.querySelector('[aria-label="Tools"]'), null, "agents work on the screen or in the terminal");
   assert.equal(c.querySelector('[aria-label="Search tools"]'), null);
@@ -327,8 +337,9 @@ test("the picture is the Mac: clicks, right-clicks and double-clicks land where 
   await dom.waitFor(
     () => c.querySelector('[aria-label="Text to type"]').value === "",
   );
-  await click(button(c, "Keys"));
+  await click(button(c, "Shortcuts"));
   assert.equal(c.querySelector('[aria-label="Text to type"]'), null);
+  assert.ok(c.querySelector('dialog[aria-label="Shortcuts"]'), "the owner's Shortcuts panel");
   await click(button(c, "Esc"));
   await dom.waitFor(() => inputs(calls).length === 7);
   assert.deepEqual(inputs(calls)[6], { type: "key", key: "escape" });
@@ -381,9 +392,10 @@ test("aiming: pictures match the page, zooming asks for full detail and maps cli
     "1280",
     "the picture is sized to the page, no larger than needed",
   );
+  await click(button(c, "Screen options"));
   const zoomIn = button(c, "Zoom in");
-  assert.equal(zoomIn.getAttribute("aria-pressed"), "false");
   await click(zoomIn);
+  assert.equal(c.querySelector('dialog[aria-label="Screen options"]'), null, "choosing closes the panel");
   assert.equal(button(c, "Zoom out").getAttribute("aria-pressed"), "true");
   assert.match(c.textContent, /Click the picture where you want to look closer/);
   assert.equal(
@@ -897,7 +909,7 @@ test("Read only looks and never touches; Apps shows only its apps", async () => 
     "no keyboard reaches the Mac",
   );
   assert.equal(c.querySelector('[aria-label="Text to type"]'), null);
-  for (const label of ["Keys", "Type text", "Esc"])
+  for (const label of ["Shortcuts", "Type text", "Esc"])
     assert.equal(
       button(c, label),
       undefined,
@@ -1163,6 +1175,7 @@ for (const actionFailure of [false, true])
 test("Sign in fills from the agent's vault without the value ever showing", async () => {
   const { c, calls } = await open(full);
   await screen(c);
+  await click(button(c, "Screen options"));
   await click(button(c, "Sign in"));
   const user = c.querySelector('[aria-label="Email or username for the Mac"]');
   const pass = c.querySelector('[aria-label="Password for the Mac"]');
@@ -1183,7 +1196,7 @@ test("Sign in fills from the agent's vault without the value ever showing", asyn
   assert.equal(pass.value, "");
   await dom.waitFor(() => /pressed Enter/.test(c.textContent));
   assert.doesNotMatch(c.innerHTML, /hunter2-secret|me@example\.com/, "the page never shows a vault value");
-  assert.match(c.textContent, /hidden/);
+  assert.match(c.textContent, /hidden/i);
 });
 
 test("Full screen fills the window with the Mac and a button brings the page back", async () => {

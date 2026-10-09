@@ -51,6 +51,8 @@ before(async () => {
   React = dom.React;
   dom.window.URL.createObjectURL ||= () => "blob:screen";
   dom.window.URL.revokeObjectURL ||= () => {};
+  dom.window.HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close ??= function () { this.open = false; };
   ({ default: SavedAgentTools } = await dom.load("/src/SavedAgentTools.tsx"));
   ({ default: AgentPage } = await dom.load("/src/AgentPage.tsx"));
 });
@@ -265,7 +267,7 @@ test("a visual agent records screen actions, saves a tool and replays it without
     }),
   );
   await dom.waitFor(() => applied.length === 1);
-  button(c, "Keys").click();
+  button(c, "Shortcuts").click();
   await settle();
   await type(c.querySelector('[aria-label="Shortcut"]'), "cmd+l");
   button(c, "Press").click();
