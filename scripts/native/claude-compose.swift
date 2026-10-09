@@ -57,10 +57,20 @@ struct Window {
 // sheet: Low, Medium, High, Extra high, Max).
 let effortNames = ["Low", "Medium", "High", "Extra high", "Max"]
 // The model chip reads "<model> <effort>"; it's the one ending in a level.
+// A combined chip ("Opus 5.5 High", the app's older composer) starts with
+// a model's name. Anything else ending in an effort word isn't one: the
+// account button reads "<name> Max" (the plan), and counted as a second
+// effort and model chip, every effort or model change from the phone failed.
+let modelPattern = try! NSRegularExpression(pattern: "^(Claude )?(Opus|Sonnet|Haiku|Fable)\\b")
+func namesModel(_ text: String) -> Bool {
+  modelPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+}
 func effortOf(_ text: String) -> String? {
-  let text = text.hasPrefix("Effort: ") ? String(text.dropFirst(8)) : text
+  let labelled = text.hasPrefix("Effort: ")
+  guard labelled || namesModel(text) else { return nil }
+  let text = labelled ? String(text.dropFirst(8)) : text
   if text == "Extra" { return "Extra high" }
-  return effortNames.sorted { $0.count > $1.count }.first { text == $0 || text.hasSuffix(" " + $0) }
+  return effortNames.sorted { $0.count > $1.count }.first { text == $0 || (!labelled && text.hasSuffix(" " + $0)) }
 }
 func modelOf(_ text: String) -> String? {
   if text.hasPrefix("Effort: ") { return nil }

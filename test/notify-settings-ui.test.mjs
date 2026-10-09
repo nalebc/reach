@@ -377,3 +377,32 @@ test("failed preference saves retain the previous choice and show an error", asy
   assert.match(view.container.textContent, /Computer disconnected/);
   await view.unmount();
 });
+
+test("a status read begun before a change can't put the old choice back", async () => {
+  browser();
+  const view = await render();
+  await tap(mainSwitch(view), 80);
+  // The phone comes back to the page: a read starts, and is slow.
+  const original = globalThis.fetch;
+  let release, reads = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init) => {
+    // The second endpoint read is the preferences (the first asks if subscribed).
+    if ((init?.method || "GET") === "GET" && new URL(url).pathname === "/api/push" && new URL(url).searchParams.has("endpoint") && ++reads === 2) {
+      const answer = await original(url, init);
+      await new Promise((resolve) => (release = resolve));
+      return answer;
+    }
+    return original(url, init);
+  };
+  dom.window.dispatchEvent(new dom.window.Event("focus"));
+  await dom.waitFor(() => release);
+  // Meanwhile a category is turned off and saved.
+  await tap(categories(view)[0], 80);
+  assert.equal(categories(view)[0].checked, false);
+  // The old read answers with the choice from before the change.
+  release();
+  await settle(80);
+  assert.equal(categories(view)[0].checked, false);
+  globalThis.fetch = dom.window.fetch = original;
+  await view.unmount();
+});

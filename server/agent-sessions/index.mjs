@@ -17,7 +17,7 @@ import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { createClaudeHost } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
-import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds } from "./claude-import.mjs";
+import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createAppCards } from "./app-cards.mjs";
 import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
@@ -88,13 +88,18 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
 // The claude executable as the owner's login shell finds it (Reach may run
 // with a shorter PATH than their terminal).
 let claudeAt = null;
+let claudeFound = null;
 export function locateClaude(run = exec) {
+  // Gone from where it was (reinstalled elsewhere, an update that moved
+  // it): looked for again rather than sent to a missing file.
+  if (claudeFound && !fs.existsSync(claudeFound)) claudeAt = claudeFound = null;
   claudeAt ??= run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
     .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
     .then((found) => (found?.startsWith("/") ? found : null))
     .catch(() => null)
     .then((found) => {
       if (!found) claudeAt = null; // look again next time
+      claudeFound = found;
       return found;
     });
   return claudeAt;
@@ -172,6 +177,9 @@ export function createAgentSessions({
   // How often one the Claude app hasn't taken tries again, when the Mac
   // doesn't say what it waits for (the app in front, see frontmost()).
   appRetryMs = 5000,
+  // Whether the Mac's screen is locked; tests that don't say: by the app in
+  // front only.
+  locked = process.env.NODE_TEST_CONTEXT || process.platform !== "darwin" ? () => false : () => screenLocked(),
   // How long a chat must stay waiting before it counts as waiting on you
   // (tests that don't say count it at once, as before).
   settleMs = process.env.NODE_TEST_CONTEXT ? 0 : 6000,
@@ -509,6 +517,12 @@ export function createAgentSessions({
   // The app in front on the Mac, as the menu bar's helper tells it (null:
   // not told; asked of macOS then).
   let front = null;
+  // The lock screen (or screen saver) in front, or the console session
+  // locked (a window can come forward over a locked Mac): no app can be
+  // typed into.
+  const macLocked = async () =>
+    front === "com.apple.loginwindow" || front === "com.apple.ScreenSaver.Engine" ||
+    (await Promise.resolve(locked()).catch(() => false)) === true;
   const claudeCompose =
     givenCompose ||
     (process.env.NODE_TEST_CONTEXT
@@ -544,6 +558,8 @@ export function createAgentSessions({
   const preparingHelpers = new AbortController();
   const delivering = new Set();
   const deliveringMessage = new Map();
+  // App messages handed to Claude Code instead (their chat wasn't on screen).
+  const direct = new Set();
   const wakers = new Map();
   // Messages waiting for the Claude app try again now.
   const wakeAppMessages = () => {
@@ -598,8 +614,13 @@ export function createAgentSessions({
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
-          if (next.via === "app") {
-            if (!outbox.begin(id, next.id)) break;
+          if (next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
+            // Marked on its way only once the app is about to be typed into:
+            // marked while it still queued behind other Claude app work, a
+            // Reach restart paused it as maybe sent when it never was.
+            const begin = () => {
+              if (!outbox.begin(id, next.id)) throw Object.assign(new Error("This message is no longer waiting."), { waiting: true });
+            };
             // A mode sent with it goes with Claude Code's next request (its
             // hook), never picked in the app's menu.
             if (next.mode)
@@ -608,7 +629,7 @@ export function createAgentSessions({
               } catch {
                 /* a mode the hook can't switch to (Bypass) stays as it is */
               }
-            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}) });
+            await claudeCompose.deliver(id, { title: next.title, text: next.text, images: next.images, ...(next.owner ? { owner: next.owner } : {}), ...(next.now ? { now: true } : {}), begin });
             outbox.remove(id, next.id);
             wentIn = true;
             continue;
@@ -619,9 +640,19 @@ export function createAgentSessions({
             continue;
           }
           const { id: messageId, at, error, ...message } = next;
+          // One for the Claude app while the Mac is locked: nothing can be
+          // typed into the app then (each try failed, for as long as the Mac
+          // stayed locked), so Claude Code continues the chat itself, as above
+          // (the app's window reloads it later, claudeRefresh).
+          if (next.via === "app") {
+            const { session } = await claude.read(id, { limit: 1 });
+            message.cwd = session.cwd;
+            if (!message.mode && session.mode) message.mode = session.mode;
+          }
           if (!outbox.begin(id, next.id)) break;
           await claudeHost.send(id, message);
           outbox.remove(id, messageId);
+          direct.delete(messageId);
         } catch (e) {
           wentIn = false;
           waitFor = e;
@@ -631,12 +662,20 @@ export function createAgentSessions({
             outbox.strand(id);
             continue;
           }
+          // Its chat isn't on screen and the window won't be switched now
+          // (you're at the Mac, or the app didn't open it): Claude Code
+          // continues the chat at once, as on a locked Mac, never typed.
+          if (next.via === "app" && e?.elsewhere && next.delivery !== "sending") {
+            direct.add(next.id);
+            tried = false;
+            continue;
+          }
           if (e?.retryable === false || (next.delivery === "sending" && !e?.waiting)) {
             outbox.pause(id, next.id, e?.retryable === false ? e.message : uncertainDelivery("claude").message);
             break;
           }
           outbox.retryLater(id, next.id);
-          outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
+          if (!(e?.collision && next.error)) outbox.problem(id, next.id, e?.message || "It couldn't be sent yet.");
         } finally {
           deliveringMessage.delete(id);
         }
@@ -645,8 +684,23 @@ export function createAgentSessions({
       delivering.delete(id);
     }
   };
+  // Paused by a restart while going into the Claude app: the chat says
+  // whether it got in. In it: done. Not in it: it goes again by itself (a
+  // restart mid-delivery left it paused until someone tapped Send).
+  const recheckRestarted = async (id) => {
+    for (const m of [...outbox.list(id)]) {
+      if (!m.restarted || m.via !== "app") continue;
+      try {
+        if (await claude.arrived(id, m.text, m.at, { images: m.images.length })) outbox.remove(id, m.id);
+        else outbox.resume(id, m.id);
+      } catch {
+        /* the chat can't be read: it stays paused for the phone */
+      }
+    }
+  };
   // Left waiting when Reach last stopped: on their way again.
-  for (const id of outbox.sessions()) if (!recoveryChats.some((chat) => chat.id === id)) void deliver(id);
+  for (const id of outbox.sessions())
+    if (!recoveryChats.some((chat) => chat.id === id)) void recheckRestarted(id).then(() => deliver(id));
   // Claude sessions started here join the Claude app's list once Reach lets
   // go of them, through the app's own import, when nobody is at the Mac (the
   // import switches the app's window), so they're there when you get to it.
@@ -892,6 +946,10 @@ export function createAgentSessions({
     listChanged();
   });
   claudeHost.onChange?.(() => listChanged());
+  // A permission or question Claude Code holds through Reach's hook
+  // (agent-asks.mjs) writes nothing to a file: the list (Needs you, a chat's
+  // Waiting) hears of it, and of its answer, at once.
+  agentAsks.onChange?.(() => listChanged());
   // A whole Codex chat, oldest first, kept a minute (a moved chat pages
   // through the one it continues).
   const codexWhole = new Map();
@@ -1136,7 +1194,7 @@ export function createAgentSessions({
       if (host(agent) === codexLive) {
         // A skill picked from "/": found in Codex's own list for the chat.
         const skill = typeof body.skill === "string" && body.skill ? await slash.skill(id, body.skill) : undefined;
-        const sent = await codexLive.send(id, { ...body, skill, mode: body.mode || chatModes.get(id) || codex.appMode?.() || undefined });
+        const sent = await codexLive.send(id, { ...body, skill, mode: body.mode || chatModes.get(id) || (codex.modeFor ? codex.modeFor(id) : codex.appMode?.()) || undefined });
         if (body.mode) chatModes.set(id, body.mode);
         return sent;
       }
@@ -1263,6 +1321,9 @@ export function createAgentSessions({
       const store = adapter(agent);
       if (!store.archive) throw Object.assign(new Error(`${agentName(agent)} chats can't be archived.`), { status: 400 });
       const done = await store.archive(id, archived !== false);
+      // The Codex app keeps its own list: told, or it shows the chat until
+      // it restarts. Archived either way, so a closed app is no failure.
+      if (agent === "codex") await codexDesktop.archived?.(id, archived !== false).catch(() => {});
       listChanged();
       return done;
     },
@@ -1549,14 +1610,29 @@ export function createAgentSessions({
       if (agent === "codex") return codex.models();
       if (agent === "gemini") return { models: [], modes: [], mode: null };
       const [list, modes] = await Promise.all([claudeHost.models(), claudeHost.modes?.().catch(() => []) || []]);
+      // The level Claude Code runs a chat at when it names none: its
+      // CLAUDE_CODE_EFFORT_LEVEL, else your settings' effortLevel. The phone
+      // showed "Default" where Claude Code used "High".
+      let settingsEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL || null;
+      if (!settingsEffort) {
+        try {
+          const level = JSON.parse(fs.readFileSync(claudeSettingsPath, "utf8")).effortLevel;
+          if (typeof level === "string") settingsEffort = level;
+        } catch {}
+      }
+      // Read field by field: a field a newer Claude Code shapes otherwise is
+      // left out (an entry without an id, a level that isn't a word), never
+      // the whole picker lost or a substring taken for a level.
+      const words = (v) => (Array.isArray(v) ? v.filter((e) => typeof e === "string" && /^[a-z][a-z0-9_-]{0,23}$/.test(e)) : []);
+      const text = (v) => (typeof v === "string" ? v : "");
       return {
-        models: list.map((m) => ({
+        models: list.filter((m) => m && typeof m.value === "string" && m.value).map((m) => ({
           id: m.value,
           ...(typeof m.resolvedModel === "string" ? { resolvedModel: m.resolvedModel } : {}),
-          name: m.value === "default" ? m.displayName : claudeModelName(m.resolvedModel) || m.displayName || m.value,
-          description: m.description || "",
-          efforts: m.supportsEffort ? m.supportedEffortLevels || [] : [],
-          defaultEffort: null,
+          name: m.value === "default" ? text(m.displayName) || m.value : claudeModelName(m.resolvedModel) || text(m.displayName) || m.value,
+          description: text(m.description),
+          efforts: m.supportsEffort === true ? words(m.supportedEffortLevels) : [],
+          defaultEffort: m.supportsEffort === true && words(m.supportedEffortLevels).includes(settingsEffort) ? settingsEffort : null,
           images: true,
           isDefault: m.value === "default",
           // Auto mode only on models that support it, as Claude Code offers it.
@@ -1793,7 +1869,13 @@ export function createAgentSessions({
     // The agents on this Mac: the two Reach drives, then others it knows of
     // (installed, not yet supported), so the phone can show where it's going.
     async health({ fresh = false } = {}) {
-      const results = await Promise.allSettled([codex.health(), claude.health(), claudeApp()]);
+      // open: the Claude app is running, so a chat archived here leaves its
+      // sidebar when it next opens (claude.mjs archive); the phone says so.
+      const results = await Promise.allSettled([
+        codex.health(),
+        claude.health(),
+        Promise.all([claudeApp(), Promise.resolve(claudeOpen()).catch(() => false)]).then(([app, open]) => (app.installed ? { ...app, open: !!open } : app)),
+      ]);
       const compatibility = await Promise.allSettled([daemon.compatibility?.() || null, claudeCompatibility()]);
       const driven = results.slice(0, 2).map((r, i) => ({
         ...(r.status === "fulfilled"

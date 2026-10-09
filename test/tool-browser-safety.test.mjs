@@ -60,7 +60,7 @@ for(const failure of [false,true])test(`phone takeover waits for entire separate
  let phoneReady=false;const ready=w.control.waitForInputStop().then(()=>{phoneReady=true;});
  w.ended.resolve();await new Promise(r=>setImmediate(r));
  assert.equal(phoneReady,false,'guard helper exit must not release a separate browser command');
- assert.equal(w.desktop.automationBusy(),true);
+ assert.match(w.desktop.automationBusy(),/using the Mac/);
  if(failure)w.work.reject(Error('Synthetic driver failure'));else w.work.resolve();
  const outcome=await w.run;assert.ok(outcome instanceof Error,'no later action can run after takeover');
  await ready;assert.equal(phoneReady,true);assert.equal(w.control.inputStopping(),false);

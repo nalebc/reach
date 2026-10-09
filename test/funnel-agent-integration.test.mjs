@@ -521,7 +521,11 @@ test("revocation, expiry, and pause close signed access and its ephemeral window
     first = await f.join();
   f.reach.auth.revoke(first.clientId);
   assert.equal(f.reach.funnelWindow().open, false);
-  assert.equal((await first.call("/api/browser")).status, 503);
+  // No window, but the agent is told its access ended (refused), not that
+  // nothing is here: it opens nothing either way.
+  const refused = await first.call("/api/browser");
+  assert.equal(refused.status, 401);
+  assert.equal(refused.headers["reach-not-run"], "1");
   const second = await f.join();
   assert.equal((await first.call("/api/browser")).status, 401);
   const file = path.join(f.state, "clients.json"),
@@ -530,7 +534,7 @@ test("revocation, expiry, and pause close signed access and its ephemeral window
     Date.now() - 1;
   atomicJson(file, clients);
   assert.equal(f.reach.funnelWindow().open, false);
-  assert.equal((await second.call("/api/browser")).status, 503);
+  assert.equal((await second.call("/api/browser")).status, 401);
   const third = await f.join();
   await f.reach.setPaused(true);
   assert.equal(f.reach.funnelWindow().open, false);
@@ -626,7 +630,7 @@ test("only an authorized browser request extends the idle lease; silence expires
   );
   offset = renewed - realNow() + 1;
   assert.equal(f.reach.funnelWindow().open, false);
-  assert.equal((await session.call("/api/browser")).status, 503);
+  assert.equal((await session.call("/api/browser")).status, 401, "ended, and told so");
   assert.equal(
     f.reach.auth.verifyFunnel(session.token, stored.browserBinding),
     null,
@@ -636,4 +640,116 @@ test("only an authorized browser request extends the idle lease; silence expires
     renewed,
     "an expired browser cannot revive its own session",
   );
+});
+
+test("one link over either route: an agent on the tailnet (even under the owner's login) gets exactly what Funnel gets", async (t) => {
+  const f = await setup(t);
+  // Same socket, no Funnel mark, and the owner's own Tailscale login: how Muse
+  // looks when it joins the tailnet under the owner's account.
+  const tailnet = { target: "tailnet", headers: { "X-Forwarded-For": "100.64.0.1", "Tailscale-User-Login": OWNER.login } };
+  // As the invite screen makes it: a preset, with its one reusable link.
+  const grant = await f.ownerCall("/api/agents/browser-invitations", {
+    method: "POST",
+    body: { name: "Muse", transport: "funnel", preset: "readonly", ttlSeconds: 600, folders: [{ root: 0, path: "granted" }] },
+  });
+  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  const claim = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, tailnet);
+  assert.equal(claim.status, 202, JSON.stringify(claim.body));
+  const polling = { operation: "status", requestId: claim.body.requestId, secret: claim.body.requestSecret };
+  f.reach.auth.decideAgentAdmission(claim.body.requestId, "approve");
+  const joined = await f.gateway(polling, tailnet);
+  assert.equal(joined.body.status, "approved");
+  const call = (route, options, method = "GET") => f.gateway({ operation: "request", token: joined.body.token, method, path: route, body: null }, options);
+  for (const route of [{}, tailnet]) {
+    const browser = await call("/api/browser", route);
+    assert.equal(browser.status, 200, JSON.stringify(browser.body));
+    assert.equal(browser.body.roots.length, 1, "only its granted folder, either way");
+    const owners = await call("/api/agents/browser-invitations", route);
+    assert.ok([403, 404].includes(owners.status), `owner routes stay closed: ${owners.status}`);
+  }
+  // Its link opened again in a new browser, over the internet this time.
+  const newKey = signingKey();
+  const moved = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, {}, newKey);
+  assert.equal(moved.status, 202, JSON.stringify(moved.body));
+  assert.equal(moved.body.moved, true);
+  assert.equal(f.reach.auth.listAgentAdmissions().length, 0, "nothing to approve again");
+  const back = await f.gateway({ operation: "status", requestId: moved.body.requestId, secret: moved.body.requestSecret }, {}, newKey);
+  assert.equal(back.body.status, "approved");
+  assert.equal((await call("/api/browser", {})).status, 401, "the old browser is cut off");
+  const fresh = await f.gateway({ operation: "request", token: back.body.token, method: "GET", path: "/api/browser", body: null }, {}, newKey);
+  assert.equal(fresh.status, 200);
+});
+
+test("through the gateway: the page reconnects on its own, never takes access from the browser now using it", async (t) => {
+  const f = await setup(t);
+  const grant = await f.ownerCall("/api/agents/browser-invitations", {
+    method: "POST",
+    body: { name: "Muse", transport: "funnel", preset: "readonly", standing: true, folders: [{ root: 0, path: "granted" }] },
+  });
+  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  const claim = await f.gateway({ operation: "claim", invitation: grant.body.invitation });
+  f.reach.auth.decideAgentAdmission(claim.body.requestId, "approve");
+  const first = await f.gateway({ operation: "status", requestId: claim.body.requestId, secret: claim.body.requestSecret });
+  assert.equal(first.body.status, "approved");
+  // Its own browser reconnects: refreshed, a new token, nothing for the owner.
+  const again = await f.gateway({ operation: "reconnect", invitation: grant.body.invitation });
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal(again.body.refreshed, true);
+  const back = await f.gateway({ operation: "status", requestId: again.body.requestId, secret: again.body.requestSecret });
+  assert.equal(back.body.status, "approved");
+  assert.equal(f.reach.auth.listAgentAdmissions().length, 0);
+  // Opened in another browser: it moves there; the first browser's own
+  // reconnects are told it's in use elsewhere, refused before anything ran.
+  const other = signingKey();
+  const moved = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, {}, other);
+  assert.equal(moved.body.moved, true);
+  const refused = await f.gateway({ operation: "reconnect", invitation: grant.body.invitation });
+  assert.equal(refused.status, 423);
+  assert.equal(refused.headers["reach-not-run"], "1");
+  assert.match(refused.body.error, /in use in another browser/);
+  const there = await f.gateway({ operation: "status", requestId: moved.body.requestId, secret: moved.body.requestSecret }, {}, other);
+  assert.equal(there.body.status, "approved", "the browser now using it keeps it");
+});
+
+test("an agent whose access ended hears that it ended, on either route, even with nothing else open", async (t) => {
+  const f = await setup(t);
+  const tailnet = { target: "tailnet", headers: { "X-Forwarded-For": "100.64.0.1", "Tailscale-User-Login": OWNER.login } };
+  const join = async () => {
+    const grant = await f.ownerCall("/api/agents/browser-invitations", {
+      method: "POST",
+      body: { name: "Muse", transport: "funnel", preset: "readonly", ttlSeconds: 600, folders: [{ root: 0, path: "granted" }] },
+    });
+    const claim = await f.gateway({ operation: "claim", invitation: grant.body.invitation });
+    f.reach.auth.decideAgentAdmission(claim.body.requestId, "approve");
+    const joined = await f.gateway({ operation: "status", requestId: claim.body.requestId, secret: claim.body.requestSecret });
+    return { grant: grant.body, token: joined.body.token };
+  };
+  const request = (token, route) => f.gateway({ operation: "request", token, method: "GET", path: "/api/browser", body: null }, route);
+  // Stopped by the owner.
+  const stopped = await join();
+  f.reach.auth.revoke(stopped.grant.clientId);
+  assert.equal(f.reach.auth.funnelWindow().open, false, "nothing else is open");
+  for (const route of [{}, tailnet]) {
+    const refused = await request(stopped.token, route);
+    assert.equal(refused.status, 401, `refused, not missing: ${refused.status}`);
+    assert.equal(refused.headers["reach-not-run"], "1");
+    const again = await f.gateway({ operation: "reconnect", invitation: stopped.grant.invitation }, route);
+    assert.equal(again.status, 401, `the link is dead: ${again.status}`);
+  }
+  // Expired.
+  const expired = await join();
+  const file = path.join(f.state, "clients.json");
+  const clients = JSON.parse(fs.readFileSync(file, "utf8"));
+  clients.find((c) => c.id === expired.grant.clientId).expiresAt = Date.now() - 1000;
+  fs.writeFileSync(file, JSON.stringify(clients));
+  assert.equal(f.reach.auth.funnelWindow().open, false);
+  for (const route of [{}, tailnet]) {
+    assert.equal((await request(expired.token, route)).status, 401);
+    const again = await f.gateway({ operation: "reconnect", invitation: expired.grant.invitation }, route);
+    assert.equal(again.status, 410, `ended, and said so: ${again.status}`);
+  }
+  // Paused: a moment's wait, never "ended".
+  f.reach.setPaused(true);
+  assert.equal((await f.gateway({ operation: "reconnect", invitation: expired.grant.invitation })).status, 503);
+  f.reach.setPaused(false);
 });

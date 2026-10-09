@@ -147,6 +147,8 @@ test("Reach at the one address: your phone gets Reach, the internet only the sta
   t.after(() => reach.close());
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const socketPath = path.join(dir, "s");
+  // The internet is answered only while a window is open: an unopened invitation opens one.
+  reach.auth.inviteGuest({ name: "Sam", full: true, ttlSeconds: 1800 });
   await reach.listenPrivate(socketPath, {
     publicApp: publicStartHandler({ dist, tailnetDir: null, privateOrigin: "https://mac.t.ts.net:8443", home: "https://mac.t.ts.net", name: "Mac", instance: reach.instance }),
   });

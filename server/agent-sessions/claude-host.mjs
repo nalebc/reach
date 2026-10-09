@@ -28,14 +28,20 @@ export function claudeModes(help = "") {
   const order = Object.keys(MODE_NAMES);
   // Help worded differently one day: the modes Reach knows, not none.
   const listed = [...choices.matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+  for (const id of listed) MODES.add(id);
   const ids = (listed.length ? listed : order).filter((id) => id !== "dontAsk");
   const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   return ids.sort((a, b) => rank(a) - rank(b)).map((id) => ({ id, label: MODE_NAMES[id] || id }));
 }
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 // --permission-mode choices in 2.1.289; the Claude app records "default" for Manual.
+// A mode a newer Claude Code lists in its --help joins them (claudeModes).
 const MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
 export const claudeMode = (mode) => (mode === "default" ? "manual" : MODES.has(mode) ? mode : null);
+// The mode a chat runs in: its own, or Manual (asks each step) for one Reach
+// can't name to Claude Code. Without a mode Claude Code would run its own
+// default, which may allow more than the phone shows (fail-open audit, Oct 8).
+const runMode = (mode) => (mode ? claudeMode(mode) || "manual" : null);
 const MEDIA = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
 // A message in the Anthropic format: text, then images inline.
@@ -121,7 +127,11 @@ export function describeClaudePrompt(id, request = {}) {
     };
   }
   const name = request.display_name || request.tool_name || "a tool";
-  const suggestions = !request.suppress_always_allow_rule && Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
+  const offered = !request.suppress_always_allow_rule && Array.isArray(request.permission_suggestions) ? request.permission_suggestions : [];
+  // "Don't ask again" applies these unseen, so only when each is one Reach
+  // reads exactly; never a switch to Bypass, never a kind Claude Code adds
+  // later (fail-open audit, Oct 8).
+  const suggestions = offered.length && offered.every(understoodSuggestion) ? offered : [];
   const shown = input.command ?? input.file_path ?? input.notebook_path ?? input.url ?? input.pattern ?? input.host;
   return {
     id,
@@ -138,6 +148,22 @@ export function describeClaudePrompt(id, request = {}) {
 
 // The modes a plan can be approved into, in Claude Code's order.
 const PLAN_MODES = ["auto", "acceptEdits", "default"];
+const DESTINATIONS = new Set(["session", "localSettings", "projectSettings", "userSettings"]);
+const SUGGESTED_MODES = new Set(["default", "acceptEdits", "plan", "auto"]);
+const plainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const onlyKeys = (v, keys) => Object.keys(v).every((k) => keys.includes(k));
+export function understoodSuggestion(s) {
+  if (!plainObject(s) || !DESTINATIONS.has(s.destination)) return false;
+  if (s.type === "setMode") return onlyKeys(s, ["type", "mode", "destination"]) && SUGGESTED_MODES.has(s.mode);
+  if (s.type === "addDirectories")
+    return onlyKeys(s, ["type", "directories", "destination"]) && Array.isArray(s.directories) && s.directories.length > 0 &&
+      s.directories.every((d) => typeof d === "string" && path.isAbsolute(d));
+  if (s.type === "addRules")
+    return onlyKeys(s, ["type", "rules", "behavior", "destination"]) && s.behavior === "allow" && Array.isArray(s.rules) && s.rules.length > 0 &&
+      s.rules.every((r) => plainObject(r) && onlyKeys(r, ["toolName", "ruleContent"]) && typeof r.toolName === "string" && !!r.toolName &&
+        (r.ruleContent === undefined || typeof r.ruleContent === "string"));
+  return false;
+}
 
 // The phone's answer as Claude Code expects it; only what was offered.
 export function claudeAnswer(prompt, answer, platform = process.platform) {
@@ -229,6 +255,19 @@ export function createClaudeHost({
   let closed = false;
   const catalogs = new Map(); // folder → its handshake
   let modeList = null;
+  // What a kept reading came from: the CLI file itself, links followed (the
+  // native installer points ~/.local/bin/claude at the new version's file;
+  // npm rewrites it in place). Read from another file, it's read again: an
+  // update from the phone shows its models and modes at once.
+  const binaryKey = (file) => {
+    try {
+      const real = fs.realpathSync(file);
+      const s = fs.statSync(real);
+      return `${real}:${s.size}:${s.mtimeMs}`;
+    } catch {
+      return String(file);
+    }
+  };
   // Reach's own environment, never a host app's (a terminal inside Claude Code
   // sets CLAUDECODE) or its own pairing settings.
   const clean = Object.fromEntries(
@@ -341,7 +380,11 @@ export function createClaudeHost({
     if (!s.proc || s.turns || s.background) return;
     // Still naming the session: its name goes in first.
     if (s.naming) return void s.naming.then(() => rest(s));
-    s.idle = setTimeout(() => !s.turns && !s.background && end(s), s.waiters.size ? idleMs : graceMs);
+    // Background work was started but Claude Code never said what runs (its
+    // tasks event renamed by a newer version, say): kept a long while rather
+    // than ending agents that may still work (fail-open audit, Oct 8).
+    const unsure = s.startedBackground && !s.tasksSeen;
+    s.idle = setTimeout(() => !s.turns && !s.background && end(s), unsure ? Math.max(idleMs, 30 * 60 * 1000) : s.waiters.size ? idleMs : graceMs);
     s.idle.unref?.();
   };
   const released = new Set();
@@ -356,6 +399,7 @@ export function createClaudeHost({
     s.prompts.clear();
     s.turns = 0;
     s.background = 0;
+    s.startedBackground = s.tasksSeen = false;
     s.unread = 0;
     s.status = "idle";
     s.streaming = "";
@@ -373,7 +417,10 @@ export function createClaudeHost({
   };
 
   function handle(s, m) {
-    if (!object(m) || typeof m.type !== "string") throw compatibilityError("claude", "stream");
+    // A line that isn't a typed message is passed over (nothing in it to
+    // read). A known message whose shape changed still stops visibly: the
+    // turn's end is read from these, and a spinner must never be left on.
+    if (!object(m) || typeof m.type !== "string") return;
     switch (m.type) {
       case "control_request": {
         if (typeof m.request_id !== "string" || !m.request_id || !object(m.request)) {
@@ -443,6 +490,7 @@ export function createClaudeHost({
       case "system":
         if (m.subtype === "status" && m.permissionMode) s.settings.mode = m.permissionMode;
         else if (m.subtype === "background_tasks_changed" && Array.isArray(m.tasks)) {
+          s.tasksSeen = true;
           // Every live background task (agents, shells), the whole set each
           // time (2.1.291). Ambient ones (monitors) last the session; they
           // don't keep it.
@@ -471,6 +519,8 @@ export function createClaudeHost({
         s.items++;
         if (!Array.isArray(m.message?.content)) throw compatibilityError("claude", "assistant message");
         const tools = m.message.content.filter((b) => b?.type === "tool_use");
+        // An agent or a command set to run on after the turn.
+        if (tools.some((b) => b.input?.run_in_background === true || b.name === "Task" || b.name === "Agent")) s.startedBackground = true;
         if (tools.length) s.activity = claudeActivity(tools.at(-1));
         if (m.error) {
           const text = (m.message?.content || []).find((b) => b?.type === "text")?.text;
@@ -529,7 +579,7 @@ export function createClaudeHost({
     if (compatible.status !== "available")
       throw bad("Couldn’t check Claude Code’s connection. Try again in a moment, or use the screen or terminal.", 503);
     if (closed) throw bad("Claude session service is closed.", 503);
-    const mode = claudeMode(s.settings.mode);
+    const mode = runMode(s.settings.mode);
     const args = [
       "-p",
       "--input-format",
@@ -578,8 +628,14 @@ export function createClaudeHost({
         const line = buffer.slice(0, i);
         buffer = buffer.slice(i + 1);
         if (!line.trim()) continue;
+        let message;
         try {
-          handle(s, JSON.parse(line));
+          message = JSON.parse(line);
+        } catch {
+          continue; // not a message (a stray print): nothing to read
+        }
+        try {
+          handle(s, message);
         } catch (error) {
           // Preserve the specific checked feature; a malformed JSON line is
           // a stream mismatch. Never expose arbitrary provider payloads.
@@ -715,8 +771,8 @@ export function createClaudeHost({
           await control(s, { subtype: "set_model", model });
           s.settings.model = model;
         }
-        if (mode && claudeMode(mode)) {
-          await control(s, { subtype: "set_permission_mode", mode: claudeMode(mode) });
+        if (mode) {
+          await control(s, { subtype: "set_permission_mode", mode: runMode(mode) });
           s.settings.mode = mode;
         }
       }
@@ -878,16 +934,17 @@ export function createClaudeHost({
     },
     // The permission modes this Claude Code offers (from its --help), kept.
     async modes() {
-      if (modeList) return modeList;
       const cli = await locate();
       if (!cli) return [];
+      const key = binaryKey(cli);
+      if (modeList?.key === key) return modeList.modes;
       const help = await new Promise((resolve) =>
         execFile(cli, ["--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
           resolve(String(stdout || "")),
         ),
       );
       const modes = claudeModes(help);
-      if (modes.length) modeList = modes;
+      if (modes.length) modeList = { key, modes };
       return modes;
     },
     // Slash commands, as the composer offers them after "/": those of the
@@ -899,10 +956,11 @@ export function createClaudeHost({
     // starts no session, in a folder (the chat's, or none); kept half an hour.
     async catalog(cwd) {
       const where = typeof cwd === "string" && path.isAbsolute(cwd) && fs.existsSync(cwd) ? cwd : os.tmpdir();
-      const kept = catalogs.get(where);
-      if (kept && now() - kept.at < 30 * 60 * 1000) return kept.value;
       const claude = await locate();
       if (!claude) return { models: [], commands: [] };
+      const key = binaryKey(claude);
+      const kept = catalogs.get(where);
+      if (kept && kept.key === key && now() - kept.at < 30 * 60 * 1000) return kept.value;
       const value = await new Promise((resolve) => {
         const proc = spawn(claude, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
           cwd: where,
@@ -944,7 +1002,7 @@ export function createClaudeHost({
         });
         proc.stdin.write(`${JSON.stringify({ type: "control_request", request_id: "models", request: { subtype: "initialize" } })}\n`);
       });
-      if (value.models.length) catalogs.set(where, { at: now(), value });
+      if (value.models.length) catalogs.set(where, { at: now(), key, value });
       return value;
     },
     // Reach is quitting: let every Claude Code process go.

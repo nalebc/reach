@@ -46,18 +46,22 @@ export const forgetGuestSession = () => sessionStorage.removeItem(storageKey);
 export function GuestBar({
   session,
   onEnd,
+  onLost,
   always = false,
 }: {
   session: GuestSession;
   onEnd: () => void;
+  // Its access check was refused: what that means is the page's to find out
+  // (an agent's page reconnects). Without it, the same as leaving.
+  onLost?: () => void;
   // An agent with Always access: no countdown, and no Leave, which would end
   // its access for good (closing the tab is enough).
   always?: boolean;
 }) {
   const [now, setNow] = useState(Date.now());
   const [expiresAt, setExpiresAt] = useState(session.expiresAt);
-  const ended = useRef(onEnd);
-  ended.current = onEnd;
+  const ended = useRef(onLost || onEnd);
+  ended.current = onLost || onEnd;
   const peersKey = session.peers.map((peer) => `${peer.url}:${peer.token}`).join("|");
   useEffect(() => {
     document.documentElement.dataset.guest = "1";

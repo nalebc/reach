@@ -260,7 +260,13 @@ export function createClaudeSessions({
   async function withUsage(health) {
     if (!health.signedIn) return health;
     const [limit, meters] = await Promise.all([usage().catch(() => null), accountUsage?.().catch(() => null)]);
-    return { ...health, ...(meters ? { usage: meters } : {}), ...(limit ? { usable: false, resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : {}) };
+    // Usable: out on a limit message; else as its meters read (a window at
+    // 100% is out); meters unread, unknown (never "has usage": a chat would
+    // be moved here, "back" sent). Fail-open audit, Oct 8.
+    const usable = limit ? false
+      : meters?.available === true ? !meters.windows.some((w) => w.usedPercent >= 100)
+      : meters ? undefined : health.usable;
+    return { ...health, usable, ...(meters ? { usage: meters } : {}), ...(limit ? { resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : {}) };
   }
   return {
     usage,
@@ -390,8 +396,12 @@ export function createClaudeSessions({
     },
     // Archived (or back) in the Claude app: its own record of the chat says
     // so (isArchived, what its sidebar's Archive sets), written whole and
-    // swapped in, so the app never reads half of it. A chat only Claude Code
-    // has (never opened in the app) has no archive to set.
+    // swapped in, so the app never reads half of it, and its list of archived
+    // chats (archived-sessions.idx, beside the records) to match. A chat only
+    // Claude Code has (never opened in the app) has no archive to set.
+    // The Claude app reads them when it opens: one already open keeps the
+    // chat in its sidebar until then (it has no way to be told; Oct 8), but
+    // leaves the record as written (one archived at 09:08 stayed so).
     async archive(id, archived = true) {
       if (!UUID.test(id)) throw Object.assign(new Error("Unknown session."), { status: 404 });
       await records();
@@ -402,12 +412,29 @@ export function createClaudeSessions({
       // app that keeps it elsewhere would silently ignore the change.
       if (typeof record?.isArchived !== "boolean")
         throw Object.assign(new Error("This Claude app keeps archived chats differently. Archive it in the Claude app."), { status: 409 });
+      if (record.isArchived === !!archived) return { archived: !!archived };
+      const swap = async (to, text) => {
+        const temporary = `${to}.reach-${process.pid}-${Date.now()}`;
+        const { mode } = await fs.stat(to);
+        await fs.writeFile(temporary, text, { mode });
+        await fs.rename(temporary, to);
+      };
       record.isArchived = !!archived;
-      const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
-      const { mode } = await fs.stat(file);
-      await fs.writeFile(temporary, JSON.stringify(record), { mode });
-      await fs.rename(temporary, file);
+      await swap(file, JSON.stringify(record));
       recordCache.delete(file);
+      // The app's list of archived chats, when it keeps one the way Reach
+      // knows ({ v: 1, archived: [local_…] }); otherwise left alone.
+      const index = path.join(path.dirname(file), "archived-sessions.idx");
+      const local = path.basename(file, ".json");
+      try {
+        const list = JSON.parse(await fs.readFile(index, "utf8"));
+        if (list?.v === 1 && Array.isArray(list.archived)) {
+          const rest = list.archived.filter((x) => x !== local);
+          await swap(index, JSON.stringify({ ...list, archived: archived ? [...rest, local] : rest }));
+        }
+      } catch {
+        /* none yet: the record alone says it */
+      }
       return { archived: !!archived };
     },
     // Deleted: its transcript (and the Claude app's record of it) to the

@@ -11,6 +11,10 @@ const exec = promisify(execFile);
 // `codex agents` use). Verified: `codex app-server daemon start` is
 // idempotent and reports the control socket, which speaks JSON-RPC over a
 // WebSocket on that Unix socket. Threads created here appear in the Codex app.
+// "codex_cli_rs/0.158.0-alpha.2.1 (Mac OS 26.6.2; arm64) …" → its version.
+export const serviceVersionOf = (agent) =>
+  typeof agent === "string" ? /^[\w.-]+\/(\d+\.\d+\.\d+[\w.+-]*)/.exec(agent.trim())?.[1] || null : null;
+
 export function createCodexDaemon({
   locate = findCodexExecutable,
   run = exec,
@@ -33,6 +37,7 @@ export function createCodexDaemon({
   // Set when Reach quits; nothing reconnects after that.
   let closed = false;
   let version = null;
+  let serviceVersion = null;
   const issues = new Map();
   async function compatibility() {
     const report = await check(await locate());
@@ -41,7 +46,7 @@ export function createCodexDaemon({
       issues.clear(); version = report.version;
       if (upgraded) socket?.terminate(); // Re-negotiate rather than use an old daemon connection.
     }
-    return { ...report, status: issues.size && report.status === "available" ? "degraded" : report.status, issues: [...issues.values()].map(e => ({ feature: e.feature, reason: e.message })) };
+    return { ...report, ...(serviceVersion ? { serviceVersion } : {}), status: issues.size && report.status === "available" ? "degraded" : report.status, issues: [...issues.values()].map(e => ({ feature: e.feature, reason: e.message })) };
   }
   const closedError = () => new Error("Codex session service is closed.");
   const fail = (message) => {
@@ -154,10 +159,13 @@ export function createCodexDaemon({
     });
     ws.on("error", () => {});
     socket = ws;
-    await send("initialize", {
+    const hello = await send("initialize", {
       clientInfo: { name: "reach", title: "Reach", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     });
+    // The service's own version ("codex_cli_rs/0.158.0 (…)"): it updates
+    // apart from the CLI Reach checks, so it's said as it is, or unknown.
+    serviceVersion = serviceVersionOf(hello?.userAgent);
     ws.send(JSON.stringify({ method: "initialized" }));
     for (const listener of readyListeners) {
       try { listener(); } catch {}

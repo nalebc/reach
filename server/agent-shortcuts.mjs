@@ -178,7 +178,8 @@ export function createAgentShortcuts({
     lock(client.id, async () => {
       prune();
       const entry = recordings.get(client.id);
-      if (!entry || entry.error) return operation();
+      // A password is never part of a saved tool.
+      if (!entry || entry.error || action.secret) return operation();
       // Read before the action, append only after its confirmed success.
       let front;
       if (action.type !== "open")

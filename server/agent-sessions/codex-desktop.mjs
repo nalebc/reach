@@ -64,7 +64,9 @@ export function createCodexDesktop({
   // the outcome is uncertain, not failed.
   // work, instead of one request: several steps with the owner ({ rpc,
   // snapshot }), e.g. reading the chat's state before answering in it.
-  const ask = async (conversationId, { method, version, params, check, work, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
+  // discover: false, for a word to every Codex window (a broadcast) about a
+  // chat none of them may hold.
+  const ask = async (conversationId, { method, version, params, check, work, discover = true, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
     if (!UUID.test(conversationId)) throw unavailable();
     try {
       await checkEndpoint();
@@ -96,12 +98,13 @@ export function createCodexDesktop({
       pending.clear();
       socket?.destroy();
     };
-    const send = (message) => {
+    // written: called once it's out (before the socket may close).
+    const send = (message, written) => {
       if (ended || !socket?.writable) throw unavailable();
       const body = Buffer.from(JSON.stringify(message));
       const header = Buffer.alloc(4);
       header.writeUInt32LE(body.length);
-      socket.write(Buffer.concat([header, body]));
+      socket.write(Buffer.concat([header, body]), written);
     };
     const rpc = (method, params, version, targetClientId) =>
       new Promise((resolve, reject) => {
@@ -217,6 +220,11 @@ export function createCodexDesktop({
       if (typeof hello.result?.clientId !== "string" || !hello.result.clientId)
         throw unavailable();
       clientId = hello.result.clientId;
+      if (!discover)
+        return await work({
+          broadcast: (m, p, v) =>
+            new Promise((resolve) => send({ type: "broadcast", method: m, sourceClientId: clientId, params: p, version: v }, () => resolve())),
+        });
       const owner = await rpc(
         "thread-owner-discovery",
         { hostId: "local", conversationId },
@@ -378,6 +386,19 @@ export function createCodexDesktop({
         unavailable: editUnavailable,
         uncertain: editUncertain,
       }).then(() => ({ edited: true }));
+    },
+    // Archived (or back) by Reach through the shared Codex daemon: the Codex
+    // app runs its own app-server, so it's told as its other windows tell
+    // each other (thread-archived, v2; thread-unarchived, v1), and its list
+    // drops (or brings back) the chat at once instead of on its next restart.
+    archived(conversationId, archived = true) {
+      return ask(conversationId, {
+        discover: false,
+        work: ({ broadcast }) =>
+          archived
+            ? broadcast("thread-archived", { hostId: "local", conversationId }, 2)
+            : broadcast("thread-unarchived", { hostId: "local", conversationId }, 1),
+      });
     },
     model(conversationId, { model, effort, serviceTier }) {
       if (typeof model !== "string" || !model.trim())

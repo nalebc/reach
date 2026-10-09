@@ -54,7 +54,9 @@ export function createAppCards({
 }) {
   const there = () => `Answer it in the Codex app on your ${computerWord(platform)}.`;
   // The live request behind the card: the one with the call's id, or the
-  // chat's only approval when the app doesn't name it.
+  // chat's only approval when the app doesn't name it. One the app names
+  // otherwise is another request (asked after this card, say): never
+  // answered with this card's button.
   const find = async (id, promptId) => {
     const asked = await pending("codex", id);
     if (!asked || (promptId && asked.id !== promptId)) throw bad("This request was already answered.", 409);
@@ -65,7 +67,8 @@ export function createAppCards({
       throw bad(`${error.message} ${error.message.includes("Codex app") ? "" : there()}`.trim(), 409);
     }
     const named = requests.filter((r) => [r.params?.itemId, r.params?.callId].map(String).includes(String(asked.callId)));
-    const request = named.length === 1 ? named[0] : !named.length && requests.length === 1 ? requests[0] : null;
+    const unnamed = (r) => r.params?.itemId == null && r.params?.callId == null;
+    const request = named.length === 1 ? named[0] : !named.length && requests.length === 1 && unnamed(requests[0]) ? requests[0] : null;
     if (!request) throw bad(`Reach can't tell which request this is. ${there()}`, 409);
     return { asked, request };
   };

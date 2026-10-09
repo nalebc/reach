@@ -29,6 +29,14 @@ export async function idleSeconds(run = exec) {
   return m ? Number(m[1]) / 1e9 : null;
 }
 
+// Whether this Mac's screen is locked (its console session says so), null
+// when it can't tell. Locked, nothing can be typed into any app.
+export async function screenLocked(run = exec) {
+  const { stdout } = await run("/usr/sbin/ioreg", ["-n", "Root", "-d", "1"], { timeout: 5000 });
+  const m = stdout.match(/"CGSSessionScreenIsLocked"=(Yes|No)/);
+  return m ? m[1] === "Yes" : null;
+}
+
 // The Claude app's process by its bundle id, as macOS's own app list has it
 // (wherever the app lives or whatever it's named); null when it isn't open,
 // undefined when that list can't be read.

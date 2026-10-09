@@ -156,3 +156,20 @@
   font-size: 12px;
   font-weight: 650;
 }
+/* Take the access back from another browser: one clear, full-width action. */
+.funnel-agent-use-here {
+  width: 100%;
+  min-height: 48px;
+  margin: 4px 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lime, #b9efd4);
+  color: #0d1410;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.funnel-agent-use-here:focus-visible {
+  outline: 2px solid var(--lime, #b9efd4);
+  outline-offset: 3px;
+}

@@ -98,9 +98,10 @@ test("Gemini CLI's chats are listed with the others, open in Gemini's look, and 
   // The way on: in ⋯ only, the apps that can take it; no card above the box.
   assert.equal($(".move-offer"), null);
   await click($$("button").find((b) => b.getAttribute("aria-label") === "More"));
+  await click($(".as-details .move-continue"));
   assert.deepEqual(
-    $$(".as-details .move-item .move-item-text > span").map((s) => s.textContent),
-    ["Continue in Codex", "Continue in Claude Code"],
+    $$(".as-details .move-item:not(.move-section-back) .move-item-text > span").map((s) => s.textContent),
+    ["Codex", "Claude Code"],
   );
   assert.equal($(".as-prompt"), null, "read-only histories never become actionable approvals");
   await click($$("button").find(b => b.textContent === "Open live screen"));

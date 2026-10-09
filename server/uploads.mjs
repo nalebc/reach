@@ -28,6 +28,10 @@ export function createUploads({
       fs.rmSync(path.join(dir, name), { force: true });
   const sessions = new Map();
   const creating = new Map();
+  // Uploads that landed, for a while: a phone whose answer to "complete" was
+  // lost asks again and hears the same success, not that its upload is gone.
+  const finished = new Map();
+  const DONE_KEEP = 60 * 60 * 1000;
   const own = (id, client) => {
     const session = typeof id === "string" ? sessions.get(id) : undefined;
     if (!session || session.clientId !== client.id)
@@ -43,6 +47,8 @@ export function createUploads({
     () => {
       for (const session of sessions.values())
         if (Date.now() - session.touched > IDLE) void drop(session);
+      for (const [id, done] of finished)
+        if (Date.now() - done.at > DONE_KEEP) finished.delete(id);
     },
     60 * 60 * 1000,
   );
@@ -150,33 +156,27 @@ export function createUploads({
       }
     },
     // Moves the finished file into `folder`, never over an existing file.
+    // This device's upload that already landed (see `finished`), or null.
+    done(id, client) {
+      const done = typeof id === "string" ? finished.get(id) : undefined;
+      return done && done.clientId === client.id ? { name: done.name } : null;
+    },
     async complete(id, client, folder) {
+      const done = this.done(id, client);
+      if (done) return done;
       const session = own(id, client);
+      // A second complete while the first moves the file: the same answer.
+      if (session.completing) return session.completing;
       if (session.writing || session.received !== session.size)
         throw Object.assign(fail(409, "Some of the file hasn't arrived yet."), {
           offset: session.received,
         });
-      const target = path.join(folder, session.name);
-      await fsp.truncate(session.file, session.size);
+      session.completing = finish(session, folder);
       try {
-        // Same disk: instant, and fails if the name is taken.
-        await fsp.link(session.file, target);
-      } catch (e) {
-        if (e.code === "EEXIST")
-          throw fail(
-            409,
-            "A file with that name now exists. Rename it before uploading.",
-          );
-        if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"].includes(e.code))
-          throw e;
-        await fsp.copyFile(
-          session.file,
-          target,
-          fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
-        );
+        return await session.completing;
+      } finally {
+        session.completing = undefined;
       }
-      await drop(session);
-      return { name: session.name };
     },
     async cancel(id, client) {
       await drop(own(id, client));
@@ -186,6 +186,34 @@ export function createUploads({
       return sessions.get(id);
     },
   };
+  async function finish(session, folder) {
+    const target = path.join(folder, session.name);
+    await fsp.truncate(session.file, session.size);
+    try {
+      // Same disk: instant, and fails if the name is taken.
+      await fsp.link(session.file, target);
+    } catch (e) {
+      if (e.code === "EEXIST")
+        throw fail(
+          409,
+          "A file with that name now exists. Rename it before uploading.",
+        );
+      if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"].includes(e.code))
+        throw e;
+      await fsp.copyFile(
+        session.file,
+        target,
+        fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
+      );
+    }
+    finished.set(session.id, {
+      clientId: session.clientId,
+      name: session.name,
+      at: Date.now(),
+    });
+    await drop(session);
+    return { name: session.name };
+  }
 }
 const exists = (file) =>
   fsp.access(file).then(

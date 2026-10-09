@@ -2017,21 +2017,39 @@ button.as-image-more {
   width: auto;
 }
 
-/* Delete, at the end of the chat's ⋯ menu. */
+/* Delete, at the end of the chat's ⋯ menu, past a line: a row like the
+   others, in red. */
 .as-details-delete {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
-  min-height: 44px;
-  padding: 0 14px;
+  min-height: 48px;
+  margin-top: 9px;
+  padding: 8px 10px;
   border: 0;
-  border-top: 1px solid var(--hairline, rgb(255 255 255 / 0.07));
+  border-radius: 10px;
   background: none;
   color: #f1a08d;
   font: inherit;
   font-size: 14px;
   text-align: left;
+}
+.as-details-delete::before {
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  left: 6px;
+  border-top: 0.5px solid var(--as-float-line, rgb(255 255 255 / 0.07));
+  content: "";
+}
+.as-details-delete:active {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+.as-details-delete > svg {
+  flex: 0 0 auto;
+  margin: 0 1px;
 }
 
 /* How full the chat's context is, beside the model (as both apps show it). */

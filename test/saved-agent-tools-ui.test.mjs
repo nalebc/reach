@@ -245,7 +245,9 @@ test("a visual agent records screen actions, saves a tool and replays it without
   button(c, "Screen").click();
   await settle();
   const frame = await dom.waitFor(() =>
-    c.querySelector('[aria-label="Mac screen. Click to click there."]'),
+    c.querySelector(
+      '[aria-label="Mac screen. Click, drag, scroll and type here as on the Mac."]',
+    ),
   );
   await dom.waitFor(() => frame.querySelector("img"));
   frame.getBoundingClientRect = () => ({
@@ -262,9 +264,13 @@ test("a visual agent records screen actions, saves a tool and replays it without
     }),
   );
   await dom.waitFor(() => applied.length === 1);
+  button(c, "Keys").click();
+  await settle();
   await type(c.querySelector('[aria-label="Shortcut"]'), "cmd+l");
   button(c, "Press").click();
   await dom.waitFor(() => applied.length === 2);
+  button(c, "Type text").click();
+  await settle();
   await type(
     c.querySelector('[aria-label="Text to type"]'),
     "https://mail.google.com/",

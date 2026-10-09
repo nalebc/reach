@@ -322,7 +322,7 @@ export function restartNotification(request, terminals = 0) {
       signature: request.id,
       createdAt: request.requestedAt,
       expiresAt: request.expiresAt,
-      target: { page: "overview" },
+      target: { page: "overview", needs: `restart:${request.id}` },
       actions: waiting
         ? [
             { id: "restart", label: "Restart now" },

@@ -284,3 +284,97 @@ test("the Claude app helper is asked for the chat by its id, and says which one 
   assert.match(helper, /session\.map \{ w\.sessions == \[\$0\] \}/);
   assert.match(helper, /guard showing\(window\) else \{ fail\("The Claude app switched to another chat."\) \}/);
 });
+
+test("locked Mac: a message waiting for the Claude app goes in through Claude Code, never typed", async () => {
+  const sent = [];
+  const { sessions, tries, delivered } = await waitingSessions(() => {
+    throw inApp(60000);
+  }, {
+    claude: { read: async () => ({ session: { cwd: "/tmp/project", mode: "auto" } }) },
+    claudeHost: { onRelease() {}, drives: () => false, send: async (id, message) => { sent.push({ id, ...message }); return { sent: true }; } },
+  });
+  try {
+    sessions.frontmost("com.apple.Safari");
+    for (const end = Date.now() + 1000; tries.length < 1 && Date.now() < end; ) await later(10);
+    await later(50);
+    assert.equal(sent.length, 0, "unlocked: typed into the app only");
+    sessions.frontmost("com.apple.loginwindow");
+    assert.ok(await delivered(2000), "in once the Mac locks");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].id, A);
+    assert.equal(sent[0].text, "hi");
+    assert.equal(sent[0].cwd, "/tmp/project");
+    assert.equal(sent[0].mode, "auto");
+    assert.equal(tries.length, 1, "never typed while locked");
+  } finally {
+    sessions.close();
+  }
+});
+
+test("a chat not on screen while you're at the Mac: Claude Code continues it at once, never waiting or switching", async () => {
+  const sent = [];
+  const { sessions, tries, delivered } = await waitingSessions(() => {
+    throw Object.assign(inApp(60000), { elsewhere: true });
+  }, {
+    claude: { read: async () => ({ session: { cwd: "/tmp/project", mode: "auto" } }) },
+    claudeHost: { onRelease() {}, drives: () => false, send: async (id, message) => { sent.push({ id, ...message }); return { sent: true }; } },
+  });
+  try {
+    sessions.frontmost("com.apple.Safari");
+    assert.ok(await delivered(2000), "in without waiting for you to step away");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, "hi");
+    assert.equal(sent[0].cwd, "/tmp/project");
+    assert.equal(tries.length, 1, "the app was asked once, never switched again");
+  } finally {
+    sessions.close();
+  }
+});
+
+for (const landed of [false, true]) test(`a restart mid-delivery: ${landed ? "already in the chat, it's done" : "never in the chat, it goes again by itself"}`, async () => {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-restart-outbox-"));
+  const file = path.join(dir, "agent-outbox.json");
+  const before = createOutbox({ file });
+  const m = before.add(A, { text: "hi", via: "app", title: "Fix" });
+  before.begin(A, m.id);
+  const outbox = createOutbox({ file });
+  assert.equal(outbox.list(A)[0].delivery, "paused");
+  const typed = [];
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: {}, codexLive: { drives: () => false },
+    claude: { arrived: async () => landed },
+    claudeHost: { onRelease() {} }, signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks: { close() {} }, agentWatch: { onChange: () => () => {} },
+    outbox,
+    claudeCompose: { deliver: async (id, { begin }) => { begin(); typed.push(id); return { delivered: true }; } },
+  });
+  try {
+    sessions.frontmost("com.apple.Safari");
+    for (const end = Date.now() + 2000; outbox.list(A).length && Date.now() < end; ) await later(10);
+    assert.equal(outbox.list(A).length, 0, "nothing left paused");
+    assert.deepEqual(typed, landed ? [] : [A], landed ? "never sent twice" : "sent once");
+  } finally {
+    sessions.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a message paused by an older Reach's restart is rechecked too", async () => {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-old-pause-"));
+  const file = path.join(dir, "agent-outbox.json");
+  await fs.writeFile(file, JSON.stringify({ [A]: [{ id: "m1", text: "hi", images: [], at: 1, via: "app", delivery: "paused",
+    error: "Reach restarted during delivery. Check the conversation before sending again; automatic retry is paused." }] }));
+  const outbox = createOutbox({ file });
+  assert.equal(outbox.list(A)[0].restarted, true);
+  assert.equal(outbox.resume(A, "m1"), true);
+  await fs.rm(dir, { recursive: true, force: true });
+});

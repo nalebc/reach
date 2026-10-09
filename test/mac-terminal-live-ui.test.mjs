@@ -172,6 +172,8 @@ test("Return on an empty line in a Mac tab is sent, so prompts can be answered",
   enter.click();
   await dom.waitFor(() => state.sent.length);
   assert.deepEqual(state.sent, [{ text: "" }]);
+  // One line at a time: the next Enter after the Mac took this one.
+  await settle();
   // Spaces alone are a slip: still just Return.
   const term = Terminal.instances.at(-1);
   term.type("  ");

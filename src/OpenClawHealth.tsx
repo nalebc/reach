@@ -69,9 +69,15 @@ export function ClawHealthPill({
   const [problem, setProblem] = useState("");
   const [checked, setChecked] = useState("");
   const fetching = useRef(false);
+  // Asked for while a read was on its way (a restart just finished): that
+  // read began before the change, so another follows it.
+  const again = useRef(false);
   const load = useCallback(
-    async (force = false) => {
-      if (fetching.current) return;
+    async (force = false): Promise<void> => {
+      if (fetching.current) {
+        if (force) again.current = true;
+        return;
+      }
       if (!force && Date.now() - readAt.current < EVERY_MS) return;
       readAt.current = Date.now();
       fetching.current = true;
@@ -93,11 +99,19 @@ export function ClawHealthPill({
         fetching.current = false;
         setRefreshing(false);
       }
+      if (again.current) {
+        again.current = false;
+        return load(true);
+      }
     },
     [peer],
   );
+  // The first look, then each refresh the page asks for, at once.
+  const asked = useRef(refresh);
   useEffect(() => {
-    void load();
+    const forced = asked.current !== refresh;
+    asked.current = refresh;
+    void load(forced);
   }, [load, refresh]);
   useEffect(() => {
     const timer = setInterval(() => void load(), EVERY_MS * 2);

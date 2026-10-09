@@ -103,6 +103,10 @@ test("a large file uploads in chunks, resumes at the right offset, and appears o
     assert.ok(
       fs.readFileSync(path.join(t.shared, "Inbox", "video.mov")).equals(file),
     );
+    // The answer was lost and the app asks again: the same success.
+    const again = await t.call(t.owner.token, `/api/files/uploads/${id}/complete`, { method: "POST" });
+    assert.equal(again.status, 200);
+    assert.deepEqual(await again.json(), { name: "video.mov" });
     // The session and its temp file are gone.
     assert.equal(
       (await t.call(t.owner.token, `/api/files/uploads/${id}`)).status,

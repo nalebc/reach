@@ -44,6 +44,11 @@ assert(modelOf("Auto") == nil)
 assert(effortOf("Effort: Extra") == "Extra high")
 assert(effortOf("Effort: Low") == "Low")
 assert(effortOf("Model: Sonnet 5.5") == nil)
+// The account button ("<name> <plan>") is neither an effort nor a model chip.
+assert(effortOf("Jordan Max") == nil)
+assert(modelOf("Jordan Max") == nil)
+assert(effortOf("Effort: High") == "High")
+assert(effortOf("Claude Opus 5.5 Max") == "Max")
 var gate = SettingsSessionGate(session: "local_expected")
 var visible = ["local_expected"]
 var actions = 0

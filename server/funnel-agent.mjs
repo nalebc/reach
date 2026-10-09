@@ -232,7 +232,7 @@ export function createFunnelAgentGateway({
       return;
     }
     const status = [
-      400, 401, 403, 404, 405, 408, 409, 410, 413, 415, 421, 429, 503,
+      400, 401, 403, 404, 405, 408, 409, 410, 413, 415, 421, 423, 429, 503,
     ].includes(error?.status)
       ? error.status
       : 500;
@@ -248,11 +248,15 @@ export function createFunnelAgentGateway({
       413: "The agent request is too large.",
       415: "Use JSON for the agent request.",
       421: "Unrecognized host.",
+      423: "This access is in use in another browser. Opening the link here moves it to this browser.",
       429: "Too many agent requests. Wait briefly and retry.",
-      503: "Agent access is closed. Ask the laptop owner for a new invitation.",
+      503: "Reach is briefly unavailable (restarting, paused or reconnecting). Retry in a few seconds.",
       500: "The agent request could not be completed.",
     };
-    if (status === 429) res.setHeader("Retry-After", "5");
+    if (status === 429 || status === 503) res.setHeader("Retry-After", "5");
+    // Refused here, before any route ran: safe for the agent's page to send
+    // again, writes included (src/funnel-agent.ts funnelFetch).
+    res.setHeader("Reach-Not-Run", "1");
     json(res, status, { error: messages[status] });
   };
   const run = async (req, res) => {
@@ -313,6 +317,8 @@ export function createFunnelAgentGateway({
       }
       const operationKeys = {
         claim: ["invitation"],
+        // The page on its own, after a refused request (core.mjs relink).
+        reconnect: ["invitation"],
         status: ["requestId", "secret"],
         request: ["token", "method", "path", "body"],
       };
@@ -350,12 +356,11 @@ export function createFunnelAgentGateway({
       if (replay.size >= REPLAY_LIMIT) throw failure(429);
       replay.set(nonce, payload.issuedAt + CLOCK_WINDOW);
       if (!available()) throw failure(503);
-      if (payload.operation === "claim") {
+      if (payload.operation === "claim" || payload.operation === "reconnect") {
         if (!encoded(payload.invitation, 32)) throw failure(400);
-        const result = await auth.redeemFunnelBrowser(
-          payload.invitation,
-          identity.thumbprint,
-        );
+        const result = await (payload.operation === "claim"
+          ? auth.redeemFunnelBrowser(payload.invitation, identity.thumbprint)
+          : auth.reconnectFunnelBrowser(payload.invitation, identity.thumbprint));
         if (result?.status !== "pending" || result.token !== undefined)
           throw failure(500);
         // Notification delivery must not lose a successfully consumed receipt.

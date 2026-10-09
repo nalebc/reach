@@ -65,3 +65,23 @@ test("failed upload creation releases the reserved quota", async (t) => {
   available = true;
   assert.ok((await create("device", "after-failure.txt")).id);
 });
+
+test("completing an upload again, after its answer was lost, reports the same success", async (t) => {
+  const { uploads, create } = await fixture(t);
+  const { Readable } = await import("node:stream");
+  const { id } = await create("phone", "photo.jpg");
+  const body = Readable.from([Buffer.from("x")]);
+  body.complete = true;
+  await uploads.write(id, { id: "phone" }, 0, body);
+  const folder = path.join(path.dirname(uploads.get(id).file), "..", "shared");
+  // Two completes at once (a retry racing the first), then one more later.
+  const both = await Promise.all([
+    uploads.complete(id, { id: "phone" }, folder),
+    uploads.complete(id, { id: "phone" }, folder),
+  ]);
+  assert.deepEqual(both, [{ name: "photo.jpg" }, { name: "photo.jpg" }]);
+  assert.deepEqual(await uploads.complete(id, { id: "phone" }, folder), { name: "photo.jpg" });
+  assert.equal(await fs.readFile(path.join(folder, "photo.jpg"), "utf8"), "x");
+  // Another device can't learn about it.
+  await assert.rejects(uploads.complete(id, { id: "other" }, folder), { status: 404 });
+});

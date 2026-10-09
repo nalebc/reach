@@ -177,9 +177,11 @@ const filter = async (root, value) => {
   await settle();
 };
 
-test("Tools opens directly with compact Run controls; search, empty results, and missing inputs never execute a task", async (t) => {
+test("Tools is one tap from the live screen, with compact Run controls; search, empty results, and missing inputs never execute a task", async (t) => {
   const f = await fixture(t),
     nav = f.root.querySelector('[aria-label="Workspace navigation"]');
+  assert.equal(button(nav, "Screen").getAttribute("aria-current"), "page");
+  await navigate(f.root, "Tools");
   assert.equal(button(nav, "Tools").getAttribute("aria-current"), "page");
   assert.equal(button(nav, "Overview"), undefined);
   assert.equal(f.root.querySelector(".atl-runner"), null);

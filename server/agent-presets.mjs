@@ -20,9 +20,9 @@ export const validAppPath = (value) =>
 // created the invitation (browser-host-guard.mjs), as app sessions did.
 export const hostGuardedPreset = (policy) => policy?.browser === true && ["full", "apps"].includes(policy.preset);
 
-// "Always": the agent keeps its access until the owner ends it and comes back
-// from the same browser; the link still works once (Reopen link lets a new
-// browser use it once more). Only over the public link.
+// "Always": the agent keeps its access until the owner ends it. Once approved,
+// its one link brings it back from any browser (core.mjs rebind), moving the
+// access and disconnecting the old browser. Only over the public link.
 export const STANDING_SECONDS = 10 * 365 * 86400;
 export const standingPolicy = (policy) => policy?.browser === true && policy.standing === true;
 

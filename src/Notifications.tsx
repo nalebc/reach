@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Loader2,
   Monitor,
+  RotateCw,
   Settings2,
   Sparkles,
   X,
@@ -26,6 +27,7 @@ import {
   takeNotificationIntent,
 } from "./notification-bridge";
 import { holdPage } from "./page-hold";
+import type { NeedItem } from "./NeedsYou";
 import "./notifications.css";
 
 export type NotificationItem = {
@@ -58,6 +60,8 @@ const Notifications = createContext<{
   setup: boolean;
   open: (bell?: HTMLElement) => void;
   expanded: boolean;
+  items: NotificationItem[];
+  act: (item: NotificationItem, action: string) => Promise<void>;
 } | null>(null);
 // Use the existing inbox scan for background apps, including OpenClaw.
 // A chat view for a different computer must never inherit these badges.
@@ -67,6 +71,33 @@ export function useAppNotifications(peer: Peer): Record<string, number> {
     state.peer.url === peer.url && state.peer.token === peer.token
     ? state.apps
     : {};
+}
+// Requests only the bell knew about (an agent asking to restart Reach), as
+// cards in Home's "Needs you", answered right there: a notification's link
+// (needs=restart:…) lands on the card itself, not on Home with the bell to find.
+export function useBellNeeds(peer: Peer): NeedItem[] {
+  const state = useContext(Notifications);
+  if (
+    !state ||
+    state.peer.id !== peer.id ||
+    state.peer.url !== peer.url ||
+    state.peer.token !== peer.token
+  )
+    return [];
+  return state.items
+    .filter((item) => item.source === "restart")
+    .map((item) => ({
+      key: item.id,
+      icon: <RotateCw size={22} />,
+      title: item.title,
+      detail: [item.sender, item.summary].filter(Boolean).join(" · "),
+      actions: (item.actions || []).map((action) => ({
+        label: action.label,
+        primary: action.tone === "primary",
+        completes: true,
+        run: () => state.act(item, action.id),
+      })),
+    }));
 }
 export function NotificationBell({ compact = false }: { compact?: boolean }) {
   const state = useContext(Notifications);
@@ -454,7 +485,11 @@ export function NotificationCenter({
     );
     setItems((items) => items.filter((value) => value.id !== item.id));
     setNotice(
-      action === "deny"
+      item.source === "restart" && action !== "deny"
+        ? action === "after"
+          ? "Reach restarts when the chats finish"
+          : "Reach is restarting"
+        : action === "deny"
         ? "Request denied"
         : action === "approve"
           ? "Allowed once"
@@ -479,6 +514,8 @@ export function NotificationCenter({
               setup:
                 !setup.loading && !setup.on && setup.support !== "unsupported",
               expanded: open,
+              items,
+              act,
               open: (bell) => {
                 setAnchor(bell?.getBoundingClientRect() || null);
                 setOpen(true);

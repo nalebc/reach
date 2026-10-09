@@ -115,3 +115,16 @@ test("Claude native consent rejects concurrent taps and rechecks the request aft
   await assert.rejects(answer, /already answered/);
   assert.equal(mac.presses.length, 0);
 });
+
+// Allow presses the card that shows "Allow Claude to use" and its apps: with
+// no app named (the field renamed in a newer Claude), any apps card would
+// match, so Allow is never pressed. Deny still is (fail-open audit, Oct 8).
+test("an apps card that names no app is never allowed from the phone", async () => {
+  const mac = app();
+  mac.asked = { id: "consent:toolu_1", kind: "apps", apps: [] };
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(A), wait: async () => {} });
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), (e) => e.status === 409 && /which apps/.test(e.message));
+  assert.deepEqual(mac.presses, []);
+  await consent.answer(A, "consent:toolu_1", { decision: "deny" });
+  assert.deepEqual(mac.presses, ["Deny"]);
+});

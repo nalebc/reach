@@ -53,9 +53,16 @@ export function validateBrowserInvitation(input, options = {}) {
 }
 export const id = () => crypto.randomUUID();
 // A public-link browser session ends after two silent minutes, unless the owner
-// gave the agent Always access: then only the owner ends it.
+// gave the agent Always access, or approved a preset agent: then it lasts until
+// its access ends (or the owner ends it), however long the agent is quiet.
+// Approved by the owner: stamped since 2026-10-08, or (agents approved before
+// then) an admission the owner approved and the agent may have collected.
+export const ownerApproved = (client) =>
+  client?.approvedAt > 0 || ["approved", "collected"].includes(client?.admission?.status);
 export const browserIdleEnded = (client, now = Date.now()) =>
-  client?.browserTransport === "funnel" && !standingPolicy(client.policy) && !(client.browserIdleExpiresAt > now);
+  client?.browserTransport === "funnel" && !standingPolicy(client.policy) &&
+  !(ownerApproved(client) && client.policy?.preset !== undefined) &&
+  !(client.browserIdleExpiresAt > now);
 export const hash = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
 export function atomicJson(file, value) {
@@ -725,9 +732,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         (client.inviteExpiresAt && client.inviteExpiresAt <= Date.now())
       )
         throw fail(404, "That invitation has ended.");
-      if (client.browserTransport === "funnel" && client.admission && admissionStatus(client) === "expired")
+      // Moving to another browser (relink): already approved, so the owner's
+      // edits carry over as for a collected session.
+      const moving = client.admission?.moved === true;
+      if (client.browserTransport === "funnel" && client.admission && admissionStatus(client) === "expired" && !moving)
         throw fail(404, "That invitation has ended.");
-      if (client.admission && client.admission.status !== "collected")
+      if (client.admission && client.admission.status !== "collected" && !moving)
         throw fail(409, "This agent's first connection is waiting or has ended. Create a new invitation to change its access.");
       const guest = client.kind === "guest";
       const browser = client.policy?.browser === true;
@@ -801,7 +811,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       client.expiresAt = expiresAt;
       // Keep the already-approved, browser-bound credential. Outstanding
       // action approvals have their own old grant and are invalidated below.
-      if (client.admission?.status === "collected")
+      if (client.admission?.status === "collected" || client.admission?.moved === true)
         client.admission.grant = admissionGrant(client);
       client.changedAt = new Date().toISOString();
       result = {
@@ -893,6 +903,79 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   const claimSource = (client) => client.browserTransport === "funnel"
     ? `browser:${client.browserBinding}`
     : `tailnet:${client.tailscale?.nodeId || "unbound"}`;
+  // An agent's one link, after its first opening. Approved by the owner: from
+  // its own browser it refreshes the session (a lost answer, a rotated token);
+  // from another browser (Muse's browser reset, a new tab, another machine)
+  // opening it moves the access there and the browser it used is cut off. An
+  // automatic reconnect never moves it (423): only opening the link does, so
+  // two open browsers can't take it back and forth. Not approved yet: the
+  // browser that opened it gets its waiting request again, nobody else gets
+  // anything. Only an ended access (410), a declined one (403) or an unknown
+  // or revoked link (revoking deletes it: null, 401) is final.
+  const REBINDS_PER_MINUTE = 6;
+  // The terms the owner approved must still be the record's terms: a change
+  // that fails closed (another supervising phone, say) is never re-approved.
+  const rebindable = (client, now = Date.now()) =>
+    isFunnelBrowser(client) && client.policy?.preset !== undefined &&
+    typeof client.linkHash === "string" && ownerApproved(client) &&
+    client.admission?.grant === admissionGrant(client) &&
+    client.expiresAt > now && !!applyAgentPolicy(client, config);
+  function relink(latest, invitation, keyThumbprint, reconnect) {
+    const now = Date.now();
+    const client = latest.find((c) => isFunnelBrowser(c) && typeof c.linkHash === "string" && c.linkHash === hash(invitation));
+    if (!client) return null;
+    if (!(client.expiresAt > now) || !applyAgentPolicy(client, config))
+      throw fail(410, "This agent's access has ended.");
+    const receipt = (requestSecret, extra) => ({
+      status: "pending",
+      requestId: client.admission.requestId,
+      requestSecret,
+      verificationCode: client.admission.verificationCode,
+      expiresAt: client.admission.expiresAt,
+      clientId: client.id,
+      kind: "agent",
+      ...extra,
+    });
+    if (rebindable(client, now)) {
+      const same = client.browserBinding === keyThumbprint;
+      if (!same && reconnect)
+        throw fail(423, "This agent's access is in use in another browser.");
+      const recent = (client.rebinds || []).filter((at) => at > now - 60000);
+      if (recent.length >= REBINDS_PER_MINUTE)
+        throw fail(429, "This link was opened too often just now. Wait a minute and try again.");
+      client.rebinds = [...recent, now];
+      // The previous token and receipt end here, in the same write.
+      for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt", "inviteHash", "inviteExpiresAt"]) delete client[key];
+      client.browserBinding = keyThumbprint;
+      const requestSecret = crypto.randomBytes(32).toString("base64url");
+      // Already approved: collected on the page's next check, any time while
+      // the access lasts (`moved`: the owner's edits carry over, as collected).
+      client.admission = {
+        requestId: id(),
+        secretHash: hash(requestSecret),
+        verificationCode: crypto.randomInt(100000, 1000000).toString(),
+        requestedAt: now,
+        expiresAt: client.expiresAt,
+        status: "approved",
+        moved: true,
+        grant: admissionGrant(client),
+      };
+      return receipt(requestSecret, same ? { refreshed: true } : { moved: true });
+    }
+    if (client.admission?.status === "denied")
+      throw fail(403, "The owner declined this agent's connection.");
+    if (client.browserBinding !== keyThumbprint || !client.admission) return null;
+    const status = admissionStatus(client, now);
+    // Its answer was lost: the same waiting request (same code), a new secret.
+    if (status === "pending") {
+      const requestSecret = crypto.randomBytes(32).toString("base64url");
+      client.admission.secretHash = hash(requestSecret);
+      return receipt(requestSecret, { resumed: true });
+    }
+    if (status === "expired")
+      throw fail(410, "This invitation expired before it was approved.");
+    return null;
+  }
   function redeemGuest(invitation, identity) {
     return redeemInvitation(invitation, identity);
   }
@@ -901,7 +984,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       throw fail(401, "A valid browser key is required to claim this invitation.");
     return redeemInvitation(invitation, undefined, keyThumbprint);
   }
-  function redeemInvitation(invitation, identity, keyThumbprint) {
+  // The agent's page, on its own after a refused request: like opening the
+  // link, except that it never moves the access from another browser.
+  function reconnectFunnelBrowser(invitation, keyThumbprint) {
+    if (!validBrowserBinding(keyThumbprint))
+      throw fail(401, "A valid browser key is required to reconnect.");
+    return redeemInvitation(invitation, undefined, keyThumbprint, true);
+  }
+  function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false) {
     const funnel = keyThumbprint !== undefined;
     if (
       typeof invitation !== "string" ||
@@ -921,6 +1011,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
       );
+      if (!client && funnel) {
+        const linked = relink(latest, invitation, keyThumbprint, reconnect);
+        if (linked) { result = linked; return latest; }
+      }
       if (!client)
         throw fail(
           401,
@@ -991,9 +1085,11 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return result;
   }
-  // The owner's "Reopen link": the agent's same link works once more, for 15
-  // minutes, and joins with the owner's code approval like the first time. The
-  // browser it used until now is disconnected (the route ends its work).
+  // The owner's "Reopen link" (the owner API; the link of an approved agent
+  // already works from any browser): the browser in use is disconnected (the
+  // route ends its work) and the link keeps working, nothing to approve. A
+  // link not approved yet works once more, for 15 minutes, with the owner's
+  // code approval like the first time.
   function reopenBrowserInvitation(clientId) {
     let result;
     changeClients((latest) => {
@@ -1001,6 +1097,11 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const client = latest.find((c) => c.id === clientId);
       if (!isFunnelBrowser(client) || client.policy?.preset === undefined || !client.linkHash || !(client.expiresAt > now))
         throw fail(404, "This agent's link can't be reopened. Make a new invite.");
+      if (rebindable(client, now)) {
+        for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
+        result = { clientId: client.id, joinBy: client.expiresAt };
+        return latest;
+      }
       for (const key of ["hash", "browserBinding", "admission", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
       client.inviteHash = client.linkHash;
       client.inviteExpiresAt = Math.min(client.expiresAt, now + 900000);
@@ -1024,6 +1125,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       if (admissionStatus(client) !== "pending")
         throw fail(409, "This agent connection request is no longer pending.");
       client.admission.status = decision === "approve" ? "approved" : "denied";
+      // Lasting: its link then works again from any browser (rebindable).
+      if (decision === "approve") client.approvedAt = Date.now();
       result = { requestId, clientId: client.id, status: client.admission.status };
       return latest;
     });
@@ -1058,7 +1161,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       if (["pending", "denied", "expired"].includes(status))
         return { result: { status, expiresAt: request.expiresAt } };
       if (status === "accepted")
-        throw fail(409, "This agent credential was already collected. If the response was lost, ask for a new invitation.");
+        throw fail(409, "This agent credential was already collected. Open the link again in this browser to reconnect.");
       if (status !== "approved") throw fail(401, "This agent connection receipt is invalid.");
       return { client };
     };
@@ -1153,6 +1256,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "standing" };
         continue;
       }
+      // Approved once: its link works again until the access ends (rebind),
+      // so the page stays up for it until then.
+      if (rebindable(client, now)) {
+        if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "granted" };
+        continue;
+      }
       let until = 0, reason = "invitation";
       if (client.inviteHash && !client.admission && !client.hash && !client.browserBinding)
         until = Math.min(client.inviteExpiresAt || 0, client.expiresAt);
@@ -1237,6 +1346,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     changeAccess,
     redeemGuest,
     redeemFunnelBrowser,
+    reconnectFunnelBrowser,
     reopenBrowserInvitation,
     listAgentAdmissions,
     decideAgentAdmission,
@@ -1270,7 +1380,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         const client = latest.find((entry) => entry.id === clientId);
         if (!client || client.kind !== "agent" || client.policy?.screen !== "apps" || client.expiresAt <= Date.now()) throw fail(404, "This app invitation has ended.");
         client.policy.appAccess = client.policy.appAccess.flatMap((entry) => entry.id !== appId ? [entry] : mode === "hidden" ? [] : [{...entry, mode:"view"}]);
-        if (client.admission?.status === "collected") client.admission.grant = admissionGrant(client);
+        if (client.admission?.status === "collected" || client.admission?.moved === true) client.admission.grant = admissionGrant(client);
         client.changedAt = new Date().toISOString();
         return latest;
       });

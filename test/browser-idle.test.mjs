@@ -38,7 +38,7 @@ const clock = (t) => {
   return (ms) => { now += ms; };
 };
 
-test("a preset session outlives nine silent minutes and ends after ten; an earlier-form session ends after two", (t) => {
+test("an approved preset session never ends from silence, only when its access ends; an earlier-form session ends after two", (t) => {
   const advance = clock(t);
   const f = fixture(t);
   const presetKey = binding(), earlierKey = binding();
@@ -51,8 +51,10 @@ test("a preset session outlives nine silent minutes and ends after ten; an earli
   advance(2_000);
   assert.equal(f.auth.verifyFunnel(earlier.token, earlierKey), null, "the earlier form: two silent minutes");
   assert.ok(f.auth.verifyFunnel(preset.token, presetKey), "a preset agent is still thinking");
-  advance(8 * 60_000);
-  assert.equal(f.auth.verifyFunnel(preset.token, presetKey), null, "ten silent minutes end a preset session");
+  advance(30 * 60_000);
+  assert.ok(f.auth.verifyFunnel(preset.token, presetKey), "granted: silence never ends it");
+  advance(60 * 60_000);
+  assert.equal(f.auth.verifyFunnel(preset.token, presetKey), null, "it ends when its access ends");
 });
 
 test("a request from the agent's browser starts a preset session's ten minutes again", (t) => {

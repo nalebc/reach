@@ -115,12 +115,14 @@ test("a chat offers every app that can take it, and moved to OpenClaw, opens the
   views.push(view);
   await click(await dom.waitFor(() => $$("button").find((b) => b.getAttribute("aria-label")?.startsWith("Login page"))));
   await click(await dom.waitFor(() => button("More")));
-  const itemFor = (name) => $$(".as-details .move-item").find((r) => r.textContent.startsWith(`Continue in ${name}`));
+  await click(await dom.waitFor(() => $(".as-details .move-continue")));
+  const apps = () => $$(".as-details .move-item:not(.move-section-back)");
+  const itemFor = (name) => apps().find((r) => r.textContent.startsWith(name));
   await dom.waitFor(() => itemFor("OpenClaw"));
   // Codex and OpenClaw; Gemini CLI listed too, greyed: Reach only reads it.
   assert.deepEqual(
-    $$(".as-details .move-item").map((r) => [r.querySelector(".move-item-text > span").textContent, r.disabled]),
-    [["Continue in Codex", false], ["Continue in OpenClaw", false], ["Continue in Gemini CLI", true]],
+    apps().map((r) => [r.querySelector(".move-item-text > span").textContent, r.disabled]),
+    [["Codex", false], ["OpenClaw", false], ["Gemini CLI", true]],
   );
   await click(itemFor("OpenClaw"));
   // One tap says what happens; the next one moves it.

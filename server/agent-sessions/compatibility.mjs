@@ -270,11 +270,21 @@ export function createAgentProbe({
         const required =
           agent === "claude"
             ? [
+                // Every option Reach launches Claude Code with (claude-host.mjs),
+                // but --resume-session-at, which its --help doesn't list. One
+                // gone is found here, not as "may already have happened" on send.
                 "--input-format",
                 "--output-format",
                 "--resume",
                 "--session-id",
                 "--permission-mode",
+                "--verbose",
+                "--permission-prompts",
+                "--permission-prompt-tool",
+                "--include-partial-messages",
+                "--replay-user-messages",
+                "--model",
+                "--effort",
               ]
             : ["start"];
         // Read again while the text looks cut short (see runToFile): only a

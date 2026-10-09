@@ -532,6 +532,83 @@ test("models come from a handshake that starts no session, and are kept a while"
   assert.ok(!claude.runs[0].args.includes("--resume") && !claude.runs[0].args.includes("--session-id"));
 });
 
+// "Don't ask again" applies Claude Code's suggestions unseen: only kinds
+// Reach reads exactly, never Bypass (fail-open audit, Oct 8).
+test("don't ask again is offered only for suggestions Reach reads exactly", async () => {
+  const { describeClaudePrompt } = await import("../server/agent-sessions/claude-host.mjs");
+  const ask = (permission_suggestions) => describeClaudePrompt("r1", { subtype: "can_use_tool", tool_name: "Bash", input: { command: "npm test" }, permission_suggestions });
+  const rule = { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "localSettings" };
+  assert.deepEqual(ask([rule]).decisions, ["allow", "allowAlways", "deny"]);
+  assert.deepEqual(ask([{ type: "setMode", mode: "acceptEdits", destination: "session" }]).decisions, ["allow", "allowAlways", "deny"]);
+  for (const bad of [
+    [{ type: "setMode", mode: "bypassPermissions", destination: "session" }],
+    [rule, { type: "setMode", mode: "bypassPermissions", destination: "session" }],
+    [{ ...rule, behavior: "deny" }],
+    [{ type: "replaceRules", rules: [], behavior: "allow", destination: "userSettings" }],
+    [{ type: "removeRules", rules: [{ toolName: "Bash" }], behavior: "deny", destination: "userSettings" }],
+    [{ type: "addDirectories", directories: ["relative"], destination: "session" }],
+    [{ ...rule, destination: "managedSettings" }],
+    [{ ...rule, scope: "everything" }],
+    [{ type: "grantAll", destination: "session" }],
+    ["addRules"],
+  ])
+    assert.deepEqual(ask(bad).decisions, ["allow", "deny"], JSON.stringify(bad));
+});
+
+// Fail-open audit (Oct 8): a mode Reach can't name to Claude Code runs as
+// Manual (asks each step), never as Claude Code's own default.
+test("a chat in a mode Reach doesn't know runs in Manual", async () => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  await h.send(ID, { text: "hi", cwd: "/work/app", mode: "someFutureMode" });
+  const args = claude.last().args;
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
+  h.close();
+});
+
+// Fail-open audit (Oct 8): an agent started in the background, and Claude
+// Code never says what runs (its tasks event renamed): the process is kept
+// a long while, not ended seconds after the turn with its agents.
+test("background work Claude Code doesn't report keeps its process", async (t) => {
+  let now = 1000;
+  const timers = [];
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => { timers.push(ms); return real(() => {}, 0); };
+  t.after(() => { globalThis.setTimeout = real; });
+  const claude = fakeClaude();
+  const h = host(claude, { now: () => now, graceMs: 5000, idleMs: 60000 });
+  t.after(() => h.close());
+  await h.send(ID, { text: "go", cwd: "/work/app" });
+  const proc = claude.last();
+  proc.print({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Agent", input: { prompt: "look", run_in_background: true } }] } });
+  timers.length = 0;
+  proc.print({ type: "result", subtype: "success", result: "ok" });
+  assert.ok(timers.includes(30 * 60 * 1000), `kept: ${timers}`);
+  // Told what runs (nothing now): the usual short wait.
+  proc.print({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  assert.ok(timers.at(-1) <= 60000, `then let go: ${timers}`);
+});
+
+// Updated from the phone (agent-updates.mjs): the native installer points
+// the claude link at the new version's file. Its models (and efforts) show
+// at once, not after the half hour they're kept.
+test("models are read again once the claude file changes under its link", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-link-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const version of ["2.1.291", "2.1.295"]) fs.writeFileSync(path.join(dir, version), version);
+  const link = path.join(dir, "claude");
+  fs.symlinkSync(path.join(dir, "2.1.291"), link);
+  const claude = fakeClaude({ models: [{ value: "default", displayName: "Default" }] });
+  const h = host(claude, { locate: async () => link });
+  await h.models();
+  await h.models();
+  assert.equal(claude.runs.length, 1);
+  fs.rmSync(link);
+  fs.symlinkSync(path.join(dir, "2.1.295"), link);
+  await h.models();
+  assert.equal(claude.runs.length, 2);
+});
+
 // A message that waits its turn: queued, with the id it waits under.
 const queuedReply = ({ messageId, ...reply }) => {
   assert.match(messageId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
@@ -785,8 +862,10 @@ test("a message to a chat the Claude app lists goes into the app itself (its win
     claudeImports: { add: async () => {}, close() {} },
     claudeOpen: async () => app.open,
     claudeCompose: {
-      deliver: async (id, message) => {
+      deliver: async (id, { begin, ...message }) => {
         if (refuse) throw Object.assign(new Error(refuse), { waiting: true });
+        // Marked on its way only as it's typed, as the real one does.
+        begin();
         delivered.push([id, message]);
         return { delivered: true };
       },
@@ -1135,6 +1214,27 @@ test("a Codex app request Reach can't tell apart is left to the Codex app", asyn
   await assert.rejects(cards.answer("codex", "chat", "app-permission:codex:c1", { label: "Allow once" }), /can't tell which request/);
   await assert.rejects(cards.card("claude", "chat"), (e) => e.status === 400);
   assert.deepEqual(answered, []);
+});
+
+// The card's command was allowed in the Codex app and runs on; the chat's
+// only request now is another one (a file change). The card's "Allow once"
+// must not answer it (fail-open audit, Oct 8).
+test("a Codex app request named otherwise is never answered with another card's button", async () => {
+  const { createAppCards } = await import("../server/agent-sessions/app-cards.mjs");
+  const answered = [];
+  const only = (params) => createAppCards({
+    pending: async () => ({ id: "app-permission:codex:c1", callId: "c1" }),
+    desktop: { requests: async () => [{ id: 2, method: "item/fileChange/requestApproval", params }], answer: async (...a) => (answered.push(a), { answered: true }) },
+    platform: "darwin",
+  });
+  for (const params of [{ itemId: "c2", fileChanges: { "a.txt": {} } }, { callId: "c2", fileChanges: { "a.txt": {} } }]) {
+    await assert.rejects(only(params).card("codex", "chat"), /can't tell which request/);
+    await assert.rejects(only(params).answer("codex", "chat", "app-permission:codex:c1", { label: "Allow once" }), /can't tell which request/);
+  }
+  assert.deepEqual(answered, []);
+  // Not named at all: the chat's only request is still this one.
+  assert.deepEqual(await only({ fileChanges: { "a.txt": {} } }).answer("codex", "chat", "app-permission:codex:c1", { label: "Allow once" }), { answered: true });
+  assert.equal(answered.length, 1);
 });
 
 test("the session service listens for Claude Code's hook privately and keeps its own sessions' requests", async () => {

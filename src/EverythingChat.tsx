@@ -17,11 +17,12 @@ import {
   X,
 } from "lucide-react";
 import { useNotifyBack } from "./notify-back";
-import { post, request, type Peer } from "./api";
+import { post, type Peer } from "./api";
 import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
 import { modelDisplayName } from "./ModelSheet";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
+import AgentUpdate, { useTerminalRun } from "./AgentUpdate";
 import OpenClawSpace from "./OpenClawSpace";
 import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import ChatList, {
@@ -81,6 +82,10 @@ const AGENTS: AgentName[] = ["codex", "claude"];
 
 // Claude Code's --permission-mode choices for a new chat; "Default" leaves
 // Claude Code's own settings in charge.
+// A new chat starts on each app's auto mode (Oct 8): Claude's Auto, Codex's
+// "Approve for me". Claude falls back to Default on a model without Auto,
+// Codex to its app's own mode when Approve for me is switched off.
+const autoMode = (agent: AgentName) => (agent === "codex" ? "guardian-approvals" : "auto");
 // Until Claude Code's own list arrives.
 const CLAUDE_MODE_CHOICES = ["manual", "acceptEdits", "plan", "auto"];
 
@@ -166,7 +171,7 @@ export function NewChat({
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [speed, setSpeed] = useState<string | null>(null);
-  const [mode, setMode] = useState(agent === "codex" ? "auto" : "default");
+  const [mode, setMode] = useState(autoMode(agent));
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
   // A team (docs/ACROSS_AGENTS.md): this agent leads, helpers take tasks.
   const teamAgents = relayAgents(health, { openclaw: false });
@@ -212,7 +217,7 @@ export function NewChat({
     setModel(null);
     setEffort(null);
     setSpeed(null);
-    setMode(agent === "codex" ? "auto" : "default");
+    setMode(autoMode(agent));
     setPanel("");
     setModes(null);
     modelDefaults.current = true;
@@ -231,7 +236,12 @@ export function NewChat({
             setModelError("No models were returned. Try loading them again.");
           if (!modelDefaults.current) return;
           // New chats start the way the agent's app would start them.
-          if (agent === "codex" && r.mode) setMode(r.mode);
+          if (agent === "codex")
+            setMode(
+              !r.modes?.length || r.modes.some((m) => m.id === "guardian-approvals")
+                ? "guardian-approvals"
+                : r.mode || "auto",
+            );
           const first = r.models.find((m) => m.isDefault) || r.models[0];
           if (first) {
             modelDefaults.current = false;
@@ -251,6 +261,9 @@ export function NewChat({
     };
   }, [peer.url, peer.token, agent, modelReload]);
   const current = models.find((m) => m.id === model);
+  useEffect(() => {
+    if (agent === "claude" && mode === "auto" && current?.autoMode === false) setMode("default");
+  }, [agent, mode, current?.id]);
   // Permission modes for the new chat, as the agent offers them now. Claude
   // Code starts in your settings' default unless you pick one.
   const modeChoices: AgentMode[] =
@@ -659,31 +672,15 @@ export function NewChat({
 function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: AgentName; name: string; recheck: () => void }) {
   const [plan, setPlan] = useState<InstallPlan | null>(null);
   const [step, setStep] = useState<"" | "confirm" | "running" | "failed">("");
-  const [line, setLine] = useState("");
   const [problem, setProblem] = useState("");
   const terminal = useRef("");
   const word = computerWord(peer.platform);
-  useEffect(() => {
-    if (step !== "running") return;
-    // Only while it runs (a minute or two): its terminal's state.
-    const timer = setInterval(async () => {
-      try {
-        const list = await request<{ id: string; status: string; exitCode?: number; preview?: string }[]>(peer, "/api/terminals");
-        const t = list.find((x) => x.id === terminal.current);
-        if (t?.preview) setLine(t.preview.trim().split("\n").pop() || "");
-        if (t?.status === "running") return;
-        // Ended, or its terminal gone (closed, or Reach restarted): checked
-        // again either way, so one that did install shows as installed; never
-        // left spinning.
-        if (!t) setLine("");
-        setStep(t?.exitCode === 0 ? "" : "failed");
-        recheck();
-      } catch {
-        /* the next look tells */
-      }
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [step]);
+  // Ended, or its terminal gone: checked again either way, so one that did
+  // install shows as installed.
+  const line = useTerminalRun(peer, step === "running" ? terminal.current : null, (ok) => {
+    setStep(ok ? "" : "failed");
+    recheck();
+  });
   const ask = async () => {
     setProblem("");
     try {
@@ -698,7 +695,6 @@ function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: Agent
     try {
       const started = await installAgent(peer, agent, true);
       terminal.current = started.terminal?.id || "";
-      setLine("");
       setStep("running");
     } catch (e) {
       setProblem((e as Error).message);
@@ -1082,6 +1078,7 @@ export default function EverythingChat({
           onSectionMoved={() => void reload()} onArchived={() => void reload()}
           canStart={!needsSetup && app.agent !== "gemini"}
           setup={needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} /> : undefined}
+          notice={app.supported && appHealth?.installed && !needsSetup ? <AgentUpdate peer={peer} agent={agent} /> : undefined}
           workflows={flowEntry}
           errors={errors[app.agent] ? { [app.agent]: errors[app.agent] } : {}}
           failure={failure} onOpen={openChat}

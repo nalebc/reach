@@ -54,7 +54,7 @@ export function relayLine(relay: Relay, here: ChatRef) {
   if (relay.trigger === "usage") {
     const target = agentLabel(relay.steps[relay.next]?.agent || relay.steps[0]?.agent || "");
     if (relay.state === "waiting") return relay.priority
-      ? `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Unavailable providers are skipped (24 hours).`
+      ? `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Continues once; unavailable providers are skipped (24 hours).`
       : `Auto-continue in ${target} if usage runs out (24 hours).`;
     if (relay.state === "sending") return `Continuing in ${target}…`;
     if (relay.state === "done") return `Auto-continued in ${agentLabel(relay.chain.at(-1)?.agent || relay.steps[0]?.agent || "")}.`;
@@ -593,7 +593,7 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
     }
   };
   return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
-    <p className="relay-say">When usage runs out, continue with the first available provider in this order. If that provider runs out too, move to the next unused provider with the conversation history.</p>
+    <p className="relay-say">When usage runs out, continue with the first available provider in this order, with the conversation history. This happens once: the continued chat isn't moved again on its own.</p>
     <ol className="continue-priority" aria-label="Provider priority">
       {order.map((agent, index) => {
         const unavailable = continueUnavailable(agent, health);
@@ -610,7 +610,7 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
         </li>;
       })}
     </ol>
-    <p className="relay-say">Watches for 24 hours, uses each provider once, and skips providers that are unavailable. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
+    <p className="relay-say">Watches for 24 hours and skips providers that are unavailable. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
     {!ready && <p className="relay-problem">Select another available provider. Sign in or reconnect on this computer if needed.</p>}
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>

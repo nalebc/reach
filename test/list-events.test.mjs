@@ -304,3 +304,64 @@ test("Claude Code's status changing is read afresh for the list, not from a look
     sessions.close();
   }
 });
+
+test("a Claude Code permission held through Reach's hook reaches the list at once, and leaves it once answered", async () => {
+  const CLAUDE = "2c4b1f0e-9a3d-4e5f-8a6b-7c8d9e0f1a2b";
+  const asks = new Set();
+  const listeners = new Set();
+  const prompt = { id: "p1", kind: "permission", title: "Run a command" };
+  const agentAsks = {
+    close() {},
+    has: (agent, id) => agent === "claude" && asks.has(id),
+    prompts: (agent, id) => (agent === "claude" && asks.has(id) ? [prompt] : []),
+    onChange(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const ask = (on) => {
+    on ? asks.add(CLAUDE) : asks.delete(CLAUDE);
+    for (const listener of listeners) listener("claude", CLAUDE);
+  };
+  const claudeChat = { ...chat({ agent: "claude", id: CLAUDE, inApp: false }) };
+  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
+  const s2 = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: { list: async () => [], projects: async () => [] },
+    codexLive: { drives: () => false },
+    claude: { list: async () => [structuredClone(claudeChat)] },
+    gemini: { list: async () => [] },
+    live: async () => new Map(),
+    claudeHost: {
+      onRelease() {},
+      running: () => false,
+      drives: () => false,
+      view: () => ({ version: 0, status: "idle", error: null, prompts: [], streaming: "", activity: null, items: 0 }),
+      changes: (id, version, ms) => new Promise((r) => setTimeout(r, ms)),
+    },
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks,
+    agentWatch: { onChange: () => () => {} },
+    listMaxAgeMs: 60000,
+    listGapMs: 20,
+    proactive: true,
+  });
+  try {
+    const waitingIn = async () => (await s2.list()).sessions.find((s) => s.id === CLAUDE);
+    assert.ok(!(await waitingIn()).prompts);
+    const heard = [];
+    s2.onListChange((revision) => heard.push(revision));
+    await new Promise((r) => setTimeout(r, 100));
+    heard.length = 0;
+    ask(true);
+    assert.ok(await until(() => heard.length >= 1), "the list is rebuilt when the hook holds an ask");
+    assert.deepEqual((await waitingIn()).prompts, [prompt]);
+    heard.length = 0;
+    ask(false);
+    assert.ok(await until(() => heard.length >= 1), "and again once it's answered");
+    assert.ok(!(await waitingIn()).prompts);
+  } finally {
+    s2.close?.();
+  }
+});

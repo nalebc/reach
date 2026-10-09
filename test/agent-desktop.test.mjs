@@ -148,7 +148,7 @@ test("screenshots are rate limited and need the live scope", async () => {
   const files = w.make("files", "files");
   await rejects(() => w.desktop.screenshot(files, authorize(files)), 403);
   const ro = w.make("ro", "readonly");
-  for (let i = 0; i < 4; i++) await w.desktop.screenshot(ro, authorize(ro));
+  for (let i = 0; i < 10; i++) await w.desktop.screenshot(ro, authorize(ro));
   await rejects(() => w.desktop.screenshot(ro, authorize(ro)), 429);
   w.tick(1100);
   await w.desktop.screenshot(ro, authorize(ro));
@@ -178,6 +178,23 @@ test("typing asks what is in front first: terminals take the deny list, password
   // Clicks and keys go straight to the checker.
   await w.desktop.act(full, { type: "key", key: "enter" }, authorize(full));
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
+});
+
+test("vault values reach sign-in fields hidden, never a terminal, and plain text never a password field", async () => {
+  const w = world();
+  const full = w.make("muse", "full");
+  w.setFront({ app: "Google Chrome", bundle: "com.google.Chrome", terminalLike: false, secure: true });
+  await rejects(() => w.desktop.act(full, { type: "type", text: "hunter2" }, authorize(full)), 403, /Password box/, "blocked");
+  const done = await w.desktop.act(full, { type: "type", text: "hunter2", secret: true }, authorize(full));
+  assert.deepEqual(done, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" }, "the reply never carries the value");
+  w.setFront({ secure: false });
+  await w.desktop.act(full, { type: "type", text: "me@example.com", secret: true }, authorize(full));
+  const sent = w.helpers[0].requests.filter((request) => request.op === "act").map((request) => request.action);
+  assert.deepEqual(sent.map((action) => action.secret), [true, true]);
+  w.setFront({ app: "Terminal", bundle: "com.apple.Terminal", terminalLike: true });
+  await rejects(() => w.desktop.act(full, { type: "type", text: "hunter2", secret: true }, authorize(full)), 403, /terminal/, "blocked");
+  await rejects(() => w.desktop.act(full, { type: "type", text: "x", secret: "yes" }, authorize(full)), 400);
+  assert.equal(w.helpers[0].requests.filter((request) => request.op === "act").length, 2, "refused values never reach the Mac");
 });
 
 test("typing into a browser does not certify a later terminal focus for command execution", async () => {

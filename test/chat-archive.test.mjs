@@ -51,6 +51,33 @@ test("archiving a Claude app chat sets the app's own record, and the list follow
   await fs.rm(root, { recursive: true, force: true });
 });
 
+// The Claude app reads its records when it opens: the record and its list of
+// archived chats both say so, for its next launch.
+test("archiving a Claude app chat sets its record and the app's list of archived chats", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-archive-open-"));
+  const projects = path.join(root, "projects", "-work-app");
+  const records = path.join(root, "records", "acct", "org");
+  await fs.mkdir(projects, { recursive: true });
+  await fs.mkdir(records, { recursive: true });
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), said(ID));
+  const record = path.join(records, `local_${ID}.json`);
+  const index = path.join(records, "archived-sessions.idx");
+  await fs.writeFile(record, JSON.stringify({ sessionId: `local_${ID}`, cliSessionId: ID, isArchived: false }));
+  await fs.writeFile(index, JSON.stringify({ v: 1, archived: ["local_other"] }));
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+
+  await claude.archive(ID);
+  assert.equal(JSON.parse(await fs.readFile(record, "utf8")).isArchived, true);
+  assert.deepEqual(JSON.parse(await fs.readFile(index, "utf8")), { v: 1, archived: ["local_other", `local_${ID}`] });
+  // Already archived: nothing to do.
+  assert.deepEqual(await claude.archive(ID), { archived: true });
+
+  await claude.archive(ID, false);
+  assert.deepEqual(JSON.parse(await fs.readFile(index, "utf8")), { v: 1, archived: ["local_other"] });
+  assert.deepEqual((await fs.readdir(records)).sort(), ["archived-sessions.idx", `local_${ID}.json`], "no temporary file left");
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("archiving a Codex chat uses Codex's own archive (and unarchive)", async () => {
   const calls = [];
   const daemon = {

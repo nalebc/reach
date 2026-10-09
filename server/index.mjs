@@ -72,6 +72,7 @@ import { createServiceConnectors } from "./service-connectors.mjs";
 import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installPlan, installTerminalCommand } from "./agent-install.mjs";
+import { createAgentUpdates } from "./agent-updates.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
 import {
   MacTerminalWatch,
@@ -347,8 +348,14 @@ export async function createReach(overrides = {}) {
   const screenControl = new ScreenControl();
   let agentDesktop = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
-    blocked: () => paused || !transportAvailable || !!screenControl.holder() || screenControl.inputStopping() || inputInFlight ||
-      !!(agentDesktop && agentDesktop.automationBusy?.() !== false),
+    // Why chats' Claude app work waits, named on the waiting message.
+    blocked: () => {
+      if (paused) return "Reach is paused";
+      if (!transportAvailable) return "Reach's connection is down";
+      if (screenControl.holder() || screenControl.inputStopping() || inputInFlight) return "you're controlling the Mac from your phone";
+      const agent = agentDesktop ? agentDesktop.automationBusy?.() : false;
+      return agent === false ? false : typeof agent === "string" ? agent : "an agent is using the Mac";
+    },
   });
   screenControl.onAcquire = () => {
     for (const stopped of [desktopAutomation.interrupt(), agentDesktop?.yieldForOwner?.()])
@@ -806,7 +813,10 @@ export async function createReach(overrides = {}) {
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
     phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(),
-    automationControls: () => desktopAutomation.active(), onObservation: () => desktopAutomation.interrupt(), paused: () => paused, record,
+    // A chat waiting on an agent gets the next turn (the agent's input waits a
+    // moment), and the agent looks again after a chat drove the Mac.
+    automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
+    screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record,
   }) : null);
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
   const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
@@ -2350,6 +2360,9 @@ export async function createReach(overrides = {}) {
     }
   });
   app.post("/api/files/uploads/:id/complete", async (req, res) => {
+    // Asked again after the answer was lost: it already landed.
+    const landed = resumable.done(req.params.id, req.client);
+    if (landed) return res.json(landed);
     resumable.status(req.params.id, req.client);
     const { root, path: folder } = resumable.get(req.params.id);
     try {
@@ -2618,6 +2631,27 @@ export async function createReach(overrides = {}) {
       command: installTerminalCommand(plan),
     });
     record("terminal", `Installing ${plan.name}`);
+    res.json({ ...plan, terminal });
+  });
+  // Updating Claude Code or Codex (agent-updates.mjs): offered only when a
+  // newer version is certain, as Install: its command shown, then run once
+  // confirmed. A copy inside an app updates with the app.
+  const agentUpdates = overrides.agentUpdates || createAgentUpdates();
+  app.get("/api/sessions/agent-updates", async (req, res) =>
+    res.json({ agents: (await agentUpdates.list({ fresh: req.query.fresh === "1" })).map(({ file, ...rest }) => rest) }),
+  );
+  app.post("/api/sessions/agent-update/:agent", async (req, res) => {
+    const plan = await agentUpdates.plan(req.params.agent);
+    const current = req.reauthorize();
+    if (req.body?.confirm !== true) return res.json(plan);
+    notPaused();
+    const terminal = terminals.create({
+      cwd: os.homedir(),
+      name: `Update ${plan.name}`,
+      clientId: current.id,
+      command: installTerminalCommand(plan),
+    });
+    record("terminal", `Updating ${plan.name} to ${plan.to}`);
     res.json({ ...plan, terminal });
   });
   app.get("/api/sessions", async (req, res) =>
@@ -2937,20 +2971,24 @@ export async function createReach(overrides = {}) {
   });
   // Model ids as the agents list them, e.g. "gpt-6-astra", "claude-fable-5-1[1m]".
   const MODEL = /^[A-Za-z0-9._:[\]-]{1,64}$/;
-  const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-  // Permission modes a reply may switch to, in each agent's own terms.
+  // A thinking level by its id: the agent checks it against the model (a
+  // level a newer one adds works at once; it goes as an argument, never a shell).
+  const EFFORT = /^[a-z][a-z0-9_-]{0,23}$/;
+  // Permission modes a reply may switch to, in each agent's own terms: Codex's
+  // own and its named profiles (as its menu lists them, codex.mjs); Claude
+  // Code's by id (one it doesn't list runs as Manual, claude-host.mjs).
   const REPLY_MODES = {
-    codex: ["auto", "guardian-approvals", "full-access", "read-only"],
-    claude: ["default", "auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"],
+    codex: (mode) => ["auto", "guardian-approvals", "full-access", "read-only", "custom"].includes(mode) || /^profile::?[\w.-]{1,80}$/.test(mode),
+    claude: (mode) => /^[A-Za-z][\w-]{0,40}$/.test(mode),
   };
   const withFiles = (text, files, agent) =>
     files.length ? [text.trim(), files.map((f) => (agent === "claude" ? `@${f}` : f)).join("\n")].filter(Boolean).join("\n\n") : text;
   const turnOptions = (body, agent) => {
     if (body.model !== undefined && body.model !== null && !MODEL.test(body.model))
       throw fail(400, "Unknown model.");
-    if (body.effort !== undefined && body.effort !== null && !EFFORTS.includes(body.effort))
+    if (body.effort !== undefined && body.effort !== null && !(typeof body.effort === "string" && EFFORT.test(body.effort)))
       throw fail(400, "Unknown thinking level.");
-    if (agent && body.mode !== undefined && body.mode !== null && !REPLY_MODES[agent]?.includes(body.mode))
+    if (agent && body.mode !== undefined && body.mode !== null && !(typeof body.mode === "string" && REPLY_MODES[agent]?.(body.mode)))
       throw fail(400, "Unknown permission mode.");
     // Codex's speed (a service tier id from its model list, e.g. "default").
     if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
@@ -3243,7 +3281,9 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/model", async (req, res) => {
     macOwner(req);
     const { model, effort, speed } = req.body || {};
-    if (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f]/.test(model) ||
+    // Claude's Effort page sends the level alone: the chat keeps its model.
+    if ((model == null && (effort == null || req.params.agent !== "claude")) ||
+        (model != null && (typeof model !== "string" || !model.trim() || model.length > 200 || /[\x00-\x1f]/.test(model))) ||
         (effort != null && (typeof effort !== "string" || !effort.trim() || effort.length > 80 || /[\x00-\x1f]/.test(effort))))
       throw fail(400, "Choose a model and thinking level.");
     // Codex's speed (its service tier), changed mid-chat as in the Codex app.
@@ -4473,9 +4513,25 @@ export async function createReach(overrides = {}) {
         auth,
         origin: new URL(config.publicOrigin).origin.replace(/:\d+$/, ""),
         requestHost: serveRequestHost,
-        available: () => !paused && transportAvailable && auth.funnelWindow().open,
+        // Whenever Reach runs: an agent whose access ended is told so (401,
+        // 410) instead of finding nothing. Nothing opens without credentials:
+        // with no window, no invitation, request or access is left to use.
+        available: () => !paused && transportAvailable,
         device: invitationDevice,
         claimed: (joined) => {
+          // The same browser reconnecting, or getting its waiting request
+          // again: nothing new for the owner.
+          if (joined.refreshed || joined.resumed) return;
+          // Its approved link, opened in another browser: the access moved
+          // there and the browser it used is disconnected. Nothing to approve.
+          if (joined.moved) {
+            endSession(joined.clientId);
+            const name = auth.list().find((c) => c.id === joined.clientId)?.name || "An agent";
+            record("agent", `${name} opened its link in a new browser; the previous one was disconnected`);
+            notify({ category: "access", title: `${name} moved to a new browser`, body: "Its link was opened again. The browser it used before is disconnected. End its access in Settings → Agents if this wasn't it.", tag: `agent-moved-${joined.clientId}` });
+            for (const nudge of presenceNudges) nudge();
+            return;
+          }
           record("agent", "An invited browser agent is waiting for connection approval");
           notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
           for (const nudge of presenceNudges) nudge();
@@ -4484,6 +4540,12 @@ export async function createReach(overrides = {}) {
           // Only the signature-verifying gateway can mark a request. Neither a
           // header nor a public token can manufacture a private Tailscale identity.
           funnelRequests.set(req, context);
+          // Over the tailnet (the same link from an agent on it), the device's
+          // Tailscale identity must never reach the inner routes: it may be
+          // the owner's own login. The signed browser key is the only identity.
+          req.reachIdentity = null;
+          for (const name of Object.keys(req.headers))
+            if (name.startsWith("tailscale-user-")) delete req.headers[name];
           req.method = context.method;
           req.url = context.path;
           req.originalUrl = context.path; // Verified inner route, not the outer gateway path.
@@ -4520,6 +4582,9 @@ export async function createReach(overrides = {}) {
       return paused;
     },
     // `publicApp`: what the internet gets at this same address (the start page).
+    // The public route stays on while Reach runs (scripts/ephemeral-funnel.mjs),
+    // so the internet gets nothing at all unless an invitation or agent
+    // session is live.
     async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
@@ -4528,7 +4593,17 @@ export async function createReach(overrides = {}) {
         app,
         upgrade,
         resolveIdentity,
-        publicApp,
+        publicApp: publicApp && ((req, res) => {
+          // Paused or between Tailscale blips: come back later (an agent's page
+          // keeps retrying). No window: there is nothing here.
+          const status = paused || !transportAvailable ? 503 : auth.funnelWindow().open ? 0 : 404;
+          // The signed agent gateway still answers, so an agent whose access
+          // ended hears that it ended (it can open nothing: see publicAgent).
+          if (!status || (status === 404 && req.method === "POST" && req.url === "/agent-gateway"))
+            return publicApp(req, res);
+          res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end(status === 503 ? "Unavailable." : "Not found.");
+        }),
       });
     },
     setTransportAvailable(value) {

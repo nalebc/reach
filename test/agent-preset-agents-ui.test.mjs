@@ -72,24 +72,17 @@ test("the card names the preset, what the agent is using, and pauses it", async 
   assert.ok(!button(grok, "Pause") || grok.textContent.includes("Pause"), "Apps agents can be paused too");
 });
 
-test("an Always agent says Always, and Reopen link lets it come back in a new browser with the same link", async () => {
-  const toasts = [];
-  const calls = mock(() => [
+test("an Always agent says Always; there is no Reopen link, since its one link already works from any browser", async () => {
+  mock(() => [
     session("muse-1", { standing: true, relink: true, expiresAt: Date.now() + 10 * 365 * 86400000 }),
-    session("grok-2", { name: "Grok", holdsMac: false, using: undefined }),
   ]);
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast: (message) => toasts.push(message) }));
+  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
   views.add(view);
   const c = view.container;
   const muse = await dom.waitFor(() => c.querySelector('[data-agent-id="muse-1"]'));
   assert.match(muse.querySelector(".ag-agent-title small").textContent, /^Always/);
   assert.match(muse.textContent, /When you end it/);
-  assert.equal(button(c.querySelector('[data-agent-id="grok-2"]'), "Reopen link"), undefined, "only agents whose link can be reopened");
-  await click(button(muse, "Reopen link"));
-  await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/agents/reopen"));
-  assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/browser/agents/reopen")[2], { clientId: "muse-1" });
-  await dom.waitFor(() => toasts.length);
-  assert.match(toasts[0], /Muse can open the same link again for 15 minutes/);
+  assert.equal(button(muse, "Reopen link"), undefined);
 });
 
 test("Edit access offers the presets and saves the chosen one", async () => {

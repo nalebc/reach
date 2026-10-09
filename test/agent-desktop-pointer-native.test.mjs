@@ -110,12 +110,18 @@ expect("protected AX URL", [window(1),window(3)], 3, full, "blocked")
 axURL = ""
 axTitle = ""
 appHostsReach = true
-expect("missing title still checks app Reach windows", [window(1),window(3)], 3, full, "blocked")
+expect("Full: missing title no longer closes the whole app", [window(1),window(3)], 3, full, "allowed", "Safari")
+expect("untitled content in a named window of an app with a Reach tab", [window(5,"Uber Eats")], 5, full, "allowed", "Chrome")
+expect("Full: untitled content in an unnamed window of an app with a Reach tab", [window(5)], 5, full, "allowed", "Chrome")
+expect("Full: another app's named window over an app with a Reach tab", [window(3,"Interaction Lab")], 5, full, "allowed", "Chrome")
+expect("a named window that shows Reach stays closed", [window(5,"Reach")], 5, full, "blocked")
 appHostsReach = false
 axTitle = "Interaction Lab"
-expect("compositor with failed AX", [window(1),window(2)], nil, full, "retry")
-expect("compositor with unknown AX", [window(1),window(2)], 1, full, "retry")
-expect("no target", [], nil, full, "retry")
+expect("compositor with failed AX still shows protected CG", [window(1),window(2)], nil, full, "allowed", "Window Server")
+expect("Apps: compositor with failed AX", [window(1),window(2)], nil, apps, "blocked")
+expect("Full: compositor with unknown AX is usable", [window(1),window(2)], 1, full, "allowed", "Window Server")
+expect("Full: empty desktop point is usable", [], nil, full, "allowed", "")
+expect("Apps: no target", [], nil, apps, "retry")
 expect("known checked CG fallback", [window(3)], nil, full, "allowed", "Safari")
 expect("AX without CG", [], 3, full, "allowed", "Safari")
 expect("selected app", [window(3)], 3, apps, "allowed", "Safari")

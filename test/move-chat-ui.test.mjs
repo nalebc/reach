@@ -101,6 +101,12 @@ const open = async (session, health = both(), items = said) => {
   return selected;
 };
 const offer = (scope = dom.document) => [...scope.querySelectorAll(".move-offer-row")];
+// The ⋯ menu's one "Continue in…" row, then the apps it turns into.
+const APP = ".as-details .move-item:not(.move-section-back)";
+const continueIn = async () => {
+  await click(await dom.waitFor(() => $(".as-details .move-continue")));
+  return dom.waitFor(() => $(APP));
+};
 
 test("only ⋯ offers it: no switcher in the header, nothing beside the models, out of usage or signed out", async () => {
   await open(claudeChat(), both({ claude: { usable: false, resetsAt: Date.now() + 3600000, limit: "You've hit your session limit" } }));
@@ -113,7 +119,7 @@ test("only ⋯ offers it: no switcher in the header, nothing beside the models, 
   await settle(100);
   assert.equal($(".move-offer"), null);
   await click(button("More"));
-  assert.match((await dom.waitFor(() => $(".as-details .move-item"))).textContent, /^Continue in Codex/);
+  assert.equal((await continueIn()).textContent, "Codex");
   assert.deepEqual(dom.errors, []);
 });
 
@@ -134,20 +140,25 @@ test("a chat continued elsewhere ends with the way there; the new one shows the 
   assert.match(dom.document.querySelector(".as-scroll").textContent, /Build the login page[\s\S]*Continued with Codex · earlier messages are from Claude Code[\s\S]*Ship it/);
 });
 
-test("the chat's ⋯ menu has a row, with the app's logo, to continue it in the other app: one tap says what happens, the next moves it", async () => {
+test("the chat's ⋯ menu has one Continue in… row; it lists the apps with their logos: one tap says what happens, the next moves it", async () => {
   const selected = await open(claudeChat());
   await click(button("More"));
   const menu = await dom.waitFor(() => $(".as-details"));
-  // Just that: no "Open in the app", no card.
+  // Just that: no "Open in the app", no card, no app listed yet.
   assert.equal(menu.querySelector(".as-details-open"), null);
   assert.equal(offer(menu).length, 0);
   assert.doesNotMatch(menu.textContent, /Open in the/);
-  const item = menu.querySelector(".move-item");
+  assert.equal(menu.querySelector(".agent-logo"), null);
+  assert.equal(menu.querySelector(".move-continue").textContent, "Continue in…");
+  const item = await continueIn();
+  // The menu is the apps now, with a way back.
+  assert.equal(menu.querySelector(".move-section-back").textContent, "Continue in");
+  assert.equal(menu.querySelector(".relay-menu-item"), null);
   assert.ok(item.querySelector(".agent-logo"), "with the app's logo");
-  assert.match(item.textContent, /^Continue in CodexPicks up from here; this chat stays$/);
+  assert.equal(item.textContent, "Codex");
   await click(item);
   assert.equal(item.querySelector(".move-item-text > span").textContent, "Codex");
-  assert.equal(item.querySelector(".move-item-text small").textContent, "gets what Claude Code knows so far");
+  assert.equal(item.querySelector(".move-item-text small").textContent, "Gets what Claude Code knows so far");
   assert.equal(item.querySelector(".move-item-go").textContent, "Continue");
   assert.deepEqual(mac.moves, []);
   await click(item);
@@ -172,21 +183,21 @@ test("a tap outside the ⋯ menu closes it", async () => {
 test("an app that can't take the chat now shows greyed, saying why", async () => {
   await open(claudeChat(), both({ codex: { usable: false } }));
   await click(button("More"));
-  const menu = await dom.waitFor(() => $(".as-details"));
-  const rows = [...menu.querySelectorAll(".move-item")];
+  await continueIn();
+  const rows = $$(APP);
   assert.equal(rows.length, 1);
   assert.ok(rows[0].classList.contains("blocked"));
   assert.equal(rows[0].disabled, true);
-  assert.equal(rows[0].textContent, "Continue in CodexCodex is out of usage.");
+  assert.equal(rows[0].textContent, "CodexCodex is out of usage.");
 });
 
-test("a quiet line under the header says so twice at most; a tap opens ⋯ where it stays", async () => {
+test("a quiet line under the header says so twice at most; a tap opens ⋯ on its apps", async () => {
   dom.window.localStorage.setItem("reach.moveHint", "0");
   await open(claudeChat());
   const hint = await dom.waitFor(() => $(".move-hint"));
   assert.match(hint.textContent, /New: continue this chat in Codex$/);
   await click(hint);
-  assert.match((await dom.waitFor(() => $(".as-details .move-item"))).textContent, /^Continue in Codex/);
+  assert.equal((await dom.waitFor(() => $(APP))).textContent, "Codex");
   // Tapped once: never again.
   for (const view of views.splice(0)) await view.unmount();
   await open(claudeChat());
@@ -229,22 +240,24 @@ test("every app found is listed in the same order; OpenClaw when its Gateway can
     { agent: "openclaw", installed: true, signedIn: false, supported: true, canTakeMoves },
   ];
   const rows = () =>
-    [...dom.document.querySelectorAll(".as-details .move-item")].map((b) => [
+    $$(APP).map((b) => [
       b.querySelector(".move-item-text > span").textContent,
       b.classList.contains("blocked") ? b.querySelector("small").textContent : "ready",
     ]);
   await open(claudeChat(), apps(false));
   await click(button("More"));
+  await continueIn();
   assert.deepEqual(rows(), [
-    ["Continue in Codex", "ready"],
-    ["Continue in OpenClaw", "Update OpenClaw on your Mac to move chats there."],
-    ["Continue in Antigravity", "Reach can't continue chats in Antigravity yet."],
-    ["Continue in Gemini CLI", "Reach only reads Gemini CLI chats."],
+    ["Codex", "ready"],
+    ["OpenClaw", "Update OpenClaw on your Mac to move chats there."],
+    ["Antigravity", "Reach can't continue chats in Antigravity yet."],
+    ["Gemini CLI", "Reach only reads Gemini CLI chats."],
   ]);
   for (const view of views.splice(0)) await view.unmount();
   await open(claudeChat(), apps(true));
   await click(button("More"));
-  assert.deepEqual(rows().slice(0, 2), [["Continue in Codex", "ready"], ["Continue in OpenClaw", "ready"]]);
+  await continueIn();
+  assert.deepEqual(rows().slice(0, 2), [["Codex", "ready"], ["OpenClaw", "ready"]]);
 });
 
 // "Continued in Codex" stayed pinned under the messages written after it.
@@ -376,7 +389,11 @@ test("holding a chat shows its menu (Open, New chat in its folder, Continue in�
   const menu = $(".chat-popover");
   assert.ok(menu, "menu shows");
   assert.match(menu.querySelector(".chat-popover-head").textContent, /Sign up/);
-  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue in Codex", "Archive"]);
+  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue in…", "Archive"]);
+  // Continue in… turns the menu into the apps, with a way back.
+  await click($(".chat-popover .move-continue"));
+  assert.deepEqual(menuRows(), ["Continue in", "Codex"]);
+  await click($(".chat-popover .move-section-back"));
   await click($$(".chat-popover .move-item").find((b) => b.textContent.includes("New chat in app")));
   assert.deepEqual(news, ["/work/app"]);
   assert.equal($(".chat-popover"), null);
@@ -403,6 +420,18 @@ const holdOpen = async (title) => {
   await settle();
   return card;
 };
+// The Claude app, while it runs, reads the archive when it reopens: the
+// row archives it all the same and says when the app shows it.
+test("while the Claude app is open, Archive still archives and says the app shows it once it reopens", async () => {
+  await list({ health: both({ claude: { app: { installed: true, signedIn: true, open: true } } }) });
+  await holdOpen("Login page");
+  const row = $$(".chat-popover .move-item").find((b) => b.textContent.includes("Archive"));
+  assert.equal(row.disabled, false);
+  assert.match(row.textContent, /In the Claude app once it reopens/);
+  await click(row);
+  await dom.waitFor(() => mac.archives.length === 1);
+});
+
 test("Archive in a chat's menu archives it in its app, hides it here, and Undo brings it back", async () => {
   let reloads = 0;
   await list({ onArchived: () => reloads++ });
@@ -454,7 +483,7 @@ for (const [label, reply] of [
     views.push(await dom.render(React.createElement(NavigatingChat)));
     await dom.waitFor(() => $(".as-user"));
     await click(button("More"));
-    const item = await dom.waitFor(() => $(".as-details .move-item"));
+    const item = await continueIn();
     await click(item); await click(item);
     await dom.waitFor(() => mac.moves.length === 1);
     await settle(100);

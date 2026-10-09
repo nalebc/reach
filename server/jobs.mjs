@@ -61,9 +61,12 @@ export class Jobs {
             env,
             detached: true,
           });
+    // At the deadline: a job still running times out. One already finished
+    // (its shell exited) only has whatever it left in the background ended.
     const timer = setTimeout(() => {
-      job.status = "timed_out";
       this.kill(child);
+      if (job.status !== "running") return;
+      job.status = "timed_out";
       this.save();
     }, timeoutMs);
     timer.unref();
@@ -74,7 +77,19 @@ export class Jobs {
         .filter((j) => j.status === "running")
         .concat(this.jobs.filter((j) => j.status !== "running").slice(-190));
     this.save();
+    let ended = false;
+    const end = (code) => {
+      if (ended) return;
+      ended = true;
+      job.exitCode = code;
+      job.finishedAt = new Date().toISOString();
+      if (job.status === "running")
+        job.status = code === 0 ? "completed" : "failed";
+      this.running.delete(job.id);
+      this.save();
+    };
     const append = (data) => {
+      if (ended) return;
       job.output = (job.output + data.toString()).slice(-262144);
     };
     child.stdout.on("data", append);
@@ -83,14 +98,17 @@ export class Jobs {
       append(e.message);
       job.status = "failed";
     });
+    // The shell exited, but something it started in the background (`cmd &`)
+    // still holds its output: the job is done all the same, after a moment
+    // for the last output to arrive.
+    child.on("exit", (code) => {
+      const grace = setTimeout(() => end(code), 1000);
+      grace.unref();
+    });
+    // Everything holding its output ended: nothing is left to end later.
     child.on("close", (code) => {
       clearTimeout(timer);
-      job.exitCode = code;
-      job.finishedAt = new Date().toISOString();
-      if (job.status === "running")
-        job.status = code === 0 ? "completed" : "failed";
-      this.running.delete(job.id);
-      this.save();
+      end(code);
     });
     return job;
   }

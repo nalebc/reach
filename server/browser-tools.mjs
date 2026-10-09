@@ -36,12 +36,12 @@ const desktopActions = [
   object({ type: kinds("move"), x: fraction, y: fraction }, ["type", "x", "y"]),
   object({ type: kinds("drag"), x: fraction, y: fraction, toX: fraction, toY: fraction }, ["type", "x", "y", "toX", "toY"]),
   object({ type: kinds("scroll"), x: fraction, y: fraction, dx: { type: "number", minimum: -2000, maximum: 2000 }, dy: { type: "number", minimum: -2000, maximum: 2000, description: "Positive scrolls down." } }, ["type", "x", "y"]),
-  object({ type: kinds("type"), text: { ...string(2000), description: "Typed into the focused field. Never a password: password fields are closed to you; ask the owner to sign in from their phone." } }, ["type", "text"]),
+  object({ type: kinds("type"), text: { ...string(2000), description: "Typed into the focused field." }, secret: { type: "boolean", const: true, description: "Set for a username, email or password from your vault: it goes into the focused field (password fields included, never a terminal) and is never echoed, logged or saved. Plain text never goes into a password field." } }, ["type", "text"]),
   object({ type: kinds("key"), key: { ...string(16), description: "A key name: enter, tab, escape, backspace, delete, space, up, down, left, right, home, end, pageup, pagedown, f1-f11, a-z, 0-9 or punctuation." }, modifiers: { type: "array", minItems: 0, maxItems: 4, items: kinds(["cmd", "shift", "option", "control"]) } }, ["type", "key"]),
 ];
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
-  const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
+  const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends. Your user's request is your permission: act without asking at each step, but ask your user before paying, sending a message or deleting something. Sign in with reach_act type + secret from your vault; read emailed codes in Gmail or Mail on the Mac.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
   if (access.services) {
     tools.push(
       definition("reach_services", "Services", "Discover available service tools and this agent's service access. Service consent is separate from laptop permissions.", object(), {}),

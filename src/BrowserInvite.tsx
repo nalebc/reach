@@ -130,8 +130,8 @@ export const museMessage = (link: string, issued: Issued) => {
     ? " Check Saved tools before acting. Click a matching task to execute it, or find its reach_saved_* tool using reach_shortcuts."
     : "";
   const opening = issued.always
-    ? "Open this Reach link in your browser; the owner will match your connection code. Your access lasts until the owner ends it, in this browser: if you close the page, open it again in the same browser and you are back. The link works once; for a different browser, ask the owner to reopen it."
-    : "Open this temporary Reach link in your browser and keep it open; the owner will match your connection code.";
+    ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: open it again in any browser and you are back, with nothing to approve."
+    : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, open it again in any browser and you are back, with nothing to approve.";
   return `${opening} ${grant}${protectedWords}${sharing}${savedTools} Use the page's labelled controls or window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
@@ -733,10 +733,9 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           {minutes === ALWAYS && (
             <p className="ag-quiet">
               Until you end it in Settings → Agents.{" "}
-              {name.trim() || "The agent"} comes back from the same browser with
-              no new invite. The link works once; for a new browser, tap Reopen
-              link in Settings → Agents. The public link stays up while it has
-              access.
+              {name.trim() || "The agent"} comes back through the same link
+              from any browser, with no new invite. Opening it elsewhere moves
+              the access there and disconnects the old browser.
             </p>
           )}
         </div>

@@ -15,6 +15,8 @@ const valid = (m) =>
   m.images.every((i) => typeof i === "string") &&
   Number.isFinite(m.at);
 
+const RESTARTED = "Reach restarted during delivery. Check the conversation before sending again; automatic retry is paused.";
+
 export function createOutbox({ file = null } = {}) {
   // session id -> messages, oldest first
   const queues = new Map();
@@ -22,9 +24,14 @@ export function createOutbox({ file = null } = {}) {
     for (const [id, list] of Object.entries(JSON.parse(fs.readFileSync(file, "utf8")))) {
       // Send now was for that moment: after a restart they wait like the rest.
       const kept = Array.isArray(list) ? list.filter(valid).map(({ now, ...m }) => m) : [];
-      for (const message of kept) if (message.delivery && message.delivery !== "paused") {
+      for (const message of kept) if (message.delivery && message.delivery !== "paused" ||
+        // Paused by an earlier restart, before the mark below existed.
+        message.delivery === "paused" && message.error === RESTARTED) {
         message.delivery = "paused";
-        message.error = "Reach restarted during delivery. Check the conversation before sending again; automatic retry is paused.";
+        // Checked against the chat on start (recheck): never in it, it goes
+        // again by itself; in it, it's done.
+        message.restarted = true;
+        message.error = RESTARTED;
       }
       if (UUID.test(id) && kept.length) queues.set(id, kept);
     }
@@ -78,6 +85,17 @@ export function createOutbox({ file = null } = {}) {
       message.delivery = "paused";
       message.error = error;
       changed(id);
+    },
+    // Paused by a restart mid-delivery, and the chat shows it never got in:
+    // waiting again, as before.
+    resume(id, messageId) {
+      const message = queues.get(id)?.find(m => m.id === messageId);
+      if (!message || message.delivery !== "paused" || !message.restarted) return false;
+      delete message.delivery;
+      delete message.restarted;
+      delete message.error;
+      changed(id);
+      return true;
     },
     retryLater(id, messageId) {
       const message = queues.get(id)?.find(m => m.id === messageId);

@@ -17,6 +17,9 @@ const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(v
 const number = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", "escape", "esc", "left", "right", "down", "up", "forwarddelete", "home", "end", "pageup", "pagedown",
   "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", ..."abcdefghijklmnopqrstuvwxyz0123456789", "=", "-", "]", "[", "'", ";", "\\", ",", "/", ".", "`"]);
+// A live screen asks back to back; ten a second keeps it real time without
+// letting one agent monopolise the helper.
+export const SHOTS_PER_SECOND = 10;
 const MODIFIERS = new Set(["cmd", "command", "meta", "shift", "option", "alt", "control", "ctrl"]);
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -58,10 +61,13 @@ export function normalizeAction(value) {
       return { type: "scroll", ...point("x", "y"), dx: value.dx ?? 0, dy: value.dy ?? 0 };
     }
     case "type": {
-      only("type", "text");
+      only("type", "text", "secret");
+      if (value.secret !== undefined && value.secret !== true) throw fail(400, "Mark only a password as secret.");
       if (typeof value.text !== "string" || !value.text || value.text.length > 2000 || hiddenControls.test(value.text))
         throw fail(400, "Type up to 2000 characters, without hidden controls.");
-      return { type: "type", text: value.text };
+      // A secret (a username, email or password from the agent's vault) is
+      // never echoed, logged or recorded; it never goes into a terminal.
+      return value.secret ? { type: "type", text: value.text, secret: true } : { type: "type", text: value.text };
     }
     case "key": {
       only("type", "key", "modifiers");
@@ -185,18 +191,22 @@ export function createAgentDesktop(config, {
   verifyClient = () => undefined,
   phoneControls = () => false,
   automationControls = () => false,
-  onObservation = () => {},
+  // When a chat last drove the Mac (desktop-automation.mjs changedAt): an
+  // agent's picture from before then may show the wrong window.
+  screenChangedAt = () => 0,
   paused = () => false,
   onActivity = () => {},
   record = () => {},
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
-  observationMs = 30000,
 } = {}) {
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
-  const observations = new Map(); // recent authorized desktop use, separate from agent input ownership
+  // When each agent last looked at the screen. Looking never holds the Mac:
+  // a live screen asks several times a second, and each look used to hold
+  // chats' Claude app messages 30 s, so with one open they never went in.
+  const looks = new Map(); // clientId -> ms
   const shots = new Map();    // clientId -> recent screenshot times
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
@@ -296,26 +306,19 @@ export function createAgentDesktop(config, {
     return pending ? { clientId: pending.client.id, name: String(pending.client.name || "Another agent").slice(0, 80) }
       : lease.until > now() ? { clientId: lease.holder, name: lease.name } : null;
   };
-  const observe = (client) => {
-    observations.set(client.id, { until: Math.min(client.expiresAt, now() + observationMs), fingerprint: fingerprint(client) });
-    onObservation();
-  };
+  const observe = (client) => { looks.set(client.id, now()); };
+  // Who holds the Mac for chats' desktop work, by name, or false. Pending
+  // native input remains authoritative even after revocation or an expired
+  // idle lease, until the old helper has actually exited.
   const automationBusy = () => {
-    // Pending native input remains authoritative even after revocation or an
-    // expired idle lease, until the old helper has actually exited.
-    if (currentHolder()) return true;
-    for (const [id, entry] of observations) {
-      let client;
-      try { client = verifyClient(id); } catch { return true; }
-      if (entry.until <= now() || !client || client.kind !== "agent" || client.status !== "accepted" ||
-          client.policy?.browser !== true || client.policy.preset === undefined || !client.scopes?.includes("browser:screen") ||
-          client.expiresAt <= now() || fingerprint(client) !== entry.fingerprint) {
-        observations.delete(id);
-        continue;
-      }
-      return true;
-    }
-    return false;
+    const holder = currentHolder();
+    return holder ? `${holder.name} is using the Mac` : false;
+  };
+  // A click aimed from a picture taken before a chat drove the Mac could land
+  // on the wrong window: the agent looks again first.
+  const checkFresh = (client) => {
+    if ((looks.get(client.id) ?? 0) < screenChangedAt())
+      throw Object.assign(fail(409, "A chat just updated the Claude app on this Mac, so the screen may have changed. Look at the screen again, then act."), { kind: "busy", holder: "Desktop automation", retryInMs: 0, stale: true });
   };
   const note = (client, kind, result) => {
     const previous = activity.get(client.id);
@@ -361,7 +364,7 @@ export function createAgentDesktop(config, {
     async screenshot(client, authorize, { maxWidth = 2560 } = {}) {
       const latest = live(client, authorize, "browser:screen");
       const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
-      if (recent.length >= 4) throw fail(429, "Wait a moment between screenshots.");
+      if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
       recent.push(now()); shots.set(latest.id, recent);
       const state = await session(latest);
       checkState(client, authorize, "browser:screen", state);
@@ -393,13 +396,18 @@ export function createAgentDesktop(config, {
       const action = normalizeAction(input);
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
+      checkFresh(latest);
       take(latest);
       try {
         if (action.type === "type") {
           const front = answer(await state.helper.send({ op: "front" }));
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
-          if (front.secure) throw Object.assign(fail(403, "That's a password field. The agent never types passwords; sign in yourself from Screen."), { kind: "blocked" });
-          const reason = typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+          if (action.secret) {
+            // Vault values (usernames, emails, passwords) never go to a terminal,
+            // where they would run or show as a command.
+            if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
+          } else if (front.secure) throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
+          const reason = action.secret ? null : typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
           if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           action.terminalLikeChecked = front.terminalLike === true;
         }
@@ -493,7 +501,7 @@ export function createAgentDesktop(config, {
       sessions.delete(id);
       activity.delete(id);
       shots.delete(id);
-      observations.delete(id);
+      looks.delete(id);
       pausedAgents.delete(id);
       release(id);
     },
@@ -501,7 +509,7 @@ export function createAgentDesktop(config, {
       closed = true;
       for (const state of sessions.values()) state.helper.stop();
       sessions.clear();
-      observations.clear();
+      looks.clear();
       utility?.stop(); utility = null; clearTimeout(utilityIdle);
     },
   };

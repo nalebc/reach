@@ -48,10 +48,11 @@ function fixture(handler = () => false, options = {}) {
         ])
           socket.emit("data", chunk);
       };
-      socket.write = (bytes) => {
+      socket.write = (bytes, written) => {
         assert.equal(bytes.readUInt32LE(), bytes.length - 4);
         const message = JSON.parse(bytes.subarray(4));
         messages.push(message);
+        if (written) queueMicrotask(written);
         queueMicrotask(() => {
           if (
             !handler(message, { reply, socket }) &&
@@ -76,6 +77,27 @@ function fixture(handler = () => false, options = {}) {
     },
   };
 }
+
+// Archived by Reach through the shared daemon: every Codex window is told,
+// as they tell each other, whether or not one holds the chat.
+test("an archive is broadcast to the Codex app, with no owner to find", async () => {
+  const f = fixture();
+  await f.desktop.archived(thread);
+  await f.desktop.archived(thread, false);
+  assert.deepEqual(
+    f.messages.map((m) => [m.type, m.method, m.version]),
+    [
+      ["request", "initialize", 0],
+      ["broadcast", "thread-archived", 2],
+      ["request", "initialize", 0],
+      ["broadcast", "thread-unarchived", 1],
+    ],
+  );
+  assert.deepEqual(f.messages[1].params, { hostId: "local", conversationId: thread });
+  assert.equal(f.messages[1].sourceClientId, "reach-client");
+  assert.equal(f.socket.writable, false);
+  await assert.rejects(() => f.desktop.archived("nope"));
+});
 
 test("desktop model changes use the discovered owner and confirm its exact response", async () => {
   const f = fixture();

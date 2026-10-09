@@ -417,6 +417,36 @@ button.chat-new-context:hover,
   padding: 6px 12px;
   font-size: 13px;
 }
+/* An agent update: the out-of-usage line's look; confirming, the command
+   on a line of its own with Cancel and Update under it. */
+.chat-status.agent-update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--as-text) 6%, transparent);
+  line-height: 1.35;
+}
+.chat-status.agent-update.open {
+  padding: 10px 10px 10px 14px;
+}
+.chat-status.agent-update .chat-setup-command {
+  flex-basis: 100%;
+  margin: 0;
+}
+.chat-status.agent-update .as-banner-btn {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.agent-update-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
 /* Review requests retain their complete context and original actions. */
 .reach-chat-sheet .needs-track {
   scroll-snap-type: x mandatory;

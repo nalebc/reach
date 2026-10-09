@@ -211,7 +211,7 @@ export function statusText(hosts, { command = "reach", started = new Map(), now,
       // Its routes in Tailscale: the private one phones use, the public one
       // open while an invitation or agent session is live.
       ...(routes?.private ? [`Private route: ${routes.private.up ? `up${since(routes.private)}` : "down"}${interruptions ? ` · ${interruptions} interruption${interruptions === 1 ? "" : "s"}` : ""}`] : []),
-      ...(routes?.public ? [`Public link: ${routes.public.open ? `open${since(routes.public)}` : "closed"}`] : []),
+      ...(routes?.public ? [`Public link: ${routes.public.open ? `on${since(routes.public)}, blocked until an invite` : "off"}`] : []),
       ...(awake?.mode ? [`Sleep prevention: ${awake.mode} · ${awake.active ? "active" : "not active"}${awake.error ? ` · ${awake.error}` : ""}`] : []),
       // The service writes its output to files; a window shows it.
       ...(h.service ? [`Logs: ${home(path.join(state(h.root), "logs"), dir)}`] : []),

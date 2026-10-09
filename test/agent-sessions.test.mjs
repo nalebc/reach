@@ -520,6 +520,10 @@ test("Claude Code's own registry says which process holds a session and whether 
     await write(14, { sessionId: "gone", entrypoint: "cli", kind: "interactive", status: "idle" });
     await write(16, { sessionId: "app-asking", entrypoint: "claude-desktop", kind: "interactive", status: "waiting", waitingFor: "input needed" });
     await write(17, { sessionId: "term-allow", entrypoint: "cli", kind: "interactive", status: "waiting", waitingFor: "permission prompt" });
+    // A state word a newer Claude Code adds is never read as idle (an idle
+    // app process may be ended to take its chat over); no word, no say.
+    await write(18, { sessionId: "app-new-word", entrypoint: "claude-desktop", kind: "interactive", status: "compacting" });
+    await write(19, { sessionId: "app-no-word", entrypoint: "claude-desktop", kind: "interactive" });
     await fs.writeFile(path.join(dir, "15.json"), "{ half written");
     await fs.writeFile(path.join(dir, "11.abc.key"), "secret");
     const found = readSessionRegistry({ dir, alive: (pid) => pid !== 14 });
@@ -530,6 +534,8 @@ test("Claude Code's own registry says which process holds a session and whether 
       // Stopped on the person: a question, or a permission to allow.
       "app-asking": { where: "claude-app", pid: 16, tty: null, exact: true, busy: false, waiting: "input needed" },
       "term-allow": { where: "terminal", pid: 17, tty: null, exact: true, busy: false, waiting: "permission prompt" },
+      "app-new-word": { where: "claude-app", pid: 18, tty: null, exact: true, busy: true, waiting: null },
+      "app-no-word": { where: "claude-app", pid: 19, tty: null, exact: true, busy: undefined, waiting: null },
     });
     assert.deepEqual([...readSessionRegistry({ dir: path.join(dir, "missing") })], []);
   } finally {

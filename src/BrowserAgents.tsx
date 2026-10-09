@@ -288,18 +288,6 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       if (alive.current) setActionError((failure as Error).message);
     }
   };
-  // The agent's same link works once more for 15 minutes, joining with the
-  // code like the first time; the browser it used is disconnected.
-  const reopen = async (agent: BrowserAgentSession) => {
-    setActionError("");
-    try {
-      await request(peer, "/api/browser/agents/reopen", { method: "POST", body: JSON.stringify({ clientId: agent.id }) });
-      setRevision((value) => value + 1);
-      toast(`${agent.name} can open the same link again for 15 minutes`);
-    } catch (failure) {
-      if (alive.current) setActionError((failure as Error).message);
-    }
-  };
   const active = agents.filter((agent) => activeSession(agent, now));
   const busy = stopping.length > 0;
   const words = query.trim().toLowerCase();
@@ -587,15 +575,6 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
                 onClick={() => void pause(agent, !agent.paused)}
               >
                 {agent.paused ? "Resume" : "Pause"}
-              </button>
-            )}
-            {agent.relink && !["invited", "pending", "approved"].includes(agent.status || "") && (
-              <button
-                className="ag-secondary ag-small"
-                disabled={busy || !!error}
-                onClick={() => void reopen(agent)}
-              >
-                Reopen link
               </button>
             )}
             {active && (

@@ -12,7 +12,7 @@ import { describeClaudePrompt } from "../server/agent-sessions/claude-host.mjs";
 import { typeIntoClaude } from "../server/agent-sessions/claude-compose.mjs";
 
 const help =
-  "--input-format --output-format --resume --session-id --permission-mode";
+  "--input-format --output-format --resume --session-id --permission-mode --verbose --permission-prompts --permission-prompt-tool --include-partial-messages --replay-user-messages --model --effort";
 test("CLI probes share work, expire, and detect replaced executables without sending prompts", async () => {
   let calls = 0,
     stamp = 1,

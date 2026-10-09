@@ -70,27 +70,28 @@ const full = {
   apps: [],
   hidden: [],
 };
-function mock(access, { busy = false, input, catalog } = {}) {
+function mock(
+  access,
+  { busy = false, input, catalog, front = "Google Chrome" } = {},
+) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const parsed = new URL(url),
       route = parsed.pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
-    calls.push([init.method || "GET", route, body]);
+    calls.push([
+      init.method || "GET",
+      route,
+      body,
+      { at: Date.now(), width: parsed.searchParams.get("maxWidth") },
+    ]);
     if (route === "/api/browser") return reply(access);
     if (route === "/api/browser/shortcuts")
       return reply({ shortcuts: [], recording: null });
-    if (route === "/api/browser/desktop/screen") {
-      assert.equal(
-        parsed.searchParams.get("maxWidth"),
-        "2560",
-        "the page asks for the display's own pixels",
-      );
-      return jpeg();
-    }
+    if (route === "/api/browser/desktop/screen") return jpeg();
     if (route === "/api/browser/desktop/front")
       return reply({
-        app: "Google Chrome",
+        app: front,
         title: "Amazon",
         terminalLike: false,
         secure: false,
@@ -165,6 +166,54 @@ const inputs = (calls) =>
         method === "POST" && route === "/api/browser/desktop/input",
     )
     .map(([, , body]) => body.action);
+const shots = (calls) =>
+  calls
+    .filter(([, route]) => route === "/api/browser/desktop/screen")
+    .map(([, , , info]) => info);
+// The live screen: the picture is the Mac, a hidden field its keyboard.
+const LABEL = "Mac screen. Click, drag, scroll and type here as on the Mac.";
+const screen = async (c, label = LABEL) => {
+  const frame = await dom.waitFor(() =>
+    c.querySelector(`[aria-label="${label}"]`),
+  );
+  await dom.waitFor(() => frame.querySelector("img"));
+  frame.getBoundingClientRect = () => ({
+    left: 0,
+    top: 0,
+    width: 200,
+    height: 100,
+    right: 200,
+    bottom: 100,
+  });
+  return frame;
+};
+const at = (frame, type, x, y, init = {}) =>
+  frame.dispatchEvent(
+    new dom.window.MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      ...init,
+    }),
+  );
+const keyboard = (c) => c.querySelector('[aria-label="Keyboard for the Mac"]');
+const typeKeys = async (c, text) => {
+  const field = keyboard(c);
+  field.value = text;
+  field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await settle(200);
+};
+const press = async (c, init) => {
+  keyboard(c).dispatchEvent(
+    new dom.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    }),
+  );
+  await settle(40);
+};
 const open = async (
   access,
   options,
@@ -186,7 +235,7 @@ const open = async (
   return { c, calls };
 };
 
-test("the workspace starts with tools discovery and explicit navigation, and Screen updates only when opened", async () => {
+test("the workspace opens on the live screen, and other sections stay one tap away", async () => {
   const { c, calls } = await open(full, undefined, null);
   const nav = c.querySelector('[aria-label="Workspace navigation"]');
   assert.deepEqual(
@@ -196,12 +245,24 @@ test("the workspace starts with tools discovery and explicit navigation, and Scr
     ["Tools", "Screen", "Apps", "Files", "Commands", "Access", "Reload page"],
   );
   assert.equal(
-    nav.querySelector('[aria-label="Tools"]').getAttribute("aria-current"),
+    nav.querySelector('[aria-label="Screen"]').getAttribute("aria-current"),
     "page",
   );
-  assert.equal(c.querySelector("#agent-section-screen").hidden, true);
+  assert.equal(c.querySelector("#agent-section-screen").hidden, false);
+  await screen(c);
+  await dom.waitFor(() => /Live · 1 window hidden/.test(c.textContent));
+  assert.match(c.textContent, /Use it like the Mac: click, type, scroll, drag\./);
+  const brief = c.querySelector(".ap-brief");
+  assert.ok(brief?.open, "the agent sees how to use the Mac first");
+  assert.match(brief.textContent, /You have full control of My Mac\. Your user's request is your permission/);
+  assert.match(brief.textContent, /Ask your user before you pay, send a message or delete something/);
+  await dom.waitFor(() => /Typing goes to Google Chrome/.test(c.textContent));
+  await click(nav.querySelector('[aria-label="Tools"]'));
   assert.ok(c.querySelector('[aria-label="Search tools"]'));
-  assert.ok(!calls.some(([, route]) => route.endsWith("/desktop/screen")));
+  assert.equal(c.querySelector("#agent-section-screen").hidden, true);
+  const seen = shots(calls).length;
+  await settle(700);
+  assert.equal(shots(calls).length, seen, "the screen rests while hidden");
   await click(nav.querySelector('[aria-label="Access"]'));
   assert.match(
     c.querySelector("#agent-section-access").textContent,
@@ -211,36 +272,14 @@ test("the workspace starts with tools discovery and explicit navigation, and Scr
     c.querySelector(".ap-foot").textContent,
     /Commands run as the owner and are not confined to shared folders/,
   );
-  await click(nav.querySelector('[aria-label="Screen"]'));
-  await dom.waitFor(() => /Live · updated/.test(c.textContent));
-  assert.match(c.textContent, /1 protected window left out/);
-  assert.equal(c.querySelector("#agent-section-screen").hidden, false);
   assert.ok(button(c, "Reload page"));
   assert.match(button(c, "Reload page").title, /Reloads this web page/);
-  assert.ok(button(c, "Take a screenshot now"));
 });
 
-test("clicking the picture clicks the Mac and the result is written next to the actions", async () => {
+test("the picture is the Mac: clicks, right-clicks and double-clicks land where they are made", async () => {
   const { c, calls } = await open(full);
-  const frame = await dom.waitFor(() =>
-    c.querySelector('[aria-label="Mac screen. Click to click there."]'),
-  );
-  await dom.waitFor(() => frame.querySelector("img"));
-  frame.getBoundingClientRect = () => ({
-    left: 0,
-    top: 0,
-    width: 200,
-    height: 100,
-    right: 200,
-    bottom: 100,
-  });
-  frame.dispatchEvent(
-    new dom.window.MouseEvent("click", {
-      bubbles: true,
-      clientX: 50,
-      clientY: 25,
-    }),
-  );
+  const frame = await screen(c);
+  at(frame, "click", 50, 25);
   await dom.waitFor(() => inputs(calls).length === 1);
   assert.deepEqual(inputs(calls)[0], {
     type: "click",
@@ -250,20 +289,11 @@ test("clicking the picture clicks the Mac and the result is written next to the 
     count: 1,
   });
   await dom.waitFor(() =>
-    /Done: clicked at 25%, 25% in Google Chrome\. The screen below is updating\./.test(
-      c.textContent,
-    ),
+    /Done: clicked at 25%, 25% in Google Chrome\./.test(c.textContent),
   );
   assert.ok(c.querySelector(".ap-status.is-done"));
-  // Clicking by typed coordinates, in right-click mode.
-  await click(
-    [...c.querySelectorAll('[aria-label="Click mode"] [role="radio"]')].find(
-      (item) => item.dataset.value === "right",
-    ),
-  );
-  await type(c.querySelector('[aria-label="X percent"]'), "80");
-  await type(c.querySelector('[aria-label="Y percent"]'), "10");
-  await click(button(c, "Click there"));
+  assert.ok(c.querySelector(".ap-mark-ring"), "the last click is marked");
+  at(frame, "contextmenu", 160, 10);
   await dom.waitFor(() => inputs(calls).length === 2);
   assert.deepEqual(inputs(calls)[1], {
     type: "click",
@@ -272,30 +302,42 @@ test("clicking the picture clicks the Mac and the result is written next to the 
     button: "right",
     count: 1,
   });
+  at(frame, "click", 100, 50, { detail: 1 });
+  at(frame, "click", 100, 50, { detail: 2 });
+  await dom.waitFor(() => inputs(calls).length === 4);
+  assert.deepEqual(
+    inputs(calls).slice(2),
+    [
+      { type: "click", x: 0.5, y: 0.5, button: "left", count: 1 },
+      { type: "click", x: 0.5, y: 0.5, button: "left", count: 2 },
+    ],
+    "the second click of a double-click waits its turn, never dropped",
+  );
+  // Panels for what a browser can't pass through.
+  await click(button(c, "Type text"));
   await type(c.querySelector('[aria-label="Text to type"]'), "hello");
   await click(button(c, "Type + Enter"));
-  await dom.waitFor(() => inputs(calls).length === 4);
-  assert.deepEqual(inputs(calls).slice(2), [
+  await dom.waitFor(() => inputs(calls).length === 6);
+  assert.deepEqual(inputs(calls).slice(4), [
     { type: "type", text: "hello" },
     { type: "key", key: "enter" },
   ]);
   await dom.waitFor(
     () => c.querySelector('[aria-label="Text to type"]').value === "",
   );
+  await click(button(c, "Keys"));
+  assert.equal(c.querySelector('[aria-label="Text to type"]'), null);
   await click(button(c, "Esc"));
-  await dom.waitFor(() => inputs(calls).length === 5);
+  await dom.waitFor(() => inputs(calls).length === 7);
+  assert.deepEqual(inputs(calls)[6], { type: "key", key: "escape" });
   await type(c.querySelector('[aria-label="Shortcut"]'), "cmd+l");
   await click(button(c, "Press"));
-  await dom.waitFor(() => inputs(calls).length === 6);
+  await dom.waitFor(() => inputs(calls).length === 8);
   assert.deepEqual(inputs(calls).at(-1), {
     type: "key",
     key: "l",
     modifiers: ["cmd"],
   });
-  await click(button(c, "Check what's in front"));
-  await dom.waitFor(() =>
-    /In front: Google Chrome · Amazon/.test(c.textContent),
-  );
   await click(
     c.querySelector('[aria-label="Workspace navigation"] [aria-label="Apps"]'),
   );
@@ -329,63 +371,40 @@ test("clicking the picture clicks the Mac and the result is written next to the 
   );
 });
 
-test("aiming: the picture is requested at the display's resolution, a zoomed quarter maps clicks exactly, and the last click is marked", async () => {
+test("aiming: pictures match the page, zooming asks for full detail and maps clicks exactly", async () => {
   const { c, calls } = await open(full);
-  const frame = await dom.waitFor(() =>
-    c.querySelector('[aria-label="Mac screen. Click to click there."]'),
-  );
-  await dom.waitFor(() => frame.querySelector("img"));
-  assert.ok(
-    calls.some(([, route, ,]) => route === "/api/browser/desktop/screen"),
-    "screenshots are fetched",
-  );
-  const shotUrl =
-    [...c.ownerDocument.defaultView.document.querySelectorAll("img")].length >=
-      0 && calls.find(([, route]) => route === "/api/browser/desktop/screen");
-  assert.ok(shotUrl);
-  await dom.waitFor(
-    () => /100×60 px/.test(c.textContent),
-    "the picture's pixel size is written next to the live readout",
+  const frame = await screen(c);
+  assert.equal(
+    shots(calls)[0].width,
+    "1280",
+    "the picture is sized to the page, no larger than needed",
   );
   const zoomIn = button(c, "Zoom in");
   assert.equal(zoomIn.getAttribute("aria-pressed"), "false");
   await click(zoomIn);
   assert.equal(button(c, "Zoom out").getAttribute("aria-pressed"), "true");
-  assert.match(
-    c.textContent,
-    /Zoom mode: click the picture where you want to look closer/,
+  assert.match(c.textContent, /Click the picture where you want to look closer/);
+  assert.equal(
+    c.querySelector('[aria-label="Mac screen. Click where to zoom in."]'),
+    frame,
   );
-  const zoomFrame = c.querySelector(
-    '[aria-label="Mac screen. Click where to zoom in."]',
-  );
-  zoomFrame.getBoundingClientRect = () => ({
-    left: 0,
-    top: 0,
-    width: 200,
-    height: 100,
-    right: 200,
-    bottom: 100,
-  });
-  zoomFrame.dispatchEvent(
-    new dom.window.MouseEvent("click", {
-      bubbles: true,
-      clientX: 100,
-      clientY: 50,
-    }),
-  );
+  at(frame, "click", 100, 50);
   await settle(40);
   assert.equal(
     inputs(calls).length,
     0,
     "choosing where to zoom never clicks the Mac",
   );
-  assert.match(c.textContent, /Zoomed view/);
-  assert.match(c.textContent, /X 38%–63%, Y 38%–63% · 4×/);
-  const zoomed = c.querySelector(
-    '[aria-label="Zoomed view. Click to click there."]',
+  assert.ok(
+    c.querySelector(
+      '[aria-label="Zoomed Mac screen. Click, drag, scroll and type here as on the Mac."]',
+    ),
   );
-  assert.ok(zoomed);
-  zoomed.getBoundingClientRect = () => ({
+  await dom.waitFor(
+    () => shots(calls).some((shot) => shot.width === "2560"),
+    "the zoomed view asks for the full picture",
+  );
+  frame.getBoundingClientRect = () => ({
     left: 0,
     top: 0,
     width: 400,
@@ -393,54 +412,234 @@ test("aiming: the picture is requested at the display's resolution, a zoomed qua
     right: 400,
     bottom: 200,
   });
-  zoomed.dispatchEvent(
-    new dom.window.MouseEvent("click", {
-      bubbles: true,
-      clientX: 100,
-      clientY: 50,
-    }),
-  );
+  at(frame, "click", 100, 50);
   await dom.waitFor(() => inputs(calls).length === 1);
-  const sent = inputs(calls)[0];
-  assert.equal(sent.type, "click");
-  assert.equal(sent.x.toFixed(4), "0.4375");
-  assert.equal(sent.y.toFixed(4), "0.4375");
+  assert.equal(inputs(calls)[0].x.toFixed(4), "0.4375");
+  assert.equal(inputs(calls)[0].y.toFixed(4), "0.4375");
   assert.ok(c.querySelector(".ap-mark-ring"), "the last click is marked");
   await click(button(c, "Move zoom right"));
-  assert.match(c.textContent, /X 48%–73%, Y 38%–63%/);
+  at(frame, "click", 100, 50);
+  await dom.waitFor(() => inputs(calls).length === 2);
+  assert.equal(inputs(calls)[1].x.toFixed(4), "0.5375");
   await click(button(c, "Zoom out"));
-  assert.equal(
-    c.querySelector('[aria-label="Zoomed view. Click to click there."]'),
-    null,
-  );
-  assert.ok(button(c, "Full screen"));
+  assert.ok(c.querySelector(`[aria-label="${LABEL}"]`));
+  assert.equal(button(c, "Move zoom right"), undefined);
 });
 
 test("another agent holding the Mac reads as waiting, not failure", async () => {
   const { c } = await open(full, { busy: true });
-  const frame = await dom.waitFor(() =>
-    c.querySelector('[aria-label="Mac screen. Click to click there."]'),
-  );
-  await dom.waitFor(() => frame.querySelector("img"));
-  frame.getBoundingClientRect = () => ({
-    left: 0,
-    top: 0,
-    width: 200,
-    height: 100,
-    right: 200,
-    bottom: 100,
-  });
-  frame.dispatchEvent(
-    new dom.window.MouseEvent("click", {
-      bubbles: true,
-      clientX: 50,
-      clientY: 25,
-    }),
-  );
+  const frame = await screen(c);
+  at(frame, "click", 50, 25);
   await dom.waitFor(() =>
     /Not done: Grok is using the Mac\. Try again in 2 s\./.test(c.textContent),
   );
   assert.ok(c.querySelector(".ap-status.is-wait"));
+});
+
+test("pictures follow each other without waiting, within the Mac's limit", async () => {
+  const { c, calls } = await open(full);
+  await screen(c);
+  await dom.waitFor(() => shots(calls).length >= 4, 4000);
+  const times = shots(calls).map((shot) => shot.at);
+  const gaps = times.slice(1).map((time, i) => time - times[i]);
+  assert.ok(
+    gaps.every((gap) => gap >= 100),
+    `no more than ten pictures a second: ${gaps}`,
+  );
+  assert.ok(times.at(-1) - times[0] < 1500, `pictures keep coming: ${gaps}`);
+});
+
+test("typing on the picture reaches the Mac as whole text, keys after it, in order", async () => {
+  const { c, calls } = await open(full);
+  const frame = await screen(c);
+  at(frame, "click", 50, 25);
+  await dom.waitFor(() => inputs(calls).length === 1);
+  const field = keyboard(c);
+  for (const part of ["uber", "eats", ".com"]) {
+    field.value = part;
+    field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  }
+  await press(c, { key: "Enter" });
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.deepEqual(inputs(calls).slice(1), [
+    { type: "type", text: "ubereats.com" },
+    { type: "key", key: "enter" },
+  ]);
+  assert.equal(field.value, "", "nothing piles up in the page's own field");
+  await press(c, { key: "l", code: "KeyL", metaKey: true });
+  await press(c, { key: "a", code: "KeyA", ctrlKey: true });
+  await press(c, { key: "Tab", code: "Tab", ctrlKey: true });
+  await press(c, { key: "Tab", code: "Tab", shiftKey: true });
+  await dom.waitFor(() => inputs(calls).length === 7);
+  assert.deepEqual(inputs(calls).slice(3), [
+    { type: "key", key: "l", modifiers: ["cmd"] },
+    // Not a Mac browser: Ctrl+A means ⌘A, but Ctrl+Tab stays a tab switch.
+    { type: "key", key: "a", modifiers: ["cmd"] },
+    { type: "key", key: "tab", modifiers: ["control"] },
+    { type: "key", key: "tab", modifiers: ["shift"] },
+  ]);
+  await dom.waitFor(() => /Done: pressed shift\+Tab in Google Chrome\./.test(c.textContent));
+  assert.match(c.textContent, /Typing goes to Google Chrome/);
+});
+
+test("after a click that didn't land, keys wait for one that does", async () => {
+  let refuse = true;
+  const { c, calls } = await open(full, {
+    front: "Claude",
+    input: (action) =>
+      action.type === "click" && refuse
+        ? reply(
+            { error: "That's Reach. The agent can't use Reach.", kind: "blocked" },
+            403,
+          )
+        : reply({ ok: true, app: "Google Chrome" }),
+  });
+  const frame = await screen(c);
+  await dom.waitFor(() => /Typing goes to Claude/.test(c.textContent));
+  at(frame, "click", 50, 25);
+  await dom.waitFor(() =>
+    /Not done: That's Reach\. The agent can't use Reach\./.test(c.textContent),
+  );
+  await typeKeys(c, "ubereats.com");
+  await press(c, { key: "Enter" });
+  await settle(200);
+  assert.deepEqual(
+    inputs(calls).map((action) => action.type),
+    ["click"],
+    "nothing typed reaches the app in front",
+  );
+  assert.match(
+    c.textContent,
+    /Not typed: your last click didn't land, so typing would go to Claude\. Click where you want to type first\./,
+  );
+  assert.ok(c.querySelector(".ap-status.is-blocked"));
+  await click(button(c, "Type text"));
+  await type(c.querySelector('[aria-label="Text to type"]'), "ubereats.com");
+  await click(button(c, "Type + Enter"));
+  assert.equal(inputs(calls).length, 1, "the Type panel waits too");
+  refuse = false;
+  at(frame, "click", 50, 25);
+  await dom.waitFor(() => /Typing goes to Google Chrome/.test(c.textContent));
+  await typeKeys(c, "ubereats.com");
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.deepEqual(inputs(calls).at(-1), { type: "type", text: "ubereats.com" });
+});
+
+test("keys typed right after a new click wait for it, and go only if it lands", async () => {
+  let refusals = 2;
+  let finishClick;
+  const { c, calls } = await open(full, {
+    front: "Claude",
+    input: (action) => {
+      if (action.type !== "click")
+        return reply({ ok: true, app: "Google Chrome" });
+      if (refusals-- > 0)
+        return reply(
+          { error: "That's Reach. The agent can't use Reach.", kind: "blocked" },
+          403,
+        );
+      return new Promise((resolve) => {
+        finishClick = () => resolve(reply({ ok: true, app: "Google Chrome" }));
+      });
+    },
+  });
+  const frame = await screen(c);
+  at(frame, "click", 50, 25);
+  await dom.waitFor(() => /Not done: That's Reach/.test(c.textContent));
+  // Clicked again and typed at once, as an agent does: refused again, so
+  // the text is dropped with the click.
+  at(frame, "click", 60, 25);
+  await typeKeys(c, "ubereats.com");
+  await dom.waitFor(() => inputs(calls).length === 2);
+  await settle(200);
+  assert.deepEqual(
+    inputs(calls).map((action) => action.type),
+    ["click", "click"],
+    "text never follows a refused click",
+  );
+  // The third click lands: the text typed meanwhile waited and goes after it.
+  at(frame, "click", 70, 25);
+  await typeKeys(c, "ubereats.com");
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.equal(inputs(calls).length, 3, "the text waits for its click");
+  finishClick();
+  await dom.waitFor(() => inputs(calls).length === 4);
+  assert.deepEqual(inputs(calls).at(-1), { type: "type", text: "ubereats.com" });
+});
+
+test("long typing is split for the Mac without breaking a character", async () => {
+  const { c, calls } = await open(full);
+  const frame = await screen(c);
+  at(frame, "click", 50, 25);
+  await dom.waitFor(() => inputs(calls).length === 1);
+  await typeKeys(c, "a".repeat(1999) + "😀bc");
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.deepEqual(
+    inputs(calls).slice(1).map((action) => action.text),
+    ["a".repeat(1999), "😀bc"],
+  );
+});
+
+test("dragging, scrolling and resting the pointer on the picture do the same on the Mac", async () => {
+  const { c, calls } = await open(full);
+  const frame = await screen(c);
+  const pointer = (type, x, y) =>
+    frame.dispatchEvent(
+      new dom.window.PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        button: 0,
+        clientX: x,
+        clientY: y,
+      }),
+    );
+  pointer("pointerdown", 20, 80);
+  pointer("pointermove", 120, 40);
+  pointer("pointerup", 180, 10);
+  at(frame, "click", 180, 10);
+  await dom.waitFor(() => inputs(calls).length === 1);
+  await settle(60);
+  assert.deepEqual(
+    inputs(calls),
+    [{ type: "drag", x: 0.1, y: 0.8, toX: 0.9, toY: 0.1 }],
+    "a drag is never also a click",
+  );
+  await dom.waitFor(() =>
+    /Done: dragged from 10%, 80% to 90%, 10%/.test(c.textContent),
+  );
+  const wheel = (init) => {
+    const event = new dom.window.WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 100,
+      clientY: 50,
+      ...init,
+    });
+    frame.dispatchEvent(event);
+    return event;
+  };
+  assert.equal(wheel({ deltaY: 100 }).defaultPrevented, true, "the page itself stays still");
+  wheel({ deltaY: 150 });
+  await dom.waitFor(() => inputs(calls).length === 2);
+  assert.deepEqual(
+    inputs(calls)[1],
+    { type: "scroll", x: 0.5, y: 0.5, dx: 0, dy: 250 },
+    "a burst of wheel turns is one scroll",
+  );
+  wheel({ deltaX: -3, deltaMode: 1 });
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.deepEqual(inputs(calls)[2], {
+    type: "scroll",
+    x: 0.5,
+    y: 0.5,
+    dx: -120,
+    dy: 0,
+  });
+  pointer("pointermove", 40, 20);
+  await dom.waitFor(() => inputs(calls).length === 4, 3000);
+  assert.deepEqual(inputs(calls)[3], { type: "move", x: 0.2, y: 0.2 });
 });
 
 for (const kind of ["busy", "blocked", "retry"]) {
@@ -457,7 +656,8 @@ for (const kind of ["busy", "blocked", "retry"]) {
           kind === "blocked" ? 403 : 409,
         ),
     });
-    await dom.waitFor(() => c.querySelector(".ap-frame img"));
+    await screen(c);
+    await click(button(c, "Type text"));
     const field = c.querySelector('[aria-label="Text to type"]');
     await type(field, "Zoë García — Café déjà vu");
     await click(button(c, "Type + Enter"));
@@ -480,7 +680,7 @@ for (const kind of ["busy", "blocked", "retry"]) {
   });
 }
 
-test("Type + Enter holds one sequence while preserving a newer draft and ignoring overlapping actions", async () => {
+test("Type + Enter holds one sequence; a key pressed meanwhile waits for all of it", async () => {
   let finishType, finishEnter;
   const typing = new Promise((resolve) => {
     finishType = resolve;
@@ -499,7 +699,8 @@ test("Type + Enter holds one sequence while preserving a newer draft and ignorin
       return reply({ ok: true, app: "Google Chrome" });
     },
   });
-  await dom.waitFor(() => c.querySelector(".ap-frame img"));
+  await screen(c);
+  await click(button(c, "Type text"));
   const field = c.querySelector('[aria-label="Text to type"]');
   const submit = () =>
     field
@@ -513,12 +714,16 @@ test("Type + Enter holds one sequence while preserving a newer draft and ignorin
   await type(field, "newer draft");
   submit();
   await click(button(c, "Type + Enter"));
-  await click(button(c, "Esc"));
+  await press(c, { key: "Escape" });
   assert.deepEqual(inputs(calls), [{ type: "type", text: "first draft" }]);
   assert.equal(field.value, "newer draft");
   finishType(reply({ ok: true, app: "Google Chrome" }));
   await dom.waitFor(() => inputs(calls).length === 2);
-  assert.deepEqual(inputs(calls)[1], { type: "key", key: "enter" });
+  assert.deepEqual(
+    inputs(calls)[1],
+    { type: "key", key: "enter" },
+    "nothing comes between the text and its Enter",
+  );
   assert.equal(
     field.value,
     "newer draft",
@@ -533,10 +738,16 @@ test("Type + Enter holds one sequence while preserving a newer draft and ignorin
     "the lock includes the awaited Enter response",
   );
   finishEnter(reply({ ok: true, app: "Google Chrome" }));
-  await dom.waitFor(() => /Done: pressed Enter/.test(c.textContent));
-  await click(button(c, "Type"));
   await dom.waitFor(() => inputs(calls).length === 3);
-  assert.deepEqual(inputs(calls)[2], { type: "type", text: "newer draft" });
+  assert.deepEqual(
+    inputs(calls)[2],
+    { type: "key", key: "escape" },
+    "the key pressed meanwhile runs after the whole sequence",
+  );
+  await dom.waitFor(() => /Done: pressed Escape/.test(c.textContent));
+  await click(button(c, "Type"));
+  await dom.waitFor(() => inputs(calls).length === 4);
+  assert.deepEqual(inputs(calls)[3], { type: "type", text: "newer draft" });
   await dom.waitFor(() => field.value === "");
 });
 
@@ -550,7 +761,8 @@ test("acknowledged typing clears only its own draft even when Enter fails", asyn
             409,
           ),
   });
-  await dom.waitFor(() => c.querySelector(".ap-frame img"));
+  await screen(c);
+  await click(button(c, "Type text"));
   const field = c.querySelector('[aria-label="Text to type"]');
   await type(field, "already typed");
   await click(button(c, "Type + Enter"));
@@ -572,7 +784,8 @@ test("typing acknowledgement preserves a newer edit even if it matches the origi
     finishType = resolve;
   });
   const { c, calls } = await open(full, { input: () => pending });
-  await dom.waitFor(() => c.querySelector(".ap-frame img"));
+  await screen(c);
+  await click(button(c, "Type text"));
   const field = c.querySelector('[aria-label="Text to type"]');
   await type(field, "same words");
   await click(button(c, "Type"));
@@ -674,34 +887,41 @@ test("Read only looks and never touches; Apps shows only its apps", async () => 
     write: false,
   });
   assert.match(c.textContent, /You may look at the screen, read files\./);
-  await dom.waitFor(() => c.querySelector('[aria-label="Mac screen"]'));
+  const frame = await screen(c, "Mac screen");
+  assert.equal(c.querySelector(`[aria-label="${LABEL}"]`), null);
   assert.equal(
-    c.querySelector('[aria-label="Mac screen. Click to click there."]'),
+    c.querySelector('[aria-label="Keyboard for the Mac"]'),
     null,
+    "no keyboard reaches the Mac",
   );
   assert.equal(c.querySelector('[aria-label="Text to type"]'), null);
-  for (const label of [
-    "Move pointer",
-    "Drag there",
-    "Scroll up",
-    "Scroll down",
-    "Scroll left",
-    "Scroll right",
-  ])
+  for (const label of ["Keys", "Type text", "Esc"])
     assert.equal(
       button(c, label),
       undefined,
       `${label} must not appear for Read only`,
     );
-  assert.equal(c.querySelector('[aria-label="Destination X percent"]'), null);
+  at(frame, "click", 50, 25);
+  at(frame, "contextmenu", 50, 25);
+  const wheel = new dom.window.WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    deltaY: 300,
+    clientX: 50,
+    clientY: 25,
+  });
+  frame.dispatchEvent(wheel);
+  await settle(300);
+  assert.deepEqual(inputs(calls), [], "looking never touches the Mac");
+  assert.equal(wheel.defaultPrevented, false, "the page scrolls as usual");
   assert.equal(c.querySelector('[aria-label="Search apps"]'), null);
-  assert.equal(button(c, "Esc"), undefined);
   assert.equal(c.querySelector('[aria-label="Command"]'), null);
   assert.equal(c.querySelector('[aria-label="New file name"]'), null);
   assert.match(
     c.textContent,
     /Look only\. Nothing on this page clicks or types on the Mac/,
   );
+  assert.equal(c.querySelector(".ap-brief"), null, "Read only gets no instructions to act");
   assert.doesNotMatch(
     c.querySelector(".ap-abilities").textContent,
     /Click the picture/,
@@ -805,90 +1025,6 @@ test("Run command shows an allowed shell result after the ordinary browser reque
   assert.ok(
     deadlines.some((d) => d.ms === 35000),
     "ordinary reads retain their shorter budget",
-  );
-});
-
-test("pointer movement, dragging and both scroll axes send the chosen screen coordinates", async () => {
-  const { c, calls } = await open(full);
-  await dom.waitFor(() => c.querySelector(".ap-frame img"));
-  const field = (label) => c.querySelector(`[aria-label="${label}"]`);
-  assert.equal(field("X percent").value, "50");
-  assert.equal(field("Y percent").value, "50");
-  await click(button(c, "Move pointer"));
-  assert.deepEqual(inputs(calls), [{ type: "move", x: 0.5, y: 0.5 }]);
-  await type(field("X percent"), "25");
-  await type(field("Y percent"), "80");
-  await type(field("Destination X percent"), "100");
-  await type(field("Destination Y percent"), "0");
-  await click(button(c, "Drag there"));
-  assert.deepEqual(inputs(calls).at(-1), {
-    type: "drag",
-    x: 0.25,
-    y: 0.8,
-    toX: 1,
-    toY: 0,
-  });
-  await dom.waitFor(() =>
-    /Done: dragged from 25%, 80% to 100%, 0%/.test(c.textContent),
-  );
-  for (const label of [
-    "Scroll left",
-    "Scroll right",
-    "Scroll up",
-    "Scroll down",
-  ])
-    await click(button(c, label));
-  assert.deepEqual(inputs(calls).slice(2), [
-    { type: "scroll", x: 0.25, y: 0.8, dx: -600, dy: 0 },
-    { type: "scroll", x: 0.25, y: 0.8, dx: 600, dy: 0 },
-    { type: "scroll", x: 0.25, y: 0.8, dx: 0, dy: -600 },
-    { type: "scroll", x: 0.25, y: 0.8, dx: 0, dy: 600 },
-  ]);
-});
-
-test("empty or invalid pointer and drag coordinates never dispatch an input request", async () => {
-  const { c, calls } = await open(full);
-  await dom.waitFor(() => c.querySelector(".ap-frame img"));
-  const field = (label) => c.querySelector(`[aria-label="${label}"]`);
-  await type(field("X percent"), "");
-  await type(field("Destination X percent"), "75");
-  await type(field("Destination Y percent"), "75");
-  for (const label of [
-    "Click there",
-    "Move pointer",
-    "Drag there",
-    "Scroll left",
-    "Scroll down",
-  ])
-    await click(button(c, label));
-  assert.deepEqual(
-    inputs(calls),
-    [],
-    "an empty coordinate must not become zero",
-  );
-  assert.match(c.textContent, /give X and Y as percentages from 0 to 100/);
-  await type(field("X percent"), "50");
-  for (const invalid of [" ", "-1", "101", "NaN", "Infinity"]) {
-    await type(field("Y percent"), invalid);
-    await click(button(c, "Move pointer"));
-  }
-  await type(field("Y percent"), "50");
-  for (const [label, invalid] of [
-    ["Destination X percent", ""],
-    ["Destination X percent", "-0.1"],
-    ["Destination X percent", "100.1"],
-    ["Destination X percent", "NaN"],
-    ["Destination Y percent", " "],
-  ]) {
-    await type(field("Destination X percent"), "75");
-    await type(field("Destination Y percent"), "75");
-    await type(field(label), invalid);
-    await click(button(c, "Drag there"));
-  }
-  assert.deepEqual(inputs(calls), []);
-  assert.match(
-    c.textContent,
-    /give destination X and Y as percentages from 0 to 100/,
   );
 });
 
@@ -1021,3 +1157,29 @@ for (const actionFailure of [false, true])
       "recovery never repeats app opening",
     );
   });
+
+test("Sign in fills from the agent's vault without the value ever showing", async () => {
+  const { c, calls } = await open(full);
+  await screen(c);
+  await click(button(c, "Sign in"));
+  const user = c.querySelector('[aria-label="Email or username for the Mac"]');
+  const pass = c.querySelector('[aria-label="Password for the Mac"]');
+  assert.equal(pass.type, "password");
+  assert.equal(pass.autocomplete, "current-password");
+  user.value = "me@example.com";
+  await click(button(c, "Fill email"));
+  await dom.waitFor(() => inputs(calls).length === 1);
+  pass.value = "hunter2-secret";
+  await click(button(c, "Fill + Enter"));
+  await dom.waitFor(() => inputs(calls).length === 3);
+  assert.deepEqual(inputs(calls), [
+    { type: "type", text: "me@example.com", secret: true },
+    { type: "type", text: "hunter2-secret", secret: true },
+    { type: "key", key: "enter" },
+  ]);
+  assert.equal(user.value, "");
+  assert.equal(pass.value, "");
+  await dom.waitFor(() => /pressed Enter/.test(c.textContent));
+  assert.doesNotMatch(c.innerHTML, /hunter2-secret|me@example\.com/, "the page never shows a vault value");
+  assert.match(c.textContent, /hidden/);
+});

@@ -32,6 +32,7 @@ import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
 import { useBrowserApprovals } from "./browser-approvals";
 import { useAgentAdmissions } from "./agent-admissions";
 import { useServiceAccess } from "./service-access";
+import { useBellNeeds } from "./Notifications";
 import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
@@ -376,7 +377,9 @@ export default function HomeLive({
     connections[active]?.changes,
   );
   const serviceAccess = useServiceAccess(peer, features.owner && visible, connections[active]?.changes);
+  const bellNeeds = useBellNeeds(peer);
   const needItems: NeedItem[] = [
+    ...bellNeeds,
     ...agentAdmissions.items,
     ...browserApprovals.items,
     ...serviceAccess.items,

@@ -60,7 +60,11 @@ export function codexSession(thread) {
           : "running"
         : thread.status?.type === "systemError"
           ? "error"
-          : "idle",
+          : // A state a newer Codex adds is never read as finished (relays
+            // and auto-continue act on idle chats); no state at all is idle.
+            thread.status?.type == null || ["idle", "notLoaded"].includes(thread.status.type)
+            ? "idle"
+            : "running",
     preview: firstLine.slice(0, 200),
     archived: false,
     // `codex exec` runs: nobody to ask while they run.
@@ -218,8 +222,13 @@ export function codexMode(p) {
   if (!p) return null;
   const profile = p.activePermissionProfile?.id;
   if (p.approvalPolicy === "never" && profile === ":danger-full-access") return "full-access";
-  if (p.approvalsReviewer === "auto_review" || p.approvalsReviewer === "guardian_subagent") return "guardian-approvals";
+  // "Approve for me" is the workspace's: the same reviewer on another
+  // profile (read only, say) is that profile, never widened to workspace
+  // writes on the next message (fail-open audit, Oct 8).
+  const guardian = p.approvalsReviewer === "auto_review" || p.approvalsReviewer === "guardian_subagent";
+  if (guardian && profile === ":workspace" && p.approvalPolicy === "on-request") return "guardian-approvals";
   if (profile === ":read-only") return "read-only";
+  if (guardian) return "custom";
   if (profile === ":workspace" && p.approvalPolicy === "on-request") return "auto";
   // Preserve named profiles exactly as the model catalog offers them. Calling
   // every named profile "custom" drops its identity when building the next turn.
@@ -227,6 +236,19 @@ export function codexMode(p) {
       !ORDER.includes(profile) && p.approvalPolicy === "on-request" &&
       (!p.approvalsReviewer || p.approvalsReviewer === "user")) return `profile:${profile}`;
   return "custom";
+}
+
+// The mode a message from the phone goes in when none was picked: the Codex
+// app's current one (its composer's), but never broader than the thread's
+// own saved permissions. Not comparable (a profile, custom): the thread's
+// own settings stay as they are ("custom" sends nothing). Fail-open audit,
+// Oct 8: a read-only thread was sent the app's "Approve for me".
+const BREADTH = { "read-only": 0, auto: 1, "guardian-approvals": 2, "full-access": 3 };
+export function narrowerMode(app, own) {
+  if (!own) return app || null;
+  if (!app) return own;
+  if (Object.hasOwn(BREADTH, app) && Object.hasOwn(BREADTH, own)) return BREADTH[app] <= BREADTH[own] ? app : own;
+  return app === own ? app : "custom";
 }
 
 // The Codex app's saved choices: its mode for new chats and each thread's
@@ -255,6 +277,18 @@ export function codexAppState(file = APP_STATE) {
 // The apps write "GPT-6 Astra" for the catalog's "GPT-6-Astra".
 export const modelName = (name) => String(name || "").replace(/^(GPT-[\d.]+)-/i, "$1 ");
 
+// Codex's error kind: "usageLimitExceeded", or the same as an object
+// ({ usageLimitExceeded: {...} } or { type: "usageLimitExceeded" }).
+const errorKind = (info) =>
+  typeof info === "string" ? info
+    : info && typeof info === "object" && !Array.isArray(info)
+      ? typeof info.type === "string" ? info.type : Object.keys(info).length === 1 ? Object.keys(info)[0] : null
+      : null;
+// A turn still going: no end time, and not a status that says it's over.
+const FINISHED = new Set(["completed", "failed", "interrupted"]);
+const turnOpen = (turn, held) =>
+  !!turn && !turn.completedAt && (turn.status === "inProgress" || !FINISHED.has(turn.status) || (turn.status === "interrupted" && held && held !== "daemon"));
+
 // Failed or stopped turns show where they happened, as in the Codex app. The
 // last item of an older page may belong to a turn that continues in the
 // newer page, so no marker is placed after it.
@@ -266,13 +300,16 @@ export function withTurnNotes(items, turns, { olderPage = false, runningTurn = n
     const next = items[i + 1];
     if (!item.turnId || item.turnId === runningTurn || next?.turnId === item.turnId || (olderPage && !next)) return;
     const turn = info.get(item.turnId);
-    if (turn?.status === "failed" && turn.error?.message)
+    // A turn that ended any way but done (failed, or a status a newer Codex
+    // adds) never reads as a reply: relays would pass it on.
+    const ended = turn && typeof turn.status === "string" && !["completed", "inProgress", "interrupted"].includes(turn.status) && (turn.status === "failed" || turn.completedAt);
+    if (ended)
       out.push({
         id: `${item.turnId}:error`,
         role: "system",
         kind: "error",
-        text: turn.error.message,
-        ...(turn.error.codexErrorInfo ? { detail: String(turn.error.codexErrorInfo) } : {}),
+        text: typeof turn.error?.message === "string" && turn.error.message ? turn.error.message : turn.status === "failed" ? "Failed" : `Ended: ${turn.status}`,
+        ...(errorKind(turn.error?.codexErrorInfo) ? { detail: errorKind(turn.error.codexErrorInfo) } : {}),
         turnId: item.turnId,
       });
     else if (turn?.status === "interrupted")
@@ -337,7 +374,7 @@ export function codexRunningElsewhere({
             .rpc("thread/turns/list", { threadId: s.id, limit: 1, sortDirection: "desc", itemsView: "notLoaded" })
             .catch(() => null);
           const turn = r?.data?.[0];
-          const running = !!turn && !turn.completedAt && ["inProgress", "interrupted"].includes(turn.status);
+          const running = !!turn && !turn.completedAt && (["inProgress", "interrupted"].includes(turn.status) || !FINISHED.has(turn.status));
           const file = files.get(s.id);
           const asked = running && file ? await waiting(file, { onLater: (ms) => onLater?.(ms, s.id) }).catch(() => null) : null;
           cache.set(s.id, { at: now(), running, asking: !!asked, since: asked?.since });
@@ -399,6 +436,8 @@ export function createCodexSessions({
     },
     // The mode the Codex app's composer is in now; its next message uses it.
     appMode: () => appState().mode || null,
+    // The mode for this thread's next message without a pick (narrowerMode).
+    modeFor: (id) => narrowerMode(appState().mode || null, codexMode(appState().threads[id])),
     // The Codex app's projects (its sidebar), each with its folders.
     async projects() {
       const r = await daemon.rpc("project/list", {});
@@ -497,17 +536,13 @@ export function createCodexSessions({
       session.speed = thread.serviceTier || null;
       session.held = held;
       // The Codex app's composer shows (and its next message uses) the app's
-      // current mode, not a thread's own; scheduled runs keep theirs apart.
-      session.mode = appState().mode || codexMode(appState().threads[id]);
+      // current mode; from the phone, never broader than the thread's own
+      // (narrowerMode). Scheduled runs keep theirs apart.
+      session.mode = narrowerMode(appState().mode || null, codexMode(appState().threads[id]));
       // A turn another engine is running reads from its file as
       // "interrupted" with no end time (verified with the Codex app).
       const latest = turns?.data?.[0];
-      const runningTurn =
-        latest &&
-        !latest.completedAt &&
-        (latest.status === "inProgress" || (latest.status === "interrupted" && held && held !== "daemon"))
-          ? latest.id
-          : null;
+      const runningTurn = turnOpen(latest, held) ? latest.id : null;
       if (runningTurn && session.status === "idle") session.status = "running";
       // Held by another engine (the Codex app, a terminal) and asking you
       // there: what it asks, read from the chat's file (that engine tells no
@@ -575,7 +610,11 @@ export function createCodexSessions({
         agent: "codex",
         installed: true,
         signedIn: true,
-        usable: limits ? limits.ordinaryUsageAllowed !== false : true,
+        // Codex's own word, else its main meter; neither read, unknown (never
+        // "has usage": a chat would be moved here, "back" sent).
+        usable: typeof limits?.ordinaryUsageAllowed === "boolean" ? limits.ordinaryUsageAllowed
+          : typeof primary?.usedPercent === "number" ? primary.usedPercent < 100
+          : undefined,
         resetsAt: primary?.resetsAt ? primary.resetsAt * 1000 : null,
         usedPercent: primary?.usedPercent ?? null,
         usage: codexUsage(limits),

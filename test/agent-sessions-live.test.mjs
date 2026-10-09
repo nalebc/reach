@@ -533,7 +533,14 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal((await call(`/api/sessions/codex/${T}/model`, agent.token, { model: "gpt-6-luna" })).status, 403);
     assert.deepEqual(await (await call(`/api/sessions/codex/${T}/model`, owner.token, { model: "gpt-6-luna", effort: "high" })).json(), { model: "gpt-6-luna", effort: "high", applied: true });
     assert.equal((await call(`/api/sessions/codex/${T}/model`, owner.token, { model: "" })).status, 400);
-    assert.deepEqual(seen.filter(([kind]) => kind === "model"), [["model", "codex", T, { model: "gpt-6-luna", effort: "high" }]]);
+    // Claude's Effort page changes the level alone; the model stays as it is.
+    assert.equal((await call(`/api/sessions/claude/${T}/model`, owner.token, { effort: "max" })).status, 200);
+    assert.equal((await call(`/api/sessions/claude/${T}/model`, owner.token, {})).status, 400);
+    assert.equal((await call(`/api/sessions/codex/${T}/model`, owner.token, { effort: "high" })).status, 400);
+    assert.deepEqual(seen.filter(([kind]) => kind === "model"), [
+      ["model", "codex", T, { model: "gpt-6-luna", effort: "high" }],
+      ["model", "claude", T, { model: undefined, effort: "max" }],
+    ]);
 
     // A permission mode picked on the phone, picked in the Claude app too: the
     // owner's call only, and never Bypass permissions.
@@ -557,7 +564,10 @@ test("reply, approve, stop and start routes are owner-only and checked", async (
     assert.equal(body.text, "look at this");
     assert.equal(body.images[0], path.join(root, ".reach", "agent-images", id));
     assert.equal(body.effort, "xhigh");
-    assert.equal((await call(`/api/sessions/codex/${T}/messages`, owner.token, { text: "x", effort: "turbo" })).status, 400);
+    // A level a newer agent adds goes to it (it checks its model); only a
+    // malformed one is refused here.
+    for (const effort of ["turbo --yolo", "Ultra", "", 3, "a".repeat(40)])
+      assert.equal((await call(`/api/sessions/codex/${T}/messages`, owner.token, { text: "x", effort })).status, 400, String(effort));
     // Claude Code's ids carry brackets.
     assert.equal(
       (await call(`/api/sessions/claude/${T}/messages`, owner.token, { text: "x", model: "claude-fable-5-1[1m]" })).status,
@@ -647,6 +657,11 @@ test("Codex modes read like the app's permissions menu", () => {
   assert.equal(codexMode({ activePermissionProfile: { id: ":read-only" }, approvalPolicy: "never", approvalsReviewer: "user" }), "read-only");
   assert.equal(codexMode({ activePermissionProfile: { id: ":workspace" }, approvalPolicy: "untrusted" }), "custom");
   assert.equal(codexMode({ activePermissionProfile: { id: "network-only" }, approvalPolicy: "on-request", approvalsReviewer: "user" }), "profile:network-only");
+  // The reviewer on another profile never reads as the workspace's
+  // "Approve for me" (which sends workspace writes on the next message).
+  assert.equal(codexMode({ activePermissionProfile: { id: ":read-only" }, approvalPolicy: "on-request", approvalsReviewer: "auto_review" }), "read-only");
+  assert.equal(codexMode({ activePermissionProfile: { id: "network-only" }, approvalPolicy: "on-request", approvalsReviewer: "auto_review" }), "custom");
+  assert.equal(codexMode({ approvalPolicy: "on-request", approvalsReviewer: "guardian_subagent" }), "custom");
 });
 
 test("Codex threads another engine is running show as running; idle or old ones don't", async () => {
@@ -872,6 +887,24 @@ test("required fields, device proofs and specialized native confirmations never 
     assert.deepEqual(prompt.decisions, ["decline", "cancel"]);
     assert.throws(() => answerFor(prompt, { decision: "accept" }));
   }
+});
+
+// Without its form fields (renamed by a newer Codex, say), the request's
+// kind can't be read: no Accept from the phone (fail-open audit, Oct 8).
+test("an elicitation whose shape Reach can't read whole is never accepted", async () => {
+  const { describePrompt, answerFor } = await import("../server/agent-sessions/codex-live.mjs");
+  for (const params of [
+    { serverName: "x", message: "Allow Gmail?", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "gmail" } },
+    { serverName: "x", message: "Sign in", _meta: { codex_approval_kind: "browser_auth" } },
+    { serverName: "x", message: "Fill this", schema: { type: "object", properties: { code: { type: "string" } } } },
+    { serverName: "x", message: "Verify", kind: "device" },
+  ]) {
+    const prompt = describePrompt("mcpServer/elicitation/request", params);
+    assert.deepEqual(prompt.decisions, ["decline", "cancel"], JSON.stringify(params));
+    assert.throws(() => answerFor(prompt, { decision: "accept" }));
+  }
+  // A plain confirmation, whole: still Yes from the phone.
+  assert.deepEqual(describePrompt("mcpServer/elicitation/request", { threadId: "t", serverName: "x", message: "Go on?" }).decisions, ["accept", "decline", "cancel"]);
 });
 
 // Speed (Oct 6): the phone's Configure › Speed goes to Codex as its service
@@ -1162,3 +1195,75 @@ for (const operation of ["steer", "queue"])
       await assert.rejects(work, /no longer owns|connection ended/i);
       assert.deepEqual(daemon.calls.slice(before).map(([m]) => m), [readMethod], "no side effect after the awaited read");
     });
+
+// Fail-open audit (Oct 8): the phone answers only what it shows.
+test("a Codex approval offers only what Codex offers, once only when it widens a folder", async () => {
+  const { describePrompt } = await import("../server/agent-sessions/codex-live.mjs");
+  const change = (extra) => describePrompt("item/fileChange/requestApproval", { threadId: "t", fileChanges: { "a.txt": {} }, ...extra });
+  assert.deepEqual(change({}).decisions, ["accept", "acceptForSession", "decline", "cancel"]);
+  assert.deepEqual(change({ availableDecisions: ["accept", "decline"] }).decisions, ["accept", "decline"]);
+  assert.deepEqual(change({ grantRoot: "/" }).decisions, ["accept", "decline", "cancel"]);
+  assert.deepEqual(describePrompt("item/commandExecution/requestApproval", { command: "ls", grantRoot: "/" }).decisions, ["accept", "decline", "cancel"]);
+  assert.equal(describePrompt("item/commandExecution/requestApproval", { command: ["npm", "test"] }).command, "npm test");
+  // A rule the phone doesn't show is never granted from it.
+  assert.deepEqual(describePrompt("item/commandExecution/requestApproval", {
+    command: "npm test",
+    availableDecisions: ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["npm"] } }, "decline"],
+  }).decisions, ["accept", "decline"]);
+  for (const command of [undefined, "", { program: "rm" }, ["rm", 1], []])
+    assert.deepEqual(describePrompt("item/commandExecution/requestApproval", { command }).decisions, ["decline", "cancel"], JSON.stringify(command));
+});
+
+// Fail-open audit (Oct 8): a state a newer Codex adds is never read as
+// finished, and a turn that ended badly never reads as a reply.
+test("Codex states Reach doesn't know are never read as done", async () => {
+  const { codexSession, withTurnNotes } = await import("../server/agent-sessions/codex.mjs");
+  const { turnOutcome, usageLimited } = await import("../server/agent-sessions/turn-watch.mjs");
+  const status = (s) => codexSession({ id: "t", status: s }).status;
+  assert.equal(status({ type: "idle" }), "idle");
+  assert.equal(status({ type: "notLoaded" }), "idle");
+  assert.equal(status(undefined), "idle");
+  assert.equal(status({ type: "compacting" }), "running");
+  const items = [
+    { id: "u", role: "user", kind: "text", text: "go", turnId: "x" },
+    { id: "a", role: "assistant", kind: "text", text: "half an answer", turnId: "x" },
+  ];
+  const outcome = (turn) => turnOutcome(withTurnNotes(items, [{ id: "x", ...turn }])).kind;
+  assert.equal(outcome({ status: "completed", completedAt: 1 }), "reply");
+  assert.equal(outcome({ status: "failed" }), "error");
+  assert.equal(outcome({ status: "cancelled", completedAt: 1 }), "error");
+  const limited = withTurnNotes(items, [{ id: "x", status: "failed", error: { message: "Limit", codexErrorInfo: { usageLimitExceeded: {} } } }]).at(-1);
+  assert.equal(usageLimited("codex", limited), true);
+});
+
+// Fail-open audit (Oct 8): the phone's message without a pick never runs a
+// thread broader than its own saved permissions.
+test("a Codex thread is never sent a broader mode than its own", async () => {
+  const { narrowerMode } = await import("../server/agent-sessions/codex.mjs");
+  assert.equal(narrowerMode("guardian-approvals", "read-only"), "read-only");
+  assert.equal(narrowerMode("full-access", "auto"), "auto");
+  assert.equal(narrowerMode("auto", "full-access"), "auto");
+  assert.equal(narrowerMode("guardian-approvals", null), "guardian-approvals");
+  assert.equal(narrowerMode(null, "read-only"), "read-only");
+  // Not comparable: the thread's own settings stay ("custom" sends nothing).
+  assert.equal(narrowerMode("full-access", "profile:network-only"), "custom");
+  assert.equal(narrowerMode("full-access", "custom"), "custom");
+});
+
+// An answer from the Codex app for a request Reach holds is checked against
+// that request: never more access than asked (fail-open audit, Oct 8).
+test("a Codex app answer never grants more than the request asked", async () => {
+  const { appAnswerFits } = await import("../server/agent-sessions/codex-live.mjs");
+  const asked = { kind: "permissions", permissions: { network: { enabled: true }, fileSystem: { write: ["/work"] } } };
+  assert.equal(appAnswerFits(asked, { permissions: { network: { enabled: true } }, scope: "turn" }), true);
+  assert.equal(appAnswerFits(asked, { permissions: {}, scope: "session" }), true);
+  assert.equal(appAnswerFits(asked, { permissions: { fileSystem: { write: ["/"] } }, scope: "turn" }), false);
+  assert.equal(appAnswerFits(asked, { permissions: { sandbox: "danger-full-access" } }), false);
+  assert.equal(appAnswerFits(asked, { permissions: asked.permissions, scope: "forever" }), false);
+  const question = { kind: "question", questions: [{ id: "q1" }] };
+  assert.equal(appAnswerFits(question, { answers: { q1: { answers: ["yes"] } } }), true);
+  assert.equal(appAnswerFits(question, { answers: { q2: { answers: ["yes"] } } }), false);
+  assert.equal(appAnswerFits({ kind: "elicitation" }, { action: "accept", content: { code: "1" } }), true);
+  assert.equal(appAnswerFits({ kind: "elicitation" }, { action: "grant" }), false);
+  assert.equal(appAnswerFits({ kind: "unknown" }, { decision: "accept" }), false);
+});

@@ -115,37 +115,46 @@ function priorityStage(t, { priority = ["codex", "claude", "gemini", "openclaw"]
   return { ...h, relays, pages, health, moves, sends, body, limit, settle: () => h.settle(relays) };
 }
 
-test("priority continues through multiple providers, skips read-only Gemini, and never loops", async t => {
+test("priority continues once, skips read-only Gemini, and never moves the continued chat again", async t => {
   const h = priorityStage(t);
   await h.relays.start(h.body);
   h.limit("codex");
   await h.settle();
   assert.deepEqual(h.moves.map(m => m.options.to), ["claude"]);
-  assert.equal(h.relays.list()[0].state, "waiting");
+  assert.equal(h.relays.list()[0].state, "done");
   h.limit("claude");
   await h.settle();
-  assert.deepEqual(h.moves.map(m => m.options.to), ["claude", "openclaw"]);
-  assert.equal(h.sends.length, 1);
-  assert.match(h.sends[0].body.text, /Don't send anything to WhatsApp/);
-  assert.equal(h.relays.list()[0].state, "done");
-  h.limit("openclaw");
-  await h.settle();
-  assert.equal(h.moves.length, 2);
+  assert.equal(h.moves.length, 1, "the continued chat is not continued again automatically");
 });
 
-test("custom order is honored and availability is rechecked when usage runs out", async t => {
+test("custom order is honored and availability is checked when usage runs out", async t => {
   const h = priorityStage(t, { priority: ["codex", "openclaw", "claude", "gemini"] });
+  h.health.find(x => x.agent === "openclaw").connected = false;
   await h.relays.start(h.body);
+  h.health.find(x => x.agent === "openclaw").connected = true;
   h.limit("codex");
   await h.settle();
-  assert.equal(h.moves[0].options.to, "openclaw");
-  // Claude loses its sign-in after the watch was enabled.
-  h.health.find(x => x.agent === "claude").signedIn = false;
-  h.limit("openclaw");
+  assert.deepEqual(h.moves.map(m => m.options.to), ["openclaw"]);
+  assert.equal(h.sends.length, 1);
+  assert.match(h.sends[0].body.text, /Don't send anything to WhatsApp/);
+});
+
+test("auto-continue is refused on a chat that is already a continuation", async t => {
+  const h = priorityStage(t);
+  h.pages.codex.session.movedFrom = { agent: "claude", id: "earlier" };
+  await assert.rejects(h.relays.start(h.body), { status: 409, message: /already continued/ });
+  assert.equal(h.relays.list().length, 0);
+});
+
+test("a watch saved before the chat was continued stops instead of moving it again", async t => {
+  const h = priorityStage(t);
+  await h.relays.start(h.body);
+  h.pages.codex.session.movedFrom = { agent: "claude", id: "earlier" };
+  h.limit("codex");
   await h.settle();
-  assert.equal(h.moves.length, 1);
+  assert.equal(h.moves.length, 0);
   assert.equal(h.relays.list()[0].state, "stopped");
-  assert.match(h.relays.list()[0].problem, /No unused provider/);
+  assert.match(h.relays.list()[0].problem, /already continued/);
 });
 
 test("unavailable providers are skipped without creating a chat", async t => {
@@ -157,18 +166,16 @@ test("unavailable providers are skipped without creating a chat", async t => {
   assert.deepEqual(h.moves.map(m => m.options.to), ["openclaw"]);
 });
 
-test("priority is preserved across a restart between fallback hops", async t => {
+test("priority is preserved across a restart before the move", async t => {
   const h = priorityStage(t);
   await h.relays.start(h.body);
-  h.limit("codex");
-  await h.settle();
   const restored = createRelays(h.options);
   assert.deepEqual(restored.list()[0].priority, h.body.priority);
-  h.limit("claude");
+  h.limit("codex");
   await restored.check();
   h.advance(11);
   await restored.check();
-  assert.deepEqual(h.moves.map(m => m.options.to), ["claude", "openclaw"]);
+  assert.deepEqual(h.moves.map(m => m.options.to), ["claude"]);
 });
 
 for (const action of ["cancel", "revoke"]) test(`${action} while checking availability prevents a move`, async t => {
@@ -192,21 +199,29 @@ test("malformed, duplicate, unsupported, or ambiguous priorities are rejected", 
   await assert.rejects(h.relays.start({ ...h.body, steps: [{ kind: "build", agent: "claude" }] }), { status: 400 });
 });
 
-test("a later move out of OpenClaw keeps the original project folder", async t => {
-  const h = priorityStage(t, { priority: ["codex", "openclaw", "claude"] });
-  await h.relays.start(h.body);
-  h.limit("codex");
-  await h.settle();
-  h.limit("openclaw");
-  await h.settle();
-  assert.equal(h.moves[1].options.to, "claude");
-  assert.equal(h.moves[1].options.cwd, "/work");
-});
-
 test("simultaneous enables create only one priority watch", async t => {
   const h = priorityStage(t);
   const results = await Promise.allSettled([h.relays.start(h.body), h.relays.start(h.body)]);
   assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
   assert.equal(results.find(r => r.status === "rejected").reason.status, 409);
   assert.equal(h.relays.list().length, 1);
+});
+
+// Fail-open audit (Oct 8): meters that couldn't be read are not "has usage".
+test("a chat is never moved into an agent whose usage is unknown", async () => {
+  const { continueUnavailable } = await import("../server/agent-sessions/auto-continue.mjs");
+  const h = (usable) => [{ agent: "codex", installed: true, signedIn: true, ...(usable === undefined ? {} : { usable }) }];
+  assert.equal(continueUnavailable("codex", h(true)), "");
+  assert.equal(continueUnavailable("codex", h(false)), "Out of usage");
+  assert.equal(continueUnavailable("codex", h(undefined)), "Usage unknown");
+});
+
+// Meters in a shape Reach doesn't read are unknown, never "plenty left".
+test("usage meters Reach can't read are unavailable, not empty and fine", async () => {
+  const { codexUsage, claudeUsage } = await import("../server/agent-sessions/account-usage.mjs");
+  assert.equal(codexUsage({ rateLimits: { renamed: {} } }).available, false);
+  assert.equal(codexUsage({ rateLimits: { primary: { usedPercent: 40 } } }).available, true);
+  assert.equal(claudeUsage({ newShape: [] }).available, false);
+  assert.equal(claudeUsage({ limits: "x" }).available, false);
+  assert.equal(claudeUsage({ five_hour: { utilization: 12 } }).available, true);
 });

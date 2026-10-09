@@ -259,7 +259,8 @@ export function createClaudeCompose({
     },
     // `now`: sent with Send now from the phone, so it goes in even while
     // someone uses the Mac (the Claude window switches to this chat).
-    deliver(id, { title, text = "", images = [], owner, now = false }) {
+    // `begin`: called just before typing (the outbox marks it on its way).
+    deliver(id, { title, text = "", images = [], owner, now = false, begin = () => {} }) {
       return serial(async (guard) => {
       if (!(await appRunning())) throw Object.assign(waiting("Goes in when the Claude app is open on your Mac."), { appClosed: true });
       const list = shown();
@@ -283,13 +284,15 @@ export function createClaudeCompose({
       const away = now || (measured && seconds * 1000 >= awayMs);
       const awayIn = measured ? { retryMs: Math.max(0, awayMs - seconds * 1000) } : {};
       if (showing !== target.session) {
+        // `elsewhere`: this chat isn't on screen and won't be switched to
+        // now; the outbox hands it to Claude Code instead of waiting.
         if (!now && (held.get(id) ?? 0) > clock())
-          throw waiting("The Claude app didn't open this chat; trying again in a few minutes. Send now puts it in at once.");
+          throw Object.assign(waiting("The Claude app didn't open this chat; trying again in a few minutes. Send now puts it in at once."), { elsewhere: true });
         if (!away)
           throw Object.assign(
             waiting("Goes in when you open this chat in the Claude app, or step away from the Mac. Send now puts it in at once."),
             // Tried again once you'd count as away (no input for awayMs).
-            { inApp: true, ...awayIn },
+            { inApp: true, elsewhere: true, ...awayIn },
           );
         if (await screen() !== showing)
           throw waiting("The Claude app changed chats before this message was sent. Trying again later.");
@@ -312,6 +315,7 @@ export function createClaudeCompose({
         // Send, only while nobody is at the Mac (or with Send now).
         const into = { title, session: target.session, ...(switched ? { waitMs: switchMs } : {}), ...(away ? { keep: true } : {}) };
         guard();
+        begin();
         const result = await type({ ...into, text, images, ...(draft ? { expected: known(draft) } : {}) }, guard);
         if (typeof result?.kept === "string") keepText(id, result.kept);
         held.delete(id);

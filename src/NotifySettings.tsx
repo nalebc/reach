@@ -63,9 +63,14 @@ export function useNotificationSetup(peer: Peer, active = true) {
   const [note, setNote] = useState("");
   const generation = useRef(0);
   const pending = useRef(false);
+  // Each read, and each change this device made: a read only counts if
+  // nothing newer began or changed while it was on its way.
+  const reads = useRef(0);
   const here = sameComputer(peer.url);
   const refresh = useCallback(async () => {
     const version = generation.current;
+    const read = ++reads.current;
+    const latest = () => version === generation.current && read === reads.current;
     const current = pushSupport();
     setSupport(current);
     if (!active || !here || current === "unsupported") {
@@ -74,16 +79,17 @@ export function useNotificationSetup(peer: Peer, active = true) {
     }
     try {
       await request(peer, "/api/push");
-      if (version !== generation.current) return;
+      if (!latest()) return;
       setAllowed(true);
       const enabled = current === "ready" && (await pushEnabled(peer));
-      if (version === generation.current) setOn(enabled);
+      if (!latest()) return;
+      setOn(enabled);
       if (enabled) {
         const prefs = await notificationPreferences(peer);
-        if (version === generation.current) setPreferences(prefs);
+        if (latest()) setPreferences(prefs);
       }
     } catch (e) {
-      if (version === generation.current) {
+      if (latest()) {
         if ([401, 403].includes((e as { status?: number }).status || 0))
           setAllowed(false);
         else
@@ -135,6 +141,7 @@ export function useNotificationSetup(peer: Peer, active = true) {
           "Test sent. Check Notification Center on this device. Focus settings may silence the banner.",
         );
       else {
+        reads.current++;
         setOn(!on);
         window.dispatchEvent(new Event("reach-push-changed"));
       }
@@ -161,6 +168,7 @@ export function useNotificationSetup(peer: Peer, active = true) {
     try {
       const prefs = await notificationPreferences(peer, change);
       if (version !== generation.current) return;
+      reads.current++;
       setPreferences(prefs);
       setNote("Saved for this device.");
       window.dispatchEvent(new Event("reach-push-changed"));

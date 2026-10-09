@@ -384,6 +384,12 @@
   flex: 0 0 auto;
   margin: 0 1px;
 }
+/* A value at the row's end (Usage: 80%), as ChatGPT's menus show one. */
+.relay-menu-value {
+  flex: none;
+  color: var(--as-muted, currentColor);
+  font-size: 13px;
+}
 
 .continue-priority {
   margin: 16px 0;

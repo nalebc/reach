@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Bell, BellRing, Loader2, Workflow } from "lucide-react";
+import { ArrowRight, Bell, BellRing, Loader2, RefreshCw } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import type { UsageLink } from "./agent-sessions";
 import type { Peer } from "./api";
@@ -143,7 +143,7 @@ export default function UsageStrip({
               ))}
               {onAutoContinue && (
                 <button className="usage-continue-offer usage-auto-continue" onClick={onAutoContinue}>
-                  <Workflow size={16} />
+                  <RefreshCw size={16} />
                   <span>Auto-continue</span>
                 </button>
               )}

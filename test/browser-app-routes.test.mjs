@@ -74,7 +74,7 @@ async function fixture(t, hooks = {}) {
   if (hooks.funnel) reach.setFunnelController(async () => {});
   t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(socketDir, { recursive: true, force: true }); });
   await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
-  await reach.listenPrivate(socketPath);
+  await reach.listenPrivate(socketPath, hooks.publicApp ? { publicApp: hooks.publicApp } : {});
   const call = (route, { node = "nPhone", token = owners[node]?.token || "", method = "GET", body, headers = {} } = {}) => new Promise((resolve, reject) => {
     const req = http.request({ socketPath, path: route, method, headers: {
       Host: "localhost", "X-Forwarded-For": addresses[node], "Tailscale-User-Login": ownerAccount.login,
@@ -268,6 +268,21 @@ test("changed app signature prevents an already displayed owner request from gra
   f.applications.find((app) => app.id === notes).identity = "d".repeat(64);
   assert.equal((await f.call(`/api/agents/browser-requests/${pending.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 409);
   assert.equal((await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(notes)}`)).status, 403);
+});
+
+test("the held public route gives the internet nothing unless an invitation is live", platform, async (t) => {
+  const served = [];
+  const f = await fixture(t, { funnel: true, publicApp: (req, res) => { served.push(req.url); res.end("start page"); } });
+  const internet = () => f.call("/", { token: "", headers: { "Tailscale-Funnel-Request": "?1" } });
+  assert.deepEqual(await internet(), { status: 404, body: "Not found." });
+  assert.deepEqual(served, []);
+  const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: textEdit, mode: "view" }], transport: "funnel" } });
+  assert.equal(created.status, 201, JSON.stringify(created));
+  assert.deepEqual(await internet(), { status: 200, body: "start page" });
+  assert.deepEqual(served, ["/"]);
+  f.reach.auth.revoke(created.body.clientId);
+  assert.deepEqual(await internet(), { status: 404, body: "Not found." });
+  assert.deepEqual(served, ["/"]);
 });
 
 test("a Funnel invite whose public name Tailscale hasn't published still issues, and says so", platform, async (t) => {

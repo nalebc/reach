@@ -214,6 +214,8 @@ test(
     fs.writeFileSync(path.join(dist, "start.html"), "<!doctype html>start");
     const startPage = publicStartHandler({ dist, tailnetDir: null, privateOrigin: `${START}:8443`, home: START, name: "Mac A", instance: reach.instance, faceId: reach.faceIdAvailable });
     const socketPath = path.join(socketDir, "s");
+    // The internet is answered only while a window is open: an unopened invitation opens one.
+    reach.auth.inviteGuest({ name: "Sam", full: true, ttlSeconds: 1800 });
     await reach.listenPrivate(socketPath, { publicApp: (req, res) => reach.publicFaceId(req, res) || startPage(req, res) });
     t.after(() => reach.close());
     const send = (headers, route, { method = "POST", body, raw } = {}) =>

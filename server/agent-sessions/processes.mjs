@@ -172,7 +172,11 @@ export function readSessionRegistry({
       pid: r.pid,
       tty: null,
       exact: true,
-      busy: r.status === "busy",
+      // Only "idle" is idle: Reach may end an idle app process to take its
+      // chat over, so a state word a newer Claude Code adds counts as busy
+      // (never interrupted). No word at all: not Claude Code's say (the
+      // transcript's age decides, as without a registry).
+      busy: r.status === "idle" || r.status === "waiting" ? false : typeof r.status === "string" ? true : undefined,
       // Stopped on you: "input needed" (a question) or "permission prompt".
       waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
       ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),

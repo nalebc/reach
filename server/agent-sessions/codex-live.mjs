@@ -58,17 +58,30 @@ export function describePrompt(method, params = {}) {
   if (params.availableDecisions != null && (!Array.isArray(params.availableDecisions) || !params.availableDecisions.length || params.availableDecisions.some(d => typeof d !== "string" && !object(d))))
     throw compatibilityError("codex", "approval decisions");
   const base = { method, threadId: params.threadId || params.conversationId, turnId: params.turnId || null };
+  // What Codex offers, else its usual four. A request that also widens
+  // access to a folder (grantRoot) the phone doesn't show is answered for
+  // this once only, never for the whole session (fail-open audit, Oct 8).
+  // An "Always allow…" that carries a rule (an execpolicy or network
+  // amendment) grants what the phone doesn't show: answered in the app only.
+  const offered = ((params.availableDecisions?.length ? params.availableDecisions : DEFAULT_DECISIONS[method]) || []).filter((d) => typeof d === "string");
+  const decisions = params.grantRoot
+    ? offered.filter((d) => !["acceptForSession", "approved_for_session"].includes(typeof d === "string" ? d : Object.keys(d)[0]))
+    : offered;
   switch (method) {
     case "item/commandExecution/requestApproval":
     case "execCommandApproval":
+      // A command the phone can't show as written is never accepted from
+      // it: only declined (fail-open audit, Oct 8).
+      const shown = (typeof params.command === "string" && params.command.trim()) ||
+        (Array.isArray(params.command) && params.command.length && params.command.every((part) => typeof part === "string"));
       return {
         ...base,
         kind: "command",
         title: "Run this command?",
-        command: Array.isArray(params.command) ? params.command.join(" ") : String(params.command ?? ""),
+        command: shown ? (Array.isArray(params.command) ? params.command.join(" ") : params.command) : "",
         cwd: params.cwd || "",
         reason: params.reason || "",
-        decisions: params.availableDecisions?.length ? params.availableDecisions : DEFAULT_DECISIONS[method],
+        decisions: shown ? decisions : decisions.filter((d) => /^(decline|cancel|abort|denied)$/.test(typeof d === "string" ? d : Object.keys(d)[0])),
       };
     case "item/fileChange/requestApproval":
     case "applyPatchApproval":
@@ -79,7 +92,7 @@ export function describePrompt(method, params = {}) {
         files: Object.keys(params.fileChanges || {}),
         reason: params.reason || "",
         grantRoot: params.grantRoot || null,
-        decisions: DEFAULT_DECISIONS[method],
+        decisions,
       };
     case "item/permissions/requestApproval":
       if (!object(params.permissions)) throw compatibilityError("codex", "permission scope");
@@ -144,6 +157,33 @@ export function answerFor(prompt, answer) {
       return elicitationAnswer(prompt, answer);
     default:
       throw bad("Reach cannot answer this prompt.", 409);
+  }
+}
+
+// An answer the Codex app gives for a request Reach holds, checked against
+// that request before it goes on: never more access than was asked, only
+// the questions asked, only the actions a form has (fail-open audit, Oct 8).
+const within = (given, asked) =>
+  given === asked ||
+  (object(given) && object(asked) && Object.entries(given).every(([k, v]) => Object.hasOwn(asked, k) && within(v, asked[k]))) ||
+  (Array.isArray(given) && Array.isArray(asked) && given.every((g) => asked.some((a) => within(g, a)))) ||
+  // Turning something off is never more access.
+  given === false || given === null;
+export function appAnswerFits(prompt, response) {
+  switch (prompt.kind) {
+    case "permissions":
+      return Object.keys(response).every((k) => ["permissions", "scope"].includes(k)) &&
+        object(response.permissions) && within(response.permissions, prompt.permissions) &&
+        (response.scope === undefined || response.scope === "turn" || response.scope === "session");
+    case "question":
+      return Object.keys(response).every((k) => k === "answers") && object(response.answers) &&
+        Object.entries(response.answers).every(([id, a]) => prompt.questions.some((q) => q.id === id) &&
+          object(a) && Array.isArray(a.answers) && a.answers.every((x) => typeof x === "string"));
+    case "elicitation":
+      return ["accept", "decline", "cancel"].includes(response.action) &&
+        (response.content == null || object(response.content));
+    default:
+      return false;
   }
 }
 
@@ -762,7 +802,8 @@ export function createCodexLive({
         if (!prompt || prompt.method !== methods[method]) throw bad("This prompt was already answered.", 409);
         if (prompt.attempted) throw bad("This answer was already attempted. Check Codex.", 409);
         const response = "decision" in p ? answerFor(prompt, { decision: p.decision }) : p.response;
-        if (!object(response)) throw bad("Invalid answer.");
+        // A decision is one the request offered (answerFor); a whole answer is checked.
+        if (!object(response) || (!("decision" in p) && !appAnswerFits(prompt, response))) throw bad("Invalid answer.");
         authorize();
         prompt.attempted = true;
         await prompt.resolve(response);

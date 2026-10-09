@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ChevronLeft, ChevronRight, Loader2, MessageSquare, MoreHorizontal } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, ChevronLeft, ChevronRight, Loader2, MessageSquare, MoreHorizontal } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
@@ -211,15 +211,19 @@ export function MoveOffer({
   );
 }
 
-// In the chat's ⋯ menu: one row per app found on the Mac, with its logo
-// (moveChoices). One tap says what happens, the next one moves it; an app
-// that can't take the chat shows, greyed, with why.
+// In a chat's menu (its ⋯, or held on the list): one "Continue in…" row;
+// a tap turns the menu into the apps found on the Mac, each with its logo
+// (moveChoices). One tap on an app says what happens, the next one moves it;
+// an app that can't take the chat shows, greyed, with why.
 export function MoveItems({
   peer,
   session,
   health,
   logos,
   word,
+  open,
+  onOpen,
+  onBack,
   onMoved,
 }: {
   peer: Peer;
@@ -227,12 +231,19 @@ export function MoveItems({
   health: AgentHealth[];
   logos: AgentLogos;
   word?: string;
+  open: boolean;
+  onOpen: () => void;
+  onBack: () => void;
   onMoved: (s: AgentSession) => void;
 }) {
   const choices = moveChoices(session.agent, health, word);
   const [asking, setAsking] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  // Back out and in again: no app is left one tap from moving the chat.
+  useEffect(() => {
+    if (!open) (setAsking(""), setProblem(""));
+  }, [open]);
   if (!choices.length) return null;
   const from = agentLabel(session.agent);
   const go = async (to: string) => {
@@ -247,8 +258,24 @@ export function MoveItems({
       setBusy(false);
     }
   };
+  if (!open)
+    return (
+      <button role="menuitem" className="move-item move-continue" onClick={onOpen}>
+        <ArrowLeftRight size={18} />
+        <span className="move-item-text">
+          <span>Continue in…</span>
+        </span>
+        <ChevronRight size={16} />
+      </button>
+    );
   return (
     <>
+      <button role="menuitem" className="move-item move-section-back" disabled={busy} onClick={onBack}>
+        <ChevronLeft size={16} />
+        <span className="move-item-text">
+          <span>Continue in</span>
+        </span>
+      </button>
       {choices.map(({ to, name, blocked }) => {
         const here = asking === to;
         if (blocked)
@@ -256,7 +283,7 @@ export function MoveItems({
             <button key={to} role="menuitem" className="move-item blocked" disabled aria-disabled="true">
               <AgentLogo agent={to} name={name} logos={logos} size={20} />
               <span className="move-item-text">
-                <span>Continue in {name}</span>
+                <span>{name}</span>
                 <small>{blocked}</small>
               </span>
             </button>
@@ -267,18 +294,12 @@ export function MoveItems({
             role="menuitem"
             className={`move-item ${here ? "asking" : ""}`}
             disabled={busy}
-            onClick={() => (here ? void go(to) : setAsking(to))}
+            onClick={() => (here ? void go(to) : (setAsking(to), setProblem("")))}
           >
             <AgentLogo agent={to} name={name} logos={logos} size={20} />
             <span className="move-item-text">
-              <span>{here ? name : `Continue in ${name}`}</span>
-              <small>
-                {here && problem
-                  ? problem
-                  : here
-                    ? `gets what ${from} knows so far`
-                    : "Picks up from here; this chat stays"}
-              </small>
+              <span>{name}</span>
+              {here && <small>{problem || `Gets what ${from} knows so far`}</small>}
             </span>
             {busy && here ? (
               <Loader2 size={16} className="spin" />

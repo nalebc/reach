@@ -35,7 +35,7 @@ let reachReason = "That's Reach. The agent can't use Reach."
 let protectedReason = "That holds passwords or controls who may use this Mac. It stays closed to the agent."
 let hiddenReason = "The owner hid this app from the agent."
 let notAllowedReason = "That's not one of the apps this agent may use."
-let secureReason = "That's a password field. The agent never types passwords; the owner can sign in from Screen."
+let secureReason = "That's a password field. Use the Password box so the password stays hidden."
 func lower(_ value: String) -> String { value.precomposedStringWithCompatibilityMapping.lowercased() }
 // "reach" as a word: Reach.app, com.reach.app, "Reach — node"; not Preacher.
 func mentionsReach(_ value: String, _ rules: Rules) -> Bool {
@@ -305,14 +305,22 @@ func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? 
       // A Dock item or menu of an app that hosts Reach (Reach's terminal, a Reach tab).
       let label = string(element, kAXTitleAttribute)
       if mentionsReach(label, rules) { try refuse(reachReason) }
-      if let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == label }), hostsReach(app, rules) { try refuse(reachReason) }
+      if rules.mode != "full", let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == label }), hostsReach(app, rules) { try refuse(reachReason) }
     } else {
       try check(s, rules)
-      if s.title.isEmpty, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
+      // Accessibility can't always name an element's window (deep web
+      // content). The window server's window here, checked above, names it
+      // when it is the same app's. Only an unnamed window falls back to the
+      // whole app, where any window showing Reach closes every window.
+      let named = window.map { $0.pid == s.pid && !$0.title.isEmpty } ?? false
+      if rules.mode != "full", s.title.isEmpty, !named, let app = NSRunningApplication(processIdentifier: pidOf(element)), hostsReach(app, rules) { try refuse(reachReason) }
     }
     if pointerIdentityKnown(s.bundle, s.name, s.path, Int(s.pid)) { try checkExpected(s); return s }
   }
   if let window, pointerIdentityKnown(window.bundle, window.name, window.path, Int(window.pid)) { return window }
+  // Full control is light: a point no app claims (the desktop, a compositor
+  // layer) stays usable. Named protected targets were refused above.
+  if rules.mode == "full", expected == nil { return window ?? Seen() }
   try refuse("The app at this point could not be verified. Look again and retry.", "retry")
 }
 // Any of this app's windows is Reach's (Reach's terminal, a Reach tab).
@@ -323,7 +331,10 @@ func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool {
 }
 struct Focus { let app: NSRunningApplication; let element: Seen; let terminalLike: Bool }
 // Keys and text go to the focused element; check it and its app.
-func focus(_ rules: Rules) throws -> Focus {
+// A shortcut (⌘ or ⌃ held) or a navigation key goes to the app in front;
+// some apps (Electron) never name a focused element. Text and plain letters
+// still need the verified element, so nothing is spelled into a password.
+func focus(_ rules: Rules, appOnly: Bool = false) throws -> Focus {
   guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is ready for typing.", "retry") }
   let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
   if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
@@ -336,10 +347,12 @@ func focus(_ rules: Rules) throws -> Focus {
   var focusedPid: pid_t = 0
   guard let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
     AXUIElementGetPid(focused, &focusedPid) == .success, focusedPid == front.processIdentifier else {
+    if appOnly || rules.mode == "full" { return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules)) }
     try refuse("The focused app could not be verified. Look again before typing or pressing a key.", "retry")
   }
   let element = seen(focused)
   guard element.pid == front.processIdentifier else {
+    if rules.mode == "full" { return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules)) }
     try refuse("The focused app changed while it was checked. Look again before typing or pressing a key.", "retry")
   }
   try check(element, rules)
@@ -441,7 +454,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
   case "type":
     guard let text = action["text"] as? String, !text.isEmpty, text.utf16.count <= 2000 else { try refuse("Type up to 2000 characters.", "invalid") }
     let target = try focus(rules)
-    if target.element.secure { try refuse(secureReason) }
+    // Vault values (username, email, password) may go into any field but a
+    // terminal; ordinary text never goes into a password field.
+    let secret = action["secret"] as? Bool == true
+    if target.element.secure && !secret { try refuse(secureReason) }
+    if secret && target.terminalLike { try refuse("Vault values don't go into a terminal. Click the sign-in field first.") }
     // The server checked the text as prose or as a command; if the focus
     // moved to a terminal since, it must look again.
     if target.terminalLike && action["terminalLikeChecked"] as? Bool != true { try refuse("A terminal is in front now. Try again.", "retry") }
@@ -463,7 +480,8 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     guard let name = (action["key"] as? String)?.lowercased(), let code = keyCodes[name] else { try refuse("Unknown key.", "invalid") }
     let mods = action["modifiers"] as? [String] ?? []
     let shortcut = flags(mods)
-    let target = try focus(rules)
+    let chord = shortcut.contains(.maskCommand) || shortcut.contains(.maskControl)
+    let target = try focus(rules, appOnly: chord || ["tab", "escape", "esc", "left", "right", "up", "down", "home", "end", "pageup", "pagedown"].contains(name))
     let command = shortcut.contains(.maskCommand), option = shortcut.contains(.maskAlternate)
     // ⌘Q or ⌘W on a window holding Reach would close Reach.
     if command, ["q", "w"].contains(name), hostsReach(target.app, rules) { try refuse(reachReason) }

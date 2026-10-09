@@ -117,22 +117,23 @@ func expect(_ label: String, _ action: [String:Any], _ status: String, _ rules: 
 }
 let typing: [String:Any] = ["type":"type", "text":"Zoë"]
 let key: [String:Any] = ["type":"key", "key":"a"]
+var apps = full; apps.mode = "apps"; apps.allowedApps = [["id":"/Applications/Safari.app","bundleId":"com.apple.Safari"]]
+// Full control is light: a focus Accessibility can't confirm goes to the app
+// in front (still checked). The Apps preset keeps refusing it.
+func unverified(_ label: String, _ action: [String:Any], _ setup: () -> Void) {
+  reset(); setup(); expect(label + " (Full)", action, "allowed")
+  reset(); setup(); expect(label + " (Apps)", action, "retry", apps)
+}
 for action in [typing,key] {
   let name = action["type"] as! String
-  reset(); focusedPid = 99; observedPid = 99
-  expect(name + " mismatched PID", action, "retry")
-  reset(); focusedPid = nil
-  expect(name + " no AX focus", action, "retry")
-  reset(); focusedPid = 0; observedPid = 0
-  expect(name + " unavailable AX PID", action, "retry")
+  unverified(name + " mismatched PID", action) { focusedPid = 99; observedPid = 99 }
+  unverified(name + " no AX focus", action) { focusedPid = nil }
+  unverified(name + " unavailable AX PID", action) { focusedPid = 0; observedPid = 0 }
   reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(0); focusedPid = 0; observedPid = 0
   expect(name + " unavailable app PID", action, "retry")
-  reset(); pidLookupSucceeded = false
-  expect(name + " AX PID lookup failed with stale value", action, "retry")
-  reset(); observedPid = 0
-  expect(name + " failed PID lookup during inspection", action, "retry")
-  reset(); observedPid = 99
-  expect(name + " PID changed during inspection", action, "retry")
+  unverified(name + " AX PID lookup failed with stale value", action) { pidLookupSucceeded = false }
+  unverified(name + " failed PID lookup during inspection", action) { observedPid = 0 }
+  unverified(name + " PID changed during inspection", action) { observedPid = 99 }
   reset(); focusedTitle = "Reach"
   expect(name + " same-PID protected title", action, "blocked")
   reset(); focusedURL = "http://localhost:8443/"
@@ -149,12 +150,12 @@ reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.
 expect("terminal transition keeps prior command guard", typing, "retry")
 reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.apple.Terminal","Terminal")
 expect("checked terminal text remains allowed", ["type":"type","text":"pwd","terminalLikeChecked":true], "allowed")
-reset(); var apps = full; apps.mode = "apps"; apps.allowedApps = [["id":"/Applications/Safari.app","bundleId":"com.apple.Safari"]]
+reset()
 expect("selected app ordinary focus", key, "allowed", apps)
 reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.apple.Notes","Notes")
 expect("selected app policy still enforced", key, "blocked", apps)
 if !failures.isEmpty { print(failures.joined(separator:"\n")); exit(1) }
-print("OK 29 focus and keyboard dispatch cases")
+print("OK 41 focus and keyboard dispatch cases")
 `;
     const program = "import Foundation\nimport CoreGraphics\nimport Darwin\nstruct Refusal: Error { let message:String; let kind:String }\nfunc refuse(_ message:String, _ kind:String = \"blocked\") throws -> Never { throw Refusal(message:message,kind:kind) }\n"
       + policy + "\n" + text + "\n" + seen + "\n" + stubs
@@ -169,7 +170,7 @@ print("OK 29 focus and keyboard dispatch cases")
     assert.equal(compiled.status, 0, compiled.stderr);
     const run = spawnSync(path.join(directory, "focus"), [], { encoding: "utf8", timeout: 30000 });
     assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
-    assert.equal(run.stdout.trim(), "OK 29 focus and keyboard dispatch cases");
+    assert.equal(run.stdout.trim(), "OK 41 focus and keyboard dispatch cases");
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

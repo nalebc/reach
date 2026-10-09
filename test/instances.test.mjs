@@ -64,11 +64,11 @@ test("reach status tells what really runs, with its link", { skip: process.platf
   const routes = { private: { up: true, since: new Date(2026, 9, 5, 18, 9).getTime(), interruptions: 2 }, public: { open: true, since: new Date(2026, 9, 5, 18, 20).getTime() } };
   assert.match(
     statusText([hosts[0]], { dir: HOME, now, runtime: () => ({ link: "https://mac.tail.ts.net", routes }) }),
-    /\nLink: https:\/\/mac\.tail\.ts\.net\nPrivate route: up since [^\n]*:09[^\n]* · 2 interruptions\nPublic link: open since [^\n]*:20[^\n]*$/,
+    /\nLink: https:\/\/mac\.tail\.ts\.net\nPrivate route: up since [^\n]*:09[^\n]* · 2 interruptions\nPublic link: on since [^\n]*:20[^\n]*, blocked until an invite$/,
   );
   assert.match(
     statusText([hosts[0]], { dir: HOME, runtime: () => ({ routes: { private: { up: false, since: 0, interruptions: 0 }, public: { open: false, since: 0 } } }) }),
-    /\nPrivate route: down\nPublic link: closed$/,
+    /\nPrivate route: down\nPublic link: off$/,
   );
   assert.match(statusText([hosts[1]], { dir: HOME, runtime: () => ({}) }), /It has no window/);
   assert.match(statusText(hosts, { dir: HOME, runtime: () => ({}) }), /3 copies are running; only one should\./);

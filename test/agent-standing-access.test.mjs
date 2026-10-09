@@ -8,9 +8,9 @@ import { createAuth, validateBrowserInvitation } from "../server/core.mjs";
 import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
 
 // "Always": an agent keeps its access until the owner ends it. It joins like
-// any link, once and with the owner's approval; afterwards its browser (its
-// key and saved session) is how it comes back, so the used link is worth
-// nothing to anyone else. The public link stays up while it has access, or its
+// any link, with the owner's approval the first time; afterwards that one link
+// brings it back from any browser, moving the access and cutting off the old
+// browser, until the owner ends it. The public link stays up while it has access, or its
 // browser would have nothing to come back to.
 const binding = () => crypto.randomBytes(32).toString("base64url");
 function fixture(t) {
@@ -52,7 +52,7 @@ test("Always is a public link with no end time", () => {
   ]) assert.throws(() => validateBrowserInvitation(wrong), { status: 400 });
 });
 
-test("an Always session outlives silent minutes and keeps the public link up; a one-time one still ends", (t) => {
+test("Always and approved timed sessions both outlive silent minutes and keep the public link up", (t) => {
   const advance = clock(t);
   const f = fixture(t);
   const key = binding();
@@ -65,18 +65,26 @@ test("an Always session outlives silent minutes and keeps the public link up; a 
   assert.ok(f.auth.verifyFunnel(access.token, key), "ten silent minutes don't end Always access");
   assert.equal(f.record(access.clientId).status, "accepted");
   assert.deepEqual(f.auth.funnelWindow(), { open: true, until: f.record(access.clientId).expiresAt, reason: "standing" });
-  assert.equal(f.auth.verifyFunnel(once.token, onceKey), null, "a one-time session still ends after two silent minutes");
+  assert.ok(f.auth.verifyFunnel(once.token, onceKey), "a timed session, once approved, lasts until its access ends");
 });
 
-test("the link works once: shared with another browser after Muse joined, it gets nothing", (t) => {
+test("one link: opened again in another browser after Muse joined, the access moves there and the old browser is cut off", (t) => {
   const f = fixture(t);
   const grant = f.invite();
   const key = binding();
   const access = f.join(grant, key);
-  assert.throws(() => f.claim(grant, binding()), { status: 401 });
-  assert.equal(f.auth.listAgentAdmissions().length, 0, "nothing reaches the owner's phone");
-  assert.ok(f.auth.verifyFunnel(access.token, key), "Muse's own browser is untouched");
-  assert.equal(f.auth.verifyFunnel(access.token, binding()), null, "the session belongs to Muse's browser key only");
+  const newKey = binding();
+  const receipt = f.claim(grant, newKey);
+  assert.equal(receipt.status, "pending");
+  assert.equal(receipt.moved, true);
+  assert.equal(receipt.clientId, access.clientId, "the same access, not a new one");
+  assert.equal(f.auth.listAgentAdmissions().length, 0, "nothing to approve on the owner's phone");
+  assert.equal(f.auth.verifyFunnel(access.token, key), null, "the browser it used is disconnected");
+  const back = f.auth.pollFunnelAdmission(receipt.requestId, receipt.requestSecret, newKey);
+  assert.equal(back.status, "approved");
+  assert.equal(back.standing, true);
+  assert.ok(f.auth.verifyFunnel(back.token, newKey));
+  assert.equal(f.auth.verifyFunnel(back.token, key), null, "the session belongs to the new browser key only");
 });
 
 test("an unopened Always invitation joins within the usual window, then the public link closes", (t) => {
@@ -107,29 +115,31 @@ test("Stop ends Always access and closes the public link", (t) => {
   assert.equal(f.auth.funnelWindow().open, false);
 });
 
-test("Reopen link: the same link brings a new browser once, with approval, and the old browser is disconnected", (t) => {
+test("Reopen link (owner API) disconnects the browser in use; the link keeps working, nothing to approve", (t) => {
   const advance = clock(t);
   const f = fixture(t);
   const grant = f.invite();
   const oldKey = binding();
   const old = f.join(grant, oldKey);
-  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "closed until the owner reopens it");
   assert.equal(f.record(old.clientId).relink, true);
   assert.equal(f.record(old.clientId).linkHash, undefined, "the owner's list never carries the link's fingerprint");
   f.auth.reopenBrowserInvitation(old.clientId);
   assert.equal(f.auth.verifyFunnel(old.token, oldKey), null, "the browser it used is disconnected");
   const newKey = binding();
   const receipt = f.claim(grant, newKey);
-  assert.equal(receipt.status, "pending", "the new browser waits for the owner's code approval");
+  assert.equal(receipt.moved, true, "approved before: nothing to approve");
   assert.equal(receipt.clientId, old.clientId, "the same access, not a new one");
-  f.auth.decideAgentAdmission(receipt.requestId, "approve");
+  assert.equal(f.auth.listAgentAdmissions().length, 0);
   const back = f.auth.pollFunnelAdmission(receipt.requestId, receipt.requestSecret, newKey);
   assert.equal(back.standing, true);
   assert.ok(f.auth.verifyFunnel(back.token, newKey));
-  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "used again, closed again");
   f.auth.reopenBrowserInvitation(old.clientId);
   advance(16 * 60_000);
-  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "reopened and unused: closes after 15 minutes");
+  // Still its one link for as long as the access lasts.
+  assert.equal(f.claim(grant, binding()).moved, true);
+  assert.equal(f.auth.funnelWindow().open, true);
+  f.auth.revoke(old.clientId);
+  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "ended: the link is dead");
   assert.equal(f.auth.funnelWindow().open, false);
 });
 
@@ -140,7 +150,9 @@ test("a timed invitation can be reopened while it has time left, never after", (
   const first = f.join(grant, binding());
   advance(5 * 60_000);
   f.auth.reopenBrowserInvitation(first.clientId);
-  assert.equal(f.join(grant, binding()).status, "approved");
+  const key = binding();
+  const moved = f.claim(grant, key);
+  assert.equal(f.auth.pollFunnelAdmission(moved.requestId, moved.requestSecret, key).status, "approved");
   advance(60 * 60_000);
   assert.throws(() => f.auth.reopenBrowserInvitation(first.clientId), { status: 404 });
   const tailnet = f.invite({ ttlSeconds: 3600, transport: "tailnet" });

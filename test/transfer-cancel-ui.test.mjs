@@ -66,3 +66,37 @@ test("canceling an offline upload prevents a later online event from resuming it
   assert.equal(jobs[0].state, "canceled");
   assert.deepEqual(landed, []);
 });
+
+test("a dropped answer to the last step still ends as uploaded, not failed", async (t) => {
+  const original = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = class {
+    upload = {};
+    open() {}
+    setRequestHeader() {}
+    send(chunk) {
+      this.status = 200;
+      this.responseText = JSON.stringify({ offset: chunk.size });
+      queueMicrotask(() => this.onload());
+    }
+    abort() {}
+  };
+  const realFetch = globalThis.fetch;
+  let completes = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init) => {
+    if (new URL(url).pathname.endsWith("/complete") && ++completes === 1)
+      throw new TypeError("Load failed");
+    return realFetch(url, init);
+  };
+  t.after(() => {
+    globalThis.XMLHttpRequest = original;
+    globalThis.fetch = dom.window.fetch = realFetch;
+  });
+  function Probe() { jobs = transfers.useTransfers(); return null; }
+  view = await dom.render(dom.React.createElement(Probe));
+  transfers.uploadFiles(peer, 0, "", [new File(["bytes"], "file.txt")], (name) => landed.push(name));
+  await dom.waitFor(() => finish);
+  finish({ id: "upload-1", offset: 0, chunk: 1024 });
+  await dom.waitFor(() => landed.length, 5000);
+  assert.equal(completes, 2);
+  assert.equal(jobs[0].state, "done");
+});

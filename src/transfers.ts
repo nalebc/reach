@@ -408,16 +408,27 @@ async function sendFile(
         }
       }
     }
-    checkCanceled(signal);
-    await request(peer, `/api/files/uploads/${session.id}/complete`, {
-      method: "POST", body: JSON.stringify({}), signal,
-    }).catch((e) => {
-      if ((e as { status?: number }).status === 404)
-        throw Error(
-          `The folder you were uploading to no longer exists on ${peer.name}.`,
-        );
-      throw e;
-    });
+    // Every byte is there. A dropped answer here doesn't mean it failed: ask
+    // again, and the computer says it already landed.
+    for (let tries = 1; ; tries++) {
+      checkCanceled(signal);
+      try {
+        await request(peer, `/api/files/uploads/${session.id}/complete`, {
+          method: "POST", body: JSON.stringify({}), signal,
+        });
+        break;
+      } catch (e) {
+        checkCanceled(signal);
+        if ((e as { status?: number }).status === 404)
+          throw Error(
+            `The folder you were uploading to no longer exists on ${peer.name}.`,
+          );
+        if (!retryable(e) || tries >= 6) throw e;
+        waiting();
+        await whenReachable(signal);
+        await pause(Math.min(15000, 1000 * 2 ** (tries - 1)), signal);
+      }
+    }
   } finally {
     signal.removeEventListener("abort", cancel);
   }

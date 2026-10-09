@@ -11,6 +11,8 @@ export function continueUnavailable(agent, health = []) {
     if (h.canTakeMoves !== true) return "Chat transfer unavailable";
   } else if (!h.signedIn) return "Not signed in";
   if (h.usable === false) return "Out of usage";
+  // Not known to have usage (its meters couldn't be read): never moved into.
+  if (agent !== "openclaw" && h.usable !== true) return "Usage unknown";
   return "";
 }
 export function checkContinuePriority(priority) {

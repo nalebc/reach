@@ -159,7 +159,7 @@ test("Always sends no end time and tells the owner and the agent it lasts until 
   await choose(c, "Read only");
   await click(button(c, "Always"));
   assert.match(c.textContent, /a look at the screen and files, no touching until you end it/);
-  assert.match(c.textContent, /comes back from the same browser with no new invite\. The link works once; for a new browser, tap Reopen link/);
+  assert.match(c.textContent, /comes back through the same link from any browser, with no new invite\. Opening it elsewhere moves the access there and disconnects the old browser/);
   await click(button(c, "Create invite link"));
   await dom.waitFor(() => issued(calls));
   assert.equal(issued(calls).standing, true);
@@ -167,7 +167,7 @@ test("Always sends no end time and tells the owner and the agent it lasts until 
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
   assert.match(c.textContent, /Until you end it in Settings → Agents/);
   assert.doesNotMatch(c.textContent, /Join by/);
-  assert.match(message(c), /lasts until the owner ends it, in this browser.*The link works once; for a different browser, ask the owner to reopen it/);
+  assert.match(message(c), /lasts until the owner ends it\. Keep this link: open it again in any browser and you are back, with nothing to approve/);
   assert.doesNotMatch(message(c), /temporary/);
   mock();
   const older = await open();

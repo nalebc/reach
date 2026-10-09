@@ -36,10 +36,15 @@ export function emptyConfirmation(params) {
   );
 }
 
+// A plain confirmation (a message, no form): only these fields. A request
+// with anything else (its form or kind under a new name, say) is one Reach
+// can't read whole, so it is never accepted from the phone.
+const PLAIN = new Set(["threadId", "turnId", "serverName", "message", "description", "title"]);
+
 export function elicitationPrompt(params, agent = "Codex", platform = process.platform) {
   const text = (...values) => values.find((value) => typeof value === "string" && value.trim()) || "";
   const emptyForm = emptyConfirmation(params);
-  const nativeOnly = !!(params.mode || params.requestedSchema) && !emptyForm;
+  const nativeOnly = !emptyForm && Object.keys(params).some((key) => params[key] != null && !PLAIN.has(key));
   return {
     kind: "elicitation",
     title: `${text(params.serverName) || "A tool"} needs your input`,

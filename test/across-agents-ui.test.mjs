@@ -914,7 +914,7 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   await click(await dom.waitFor(() => button("More")));
   await click($$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
-  assert.match(sheet.textContent, /24 hours, uses each provider once/);
+  assert.match(sheet.textContent, /24 hours and skips providers that are unavailable/);
   assert.match(sheet.textContent, /Read-only in Reach · skipped/);
   assert.equal(mac.sent.length, 0);
   await click(button("Move Claude Code up"));
@@ -928,6 +928,14 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   await click(button("Cancel handoff"));
   await dom.waitFor(() => !$(".relay-row"));
   assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a chat that is already a continuation offers no auto-continue", async () => {
+  await open(codexSession({ movedFrom: { agent: "claude", id: CLAUDE, title: "Refactor auth" } }), both());
+  await click(await dom.waitFor(() => button("More")));
+  await dom.waitFor(() => $$(".relay-menu-item").length);
+  assert.equal($$(".relay-menu-item").some(b => b.textContent.includes("Auto-continue")), false);
   assert.deepEqual(dom.errors, []);
 });
 

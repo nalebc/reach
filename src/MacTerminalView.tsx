@@ -151,17 +151,27 @@ export default function MacTerminalView({
       clearTimeout(soon);
       soon = setTimeout(() => void read(), 350);
     };
+    // One line on its way at a time: a second Enter before the Mac answers
+    // would run the same command again.
+    let sending = false;
     submit.current = async () => {
+      if (sending || stopped) return;
+      sending = true;
       // Nothing typed: Return on its own, as on the Mac (to accept a
       // prompt or answer with the default).
-      const text = pending.current.trim() ? pending.current : "";
+      const typed = pending.current;
+      const text = typed.trim() ? typed : "";
       try {
         await post(peer, `/api/terminals/desktop/${tab.id}/send`, { text });
-        pending.current = "";
+        if (stopped) return;
+        // What was typed while it went stays for the next line.
+        if (pending.current.startsWith(typed)) pending.current = pending.current.slice(typed.length);
         draw();
         if (timer) refreshSoon();
       } catch (e) {
-        setError((e as Error).message);
+        if (!stopped) setError((e as Error).message);
+      } finally {
+        sending = false;
       }
     };
     const input = term.onData((data) => {

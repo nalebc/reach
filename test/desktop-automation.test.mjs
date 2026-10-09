@@ -125,13 +125,13 @@ test("phone control interrupts automation and waits for its native transaction b
 function desktopWorld() {
   let clock = 1000, screenAnswer = null, inputAnswer = null;
   const clients = new Map(), requests = [], helpers = [];
-  const automation = known({ blocked: () => desktop.automationBusy() });
+  const automation = known({ blocked: () => desktop.automationBusy(), now: () => clock });
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true,
     now: () => clock,
     verifyClient: id => clients.get(id),
-    automationControls: () => automation.active(),
-    onObservation: () => automation.interrupt(),
+    automationControls: () => automation.active() || automation.wanted(),
+    screenChangedAt: () => automation.changedAt(),
     spawnHelper: async () => {
       const ended = deferred();
       const helper = {
@@ -160,43 +160,61 @@ function desktopWorld() {
   };
 }
 
-for (const read of ["screenshot", "front"]) test(`authorized ${read} observation defers automation for30s without reserving agent input`, async t => {
+for (const read of ["screenshot", "front"]) test(`an agent's ${read}s never hold chats' desktop work`, async t => {
   const w = desktopWorld(); t.after(() => w.close());
-  const first = w.add("readonly", "readonly"), second = w.add("controller");
-  await w.desktop[read](first, w.authorize(first));
-  assert.equal(w.desktop.automationBusy(), true);
-  assert.equal(w.desktop.activity().holder, null, "observing does not own the cross-agent input lease");
-  await refused(w.automation.run(() => assert.fail("background UI must wait")));
-  await w.desktop.open(second, "/Applications/Safari.app", w.authorize(second));
-  w.tick(29999);
-  assert.equal(w.desktop.automationBusy(), true);
-  w.tick(1);
-  assert.equal(await w.automation.run(() => "idle"), "idle");
+  const client = w.add("viewer", "readonly");
+  // A live screen asks several times a second, for as long as it's open.
+  for (let i = 0; i < 20; i++) { await w.desktop[read](client, w.authorize(client)); w.tick(300); }
+  assert.equal(w.desktop.automationBusy(), false);
+  assert.equal(w.desktop.activity().holder, null, "looking does not own the cross-agent input lease");
+  assert.equal(await w.automation.run(() => "in"), "in");
 });
 
-test("revoked, expired and failed observations cannot maintain the automation hold", async t => {
+test("an agent looks again before acting once a chat drove the Mac", async t => {
   const w = desktopWorld(); t.after(() => w.close());
-  let client = w.add();
+  const client = w.add();
+  const click = () => w.desktop.act(client, { type: "click", x: 0.5, y: 0.5 }, w.authorize(client));
+  await w.desktop.screenshot(client, w.authorize(client));
+  w.tick(10);
+  // Work that refused before driving the Mac changes nothing on screen.
+  await assert.rejects(w.automation.run(() => { throw Object.assign(Error("not yet"), { waiting: true }); }));
+  await click();
+  w.tick(3000);
+  assert.equal(await w.automation.run(guard => { guard(); return "typed"; }), "typed");
+  w.tick(10);
+  await assert.rejects(click(), error => error.status === 409 && error.stale === true && /Look at the screen again/.test(error.message));
+  assert.equal(w.requests.filter(request => request.op === "act").length, 1, "the stale click never reached the Mac");
+  await w.desktop.screenshot(client, w.authorize(client));
+  await click();
+  assert.equal(w.requests.filter(request => request.op === "act").length, 2);
+});
+
+test("a chat waiting on a busy agent gets the next turn, named", async t => {
+  const w = desktopWorld(); t.after(() => w.close());
+  const client = w.add("Spicy Llama");
+  const click = () => w.desktop.act(client, { type: "click", x: 0.5, y: 0.5 }, w.authorize(client));
+  await w.desktop.screenshot(client, w.authorize(client));
+  await click();
+  await assert.rejects(w.automation.run(() => assert.fail("agent holds the Mac")),
+    error => error.kind === "busy" && error.waiting === true && /Spicy Llama is using the Mac/.test(error.message));
+  assert.equal(w.automation.wanted(), true);
+  // The agent's next click waits instead of renewing its lease forever.
+  await assert.rejects(click(), { status: 409, kind: "busy" });
+  w.tick(2500);
+  assert.equal(w.desktop.automationBusy(), false);
+  assert.equal(await w.automation.run(guard => { guard(); return "in"; }), "in");
+  assert.equal(w.automation.wanted(), false);
+  await w.desktop.screenshot(client, w.authorize(client));
+  await click();
+});
+
+test("revoked and expired agents hold nothing", async t => {
+  const w = desktopWorld(); t.after(() => w.close());
+  const client = w.add();
   await w.desktop.front(client, w.authorize(client));
   w.desktop.cancelClient(client.id); w.clients.delete(client.id);
   assert.equal(w.desktop.automationBusy(), false);
-  client = w.add();
-  await w.desktop.front(client, w.authorize(client));
-  client.status = "revoked";
-  assert.equal(w.desktop.automationBusy(), false, "external grant reload does not retain a revoked observation");
-  client = w.add(); client.expiresAt = 1500;
-  await w.desktop.front(client, w.authorize(client));
-  w.tick(500);
-  assert.equal(w.desktop.automationBusy(), false);
-  client = w.add();
-  const shot = deferred(); w.setScreen(() => shot.promise);
-  const reading = w.desktop.screenshot(client, w.authorize(client));
-  const failure = assert.rejects(reading, { status:403 });
-  await Promise.resolve(); await Promise.resolve();
-  w.clients.delete(client.id);
-  shot.resolve({ ok:true, jpeg:Buffer.from([255,216]).toString("base64") });
-  await failure;
-  assert.equal(w.desktop.automationBusy(), false);
+  assert.equal(await w.automation.run(() => "free"), "free");
 });
 
 test("agent input cannot dispatch during an automation transaction", async t => {
@@ -220,7 +238,7 @@ test("a revoked native input keeps automation excluded until actual helper termi
   w.desktop.cancelClient(client.id); w.clients.delete(client.id); w.tick(60000);
   native.resolve({ ok:true, app:"Safari", bundle:"com.apple.Safari" });
   await Promise.resolve(); await Promise.resolve();
-  assert.equal(w.desktop.automationBusy(), true);
+  assert.match(w.desktop.automationBusy(), /agent is using the Mac/);
   await refused(w.automation.run(() => assert.fail("helper has not exited")));
   w.helpers[0].end(); await failure;
   assert.equal(w.desktop.automationBusy(), false);
@@ -296,17 +314,16 @@ test("server foreground events and phone control share the transaction retiremen
   }
 });
 
-test("an observation interrupts in-flight automation even after the30s hold expires", async t => {
+test("an agent looking mid-transaction doesn't stop it", async t => {
   const w = desktopWorld(); t.after(() => w.close());
-  const client = w.add("observer","readonly"), native = deferred();
+  const client = w.add("viewer","readonly"), native = deferred();
   let restored = false;
-  const task = w.automation.run(async guard => { guard(); await native.promise; guard(); restored = true; });
-  const failure = refused(task);
+  const task = w.automation.run(async guard => { guard(); await native.promise; guard(); restored = true; return "done"; });
   await w.desktop.front(client, w.authorize(client));
-  w.tick(30001);
-  assert.equal(w.desktop.automationBusy(), false);
-  native.resolve(); await failure;
-  assert.equal(restored, false, "a later expiry cannot revive a stale transaction");
+  await w.desktop.screenshot(client, w.authorize(client));
+  native.resolve();
+  assert.equal(await task, "done");
+  assert.equal(restored, true);
 });
 
 for (const revoked of [false, true]) test(`phone takeover waits for active agent native exit and ${revoked ? "rechecks a revoked owner grant" : "then enables fresh input"}`, async t => {

@@ -87,6 +87,26 @@ test("the bell collects actual pending requests across providers and drops resol
   assert.equal(result.items.find((i) => i.source === "handoff").push, false);
 });
 
+test("a request's notification lands on its own card, answerable there", async () => {
+  const result = await readAttention(
+    sources({
+      agentSessions: {
+        list: async () => ({
+          sessions: [],
+          errors: {},
+          macPrompts: [{ id: "dialog", kind: "buttons", title: "Allow?" }],
+        }),
+      },
+      restartRequests: () => [
+        { id: "r1", app: "Claude Code", requestedAt: 1, expiresAt: Date.now() + 60000 },
+      ],
+    }),
+  );
+  const target = (id) => result.items.find((i) => i.id === id).target;
+  assert.deepEqual(target("restart:r1"), { page: "overview", needs: "restart:r1" });
+  assert.deepEqual(target("mac:dialog"), { page: "overview", needs: "mac:dialog" });
+});
+
 const item = (signature = "p1") => ({
   id: "chat:claude:private-id",
   source: "claude",

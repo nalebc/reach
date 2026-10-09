@@ -77,6 +77,10 @@ export function createClaudeConsent({
       const asked = await pending(id);
       guard();
       if (asked?.id !== promptId) throw bad("This request was already answered.", 409);
+      // Allow presses the card that shows these words: with no app named
+      // (its field renamed, say), any apps card would match. Never pressed.
+      if (decision === "allow" && (asked.kind === "apps" || asked.kind === "teach") && !asked.apps?.length)
+        throw bad(`Reach can't tell which apps this allows. Answer it on your ${computerWord(platform)}.`, 409);
       // Drawn in its session's view: show that session first.
       const list = shown();
       if (list[0]?.id !== id) {

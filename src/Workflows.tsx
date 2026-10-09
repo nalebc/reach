@@ -332,6 +332,9 @@ function Editor({
   // arriving, a task starting. Your own save coming back only names new tasks.
   useEffect(() => {
     if (edits.current !== saved.current) return;
+    // A copy older than this editor's own last save (its effect ran late,
+    // after a newer save came back) is never put over the newer edits.
+    if (workflow.updatedAt < ours.current) return;
     const theirs = workflow.tasks.slice(lockedCount(workflow)).map(toDraft);
     if (workflow.updatedAt === ours.current) {
       setTasks((mine) => mine.map((t, i) => (t.id ? t : { ...t, id: theirs[i]?.id })));

@@ -313,9 +313,9 @@ export async function launch(options, root) {
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
       if (publicStart && !stopped) {
-        // Public access exists only while an invitation/admission/session is
-        // alive: a background Funnel route, switched on and off with the
-        // window; a janitor process holds a five-second lease on it.
+        // Public access: a background Funnel route held on while Reach runs,
+        // answered only while an invitation/admission/session is alive; a
+        // janitor process holds a five-second lease on it.
         publicLink = new EphemeralFunnel({
           origin: publicStart,
           target: serveTarget,

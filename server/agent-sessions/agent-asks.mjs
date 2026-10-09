@@ -26,26 +26,73 @@ const AGENTS = new Set(["claude"]);
 // (as its plan answers do: Manual is "default" there). Never Bypass.
 const MODES = new Set(["default", "acceptEdits", "plan", "auto"]);
 // Steps Claude Code takes without asking in any mode: reading or searching
-// in the chat's own folder, its task list; and, in a mode that accepts edits,
-// editing there. A mode picked on the phone switches on one of these at once,
-// answered by Reach itself (it asked only for the switch): no tap, and
-// nothing allowed that the chat wouldn't have done anyway.
-const READS = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead"]);
+// in the chat's own folder, its task list. A mode picked on the phone
+// switches on one of these at once, answered by Reach itself (it asked only
+// for the switch): no tap, and nothing allowed that the chat wouldn't have
+// done anyway.
+// Fails closed (audit, Oct 8): Reach can't see why Claude Code asked. It
+// asks inside the folder too, for a file it holds sensitive (.claude/,
+// .git/, a link out of the folder) or the person's own ask rules. So edits
+// always go to the phone, and a read counts only when its whole input is
+// one Reach reads exactly: the tool's own path field, absolute, really
+// inside the folder (links followed), through no hidden file or folder, and
+// no other field naming a path.
+const READS = { Read: "file_path", NotebookRead: "notebook_path", Glob: "path", Grep: "path", LS: "path" };
+const OPTIONAL = new Set(["Glob", "Grep", "LS"]);
 const BOOKKEEPING = new Set(["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ToolSearch"]);
-const EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-const inside = (cwd, file) => {
+const realInside = (cwd, file, real = fs.realpathSync) => {
   if (typeof cwd !== "string" || !path.isAbsolute(cwd)) return false;
-  if (file == null) return true;
-  if (typeof file !== "string") return false;
-  const rel = path.relative(cwd, path.resolve(cwd, file));
-  return !rel.startsWith("..") && !path.isAbsolute(rel);
+  if (typeof file !== "string" || !path.isAbsolute(file)) return false;
+  let root, target;
+  try {
+    root = real(cwd);
+    target = real(file);
+  } catch {
+    return false;
+  }
+  const rel = path.relative(root, target);
+  if (rel === "") return true;
+  if (path.isAbsolute(rel) || rel.split(path.sep).some((part) => part === ".." || part.startsWith("."))) return false;
+  return true;
 };
-export function switchesAlone(tool, input, cwd, mode) {
-  const file = input?.file_path ?? input?.notebook_path ?? input?.path;
-  if (BOOKKEEPING.has(tool)) return true;
-  if (READS.has(tool)) return inside(cwd, file);
-  if (EDITS.has(tool)) return (mode === "acceptEdits" || mode === "auto") && inside(cwd, file);
+// Anything in another field that could name a place: not read whole.
+const pathLike = (value) =>
+  typeof value === "string" ? /^[/~]|(^|[/\\])\.\.([/\\]|$)/.test(value) : value !== null && typeof value === "object";
+// The person's own ask rules (permissions.ask in any Claude settings file
+// for this folder) make Claude Code ask inside the folder too, and its hook
+// doesn't say which ask was Reach's: with any (or a file Reach can't read),
+// nothing switches alone.
+export function hasAskRules(cwd, { read = fs.readFileSync, home = os.homedir() } = {}) {
+  const files = [
+    "/Library/Application Support/ClaudeCode/managed-settings.json",
+    path.join(home, ".claude", "settings.json"),
+    ...(typeof cwd === "string" && path.isAbsolute(cwd) ? [path.join(cwd, ".claude", "settings.json"), path.join(cwd, ".claude", "settings.local.json")] : []),
+  ];
+  for (const file of files) {
+    let text;
+    try {
+      text = read(file, "utf8");
+    } catch (e) {
+      if (e?.code === "ENOENT" || e?.code === "ENOTDIR") continue;
+      return true;
+    }
+    try {
+      const ask = JSON.parse(text)?.permissions?.ask;
+      if (ask != null && (!Array.isArray(ask) || ask.length)) return true;
+    } catch {
+      return true;
+    }
+  }
   return false;
+}
+export function switchesAlone(tool, input, cwd, mode, { real, askRules = hasAskRules } = {}) {
+  if (BOOKKEEPING.has(tool)) return true;
+  if (askRules(cwd)) return false;
+  if (!Object.hasOwn(READS, tool) || input === null || typeof input !== "object" || Array.isArray(input)) return false;
+  const field = READS[tool];
+  if (Object.entries(input).some(([k, v]) => k !== field && pathLike(v))) return false;
+  if (input[field] == null) return OPTIONAL.has(tool) && realInside(cwd, cwd, real);
+  return realInside(cwd, input[field], real);
 }
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 const key = (agent, sessionId) => `${agent}:${sessionId}`;

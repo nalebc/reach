@@ -95,36 +95,32 @@ function fixture(t, options = {}) {
 }
 const on = ["funnel", "--bg", "--https=443", target], off = ["funnel", "--https=443", "off"];
 
-test("idle startup never opens Funnel or creates a persistent route", async (t) => {
+test("startup holds the route on and leases the janitor; an agent link still needs a live window", async (t) => {
   const f = fixture(t);
-  assert.equal(await f.link.start(), false);
-  await f.link.sync();
-  assert.equal(f.workers.length, 0);
-  assert.deepEqual(f.runs, []);
-  assert.equal(fs.existsSync(f.file), false);
-  await assert.rejects(f.link.ensure(), /ended/);
-  assert.deepEqual(f.getConfig(), privateRoute);
-});
-
-test("an active invitation switches the background route on, leases the janitor, and switches it off on revocation", async (t) => {
-  const f = fixture(t);
-  await f.link.start();
-  const until = f.timer.now() + 60000;
-  f.setWindow({ open: true, until, reason: "invitation" });
-  assert.equal(await f.link.ensure(), true);
+  assert.equal(await f.link.start(), true);
   assert.deepEqual(f.runs, [on], "the route is daemon state, switched on once");
   assert.deepEqual(JSON.parse(fs.readFileSync(f.file, "utf8")), { version: 1, origin, target });
   assert.equal(f.workers.length, 1);
-  const child = f.workers[0];
-  assert.equal(child.messages[0].type, "init");
-  assert.equal(child.messages[0].target, target);
-  assert.equal(child.messages[0].origin, origin);
-  assert.equal(child.messages[0].windowUntil, until);
-  assert.equal(child.messages[0].leaseUntil, 105000);
-  assert.ok(f.reports.some((m) => /Public link open/.test(m)));
-  // Ticks while live renew the lease without asking the daemon each time.
+  const init = f.workers[0].messages[0];
+  assert.equal(init.type, "init");
+  assert.equal(init.target, target);
+  assert.equal(init.origin, origin);
+  assert.equal(init.leaseUntil, 105000);
+  assert.equal(init.windowUntil, Number.MAX_SAFE_INTEGER, "Reach being alive is the window");
+  assert.ok(f.reports.some((m) => /Public link on/.test(m)));
+  await assert.rejects(f.link.ensure(), /ended/);
+  assert.deepEqual(f.changes, [true]);
+});
+
+test("an invitation uses the held route, and its end leaves the route on and leased", async (t) => {
+  const f = fixture(t);
+  await f.link.start();
+  f.setWindow({ open: true, until: f.timer.now() + 60000, reason: "invitation" });
+  assert.equal(await f.link.ensure(), true);
+  // Ticks renew the lease without asking the daemon each time.
   const inspections = [];
   f.link.inspect = async () => { inspections.push(f.timer.now()); return f.getConfig(); };
+  const child = f.workers[0];
   for (let i = 0; i < 5; i++) { f.timer.advance(1000); await f.link.sync(); }
   assert.equal(child.messages.filter((m) => m.type === "lease").length >= 5, true);
   assert.equal(inspections.length, 0, "no status read for ten seconds while live");
@@ -132,14 +128,14 @@ test("an active invitation switches the background route on, leases the janitor,
   await f.link.sync();
   assert.equal(inspections.length, 1, "then one read");
   f.setWindow(closed);
-  assert.equal(await f.link.sync(), false);
-  assert.equal(child.connected, false);
-  assert.equal(child.messages.at(-1).type, "stop");
-  assert.deepEqual(f.runs, [on, off]);
-  assert.deepEqual(f.getConfig(), privateRoute);
-  assert.equal(fs.existsSync(f.file), false);
-  assert.equal(f.link.live, false);
-  assert.deepEqual(f.changes, [true, false], "the launcher hears the route come up and go, once each");
+  f.timer.advance(120000);
+  assert.equal(await f.link.sync(), true);
+  assert.equal(child.connected, true);
+  assert.equal(child.messages.at(-1).type, "lease");
+  assert.equal(child.messages.at(-1).leaseUntil, f.timer.now() + 5000);
+  assert.deepEqual(f.runs, [on], "never switched off between invitations");
+  assert.deepEqual(f.changes, [true]);
+  await assert.rejects(f.link.ensure(), /ended/);
 });
 
 test("a failed status read while live never tears the route down", async (t) => {
@@ -167,21 +163,6 @@ test("a route that vanished from the daemon is switched on again, once a second 
   assert.equal(f.link.live, true);
 });
 
-test("expiry switches the route off and leases never outlive the active credential deadline", async (t) => {
-  const f = fixture(t);
-  const until = f.timer.now() + 1200;
-  f.setWindow({ open: true, until, reason: "session" });
-  await f.link.start();
-  await f.link.ensure();
-  assert.equal(f.workers[0].messages[0].leaseUntil, until);
-  f.timer.advance(1200);
-  await f.link.sync();
-  assert.equal(f.workers[0].connected, false);
-  assert.deepEqual(f.runs.at(-1), off);
-  assert.equal(f.link.live, false);
-  await assert.rejects(f.link.ensure(), /ended/);
-});
-
 test("stop removes the monitor and switches the route off without touching private Serve", async (t) => {
   const f = fixture(t);
   f.setWindow({ open: true, until: f.timer.now() + 60000, reason: "session" });
@@ -200,27 +181,22 @@ test("startup removes only the exact recorded old background Funnel", async (t) 
   const oldTarget = "unix:/tmp/reach-old/public";
   f.setConfig({ ...route(oldTarget), TCP: { ...route().TCP, ...privateRoute.TCP }, Web: { ...route(oldTarget).Web, ...privateRoute.Web } });
   fs.writeFileSync(f.file, JSON.stringify({ version: 1, origin, target: oldTarget }));
-  assert.equal(await f.link.start(), false);
-  assert.deepEqual(f.runs, [off]);
-  assert.equal(fs.existsSync(f.file), false);
-  assert.deepEqual(f.getConfig(), privateRoute);
-  assert.equal(f.workers.length, 0);
+  assert.equal(await f.link.start(), true);
+  assert.deepEqual(f.runs, [off, on], "the old route goes, ours comes up");
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.file, "utf8")), { version: 1, origin, target });
+  assert.equal(f.workers.length, 1);
 });
 
-test("a recorded route of our own is kept across a restart while a window is open, retired when none is", async (t) => {
-  const kept = fixture(t);
-  kept.setConfig(kept.withFunnel());
-  fs.writeFileSync(kept.file, JSON.stringify({ version: 1, origin, target }));
-  kept.setWindow({ open: true, until: kept.timer.now() + 60000, reason: "session" });
-  assert.equal(await kept.link.start(), true, "no blink on restart");
-  assert.deepEqual(kept.runs, []);
-  assert.equal(kept.workers.length, 1, "the janitor is leased again");
-  const retired = fixture(t);
-  retired.setConfig(retired.withFunnel());
-  fs.writeFileSync(retired.file, JSON.stringify({ version: 1, origin, target }));
-  await retired.link.start();
-  assert.deepEqual(retired.runs, [off]);
-  assert.equal(retired.workers.length, 0);
+test("a recorded route of our own is kept across a restart, window or not", async (t) => {
+  for (const window of [{ open: true, until: 160000, reason: "session" }, closed]) {
+    const kept = fixture(t);
+    kept.setConfig(kept.withFunnel());
+    fs.writeFileSync(kept.file, JSON.stringify({ version: 1, origin, target }));
+    kept.setWindow(window);
+    assert.equal(await kept.link.start(), true, "no blink on restart");
+    assert.deepEqual(kept.runs, []);
+    assert.equal(kept.workers.length, 1, "the janitor is leased again");
+  }
 });
 
 test("an exact route of our own is used as is; foreground, extra-handler and unrelated routes are never changed", async (t) => {
@@ -255,38 +231,16 @@ test("background ownership rejects foreground duplicates and preserves port 8443
   assert.equal(exactBackgroundFunnel({ ...route(), Foreground: { private: privateRoute } }, origin, target), true);
 });
 
-test("an authentication window ending during route inspection cannot switch Funnel on", async (t) => {
-  let finish, inspections = 0;
-  const f = fixture(t, { inspect: () => new Promise((resolve) => { inspections++; finish = resolve; }) });
-  await f.link.start();
-  f.setWindow({ open: true, until: f.timer.now() + 60000, reason: "invitation" });
-  const pending = f.link.sync();
-  f.setWindow(closed);
-  finish(structuredClone(privateRoute));
-  assert.equal(await pending, false);
-  assert.deepEqual(f.runs, []);
-  assert.equal(inspections, 1, "the state just read decides the release; no second read");
-  assert.equal(f.workers[0].connected, false, "the janitor is dismissed");
-  // Nothing of Reach's was ever on the port: stopping asks the daemon nothing.
-  await f.link.stop();
-  assert.equal(inspections, 1);
-  assert.deepEqual(f.runs, []);
-});
-
-test("stopping or closing a window that never opened a route leaves the daemon alone", async (t) => {
+test("a route that could not be switched on leaves only a dropped record behind", async (t) => {
   let inspections = 0;
   const f = fixture(t, { inspect: async () => { inspections++; return structuredClone(privateRoute); } });
-  await f.link.start();
-  f.setWindow({ open: true, until: f.timer.now() + 60000, reason: "invitation" });
   f.link.run = async () => { throw Error("tailscale: unexpected EOF"); };
-  assert.equal(await f.link.sync(), false, "the route could not be switched on");
+  assert.equal(await f.link.start(), false, "the route could not be switched on");
+  assert.ok(f.reports.includes("tailscale: unexpected EOF"));
   const after = inspections;
-  f.setWindow(closed);
-  assert.equal(await f.link.sync(), false);
+  await f.link.stop();
   assert.equal(inspections, after + 1, "the record written before the attempt is checked against the daemon");
   assert.equal(fs.existsSync(f.file), false, "a record with no route behind it is dropped");
-  await f.link.stop();
-  assert.equal(inspections, after + 1, "no record and never live: nothing to release");
 });
 
 // The janitor: a lease that is not renewed switches Reach's own route off.

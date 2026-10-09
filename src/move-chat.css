@@ -170,3 +170,8 @@
 .move-section-back .move-item-text > span {
   font-weight: 600;
 }
+/* "Continue in…": its chevron says a list of apps follows. */
+.move-continue > svg:last-child {
+  flex: none;
+  opacity: 0.5;
+}

@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, Loader2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, Loader2 } from "lucide-react";
 import { effortLabel, type AgentModel, type AgentName } from "./agent-sessions";
 import { dragToClose } from "./sheet-drag";
 import "./model-sheet.css";
 
 // The model and its effort, picked as each app has you pick them (their
-// phone apps, Oct 6). Claude: a "Select model" sheet, the models in one card
-// with what each is for, and Effort as its own row that opens its levels.
+// phone apps, Oct 6). Claude: a small menu over the composer as ChatGPT draws
+// its model picker (Oct 8: the sheet was far too big for a model): one
+// compact row per model, its purpose in one short line, and Effort as its own
+// row that turns the same menu into its levels.
 // Codex: the model and effort as words over the composer with a row of dots
 // to slide the effort, and the models in a "Configure" sheet with Done.
 // Before, every model and then every effort sat in one list.
@@ -30,9 +32,13 @@ type Props = {
 
 // A chat may use a model the connection's picker no longer lists. Its real
 // selection must never turn into the catalog's default just by opening it.
+// The Claude app names a variant with a suffix ("claude-opus-5-5[1m]", its
+// 1M context window) that Claude Code's catalog doesn't list: the same model.
+const byId = (models: AgentModel[], model: string) =>
+  models.find((m) => m.id === model) || models.find((m) => m.resolvedModel === model && !m.isDefault) || models.find((m) => m.resolvedModel === model);
 export const currentModel = (models: AgentModel[], model: string | null) =>
   model
-    ? models.find((m) => m.id === model) || models.find((m) => m.resolvedModel === model && !m.isDefault) || models.find((m) => m.resolvedModel === model)
+    ? byId(models, model) || (/\[[^\]]+\]$/.test(model) ? byId(models, model.replace(/\[[^\]]+\]$/, "")) : undefined)
     : models.find((m) => m.isDefault) || models[0];
 export const modelDisplayName = (model: string) => {
   const parts = /^gpt-([\d.]+)-(.+)$/i.exec(model);
@@ -70,11 +76,86 @@ function Sheet({ agent, label, className, onClose, children }: { agent: AgentNam
   );
 }
 
-function Status({ busy, error, working, empty, onRetry }: { busy?: boolean; error?: string; working?: boolean; empty: boolean; onRetry?: () => void }) {
+// A small menu just above the button that opened it, as ChatGPT's model
+// picker: no dimmed chat, closed by a tap anywhere else or Escape.
+const MENU_WIDTH = 300;
+// The model button last pressed: the menu belongs to it, wherever it is (a
+// chat's composer, or New chat's over it).
+let trigger: Element | null = null;
+if (typeof document !== "undefined")
+  document.addEventListener(
+    "pointerdown",
+    (e) => { trigger = (e.target as Element | null)?.closest?.(".as-model, .chat-model") || trigger; },
+    true,
+  );
+function anchorOf() {
+  const pressed = trigger instanceof HTMLElement && trigger.isConnected && trigger.offsetParent ? trigger : null;
+  return pressed || [...document.querySelectorAll<HTMLElement>(".as-model, .chat-model")].reverse().find((b) => b.offsetParent) || null;
+}
+function Menu({ agent, label, className, onClose, children }: { agent: AgentName; label: string; className: string; onClose: () => void; children: React.ReactNode }) {
+  const [place, setPlace] = useState<React.CSSProperties>({});
+  useLayoutEffect(() => {
+    // Measured in the same coordinates as the button (its client rect): the
+    // menu's bottom edge 8px above it. Followed every frame while open, so
+    // the keyboard, a growing composer, a resize or a rotation never leave
+    // it behind (a resize event comes before the chat has moved: Oct 8).
+    let last = "";
+    let frame = 0;
+    const measure = () => {
+      const box = anchorOf()?.getBoundingClientRect();
+      const width = Math.min(MENU_WIDTH, window.innerWidth - 24);
+      const next: React.CSSProperties =
+        !box || !box.width
+          ? { width, left: (window.innerWidth - width) / 2, top: window.innerHeight - 96, maxHeight: Math.max(160, window.innerHeight - 120) }
+          : {
+              width,
+              left: Math.max(12, Math.min(box.right - width, window.innerWidth - width - 12)),
+              top: box.top - 8,
+              maxHeight: Math.max(160, Math.min(440, box.top - 20)),
+            };
+      const key = JSON.stringify(next);
+      if (key !== last) {
+        last = key;
+        setPlace(next);
+      }
+    };
+    const follow = () => {
+      measure();
+      frame = requestAnimationFrame(follow);
+    };
+    measure();
+    frame = requestAnimationFrame(follow);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => {
+    // Escape closes this menu only: caught before the New chat sheet under
+    // it (which closes on Escape too) can hear it.
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [onClose]);
+  return createPortal(
+    <div className={`ms-layer ms-pop ${agent}`}>
+      <div className="ms-scrim" onClick={onClose} />
+      <div className={`ms-sheet ms-menu ${className}`} style={place} role="dialog" aria-modal="true" aria-label={label}>
+        {children}
+      </div>
+    </div>,
+    document.querySelector(".reach-chat-sheet") || document.querySelector(".as-page, .chat-home") || document.body,
+  );
+}
+
+function Status({ busy, error, working, empty, onRetry, changing = "model", quiet = false }: { busy?: boolean; error?: string; working?: boolean; empty: boolean; onRetry?: () => void; changing?: "model" | "effort"; quiet?: boolean }) {
   return (
     <>
-      {working && <p className="ms-note">Applies to the next turn. The current reply keeps its model.</p>}
-      {busy && <p className="ms-note" role="status">{empty ? "Loading models…" : "Changing model…"}</p>}
+      {working && <p className="ms-note">Applies to the next turn. The current reply keeps its {changing}.</p>}
+      {/* quiet: the menu says it in its header line instead, without moving. */}
+      {busy && !quiet && <p className="ms-note" role="status">{empty ? "Loading models…" : `Changing ${changing}…`}</p>}
       {error && <p className="ms-note ms-error" role="alert">{error}</p>}
       {onRetry && (
         <button className="ms-retry" disabled={busy} onClick={onRetry}>{empty ? "Try loading models again" : "Refresh model list"}</button>
@@ -90,7 +171,7 @@ function Mark({ checked, pending }: { checked: boolean; pending: boolean }) {
 }
 function ModelRows({ models, model, current, busy, onPick }: { models: AgentModel[]; model: string | null; current?: AgentModel; busy?: boolean; onPick: (m: AgentModel) => void }) {
   const [tapped, setTapped] = useState("");
-  const unlisted = model && !models.some((m) => m.id === model || m.resolvedModel === model) ? model : null;
+  const unlisted = model && !current ? model : null;
   return (
     <div className="ms-card" role="radiogroup" aria-label="Models">
       {unlisted && (
@@ -123,16 +204,20 @@ export function ClaudeModelSheet(props: Props) {
   const current = currentModel(models, model);
   const level = effort || current?.defaultEffort || null;
   return (
-    <Sheet agent={agent} label={page === "models" ? "Select model" : "Effort"} className="ms-claude" onClose={onClose}>
-      <header className="ms-head" data-sheet-grab>
-        {page === "models" ? (
-          <button className="ms-round" aria-label="Close" onClick={onClose}><X size={20} /></button>
-        ) : (
-          <button className="ms-round" aria-label="Back" onClick={() => setPage("models")}><ChevronLeft size={22} /></button>
+    <Menu agent={agent} label={page === "models" ? "Model" : "Effort"} className="ms-claude" onClose={onClose}>
+      <header className="ms-menu-head">
+        {page === "effort" && (
+          <button className="ms-back" aria-label="Back" onClick={() => setPage("models")}><ChevronLeft size={18} /></button>
         )}
-        <h2>{page === "models" ? "Select model" : "Effort"}</h2>
+        <h2>{page === "models" ? "Model" : "Effort"}</h2>
+        {busy && (
+          <span className="ms-menu-status" role="status">
+            {!models.length ? "Loading…" : page === "effort" ? "Changing effort…" : "Changing model…"}
+          </span>
+        )}
       </header>
-      <Status {...props} empty={!models.length} />
+      {/* Refreshing helps only when the list is missing something. */}
+      <Status {...props} onRetry={!models.length || props.error || (model && !current) ? props.onRetry : undefined} empty={!models.length} changing={page === "effort" ? "effort" : "model"} quiet />
       {page === "models" ? (
         <>
           <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
@@ -140,7 +225,7 @@ export function ClaudeModelSheet(props: Props) {
             <button className="ms-card ms-row" disabled={busy} onClick={() => setPage("effort")}>
               <span>Effort</span>
               <span className="ms-value">{level ? levelName(level, agent) : "Default"}</span>
-              <ChevronRight size={18} className="ms-chevron" />
+              <ChevronRight size={16} className="ms-chevron" />
             </button>
           )}
         </>
@@ -171,7 +256,7 @@ export function ClaudeModelSheet(props: Props) {
           ))}
         </div>
       )}
-    </Sheet>
+    </Menu>
   );
 }
 

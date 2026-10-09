@@ -214,7 +214,8 @@ test("close to its limit, a chat says so above the message box, and a tap shows 
   await click($(".usage-sheet .chat-sheet-close"));
   await click($("[aria-label='More']"));
   const item = await dom.waitFor(() => $$(".as-details .relay-menu-item").find((b) => /^Usage/.test(b.textContent)));
-  assert.match(item.textContent, /95% used · resets/);
+  // One short value at the row's end; the reset times are in the sheet.
+  assert.equal(item.textContent, "Usage95%");
   await click(item);
   assert.ok(await dom.waitFor(() => $(".usage-sheet")));
 });
@@ -1230,7 +1231,7 @@ test("Codex: Speed in Configure uses the phone's own menu and changes the chat's
   assert.equal(mac.sent.at(-1).body.speed, undefined);
 });
 
-test("Claude: Select model with what each is for, and Effort as its own row that opens the levels", async (t) => {
+test("Claude: a small model menu over the composer, what each is for in one line, Effort one tap further", async (t) => {
   const offers = CLAUDE_OFFERS.models;
   CLAUDE_OFFERS.models = [
     { id: "claude-fable-5-1", name: "Fable 5.1", description: "For your toughest challenges", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null },
@@ -1242,8 +1243,10 @@ test("Claude: Select model with what each is for, and Effort as its own row that
   await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
   await click($(".as-model"));
   const sheet = await dom.waitFor(() => $(".ms-sheet.ms-claude"));
-  assert.equal(sheet.querySelector("h2").textContent, "Select model");
-  assert.ok(sheet.querySelector("button[aria-label=Close]"));
+  assert.ok(sheet.classList.contains("ms-menu"), "a small menu, not a sheet");
+  assert.equal(sheet.querySelector("h2").textContent, "Model");
+  assert.equal(sheet.querySelector("button[aria-label=Close]"), null, "a tap elsewhere closes it");
+  assert.equal(sheet.querySelector(".sheet-handle"), null);
   assert.equal(checkedModel(), "Opus 5.5");
   assert.match(modelRow("Fable 5.1").textContent, /For your toughest challenges/);
   // Effort: a row of its own, its levels one tap further.
@@ -1251,6 +1254,7 @@ test("Claude: Select model with what each is for, and Effort as its own row that
   assert.match(row.textContent, /^Effort/);
   await click(row);
   assert.equal($(".ms-sheet h2").textContent, "Effort");
+  assert.ok($(".ms-sheet button[aria-label=Back]"), "back to the models in the same menu");
   assert.deepEqual($$(".ms-card[aria-label=Effort] .ms-text > span").map((s) => s.textContent), ["Low", "Medium", "High", "Extra high", "Max"]);
   await click($$(".ms-card[aria-label=Effort] button").find((b) => b.textContent.includes("Extra high")));
   await dom.waitFor(() => !$(".ms-sheet"));
@@ -1264,8 +1268,58 @@ test("Claude: Select model with what each is for, and Effort as its own row that
   await click($(".as-model"));
   await dom.waitFor(() => $(".ms-sheet"));
   assert.equal($(".ms-row"), null);
-  await click($(".ms-sheet button[aria-label=Close]"));
+  await click($(".ms-pop .ms-scrim"));
   assert.equal($(".ms-sheet"), null);
+});
+
+test("Claude's model menu: Escape closes the menu alone, and a complete list offers no refresh row", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "claude-opus-5-5", name: "Opus 5.5", description: "For complex work", efforts: ["low", "high"], defaultEffort: null, isDefault: true },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", efforts: [], defaultEffort: null },
+  ];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  await open(claudeSession(), signedIn, { ...peer, url: "https://claude-menu-escape.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await dom.waitFor(() => $(".ms-sheet.ms-menu"));
+  assert.equal(button("Refresh model list"), undefined, "nothing is missing: no refresh row");
+  // Whatever is under the menu (New chat's sheet closes on Escape too) never hears it.
+  let heard = 0;
+  const under = (e) => e.key === "Escape" && heard++;
+  dom.document.addEventListener("keydown", under);
+  t.after(() => dom.document.removeEventListener("keydown", under));
+  dom.document.body.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await settle();
+  assert.equal($(".ms-sheet"), null);
+  assert.equal(heard, 0);
+});
+
+test("Claude: a chat on the app's 1M variant still offers Effort for its model", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "default", resolvedModel: "claude-opus-5-5", name: "Default (recommended)", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null, isDefault: true },
+    { id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null },
+    { id: "haiku", resolvedModel: "claude-haiku-4-5", name: "Haiku 4.5", efforts: [], defaultEffort: null },
+  ];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const chat = claudeSession({ model: "claude-opus-5-5[1m]", effort: "high" });
+  mac.pages[`claude:${CLAUDE}`] = { ...(mac.pages[`claude:${CLAUDE}`] || {}), session: chat, items: mac.pages[`claude:${CLAUDE}`]?.items || [] };
+  await open(chat, signedIn, { ...peer, url: "https://claude-1m.test" });
+  await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
+  await click($(".as-model"));
+  await dom.waitFor(() => $(".ms-sheet.ms-claude"));
+  assert.equal(checkedModel(), "Opus 5.5");
+  assert.equal($(".ms-current-unlisted"), null, "the 1M variant is the listed model, not an unknown one");
+  const row = $(".ms-card.ms-row");
+  assert.ok(row, "Effort is offered");
+  assert.match(row.textContent, /High/);
+  await click(row);
+  await dom.waitFor(() => $(".ms-card[aria-label=Effort]"));
+  await click($$(".ms-card[aria-label=Effort] button").find((b) => b.textContent.includes("Max")));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  assert.deepEqual(mac.sent.at(-1), { route: `/api/sessions/claude/${CLAUDE}/model`, body: { effort: "max" } });
+  assert.deepEqual(dom.errors, []);
 });
 
 test("a model change on a working app-labelled chat waits for native confirmation", async () => {
@@ -1344,10 +1398,12 @@ test("a tapped effort level turns until Claude confirms, and a refusal stays on 
   await click(await dom.waitFor(() => $(".ms-row")));
   const row = () => $$(".ms-card[aria-label=Effort] button").find((b) => b.textContent.startsWith("Extra high"));
   await click(row());
-  // Still on the levels, the tapped one turning.
+  // Still on the levels, the tapped one turning; the header says what changes.
   assert.equal($(".ms-sheet h2").textContent, "Effort");
   assert.equal(row().getAttribute("aria-busy"), "true");
   assert.ok(row().querySelector(".spin"));
+  assert.equal($(".ms-menu-status").textContent, "Changing effort…");
+  assert.doesNotMatch($(".ms-sheet").textContent, /Changing model/);
   finish(Response.json({ error: "Open this chat in the Claude app on your Mac to change its effort from here." }, { status: 409 }));
   await dom.waitFor(() => $(".ms-sheet [role=alert]"));
   assert.equal($(".ms-sheet h2").textContent, "Effort");
@@ -2292,7 +2348,8 @@ test("a new Claude Code chat uses Claude Code's own models and permission modes"
     $(".chat-model")?.getAttribute("aria-label").includes("Default (recommended)"),
   );
   assert.equal($(".chat-model").textContent, "");
-  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Default");
+  // A new chat starts on Auto.
+  assert.equal($(".as-mode-pick").getAttribute("aria-label"), "Permissions: Auto");
   await click($(".as-mode-pick"));
   // Claude Code's own modes, in the Claude app's order and words (as in a
   // chat), after the settings' default.

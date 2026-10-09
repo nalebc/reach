@@ -39,6 +39,7 @@ import {
   ImageIcon,
   SearchCheck,
   Workflow,
+  RefreshCw,
   RotateCcw,
   Trash2,
   Square,
@@ -708,7 +709,7 @@ function ComposerMenu({
 }
 
 // The model and effort, picked as each app has you pick them (ModelSheet.tsx):
-// Claude's "Select model" sheet; Codex's words and effort dots over the
+// Claude's "Model" sheet; Codex's words and effort dots over the
 // composer, its models in "Configure".
 function ModelMenu({
   agent,
@@ -2430,6 +2431,11 @@ export default function AgentSessionView({
   );
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [details, setDetails] = useState(false);
+  // The ⋯ menu turned into the apps to continue the chat in (MoveItems).
+  const [continuing, setContinuing] = useState(false);
+  useEffect(() => {
+    if (!details) setContinuing(false);
+  }, [details]);
   // A second opinion on a reply, or a relay for when this chat's agent
   // finishes (Relays.tsx). One just set up shows at once, before the list has it.
   const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" | "auto-continue" }>(null);
@@ -2581,14 +2587,14 @@ export default function AgentSessionView({
       </header>
       {helping && <HelperBadge team={helping.team} task={helping.task} logos={logos} onOpen={(c) => onSelect(chatOf(c))} />}
       {items && items.length > 2 && !helping && !ledTeam && (
-        <MoveHint session={info} health={health} logos={logos} onOpen={() => setDetails(true)} />
+        <MoveHint session={info} health={health} logos={logos} onOpen={() => (setDetails(true), setContinuing(true))} />
       )}
       {details && (
         <>
           {/* A tap anywhere else closes the menu. */}
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
-            <div className="as-details-head">
+            {!continuing && <div className="as-details-head">
               {renaming !== null && (agent === "claude" || agent === "codex") ? (
                 <form
                   className="as-rename"
@@ -2620,26 +2626,7 @@ export default function AgentSessionView({
               <small>
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
-            </div>
-            {(agent === "claude" || agent === "codex") && (
-              <button
-                className="as-details-delete"
-                role="menuitem"
-                onClick={async () => {
-                  if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
-                    return;
-                  try {
-                    await deleteSession(peer, initial);
-                    setDetails(false);
-                    onBack();
-                  } catch (error) {
-                    setProblem((error as Error).message);
-                  }
-                }}
-              >
-                <Trash2 size={15} /> Delete chat
-              </button>
-            )}
+            </div>}
             {/* Continue this chat in the other app. */}
             <MoveItems
               peer={peer}
@@ -2647,67 +2634,91 @@ export default function AgentSessionView({
               health={health}
               logos={logos}
               word={word}
+              open={continuing}
+              onOpen={() => setContinuing(true)}
+              onBack={() => setContinuing(false)}
               onMoved={(s) => {
                 setDetails(false);
                 onSelect(s);
               }}
             />
-            {(info.agent === "claude" || info.agent === "codex") && (
-              <button className="relay-menu-item" role="menuitem" onClick={() => {
-                setDetails(false);
-                setRelaySheet({ mode: "auto-continue" });
-              }}>
-                <Workflow size={18} />
-                <span className="move-item-text"><span>Auto-continue</span><small>Switch providers when usage runs out</small></span>
-              </button>
-            )}
-            {/* Its work goes on to another agent (Relays.tsx). */}
-            <button
-              className="relay-menu-item"
-              role="menuitem"
-              onClick={() => {
-                setDetails(false);
-                setRelaySheet({ mode: "relay" });
-              }}
-            >
-              <Workflow size={18} />
-              <span className="move-item-text">
-                <span>Hand off</span>
-                <small>Pass the work to another agent</small>
-              </span>
-            </button>
-            {!!lastReply && (
-              <button
-                className="relay-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setDetails(false);
-                  setRelaySheet({ mode: "opinion" });
-                }}
-              >
-                <SearchCheck size={18} />
-                <span className="move-item-text">
-                  <span>Review reply</span>
-                  <small>Another agent reviews the last reply</small>
-                </span>
-              </button>
-            )}
-            {/* Its account's limits (UsageRing.tsx), as on the chat list. */}
-            {nearLimit && (
-              <button
-                className="relay-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setDetails(false);
-                  setUsageOpen(true);
-                }}
-              >
-                <Gauge size={18} />
-                <span className="move-item-text">
-                  <span>Usage</span>
-                  <small>{nearLimit.level === "out" ? "Out of usage" : `${nearLimit.percent}% used`}{nearLimit.resetsAt ? ` · resets ${shortReset(nearLimit.resetsAt)}` : ""}</small>
-                </span>
-              </button>
+            {!continuing && (
+              <>
+                {(info.agent === "claude" || info.agent === "codex") && !info.movedFrom && (
+                  <button className="relay-menu-item" role="menuitem" onClick={() => {
+                    setDetails(false);
+                    setRelaySheet({ mode: "auto-continue" });
+                  }}>
+                    <RefreshCw size={18} />
+                    <span className="move-item-text"><span>Auto-continue</span></span>
+                  </button>
+                )}
+                {/* Its work goes on to another agent (Relays.tsx). */}
+                <button
+                  className="relay-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setDetails(false);
+                    setRelaySheet({ mode: "relay" });
+                  }}
+                >
+                  <Workflow size={18} />
+                  <span className="move-item-text">
+                    <span>Hand off</span>
+                  </span>
+                </button>
+                {!!lastReply && (
+                  <button
+                    className="relay-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setDetails(false);
+                      setRelaySheet({ mode: "opinion" });
+                    }}
+                  >
+                    <SearchCheck size={18} />
+                    <span className="move-item-text">
+                      <span>Review reply</span>
+                    </span>
+                  </button>
+                )}
+                {/* Its account's limits (UsageRing.tsx), as on the chat list. */}
+                {nearLimit && (
+                  <button
+                    className="relay-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setDetails(false);
+                      setUsageOpen(true);
+                    }}
+                  >
+                    <Gauge size={18} />
+                    <span className="move-item-text">
+                      <span>Usage</span>
+                    </span>
+                    <small className="relay-menu-value">{nearLimit.level === "out" ? "Out" : `${nearLimit.percent}%`}</small>
+                  </button>
+                )}
+                {(agent === "claude" || agent === "codex") && (
+                  <button
+                    className="as-details-delete"
+                    role="menuitem"
+                    onClick={async () => {
+                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
+                        return;
+                      try {
+                        await deleteSession(peer, initial);
+                        setDetails(false);
+                        onBack();
+                      } catch (error) {
+                        setProblem((error as Error).message);
+                      }
+                    }}
+                  >
+                    <Trash2 size={18} /> Delete chat
+                  </button>
+                )}
+              </>
             )}
           </div>
         </>
@@ -3128,7 +3139,7 @@ export default function AgentSessionView({
             from={agentLabel(agent)}
             continueIn={continueIn}
             onContinue={continueElsewhere}
-            onAutoContinue={info.agent === "claude" || info.agent === "codex" ? () => setRelaySheet({ mode: "auto-continue" }) : undefined}
+            onAutoContinue={(info.agent === "claude" || info.agent === "codex") && !info.movedFrom ? () => setRelaySheet({ mode: "auto-continue" }) : undefined}
             logos={logos}
             peer={peer}
             session={info.id}

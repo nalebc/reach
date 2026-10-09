@@ -145,8 +145,8 @@ export type AgentHealth = {
   resetsAt?: number | null;
   // Codex: free rate-limit resets the account holds.
   resetCredits?: number;
-  // Claude: its app's own sign-in (the CLI's is `signedIn`).
-  app?: { installed: boolean; signedIn: boolean };
+  // Claude: its app's own sign-in (the CLI's is `signedIn`); open: running.
+  app?: { installed: boolean; signedIn: boolean; open?: boolean };
   // Claude, while out of usage: the limit it hit, in Claude Code's own words.
   limit?: string;
   // Out of usage: you asked to be notified when it's back (usage-watch.mjs).
@@ -732,6 +732,22 @@ export type InstallPlan = {
 };
 export const installAgent = (peer: Peer, agent: string, confirm = false) =>
   post<InstallPlan>(peer, `/api/sessions/agent-install/${encodeURIComponent(agent)}`, { confirm });
+// Updating Claude Code or Codex on the Mac (server/agent-updates.mjs):
+// "available" only when a newer version is certain; "app" when an app
+// updates it (Codex in ChatGPT); "unknown" when Reach couldn't tell.
+export type AgentUpdateInfo = {
+  agent: string;
+  name: string;
+  state: "available" | "current" | "unknown" | "app" | "missing";
+  installed?: string | null;
+  latest?: string;
+  app?: string;
+  reason?: string;
+};
+export const agentUpdates = (peer: Peer, fresh = false) =>
+  request<{ agents: AgentUpdateInfo[] }>(peer, `/api/sessions/agent-updates${fresh ? "?fresh=1" : ""}`);
+export const updateAgent = (peer: Peer, agent: string, confirm = false) =>
+  post<InstallPlan & { from: string; to: string }>(peer, `/api/sessions/agent-update/${encodeURIComponent(agent)}`, { confirm });
 // A Codex app approval as the phone draws it: its words and one button per
 // decision it offers, read through the Codex app's IPC (nothing is clicked).
 export type AppCard = { id: string; texts: string[]; buttons: string[]; more?: string[]; moreInApp?: boolean };

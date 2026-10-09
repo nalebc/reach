@@ -12,6 +12,8 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { agentName, resumeText } from "./move.mjs";
 import { canContinue, checkContinuePriority, continueUnavailable } from "./auto-continue.mjs";
+
+const ONCE = "This chat was already continued from another agent. Auto-continue moves a chat once; continue it by hand if you need to.";
 import { turnOutcome, usageLimited } from "./turn-watch.mjs";
 import { CODEX_MODES } from "./codex.mjs";
 import { visibleUserText } from "./message-text.mjs";
@@ -267,6 +269,10 @@ export function createRelays({
     let step = r.steps[r.next];
     const src = r.chain.at(-1);
     if (r.trigger === "usage") {
+      // A chat that is itself a continuation is never continued again on its
+      // own: one automatic move per chat. Continuing it by hand still works.
+      if (r.chain.length > 1 || page?.session?.movedFrom)
+        return void stop(r, ONCE);
       if (r.priority) {
         let health;
         try {
@@ -309,8 +315,7 @@ export function createRelays({
         r.chain.push({ agent: moved.agent, id: moved.id, title: src.title, cwd: src.cwd });
         r.sent.push({ kind: "build", to: { agent: moved.agent, id: moved.id }, at: now() });
         r.next++;
-        const more = r.priority?.some((a) => canContinue(a) && !r.chain.some((c) => c.agent === a));
-        r.state = moved.resumed ? more ? "waiting" : "done" : "stopped";
+        r.state = moved.resumed ? "done" : "stopped";
         r.since = null;
         r.expect = "";
         r.problem = moved.resumed ? "" : moved.resumeError || "The chat moved, but couldn't continue. Open it to retry.";
@@ -577,6 +582,7 @@ export function createRelays({
       if (relays.some((r) => ["waiting", "sending"].includes(r.state) && r.chain.some((c) => c.agent === from.agent && c.id === from.id) && !atOnce))
         throw bad("This chat already has a relay waiting. Cancel it first.", 409);
       const page = await sessions.read(from.agent, from.id, { limit: 200 });
+      if (trigger === "usage" && page.session?.movedFrom) throw bad(ONCE, 409);
       const items = page.items || [];
       // A chat picked to send to must be there; its name shows on the phone.
       for (const step of checked)

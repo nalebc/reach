@@ -56,7 +56,8 @@ export async function readAttention({
         detail: "Review the request on the live screen",
         // Its own words, for the phone's notification (mac-prompts.mjs).
         ...(p.title && { title: String(p.title), summary: String(p.detail || "") }),
-        target: { page: "screen" },
+        // Its card on Home, with the dialog's own buttons and the live screen.
+        target: { page: "overview", needs: `mac:${p.id}` },
       });
   } else
     for (const source of ["codex", "claude", "gemini", "mac"])

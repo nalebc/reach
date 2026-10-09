@@ -20,17 +20,21 @@ export function codexUsage(data, now = Date.now()) {
     const period = w.windowDurationMins === 10080 ? 'Weekly' : w.windowDurationMins === 300 ? '5 hours' : w.windowDurationMins ? `${w.windowDurationMins / 60} hours` : key === 'primary' ? 'Current limit' : 'Additional limit';
     windows.push({ id: `${s.limitId || 'codex'}:${key}`, label: s.limitName ? `${s.limitName} · ${period}` : period, usedPercent: percent(w.usedPercent), resetsAt: date(w.resetsAt), severity: severity(w.usedPercent) });
   }
+  // Meters in a shape Reach doesn't read are unknown, never "plenty left".
+  if (!windows.length) return { available: false, windows: [], error: 'Codex usage could not be read.' };
   return { available: true, windows, updatedAt: now, plan: data.rateLimits?.planType || null,
     credits: data.rateLimits?.credits ? { unlimited: !!data.rateLimits.credits.unlimited, balance: data.rateLimits.credits.balance } : null };
 }
 export function claudeUsage(data, now = Date.now()) {
   const labels = { session: 'Current session', weekly_all: 'All models · weekly', weekly_scoped: 'Weekly', spend: 'Usage credits' };
-  let windows = (data.limits || []).filter(r => percent(r.percent) !== null).map((r, i) => ({
+  if (!data || typeof data !== 'object') return { available: false, windows: [], error: 'Claude usage could not be read.' };
+  let windows = (Array.isArray(data.limits) ? data.limits : []).filter(r => r && typeof r === 'object').filter(r => percent(r.percent) !== null).map((r, i) => ({
     id: `${r.kind}:${i}`, label: r.scope?.model?.display_name ? `${r.scope.model.display_name} · weekly` : labels[r.kind] || r.group || 'Usage',
     usedPercent: percent(r.percent), resetsAt: date(r.resets_at), severity: r.severity || severity(r.percent),
   }));
   if (!windows.length) windows = Object.entries({ five_hour: 'Current session', seven_day: 'All models · weekly', seven_day_opus: 'Opus · weekly', seven_day_sonnet: 'Sonnet · weekly' })
     .filter(([k]) => percent(data[k]?.utilization) !== null).map(([id, label]) => ({ id, label, usedPercent: data[id].utilization, resetsAt: date(data[id].resets_at), severity: severity(data[id].utilization) }));
+  if (!windows.length) return { available: false, windows: [], error: 'Claude usage could not be read.' };
   return { available: true, windows, updatedAt: now, ...(data.spend ? { spend: { enabled: data.spend.enabled, used: data.spend.used, limit: data.spend.limit } } : {}) };
 }
 export function createClaudeAccountUsage({ run = exec, fetcher = fetch, read = fs.readFile, home = os.homedir(), env = process.env, platform = process.platform, now = Date.now } = {}) {

@@ -263,3 +263,18 @@ test("a setting selection that lost its session is uncertain and never automatic
     }), (e) => e.code === "AGENT_SETTINGS_UNKNOWN" && e.uncertain === true && e.retryable === false && !e.waiting);
   }
 });
+
+test("a message is marked on its way only right before it's typed, never while it waits", async () => {
+  // Waiting (someone at the Mac): never begun, so a Reach restart can't
+  // pause it as maybe sent.
+  const m = mac({ onScreen: B, idle: 5 });
+  let begun = 0;
+  await assert.rejects(compose(m).deliver(A, { ...message, begin: () => begun++ }), (e) => e.waiting);
+  assert.equal(begun, 0);
+  // Typed: begun once, just before the helper ran.
+  const here = mac({ onScreen: A, idle: 0 });
+  const order = [];
+  await compose(here, { type: async (value) => (order.push("typed"), here.typed.push(value)) })
+    .deliver(A, { ...message, begin: () => order.push("begin") });
+  assert.deepEqual(order, ["begin", "typed"]);
+});

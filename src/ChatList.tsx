@@ -429,6 +429,7 @@ export default function ChatList({
   onAgentChange,
   appPending,
   setup,
+  notice,
   canStart = true,
   onRefresh,
   health = [],
@@ -453,6 +454,8 @@ export default function ChatList({
   onAgentChange?: (agent: string) => void;
   appPending?: Record<string, number>;
   setup?: ReactNode;
+  // A quiet line over the chats (an update for the agent, AgentUpdate.tsx).
+  notice?: ReactNode;
   canStart?: boolean;
   onRefresh?: () => void;
   // The apps found on the Mac: a folder's chats can move to another one.
@@ -680,6 +683,7 @@ export default function ChatList({
         <span className="chat-source-device"><span className="chat-source-dot" /><Laptop size={16} />{peer.name}</span>
       </div>}
       {setup}
+      {notice}
       {!!pending && onReview && !compact && !found.length && (
         <button
           className="chat-review-link chat-review-empty"
@@ -874,53 +878,68 @@ function ChatMenu({
   onArchive: (s: AgentSession) => void;
 }) {
   const where = projectName(session.cwd) || "Workspace";
-  // Archived in its own app, or why it can't be.
+  // The menu turned into the apps to continue the chat in (MoveItems).
+  const [continuing, setContinuing] = useState(false);
+  // Archived in its own app, or why it can't be. The Claude app, while it
+  // runs, shows it archived once it reopens (agent-sessions/claude.mjs).
+  const claudeOpen = session.agent === "claude" && health.find((h) => h.agent === "claude")?.app?.open;
   const noArchive =
     session.agent === "codex" ? "" : session.agent === "claude" ? (session.inApp ? "" : "Open it in the Claude app to archive it.") : `${agentLabel(session.agent)} has no archive.`;
   return (
     <ChatPopover anchor={at} align="start" label={`${session.title || "New chat"} options`} onClose={onClose}>
-      <div className="chat-popover-head">
-        <strong>{plainLine(session.title || "") || "New chat"}</strong>
-        <small>
-          {where} · {agentLabel(session.agent)}
-        </small>
-      </div>
-      <button role="menuitem" className="move-item" onClick={() => onOpen(session)}>
-        <ArrowUpRight size={18} />
-        <span className="move-item-text">
-          <span>Open</span>
-        </span>
-      </button>
-      {canStart && session.cwd && (
-        <button role="menuitem" className="move-item" onClick={() => onNew(session.cwd)}>
-          <SquarePen size={18} />
-          <span className="move-item-text">
-            <span>New chat in {where}</span>
-          </span>
-        </button>
+      {!continuing && (
+        <>
+          <div className="chat-popover-head">
+            <strong>{plainLine(session.title || "") || "New chat"}</strong>
+            <small>
+              {where} · {agentLabel(session.agent)}
+            </small>
+          </div>
+          <button role="menuitem" className="move-item" onClick={() => onOpen(session)}>
+            <ArrowUpRight size={18} />
+            <span className="move-item-text">
+              <span>Open</span>
+            </span>
+          </button>
+          {canStart && session.cwd && (
+            <button role="menuitem" className="move-item" onClick={() => onNew(session.cwd)}>
+              <SquarePen size={18} />
+              <span className="move-item-text">
+                <span>New chat in {where}</span>
+              </span>
+            </button>
+          )}
+        </>
       )}
-      {moveChoices(session.agent, health).length > 0 && <div className="chat-popover-line" />}
+      {!continuing && moveChoices(session.agent, health).length > 0 && <div className="chat-popover-line" />}
       <MoveItems
         peer={peer}
         session={session}
         health={health}
         logos={logos}
         word={computerWord(peer.platform)}
+        open={continuing}
+        onOpen={() => setContinuing(true)}
+        onBack={() => setContinuing(false)}
         onMoved={onOpen}
       />
-      <div className="chat-popover-line" />
-      <button
-        role="menuitem"
-        className={`move-item ${noArchive ? "blocked" : ""}`}
-        disabled={!!noArchive}
-        onClick={() => onArchive(session)}
-      >
-        <Archive size={18} />
-        <span className="move-item-text">
-          <span>Archive</span>
-          <small>{noArchive || `In ${agentLabel(session.agent)} too`}</small>
-        </span>
-      </button>
+      {!continuing && (
+        <>
+          <div className="chat-popover-line" />
+          <button
+            role="menuitem"
+            className={`move-item ${noArchive ? "blocked" : ""}`}
+            disabled={!!noArchive}
+            onClick={() => onArchive(session)}
+          >
+            <Archive size={18} />
+            <span className="move-item-text">
+              <span>Archive</span>
+              <small>{noArchive || (claudeOpen ? "In the Claude app once it reopens" : `In ${agentLabel(session.agent)} too`)}</small>
+            </span>
+          </button>
+        </>
+      )}
     </ChatPopover>
   );
 }

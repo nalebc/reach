@@ -3,15 +3,16 @@ import type { Peer } from "./api";
 
 export const funnelStorageKey = "reach.funnel-agent";
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
+const DAY = 24 * 60 * 60 * 1000;
 const storageError = () =>
   Error(
-    "This browser cannot securely save its connection. Enable browser storage before opening a new invitation.",
+    "This browser cannot securely save its connection. Enable browser storage, then open the link again.",
   );
+const failure = (status: number, message: string) =>
+  Object.assign(Error(message), { status });
+// The only words that send the agent back to the owner: its access is over.
 const endedError = () =>
-  Object.assign(
-    Error("This connection has ended. Ask the owner for a new invitation."),
-    { status: 401 },
-  );
+  failure(410, "This access has ended. Ask the owner for a new invitation.");
 
 type Device = { id: string; name: string; platform: string };
 export type FunnelReceipt = {
@@ -20,6 +21,10 @@ export type FunnelReceipt = {
   verificationCode: string;
   expiresAt: number;
   device: Device;
+  // The link the owner approved before, opened in this browser (moved) or
+  // reconnected from it (refreshed): nothing to approve, collected at once.
+  moved?: boolean;
+  refreshed?: boolean;
 };
 export type FunnelSession = { peer: Peer; expiresAt: number };
 export type FunnelState = {
@@ -30,6 +35,8 @@ export type FunnelState = {
   // close the tab and come back without a new invitation.
   standing?: boolean;
   claimAttempted?: boolean;
+  // The owner approved this browser's access at least once.
+  approved?: boolean;
   receipt?: FunnelReceipt;
   session?: FunnelSession;
 };
@@ -189,24 +196,10 @@ export function createFunnelAgent(dependencies: {
       throw storageError();
     }
     if (state && (!invitation || state.invitation === invitation)) {
-      if (
-        !state.session && (state.receipt?.expiresAt || Infinity) <= now()
-      ) {
-        await forget(state);
-        throw endedError();
-      }
       // Never mint a different identity for an already-claimed invitation.
+      // Whether its access goes on is the computer's to say (reconnect), not
+      // a clock on this page: the owner may have extended or approved it.
       await keyFor(state);
-      if (state.session && state.session.expiresAt <= now()) {
-        const response = await request(state.session.peer, "/api/device");
-        const updated = read();
-        if (response.status === 401 || (response.ok && (!updated?.session || updated.session.expiresAt <= now()))) {
-          await forget(state);
-          throw endedError();
-        }
-        if (!response.ok) throw Error("Couldn’t verify access. Try again when the computer is connected.");
-        return updated!;
-      }
       save(state);
       return state;
     }
@@ -295,36 +288,63 @@ export function createFunnelAgent(dependencies: {
       signal: signal || AbortSignal.timeout(35000),
     });
   }
-  async function exchange(state: FunnelState, operation: "claim" | "status") {
+  // What a refusal means for this page: over (401 unknown or revoked link,
+  // 403 declined, 410 ended), or in use in another browser (423). Anything
+  // else is a moment's trouble, tried again.
+  const refused = (status: number, current: FunnelState) => {
+    if (status === 423)
+      return failure(423, "This access is in use in another browser. Use it here to move it to this browser.");
+    if (status === 403) return failure(403, "The owner declined this connection.");
+    if (status === 401 || status === 410)
+      return failure(
+        410,
+        current.session || current.approved
+          ? "This access has ended. Ask the owner for a new invitation."
+          : current.receipt
+            ? "This invitation expired before it was approved. Ask the owner for a new invitation."
+            : "This link no longer works: it was opened in another browser before it was approved, or its access ended. Ask the owner for a new invitation.",
+      );
+    return failure(status || 502, "Couldn’t reach the computer just now. Trying again…");
+  };
+  async function exchange(
+    state: FunnelState,
+    operation: "claim" | "status" | "reconnect",
+    again = true,
+  ): Promise<FunnelState> {
     const current = read();
     if (current?.id !== state.id) throw endedError();
-    if (current.session) return current;
+    if (operation !== "reconnect" && current.session) return current;
     if (operation === "claim" && current.receipt) return current;
+    if (operation === "status" && !current.receipt) return current;
+    // A claim whose answer was lost is sent again: the computer gives this
+    // browser its same waiting request back (or its approved access).
     if (operation === "claim") {
-      if (current.claimAttempted)
-        throw Error(
-          "The invitation was already sent from this tab, but its connection receipt was not received. Ask the owner for a new invitation.",
-        );
       current.claimAttempted = true;
       save(current);
     }
     const payload =
-      operation === "claim"
-        ? { operation, invitation: current.invitation }
-        : {
+      operation === "status"
+        ? {
             operation,
             requestId: current.receipt?.requestId,
             secret: current.receipt?.requestSecret,
-          };
+          }
+        : { operation, invitation: current.invitation };
     const response = await signed(current, payload);
-    const result = await response.json();
-    if (!response.ok)
-      throw Object.assign(
-        Error(result.error || "This invitation could not connect."),
-        { status: response.status },
-      );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // Approved, but the answer carrying the credential was lost: get a
+      // fresh one for this browser.
+      if (operation === "status" && response.status === 409 && again)
+        return reconnectAndCollect(current, false);
+      throw refused(response.status, current);
+    }
     if (result.status === "pending") {
-      if (operation === "claim") {
+      if (operation === "status") {
+        // Still waiting for the owner.
+        if (current.receipt && Number.isFinite(result.expiresAt))
+          current.receipt.expiresAt = result.expiresAt;
+      } else {
         const {
           requestId,
           requestSecret,
@@ -340,15 +360,17 @@ export function createFunnelAgent(dependencies: {
           expiresAt <= now() ||
           !validDevice(device)
         )
-          throw Error(
-            "The connection request could not be received. Ask the owner for a new invitation.",
-          );
+          throw failure(502, "The connection request could not be received. Trying again…");
+        // Reconnecting replaces a session the computer no longer accepts.
+        if (operation === "reconnect") delete current.session;
         current.receipt = {
           requestId,
           requestSecret,
           verificationCode,
           expiresAt,
           device,
+          ...(result.moved === true ? { moved: true } : {}),
+          ...(result.refreshed === true ? { refreshed: true } : {}),
         };
       }
     } else if (result.status === "approved" && operation === "status") {
@@ -359,9 +381,7 @@ export function createFunnelAgent(dependencies: {
         !Number.isFinite(result.expiresAt) ||
         result.expiresAt <= now()
       )
-        throw Error(
-          "The approved connection could not be received. Ask the owner for a new invitation.",
-        );
+        throw failure(502, "The approved connection could not be received. Trying again…");
       current.session = {
         peer: {
           ...result.device,
@@ -372,31 +392,37 @@ export function createFunnelAgent(dependencies: {
         },
         expiresAt: result.expiresAt,
       };
+      current.approved = true;
       if (result.standing === true) current.standing = true;
       delete current.receipt;
       // Token delivery is one-time: persist before a view can unmount.
       save(current);
-      await keys.write(current.id, await keyFor(current), result.expiresAt + 86400000);
+      await keys.write(current.id, await keyFor(current), result.expiresAt + DAY);
       return current;
-    } else if (result.status === "denied" || result.status === "expired") {
-      await forget(current);
-      throw Object.assign(
-        Error(
-          result.status === "denied"
-            ? "The owner denied this connection. Ask for a new invitation."
-            : "This connection request expired. Ask the owner for a new invitation.",
-        ),
-        { status: 410 },
-      );
-    } else throw Error("This invitation returned an unknown connection state.");
+    } else if (result.status === "denied") {
+      throw refused(403, current);
+    } else if (result.status === "expired") {
+      // The computer says whether this browser goes on (approved meanwhile)
+      // or not (ended, or never approved in time): ask it.
+      if (operation === "status" && again) return reconnectAndCollect(current, false);
+      throw refused(410, current);
+    } else throw failure(502, "This invitation returned an unknown connection state. Trying again…");
     save(current);
     if (current.receipt)
       await keys.write(
         current.id,
         await keyFor(current),
-        current.receipt.expiresAt,
+        // Kept while the access may come back, never only as long as a receipt.
+        Math.max(current.receipt.expiresAt, now() + DAY),
       );
     return current;
+  }
+  // Reconnect this browser, then collect at once when it was approved before.
+  async function reconnectAndCollect(current: FunnelState, again = true) {
+    let next = await exchange(current, "reconnect", again);
+    if (!next.session && (next.receipt?.moved || next.receipt?.refreshed))
+      next = await exchange(next, "status", again);
+    return next;
   }
   function once(state: FunnelState, operation: "claim" | "status") {
     const key = `${state.id}:${operation}`;
@@ -407,16 +433,45 @@ export function createFunnelAgent(dependencies: {
     void result.finally(() => exchanges.delete(key)).catch(() => {});
     return result;
   }
+  // After a refused request: one reconnect at a time for this tab. Another tab
+  // that already reconnected the same access left its session in storage.
+  let reconnecting: Promise<FunnelState> | null = null;
+  function reconnect(state: FunnelState, failedToken?: string) {
+    reconnecting ||= (async () => {
+      const stored = read();
+      if (stored?.id !== state.id) throw endedError();
+      if (stored.session && failedToken && stored.session.peer.token !== failedToken)
+        return stored;
+      return reconnectAndCollect(stored);
+    })().finally(() => {
+      reconnecting = null;
+    });
+    return reconnecting;
+  }
+  // The agent chose to use its access here, after it moved to another browser.
+  async function takeBack(state: FunnelState) {
+    const current = read();
+    if (current?.id !== state.id) throw endedError();
+    delete current.session;
+    delete current.receipt;
+    save(current);
+    let next = await exchange(current, "claim");
+    if (!next.session && (next.receipt?.moved || next.receipt?.refreshed))
+      next = await exchange(next, "status");
+    return next;
+  }
   async function request(peer: Peer, path: string, init: RequestInit = {}) {
+    // Mid-reconnect the session is being replaced: wait for the new one.
+    if (reconnecting) await reconnecting.catch(() => {});
     const state = read();
-    if (
-      !state?.session ||
-      state.id !== peer.sessionId ||
-      peer.url !== origin ||
-      peer.token !== state.session.peer.token ||
-      (state.session.expiresAt <= now() && path !== "/api/device")
-    )
-      throw endedError();
+    // The session in storage is the one to use: a refresh may have replaced
+    // the token a view still holds. Never "ended" from here: only the
+    // computer says that (reconnect).
+    if (!state?.session || state.id !== peer.sessionId || peer.url !== origin)
+      throw failure(
+        503,
+        "This page is reconnecting to the computer. Trying again in a moment.",
+      );
     if (!/^\/api\//.test(path) || /[\\#]/.test(path))
       throw Error("This request is outside the shared workspace.");
     const method = (init.method || "GET").toUpperCase();
@@ -432,19 +487,35 @@ export function createFunnelAgent(dependencies: {
       throw Error(
         "This request format is unavailable in the shared workspace.",
       );
-    const response = await signed(
-      state,
-      { operation: "request", token: peer.token, method, path, body },
-      init.signal || AbortSignal.timeout(agentRequestTimeout(path, method)),
-    );
+    const send = (current: FunnelState) =>
+      signed(
+        current,
+        { operation: "request", token: current.session!.peer.token, method, path, body },
+        init.signal || AbortSignal.timeout(agentRequestTimeout(path, method)),
+      );
+    let current = state;
+    let response = await send(current);
+    // Refused before it ran (its token replaced, Reach restarted, the owner
+    // changed something): reconnect this browser and send it once more.
+    if (response.status === 401 && response.headers.get("Reach-Not-Run") === "1" && !init.signal?.aborted) {
+      try {
+        const next = await reconnect(current, current.session!.peer.token);
+        if (next.session) {
+          current = next;
+          response = await send(current);
+        }
+      } catch {
+        // Moved or ended: the page says so (FunnelAgent).
+      }
+    }
     if (response.ok && method === "GET" && path === "/api/device") {
       const device = await response.clone().json();
       const expiresAt = device.access?.expiresAt;
-      const current = read();
-      if (Number.isFinite(expiresAt) && expiresAt > now() && current?.id === state.id && current.session) {
-        await keys.write(current.id, await keyFor(current), expiresAt + 86400000);
-        current.session.expiresAt = expiresAt;
-        save(current);
+      const latest = read();
+      if (Number.isFinite(expiresAt) && expiresAt > now() && latest?.id === current.id && latest.session) {
+        await keys.write(latest.id, await keyFor(latest), expiresAt + DAY);
+        latest.session.expiresAt = expiresAt;
+        save(latest);
       }
     }
     return response;
@@ -453,6 +524,8 @@ export function createFunnelAgent(dependencies: {
     prepare,
     claim: (state: FunnelState) => once(state, "claim"),
     status: (state: FunnelState) => once(state, "status"),
+    reconnect,
+    takeBack,
     request,
     forget,
   };
@@ -470,10 +543,14 @@ export function browserFunnelAgent() {
     fetch: (...args) => fetch(...args),
   }));
 }
-// A read that failed on the network (a TypeError: the connection dropped,
-// the public route blinked) is tried once more after a moment, so a live
-// screen or a file listing doesn't fail on one lost round trip. Writes are
-// never repeated: a click or a shell command must land exactly once.
+// Granted access never gives up on a blip. A read that failed on the network
+// (the connection dropped, the route blinked) or that Reach couldn't take just
+// then (restarting, paused, reconnecting: 502/503/504, or busy: 429) is sent
+// again with growing waits for about a minute. A write is sent again only when
+// Reach says it never ran (Reach-Not-Run): a click or a shell command must
+// land exactly once.
+const RETRY_WAITS = [1, 2, 4, 6, 8, 10, 10, 10, 10];
+const transient = (status: number) => [429, 502, 503, 504].includes(status);
 export async function funnelFetch(
   peer: Peer,
   path: string,
@@ -481,13 +558,35 @@ export async function funnelFetch(
   agent: Pick<FunnelAgentClient, "request"> = browserFunnelAgent(),
   retryAfterMs = 800,
 ) {
-  try {
-    return await agent.request(peer, path, init);
-  } catch (error) {
-    const method = (init.method || "GET").toUpperCase();
-    if (!["GET", "HEAD"].includes(method) || init.signal?.aborted || !(error instanceof TypeError)) throw error;
-    await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
-    if (init.signal?.aborted) throw error;
-    return agent.request(peer, path, init);
+  const read = ["GET", "HEAD"].includes((init.method || "GET").toUpperCase());
+  for (let attempt = 0; ; attempt++) {
+    const last = attempt >= RETRY_WAITS.length;
+    let response: Response;
+    try {
+      response = await agent.request(peer, path, init);
+    } catch (error) {
+      // Dropped (TypeError) or stalled past its deadline (TimeoutError):
+      // a read is safe to send again; the caller's own cancel is final.
+      const lostOrStalled = error instanceof TypeError || (error as Error)?.name === "TimeoutError";
+      if (!read || last || init.signal?.aborted || !lostOrStalled) throw error;
+      await wait(retryAfterMs * RETRY_WAITS[attempt], init.signal);
+      if (init.signal?.aborted) throw error;
+      continue;
+    }
+    const again = transient(response.status) &&
+      (read || response.headers.get("Reach-Not-Run") === "1");
+    if (!again || last || init.signal?.aborted) return response;
+    await wait(retryAfterMs * RETRY_WAITS[attempt], init.signal);
+    if (init.signal?.aborted) return response;
   }
 }
+const wait = (ms: number, signal?: AbortSignal | null) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
