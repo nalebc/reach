@@ -69,6 +69,31 @@ test("a first claim still waiting for the owner can't be taken over by another b
   assert.equal(f.auth.listAgentAdmissions()[0].requestId, receipt.requestId);
 });
 
+test("a waiting request whose browser went quiet for a minute moves to the browser that opens the link", (t) => {
+  const advance = clock(t);
+  const f = fixture(t);
+  const grant = f.invite();
+  const gone = binding();
+  const first = f.claim(grant, gone);
+  advance(30_000);
+  f.poll(first, gone);
+  advance(45_000);
+  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "checked in 45 s ago: still its own");
+  advance(20_000);
+  const fresh = binding();
+  const moved = f.claim(grant, fresh);
+  assert.equal(moved.moved, true);
+  assert.notEqual(moved.requestId, first.requestId, "a new request on the owner's phone");
+  assert.match(moved.verificationCode, /^\d{6}$/);
+  assert.equal(f.auth.listAgentAdmissions().length, 1, "still one request");
+  assert.equal(f.poll(first, gone).status, "expired", "the quiet browser's request ended");
+  assert.throws(() => f.auth.decideAgentAdmission(first.requestId, "approve"), "an old approval card can't approve the new browser");
+  f.auth.decideAgentAdmission(moved.requestId, "approve");
+  const back = f.poll(moved, fresh);
+  assert.equal(back.status, "approved");
+  assert.ok(f.auth.verifyFunnel(back.token, fresh));
+});
+
 test("denied, ended or revoked access never comes back through the link", (t) => {
   const advance = clock(t);
   const f = fixture(t);

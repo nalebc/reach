@@ -913,6 +913,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // anything. Only an ended access (410), a declined one (403) or an unknown
   // or revoked link (revoking deletes it: null, 401) is final.
   const REBINDS_PER_MINUTE = 6;
+  // A waiting browser checks in every few seconds. Kept in memory: polling
+  // writes nothing. After a restart the quiet clock starts at the restart, so
+  // a waiting agent always gets to check in before anyone else may move it.
+  const WAITING_QUIET_MS = 60_000;
+  const waitingSeen = new Map(); // admission requestId -> last check-in
+  const authStarted = Date.now();
   // The terms the owner approved must still be the record's terms: a change
   // that fails closed (another supervising phone, say) is never re-approved.
   const rebindable = (client, now = Date.now()) =>
@@ -964,10 +970,35 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     }
     if (client.admission?.status === "denied")
       throw fail(403, "The owner declined this agent's connection.");
+    // Still waiting for the owner, opened in another browser, and the first
+    // browser has stopped checking in for a minute (its machine was replaced):
+    // the waiting request moves under a new request and code, and the first
+    // one ends. A browser still waiting is never taken over; the owner
+    // matches the code the new browser shows.
+    if (client.admission && client.browserBinding !== keyThumbprint && !reconnect &&
+        admissionStatus(client, now) === "pending" &&
+        now - Math.max(waitingSeen.get(client.admission.requestId) || 0, client.admission.requestedAt || 0, authStarted) > WAITING_QUIET_MS) {
+      const recent = (client.rebinds || []).filter((at) => at > now - 60000);
+      if (recent.length >= REBINDS_PER_MINUTE)
+        throw fail(429, "This link was opened too often just now. Wait a minute and try again.");
+      client.rebinds = [...recent, now];
+      client.browserBinding = keyThumbprint;
+      const requestSecret = crypto.randomBytes(32).toString("base64url");
+      client.admission = {
+        ...client.admission,
+        requestId: id(),
+        secretHash: hash(requestSecret),
+        verificationCode: crypto.randomInt(100000, 1000000).toString(),
+        requestedAt: now,
+        grant: admissionGrant(client),
+      };
+      return receipt(requestSecret, { moved: true });
+    }
     if (client.browserBinding !== keyThumbprint || !client.admission) return null;
     const status = admissionStatus(client, now);
     // Its answer was lost: the same waiting request (same code), a new secret.
     if (status === "pending") {
+      waitingSeen.set(client.admission.requestId, now);
       const requestSecret = crypto.randomBytes(32).toString("base64url");
       client.admission.secretHash = hash(requestSecret);
       return receipt(requestSecret, { resumed: true });
@@ -1158,6 +1189,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
             client.tailscale.nodeId !== identity.nodeId || client.tailscale.userId !== (identity.userId || ""))))
         throw fail(401, "This agent connection receipt is invalid or belongs to another device.");
       const status = admissionStatus(client);
+      if (status === "pending") waitingSeen.set(requestId, Date.now());
       if (["pending", "denied", "expired"].includes(status))
         return { result: { status, expiresAt: request.expiresAt } };
       if (status === "accepted")
