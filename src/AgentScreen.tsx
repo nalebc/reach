@@ -829,38 +829,21 @@ export default function AgentScreen({
       aria-label="The Mac's screen"
     >
       <div className="ap-screen-bar">
-        <p className="ap-live" aria-live="off">
+        <p
+          className="ap-live"
+          aria-live="off"
+          title={hiddenCount ? `${hiddenCount} protected ${hiddenCount === 1 ? "window" : "windows"} left out` : undefined}
+        >
           <span className={`ap-dot${stale || !imageAt ? " is-busy" : ""}`} />
           {live}
-          {hiddenCount
-            ? ` · ${hiddenCount} ${hiddenCount === 1 ? "window" : "windows"} hidden`
-            : ""}
+          {control && (
+            <span className="ap-typing">
+              {" · "}Typing goes to <strong>{front || "the app in front"}</strong>
+            </span>
+          )}
         </p>
-        <p className="ap-hint">
-          {control
-            ? "Use it like the Mac: click, type, scroll, drag."
-            : "Look only. Nothing on this page clicks or types on the Mac."}
-        </p>
-        {control && (
-          // Read by the agent, not the owner: what it may do and how, once.
-          <details className="ap-brief" open>
-            <summary>How to use this Mac</summary>
-            <ul>
-              <li>
-                {access.preset === "apps"
-                  ? `You may use only the apps the owner chose on ${peer.name}.`
-                  : `You have full control of ${peer.name}.`}{" "}
-                Your user's request is your permission: go ahead without asking at each step.
-              </li>
-              {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
-              <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
-              <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
-              <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
-              <li>"Not done" says why. Try another way. Small text: Zoom in.</li>
-              <li>Ask your user before you pay, send a message or delete something.</li>
-              <li>Always closed: password managers, Reach itself, security settings. If the owner uses the Mac, wait.</li>
-            </ul>
-          </details>
+        {!control && (
+          <p className="ap-hint">Look only. Nothing on this page clicks or types on the Mac.</p>
         )}
         <div className="ap-pills">
           <button
@@ -924,6 +907,27 @@ export default function AgentScreen({
             </>
           )}
         </div>
+        {control && (
+          // Read by the agent, not the owner: what it may do and how, once.
+          <details className="ap-brief">
+            <summary>How to use</summary>
+            <ul>
+              <li>
+                {access.preset === "apps"
+                  ? `You may use only the apps the owner chose on ${peer.name}.`
+                  : `You have full control of ${peer.name}.`}{" "}
+                Your user's request is your permission: go ahead without asking at each step.
+              </li>
+              {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
+              <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
+              <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
+              <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
+              <li>"Not done" says why. Try another way. Small text: Zoom in.</li>
+              <li>Ask your user before you pay, send a message or delete something.</li>
+              <li>Always closed: password managers, Reach itself, security settings. If the owner pauses you, wait.</li>
+            </ul>
+          </details>
+        )}
       </div>
       <div className="ap-stage" ref={stageRef}>
         {control && sheet === "keys" && (
@@ -1108,11 +1112,6 @@ export default function AgentScreen({
         </div>
       </div>
       <div className="ap-screen-foot">
-        {control && (
-          <span className="ap-typing">
-            Typing goes to <strong>{front || "the app in front"}</strong>
-          </span>
-        )}
         {status.text && (
           <p
             className={`ap-status ${status.tone}`}

@@ -359,8 +359,9 @@ func focus(_ rules: Rules, appOnly: Bool = false) throws -> Focus {
   s = element; s.bundle = bundle; s.name = name; s.path = path
   return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules))
 }
-// The owner's own hands come first: any real input in the last moments pauses
-// the agent. `sinceAgent` is how long ago this process posted its own event.
+// No longer called: guessing the owner's hands from input timing stopped
+// agents when nobody was at the Mac. The owner pauses an agent instead
+// (Agents → Pause).
 func checkOwner(_ sinceAgent: Double) throws {
   let human = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
   if human < 1.5 && human + 0.3 < sinceAgent { try refuse("You're using the Mac. The agent waits until you stop.", "paused") }
@@ -665,17 +666,14 @@ func rules(from request: [String: Any]) -> Rules {
         case "act":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
-          try checkOwner(Date().timeIntervalSince(lastPosted))
           out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules, request["expected"] as? [String: String]))
         case "open":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
-          try checkOwner(Date().timeIntervalSince(lastPosted))
           out(try open(request["app"] as? String ?? "", rules))
         case "front":
           out(front(rules))
         case "browser-check":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
-          try checkOwner(Date().timeIntervalSince(lastPosted))
           let path = request["app"] as? String ?? ""
           guard rules.mode != "view", path.hasPrefix("/"), path.hasSuffix(".app"),
             let bundle = Bundle(path: path), let id = bundle.bundleIdentifier,

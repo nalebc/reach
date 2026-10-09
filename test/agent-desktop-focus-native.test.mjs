@@ -160,7 +160,7 @@ print("OK 41 focus and keyboard dispatch cases")
     const program = "import Foundation\nimport CoreGraphics\nimport Darwin\nstruct Refusal: Error { let message:String; let kind:String }\nfunc refuse(_ message:String, _ kind:String = \"blocked\") throws -> Never { throw Refusal(message:message,kind:kind) }\n"
       + policy + "\n" + text + "\n" + seen + "\n" + stubs
       + extract("func check(_ s:", "// The window server")
-      + extract("struct Focus ", "// The owner's own hands")
+      + extract("struct Focus ", "// No longer called: guessing the owner")
       + extract("let keyCodes:", "let source = CGEventSource")
       + extract("func flags(", "@available(macOS 14.0, *)\nfunc shot(")
       + config + harness;

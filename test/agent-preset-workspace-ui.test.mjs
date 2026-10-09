@@ -250,10 +250,11 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
   );
   assert.equal(c.querySelector("#agent-section-screen").hidden, false);
   await screen(c);
-  await dom.waitFor(() => /Live · 1 window hidden/.test(c.textContent));
-  assert.match(c.textContent, /Use it like the Mac: click, type, scroll, drag\./);
+  await dom.waitFor(() => /Live/.test(c.querySelector(".ap-live")?.textContent || ""));
+  await dom.waitFor(() => /1 protected window left out/.test(c.querySelector(".ap-live")?.title || ""));
+  assert.equal(c.querySelector(".ap-hint"), null, "the full screen carries no hint text");
   const brief = c.querySelector(".ap-brief");
-  assert.ok(brief?.open, "the agent sees how to use the Mac first");
+  assert.ok(brief && !brief.open, "How to use is one tap away, folded");
   assert.match(brief.textContent, /You have full control of My Mac\. Your user's request is your permission/);
   assert.match(brief.textContent, /Ask your user before you pay, send a message or delete something/);
   await dom.waitFor(() => /Typing goes to Google Chrome/.test(c.textContent));
