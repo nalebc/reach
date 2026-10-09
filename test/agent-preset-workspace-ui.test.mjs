@@ -242,7 +242,7 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
     [...nav.querySelectorAll("button")].map((button) =>
       button.getAttribute("aria-label"),
     ),
-    ["Tools", "Screen", "Apps", "Files", "Commands", "Access", "Reload page"],
+    ["Screen", "Commands", "Tools", "Apps", "Files", "Access", "Reload page"],
   );
   assert.equal(
     nav.querySelector('[aria-label="Screen"]').getAttribute("aria-current"),

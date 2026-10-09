@@ -208,6 +208,7 @@ export function createAgentDesktop(config, {
   // chats' Claude app messages 30 s, so with one open they never went in.
   const looks = new Map(); // clientId -> ms
   const shots = new Map();    // clientId -> recent screenshot times
+  const capturing = new Map(); // clientId -> { width, promise } of the capture running now
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
   const pausedAgents = new Set(); // by the owner, from the agent list
@@ -363,13 +364,32 @@ export function createAgentDesktop(config, {
     /** A JPEG of the screen with Reach, protected and hidden windows left out; in Apps, only the chosen apps. */
     async screenshot(client, authorize, { maxWidth = 2560 } = {}) {
       const latest = live(client, authorize, "browser:screen");
-      const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
-      if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
-      recent.push(now()); shots.set(latest.id, recent);
-      const state = await session(latest);
-      checkState(client, authorize, "browser:screen", state);
-      const result = answer(await state.helper.send({ op: "shot", maxWidth: Math.max(320, Math.min(3840, Number(maxWidth) || 2560)) }));
-      checkState(client, authorize, "browser:screen", state);
+      const width = Math.max(320, Math.min(3840, Number(maxWidth) || 2560));
+      // One capture per agent at a time: a request that arrives while one
+      // runs (a page that gave up and asked again) shares it. Abandoned
+      // requests used to queue behind each other and swamp macOS's capture
+      // service until no picture came back at all.
+      const running = capturing.get(latest.id);
+      let result;
+      if (running && running.width >= width) result = await running.promise;
+      else {
+        const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
+        if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
+        recent.push(now()); shots.set(latest.id, recent);
+        // Recorded before any await, so a request arriving now shares it.
+        const promise = (async () => {
+          if (running) await running.promise.catch(() => {});
+          const state = await session(latest);
+          checkState(client, authorize, "browser:screen", state);
+          const value = answer(await state.helper.send({ op: "shot", maxWidth: width }));
+          checkState(client, authorize, "browser:screen", state);
+          return value;
+        })();
+        const entry = { width, promise };
+        capturing.set(latest.id, entry);
+        try { result = await promise; } finally { if (capturing.get(latest.id) === entry) capturing.delete(latest.id); }
+      }
+      live(client, authorize, "browser:screen");
       if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
@@ -501,6 +521,7 @@ export function createAgentDesktop(config, {
       sessions.delete(id);
       activity.delete(id);
       shots.delete(id);
+      capturing.delete(id);
       looks.delete(id);
       pausedAgents.delete(id);
       release(id);

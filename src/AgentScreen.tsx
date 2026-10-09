@@ -228,7 +228,11 @@ export default function AgentScreen({
     const controller = new AbortController();
     inFlight.current = controller;
     lastShot.current = Date.now();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 12000);
     try {
       const response = await peerFetch(
         peer,
@@ -267,7 +271,11 @@ export default function AgentScreen({
         setHiddenCount(0);
       }
     } catch (e) {
-      if (!controller.signal.aborted && mounted.current) {
+      // A capture that never answers is said, never waited on in silence.
+      if (timedOut && mounted.current) {
+        setScreenError("The Mac's screen isn't answering. Still trying…");
+        backoff.current = 1000;
+      } else if (!controller.signal.aborted && mounted.current) {
         setScreenError((e as Error).message || "The screen could not be read.");
         backoff.current = 300;
         ended(e);
@@ -844,6 +852,7 @@ export default function AgentScreen({
                   : `You have full control of ${peer.name}.`}{" "}
                 Your user's request is your permission: go ahead without asking at each step.
               </li>
+              {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
               <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
               <li>To sign in, click the field on the Mac, then fill it from your vault under Sign in. It stays hidden.</li>
               <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>

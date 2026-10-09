@@ -22,6 +22,9 @@ export type AgentDestination = {
   available: boolean;
   count?: number;
 };
+// What an agent uses: the screen, and the terminal. Everything else waits
+// under More.
+const PRIMARY: AgentSection[] = ["screen", "commands"];
 const icons = {
   tools: Zap,
   screen: Monitor,
@@ -68,7 +71,7 @@ export default function AgentWorkspaceFrame({
   const left = Math.max(0, Math.ceil((expiry - now) / 60000));
   const expired = !standing && expiry <= now;
   const secondary = destinations.filter(
-    (item) => !["tools", "screen"].includes(item.id),
+    (item) => !PRIMARY.includes(item.id),
   );
   const current = secondary.find((item) => item.id === section);
   const open = (id: AgentSection) => {
@@ -111,7 +114,7 @@ export default function AgentWorkspaceFrame({
           </div>
           <nav aria-label="Workspace navigation" className="aw-nav">
             {destinations
-              .filter((item) => ["tools", "screen"].includes(item.id))
+              .filter((item) => PRIMARY.includes(item.id))
               .map(destination)}
             <details
               className="aw-more"

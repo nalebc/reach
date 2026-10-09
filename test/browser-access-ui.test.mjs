@@ -459,7 +459,7 @@ test("navigation opens the first shared resource and never fetches unavailable r
       [...c.querySelectorAll('[aria-label="Workspace navigation"] button')].map(
         (item) => item.getAttribute("aria-label"),
       ),
-      ["Tools", "Screen", "Apps", "Files", "Commands", "Access", "Reload page"],
+      ["Screen", "Commands", "Tools", "Apps", "Files", "Access", "Reload page"],
     );
     assert.equal(
       tab(c, permissions.selected).getAttribute("aria-current"),

@@ -180,6 +180,17 @@ test("typing asks what is in front first: terminals take the deny list, password
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
 });
 
+test("requests arriving during a capture share it instead of queueing more", async () => {
+  const w = world();
+  const ro = w.make("ro", "readonly");
+  const shots = await Promise.all([1, 2, 3].map(() => w.desktop.screenshot(ro, authorize(ro), { maxWidth: 1280 })));
+  assert.equal(shots.length, 3);
+  assert.ok(shots.every((shot) => shot.jpeg[0] === 0xff));
+  assert.equal(w.helpers[0].requests.filter((request) => request.op === "shot").length, 1, "one capture served all three");
+  await w.desktop.screenshot(ro, authorize(ro), { maxWidth: 1280 });
+  assert.equal(w.helpers[0].requests.filter((request) => request.op === "shot").length, 2, "the next one captures again");
+});
+
 test("vault values reach sign-in fields hidden, never a terminal, and plain text never a password field", async () => {
   const w = world();
   const full = w.make("muse", "full");
