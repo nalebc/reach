@@ -72,7 +72,7 @@ const SCREEN_REFRESH_MS = 2000;
 
 // Ordinary controls keep the shared resources usable by an assistant's browser.
 // Tabs only organize the UI; the host still authorizes every resource and action.
-type BrowserWorkspaceProps = { peer: Peer; onEnd: () => void };
+type BrowserWorkspaceProps = { peer: Peer; onEnd: () => void; agentTools?: boolean };
 export default function BrowserWorkspace(props: BrowserWorkspaceProps) {
   const { peer } = props;
   // Credentials and transport define one workspace. Remount before rendering a
@@ -87,7 +87,7 @@ export default function BrowserWorkspace(props: BrowserWorkspaceProps) {
   return <BrowserWorkspaceSession key={identity} {...props} />;
 }
 
-function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
+function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspaceProps) {
   const [access, setAccess] = useState<Access | null>(null);
   const [error, setError] = useState("");
   const [selectedSection, setSection] = useState<AgentSection | null>(null);
@@ -481,7 +481,7 @@ function BrowserWorkspaceSession({ peer, onEnd }: BrowserWorkspaceProps) {
   // to use the exact permission and approval paths of their original grants.
   if (access.preset !== undefined)
     return (
-      <AgentPage peer={peer} access={access as PresetAccess} onEnd={onEnd} />
+      <AgentPage peer={peer} access={access as PresetAccess} onEnd={onEnd} tools={agentTools} />
     );
   const endsAt = new Date(access.expiresAt).toLocaleTimeString([], {
     hour: "numeric",

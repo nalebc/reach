@@ -220,6 +220,7 @@ test("a visual agent records screen actions, saves a tool and replays it without
       peer,
       access: { ...access, apps: [chrome] },
       onEnd() {},
+      tools: true,
     }),
   );
   views.add(view);

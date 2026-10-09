@@ -242,7 +242,7 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
     [...nav.querySelectorAll("button")].map((button) =>
       button.getAttribute("aria-label"),
     ),
-    ["Screen", "Commands", "Tools", "Apps", "Files", "Access", "Reload page"],
+    ["Screen", "Commands", "Apps", "Files", "Access", "Reload page"],
   );
   assert.equal(
     nav.querySelector('[aria-label="Screen"]').getAttribute("aria-current"),
@@ -257,8 +257,9 @@ test("the workspace opens on the live screen, and other sections stay one tap aw
   assert.match(brief.textContent, /You have full control of My Mac\. Your user's request is your permission/);
   assert.match(brief.textContent, /Ask your user before you pay, send a message or delete something/);
   await dom.waitFor(() => /Typing goes to Google Chrome/.test(c.textContent));
-  await click(nav.querySelector('[aria-label="Tools"]'));
-  assert.ok(c.querySelector('[aria-label="Search tools"]'));
+  assert.equal(nav.querySelector('[aria-label="Tools"]'), null, "agents work on the screen or in the terminal");
+  assert.equal(c.querySelector('[aria-label="Search tools"]'), null);
+  await click(nav.querySelector('[aria-label="Access"]'));
   assert.equal(c.querySelector("#agent-section-screen").hidden, true);
   const seen = shots(calls).length;
   await settle(700);

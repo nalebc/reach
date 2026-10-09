@@ -62,12 +62,17 @@ type Props = {
   access: PresetAccess;
   onEnd: () => void;
   reload?: () => void;
+  // Saved and service tools. Off: they needed Chrome automation settings,
+  // failed without them, and agents do the same work on the Screen or in
+  // Commands. Kept so they can come back.
+  tools?: boolean;
 };
 export default function AgentPage({
   peer,
   access,
   onEnd,
   reload = () => window.location.reload(),
+  tools = false,
 }: Props) {
   const connection = useMemo(
     () => peer,
@@ -106,7 +111,7 @@ export default function AgentPage({
     [onEnd],
   );
   const hasBrowserTools = !!access.screen && !!access.control && !!access.open;
-  const hasTools = hasBrowserTools || !!access.services;
+  const hasTools = tools && (hasBrowserTools || !!access.services);
   const grant = JSON.stringify([
     access.preset,
     access.screen,
@@ -123,7 +128,7 @@ export default function AgentPage({
     setActivity("");
     setStatus({ text: "", tone: "" });
   }, [grant]);
-  const destinations: AgentDestination[] = [
+  const destinations: AgentDestination[] = ([
     {
       id: "tools",
       label: "Tools",
@@ -171,7 +176,7 @@ export default function AgentPage({
       detail: "Inspect what is shared and when access ends.",
       available: true,
     },
-  ];
+  ] as AgentDestination[]).filter((item) => item.id !== "tools" || tools);
   const active = destinations.some(
     (item) => item.id === section && item.available,
   )

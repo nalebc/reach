@@ -153,7 +153,7 @@ async function fixture(t, render) {
       });
     }
   };
-  const props = { peer, onEnd() {} };
+  const props = { peer, onEnd() {}, agentTools: true, tools: true };
   const view = await dom.render(
     render
       ? render({ ...props, access })
