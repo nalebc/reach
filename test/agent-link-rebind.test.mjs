@@ -82,7 +82,8 @@ test("a waiting request whose browser went quiet for a minute moves to the brows
   advance(20_000);
   const fresh = binding();
   const moved = f.claim(grant, fresh);
-  assert.equal(moved.moved, true);
+  assert.equal(moved.status, "pending");
+  assert.equal(moved.moved, undefined, "a new request for the owner, not a moved access");
   assert.notEqual(moved.requestId, first.requestId, "a new request on the owner's phone");
   assert.match(moved.verificationCode, /^\d{6}$/);
   assert.equal(f.auth.listAgentAdmissions().length, 1, "still one request");
@@ -185,14 +186,20 @@ test("before approval, a lost answer is recovered by the same browser only, with
   assert.equal(f.poll(latest, key).status, "approved");
 });
 
-test("a request the owner never answered expires, and says so", (t) => {
+test("a request the owner never answered expires; the link asks again while the invitation lasts", (t) => {
   const advance = clock(t);
   const f = fixture(t);
   const grant = f.invite();
   const key = binding();
-  f.claim(grant, key);
+  const first = f.claim(grant, key);
   advance(6 * 60_000);
-  assert.throws(() => f.claim(grant, key), { status: 410, message: /expired before it was approved/ });
+  assert.equal(f.poll(first, key).status, "expired", "the unanswered request says so");
+  const again = f.claim(grant, binding());
+  assert.equal(again.status, "pending");
+  assert.notEqual(again.requestId, first.requestId);
+  assert.equal(f.auth.listAgentAdmissions().length, 1);
+  advance(60 * 60_000);
+  assert.throws(() => f.claim(grant, binding()), { status: 410 }, "an ended invitation never asks again");
 });
 
 test("the owner can change an agent's access while it moves between browsers", (t) => {

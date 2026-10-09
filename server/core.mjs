@@ -992,7 +992,30 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         requestedAt: now,
         grant: admissionGrant(client),
       };
-      return receipt(requestSecret, { moved: true });
+      // A new request for the owner (not a moved access: nobody is cut off).
+      return receipt(requestSecret);
+    }
+    // The owner didn't answer in time, the invitation still lasts: opening
+    // the link asks again, from whichever browser opens it, with a new code.
+    const asked = client.admission;
+    if (asked && asked.status === "pending" && !reconnect && asked.expiresAt <= now &&
+        client.expiresAt > now && asked.grant === admissionGrant(client)) {
+      const recent = (client.rebinds || []).filter((at) => at > now - 60000);
+      if (recent.length >= REBINDS_PER_MINUTE)
+        throw fail(429, "This link was opened too often just now. Wait a minute and try again.");
+      client.rebinds = [...recent, now];
+      client.browserBinding = keyThumbprint;
+      const requestSecret = crypto.randomBytes(32).toString("base64url");
+      client.admission = {
+        requestId: id(),
+        secretHash: hash(requestSecret),
+        verificationCode: crypto.randomInt(100000, 1000000).toString(),
+        requestedAt: now,
+        expiresAt: Math.min(now + 300000, client.expiresAt),
+        status: "pending",
+        grant: admissionGrant(client),
+      };
+      return receipt(requestSecret);
     }
     if (client.browserBinding !== keyThumbprint || !client.admission) return null;
     const status = admissionStatus(client, now);

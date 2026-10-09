@@ -2,8 +2,10 @@ import { useOpenWantedNeed } from "./deep-link";
 import { useEffect, useRef, useState } from "react";
 import { macTerminalsFingerprint } from "./mac-terminal-live";
 import {
+  ArrowUp,
   Asterisk,
   Bell,
+  Check,
   ChevronRight,
   Loader2,
   MessageSquare,
@@ -26,7 +28,15 @@ import type { WorkspaceCapabilities } from "./capabilities";
 import type { FleetConnections } from "./useFleetConnections";
 import type { MacTerminal } from "./DesktopTerminals";
 import { ReachScene } from "./ReachIdentity";
-import type { AgentSession, MacPrompt } from "./agent-sessions";
+import {
+  readChatAgent,
+  type AgentHealth,
+  type AgentName,
+  type AgentSession,
+  type MacPrompt,
+} from "./agent-sessions";
+import { usageOf } from "./usage";
+import { UsageSheet } from "./UsageRing";
 import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
 import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
 import { useBrowserApprovals } from "./browser-approvals";
@@ -52,6 +62,8 @@ const agentName: Record<string, string> = {
 };
 // Output within this window makes a story ring spin.
 const ACTIVE_MS = 4000;
+// A chat that ended its turn this recently keeps its circle, marked done.
+const DONE_MS = 10 * 60 * 1000;
 
 // One circle in "Live on your Mac", like a story.
 type Story = {
@@ -59,7 +71,7 @@ type Story = {
   name: string;
   kind: "codex" | "claude" | "gemini" | "shell" | "chat";
   mac?: boolean;
-  state: "attention" | "active" | "running" | "idle";
+  state: "attention" | "failed" | "active" | "done" | "running" | "idle";
   line?: string;
   at: number;
   open: () => void;
@@ -274,6 +286,8 @@ export default function HomeLive({
   macPrompts = [],
   openAgentSession,
   showOnScreen,
+  agentHealth = [],
+  compose,
   onShortcuts,
   refreshSessions,
   toast,
@@ -299,6 +313,10 @@ export default function HomeLive({
   openAgentSession?: (session: AgentSession) => void;
   // Opens the live screen on a Mac dialog, to answer it there.
   showOnScreen?: (prompt: MacPrompt) => void;
+  // Each agent's sign-in and usage (the Chat feed's health).
+  agentHealth?: AgentHealth[];
+  // Ask bar: New conversation in Chat, in this agent.
+  compose?: (agent: AgentName) => void;
   onShortcuts: () => void;
   refreshSessions: () => void;
   toast: (message: string) => void;
@@ -442,8 +460,13 @@ export default function HomeLive({
       };
     }),
     // Agent sessions working anywhere on the Mac: apps, terminals, Reach.
+    // Just finished (or failed): kept a few minutes, so you see it's done.
     ...(openAgentSession ? agentSessions : [])
-      .filter((s) => !s.archived && (s.live || s.status !== "idle"))
+      .filter(
+        (s) =>
+          !s.archived &&
+          (s.live || s.status !== "idle" || now - s.updatedAt < DONE_MS),
+      )
       .slice(0, 6)
       .map((s): Story => ({
         key: `agent:${s.agent}:${s.id}`,
@@ -454,14 +477,18 @@ export default function HomeLive({
             ? "attention"
             : s.status === "running"
               ? "active"
-              : "running",
+              : now - s.updatedAt < DONE_MS
+                ? s.status === "error"
+                  ? "failed"
+                  : "done"
+                : "running",
         line: s.preview,
         at: s.updatedAt,
         open: () => openAgentSession!(s),
       })),
   ];
   // What needs you first, then what is printing right now, newest first.
-  const rank = { attention: 0, active: 1, running: 2, idle: 3 };
+  const rank = { attention: 0, failed: 1, active: 2, done: 3, running: 4, idle: 5 };
   stories.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
   const latest = stories
     .filter((s) => s.line && s.at)
@@ -531,6 +558,19 @@ export default function HomeLive({
   const canStart = features.terminal || features.codex;
   const canPlus = canStart || features.writeFiles || apps.length > 0;
   const live = features.screen && stream.ready;
+  // Usage at a glance: only agents whose usage is known.
+  const usage = agentHealth
+    .map((h) => ({ health: h, usage: usageOf(h) }))
+    .filter((x) => x.usage);
+  const [usageOpen, setUsageOpen] = useState(false);
+  // Ask bar: the app last picked in Chat, else the first one signed in.
+  const askable = agentHealth
+    .filter((h) => (h.agent === "codex" || h.agent === "claude") && h.installed)
+    .map((h) => h.agent as AgentName);
+  const saved = readChatAgent();
+  const askAgent: AgentName | undefined = askable.includes(saved as AgentName)
+    ? (saved as AgentName)
+    : askable[0];
   return (
     <div className="home-live">
       <section className="home-hero" ref={hero}>
@@ -562,6 +602,23 @@ export default function HomeLive({
             {online ? "Online" : "Connecting…"} · {connection}
             {live ? " · live" : paused ? " · paused" : ""}
           </p>
+          {usage.length > 0 && (
+            <button
+              className="home-usage"
+              aria-label="Usage"
+              onClick={() => setUsageOpen(true)}
+            >
+              {usage.map(({ health, usage: u }) => (
+                <span
+                  key={health.agent}
+                  className={`home-usage-chip ${u!.level}${u!.stale ? " stale" : ""}`}
+                >
+                  <AgentLogo agent={health.agent} logos={logos} size={14} />
+                  {u!.level === "out" ? "Out" : `${u!.percent}%`}
+                </span>
+              ))}
+            </button>
+          )}
         </div>
         {features.owner && (
           <PauseButton
@@ -590,6 +647,16 @@ export default function HomeLive({
         <div className="home-needs">
           <NeedsYouStrip items={needItems} />
         </div>
+      )}
+
+      {compose && askAgent && (
+        <button className="home-ask" onClick={() => compose(askAgent)}>
+          <AgentLogo agent={askAgent} logos={logos} size={20} />
+          <span>Ask {agentName[askAgent]}</span>
+          <i aria-hidden="true">
+            <ArrowUp size={17} strokeWidth={2.4} />
+          </i>
+        </button>
       )}
 
       {browserApprovals.review}
@@ -626,7 +693,7 @@ export default function HomeLive({
               <button
                 key={story.key}
                 className="story"
-                aria-label={`${story.name}${story.mac ? ", on your Mac" : ""}${story.state === "attention" ? ", needs you" : story.state === "active" ? ", working" : ""}`}
+                aria-label={`${story.name}${story.mac ? ", on your Mac" : ""}${story.state === "attention" ? ", needs you" : story.state === "active" ? ", working" : story.state === "done" ? ", done" : story.state === "failed" ? ", stopped with an error" : ""}`}
                 onClick={story.open}
               >
                 <span className={`story-ring ${story.state}`}>
@@ -634,6 +701,12 @@ export default function HomeLive({
                     <Glyph kind={story.kind} logos={logos} />
                   </span>
                   {story.mac && <i className="story-badge">Mac</i>}
+                  {story.state === "done" && (
+                    <i className="story-mark">
+                      <Check size={11} strokeWidth={3} />
+                    </i>
+                  )}
+                  {story.state === "failed" && <i className="story-mark">!</i>}
                 </span>
                 <small>{story.name}</small>
               </button>
@@ -656,6 +729,13 @@ export default function HomeLive({
         </section>
       )}
 
+      {usageOpen && (
+        <UsageSheet
+          health={usage.map((x) => x.health)}
+          logos={logos}
+          onClose={() => setUsageOpen(false)}
+        />
+      )}
       {sheet && (
         <ScreenPopup
           title="Start or send"
