@@ -212,11 +212,16 @@ export function createFunnelAgentGateway({
   claimed = () => {},
   dispatch,
   requestHost = (req) => req.headers.host,
+  // The computer's private address (the same name, Reach's own port): an
+  // agent on the owner's tailnet reaches the gateway there, signed for the
+  // same audience, with no public door needed.
+  privateHost = null,
   now = Date.now,
 }) {
   const publicOrigin = new URL(origin);
   if (publicOrigin.origin !== origin || publicOrigin.protocol !== "https:")
     throw new Error("The agent gateway requires an exact HTTPS origin.");
+  const hosts = new Set([publicOrigin.host, ...(typeof privateHost === "string" && privateHost ? [privateHost] : [])]);
   // Agents that still have access (their page names its key in Reach-Key,
   // checked against the signed key below) have their own capacity, rate
   // tables and replay space: a flood of strangers' requests, fresh keys or
@@ -308,7 +313,7 @@ export function createFunnelAgentGateway({
   };
   const run = async (req, res) => {
     if (req.method !== "POST") throw failure(405);
-    if (requestHost(req) !== publicOrigin.host) throw failure(421);
+    if (!hosts.has(requestHost(req))) throw failure(421);
     if (
       req.headers.origin !== origin ||
       (req.headers["sec-fetch-site"] !== undefined &&

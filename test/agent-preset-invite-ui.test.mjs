@@ -252,7 +252,7 @@ test("Tools is the default; without invite links, setting them up is one tap", a
 test("Tools without invite links: one command through the public link, no key asked", async () => {
   const calls = mock({ standingAllowed: true });
   const { c, made } = await open({ connect: "default", keyPeer: null });
-  assert.match(c.textContent, /Through your public link, from any terminal/);
+  assert.match(c.textContent, /From any terminal: your Tailscale network when the agent is on it, else your public link/);
   await choose(c, "Read only");
   await click(button(c, "Create invite link"));
   await dom.waitFor(() => made());

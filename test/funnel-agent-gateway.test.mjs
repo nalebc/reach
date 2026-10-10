@@ -730,3 +730,17 @@ test("a request signed before the gateway started is refused, however fresh", as
   assert.equal(f.claims.length, 0);
   assert.equal((await f.call(signed(f.key, { operation: "claim", invitation: f.grant().invitation }))).status, 202);
 });
+
+// An agent on the owner's tailnet reaches the gateway at the computer's
+// private address (the same name, Reach's own port), signed for the same
+// audience: no public door needed. Only that exact host joins the public one.
+test("the private address is accepted when named, the public one as ever, nothing else", async (t) => {
+  const f = setup(t, { privateHost: `${new URL(ORIGIN).host}:8443` });
+  const claim = () => signed(f.key, { operation: "claim", invitation: f.grant().invitation });
+  assert.equal((await f.call(claim(), { headers: { host: `${new URL(ORIGIN).host}:8443` } })).status, 202);
+  assert.equal((await f.call(claim())).status, 202);
+  for (const host of [`${new URL(ORIGIN).host}:443`, `${new URL(ORIGIN).host}:8444`, "attacker.example:8443"])
+    assert.equal((await f.call(claim(), { headers: { host } })).status, 421, host);
+  const plain = setup(t);
+  assert.equal((await plain.call(signed(plain.key, { operation: "claim", invitation: plain.grant().invitation }), { headers: { host: `${new URL(ORIGIN).host}:8443` } })).status, 421, "not named: not accepted");
+});

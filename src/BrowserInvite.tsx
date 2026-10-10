@@ -407,14 +407,15 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
         always: minutes === ALWAYS,
       };
       if (connect === "tools" && keyPeer?.id !== peer.id) {
-        // No invite links here: one command that joins through the public
-        // link, every request signed by the agent's own key
-        // (scripts/agent-funnel.mjs). Works from any terminal.
+        // No invite links here: one command, every request signed by the
+        // agent's own key (scripts/agent-funnel.mjs). It reaches this Mac's
+        // private address when the agent is on the tailnet, else the public
+        // link. Works from any terminal.
         const origin = new URL(result.url).origin;
         const link = guestLinkUrl(origin, {
           key: "",
           hostname: "",
-          invites: [{ origin, secret: result.invitation }],
+          invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
           funnel: true,
         }, "/agent");
         const command = toolsCommand(origin, link, result.runtime);
@@ -845,11 +846,12 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           </p>
           {connect === "tools" && keyPeer?.id !== peer.id && (
             <p className="ag-quiet">
-              Through your public link, from any terminal.{" "}
+              From any terminal: your Tailscale network when the agent is on
+              it, else your public link.{" "}
               <button type="button" className="ag-link" onClick={onSetup}>
                 Set up invite links
               </button>{" "}
-              to keep it on your Tailscale network.
+              to give it a Tailscale key.
             </p>
           )}
         </div>

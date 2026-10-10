@@ -478,3 +478,43 @@ test("requests through the agent's own node: credential, body, errors, size cap,
     /Invalid API route/,
   );
 });
+
+// A public-link invitation names the computer's private address too: the
+// same name, Reach's own port. An agent on the owner's tailnet uses it; the
+// public link is the fallback. Another name is a broken link.
+test("a public-link invitation carries the computer's private address", async () => {
+  const { parseAgentLink } = await import("../scripts/agent-remote.mjs");
+  const secret = "s".repeat(43);
+  const both = parseAgentLink(`https://mac.t.ts.net/agent#i=${encodeURIComponent(`https://mac.t.ts.net:8443~${secret}`)}&t=funnel`);
+  assert.deepEqual([both.funnel, both.public, both.private, both.origin, both.secret], [true, "https://mac.t.ts.net", "https://mac.t.ts.net:8443", "https://mac.t.ts.net:8443", secret]);
+  const only = parseAgentLink(`https://mac.t.ts.net/agent#i=${encodeURIComponent(`https://mac.t.ts.net~${secret}`)}&t=funnel`);
+  assert.deepEqual([only.public, only.private], ["https://mac.t.ts.net", null]);
+  assert.throws(() => parseAgentLink(`https://mac.t.ts.net/agent#i=${encodeURIComponent(`https://other.t.ts.net:8443~${secret}`)}&t=funnel`), /incomplete/);
+});
+
+test("the gateway client: the private address first, the public one when it doesn't answer, the private one again a minute on", async () => {
+  const { funnelGateway, agentKey } = await import("../scripts/agent-funnel.mjs");
+  const conn = fs.mkdtempSync(path.join(os.tmpdir(), "reach-route-"));
+  let clock = 1_000_000, privateUp = false;
+  const sent = [];
+  const send = async (endpoint, body, headers) => {
+    sent.push(endpoint);
+    assert.equal(headers.Origin, "https://mac.t.ts.net", "signed for the public origin on either address");
+    if (endpoint.endsWith(":8443") && !privateUp) throw Object.assign(Error("connect ECONNREFUSED"), { unreachable: true });
+    return { status: 200, headers: {}, bytes: Buffer.from(JSON.stringify({ at: endpoint })) };
+  };
+  const gateway = funnelGateway("https://mac.t.ts.net", agentKey(conn), { send, now: () => clock, endpoints: ["https://mac.t.ts.net:8443", "https://mac.t.ts.net"] });
+  assert.equal((await gateway.request("t", "GET", "/api/device", null)).json.at, "https://mac.t.ts.net", "fell back");
+  assert.deepEqual(sent, ["https://mac.t.ts.net:8443", "https://mac.t.ts.net"]);
+  assert.equal((await gateway.request("t", "GET", "/api/device", null)).json.at, "https://mac.t.ts.net", "stays on the public link meanwhile");
+  assert.equal(sent.length, 3);
+  clock += 61_000;
+  privateUp = true;
+  assert.equal((await gateway.request("t", "GET", "/api/device", null)).json.at, "https://mac.t.ts.net:8443", "back on the tailnet");
+  // A failure after the connection was made is never retried elsewhere.
+  privateUp = false;
+  const broke = funnelGateway("https://mac.t.ts.net", agentKey(conn), { endpoints: ["https://mac.t.ts.net:8443", "https://mac.t.ts.net"],
+    send: async () => { throw Object.assign(Error("socket hang up"), { unreachable: false }); } });
+  await assert.rejects(broke.request("t", "POST", "/api/browser/desktop/input", { action: {} }), /socket hang up/);
+  fs.rmSync(conn, { recursive: true, force: true });
+});

@@ -36,16 +36,24 @@ async function fixture(t) {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(socketDir, { recursive: true, force: true });
   });
-  // The internet, as Tailscale Funnel hands it to Reach.
-  const send = (origin, body, headers) => new Promise((resolve, reject) => {
+  // The internet, as Tailscale Funnel hands it to Reach; or, at the private
+  // address, the owner's tailnet (no Funnel mark, a tailnet source), when
+  // the test says that address answers.
+  let privateAnswers = false;
+  const sent = [];
+  const send = (endpoint, body, headers) => new Promise((resolve, reject) => {
+    sent.push(endpoint);
+    const privately = endpoint.endsWith(":8443");
+    if (privately && !privateAnswers) return reject(Object.assign(Error("connect EHOSTUNREACH"), { unreachable: true }));
     const req = http.request({ socketPath, path: "/agent-gateway", method: "POST",
-      headers: { ...headers, Host: "localhost", "X-Forwarded-Host": new URL(origin).host, "Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.7" } },
+      headers: { ...headers, Host: "localhost", "X-Forwarded-Host": new URL(endpoint).host,
+        ...(privately ? { "X-Forwarded-For": "100.64.0.20" } : { "Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.7" }) } },
     (res) => { const chunks = []; res.on("data", (c) => chunks.push(c)); res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) })); });
     req.once("error", reject);
     req.end(body);
   });
   const invite = () => reach.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "files", folders: [{ root: 0, path: "work" }], write: true, ttlSeconds: 3600 });
-  return { reach, send, invite, root };
+  return { reach, send, invite, root, sent, privately: (value) => { privateAnswers = value; } };
 }
 
 test("a terminal agent joins through the public link with no Tailscale key, then uses Reach's tools", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
@@ -98,6 +106,30 @@ test("a terminal agent joins through the public link with no Tailscale key, then
   assert.notEqual(asked.json.refreshed, true);
   // Its own key takes its access back at once.
   assert.equal((await f.reach.auth.reconnectFunnelBrowser(grant.invitation, key.thumbprint)).refreshed, true);
+});
+
+test("on the owner's tailnet the private address is used, with the public link as the fallback; the same key either way", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const grant = f.invite();
+  const conn = fs.mkdtempSync(path.join(f.root, "agent-"));
+  const key = agentKey(conn);
+  const endpoints = [`${ORIGIN}:8443`, ORIGIN];
+  f.privately(true);
+  const gateway = funnelGateway(ORIGIN, key, { send: f.send, endpoints });
+  const claim = await gateway.claim(grant.invitation);
+  assert.equal(claim.status, 202, JSON.stringify(claim.json));
+  assert.equal(claim.endpoint, `${ORIGIN}:8443`, "joined through the tailnet");
+  f.reach.auth.decideAgentAdmission(claim.json.requestId, "approve");
+  const approved = await gateway.status(claim.json.requestId, claim.json.requestSecret);
+  assert.equal(approved.json.status, "approved");
+  const api = funnelApi({ conn, credential: { origin: ORIGIN, private: `${ORIGIN}:8443`, token: approved.json.token }, key, gateway });
+  assert.ok((await api("/api/browser")).roots, "its tools, privately");
+  assert.ok(f.sent.every((endpoint) => endpoint.endsWith(":8443")), "nothing went through the public link");
+  // The tailnet goes away: the public link answers the same key at once.
+  f.privately(false);
+  assert.ok((await api("/api/browser")).roots);
+  assert.equal(f.sent.at(-1), ORIGIN, "fell back to the public link");
+  assert.equal(f.sent.at(-2), `${ORIGIN}:8443`, "after the private address was tried");
 });
 
 test("its credential is worth nothing without its key; leaving ends the access", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {

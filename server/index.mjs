@@ -4690,6 +4690,7 @@ export async function createReach(overrides = {}) {
     ? createFunnelAgentGateway({
         auth,
         origin: new URL(config.publicOrigin).origin.replace(/:\d+$/, ""),
+        privateHost: new URL(config.publicOrigin).host,
         requestHost: serveRequestHost,
         // Whenever Reach runs: an agent whose access ended is told so (401,
         // 410) instead of finding nothing. Nothing opens without credentials:

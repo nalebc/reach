@@ -35,10 +35,15 @@ export function agentKey(conn) {
   return { privateKey, jwk, thumbprint };
 }
 
-// One signed request to the gateway, over HTTPS to the public link.
-function httpsSend(origin, body, headers, timeoutMs) {
+// One signed request to the gateway, over HTTPS to one of the computer's
+// addresses. A failure before the connection is made (no route, refused,
+// a name that doesn't resolve) is marked unreachable: the next address is
+// tried. Anything later isn't, so an action never runs twice.
+function httpsSend(endpoint, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const req = https.request(`${origin}/agent-gateway`, { method: "POST", headers, timeout: timeoutMs }, (res) => {
+    let connected = false;
+    const unreachable = (error) => Object.assign(error, { unreachable: !connected });
+    const req = https.request(`${endpoint}/agent-gateway`, { method: "POST", headers, timeout: timeoutMs }, (res) => {
       const chunks = [];
       let size = 0;
       res.on("data", (chunk) => {
@@ -49,28 +54,47 @@ function httpsSend(origin, body, headers, timeoutMs) {
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
       res.on("error", reject);
     });
-    req.on("timeout", () => req.destroy(Error("Reach request timed out. Mutating operations are not retried.")));
-    req.once("error", reject);
+    req.on("socket", (socket) => socket.once("connect", () => { connected = true; }));
+    req.on("timeout", () => req.destroy(unreachable(Error("Reach request timed out. Mutating operations are not retried."))));
+    req.once("error", (error) => reject(unreachable(error)));
     req.end(body);
   });
 }
 
-export function funnelGateway(origin, key, { send = httpsSend, now = Date.now } = {}) {
+// The gateway, signed for `audience` (the computer's public origin, its
+// identity), reached at the first of `endpoints` that answers: the computer's
+// private address when the agent is on the owner's tailnet, else its public
+// link. A minute after the private address failed, it's tried again.
+export function funnelGateway(audience, key, { send = httpsSend, now = Date.now, endpoints = [audience] } = {}) {
+  let current = 0, failedAt = 0;
   const call = async (input, timeoutMs = 35000) => {
-    const payload = JSON.stringify({ v: 1, audience: origin, issuedAt: now(), nonce: crypto.randomBytes(24).toString("base64url"), ...input });
+    const payload = JSON.stringify({ v: 1, audience, issuedAt: now(), nonce: crypto.randomBytes(24).toString("base64url"), ...input });
     const signature = crypto.sign("sha256", Buffer.from(payload, "utf8"), { key: key.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
-    const response = await send(origin, JSON.stringify({ payload, publicKey: key.jwk, signature }), {
+    const body = JSON.stringify({ payload, publicKey: key.jwk, signature });
+    const headers = {
       "Content-Type": "application/json",
-      Origin: origin,
+      Origin: audience,
       "Sec-Fetch-Site": "same-origin",
       // Its key named up front: an agent with access has capacity kept for it.
       "Reach-Key": key.thumbprint,
-    }, timeoutMs);
-    let json = null;
-    try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
-    return { ...response, json };
+    };
+    if (current > 0 && now() - failedAt > 60_000) current = 0;
+    for (;;) {
+      const endpoint = endpoints[current];
+      try {
+        const response = await send(endpoint, body, headers, timeoutMs);
+        let json = null;
+        try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
+        return { ...response, json, endpoint };
+      } catch (error) {
+        if (!error?.unreachable || current + 1 >= endpoints.length) throw error;
+        failedAt = now();
+        current++;
+      }
+    }
   };
   return {
+    endpoint: () => endpoints[current],
     claim: (invitation) => call({ operation: "claim", invitation }),
     reconnect: (invitation) => call({ operation: "reconnect", invitation }),
     status: (requestId, secret) => call({ operation: "status", requestId, secret }),
@@ -82,7 +106,8 @@ export function funnelGateway(origin, key, { send = httpsSend, now = Date.now } 
 // The agent's API, as tailnetApi gives it: (route, method, body) → result.
 // A session the computer ended while the access lasts (Reach restarted, the
 // owner reopened its link) comes back through the same key, once.
-export function funnelApi({ conn, credential, key = agentKey(conn), gateway = funnelGateway(credential.origin, key), save }) {
+export function funnelApi({ conn, credential, key = agentKey(conn),
+  gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean) }), save }) {
   const reconnect = async () => {
     if (!credential.invitation) return false;
     const asked = await gateway.reconnect(credential.invitation);
