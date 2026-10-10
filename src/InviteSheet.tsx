@@ -26,7 +26,7 @@ import { guestLinkUrl, parseGuestLink } from "./start-flow";
 import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
-import BrowserInvite from "./BrowserInvite";
+import BrowserInvite, { toolsCommand } from "./BrowserInvite";
 import AccessEditor, { appScopedAccess, canEditAccess, type EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
@@ -172,10 +172,11 @@ const hasFolders = (g: Guest) =>
     ? (g.policy?.roots?.length || 0) > 0
     : !(g.scopes || []).includes("admin") && (g.guestRoots?.length || 0) > 0;
 const startOf = (peer: Peer) => `https://${new URL(peer.url).hostname}`;
-// What an agent runs, once: Reach for agents from the computer's start page,
-// then join with its link.
-export const agentCommand = (start: string, link: string) =>
-  `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`;
+// What an agent runs, once: Reach for agents from the computer's start page
+// (checked against its SHA-256 when the computer gave it), then join with
+// its link.
+export const agentCommand = (start: string, link: string, runtime?: string) =>
+  toolsCommand(start, link, runtime);
 const list = (items: string[]) =>
   items.length <= 1
     ? items.join("")
@@ -361,7 +362,7 @@ export function InviteSheet({
   const [guests, setGuests] = useState<Guest[]>([]);
   // Links made here, by invitation (a computer never keeps them).
   const [links, setLinks] = useState<
-    Record<string, { link: string; keyed: boolean; created: Created[] }>
+    Record<string, { link: string; keyed: boolean; created: Created[]; runtime?: string }>
   >({});
   const [made, setMade] = useState<{
     clientId: string;
@@ -643,6 +644,7 @@ export function InviteSheet({
         clientId: string;
         expiresAt: number;
         joinBy: number;
+        runtime?: string;
       }>(p, "/api/agents/invitations", {
         name: who,
         ttlSeconds: agentDays * 86400,
@@ -679,7 +681,7 @@ export function InviteSheet({
       );
       setLinks((old) => ({
         ...old,
-        [g.clientId]: { link, keyed: !!key, created: [created!] },
+        [g.clientId]: { link, keyed: !!key, created: [created!], runtime: g.runtime },
       }));
       setMade({
         clientId: g.clientId,
@@ -1153,6 +1155,7 @@ export function InviteSheet({
                   const command = agentCommand(
                     new URL(madeLink.link).origin,
                     madeLink.link,
+                    madeLink.runtime,
                   );
                   const text = `Join my computer with Reach, then add the MCP server it prints:\n${command}`;
                   return (

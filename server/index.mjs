@@ -1795,6 +1795,21 @@ export async function createReach(overrides = {}) {
       throw fail(403, "Only a paired owner device can create or set up invitations.");
     return client;
   };
+  // The SHA-256 of the agent runtime the start page serves (dist/agent.mjs):
+  // an agent's join command checks its download against it, so what replaces
+  // its runtime is exactly what this computer serves (security audit M8).
+  let runtimeHash = { at: 0, sha256: undefined };
+  const agentRuntime = () => {
+    const file = overrides.agentRuntimeFile || fileURLToPath(new URL("../dist/agent.mjs", import.meta.url));
+    try {
+      const at = fs.statSync(file).mtimeMs;
+      if (runtimeHash.at !== at)
+        runtimeHash = { at, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };
+      return runtimeHash.sha256;
+    } catch {
+      return undefined;
+    }
+  };
   // Where guests may go: Reach's port on your Reach computers.
   const guestReach = async () => {
     const st = await readStatus();
@@ -1907,7 +1922,8 @@ export async function createReach(overrides = {}) {
       throw fail(403, "Only the computer's owner can invite agents.");
     const grant = auth.inviteAgent(req.body || {});
     record("agent", `Invited agent ${req.body?.name}`);
-    res.status(201).json(grant);
+    const runtime = agentRuntime();
+    res.status(201).json({ ...grant, ...(runtime ? { runtime } : {}) });
   });
   app.post("/api/guests", async (req, res) => {
     const authorize = () => invitationOwner(req);
@@ -2142,6 +2158,7 @@ export async function createReach(overrides = {}) {
   agentToolRoutes(app, { tools: agentTools });
   agentServiceRoutes(app, agentServices);
   browserAccessRoutes(app, {
+    agentRuntime,
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,

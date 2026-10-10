@@ -89,9 +89,13 @@ type Issued = {
   command?: string;
 };
 // What a tools agent runs, once: Reach for agents from this computer's start
-// page, then joining with its link (as Command line invites do).
-export const toolsCommand = (start: string, link: string) =>
-  `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`;
+// page, then joining with its link (as Command line invites do). With the
+// runtime's SHA-256 from this computer, a download that isn't exactly it
+// never replaces the agent's runtime (security audit M8).
+export const toolsCommand = (start: string, link: string, runtime?: string) =>
+  runtime && /^[0-9a-f]{64}$/.test(runtime)
+    ? `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`
+    : `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`;
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
 
@@ -345,6 +349,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         joinBy: number;
         url: string;
         publicName?: "missing";
+        runtime?: string;
       }>(peer, "/api/agents/browser-invitations", {
         method: "POST",
         signal: controller.signal,
@@ -400,7 +405,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           hostname: key?.hostname || "",
           invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
         }, "/agent");
-        const command = toolsCommand(start, link);
+        const command = toolsCommand(start, link, result.runtime);
         setMade({
           link: command,
           name: name.trim(),

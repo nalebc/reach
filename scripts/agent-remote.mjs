@@ -202,9 +202,11 @@ export async function loadTailnet({ execFile, wasmFile }) {
   return globalThis.reachTailnet;
 }
 
-// The tailnet client comes from the computer's start page, once.
+// The tailnet client comes from the computer's start page, once per
+// computer: one computer's client never handles another's node (security
+// audit M8).
 async function tailnetFiles(home, start) {
-  const dir = path.join(home, "tailnet");
+  const dir = path.join(home, "tailnet", new URL(start).host.replace(/[^\w.-]/g, "_"));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const manifestFile = path.join(dir, "tailnet.json");
   try {

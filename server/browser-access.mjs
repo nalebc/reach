@@ -82,6 +82,9 @@ export function browserAccessRoutes(
     // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
     // can't offer them.
     desktop = null, shell = null, shortcuts = null, tools = null, services = null,
+    // The SHA-256 of the agent runtime the start page serves, pinned in a
+    // Tools agent's command (security audit M8).
+    agentRuntime = () => undefined,
   },
 ) {
   const owner = (req) => {
@@ -185,7 +188,8 @@ export function browserAccessRoutes(
     // reported so the owner knows why the agent can't open it.
     const name = url && publicName ? await publicName(new URL(url).hostname).catch(() => "unknown") : null;
     record("agent", `Invited ${input.name} through a browser`);
-    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}), ...(name === "missing" ? { publicName: "missing" } : {}) });
+    const runtime = url ? undefined : agentRuntime();
+    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}), ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime ? { runtime } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing
   // access, including Full/Read only defaults. Only those presets may include
