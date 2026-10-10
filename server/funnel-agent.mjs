@@ -5,7 +5,27 @@ import { browserRouteAllowed } from "./browser-access.mjs";
 const BODY_LIMIT = 32 * 1024;
 const CLOCK_WINDOW = 60_000;
 const REPLAY_LIMIT = 4096;
+const KNOWN_REPLAY_LIMIT = 16384;
 const RATE_BUCKET_LIMIT = 1024;
+// One source per IPv4 address, per /64 for IPv6 (one machine's usual share):
+// fresh addresses from one network count as one.
+export function sourceKey(address) {
+  const ip = String(address || "").trim();
+  if (net.isIPv4(ip)) return ip;
+  if (!net.isIPv6(ip)) return "unknown";
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (mapped) return mapped[1];
+  const hex = (part) => {
+    if (!part.includes(".")) return [part];
+    const [a, b, c, d] = part.split(".").map(Number);
+    return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
+  };
+  const half = (text) => (text ? text.split(":").flatMap(hex) : []);
+  const [head, tail] = ip.split("::");
+  const left = half(head), right = tail === undefined ? [] : half(tail);
+  const groups = tail === undefined ? left : [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":")}::/64`;
+}
 const BASE = ["v", "audience", "issuedAt", "nonce", "operation"];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const plain = (value) =>
@@ -197,15 +217,38 @@ export function createFunnelAgentGateway({
   const publicOrigin = new URL(origin);
   if (publicOrigin.origin !== origin || publicOrigin.protocol !== "https:")
     throw new Error("The agent gateway requires an exact HTTPS origin.");
+  // Agents that still have access (their page names its key in Reach-Key,
+  // checked against the signed key below) have their own capacity, rate
+  // tables and replay space: a flood of strangers' requests, fresh keys or
+  // addresses, never locks them out (security audit M3).
   const replay = new Map(),
+    knownReplay = new Map(),
     ips = new Map(),
-    keys = new Map();
-  let active = 0;
+    keys = new Map(),
+    knownKeyRates = new Map();
+  const pools = { known: { active: 0, max: 32 }, unknown: { active: 0, max: 32 } };
+  let knownCache = { until: 0, keys: new Set() };
+  const knownKeys = () => {
+    const current = now();
+    if (knownCache.until <= current) {
+      let keys;
+      try { keys = auth.funnelKeys?.() || new Set(); } catch { keys = new Set(); }
+      knownCache = { until: current + 1000, keys };
+    }
+    return knownCache.keys;
+  };
   const bucket = (map, id, maximum, current) => {
     for (const [key, value] of map)
       if (value.until <= current && value.active === 0) map.delete(key);
     let value = map.get(id);
-    if (!value) {
+    if (value) {
+      // Most recently used last: a full table drops the longest idle.
+      map.delete(id);
+      map.set(id, value);
+    } else {
+      if (map.size >= RATE_BUCKET_LIMIT)
+        for (const [key, entry] of map)
+          if (entry.active === 0) { map.delete(key); break; }
       if (map.size >= RATE_BUCKET_LIMIT) throw failure(429);
       value = { until: current + 60_000, count: 0, active: 0 };
       map.set(id, value);
@@ -288,17 +331,20 @@ export function createFunnelAgentGateway({
     const forwarded = req.headers["x-forwarded-for"];
     const source = typeof forwarded === "string" && net.isIP(forwarded.trim())
       ? forwarded.trim() : req.socket?.remoteAddress || "unknown";
-    const ip = bucket(ips, source, 240, now());
-    if (active >= 32 || ip.active >= 8) throw failure(429);
-    active++;
-    ip.active++;
+    const hint = req.headers["reach-key"];
+    const known = typeof hint === "string" && knownKeys().has(hint);
+    const pool = known ? pools.known : pools.unknown;
+    const ip = known ? null : bucket(ips, sourceKey(source), 240, now());
+    if (pool.active >= pool.max || (ip && ip.active >= 8)) throw failure(429);
+    pool.active++;
+    if (ip) ip.active++;
     let keyBucket,
       released = false;
     const release = () => {
       if (released) return;
       released = true;
-      active--;
-      ip.active--;
+      pool.active--;
+      if (ip) ip.active--;
       if (keyBucket) keyBucket.active--;
       res.removeListener("finish", release);
       res.removeListener("close", release);
@@ -348,19 +394,22 @@ export function createFunnelAgentGateway({
         )
       )
         throw failure(401);
-      const rate = bucket(keys, identity.thumbprint, 180, now());
+      // The key named up front must be the key that signed.
+      if (hint !== undefined && hint !== identity.thumbprint) throw failure(400);
+      const rate = bucket(known ? knownKeyRates : keys, identity.thumbprint, 180, now());
       if (rate.active >= 4) throw failure(429);
       keyBucket = rate;
       keyBucket.active++;
       // Consume before any asynchronous or state-changing operation; never
       // evict a live nonce to make room for a new one.
       const current = now();
-      for (const [key, expiry] of replay)
-        if (expiry < current) replay.delete(key);
+      const seen = known ? knownReplay : replay;
+      for (const [key, expiry] of seen)
+        if (expiry < current) seen.delete(key);
       const nonce = `${identity.thumbprint}:${payload.nonce}`;
-      if (replay.has(nonce)) throw failure(409);
-      if (replay.size >= REPLAY_LIMIT) throw failure(429);
-      replay.set(nonce, payload.issuedAt + CLOCK_WINDOW);
+      if (seen.has(nonce)) throw failure(409);
+      if (seen.size >= (known ? KNOWN_REPLAY_LIMIT : REPLAY_LIMIT)) throw failure(429);
+      seen.set(nonce, payload.issuedAt + CLOCK_WINDOW);
       if (!available()) throw failure(503);
       if (payload.operation === "claim" || payload.operation === "reconnect") {
         if (!encoded(payload.invitation, 32)) throw failure(400);

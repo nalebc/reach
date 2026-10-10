@@ -277,9 +277,17 @@ export function createFunnelAgent(dependencies: {
         new TextEncoder().encode(payload),
       ),
     );
+    // The key's fingerprint, as the computer computes it: an agent with
+    // access gets the capacity kept for it (server/funnel-agent.mjs).
+    const thumbprint = base64url(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(JSON.stringify({ crv: "P-256", kty: "EC", x: publicKey.x, y: publicKey.y })),
+      ),
+    );
     return dependencies.fetch(`${origin}/agent-gateway`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Reach-Key": thumbprint },
       body: JSON.stringify({ payload, publicKey, signature }),
       redirect: "error",
       credentials: "omit",

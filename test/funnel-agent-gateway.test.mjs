@@ -660,3 +660,61 @@ test("on the Unix-socket ingress each internet source has its own in-flight allo
     entry.req.end();
   }
 });
+
+// Security audit M3: anyone on the internet can send signed requests with
+// fresh keys from fresh addresses. Agents that have access name their key up
+// front (Reach-Key, checked against the signature) and keep capacity, rate
+// tables and replay space no stranger's traffic can take.
+const thumbprintOf = (key) => crypto.createHash("sha256")
+  .update(JSON.stringify({ crv: "P-256", kty: "EC", x: key.jwk.x, y: key.jwk.y })).digest("base64url");
+
+test("strangers holding every public slot never lock out an agent with access", async (t) => {
+  const f = setup(t);
+  const token = await f.join();
+  const stranger = signingKey();
+  const held = Array.from({ length: 32 }, (_, index) =>
+    send(f.gateway, signed(stranger, { operation: "claim", invitation: random() }), { hold: true, ip: `192.0.2.${index + 1}` }));
+  const known = { headers: { "reach-key": thumbprintOf(f.key) }, ip: "203.0.113.9" };
+  assert.equal((await f.call(f.request(token), known)).status, 200, "its own capacity");
+  assert.equal((await f.call(f.request(token), { ip: "203.0.113.9" })).status, 429, "without naming its key: the shared pool");
+  // Naming a key it doesn't sign with: refused before anything runs.
+  const other = signingKey();
+  assert.equal((await f.call(f.request(token, "/api/browser", "GET", null, other), known)).status, 400);
+  for (const entry of held) { entry.res.destroy(); entry.req.emit("aborted"); entry.req.end(); }
+});
+
+test("fresh keys and addresses fill no table an agent with access needs", { timeout: 60000 }, async (t) => {
+  const f = setup(t);
+  const token = await f.join();
+  const known = { headers: { "reach-key": thumbprintOf(f.key) } };
+  // More strangers than the rate tables hold: the longest idle goes, nobody is refused for it.
+  for (let index = 0; index < 1100; index++) {
+    const response = await f.call(signed(signingKey(), { operation: "claim", invitation: random() }), { ip: `10.${index >> 8}.${index & 255}.1` });
+    assert.notEqual(response.status, 429, `stranger ${index}`);
+  }
+  assert.equal((await f.call(f.request(token), known)).status, 200);
+  // Enough signed strangers to fill the shared replay space: they're refused,
+  // the agent isn't.
+  let refused = 0;
+  for (let k = 0; k < 24 && !refused; k++) {
+    const key = signingKey();
+    for (let n = 0; n < 180; n++) {
+      const response = await f.call(signed(key, { operation: "claim", invitation: random() }), { ip: `172.16.${k}.1` });
+      if (response.status === 429) { refused++; break; }
+    }
+  }
+  assert.ok(refused > 0, "the shared replay space filled");
+  for (let i = 0; i < 5; i++) assert.equal((await f.call(f.request(token), known)).status, 200);
+});
+
+test("addresses from one IPv6 network count as one source", async (t) => {
+  const f = setup(t);
+  const stranger = signingKey();
+  let last;
+  for (let index = 0; index < 241; index++)
+    last = await f.call(signed(signingKey(), { operation: "claim", invitation: random() }),
+      { headers: { "x-forwarded-for": `2001:db8:1:2::${(index + 1).toString(16)}` } });
+  assert.equal(last.status, 429, "the network's per-minute allowance");
+  const elsewhere = await f.call(signed(stranger, { operation: "claim", invitation: random() }), { headers: { "x-forwarded-for": "2001:db8:9:9::1" } });
+  assert.notEqual(elsewhere.status, 429);
+});

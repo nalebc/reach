@@ -1294,6 +1294,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         client.admission.grant !== admissionGrant(client)) return null;
     return applyAgentPolicy(client, config);
   }
+  // The browser keys of public-link agents that still have access (the one
+  // in use, the one the owner approved): the public gateway keeps capacity
+  // for them that no stranger's traffic can take (security audit M3).
+  function funnelKeys() {
+    const now = Date.now();
+    return new Set(loadJson(file, []).filter((c) => isFunnelBrowser(c) && c.expiresAt > now)
+      .flatMap((c) => [c.browserBinding, c.approvedBinding]).filter(validBrowserBinding));
+  }
   function verifyFunnel(token, keyThumbprint) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
@@ -1424,6 +1432,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verify,
     verifyDigest,
     verifyFunnel,
+    funnelKeys,
     touchFunnel,
     funnelWindow,
     inviteGuest,

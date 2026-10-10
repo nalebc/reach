@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
@@ -80,6 +81,13 @@ function fixture(answer) {
         "x",
         "y",
       ]);
+      // The key named up front is the computer's fingerprint of the key that
+      // signs (server/funnel-agent.mjs): its kept capacity (audit M3).
+      const { crv, kty, x, y } = envelope.publicKey;
+      assert.equal(
+        new Headers(init.headers).get("Reach-Key"),
+        createHash("sha256").update(JSON.stringify({ crv, kty, x, y })).digest("base64url"),
+      );
       const key = await webcrypto.subtle.importKey(
         "jwk",
         envelope.publicKey,
