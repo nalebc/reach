@@ -2233,13 +2233,9 @@ export default function AgentSessionView({
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
           ? `Open in another Claude Code process on your ${word}.`
-          : claudeSignedOut
-            ? ""
-            : elsewhere === "claude-app" && info.status === "waiting"
-              ? "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session."
-              : elsewhere === "claude-app" && info.status === "running"
-                ? "Claude is working on this in the Claude app. What you send goes next, in this same session."
-                : ""
+          // In the Claude app, working or asking: nothing to say (Oct 9: "it
+          // is unnecessary"); what you send goes next in the same session.
+          : ""
       : codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? `Codex is signed out on your ${word}.`
         : "";

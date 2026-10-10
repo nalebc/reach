@@ -2030,10 +2030,8 @@ test("a question already held by Claude offers a working live-screen fallback", 
   await click([...card.querySelectorAll("button")].find((b) => b.textContent === "Open screen to answer"));
   assert.equal(opened, 1);
   assert.equal(mac.sent.length, 0, "opening the screen does not choose an answer");
-  assert.equal(
-    $(".as-hint").textContent,
-    "Claude is waiting for your answer in the Claude app. What you send goes after it, in this same session.",
-  );
+  // The card says where it waits; no note under it repeats it.
+  assert.equal($(".as-hint"), null);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -2233,10 +2231,7 @@ test("a question asked in the Claude app while this chat is open shows as soon a
   page.session = claudeSession({ status: "waiting", asking });
   mac.bump();
   await dom.waitFor(() => $(".as-prompt.elsewhere"), 2000);
-  assert.match(
-    $(".as-hint").textContent,
-    /^Claude is waiting for your answer in the Claude app\./,
-  );
+  assert.equal($(".as-hint"), null);
   page.session = claudeSession({ status: "running" });
   mac.bump();
   await dom.waitFor(() => !$(".as-prompt.elsewhere"), 2000);
