@@ -111,3 +111,49 @@ test("the agent's runtime saves the new credential before using it, one trade at
   await rotateIfDue(conn, direct, call, { now: () => now });
   assert.equal(calls.length, 1);
 });
+
+// Always on both routes (Oct 10): a public-link agent trades its credential
+// the same way, with the key that signs for it; a copy used elsewhere ends
+// the access; any Always access unused for a week ends, for good.
+test("a public-link agent trades its credential with its key; a copy ends it; a week unused ends any Always access", async (t) => {
+  const { randomBytes } = await import("node:crypto");
+  const advance = clock(t);
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-rotate-funnel-")));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const auth = createAuth({ dataDir: path.join(dir, "private"), roots: [dir], agentPolicyFile: path.join(dir, "policy.json"), tailscaleOwner: { userId: "real-owner" } });
+  const reused = [];
+  auth.onCredentialReuse((client) => reused.push(client.id));
+  const binding = () => randomBytes(32).toString("base64url");
+  const join = (name, key) => {
+    const grant = auth.inviteBrowser({ name, transport: "funnel", preset: "readonly", standing: true });
+    const claim = auth.redeemFunnelBrowser(grant.invitation, key);
+    auth.decideAgentAdmission(claim.requestId, "approve");
+    return auth.pollFunnelAdmission(claim.requestId, claim.requestSecret, key);
+  };
+  const key = binding();
+  const first = join("Muse", key);
+  assert.ok(auth.verifyFunnel(first.token, key));
+  assert.throws(() => auth.rotateFunnelCredential(first.token, binding()), { status: 403 }, "only with its own key");
+  const { token: second } = auth.rotateFunnelCredential(first.token, key);
+  assert.ok(auth.verifyFunnel(first.token, key), "until the new one is used, nothing changes");
+  assert.ok(auth.verifyFunnel(second, key), "first use: it's the credential now");
+  assert.ok(auth.verifyFunnel(first.token, key), "two minutes of grace");
+  advance(121_000);
+  assert.ok(auth.verifyFunnel(second, key));
+  assert.equal(auth.verifyFunnel(first.token, key), null, "the old one again: a copy is in use");
+  assert.deepEqual(reused, [first.clientId]);
+  assert.equal(auth.verifyFunnel(second, key), null, "both ended");
+  // A week unused ends an Always access, however it's reached.
+  const other = binding();
+  const access = join("Grok", other);
+  assert.ok(auth.verifyFunnel(access.token, other));
+  advance(6 * 86400_000);
+  assert.ok(auth.verifyFunnel(access.token, other), "six days: still on");
+  advance(6 * 86400_000);
+  assert.ok(auth.verifyFunnel(access.token, other), "used six days ago: still on");
+  advance(7 * 86400_000 + 60_000);
+  assert.equal(auth.verifyFunnel(access.token, other), null, "a week since its last use: ended");
+  const listed = auth.list().find((c) => c.id === access.clientId);
+  assert.ok(listed.expiresAt <= Date.now(), "ended for good, in the list too");
+  assert.equal(auth.funnelWindow().open, false, "nothing keeps the public door for it");
+});

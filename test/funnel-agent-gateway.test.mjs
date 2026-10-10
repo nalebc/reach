@@ -471,6 +471,7 @@ test("a public request can reach only explicitly granted browser APIs, with no a
     ["/api/browser/shell/history", "GET", null],
     ["/api/browser/desktop/input", "POST", { action: { type: "click", x: 0.5, y: 0.5 } }],
     ["/api/browser/desktop/wait", "POST", { text: "Order placed" }],
+    ["/api/device/rotate", "POST", {}],
     ["/api/browser/desktop/open", "POST", { app: "/Applications/Safari.app" }],
     ["/api/browser/shell", "POST", { command: "ls", root: 0, cwd: "" }],
     ["/api/browser/files/change", "POST", { op: "write", root: 0, path: "a.txt", content: "x" }],

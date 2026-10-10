@@ -1721,7 +1721,11 @@ export async function createReach(overrides = {}) {
   // An agent on its own invited device trades its credential for a new one
   // (security audit M6; scripts/agent-remote.mjs).
   app.post("/api/device/rotate", (req, res) => {
-    res.json(auth.rotateCredential(req.headers.authorization?.replace(/^Bearer /, ""), req.reachIdentity));
+    // Through the signed gateway (a public-link agent): with its key.
+    const context = funnelRequests.get(req);
+    res.json(context
+      ? auth.rotateFunnelCredential(context.token, context.keyThumbprint)
+      : auth.rotateCredential(req.headers.authorization?.replace(/^Bearer /, ""), req.reachIdentity));
   });
   // A guest or agent ends its own access (`agent.mjs leave`): everything it
   // had open ends, and an invited device leaves your tailnet.

@@ -194,7 +194,7 @@ test("Tools: the same preset over Tailscale, one command, and Reach's tools for 
   await choose(c, "Full control");
   assert.ok(button(c, "Always"), "a page agent may stay");
   await click(button(c, "Tools"));
-  assert.equal(button(c, "Always"), undefined, "without invite keys here, no Always over Tools");
+  assert.ok(button(c, "Always"), "Always over the public link too");
   assert.match(c.textContent, /runs one command in its terminal, then uses Reach's tools/);
   await click(button(c, "Create invite link"));
   await dom.waitFor(() => made());

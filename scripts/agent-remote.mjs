@@ -657,7 +657,7 @@ const readCredential = (conn) =>
 const ROTATE_EVERY_MS = 3600_000;
 const rotations = new WeakMap();
 export function rotateIfDue(conn, credential, call, { now = Date.now } = {}) {
-  if (credential.via !== "tailnet") return Promise.resolve();
+  if (!["tailnet", "funnel"].includes(credential.via)) return Promise.resolve();
   const last = credential.rotatedAt || Date.parse(credential.joinedAt || "") || 0;
   if (now() - last < ROTATE_EVERY_MS) return Promise.resolve();
   if (!rotations.has(credential))
@@ -684,12 +684,30 @@ async function open(home, name, allowLocal) {
       credential,
       api: directApi(credential.origin, credential.token, allowLocal),
     };
-  // Through the computer's public link, signed by this agent's own key.
-  if (credential.via === "funnel")
+  // Through the computer's public link (or its private address), signed by
+  // this agent's own key. Several processes may share this folder (an MCP
+  // server, a call): the one holding the folder's lock trades the credential
+  // hourly; the others read what it saved before each request.
+  if (credential.via === "funnel") {
+    const file = path.join(conn, "credential.json");
+    let seen = fs.statSync(file).mtimeMs;
+    const save = (next) => { writePrivate(file, JSON.stringify(next, null, 2)); seen = fs.statSync(file).mtimeMs; };
+    const reload = () => {
+      try {
+        const now = fs.statSync(file).mtimeMs;
+        if (now !== seen) { seen = now; Object.assign(credential, readCredential(conn)); }
+      } catch { /* kept as it was */ }
+    };
+    const rotator = lock(conn);
+    const api = funnelApi({ conn, credential, save, reload });
     return {
       credential,
-      api: funnelApi({ conn, credential, save: (next) => writePrivate(path.join(conn, "credential.json"), JSON.stringify(next, null, 2)) }),
+      api: async (...args) => {
+        if (rotator) await rotateIfDue(conn, credential, api).catch(() => {});
+        return api(...args);
+      },
     };
+  }
   // Hold the node, or use the one another process holds.
   const where = {
     home,
@@ -869,12 +887,32 @@ export async function main(argv = process.argv.slice(2)) {
   const verb = o._[0];
   if (!verb || ["help", "--help", "-h"].includes(verb)) {
     process.stdout.write(
-      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
+      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
     );
     return 0;
   }
   if (verb === "join") return join(o);
   const home = agentHome();
+  // The agent's whole access to a computer, as one line for its vault: its
+  // credential, its signing key, its tailnet node if it has one. Restored on
+  // another machine, it reconnects by itself (the computer knows its key).
+  if (verb === "restore") {
+    let blob;
+    try { blob = JSON.parse(Buffer.from((await readStdin()).trim(), "base64url").toString("utf8")); } catch { blob = null; }
+    if (blob?.reach !== 1 || !/^[a-z0-9-]{1,64}$/.test(blob.name || "") || typeof blob.credential?.token !== "string" ||
+        !["funnel", "direct", "tailnet"].includes(blob.credential.via) || !/^https:\/\//.test(blob.credential.origin || ""))
+      throw Error("That isn't a line from `keep`. Paste the whole line on standard input.");
+    const conn = path.join(home, blob.name);
+    if (joinedAt(conn) && !(readCredential(conn).expiresAt <= Date.now()))
+      throw Error(`Already connected to ${blob.name}. To replace it: node ${quote(self())} leave --computer ${blob.name}`);
+    fs.mkdirSync(conn, { recursive: true, mode: 0o700 });
+    for (const stale of ["credential.json", "tailnet-state.json", "agent.sock", "key.pem", "lock"]) fs.rmSync(path.join(conn, stale), { force: true });
+    writePrivate(path.join(conn, "credential.json"), JSON.stringify(blob.credential, null, 2));
+    if (typeof blob.key === "string" && /^-----BEGIN PRIVATE KEY-----/.test(blob.key)) writePrivate(path.join(conn, "key.pem"), blob.key);
+    if (typeof blob.tailnet === "string") writePrivate(path.join(conn, "tailnet-state.json"), blob.tailnet);
+    process.stdout.write(`Restored ${blob.credential.computer || blob.name}. It reconnects by itself: node ${quote(self())} tools\n`);
+    return 0;
+  }
   if (verb === "status") {
     const list = connections(home).map((name) => {
       const c = readCredential(path.join(home, name));
@@ -924,6 +962,22 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(
       JSON.stringify(toolsFor(scopes, access), null, 2) + "\n",
     );
+    return 0;
+  }
+  if (verb === "keep") {
+    const conn = path.join(home, name);
+    const credential = readCredential(conn);
+    const read = (file) => { try { return fs.readFileSync(path.join(conn, file), "utf8"); } catch { return undefined; } };
+    const key = read("key.pem"), tailnet = read("tailnet-state.json");
+    const line = Buffer.from(JSON.stringify({ reach: 1, name, credential, ...(key ? { key } : {}), ...(tailnet ? { tailnet } : {}) })).toString("base64url");
+    const thumbprint = credential.via === "funnel" ? agentKey(conn).thumbprint : "";
+    process.stderr.write([
+      `This line is your whole access to ${credential.computer}: keep it in your vault, nowhere else.`,
+      "On another machine, get Reach for agents, then paste the line on standard input:",
+      `  curl -fsSL --create-dirs${thumbprint ? ` -H 'Reach-Key: ${thumbprint}'` : ""} -o ~/.reach-agent/agent.mjs ${credential.start}/agent.mjs && node ~/.reach-agent/agent.mjs restore`,
+      "",
+    ].join("\n"));
+    process.stdout.write(line + "\n");
     return 0;
   }
   if (verb === "leave") {

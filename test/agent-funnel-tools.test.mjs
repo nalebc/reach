@@ -152,3 +152,24 @@ test("its credential is worth nothing without its key; leaving ends the access",
   assert.ok(!f.reach.auth.list().some((c) => c.id === grant.clientId));
   await assert.rejects(api("/api/browser"), (e) => e.status === 401);
 });
+
+test("through the gateway, an agent trades its credential and the new one works; the old one ends", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const grant = f.invite();
+  const conn = fs.mkdtempSync(path.join(f.root, "agent-"));
+  const key = agentKey(conn);
+  const gateway = funnelGateway(ORIGIN, key, { send: f.send });
+  const claim = await gateway.claim(grant.invitation);
+  f.reach.auth.decideAgentAdmission(claim.json.requestId, "approve");
+  const approved = await gateway.status(claim.json.requestId, claim.json.requestSecret);
+  const credential = { origin: ORIGIN, token: approved.json.token };
+  const api = funnelApi({ conn, credential, key, gateway });
+  const traded = await api("/api/device/rotate", "POST", {});
+  assert.match(traded.token, /^[A-Za-z0-9_-]{43}$/);
+  const fresh = funnelApi({ conn, credential: { origin: ORIGIN, token: traded.token }, key, gateway });
+  assert.ok((await fresh("/api/browser")).roots, "the new credential works");
+  assert.ok((await api("/api/browser")).roots, "the old one, for two minutes");
+  // Another key can't trade this credential.
+  const stranger = funnelGateway(ORIGIN, agentKey(fs.mkdtempSync(path.join(f.root, "x-"))), { send: f.send });
+  assert.equal((await stranger.request(traded.token, "POST", "/api/device/rotate", {})).status, 401);
+});

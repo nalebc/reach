@@ -140,6 +140,8 @@ function permittedPath(method, value) {
         "/api/browser/desktop/input", "/api/browser/desktop/wait", "/api/browser/desktop/open", "/api/browser/desktop/open-url", "/api/browser/shell", "/api/browser/files/change",
         "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
         "/api/browser/tools/define", "/api/browser/tools/run",
+        // The agent's credential traded for a new one (core.mjs).
+        "/api/device/rotate",
         "/api/browser/services/request", "/api/browser/services/run"].includes(route)) ||
     (method === "DELETE" &&
       (route === "/api/device/access" ||

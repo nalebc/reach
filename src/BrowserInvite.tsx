@@ -549,9 +549,9 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
   const dayAllowed = (options?.maxFunnelSeconds ?? 86400) >= 86400;
   // Always: page agents, and tools agents that join with their own invite
   // key (their credential renews itself and a copy is caught).
-  const alwaysAllowed = connect === "page"
-    ? (options ? options.standingAllowed === true : true)
-    : options?.toolsStandingAllowed === true;
+  // Always, on either route: its key reconnects the agent until the owner
+  // ends it (a copy used elsewhere ends it; a week unused ends it).
+  const alwaysAllowed = options ? options.standingAllowed === true : true;
   useEffect(() => {
     if ((minutes === ALWAYS && !alwaysAllowed) || (minutes === 1440 && !dayAllowed)) setMinutes(60);
   }, [alwaysAllowed, dayAllowed]);

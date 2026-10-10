@@ -518,3 +518,33 @@ test("the gateway client: the private address first, the public one when it does
   await assert.rejects(broke.request("t", "POST", "/api/browser/desktop/input", { action: {} }), /socket hang up/);
   fs.rmSync(conn, { recursive: true, force: true });
 });
+
+// For an agent's vault: its access to a computer as one line (keep), put
+// back on another machine (restore), where it reconnects by itself.
+test("keep and restore: the access as one line for the vault, back on another machine", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keep-"));
+  const home = path.join(dir, "home-a"), other = path.join(dir, "home-b");
+  const conn = path.join(home, "mac");
+  fs.mkdirSync(conn, { recursive: true, mode: 0o700 });
+  const credential = { version: 1, via: "funnel", computer: "Fixture Mac", start: "https://mac.t.ts.net", origin: "https://mac.t.ts.net",
+    private: "https://mac.t.ts.net:8443", invitation: "i".repeat(43), token: "t".repeat(43), clientId: "c1", scopes: ["device"], expiresAt: Date.now() + 86400_000, joinedAt: new Date().toISOString() };
+  fs.writeFileSync(path.join(conn, "credential.json"), JSON.stringify(credential), { mode: 0o600 });
+  const { agentKey } = await import("../scripts/agent-funnel.mjs");
+  const key = agentKey(conn);
+  const kept = await run(["keep", "--computer", "mac"], { env: { REACH_AGENT_HOME: home } });
+  assert.equal(kept.code, 0, kept.stderr);
+  const line = kept.stdout.trim();
+  assert.match(line, /^[A-Za-z0-9_-]+$/, "one line, nothing else on stdout");
+  assert.match(kept.stderr, /keep it in your vault/);
+  assert.match(kept.stderr, new RegExp(`curl -fsSL --create-dirs -H 'Reach-Key: ${key.thumbprint}' -o ~/.reach-agent/agent.mjs https://mac.t.ts.net/agent.mjs && node ~/.reach-agent/agent.mjs restore`));
+  const restored = await run(["restore"], { env: { REACH_AGENT_HOME: other }, input: line + "\n" });
+  assert.equal(restored.code, 0, restored.stderr);
+  assert.match(restored.stdout, /Restored Fixture Mac\. It reconnects by itself/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(other, "mac", "credential.json"), "utf8")), credential);
+  assert.equal(fs.readFileSync(path.join(other, "mac", "key.pem"), "utf8"), fs.readFileSync(path.join(conn, "key.pem"), "utf8"), "the same key: the computer knows it");
+  assert.equal(fs.statSync(path.join(other, "mac", "key.pem")).mode & 0o777, 0o600);
+  const junk = await run(["restore"], { env: { REACH_AGENT_HOME: path.join(dir, "home-c") }, input: "not a line\n" });
+  assert.notEqual(junk.code, 0);
+  assert.match(junk.stderr, /isn't a line from `keep`/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

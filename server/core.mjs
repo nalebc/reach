@@ -292,8 +292,74 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // (scripts/agent-remote.mjs, hourly while it works). The new one becomes
   // the credential when first used, so a trade lost on the way changes
   // nothing.
-  const ROTATION_GRACE_MS = 120_000, ROTATION_IDLE_MS = 7 * 86400_000;
+  const ROTATION_GRACE_MS = 120_000;
   const reuseListeners = [];
+  // A rotated credential (security audit M6): the new one takes over on its
+  // first use; the one it replaced works two more minutes. Used after that,
+  // a copy is in use somewhere: the access ends, and the owner hears why.
+  // False when the digest just ended an access.
+  const retiredLive = (c, digest, now) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until > now);
+  const holdsDigest = (c, digest, now) => sameHash(c.hash, digest) || retiredLive(c, digest, now);
+  function settleRotation(digest, now) {
+    if (clients.some((c) => sameHash(c.hash, digest))) return true;
+    const pending = clients.find((c) => sameHash(c.pendingHash, digest));
+    if (pending) {
+      changeClients((latest) => {
+        const c = latest.find((entry) => entry.id === pending.id && sameHash(entry.pendingHash, digest));
+        if (c) {
+          c.retiredHashes = [...(c.retiredHashes || []).slice(-7), { hash: c.hash, until: now + ROTATION_GRACE_MS }];
+          c.hash = digest;
+          c.rotatedAt = now;
+          delete c.pendingHash;
+        }
+        return latest;
+      });
+      clients = loadJson(file, []);
+      return true;
+    }
+    const reused = clients.find((c) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until <= now));
+    if (!reused) return true;
+    changeClients((latest) => latest.filter((c) => c.id !== reused.id));
+    clients = loadJson(file, []);
+    for (const listener of reuseListeners) try { listener(reused); } catch { /* the access ended regardless */ }
+    return false;
+  }
+  // "Unused for a week, end it" (the owner, Oct 10): an Always access, or an
+  // agent that trades its credential. Use is stamped at most every ten
+  // minutes; a record from before stamping counts from its next use.
+  const IDLE_MS = 7 * 86400_000, USE_STAMP_MS = 600_000;
+  const idleJudged = (c) => standingPolicy(c.policy) || c.rotatedAt > 0;
+  const idle = (c, now) => !!c && typeof c === "object" && idleJudged(c) && c.usedAt > 0 && now - Math.max(c.usedAt, c.rotatedAt || 0) > IDLE_MS;
+  function noteUse(id, now) {
+    const c = clients.find((entry) => entry.id === id);
+    if (!c || !idleJudged(c) || (c.usedAt > 0 && now - c.usedAt < USE_STAMP_MS)) return;
+    changeClients((latest) => { const entry = latest.find((item) => item.id === id); if (entry) entry.usedAt = now; return latest; });
+  }
+  // An Always access unused for a week ends for good: out of its window,
+  // ended in every list.
+  function endIdle(now = Date.now()) {
+    const stored = loadJson(file, []);
+    // A corrupt store is left alone here: reads and writes refuse it (503).
+    if (!Array.isArray(stored)) return [];
+    const ended = stored.filter((c) => idle(c, now) && c.expiresAt > now).map((c) => c.id);
+    if (ended.length)
+      changeClients((latest) => { for (const c of latest) if (ended.includes(c.id)) { c.expiresAt = now; c.idleEndedAt = now; } return latest; });
+    return ended;
+  }
+  // The same trade for a public-link agent, with the key that signs for it.
+  function rotateFunnelCredential(token, keyThumbprint) {
+    const current = verifyFunnel(token, keyThumbprint);
+    if (!current || current.kind !== "agent") throw fail(403, "Only an agent rotates its credential, with its own key.");
+    const next = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === current.id && holdsDigest(c, hash(token), now));
+      if (!client) throw fail(401, "This browser connection has ended.");
+      client.pendingHash = hash(next);
+      return latest;
+    });
+    return { token: next, expiresAt: current.expiresAt };
+  }
   function rotateCredential(token, identity) {
     const current = verify(token, identity);
     if (!current || current.kind !== "agent" || !current.tailscale?.tagged || current.browserTransport === "funnel")
@@ -312,47 +378,19 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   function verifyDigest(digest, identity) {
     clients = loadJson(file, []);
     if (typeof digest !== "string" || !digest) return null;
-    // A rotated agent credential (security audit M6): the new one takes over
-    // on its first use; the one it replaced works two more minutes. Used
-    // after that, a copy of the agent's credential is in use somewhere: the
-    // access ends, and the owner hears why.
     const now = Date.now();
-    const retired = (c, live) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && (r.until > now) === live);
-    if (!clients.some((c) => sameHash(c.hash, digest))) {
-      const pending = clients.find((c) => sameHash(c.pendingHash, digest));
-      const reused = !pending && clients.find((c) => retired(c, false));
-      if (pending) {
-        changeClients((latest) => {
-          const c = latest.find((entry) => entry.id === pending.id && sameHash(entry.pendingHash, digest));
-          if (c) {
-            c.retiredHashes = [...(c.retiredHashes || []).slice(-7), { hash: c.hash, until: now + ROTATION_GRACE_MS }];
-            c.hash = digest;
-            c.rotatedAt = now;
-            delete c.pendingHash;
-          }
-          return latest;
-        });
-        clients = loadJson(file, []);
-      } else if (reused) {
-        changeClients((latest) => latest.filter((c) => c.id !== reused.id));
-        clients = loadJson(file, []);
-        for (const listener of reuseListeners) try { listener(reused); } catch { /* the access ended regardless */ }
-        return null;
-      }
-    }
+    if (!settleRotation(digest, now)) return null;
     const client = clients.find(
       (c) =>
-        (sameHash(c.hash, digest) || retired(c, true)) &&
-        // An agent on its own invited device, quiet for a week since it
-        // joined or last rotated: the access ends.
-        !(c.kind === "agent" && c.tailscale?.tagged && (c.rotatedAt || Date.parse(c.redeemedAt || "") || 0) > 0 &&
-          now - (c.rotatedAt || Date.parse(c.redeemedAt || "")) > ROTATION_IDLE_MS) &&
+        holdsDigest(c, digest, now) &&
+        !idle(c, now) &&
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
         (!c.admission || (c.admission.status === "collected" &&
           (c.policy?.browser !== true || (c.policy.screen !== "apps" && !hostGuardedPreset(c.policy)) || c.admission.grant === admissionGrant(c)))) &&
         Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
     );
+    if (client) noteUse(client.id, now);
     if (
       config.tailscaleOwner &&
       (!identity || identity.validUntil <= Date.now())
@@ -1363,8 +1401,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
     const digest = hash(token);
-    const client = loadJson(file, []).find((entry) => sameHash(entry.hash, digest));
-    return funnelSession(client, keyThumbprint);
+    clients = loadJson(file, []);
+    const now = Date.now();
+    if (!settleRotation(digest, now)) return null;
+    const client = clients.find((entry) => holdsDigest(entry, digest, now));
+    if (!client || idle(client, now)) return null;
+    const session = funnelSession(client, keyThumbprint, now);
+    if (session) noteUse(client.id, now);
+    return session;
   }
   // Only an authenticated browser request renews this short lease. Internal
   // stream authorization checks are read-only and cannot keep a dead tab alive.
@@ -1388,6 +1432,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // Opening a new invitation never extends any existing client's credential.
   function funnelWindow() {
     const now = Date.now();
+    endIdle(now);
     let result = { open: false, until: 0, reason: null };
     for (const client of loadJson(file, [])) {
       // A person's or a CLI agent's unopened invitation needs the start page
@@ -1494,6 +1539,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verifyFunnel,
     funnelKeys,
     rotateCredential,
+    rotateFunnelCredential,
+    endIdle,
     // Reach is reachable again: waiting agents get their minute anew.
     restartQuietClock: () => { authStarted = Date.now(); },
     // Called with an agent whose replaced credential was used again.
@@ -1515,7 +1562,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     pair,
     issue,
     list: () =>
-      listStoredClients().map(({ hash, inviteHash, admission, linkHash, ...rest }) => ({
+      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, ...rest }) => ({
         ...rest,
         // The owner may reopen this agent's link (Settings → Agents).
         ...(linkHash && rest.expiresAt > Date.now() ? { relink: true } : {}),

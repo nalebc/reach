@@ -68,9 +68,11 @@ test("Always over Tools: only an agent on its own invited device claims it, and 
   assert.ok(access.expiresAt > Date.now() + 365 * 86400_000, "no end time");
   assert.ok(f.auth.verify(access.token, tagged()));
   advance(6 * 86400_000);
-  assert.ok(f.auth.verify(access.token, tagged()), "six quiet days: still on");
-  advance(1 * 86400_000 + 60_000);
-  assert.equal(f.auth.verify(access.token, tagged()), null, "a week unused: ended");
+  assert.ok(f.auth.verify(access.token, tagged()), "six quiet days: still on, and used now");
+  advance(6 * 86400_000);
+  assert.ok(f.auth.verify(access.token, tagged()), "used six days ago: still on");
+  advance(7 * 86400_000 + 60_000);
+  assert.equal(f.auth.verify(access.token, tagged()), null, "a week since its last use: ended");
 });
 
 test("Always and approved timed sessions both outlive silent minutes and keep the public link up", (t) => {

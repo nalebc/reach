@@ -107,7 +107,7 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
 // A session the computer ended while the access lasts (Reach restarted, the
 // owner reopened its link) comes back through the same key, once.
 export function funnelApi({ conn, credential, key = agentKey(conn),
-  gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean) }), save }) {
+  gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean) }), save, reload }) {
   const reconnect = async () => {
     if (!credential.invitation) return false;
     const asked = await gateway.reconnect(credential.invitation);
@@ -120,6 +120,8 @@ export function funnelApi({ conn, credential, key = agentKey(conn),
   };
   return async (route, method = "GET", body) => {
     if (!route.startsWith("/api/") || route.startsWith("//")) throw Error("Invalid API route.");
+    // Another process may have traded the credential: what it saved.
+    reload?.();
     for (let attempt = 0; ; attempt++) {
       const response = await gateway.request(credential.token, method, route, body);
       if (response.status === 401 && response.headers["reach-not-run"] === "1" && attempt === 0 && (await reconnect())) continue;
