@@ -58,6 +58,12 @@ test("app invitations guard the host before redemption and until expiry", () => 
   assert.equal(browserAppSessionActive({ ...client, expiresAt: undefined }, 1000), true);
   assert.equal(browserAppSessionActive({ ...client, kind: "device" }, 1000), false);
   assert.equal(browserAppSessionActive({ ...client, policy: { browser: true, screen: "ask" } }, 1000), false);
+  // Declined, or never claimed or answered in time: it can't act, so it
+  // locks out none of the owner's other devices (security audit L2).
+  for (const state of ["denied", "expired"]) {
+    assert.equal(browserAppSessionActive({ ...client, status: state }, 1000), false, state);
+    assert.equal(browserAppSessionActive({ kind: "agent", policy: { browser: true, preset: "full" }, status: state }, 1000), false, `Always, ${state}`);
+  }
 });
 
 test("host access is blocked for reads, owner admission and existing WS checks", async () => {

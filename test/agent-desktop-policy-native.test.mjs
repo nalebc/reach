@@ -45,6 +45,12 @@ test("JavaScript Reach URL policy covers the shared native authority corpus", ()
     assert.equal(protectedPage(url, ["mac.tail1234.ts.net", "localhost:8443"]), blocked, url);
 });
 
+test("the helper never names an app the owner hid (audit L6)", async () => {
+  const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
+  const front = source.split("func front(")[1].split("\nfunc ")[0];
+  assert.match(front, /if blocked == hiddenReason \{\n\s+return \["ok": true, "app": "", "bundle": "", "title": ""/);
+});
+
 test("selected-app screenshots preserve the protected-window exclusions", async () => {
   const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
   const screenshot = source.split("func shot(")[1].split("func catalog(")[0];

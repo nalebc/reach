@@ -91,11 +91,14 @@ type Issued = {
 // What a tools agent runs, once: Reach for agents from this computer's start
 // page, then joining with its link (as Command line invites do). With the
 // runtime's SHA-256 from this computer, a download that isn't exactly it
-// never replaces the agent's runtime (security audit M8).
-export const toolsCommand = (start: string, link: string, runtime?: string) =>
-  runtime && /^[0-9a-f]{64}$/.test(runtime)
-    ? `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`
-    : `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`;
+// never replaces the agent's runtime (security audit M8). The link goes in
+// on standard input, never as an argument other processes can list (L5).
+export const toolsCommand = (start: string, link: string, runtime?: string) => {
+  const join = `printf '%s\\n' '${link}' | node ~/.reach-agent/agent.mjs join`;
+  return runtime && /^[0-9a-f]{64}$/.test(runtime)
+    ? `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`
+    : `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && ${join}`;
+};
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
 

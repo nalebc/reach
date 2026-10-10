@@ -56,6 +56,7 @@ import {
   validOrigin,
   validLeafName,
   hash,
+  sameHash,
   ALL_SCOPES,
   AGENT_SCOPES,
   GUEST_BLOCKED_ROUTES,
@@ -784,6 +785,7 @@ export async function createReach(overrides = {}) {
     (pausing = pausing.catch(() => {}).then(async () => {
       if (value === paused) return { paused };
       paused = screenControl.paused = appThreads.paused = value;
+      if (!value) auth.restartQuietClock();
       settings.paused = value;
       atomicJson(settingsFile, settings);
       if (value) {
@@ -1425,6 +1427,11 @@ export async function createReach(overrides = {}) {
     )
       throw fail(400, `Choose scopes from: ${AGENT_SCOPES.join(", ")}.`);
     const secret = crypto.randomBytes(24).toString("base64url");
+    // The device that asked: only it collects the answer, and what you
+    // approve works from it alone (security audit L1).
+    const asker = req.reachIdentity?.nodeId
+      ? { nodeId: req.reachIdentity.nodeId, userId: req.reachIdentity.userId || "", ...(req.reachIdentity.tagged ? { tagged: true } : {}) }
+      : null;
     const request = {
       id: id(),
       name,
@@ -1433,6 +1440,7 @@ export async function createReach(overrides = {}) {
       status: "pending",
       createdAt: new Date(now).toISOString(),
       expiresAt: now + 10 * 60000,
+      ...(asker ? { asker, ...(req.reachIdentity.nodeName ? { nodeName: String(req.reachIdentity.nodeName).slice(0, 160) } : {}) } : {}),
     };
     accessRequests.set(request.id, request);
     record("agent", `${name} asked for access`);
@@ -1448,7 +1456,8 @@ export async function createReach(overrides = {}) {
     const r = accessRequests.get(req.params.id);
     if (
       !r ||
-      r.secretHash !== hash(String(req.headers["x-request-secret"] || ""))
+      !sameHash(r.secretHash, hash(String(req.headers["x-request-secret"] || ""))) ||
+      (r.asker && (req.reachIdentity?.nodeId !== r.asker.nodeId || (req.reachIdentity.userId || "") !== r.asker.userId))
     )
       throw fail(404, "This request expired or does not exist.");
     if (r.status === "approved") {
@@ -1742,7 +1751,7 @@ export async function createReach(overrides = {}) {
     res.json(
       pendingRequests()
         .filter((r) => r.status === "pending")
-        .map(({ secretHash, token, ...r }) => r),
+        .map(({ secretHash, token, asker, ...r }) => r),
     ),
   );
   app.post("/api/agents/requests/:id", (req, res) => {
@@ -1753,7 +1762,7 @@ export async function createReach(overrides = {}) {
     if (!["approve", "deny"].includes(req.body?.decision))
       throw fail(400, "Choose approve or deny.");
     if (req.body?.decision === "approve") {
-      r.token = auth.issue(r.name, r.scopes, "agent").token;
+      r.token = auth.issue(r.name, r.scopes, "agent", r.asker ? { tailscale: r.asker } : {}).token;
       r.status = "approved";
       record("agent", `Authorized ${r.name}`);
     } else {
@@ -4735,6 +4744,7 @@ export async function createReach(overrides = {}) {
     setTransportAvailable(value) {
       if (transportAvailable === value) return;
       transportAvailable = value;
+      if (value) auth.restartQuietClock();
       if (!value) {
         desktopAutomation.interrupt();
         screenControl.clear();

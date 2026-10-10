@@ -33,7 +33,7 @@ function fixture(t) {
   };
   const record = (id) => auth.list().find((client) => client.id === id);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return { auth, invite, claim, join, record };
+  return { auth, invite, claim, join, record, clientsFile: path.join(config.dataDir, "clients.json") };
 }
 const clock = (t) => {
   const real = Date.now;
@@ -181,4 +181,22 @@ test("only the owner reopens an agent's link", privateIngressTest, async (t) => 
   assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
   assert.ok(reopened.body.joinBy > Date.now());
   assert.equal(f.reach.auth.verifyFunnel(muse.token, key), null);
+});
+
+// Security audit L4: an Always agent whose terms no longer match what the
+// owner approved can't act, so it keeps no public page open either.
+test("an Always agent on terms the owner never approved keeps the public page closed", (t) => {
+  const f = fixture(t);
+  const approver = { nodeId: "owner-phone", userId: "real-owner", clientId: "owner-client" };
+  const grant = f.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "full", standing: true }, approver);
+  const key = crypto.randomBytes(32).toString("base64url");
+  const access = f.join(grant, key);
+  assert.ok(f.auth.verifyFunnel(access.token, key));
+  assert.equal(f.auth.funnelWindow().open, true);
+  const clientsFile = f.clientsFile;
+  const clients = JSON.parse(fs.readFileSync(clientsFile, "utf8"));
+  clients.find((c) => c.id === access.clientId).browserAppApprover.clientId = "replacement-owner";
+  fs.writeFileSync(clientsFile, JSON.stringify(clients));
+  assert.equal(f.auth.verifyFunnel(access.token, key), null);
+  assert.equal(f.auth.funnelWindow().open, false, "nothing keeps the public page up for it");
 });

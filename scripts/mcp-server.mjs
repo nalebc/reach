@@ -2,7 +2,7 @@
 // computer: `api(route, method, body)` does the requests (HTTPS on the
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
-import { agentErrorDetails } from "../server/agent-transport.mjs";
+import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest, SAVED_TOOLS_HINT } from "../server/browser-tools.mjs";
 
 const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
@@ -242,7 +242,7 @@ export async function callTool(api, name, a, browserAccess) {
     root: String(a.root || 0),
     path: a.path || "",
   });
-  const encoded = encodeURIComponent(a.id || "");
+  const encoded = () => idSegment(a.id);
   switch (name) {
     case "reach_device":
       return api("/api/device");
@@ -260,37 +260,37 @@ export async function callTool(api, name, a, browserAccess) {
     case "reach_run_command":
       return api("/api/jobs", "POST", a);
     case "reach_get_job":
-      return api("/api/jobs/" + encoded);
+      return api("/api/jobs/" + encoded());
     case "reach_cancel_job":
-      return api("/api/jobs/" + encoded, "DELETE");
+      return api("/api/jobs/" + encoded(), "DELETE");
     case "reach_list_chats":
       return api("/api/chats");
     case "reach_create_chat":
       return api("/api/chats", "POST", a);
     case "reach_send_message":
-      return api("/api/chats/" + encoded + "/messages", "POST", {
+      return api("/api/chats/" + encoded() + "/messages", "POST", {
         text: a.text,
       });
     case "reach_get_chat":
-      return api("/api/chats/" + encoded);
+      return api("/api/chats/" + encoded());
     case "reach_list_apps":
       return api("/api/drive/apps");
     case "reach_open_app":
       return api("/api/drive/apps", "POST", { appId: a.appId });
     case "reach_see_app":
-      return api("/api/drive/apps/" + encoded);
+      return api("/api/drive/apps/" + encoded());
     case "reach_app_action":
       return appAction(api, a);
     case "reach_hand_to_person":
-      return api("/api/drive/apps/" + encoded + "/handoff", "POST", {
+      return api("/api/drive/apps/" + encoded() + "/handoff", "POST", {
         reason: a.reason,
       });
     case "reach_wait_for_person":
       return api(
-        "/api/drive/handoffs/" + encodeURIComponent(a.handoff || "") + "?wait=25",
+        "/api/drive/handoffs/" + idSegment(a.handoff) + "?wait=25",
       );
     case "reach_close_app":
-      return api("/api/drive/apps/" + encoded, "DELETE");
+      return api("/api/drive/apps/" + encoded(), "DELETE");
     default:
       throw Error("Unknown tool");
   }
@@ -298,7 +298,7 @@ export async function callTool(api, name, a, browserAccess) {
 // One action, then (unless `see` is false) a fresh picture of the result.
 async function appAction(api, a) {
   const { id, see, ...action } = a;
-  const route = "/api/drive/apps/" + encodeURIComponent(id || "");
+  const route = "/api/drive/apps/" + idSegment(id);
   await api(route + "/actions", "POST", action);
   if (see === false) return { done: true };
   // The app draws what the action changed before the picture is taken.

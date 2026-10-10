@@ -2,6 +2,13 @@
 const url = process.env.REACH_URL || "http://localhost:4317",
   token = process.env.REACH_TOKEN;
 const u = new URL(url);
+// One path segment from an id: never empty, "." or "..", which would become
+// another route once the address is read (security audit L6).
+const segment = (value) => {
+  const text = String(value ?? "");
+  if (!text || text === "." || text === ".." || /[\u0000-\u001f\u007f]/.test(text)) throw Error("Give a valid job id.");
+  return encodeURIComponent(text);
+};
 if (u.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(u.hostname))
   throw Error("Remote connections require HTTPS.");
 if (process.argv[2] === "connect") {
@@ -102,12 +109,12 @@ try {
     });
     console.error(`Job ${job.id}`);
     process.once("SIGINT", async () => {
-      await api(`/api/jobs/${job.id}`, undefined, "DELETE");
+      await api(`/api/jobs/${segment(job.id)}`, undefined, "DELETE");
       process.exit(130);
     });
     while (job.status === "running") {
       await new Promise((r) => setTimeout(r, 500));
-      job = await api(`/api/jobs/${job.id}`);
+      job = await api(`/api/jobs/${segment(job.id)}`);
     }
     process.stdout.write(job.output);
     if (job.status !== "completed") {
@@ -119,7 +126,7 @@ try {
   else if (action === "cancel")
     console.log(
       await api(
-        `/api/jobs/${encodeURIComponent(args[0])}`,
+        `/api/jobs/${segment(args[0])}`,
         undefined,
         "DELETE",
       ),

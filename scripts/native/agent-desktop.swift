@@ -823,6 +823,10 @@ func front(_ rules: Rules) -> [String: Any] {
     let element = seen(focused); s.url = element.url; s.secure = element.secure
   }
   let blocked = appReason(bundle, name, path, rules) ?? windowTitleReason(s.title, bundle, path, s.pid, rules) ?? urlReason(s.url, rules)
+  // An app the owner hid from the agent: not even its name (security audit L6).
+  if blocked == hiddenReason {
+    return ["ok": true, "app": "", "bundle": "", "title": "", "terminalLike": false, "secure": false, "blocked": hiddenReason, "path": "", "layout": ""]
+  }
   // Geometry and focus identity, without field values, let saved actions stop
   // when the window moves or the focused control changes.
   var layout = ""

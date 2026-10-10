@@ -24,7 +24,7 @@ const run = (command, home) => new Promise((resolve) =>
 
 test("the join command installs only the runtime its invitation names", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-pin-"));
-  let served = 'console.log("runtime v2:", process.argv.slice(2).join(" "));\n';
+  let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
   const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
@@ -36,7 +36,7 @@ test("the join command installs only the runtime its invitation names", { skip: 
   // As named: installed, then run with the link.
   const ok = await run(toolsCommand(start, link, sha(served)), home);
   assert.equal(ok.code, 0, ok.stderr);
-  assert.match(ok.stdout, /runtime v2: join https:\/\/mac\.t\.ts\.net\/agent#i=x/);
+  assert.match(ok.stdout, /runtime v2: join https:\/\/mac\.t\.ts\.net\/agent#i=x/, "the link arrives on standard input");
   assert.equal(fs.readFileSync(runtime, "utf8"), served);
 
   // Something else served: refused, and the agent keeps the runtime it had.
@@ -48,8 +48,10 @@ test("the join command installs only the runtime its invitation names", { skip: 
   assert.doesNotMatch(refused.stdout, /swapped/);
   assert.equal(fs.readFileSync(runtime, "utf8"), before);
 
-  // Without a hash (an older computer): the command as before.
-  assert.equal(toolsCommand(start, link), `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`);
+  // Without a hash (an older computer): the plain download.
+  assert.equal(toolsCommand(start, link), `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && printf '%s\\n' '${link}' | node ~/.reach-agent/agent.mjs join`);
+  // The link is never an argument of a process (security audit L5).
+  assert.doesNotMatch(toolsCommand(start, link, sha(served)), /agent\.mjs join '/);
   assert.equal(toolsCommand(start, link, "not-a-hash"), toolsCommand(start, link));
 });
 

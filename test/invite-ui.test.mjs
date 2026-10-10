@@ -541,7 +541,7 @@ const chooseAgent = async (c) => {
   await click([...c.querySelectorAll('[aria-label="Assistant connection"] button')].find((b) => b.textContent.trim() === "Command line"));
   await settle(40);
 };
-const commandLink = (command) => command.match(/ join '([^']+)'$/)[1];
+const commandLink = (command) => command.match(/printf '%s\\n' '([^']+)' \| node ~\/\.reach-agent\/agent\.mjs join$/)[1];
 
 test("an agent: one computer, a folder, what it may do, then one command to give it", async () => {
   const log = computers();
@@ -588,7 +588,7 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   assert.match(card.textContent, /Needs Node 18 or later, nothing else/);
   const command = c.querySelector('[aria-label="Command for the agent"]').value;
   assert.ok(
-    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs https://mac-b.t.ts.net/agent.mjs && node ~/.reach-agent/agent.mjs join 'https://mac-b.t.ts.net/agent#"),
+    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs https://mac-b.t.ts.net/agent.mjs && printf '%s\\n' 'https://mac-b.t.ts.net/agent#"),
     command,
   );
   const agentLink = new URL(commandLink(command));

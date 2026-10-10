@@ -46,3 +46,17 @@ test("Read only and Files never advertise saved tasks, including stale cached ca
     assert.deepEqual(narrowed.filter(shortcut), [], `${preset} scopes remove shortcut tools even when access metadata is stale`);
   }
 });
+
+// Security audit L6: an id of "." or ".." would become another route once
+// the address is read; the old Command line tools refuse it before asking.
+test("Command line tools refuse dot and empty ids before any request", async () => {
+  const { callTool } = await import("../scripts/mcp-server.mjs");
+  const asked = [];
+  const api = async (route, method) => { asked.push(`${method || "GET"} ${route}`); return {}; };
+  for (const [name, args] of [["reach_get_job", { id: ".." }], ["reach_cancel_job", { id: "." }], ["reach_get_chat", { id: "" }],
+    ["reach_send_message", { id: "..", text: "hi" }], ["reach_see_app", { id: ".." }], ["reach_wait_for_person", { handoff: ".." }]])
+    await assert.rejects(callTool(api, name, args), /valid id/, name);
+  assert.deepEqual(asked, []);
+  await callTool(api, "reach_get_job", { id: "job/1" });
+  assert.deepEqual(asked, ["GET /api/jobs/job%2F1"]);
+});

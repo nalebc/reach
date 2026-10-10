@@ -971,11 +971,13 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // or revoked link (revoking deletes it: null, 401) is final.
   const REBINDS_PER_MINUTE = 6;
   // A waiting browser checks in every few seconds. Kept in memory: polling
-  // writes nothing. After a restart the quiet clock starts at the restart, so
-  // a waiting agent always gets to check in before anyone else may move it.
+  // writes nothing. After a restart, and when Reach comes back from a pause
+  // or a network outage (index.mjs), the quiet clock starts again: a waiting
+  // agent that couldn't check in meanwhile always gets to before anyone else
+  // may move it (security audit L3).
   const WAITING_QUIET_MS = 60_000;
   const waitingSeen = new Map(); // admission requestId -> last check-in
-  const authStarted = Date.now();
+  let authStarted = Date.now();
   // The terms the owner approved must still be the record's terms: a change
   // that fails closed (another supervising phone, say) is never re-approved.
   const rebindable = (client, now = Date.now()) =>
@@ -1395,7 +1397,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
           !applyAgentPolicy(client, config)) continue;
       // Once joined, Always access keeps the public link up while the agent is
       // away, or its browser would have nothing to come back to.
-      if (standingPolicy(client.policy) && client.admission?.status === "collected") {
+      // (Only on the terms the owner approved: a changed grant can't act,
+      // so it keeps nothing open; security audit L4.)
+      if (standingPolicy(client.policy) && client.admission?.status === "collected" &&
+          client.admission.grant === admissionGrant(client)) {
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "standing" };
         continue;
       }
@@ -1483,6 +1488,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verifyFunnel,
     funnelKeys,
     rotateCredential,
+    // Reach is reachable again: waiting agents get their minute anew.
+    restartQuietClock: () => { authStarted = Date.now(); },
     // Called with an agent whose replaced credential was used again.
     onCredentialReuse: (listener) => reuseListeners.push(listener),
     touchFunnel,

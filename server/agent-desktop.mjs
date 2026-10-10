@@ -439,6 +439,13 @@ export function createAgentDesktop(config, {
       const result = answer(await state.helper.send({ op: "front" }));
       checkState(client, authorize, "browser:screen", state);
       const holder = currentHolder();
+      // An app the owner hid from this agent: not even its name (security
+      // audit L6), whatever an older helper answers.
+      const lower = (value) => String(value || "").toLowerCase();
+      if (result.blocked === "The owner hid this app from the agent." ||
+          (latest.policy?.hidden || []).some((app) => (app.id && app.id === result.path) || (app.name && lower(app.name) === lower(result.app))))
+        return { app: "", bundle: "", title: "", terminalLike: false, secure: false, blocked: "The owner hid this app from the agent.",
+          path: "", layout: "", holder: holder && holder.clientId !== latest.id ? holder.name : "" };
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),

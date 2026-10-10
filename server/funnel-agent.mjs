@@ -227,6 +227,9 @@ export function createFunnelAgentGateway({
     keys = new Map(),
     knownKeyRates = new Map();
   const pools = { known: { active: 0, max: 32 }, unknown: { active: 0, max: 32 } };
+  // The replay cache lives in memory: nothing signed before this gateway
+  // started is accepted, so a restart opens no replay window (audit L6).
+  const startedAt = now();
   let knownCache = { until: 0, keys: new Set() };
   const knownKeys = () => {
     const current = now();
@@ -382,6 +385,7 @@ export function createFunnelAgentGateway({
         payload.audience !== origin ||
         !Number.isSafeInteger(payload.issuedAt) ||
         Math.abs(now() - payload.issuedAt) > CLOCK_WINDOW ||
+        payload.issuedAt < startedAt ||
         !encoded(payload.nonce, 24)
       )
         throw failure(400);

@@ -99,6 +99,20 @@ test("a waiting request whose browser went quiet for a minute moves to the brows
   assert.ok(f.auth.verifyFunnel(back.token, fresh));
 });
 
+test("while Reach was paused or offline, a waiting browser isn't quiet: it gets its minute anew", (t) => {
+  const advance = clock(t);
+  const f = fixture(t);
+  const grant = f.invite();
+  const waiting = binding();
+  const first = f.claim(grant, waiting);
+  // Paused for two minutes: the waiting page couldn't check in.
+  advance(2 * 60_000);
+  f.auth.restartQuietClock();
+  assert.throws(() => f.claim(grant, binding()), { status: 401 }, "just back: still its own");
+  advance(30_000);
+  assert.equal(f.poll(first, waiting).status, "pending", "it checks in and keeps its request");
+});
+
 test("denied, ended or revoked access never comes back through the link", (t) => {
   const advance = clock(t);
   const f = fixture(t);

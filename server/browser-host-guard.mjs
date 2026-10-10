@@ -14,9 +14,14 @@ const binding = (value) => value && ["nodeId", "userId", "clientId"].every((key)
 
 // Include invitations before they are redeemed. Opening the browser later must
 // not leave a gap in which the agent can obtain a normal owner credential.
+// Not one the owner declined, nor one never claimed in time or left
+// unanswered (auth.list's status): those can't act, and would otherwise keep
+// every other device of the owner locked out for as long as the invitation
+// lasts, up to Always (security audit L2).
 export function browserAppSessionActive(client, now = Date.now()) {
   return client?.kind === "agent" && client.policy?.browser === true &&
     (client.policy.screen === "apps" || hostGuardedPreset(client.policy)) &&
+    !["denied", "expired"].includes(client.status) &&
     (!Number.isFinite(client.expiresAt) || client.expiresAt > now);
 }
 

@@ -18,6 +18,14 @@ const clean = (value, max) =>
   typeof value === "string"
     ? value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, max)
     : "";
+// One path segment from an ID an agent gave: never empty, "." or "..",
+// which would turn into another route once the address is read (audit L6).
+export function idSegment(value) {
+  const text = String(value ?? "");
+  if (!text || text === "." || text === ".." || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text))
+    throw Object.assign(Error("Give a valid id."), { status: 400 });
+  return encodeURIComponent(text);
+}
 export function agentErrorDetails(error) {
   const body = error?.body || error || {};
   const result = {

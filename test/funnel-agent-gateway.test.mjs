@@ -718,3 +718,14 @@ test("addresses from one IPv6 network count as one source", async (t) => {
   const elsewhere = await f.call(signed(stranger, { operation: "claim", invitation: random() }), { headers: { "x-forwarded-for": "2001:db8:9:9::1" } });
   assert.notEqual(elsewhere.status, 429);
 });
+
+// Security audit L6: the replay cache lives in memory, so after a restart
+// nothing signed before it is accepted, even within the clock window.
+test("a request signed before the gateway started is refused, however fresh", async (t) => {
+  const f = setup(t);
+  const earlier = signed(f.key, { operation: "claim", invitation: f.grant().invitation }, { issuedAt: Date.now() - 5000 });
+  const refused = await f.call(earlier);
+  assert.equal(refused.status, 400);
+  assert.equal(f.claims.length, 0);
+  assert.equal((await f.call(signed(f.key, { operation: "claim", invitation: f.grant().invitation }))).status, 202);
+});

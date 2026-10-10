@@ -202,7 +202,7 @@ test("Tools: the same preset over Tailscale, one command, and Reach's tools for 
   assert.deepEqual(key.clientIds, ["muse"], "a key for this agent only");
   const text = message(c);
   assert.match(text, /^Connect to this Mac with one command on your computer/);
-  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs https:\/\/mac\.tail\.ts\.net\/agent\.mjs && node ~\/\.reach-agent\/agent\.mjs join 'https:\/\/mac\.tail\.ts\.net\/agent#k=tskey-auth-k1&h=rf-ab12-agent&i=/);
+  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs https:\/\/mac\.tail\.ts\.net\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#k=tskey-auth-k1&h=rf-ab12-agent&i=[^']+' \| node ~\/\.reach-agent\/agent\.mjs join/);
   assert.match(text, /Start with reach_describe_screen/);
   assert.match(text, /node ~\/\.reach-agent\/agent\.mjs mcp as an MCP server/);
   assert.match(text, /"secret":true/);

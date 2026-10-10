@@ -183,6 +183,21 @@ test("typing asks what is in front first: terminals take the deny list, password
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
 });
 
+// Security audit L6: an app the owner hid is never named to the agent.
+test("an app the owner hid is in front: the agent hears only that", async () => {
+  const w = world();
+  const full = w.make("muse", "full", { hidden: [{ id: "/Applications/Signal.app", name: "Signal" }] });
+  w.setFront({ app: "Signal", bundle: "org.whispersystems.signal-desktop", title: "Chats", path: "/Applications/Signal.app", blocked: "" });
+  const front = await w.desktop.front(full, authorize(full));
+  assert.deepEqual([front.app, front.bundle, front.title, front.path, front.layout], ["", "", "", "", ""]);
+  assert.match(front.blocked, /hid this app/);
+  // As the helper itself answers it.
+  w.setFront({ app: "Notes", bundle: "com.apple.Notes", title: "", path: "/System/Applications/Notes.app", blocked: "The owner hid this app from the agent." });
+  assert.equal((await w.desktop.front(full, authorize(full))).app, "");
+  w.setFront({ app: "Google Chrome", bundle: "com.google.Chrome", title: "Amazon", path: "/Applications/Google Chrome.app", blocked: "" });
+  assert.equal((await w.desktop.front(full, authorize(full))).app, "Google Chrome");
+});
+
 test("numbered elements need control, come back clean, and a label click goes to the helper as one action", async () => {
   const w = world();
   const ro = w.make("ro", "readonly");
