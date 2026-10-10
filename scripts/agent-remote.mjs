@@ -811,16 +811,16 @@ export async function join(o) {
   writePrivate(credentialFile, "{}");
   fs.rmSync(credentialFile);
   try {
-    const funnel = link.funnel === true;
+    let funnel = link.funnel === true;
     const direct = !funnel && (await reachableDirect(link.origin));
     // A public-link invitation, from a machine on the owner's tailnet: the
     // computer's private address first; the public link only when it
     // doesn't answer. Checked again on every call.
     const privately = funnel && !!link.private && (await reachableDirect(link.private));
     let admissionApi;
-    if (funnel) {
-      // No Tailscale key: every request signed by this agent's own key
-      // (scripts/agent-funnel.mjs), to whichever address answers.
+    // No Tailscale key: every request signed by this agent's own key
+    // (scripts/agent-funnel.mjs), to whichever address answers.
+    const throughPublicLink = () => {
       const gateway = funnelGateway(link.public, agentKey(conn), { endpoints: [...(privately ? [link.private] : []), link.public], ...(o.send ? { send: o.send } : {}) });
       admissionApi = async (route, _method, body) => {
         const status = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
@@ -828,7 +828,9 @@ export async function join(o) {
         if (answer.status >= 400) throw agentRequestError(answer.status, answer.json);
         return answer.json;
       };
-    } else if (direct)
+    };
+    if (funnel) throughPublicLink();
+    else if (direct)
       admissionApi = (route, _method, body) => admissionDirect(link.origin, route, body);
     else {
       if (!link.key)
@@ -836,8 +838,22 @@ export async function join(o) {
           "This machine isn't on that tailnet, and the link has no Tailscale key. Ask the owner to set up invite links in Reach (Share → Set up), then invite the agent again.",
         );
       process.stderr.write("Reach: joining the tailnet…\n");
-      const node = await connectTailnet({ home, conn, ...link });
-      admissionApi = tailnetApi(node, link.origin, "");
+      try {
+        const node = await (o.connect || connectTailnet)({ home, conn, ...link, timeoutMs: 45000 });
+        admissionApi = tailnetApi(node, link.origin, "");
+      } catch (error) {
+        // Tailscale out of reach from here (a sandbox that can't reach its
+        // control plane, say): the same invitation through the computer's
+        // public link, every request signed by this agent's own key. The
+        // computer takes it either way (core.mjs redeemInvitation).
+        process.stderr.write(`Reach: ${error.message}\nReach: joining through the computer's public link instead…\n`);
+        fs.rmSync(path.join(conn, "tailnet-state.json"), { force: true });
+        funnel = true;
+        link.funnel = true;
+        link.public = link.start;
+        link.private = link.origin;
+        throughPublicLink();
+      }
     }
     let joined = await admissionApi("/api/invitations/redeem", "POST", { invitation: link.secret });
     joined = await waitForAgentAdmission(joined, admissionApi);

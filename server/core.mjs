@@ -1094,6 +1094,13 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     client?.kind === "agent" && client.policy?.invite === true &&
     client.policy.browser === true && client.browserTransport === "funnel" &&
     !client.tailscale;
+  // A Tools invitation made for the tailnet (an invite key), not opened yet:
+  // it may be opened through the public link instead, by an agent that can't
+  // reach Tailscale from where it runs ("public link or private", Oct 10).
+  const toolsLink = (client) =>
+    client?.kind === "agent" && client.policy?.invite === true && client.policy.browser === true &&
+    client.policy.preset !== undefined && client.browserTransport === undefined && !client.tailscale &&
+    !client.browserBinding && typeof client.inviteHash === "string";
   const claimSource = (client) => client.browserTransport === "funnel"
     ? `browser:${client.browserBinding}`
     : `tailnet:${client.tailscale?.nodeId || "unbound"}`;
@@ -1340,7 +1347,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const client = latest.find(
         (c) =>
           ["guest", "agent"].includes(c.kind) &&
-          (funnel ? isFunnelBrowser(c) && c.hosted !== true : c.browserTransport !== "funnel" && !c.browserBinding) &&
+          (funnel ? (isFunnelBrowser(c) || toolsLink(c)) && c.hosted !== true : c.browserTransport !== "funnel" && !c.browserBinding) &&
           sameHash(c.inviteHash, hash(invitation)) &&
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
@@ -1363,6 +1370,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         // whose credential rotates and whose copy is caught (audit M6).
         if (!funnel && standingPolicy(client.policy) && identity?.tagged !== true)
           throw fail(403, "Always access needs the agent to join with its invite key. Ask the owner for a new invitation.");
+        if (funnel && !isFunnelBrowser(client)) {
+          // Opened through the public link after all: a public-link agent
+          // from here on, its link kept so its key reconnects it.
+          client.browserTransport = "funnel";
+          client.linkHash = client.inviteHash;
+        }
         result = startAdmission(latest, client, now, { funnel, keyThumbprint, identity });
         return latest;
       }
@@ -1634,7 +1647,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       // A person's or a CLI agent's unopened invitation needs the start page
       // too: to sign in without the Tailscale app, or to fetch agent.mjs. The
       // page closes again once the link is used or runs out.
-      if (!isFunnelBrowser(client) && client.policy?.browser !== true && ["guest", "agent"].includes(client.kind) &&
+      // A Tools agent's unopened invitation too: agent.mjs, and the public
+      // link when it can't reach Tailscale.
+      if (!isFunnelBrowser(client) && (client.policy?.browser !== true || toolsLink(client)) && ["guest", "agent"].includes(client.kind) &&
           client.inviteHash && !client.hash && client.expiresAt > now) {
         const until = Math.min(client.expiresAt, client.inviteExpiresAt || client.expiresAt);
         if (until > now) strangers = true;

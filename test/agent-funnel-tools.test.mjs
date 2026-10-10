@@ -175,3 +175,57 @@ test("through the gateway, an agent trades its credential and the new one works;
   const stranger = funnelGateway(ORIGIN, agentKey(fs.mkdtempSync(path.join(f.root, "x-"))), { send: f.send });
   assert.equal((await stranger.request(traded.token, "POST", "/api/device/rotate", {})).status, 404);
 });
+
+// One Tools invite, the route chosen where the agent runs (Oct 10, Muse from
+// a sandbox that can't reach Tailscale's control plane): an invitation made
+// for the tailnet (an invite key) is opened through the public link instead
+// when Tailscale can't be joined from there, with the agent's own key and
+// the owner's code as for any public-link agent.
+test("a Tools invitation made for the tailnet opens through the public link when the agent can't reach Tailscale", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const grant = f.reach.auth.inviteBrowser({ name: "Muse", transport: "tailnet", preset: "files", folders: [{ root: 0, path: "work" }], ttlSeconds: 3600 });
+  const window = f.reach.funnelWindow();
+  assert.equal(window.open, true, "its unopened invitation keeps the start page and the gateway up");
+  assert.equal(window.reason, "invitation");
+  const home = path.join(f.root, "muse-home");
+  process.env.REACH_AGENT_HOME = home;
+  t.after(() => { delete process.env.REACH_AGENT_HOME; });
+  // The link a Tools invite carries where invite keys are set up: a key for
+  // the tailnet, the computer's private address, no public-link mark.
+  const link = `${ORIGIN}/agent#k=tskey-auth-abc123def456&h=rg-ab12-abcdefghij&i=${encodeURIComponent(`${ORIGIN}:8443~${grant.invitation}`)}`;
+  const approve = setInterval(() => {
+    const waiting = f.reach.auth.listAgentAdmissions().find((entry) => entry.clientId === grant.clientId);
+    if (waiting) f.reach.auth.decideAgentAdmission(waiting.requestId, "approve");
+  }, 50);
+  t.after(() => clearInterval(approve));
+  const out = [], err = [];
+  const stdout = process.stdout.write, stderr = process.stderr.write;
+  process.stdout.write = (chunk, ...rest) => (out.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
+  process.stderr.write = (chunk, ...rest) => (err.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
+  let tried = 0;
+  try {
+    assert.equal(await join({ _: ["join", link], send: f.send, connect: async () => { tried++; throw Error("Couldn't join the tailnet (state: starting). Check this machine's internet connection."); } }), 0);
+  } finally { process.stdout.write = stdout; process.stderr.write = stderr; clearInterval(approve); }
+  assert.equal(tried, 1, "Tailscale was tried first");
+  assert.match(err.join(""), /joining the tailnet/);
+  assert.match(err.join(""), /public link instead/);
+  assert.match(out.join(""), /Connected to Fixture Mac \(through its public link\)/);
+  const conn = path.join(home, "mac");
+  const credential = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
+  assert.equal(credential.via, "funnel");
+  assert.equal(credential.origin, ORIGIN);
+  assert.equal(credential.private, `${ORIGIN}:8443`, "its private address is still tried first on every call");
+  assert.equal(credential.invitation, grant.invitation, "its link reconnects it");
+  assert.equal(fs.existsSync(path.join(conn, "tailnet-state.json")), false, "nothing of the tailnet attempt is kept");
+  // On the Mac: a public-link agent from here on, its link kept for its key.
+  const record = f.reach.auth.list().find((c) => c.id === grant.clientId);
+  assert.equal(record.browserTransport, "funnel");
+  assert.equal(record.relink, true);
+  assert.equal(record.status, "accepted");
+  // Its tools, through the public link.
+  const key = agentKey(conn);
+  const api = funnelApi({ conn, credential, key, gateway: funnelGateway(ORIGIN, key, { send: f.send }) });
+  assert.match(JSON.stringify(await callTool(api, "reach_list_files", { root: 0, path: "" }, await api("/api/browser"))), /brief\.txt/);
+  // The same invitation can't be opened over the tailnet any more.
+  assert.throws(() => f.reach.auth.redeemGuest(grant.invitation, { nodeId: "n1", userId: "", tagged: true, validUntil: Date.now() + 60_000 }), { status: 401 });
+});
