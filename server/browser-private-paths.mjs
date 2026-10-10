@@ -10,6 +10,27 @@ const applicationRoot = fileURLToPath(new URL('../', import.meta.url));
 
 // Protect the running enforcement code as well as its state. A broad Documents
 // share must never turn an approved script into an update of Reach itself.
+// What the macOS sandbox around agent commands denies (server/agent-shell.mjs):
+// Reach's code can't change, its data (credentials) can't be read or written,
+// and Tailscale's container (Reach's private socket, Tailscale's own) can't be
+// read, written or connected to, nor the keychains or login launch agents.
+export function agentShellSandbox(config, { home = os.homedir(), appRoot = applicationRoot, sockets = [] } = {}) {
+  const containers = path.join(home, "Library", "Group Containers");
+  let tailscale = [];
+  try { tailscale = fs.readdirSync(containers).filter((name) => /tailscale/i.test(name)).map((name) => path.join(containers, name)); } catch {}
+  const real = (list) => [...new Set(list.filter(Boolean).flatMap((item) => {
+    const absolute = path.resolve(item);
+    try { return [absolute, fs.realpathSync.native(absolute)]; } catch { return [absolute]; }
+  }))];
+  const secrets = real([config.dataDir, path.join(appRoot, ".reach"), config.agentPolicyFile, ...tailscale, ...sockets, path.join(home, "Library", "Keychains"), path.join(home, ".tailscale")]);
+  return {
+    readDeny: secrets,
+    writeDeny: real([appRoot, ...secrets, path.join(home, "Library", "LaunchAgents")]),
+    socketDeny: real([config.dataDir, ...tailscale, ...sockets, "/var/run/tailscaled.socket", "/private/var/run/tailscaled.socket"]),
+    ports: [config.port].filter((port) => Number.isInteger(port) && port > 0),
+  };
+}
+
 export function browserPrivatePaths(config, { home = os.homedir(), appRoot = applicationRoot } = {}) {
   const paths = [appRoot, config.dataDir, config.agentPolicyFile, ...(config.privatePaths || []),
     ...browserPrivateNames.map(name => path.join(home, name)),

@@ -2,11 +2,6 @@
    the Mac's screen first. Read by agents driving a browser by sight, so every
    state is written out and every action has a visible result. */
 .agent-page { --ag-ink: var(--ag-text, #e9eee9); --ag-ink-2: var(--ag-muted, #93a198); --ag-surface-2: var(--ag-raised, #1a221e); --ag-accent: var(--lime, #b9efd4); max-width: 1120px; margin: 0 auto; padding: 16px 16px 40px; display: grid; gap: 14px; color: var(--ag-ink); }
-.ap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ap-title { display: flex; align-items: center; gap: 12px; }
-.ap-title h1 { margin: 0; font-size: 20px; }
-.ap-title p { margin: 2px 0 0; font-size: 14px; color: var(--ag-ink-2, #4b5563); }
-.ap-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--ag-accent-soft, rgba(47, 158, 111, 0.14)); color: var(--ag-accent, #2f9e6f); }
 .ap-abilities { margin: 0; font-size: 15px; line-height: 1.45; }
 .ap-status { margin: 0; padding: 10px 12px; border-radius: 10px; font-size: 15px; background: var(--ag-surface-2, #f3f4f6); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08)); }
 .ap-status.is-done { background: rgba(47, 158, 111, 0.1); border-color: rgba(47, 158, 111, 0.3); }
@@ -18,7 +13,7 @@
 .ap-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .ap-live { margin: 0; min-width: 0; max-width: 100%; flex-wrap: wrap; font-size: 13px; color: var(--ag-ink-2, #4b5563); display: inline-flex; align-items: center; gap: 6px; }
 .ap-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ag-accent, #2f9e6f); box-shadow: 0 0 0 3px rgba(47, 158, 111, 0.18); }
-.ap-dot.is-busy { animation: ap-pulse 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: no-preference) { .ap-dot.is-busy { animation: ap-pulse 1s ease-in-out infinite; } }
 @keyframes ap-pulse { 50% { opacity: 0.35; } }
 /* The live screen: as large as the window allows, a slim bar of pills above,
    where typing goes below. The picture itself takes clicks, drags, scrolls and keys. */
@@ -28,12 +23,10 @@
 .ap-screen-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .ap-hint { margin: 0; flex: 1 1 220px; min-width: 0; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
 .ap-brief { font-size: 13px; color: var(--ag-ink-2, #4b5563); }
-.ap-brief[open] { position: absolute; z-index: 3; top: 44px; right: 6px; max-width: min(420px, calc(100% - 12px)); padding: 10px 12px; border-radius: 14px; background: rgba(25, 33, 28, 0.97); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.ap-stage .ap-brief[open] { position: absolute; z-index: 3; top: 44px; right: 6px; max-width: min(420px, calc(100% - 12px)); padding: 10px 12px; border-radius: 14px; background: rgba(25, 33, 28, 0.97); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .ap-brief summary { cursor: pointer; color: var(--ag-ink, #e9eee9); font-weight: 600; }
 .ap-brief ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 2px; }
-.ap-pills, .ap-pan { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.ap-pills { margin-left: auto; }
-.ap-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
+.ap-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
 .ap-pill[aria-pressed="true"] { border-color: var(--ag-accent, #b9efd4); color: var(--ag-accent, #b9efd4); }
 .ap-pill.is-primary { background: var(--ag-accent, #b9efd4); border-color: transparent; color: #10221a; font-weight: 600; }
 .ap-stage { position: relative; display: grid; place-items: center; min-height: 200px; border-radius: 12px; overflow: hidden; background: #0b0d10; }
@@ -54,7 +47,7 @@
 .ap-screen-foot .ap-status { flex: 1 1 260px; padding: 5px 10px; font-size: 13px; }
 @media (max-width: 600px) { .ap-screen { --ap-chrome: 170px; } }
 /* Full screen: above the header and tabs, the picture as large as the window. */
-.ap-screen.is-full { position: fixed; inset: 0; z-index: 50; --ap-chrome: 52px; border-radius: 0; padding: 4px; background: #0b0d10; overflow: auto; }
+.ap-screen.is-full { position: fixed; inset: 0; z-index: 50; --ap-chrome: 52px; border-radius: 0; padding: max(4px, env(safe-area-inset-top)) 4px 64px; background: #0b0d10; overflow: auto; }
 .ap-screen.is-full .ap-stage { border-radius: 0; }
 .ap-placeholder { display: grid; place-items: center; gap: 8px; padding: 40px 16px; color: #c9cdd3; text-align: center; font-size: 14px; }
 .ap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -102,7 +95,9 @@
 .ap-dock .ap-status { max-width: min(560px, 100%); padding: 5px 12px; border-radius: 999px; font-size: 13px; }
 .ap-screen .screen-bar { --lime-ink: #10221a; }
 .ap-screen.is-full .ap-dock { position: fixed; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 51; max-width: calc(100% - 24px); }
-.ap-screen.is-full { --ap-chrome: 8px; }
+.ap-screen.is-full { --ap-chrome: calc(72px + env(safe-area-inset-top)); }
+/* The caption keeps its own backdrop over the picture; the bottom strip is reserved for the dock. */
+.ap-screen.is-full .ap-dock .ap-live { padding: 3px 10px; border-radius: 999px; background: rgba(11, 13, 16, 0.82); color: #e9eee9; }
 .ap-keys-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
 .ap-options { display: grid; gap: 8px; margin-bottom: 12px; }
 

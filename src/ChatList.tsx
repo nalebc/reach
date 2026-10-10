@@ -18,7 +18,7 @@ import {
 import { createPortal } from "react-dom";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, archiveSession, projectName, type AgentHealth, type AgentSession } from "./agent-sessions";
+import { agentLabel, archiveSession, projectName, projectOfChat, type AgentHealth, type AgentProject, type AgentSession } from "./agent-sessions";
 import { moveChoices, MoveItems, MoveSection } from "./MoveChat";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import { computerWord } from "./pause";
@@ -278,10 +278,10 @@ export function ChatLibraryHeader({
           </button>
         )}
       </div>
-      {apps.some((app) => app.agent !== value && pending[app.agent]) && (
+      {apps.some((app) => app.agent !== "all" && app.agent !== value && pending[app.agent]) && (
         <div className="chat-app-attention" role="group" aria-label="Apps needing you">
           <span>Needs you</span>
-          {apps.filter((app) => app.agent !== value && pending[app.agent]).map((app) => (
+          {apps.filter((app) => app.agent !== "all" && app.agent !== value && pending[app.agent]).map((app) => (
             <button key={app.agent} aria-label={`${app.name}, ${pendingLabel(pending[app.agent])}`}
               onClick={() => { onChange(app.agent); setAppMenuOpen(false); setActionsOpen(false); }}>
               <AgentLogo agent={app.agent} name={app.name} logos={logos} size={17} />
@@ -436,6 +436,7 @@ export default function ChatList({
   onSectionMoved,
   onArchived,
   workflows,
+  projects: codexProjects = [],
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -465,6 +466,8 @@ export default function ChatList({
   onArchived?: () => void;
   // The Workflows icon at the top (Workflows.tsx).
   workflows?: WorkflowsEntry;
+  // The Codex app's projects (its sidebar), this computer's.
+  projects?: AgentProject[];
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -476,6 +479,17 @@ export default function ChatList({
   useEffect(() => { if (searchOpen) searchField.current?.focus(); }, [searchOpen]);
   const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
   const [gone, setGone] = useState<Set<string>>(() => new Set());
+  // Forget an optimistic archive once the Mac's list agrees: the chat is
+  // no longer listed, or is listed as archived.
+  useEffect(() => {
+    if (!sessions) return;
+    setGone((g) => {
+      if (!g.size) return g;
+      const live = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
+      const next = new Set([...g].filter((k) => live.has(k) && !live.get(k)!.archived));
+      return next.size === g.size ? g : next;
+    });
+  }, [sessions]);
   const all = useMemo(
     () =>
       (sessions || [])
@@ -499,11 +513,32 @@ export default function ChatList({
       Number(needsYou(b) || b.status === "running") -
       Number(needsYou(a) || a.status === "running"),
   );
+  // Codex chats in one of its app's projects group under it, by its name,
+  // as in its sidebar (the deepest root holding the chat's folder); others
+  // by their folder.
+  const projectNames = new Map<string, string>();
+  const groupOf = (s: AgentSession) => {
+    const cwd = s.cwd || "";
+    // A worktree chat under its repo, as the Claude app (and Chat home) group it.
+    if (filter !== "codex" || !cwd) return projectOfChat(s);
+    let best = "";
+    for (const p of codexProjects)
+      for (const root of p.roots) {
+        const r = root.replace(/[\\/]+$/, "");
+        // Either separator: a Windows PC's folders too.
+        if (r && (cwd === r || cwd.startsWith(r + "/") || cwd.startsWith(r + "\\")) && r.length > best.length) {
+          best = r;
+          if (p.name) projectNames.set(r, p.name);
+        }
+      }
+    return best || cwd;
+  };
   const projects = new Map<string, AgentSession[]>();
   for (const s of found) {
-    const key = s.cwd || "";
+    const key = groupOf(s);
     projects.set(key, [...(projects.get(key) || []), s]);
   }
+  const groupName = (cwd: string) => projectNames.get(cwd) || projectName(cwd) || "Workspace";
   // Archived from here: gone at once (the Mac's list follows), with a
   // moment to undo it.
   const [undo, setUndo] = useState<{ s: AgentSession; problem?: string } | null>(null);
@@ -752,27 +787,27 @@ export default function ChatList({
                 <section
                   className="chat-group chat-project-group"
                   key={cwd}
-                  aria-label={`${projectName(cwd) || "Workspace"} conversations`}
+                  aria-label={`${groupName(cwd)} conversations`}
                 >
                   <div className="chat-group-heading">
                     <h2 title={cwd || undefined}>
                       <FolderOpen size={14} />
                       <span className="chat-project-name">
-                        {projectName(cwd) || "Workspace"}
+                        {groupName(cwd)}
                       </span>
                       {!!cwd && <span className="chat-project-parent">{cwd.split(/[\\/]/).filter(Boolean).at(-2) || ""}</span>}
                     </h2>
-                    {!compact && canStart && <button className="chat-folder-new" aria-label={`New chat in ${projectName(cwd) || "Workspace"}`} onClick={() => onNew(cwd || undefined)}><SquarePen size={19} /></button>}
+                    {!compact && canStart && <button className="chat-folder-new" aria-label={`New chat in ${groupName(cwd)}`} onClick={() => onNew(cwd || undefined)}><SquarePen size={19} /></button>}
                     {/* The whole folder, not only the chats shown (no search,
                         no "Show more"); chats at work stay out of it. */}
                     {!compact && (
                       <MoveSection
                         peer={peer}
-                        name={projectName(cwd) || "Workspace"}
+                        name={groupName(cwd)}
                         chats={all.filter(
                           (s) =>
                             s.agent === filter &&
-                            (s.cwd || "") === cwd &&
+                            groupOf(s) === cwd &&
                             !needsYou(s) &&
                             s.status !== "running",
                         )}

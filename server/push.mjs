@@ -1,7 +1,8 @@
 // Notifications on your phone when something needs you and Reach isn't open:
 // Web Push (RFC 8030), each message encrypted for that phone (RFC 8291) and
 // signed by this computer (VAPID, RFC 8292). Apple, Google or Mozilla carry
-// it but can't read it. Messages say only what needs you, never content.
+// it but can't read it. Messages say what needs you; a request quotes its
+// short question or command so it can be answered from the notification.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

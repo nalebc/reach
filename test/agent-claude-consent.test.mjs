@@ -21,7 +21,7 @@ const app = (id = "consent:toolu_1") => {
 
 test("a phone's answer presses the same button on the Claude app's card, showing that session first when it isn't on screen", async () => {
   const mac = app();
-  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: () => (mac.opened.length ? shownAs(A, B)() : shownAs(B, A)()), wait: async () => {} });
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: () => (mac.opened.length ? shownAs(A, B)() : shownAs(B, A)()), wait: async () => {}, idle: () => 600 });
   assert.equal(consent.owns("consent:toolu_1"), true);
   assert.equal(consent.owns("7"), false);
   assert.deepEqual(await consent.answer(A, "consent:toolu_1", { decision: "allow" }), { answered: true });
@@ -107,7 +107,7 @@ test("Claude native consent rejects concurrent taps and rechecks the request aft
   let release;
   const switched = new Promise(resolve => { release = resolve; });
   const mac = app();
-  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(B, A), wait: () => switched });
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(B, A), wait: () => switched, idle: () => 600 });
   const answer = consent.answer(A, "consent:toolu_1", { decision: "allow" });
   await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "deny" }), /already being sent/);
   mac.asked = null;
@@ -127,4 +127,12 @@ test("an apps card that names no app is never allowed from the phone", async () 
   assert.deepEqual(mac.presses, []);
   await consent.answer(A, "consent:toolu_1", { decision: "deny" });
   assert.deepEqual(mac.presses, ["Deny"]);
+});
+
+test("while someone uses the Mac, Reach never switches the Claude app's chat to answer", async () => {
+  const mac = app();
+  const consent = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(B, A), wait: async () => {}, idle: () => 3 });
+  await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /won't switch the Claude app's chat/);
+  assert.deepEqual(mac.opened, []);
+  assert.deepEqual(mac.presses, []);
 });

@@ -337,7 +337,7 @@ export default function AgentPage({
               {access.presetName || access.preset} ·{" "}
               {access.standing
                 ? "Until the owner ends it"
-                : `Ends ${new Date(access.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                : `Ends ${new Date(access.expiresAt).toLocaleString([], new Date(access.expiresAt).toDateString() === new Date().toDateString() ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" })}`}
             </p>
           </div>
           <p className="ap-abilities">
@@ -428,9 +428,13 @@ function AppsCard({
         }),
     [peer, ended],
   );
+  const card = useRef<HTMLElement>(null);
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 15000);
+    // Nothing is fetched while this section or the tab is hidden.
+    const timer = setInterval(() => {
+      if (!document.hidden && !card.current?.closest("[hidden]")) void load();
+    }, 15000);
     return () => clearInterval(timer);
   }, [load]);
   const open = async (id: string) => {
@@ -470,7 +474,7 @@ function AppsCard({
     }
   };
   return (
-    <section className="ap-card" aria-labelledby="ap-apps-title">
+    <section className="ap-card" aria-labelledby="ap-apps-title" ref={card}>
       <div className="ap-card-head">
         <h2 id="ap-apps-title">
           <AppWindow size={16} /> Open an app on the Mac
@@ -814,6 +818,7 @@ function TerminalsCard({
 }) {
   const [terminal, setTerminal] = useState(access.terminals[0]?.id ?? "");
   const [output, setOutput] = useState("");
+  const card = useRef<HTMLElement>(null);
   const current = access.terminals.some((item) => item.id === terminal)
     ? terminal
     : (access.terminals[0]?.id ?? "");
@@ -828,14 +833,16 @@ function TerminalsCard({
         .then((value) => alive && setOutput(value.output))
         .catch((e) => alive && ended(e));
     void load();
-    const timer = setInterval(() => void load(), 5000);
+    const timer = setInterval(() => {
+      if (!document.hidden && !card.current?.closest("[hidden]")) void load();
+    }, 5000);
     return () => {
       alive = false;
       clearInterval(timer);
     };
   }, [peer, current, ended]);
   return (
-    <section className="ap-card" aria-labelledby="ap-terminals-title">
+    <section className="ap-card" aria-labelledby="ap-terminals-title" ref={card}>
       <div className="ap-card-head">
         <h2 id="ap-terminals-title">
           <Terminal size={16} /> Shared terminal output

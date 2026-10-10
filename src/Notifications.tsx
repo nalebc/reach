@@ -30,6 +30,8 @@ import { holdPage } from "./page-hold";
 import type { NeedItem } from "./NeedsYou";
 import "./notifications.css";
 
+const settingsSeen = new WeakSet<HTMLDetailsElement>();
+
 export type NotificationItem = {
   id: string;
   revision?: string;
@@ -138,7 +140,9 @@ const reviewLabel = (item: NotificationItem) =>
         ? "Review access"
         : item.kind === "question"
           ? "Open question"
-          : "Open request";
+          : item.source === "restart" && item.target.page === "sessions"
+            ? "Open chat"
+            : "Open request";
 export function NotificationCard({
   item,
   logos,
@@ -449,6 +453,7 @@ export function NotificationCenter({
         setRevision((value) => value + 1);
       } catch (e) {
         setNotice((e as Error).message);
+        if ((e as { status?: number }).status === 409) latest.current();
       }
     };
     const message = (event: MessageEvent) => {
@@ -478,11 +483,18 @@ export function NotificationCenter({
   const act = async (item: NotificationItem, action: string) => {
     if (!item.revision)
       throw Error("Refresh Reach before answering this request.");
-    await post(
-      peer,
-      `/api/notifications/${encodeURIComponent(item.id)}/actions`,
-      { revision: item.revision, action },
-    );
+    try {
+      await post(
+        peer,
+        `/api/notifications/${encodeURIComponent(item.id)}/actions`,
+        { revision: item.revision, action },
+      );
+    } catch (e) {
+      // Answered elsewhere or changed since: look again now, so the card
+      // shows what's true (or goes) instead of waiting for the next check.
+      if ((e as { status?: number }).status === 409) latest.current();
+      throw e;
+    }
     setItems((items) => items.filter((value) => value.id !== item.id));
     setNotice(
       item.source === "restart" && action !== "deny"
@@ -587,7 +599,13 @@ export function NotificationCenter({
           </div>
           <details
             className="notification-preferences"
-            open={!setup.on && !items.length}
+            // Opened once on first render; after that it's the user's.
+            ref={(el) => {
+              if (el && !settingsSeen.has(el)) {
+                settingsSeen.add(el);
+                el.open = !setup.on && !items.length;
+              }
+            }}
           >
             <summary>
               <Settings2 size={16} />

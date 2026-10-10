@@ -176,7 +176,13 @@ const itemShape = (entry) => {
 };
 export function validateCodexResult(method, result) {
   let valid = object(result);
-  if (valid && /\/(list)$/.test(method))
+  // thread/loaded/list pages thread ids, not objects (codex-cli 0.162 schema).
+  if (valid && method === "thread/loaded/list")
+    valid =
+      Array.isArray(result.data) &&
+      result.data.every((id) => typeof id === "string" && !!id) &&
+      (result.nextCursor == null || typeof result.nextCursor === "string");
+  else if (valid && /\/(list)$/.test(method))
     valid = Array.isArray(result.data) && result.data.every(object);
   if (
     valid &&

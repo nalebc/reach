@@ -30,6 +30,8 @@ export function useRemoteScreen(
     ready: false,
     connecting: false,
     error: "",
+    // Why a retryable interruption happened, shown while it reconnects.
+    cause: "",
     format: "",
     fps: 0,
     mbps: 0,
@@ -50,15 +52,11 @@ export function useRemoteScreen(
   const retry = useRef(new ReconnectTimer(Math.random, 4000, 250));
   // The source whose picture is on the canvas. Reconnecting to the same one
   // keeps that picture (the toolbar says "Connecting…") instead of the
-  // loading scene; only 5 s without a fresh frame brings the scene back.
+  // loading scene. The picture stays (dimmed by the screen while connecting,
+  // with the cause named) for as long as reconnecting takes; it never stops.
   const shown = useRef("");
   const blank = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const holdFrame = () => {
-    blank.current ??= setTimeout(() => {
-      blank.current = undefined;
-      setState((s) => ({ ...s, ready: false }));
-    }, 5000);
-  };
+  const holdFrame = () => {};
   const clearHold = () => {
     clearTimeout(blank.current);
     blank.current = undefined;
@@ -95,7 +93,13 @@ export function useRemoteScreen(
       retry.current.cancel();
       clearHold();
       lost.current = null;
-      setState((s) => ({ ...s, ready: false, connecting: false, fps: 0 }));
+      setState((s) => ({
+        ...s,
+        ready: false,
+        connecting: false,
+        cause: "",
+        fps: 0,
+      }));
       return;
     }
     const source = JSON.stringify([
@@ -160,6 +164,7 @@ export function useRemoteScreen(
         ready: false,
         connecting: true,
         error: "",
+        cause: "",
         format: "",
         fps: 0,
         mbps: 0,
@@ -215,6 +220,7 @@ export function useRemoteScreen(
         ready: keep && s.ready,
         connecting: retryable,
         error: retryable ? "" : error,
+        cause: retryable ? error : "",
         fps: 0,
       }));
       if (retryable)
@@ -255,6 +261,7 @@ export function useRemoteScreen(
           ...s,
           ready: true,
           connecting: false,
+          cause: "",
           width,
           height,
           updated: last,

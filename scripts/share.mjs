@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { prepareTailscale } from "./tailscale.mjs";
+console.error(
+  "npm run share is deprecated: use ./reach, which records the route it makes. A route made here is not recorded, and ./reach will refuse to replace it.",
+);
 const cli = process.env.REACH_TAILSCALE || "tailscale";
 try {
   const origin = await prepareTailscale(8443);

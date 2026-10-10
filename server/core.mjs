@@ -65,6 +65,12 @@ export const browserIdleEnded = (client, now = Date.now()) =>
   !(client.browserIdleExpiresAt > now);
 export const hash = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
+// Two stored digests compared in constant time (a mismatch in length, or a
+// missing value, is simply no match).
+export function sameHash(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length || !a) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 export function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${id()}.tmp`;
@@ -261,7 +267,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       throw fail(409, "Credentials are being updated. Try again shortly.");
     }
     try {
-      clients = change(loadJson(file, []));
+      // A corrupt or unreadable store must never be replaced by one new
+      // client: that would erase every other credential (503, as reads do).
+      clients = change(listStoredClients());
       atomicJson(file, clients);
       credentialStoreCreated = true;
     } finally {
@@ -287,7 +295,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if (typeof digest !== "string" || !digest) return null;
     const client = clients.find(
       (c) =>
-        c.hash === digest &&
+        sameHash(c.hash, digest) &&
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
         (!c.admission || (c.admission.status === "collected" &&
@@ -928,7 +936,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     client.expiresAt > now && !!applyAgentPolicy(client, config);
   function relink(latest, invitation, keyThumbprint, reconnect) {
     const now = Date.now();
-    const client = latest.find((c) => isFunnelBrowser(c) && typeof c.linkHash === "string" && c.linkHash === hash(invitation));
+    const client = latest.find((c) => isFunnelBrowser(c) && typeof c.linkHash === "string" && sameHash(c.linkHash, hash(invitation)));
     if (!client) return null;
     if (!(client.expiresAt > now) || !applyAgentPolicy(client, config))
       throw fail(410, "This agent's access has ended.");
@@ -1061,7 +1069,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         (c) =>
           ["guest", "agent"].includes(c.kind) &&
           (funnel ? isFunnelBrowser(c) : c.browserTransport !== "funnel" && !c.browserBinding) &&
-          c.inviteHash === hash(invitation) &&
+          sameHash(c.inviteHash, hash(invitation)) &&
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
       );
@@ -1267,7 +1275,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
     const digest = hash(token);
-    const client = loadJson(file, []).find((entry) => entry.hash === digest);
+    const client = loadJson(file, []).find((entry) => sameHash(entry.hash, digest));
     return funnelSession(client, keyThumbprint);
   }
   // Only an authenticated browser request renews this short lease. Internal
@@ -1281,7 +1289,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       return;
     const digest = hash(token);
     changeClients((latest) => {
-      const client = latest.find((entry) => entry.hash === digest);
+      const client = latest.find((entry) => sameHash(entry.hash, digest));
       if (!funnelSession(client, keyThumbprint)) throw fail(401, "This browser connection has ended.");
       client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
       return latest;
@@ -1452,12 +1460,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const eligible = (client) => client.kind === "agent" && client.policy?.browser === true && (client.policy.screen === "apps" || hostGuardedPreset(client.policy)) && client.browserTransport !== "funnel" && client.expiresAt > now;
       if (route === "/api/invitations/redeem" && typeof body.invitation === "string" && body.invitation.length <= 256) {
         const digest = hash(body.invitation);
-        return entries.some((client) => eligible(client) && client.inviteExpiresAt > now && client.inviteHash === digest);
+        return entries.some((client) => eligible(client) && client.inviteExpiresAt > now && sameHash(client.inviteHash, digest));
       }
       const match = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
       if (match && typeof body.secret === "string" && body.secret.length <= 256) {
         const digest = hash(body.secret);
-        return entries.some((client) => eligible(client) && client.admission?.requestId === match[1] && client.admission.expiresAt > now && client.admission.secretHash === digest);
+        return entries.some((client) => eligible(client) && client.admission?.requestId === match[1] && client.admission.expiresAt > now && sameHash(client.admission.secretHash, digest));
       }
       return false;
     },

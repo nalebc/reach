@@ -55,7 +55,7 @@ async function sheet(props = {}) {
     React.createElement(MoreSheet, {
       peer,
       device,
-      places: ["files", "apps", "chat", "agents", "invite"],
+      places: ["files", "apps", "agents", "invite"],
       current: "files",
       settings: true,
       peers: [peer, other],
@@ -86,12 +86,11 @@ test("shows the computer, the places as a list, and Settings at the end", async 
     root.querySelector(".more-computer small").textContent,
     /Online.*macOS.*Tailscale/,
   );
-  // Its own header: no second title or close from the popup.
-  assert.equal(root.querySelector(".more-top strong").textContent, "More");
+  // Its own header: the mascot and a close, no second title from the popup.
+  assert.ok(root.querySelector(".more-top .more-mascot .brand-courier"));
   assert.deepEqual(names(root, 'nav[aria-label="Go to"] .more-row-label'), [
     "Files",
     "Apps",
-    "Codex",
     "Invite someone",
   ]);
   assert.equal(
@@ -99,10 +98,7 @@ test("shows the computer, the places as a list, and Settings at the end", async 
       .textContent,
     "Files",
   );
-  // Codex wears its real logo once it's known; the rest are line icons.
-  await dom.waitFor(() =>
-    root.querySelector(`.more-row img[src="${codexIcon}"]`),
-  );
+  // Every place wears a line icon.
   assert.equal(
     root.querySelectorAll('nav[aria-label="Go to"] .app-icon.small svg').length,
     3,
@@ -192,14 +188,14 @@ test("the page behind stays still while the sheet is open", async () => {
 });
 
 test("a place still being checked keeps its row but can't be opened yet", async () => {
-  const { view, calls, root } = await sheet({ pending: ["chat"] });
+  const { view, calls, root } = await sheet({ pending: ["apps"] });
   const rows = [...root.querySelectorAll('nav[aria-label="Go to"] .more-row')];
   assert.deepEqual(
     rows.map((r) => r.querySelector(".more-row-label").textContent),
-    ["Files", "Apps", "Codex", "Invite someone"],
+    ["Files", "Apps", "Invite someone"],
   );
-  assert.equal(rows[2].getAttribute("aria-disabled"), "true");
-  rows[2].click();
+  assert.equal(rows[1].getAttribute("aria-disabled"), "true");
+  rows[1].click();
   rows[0].click();
   await settle();
   assert.deepEqual(calls, [["go", "files"]]);
@@ -274,7 +270,7 @@ test("dragging the sheet down by its handle closes it; a short pull springs back
   pointer("pointerup", window, 400);
 
   // Pulled well down (from the header too): it slides away and closes.
-  pointer("pointerdown", dialog.querySelector(".more-top strong"), 100);
+  pointer("pointerdown", dialog.querySelector(".more-top .more-mascot"), 100);
   pointer("pointermove", window, 250);
   pointer("pointermove", window, 400);
   pointer("pointerup", window, 400);

@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { repeatedImages, visibleUserText } from "./message-text.mjs";
 import { codexWaitingApproval } from "./codex-asks.mjs";
 import { codexUsage } from "./account-usage.mjs";
+import { olderVersion } from "./codex-daemon.mjs";
 import { readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
 export { questionKey, questionReply, readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
 
@@ -66,6 +67,9 @@ export function codexSession(thread) {
             ? "idle"
             : "running",
     preview: firstLine.slice(0, 200),
+    // As Codex lists them (thread/read's, when the chat is open, win).
+    ...(thread.model ? { model: thread.model } : {}),
+    ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}),
     archived: false,
     // `codex exec` runs: nobody to ask while they run.
     ...(thread.source === "exec" || thread.originator === "codex_exec" ? { headless: true } : {}),
@@ -444,7 +448,8 @@ export function createCodexSessions({
       return (r.data || []).map((p) => ({
         id: p.id,
         name: p.name || "",
-        roots: (p.roots || []).map((root) => root.path).filter(Boolean),
+        // Folders only (a root Codex lists without a path is none).
+        roots: (Array.isArray(p.roots) ? p.roots : []).map((root) => root?.path).filter((folder) => typeof folder === "string" && folder),
       }));
     },
     async list({ pages = 10 } = {}) {
@@ -580,23 +585,59 @@ export function createCodexSessions({
       const modes = profiles?.data
         ? codexModes(profiles.data, { guardian: guardian ? !!guardian.enabled : true })
         : codexModes([{ id: ":workspace" }, { id: ":danger-full-access" }, { id: ":read-only" }]);
+      const offer = (m) => ({
+        id: m.id,
+        name: modelName(m.displayName || m.id),
+        description: m.description || "",
+        efforts: (m.supportedReasoningEfforts || []).map((e) => e.reasoningEffort),
+        effortNotes: Object.fromEntries(
+          (m.supportedReasoningEfforts || []).filter((e) => e.description).map((e) => [e.reasoningEffort, e.description]),
+        ),
+        defaultEffort: m.defaultReasoningEffort || null,
+        images: (m.inputModalities || ["text", "image"]).includes("image"),
+        isDefault: !!m.isDefault,
+        speeds: (m.serviceTiers || []).map((t) => ({ id: t.id, name: t.name || t.id, note: t.description || "" })),
+        defaultSpeed: m.defaultServiceTier || null,
+      });
+      const models = (r.data || []).filter((m) => !m.hidden).map(offer);
+      // The daemon's own list is what Reach can run. Behind the installed
+      // Codex (verified: service 0.158, CLI 0.162 lists gpt-6.1-sol), the
+      // CLI's newer models are added after it, in Codex's own words but
+      // unconfirmed: never a default (the old service refused gpt-6.1-sol,
+      // codex-live.mjs withModel), not offered to pick.
+      const known = new Set(models.map((m) => m.id));
+      const report = daemon.cliModels ? await daemon.compatibility?.().catch(() => null) : null;
+      if (olderVersion(report?.serviceVersion, report?.version)) {
+        const cli = await daemon.cliModels(report.version).catch(() => null);
+        for (const m of cli?.data || [])
+          if (!m.hidden && !known.has(m.id)) {
+            known.add(m.id);
+            models.push({ ...offer(m), isDefault: false, unconfirmed: true });
+          }
+      }
+      // config.toml's model (what Codex starts chats on): the default when
+      // the daemon has it; listed by its own name when nobody does.
+      const configured = daemon.defaults?.() || {};
+      const mine = configured.model && models.find((m) => m.id === configured.model);
+      if (mine && !mine.unconfirmed) {
+        for (const m of models) m.isDefault = m === mine;
+        if (mine.efforts.includes(configured.effort)) mine.defaultEffort = configured.effort;
+      } else if (configured.model && !mine)
+        models.push({
+          id: configured.model,
+          name: configured.model,
+          description: "",
+          efforts: [],
+          effortNotes: {},
+          defaultEffort: configured.effort || null,
+          images: false,
+          isDefault: false,
+          speeds: [],
+          defaultSpeed: null,
+          unconfirmed: true,
+        });
       return {
-        models: (r.data || [])
-          .filter((m) => !m.hidden)
-          .map((m) => ({
-            id: m.id,
-            name: modelName(m.displayName || m.id),
-            description: m.description || "",
-            efforts: (m.supportedReasoningEfforts || []).map((e) => e.reasoningEffort),
-            effortNotes: Object.fromEntries(
-              (m.supportedReasoningEfforts || []).filter((e) => e.description).map((e) => [e.reasoningEffort, e.description]),
-            ),
-            defaultEffort: m.defaultReasoningEffort || null,
-            images: (m.inputModalities || ["text", "image"]).includes("image"),
-            isDefault: !!m.isDefault,
-            speeds: (m.serviceTiers || []).map((t) => ({ id: t.id, name: t.name || t.id, note: t.description || "" })),
-            defaultSpeed: m.defaultServiceTier || null,
-          })),
+        models,
         modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml" }],
         mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
       };

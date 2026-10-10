@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, reachHosts, startTimes, statusText, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, reachHosts, startTimes, stateOf, statusText, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -75,7 +75,19 @@ function lock() {
         process.kill(previous.pid, 0);
       } catch (error) {
         if (error.code === "ESRCH") fs.unlinkSync(lockFile);
-        else throw error;
+        else if (error.code === "EPERM") {
+          // The pid belongs to another user's process now: a Reach only if
+          // its command is one; otherwise the lock is stale.
+          let command = "";
+          try {
+            command = execFileSync("/bin/ps", ["-o", "command=", "-p", String(previous.pid)], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+              timeout: 2000,
+            });
+          } catch {}
+          if (!/scripts\/bootstrap\.mjs|bin\/reach\.mjs/.test(command)) fs.unlinkSync(lockFile);
+        } else throw error;
       }
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
@@ -169,7 +181,9 @@ async function update() {
     new Promise((resolve, reject) => {
       child = spawn(process.execPath, args, { stdio: "inherit" });
       child.once("error", reject);
-      child.once("exit", (code) => (code === 0 ? resolve() : reject(code)));
+      child.once("exit", (code) =>
+        code === 0 ? resolve() : reject(Error(`${path.basename(args[0])} stopped with exit code ${code}.`)),
+      );
     });
   try {
     await run([npmCli(), "install", "--global", `${name}@latest`]);
@@ -186,7 +200,33 @@ async function update() {
   } catch {}
   if (service?.installed) {
     console.log("Reach: restarting background mode on the new version…");
-    await run([path.join(root, "scripts/bootstrap.mjs"), "install"]);
+    // The running service holds the one-Reach-per-computer lock: it stops
+    // first, and the install starts it again on the new version.
+    let target = null;
+    if (process.platform === "darwin") {
+      try {
+        const { serviceState } = await import("./stop.mjs");
+        const launchctl = (a) => execFileSync("/bin/launchctl", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        const found = serviceState(root, { run: launchctl });
+        if (found.loaded && found.ours) {
+          launchctl(["bootout", found.target]);
+          target = found;
+        }
+      } catch {}
+      for (let i = 0; i < 40 && withoutHandover(othersRunning(), state).length; i++)
+        await new Promise((r) => setTimeout(r, 250));
+    }
+    try {
+      await run([path.join(root, "scripts/bootstrap.mjs"), "install"]);
+    } catch (error) {
+      if (target) {
+        try {
+          const { startService } = await import("./stop.mjs");
+          startService(root);
+        } catch {}
+      }
+      throw error;
+    }
   } else console.log("Reach is up to date. Restart it to use the new version.");
 }
 // Hand Reach over to background mode. The LaunchAgent starts its own Reach,
@@ -245,14 +285,19 @@ async function restart(options) {
   // need it): run from an agent, the restart waits for your OK on the phone.
   // Yours, in Terminal, never asks; an installed Reach has no agents editing it.
   const asker = !packaged && (foreignApp() || (!process.stdin.isTTY && "an agent"));
-  if (asker && othersRunning().length) {
+  const running = asker ? othersRunning() : [];
+  if (asker && running.length) {
+    // The running Reach's own state (it may run from another folder), then this folder's.
     let dataDir = "";
-    try {
-      dataDir = JSON.parse(fs.readFileSync(path.join(state, "host-status.json"), "utf8")).dataDir || "";
-    } catch {}
+    for (const dir of [...running.map((h) => stateOf(h.root)), state]) {
+      try {
+        dataDir = JSON.parse(fs.readFileSync(path.join(dir, "host-status.json"), "utf8")).dataDir || "";
+      } catch {}
+      if (dataDir) break;
+    }
     if (dataDir) {
-      const { askRestart } = await import("../server/restart-requests.mjs");
-      const { again } = askRestart(dataDir, { app: asker });
+      const { askRestart, askingChat } = await import("../server/restart-requests.mjs");
+      const { again } = askRestart(dataDir, { app: asker, chat: askingChat() });
       console.log(
         `${again ? "Already asked" : "Asked"} on the phone (Needs you): Reach restarts when the user taps Restart. Nothing restarted yet; don't run this again.\nInterface changes (src/, public/) reach phones without a restart. Only server changes need one.`,
       );
@@ -396,6 +441,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         const preferences = readPreferences(root) || (await configure(root));
         options = applyPreferences(options, preferences, process.argv.slice(2));
       }
+    }
+    // The service it starts takes its own launcher lock: let go of this one first.
+    if (locked) {
+      fs.rmSync(lockFile, { force: true });
+      locked = false;
     }
     const { backgroundService } = await import("./background-service.mjs");
     await backgroundService(options, root);

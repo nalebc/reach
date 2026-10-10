@@ -376,73 +376,6 @@
     animation: none;
   }
 }
-/* Usage at a glance, under the computer's name: a logo and a percent per
-   agent, amber from 80%, red from 95%. */
-.home-usage {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  margin: 10px auto 0;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-.home-usage-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px 3px 5px;
-  border-radius: 999px;
-  background: #ffffff0f;
-  color: #d9e1da;
-  font: 500 12px system-ui, sans-serif;
-  font-variant-numeric: tabular-nums;
-}
-.home-usage-chip .agent-logo {
-  border-radius: 50%;
-}
-.home-usage-chip.warning {
-  color: #fac775;
-}
-.home-usage-chip.critical,
-.home-usage-chip.out {
-  color: #f09482;
-}
-.home-usage-chip.stale {
-  opacity: 0.55;
-}
-/* Ask bar: a ChatGPT-style composer pill that opens New conversation. */
-.home-ask {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 52px;
-  padding: 6px 7px 6px 14px;
-  border: 1px solid #ffffff12;
-  border-radius: 26px;
-  background: #2a2f2c;
-  color: #9aa39c;
-  font: 400 15.5px system-ui, sans-serif;
-  text-align: left;
-}
-.home-ask:active {
-  background: #303632;
-}
-.home-ask > span {
-  flex: 1;
-  min-width: 0;
-}
-.home-ask > i {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #f4f6f4;
-  color: #111;
-}
 /* Just finished: a solid ring with a check (red with "!" when it failed),
    kept a few minutes. */
 .story-ring.done {
@@ -474,4 +407,65 @@
 .story-ring.done + small,
 .story-ring.failed + small {
   color: #e6ece7;
+}
+/* Who's on the computer: a pill under its name; amber while someone
+   controls it. */
+.home-here {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px auto 0;
+  padding: 3px 11px 3px 4px;
+  border: 0;
+  border-radius: 999px;
+  background: #ffffff0f;
+  color: #d9e1da;
+  font: 500 12.5px system-ui, sans-serif;
+}
+.home-here.controlling {
+  background: #fac7751f;
+  color: #fac775;
+}
+.home-here-faces {
+  display: flex;
+}
+.home-here-faces i {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  margin-left: -6px;
+  border: 2px solid #0d171d;
+  border-radius: 50%;
+  background: #1f2b25;
+  color: #dce5dd;
+}
+.home-here-faces i:first-child {
+  margin-left: 0;
+}
+.home-here-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 6px 4px;
+  font: 500 15px system-ui, sans-serif;
+}
+.home-here-row > span:last-child {
+  display: flex;
+  flex-direction: column;
+}
+.home-here-row small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted, #93a096);
+}
+.home-here-manage {
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-radius: 999px;
+  background: #ffffff12;
+  color: var(--text, #e9eee9);
+  font: 500 15px system-ui, sans-serif;
 }

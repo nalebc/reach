@@ -341,6 +341,13 @@ test("uncertain approval writes are attempted once even if the handler falls bac
   assert.equal(calls.filter(m => m.id === 999).length, 1);
 });
 
+test("thread/loaded/list pages thread ids, and anything else there still fails closed", () => {
+  const page = { data: ["01a11cff-9d8d-76d2-b114-c412e165f663"], nextCursor: null };
+  assert.deepEqual(validateCodexResult("thread/loaded/list", page), page);
+  for (const malformed of [{ data: [{ id: "t" }] }, { data: [""] }, { data: {} }, { data: ["t"], nextCursor: 1 }])
+    assert.throws(() => validateCodexResult("thread/loaded/list", malformed), { code: "AGENT_INCOMPATIBLE" });
+});
+
 test("queue and steering acknowledgements require their real protocol fields", () => {
   for (const method of ["thread/queue/add", "thread/queue/delete", "turn/steer"])
     assert.throws(() => validateCodexResult(method, {}), e => e.uncertain && e.retryable === false);

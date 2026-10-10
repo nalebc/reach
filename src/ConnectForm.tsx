@@ -17,7 +17,7 @@ import {
 import { isNative } from "./native";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
-import { hasTicket, startFresh, takeTicket } from "./face-start";
+import { hasTicket, saveTicket, startFresh, takeTicket } from "./face-start";
 import {
   createWithFaceId,
   deviceLabel,
@@ -63,8 +63,11 @@ async function call(
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const value = await response.json();
-  if (!response.ok)
+  // A page that isn't Reach's (a proxy's "Not found.") is not JSON.
+  const value = await response.json().catch(() => ({
+    error: response.ok ? "This address didn't answer like Reach." : "",
+  }));
+  if (!response.ok || value.error === "This address didn't answer like Reach.")
     throw Object.assign(Error(value.error || "Could not connect."), {
       status: response.status,
     });
@@ -132,6 +135,9 @@ export default function ConnectForm({
       (result) =>
         onDone.current({ ...result.device, url: t.origin, token: result.token }),
       (e) => {
+        // No answer from the computer (no HTTP status): the ticket wasn't
+        // used, so keep it for another try.
+        if (!(e as { status?: number }).status) saveTicket(t.ticket, t.origin);
         setJoining(false);
         setError((e as Error).message);
       },
@@ -178,9 +184,16 @@ export default function ConnectForm({
   }, [url, retry]);
   useEffect(() => {
     if (!pending || !method?.eligible) return;
+    // The address may be mid-edit while a request waits: an address that
+    // doesn't parse yet just pauses the wait instead of throwing.
+    let origin: string;
+    try {
+      origin = normalizeUrl(url);
+    } catch {
+      return;
+    }
     const abort = new AbortController();
-    const origin = normalizeUrl(url),
-      key = `reach.pending:${origin}`;
+    const key = `reach.pending:${origin}`;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       if (abort.signal.aborted) return;

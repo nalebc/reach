@@ -105,20 +105,15 @@ async function tail(file) {
   }
 }
 
-// A Claude Code chat's sub-agents, newest first. notes: its task
-// notifications ({ id, toolUseId, status, summary }); items: its Agent calls
-// (kind "agent"), for foreground ones' ends.
-export async function claudeSubagents({ transcript, sessionId, notes = [], items = [], now = Date.now(), limit = 50 }) {
-  if (typeof transcript !== "string" || !ID.test(String(sessionId || ""))) return [];
-  const dir = path.join(path.dirname(transcript), sessionId, "subagents");
+// The agent-<id>.meta.json / .jsonl pairs in one folder; null if it can't
+// be read.
+async function agentFiles(dir) {
   let names;
   try {
     names = await fs.readdir(dir);
   } catch {
-    return [];
+    return null;
   }
-  const byNote = new Map(notes.map((n) => [n.id, n]));
-  const calls = new Map(items.filter((i) => i?.kind === "agent").map((i) => [i.id, i]));
   const agents = [];
   for (const name of names) {
     const id = name.match(/^agent-([\w-]{1,80})\.meta\.json$/)?.[1];
@@ -137,6 +132,72 @@ export async function claudeSubagents({ transcript, sessionId, notes = [], items
     } catch {}
     agents.push({ id, meta, log, updatedAt, createdAt });
   }
+  return agents;
+}
+
+// A chat's workflow runs, newest first (at most ten).
+async function runs(dir) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || !ID.test(e.name)) continue;
+    const full = path.join(dir, e.name);
+    const st = await fs.stat(full).catch(() => null);
+    if (st) found.push({ full, at: st.mtimeMs });
+  }
+  return found.sort((a, b) => b.at - a.at).slice(0, 10).map((r) => r.full);
+}
+
+// Which of a workflow's agents ended, and how, from its journal: its
+// "result" entry (Claude Code 2.1.295), or an entry naming it with a status
+// word Reach knows. Anything else leaves the agent running (and quiet once
+// its files stop changing).
+async function journalEnds(file) {
+  const ends = new Map();
+  let text = "";
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch {
+    return ends;
+  }
+  for (const line of text.split("\n")) {
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof e?.agentId !== "string" || !ID.test(e.agentId)) continue;
+    const status = e.type === "result" ? "done" : subagentStatus(e.type) || subagentStatus(e.status);
+    if (status && status !== "running") ends.set(e.agentId, status);
+  }
+  return ends;
+}
+
+// A Claude Code chat's sub-agents, newest first. notes: its task
+// notifications ({ id, toolUseId, status, summary }); items: its Agent calls
+// (kind "agent"), for foreground ones' ends.
+export async function claudeSubagents({ transcript, sessionId, notes = [], items = [], now = Date.now(), limit = 50 }) {
+  if (typeof transcript !== "string" || !ID.test(String(sessionId || ""))) return [];
+  const dir = path.join(path.dirname(transcript), sessionId, "subagents");
+  const agents = await agentFiles(dir);
+  if (!agents) return [];
+  // A workflow's agents sit one level down, a folder per run, with the run's
+  // journal saying which ended (subagents/workflows/<run>/journal.jsonl).
+  const ended = new Map();
+  for (const run of await runs(path.join(dir, "workflows"))) {
+    const found = await agentFiles(run);
+    if (!found?.length) continue;
+    for (const [id, status] of await journalEnds(path.join(run, "journal.jsonl"))) ended.set(id, status);
+    agents.push(...found.map((a) => ({ ...a, workflow: true })));
+  }
+  const byNote = new Map(notes.map((n) => [n.id, n]));
+  const calls = new Map(items.filter((i) => i?.kind === "agent").map((i) => [i.id, i]));
   agents.sort((a, b) => b.updatedAt - a.updatedAt);
   const out = [];
   for (const a of agents.slice(0, limit)) {
@@ -144,7 +205,7 @@ export async function claudeSubagents({ transcript, sessionId, notes = [], items
     const call = toolUseId ? calls.get(toolUseId) : null;
     const background = a.meta.requestShape === "background" || !!call?.background;
     const note = byNote.get(a.id);
-    let status = subagentStatus(note?.status);
+    let status = subagentStatus(note?.status) || ended.get(a.id) || null;
     // A foreground one ends with its call's result.
     if (!status && call && !background && call.status !== "running") status = call.status === "failed" ? "failed" : "done";
     status ||= "running";
@@ -154,6 +215,9 @@ export async function claudeSubagents({ transcript, sessionId, notes = [], items
       id: a.id,
       toolUseId,
       name: clip(a.meta.description || call?.text || "Agent", 120),
+      // A workflow's agent: not a task stop_task can end.
+      ...(a.workflow ? { workflow: true } : {}),
+      ...(typeof a.meta.workflowPhase === "string" && a.meta.workflowPhase ? { phase: clip(a.meta.workflowPhase, 60) } : {}),
       type: clip(a.meta.agentType || call?.agentType || "general-purpose", 60),
       background,
       status: quiet ? "quiet" : status,

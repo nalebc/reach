@@ -2,7 +2,7 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Settings → Access → Face ID for new browsers: what's set up, add this
+// Settings → Face ID (for new browsers): what's set up, add this
 // phone's, remove one (a lost phone). Only your own approved devices see it.
 let dom, React, FaceIdSettings;
 before(async () => {
@@ -54,7 +54,7 @@ test("lists Face ID set up here; removes one after you confirm", async () => {
   const view = await dom.render(React.createElement(FaceIdSettings, { peer }));
   await settle(80);
   const c = view.container;
-  assert.match(c.textContent, /Face ID for new browsers/);
+  assert.match(c.textContent, /Approve a new browser of yours with Face ID/);
   assert.match(c.textContent, /iPhone\s*Last used Oct 5/);
   dom.window.confirm = globalThis.confirm = () => false;
   c.querySelector('[aria-label="Remove iPhone"]').dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));

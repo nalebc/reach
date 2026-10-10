@@ -9,10 +9,12 @@ export function parseOptions(args) {
     help: false,
     stayAwake: "always",
   };
+  // `--yes restart` works as `restart --yes`.
+  const first = ["--yes", "-y"].includes(args[0]) ? 1 : 0;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (
-      i === 0 &&
+      i === first &&
       [
         "install",
         "uninstall",
@@ -32,13 +34,13 @@ export function parseOptions(args) {
     )
       options.command = arg;
     // `reach import <folder>`: the Reach folder whose pairings to bring over.
-    else if (options.command === "import" && i === 1 && !arg.startsWith("--"))
+    else if (options.command === "import" && i === first + 1 && !arg.startsWith("--"))
       options.importFrom = path.resolve(arg);
     // `reach link <name>`: link another Reach computer on your tailnet.
-    else if (options.command === "link" && i === 1 && !arg.startsWith("--"))
+    else if (options.command === "link" && i === first + 1 && !arg.startsWith("--"))
       options.linkName = arg;
     // `reach setup <section>`: redo one part of setup (account, invites, …).
-    else if (options.command === "setup" && i === 1 && !arg.startsWith("--"))
+    else if (options.command === "setup" && i === first + 1 && !arg.startsWith("--"))
       options.setupSection = arg;
     else if (arg === "--version" || arg === "-v") options.version = true;
     else if (arg === "--local") options.local = true;
@@ -50,7 +52,7 @@ export function parseOptions(args) {
     else if (arg === "--stop-background") options.stopBackground = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     // `reach stop|restart --yes`: close Reach's terminals without asking.
-    else if ((arg === "--yes" || arg === "-y") && ["stop", "restart"].includes(options.command)) options.yes = true;
+    else if ((arg === "--yes" || arg === "-y") && (["stop", "restart"].includes(options.command) || i < first)) options.yes = true;
     else if (arg === "--agent-policy") {
       if (!args[i + 1] || args[i + 1].startsWith("--"))
         throw Error("--agent-policy needs a JSON file.");
@@ -79,6 +81,7 @@ export function parseOptions(args) {
     (options.service && (options.background || options.stopBackground))
   )
     throw Error("Choose one Reach command.");
+  if (options.yes && !["stop", "restart"].includes(options.command)) throw Error("Unknown option: --yes");
   if (options.command === "import" && !options.importFrom && !options.help)
     throw Error("Name the Reach folder to import from: reach import <folder>.");
   if (

@@ -359,6 +359,10 @@ test("Codex threads and items normalize; approvals read as waiting", () => {
   assert.equal(s.updatedAt, 10000);
   assert.equal(codexSession({ id: ID, status: { type: "active", activeFlags: [] } }).status, "running");
   assert.equal(codexSession({ id: ID, status: { type: "notLoaded" } }).status, "idle");
+  // The list row carries the model and effort Codex's thread/list returns.
+  const listed = codexSession({ id: ID, model: "gpt-6-astra", reasoningEffort: "xhigh" });
+  assert.deepEqual([listed.model, listed.effort], ["gpt-6-astra", "xhigh"]);
+  assert.ok(!("model" in s) && !("effort" in s), "none listed: none said");
   assert.equal(codexItem({ item: { type: "reasoning", id: "r" } }), null);
   assert.deepEqual(
     codexItem({ item: { type: "commandExecution", id: "c", command: "npm test", aggregatedOutput: "x", exitCode: 1, status: "completed" } }),
@@ -572,6 +576,47 @@ test("a registry record whose pid now belongs to another process is ignored", as
     assert.equal(readSessionRegistry({ dir, alive: () => true, started: () => null }).get("redesign").pid, 2402);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A chat started on the phone read "Terminal" for a moment after each turn:
+// Reach's own Claude Code says "interactive" on the tty Reach runs in.
+test("Reach's own Claude Code process isn't a terminal's; a person's claude in a terminal still is", async () => {
+  const { liveClaudeSessions } = await import("../server/agent-sessions/processes.mjs");
+  const ps = [
+    "  500     1   1-00:00:00 ttys001  -zsh",
+    "  600   500      10:00 ttys001  node scripts/bootstrap.mjs",
+    "  700   600        00:30 ttys001  /usr/local/bin/claude --resume 11111111-2222-4333-8444-555555555555 -p",
+    "  800   500        05:00 ttys001  /usr/local/bin/claude",
+  ].join("\n");
+  const registry = () =>
+    new Map([
+      ["11111111-2222-4333-8444-555555555555", { where: "terminal", pid: 700, tty: null, exact: true, busy: false, waiting: null }],
+      ["22222222-2222-4222-8222-222222222222", { where: "terminal", pid: 800, tty: null, exact: true, busy: false, waiting: null }],
+    ]);
+  const live = await liveClaudeSessions([], { run: async () => ({ stdout: ps }), registry, self: 600 });
+  assert.equal(live.get("11111111-2222-4333-8444-555555555555").where, "reach");
+  assert.equal(live.get("22222222-2222-4222-8222-222222222222").where, "terminal");
+});
+
+test("a folder that isn't a git repo shows no branch (Claude Code writes HEAD)", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claude-"));
+  try {
+    const dir = path.join(root, "projects", "-work-sweep");
+    await fs.mkdir(dir, { recursive: true });
+    const base = { sessionId: ID, cwd: "/work/sweep", gitBranch: "HEAD", entrypoint: "cli" };
+    await fs.writeFile(
+      path.join(dir, `${ID}.jsonl`),
+      [
+        line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { content: "hi" } }),
+        line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(1), message: { model: "claude-x", content: [{ type: "text", text: "hello" }] } }),
+      ].join("\n") + "\n",
+    );
+    const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+    assert.equal((await claude.list())[0].branch, "");
+    assert.equal((await claude.read(ID, { limit: 1 })).session.branch, "");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
   }
 });
 

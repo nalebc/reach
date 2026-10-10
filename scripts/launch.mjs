@@ -36,6 +36,7 @@ import {
 } from "./tailscale.mjs";
 import { packaged, stateDir } from "./home.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
+import { setStartInfo } from "../server/delivery.mjs";
 import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 
@@ -167,6 +168,10 @@ export async function launch(options, root) {
     // Both your devices and the internet (Funnel) come in on Reach's private
     // listener at the one address; it hands the internet's requests, and only
     // those, to the start page.
+    // Your other computers find this one by asking it who it is, over the
+    // tailnet (server/fleet.mjs); the public start page answers only Funnel.
+    if (privateOrigin)
+      setStartInfo(() => ({ product: "Reach", origin: privateOrigin, name: reach.config.name, instance: reach.instance, since: setupSince() }));
     if (socketPath) {
       const startPage = publicStart
         ? publicStartHandler({

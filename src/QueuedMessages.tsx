@@ -19,7 +19,9 @@ import "./queued-messages.css";
 // - Codex's: a plain list; Send now (its Steer: into the turn it's running),
 //   Edit, remove, and a new order (Codex's own thread/queue/reorder).
 // A row opens on a tap to show all of it; Edit changes it where it waits,
-// pictures kept.
+// pictures kept. One already in Claude Code's own queue (held) only shows:
+// nothing there can take it back or change it. Only the phone's copy of one
+// (local) can be removed: the copy goes, nothing is sent.
 export default function QueuedMessages({
   agent,
   messages,
@@ -62,7 +64,7 @@ export default function QueuedMessages({
     .map((id) => byId.get(id))
     .filter(Boolean) as OutboxMessage[];
   const stacked = claude && messages.length > 1 && !open;
-  const sortable = !!onReorder && messages.length > 1 && !stacked;
+  const sortable = !!onReorder && messages.filter((m) => !m.held).length > 1 && !stacked;
   const label = (m: OutboxMessage) =>
     visibleUserText(m.text) ||
     (m.images ? `${m.images} image${m.images === 1 ? "" : "s"}` : "Message");
@@ -79,6 +81,8 @@ export default function QueuedMessages({
     }
   }, [messages]);
 
+  const settle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(settle.current), []);
   const move = (id: string, to: number, from = orderRef.current || messages.map((m) => m.id)) => {
     const ids = from.filter((x) => x !== id);
     ids.splice(Math.max(0, Math.min(ids.length, to)), 0, id);
@@ -95,7 +99,16 @@ export default function QueuedMessages({
     orderRef.current = ids;
     setOrder(ids);
     try {
-      await onReorder?.(ids);
+      await onReorder?.(ids.filter((id) => !byId.get(id)?.held));
+      // Accepted, but if the Mac's queue never takes the new order, show the
+      // Mac's order again rather than one it doesn't have.
+      clearTimeout(settle.current);
+      settle.current = setTimeout(() => {
+        if (orderRef.current === ids) {
+          orderRef.current = null;
+          setOrder(null);
+        }
+      }, 6000);
     } catch {
       orderRef.current = null;
       setOrder(null);
@@ -111,7 +124,7 @@ export default function QueuedMessages({
       }}
       className={`qm-row ${drag.current?.active && drag.current.id === m.id ? "dragging" : ""}`}
     >
-      {sortable && !m.sending && (
+      {sortable && !m.sending && !m.held && (
         <button
           className="qm-grip"
           disabled={!!busy || saving}
@@ -232,7 +245,7 @@ export default function QueuedMessages({
           </small>
         ) : null}
       </div>
-      {onSendNow && (!claude || m.via === "app") && !m.sending && editing?.id !== m.id && (
+      {onSendNow && (!claude || m.via === "app") && !m.sending && !m.held && editing?.id !== m.id && (
         <button
           className="qm-now"
           aria-label="Send now"
@@ -243,7 +256,7 @@ export default function QueuedMessages({
           <ArrowUp size={15} />
         </button>
       )}
-      {editing?.id !== m.id && (
+      {editing?.id !== m.id && !m.held && (
         <button
           className="qm-action"
           aria-label="Edit queued message"
@@ -257,14 +270,16 @@ export default function QueuedMessages({
           <SquarePen size={16} />
         </button>
       )}
-      <button
-        aria-label="Remove queued message"
-        title="Remove"
-        disabled={!!busy || saving}
-        onClick={() => { if (!savingNow.current && !busy) onRemove(m); }}
-      >
-        <X size={15} />
-      </button>
+      {(!m.held || m.local) && (
+        <button
+          aria-label="Remove queued message"
+          title="Remove"
+          disabled={!!busy || saving}
+          onClick={() => { if (!savingNow.current && !busy) onRemove(m); }}
+        >
+          <X size={15} />
+        </button>
+      )}
     </div>
   );
 

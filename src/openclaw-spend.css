@@ -182,3 +182,7 @@
   color: var(--text-strong);
   font-weight: 550;
 }
+
+.claw-spend-sheet {
+  overscroll-behavior: contain;
+}

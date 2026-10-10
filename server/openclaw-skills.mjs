@@ -151,7 +151,17 @@ async function clawHubSlugs(workspaceDir) {
 export function routes(app, client, ctx) {
   const { base, authorize } = ctx;
   const installs = new Map();
+  const finishedAt = new Map();
   let installing = "";
+  // A finished install is forgotten once the skill is ready, or after a while.
+  const forget = (name, ready) => {
+    const at = finishedAt.get(name);
+    if (at === undefined) return;
+    if (ready || Date.now() - at > 10 * 60 * 1000) {
+      installs.delete(name);
+      finishedAt.delete(name);
+    }
+  };
   const status = async () => {
     try {
       const data = await client.call("skills.status", {});
@@ -236,6 +246,7 @@ export function routes(app, client, ctx) {
         const install = (Array.isArray(s.install) ? s.install : [])
           .filter((o) => o && KINDS.includes(o.kind) && typeof o.id === "string" && INSTALL_ID.test(o.id))
           .map((o) => ({ id: o.id, kind: o.kind, label: clean(o.label, 80) }));
+        forget(s.name, s.eligible === true);
         const job = installs.get(s.name);
         // Its API key is missing: the phone can set it (write-only).
         const keyName =
@@ -335,6 +346,7 @@ export function routes(app, client, ctx) {
     if (installing) throw fail(409, "Another install is running. Wait for it to finish.");
     installing = name;
     installs.set(name, { status: "running" });
+    finishedAt.delete(name);
     const run = client.call(
       "skills.install",
       { name, installId, timeoutMs: INSTALL_MS },
@@ -346,6 +358,7 @@ export function routes(app, client, ctx) {
         // OpenClaw scans the skill's code while installing (it doesn't stop).
         const flagged = Array.isArray(result?.warnings) && result.warnings.length > 0;
         installs.set(name, { status: "done", ...(flagged ? { flagged: true } : {}) });
+        finishedAt.set(name, Date.now());
       })
       .catch((error) => {
         const text = String(error?.message || "");
@@ -359,6 +372,7 @@ export function routes(app, client, ctx) {
                 ? "Install took too long. Check on your Mac."
                 : "Install failed. Try it on your Mac.",
         });
+        finishedAt.set(name, Date.now());
       })
       .finally(() => {
         if (installing === name) installing = "";

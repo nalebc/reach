@@ -24,8 +24,14 @@ type Props = {
   speed?: string | null;
   busy?: boolean;
   error?: string;
+  // The Mac's own word on a pick it took but hasn't made yet ("queued").
+  notice?: string;
   working?: boolean;
+  // The Claude app's Ultracode, on for this chat (shown, not a toggle).
+  ultracode?: boolean;
   onRetry?: () => void;
+  // Sends the refused pick once more (a tap; never by itself).
+  onAgain?: () => void;
   onPick: (choice: ModelChoice) => void;
   onClose: () => void;
 };
@@ -150,14 +156,18 @@ function Menu({ agent, label, className, onClose, children }: { agent: AgentName
   );
 }
 
-function Status({ busy, error, working, empty, onRetry, changing = "model", quiet = false }: { busy?: boolean; error?: string; working?: boolean; empty: boolean; onRetry?: () => void; changing?: "model" | "effort"; quiet?: boolean }) {
+function Status({ busy, error, notice, working, empty, onRetry, onAgain, changing = "model", quiet = false }: { busy?: boolean; error?: string; notice?: string; working?: boolean; empty: boolean; onRetry?: () => void; onAgain?: () => void; changing?: "model" | "effort"; quiet?: boolean }) {
   return (
     <>
       {working && <p className="ms-note">Applies to the next turn. The current reply keeps its {changing}.</p>}
       {/* quiet: the menu says it in its header line instead, without moving. */}
       {busy && !quiet && <p className="ms-note" role="status">{empty ? "Loading models…" : `Changing ${changing}…`}</p>}
       {error && <p className="ms-note ms-error" role="alert">{error}</p>}
-      {onRetry && (
+      {notice && !error && <p className="ms-note" role="status">{notice}</p>}
+      {/* A refused pick: the same pick again, not a fresh model list (MODELS-3). */}
+      {error && onAgain ? (
+        <button className="ms-retry" disabled={busy} onClick={onAgain}>Try again</button>
+      ) : onRetry && (
         <button className="ms-retry" disabled={busy} onClick={onRetry}>{empty ? "Try loading models again" : "Refresh model list"}</button>
       )}
     </>
@@ -184,10 +194,10 @@ function ModelRows({ models, model, current, busy, onPick }: { models: AgentMode
         </button>
       )}
       {models.map((m) => (
-        <button key={m.id} role="radio" aria-checked={m.id === current?.id} aria-busy={busy && tapped === m.id} disabled={busy} onClick={() => (setTapped(m.id), onPick(m))}>
+        <button key={m.id} role="radio" aria-checked={m.id === current?.id} aria-busy={busy && tapped === m.id} disabled={busy || m.unconfirmed} onClick={() => (setTapped(m.id), onPick(m))}>
           <span className="ms-text">
             <span>{m.name}</span>
-            {m.description && <small>{m.description}</small>}
+            {m.unconfirmed ? <small>Not in this connection’s model list</small> : m.description && <small>{m.description}</small>}
           </span>
           <Mark checked={m.id === current?.id} pending={!!busy && tapped === m.id} />
         </button>
@@ -202,7 +212,11 @@ export function ClaudeModelSheet(props: Props) {
   const [page, setPage] = useState<"models" | "effort">("models");
   const [tapped, setTapped] = useState("");
   const current = currentModel(models, model);
-  const level = effort || current?.defaultEffort || null;
+  // The chat's own level only: an unknown one is "Default", never the
+  // catalog's default shown as if picked (Oct 9).
+  const level = effort || null;
+  const levels = current?.efforts || [];
+  const ultracode = props.ultracode === true;
   return (
     <Menu agent={agent} label={page === "models" ? "Model" : "Effort"} className="ms-claude" onClose={onClose}>
       <header className="ms-menu-head">
@@ -220,22 +234,24 @@ export function ClaudeModelSheet(props: Props) {
       <Status {...props} onRetry={!models.length || props.error || (model && !current) ? props.onRetry : undefined} empty={!models.length} changing={page === "effort" ? "effort" : "model"} quiet />
       {page === "models" ? (
         <>
-          <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
+          {/* An unknown level stays unnamed: the model alone, never the
+              catalog's default sent as if picked. */}
+          <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, ...(level ? { effort: effortFor(m, level) } : {}) })} />
           {!!current?.efforts.length && (
             <button className="ms-card ms-row" disabled={busy} onClick={() => setPage("effort")}>
               <span>Effort</span>
-              <span className="ms-value">{level ? levelName(level, agent) : "Default"}</span>
+              <span className="ms-value">{[level ? levelName(level, agent) : !ultracode && "Default", ultracode && level !== "ultracode" && levelName("ultracode", agent)].filter(Boolean).join(" · ")}</span>
               <ChevronRight size={16} className="ms-chevron" />
             </button>
           )}
         </>
       ) : (
         <div className="ms-card" role="radiogroup" aria-label="Effort">
-          {(current?.efforts || []).map((e) => (
+          {levels.map((e) => (
             <button
               key={e}
               role="radio"
-              aria-checked={e === level}
+              aria-checked={e === level || (ultracode && e === "ultracode")}
               aria-busy={busy && tapped === e}
               disabled={busy}
               onClick={() => {
@@ -249,9 +265,20 @@ export function ClaudeModelSheet(props: Props) {
             >
               <span className="ms-text">
                 <span>{levelName(e, agent)}</span>
-                {current?.effortNotes?.[e] && <small>{current.effortNotes[e]}</small>}
+                {current?.effortNotes?.[e] ? <small>{current.effortNotes[e]}</small> : !level && e === current?.defaultEffort && <small>Default</small>}
               </span>
-              <Mark checked={e === level} pending={!!busy && tapped === e} />
+              <Mark checked={e === level || (ultracode && e === "ultracode")} pending={!!busy && tapped === e} />
+            </button>
+          ))}
+          {/* The chat's own level or Ultracode where the list has none: in
+              its own words, never dropped (a level newer than the list);
+              once, when the level is Ultracode itself. */}
+          {[...new Set([level && !levels.includes(level) ? level : "", ultracode && !levels.includes("ultracode") ? "ultracode" : ""])].filter(Boolean).map((e) => (
+            <button key={e} role="radio" aria-checked="true" disabled>
+              <span className="ms-text">
+                <span>{levelName(e, agent)}</span>
+              </span>
+              <Check size={20} className="ms-check" />
             </button>
           ))}
         </div>
@@ -302,12 +329,14 @@ function SpeedRow({ speeds: tiers, speed, onPick }: { speeds: { id: string; name
 // effort as dots, the one in use a pill; a tap on a dot picks that level.
 export function CodexEffortStrip({ agent, models, model, effort, busy, onPick, onConfigure }: Pick<Props, "agent" | "models" | "model" | "effort" | "busy" | "onPick"> & { onConfigure: () => void }) {
   const current = currentModel(models, model);
+  // The knob sits on the default when the chat names no level, its word
+  // "Default": never the default's name as if picked (Oct 9).
   const level = effort || current?.defaultEffort || null;
   const efforts = current?.efforts || [];
   return (
     <div className={`ms-strip ${agent}`} role="group" aria-label="Model and effort">
       <button className="ms-strip-label" onClick={onConfigure}>
-        <strong>{current?.name || (model ? modelDisplayName(model) : "Model")}</strong> {level && <span>{levelName(level, agent)}</span>}
+        <strong>{current?.name || (model ? modelDisplayName(model) : "Model")}</strong> {level && <span>{effort ? levelName(effort, agent) : "Default"}</span>}
         <ChevronRight size={18} />
       </button>
       {efforts.length > 1 && (
@@ -317,7 +346,7 @@ export function CodexEffortStrip({ agent, models, model, effort, busy, onPick, o
             <button
               key={e}
               role="radio"
-              aria-checked={e === level}
+              aria-checked={e === effort}
               className={i <= efforts.indexOf(level || "") ? "filled" : ""}
               aria-label={levelName(e, agent)}
               title={current?.effortNotes?.[e]}

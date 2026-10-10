@@ -33,6 +33,14 @@ const ERRORS = {
   invalid: [409, "The browser operation is invalid."],
   download_failed: [409, "The browser could not download this attachment."],
 };
+const FIXED_DETAILS = [
+  "The target browser window is gone.",
+  "The target tab is gone.",
+  "The target tab changed. No action was taken.",
+  "The target document changed. No action was taken.",
+  "The new browser window has not acknowledged creation. Inspect it before continuing.",
+  "The browser returned an unexpected result.",
+];
 const browserError = (code, uncertain = false, fallback = "unsupported") => {
   const safeCode = typeof code === "string" && Object.hasOwn(ERRORS, code) ? code : fallback;
   const [status, message] = ERRORS[safeCode];
@@ -132,14 +140,7 @@ export function nativeToolProcess(
                 ? ERRORS.setup_required[1]
                 : // Reach's own fixed words for the target it lost, never
                   // the browser's text (it can hold URLs or paths).
-                  [
-                    "The target browser window is gone.",
-                    "The target tab is gone.",
-                    "The target tab changed. No action was taken.",
-                    "The target document changed. No action was taken.",
-                    "The new browser window has not acknowledged creation. Inspect it before continuing.",
-                    "The browser returned an unexpected result.",
-                  ].find((detail) => message.includes(detail)) || ERRORS.browser_changed[1],
+                  FIXED_DETAILS.find((detail) => message.includes(detail)) || ERRORS.browser_changed[1],
             ),
             { code: setup ? "setup_required" : "browser_changed" },
           ),
@@ -171,7 +172,11 @@ export function createToolBrowserDriver({
         }),
         options,
       ); } catch (error) {
-        throw browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain");
+        const mapped = browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain");
+        // Keep Reach's own fixed detail (e.g. "No action was taken"), never the browser's text.
+        const detail = FIXED_DETAILS.find((text) => error?.message === text);
+        if (detail) mapped.message = detail;
+        throw mapped;
       }
       let result;
       try {

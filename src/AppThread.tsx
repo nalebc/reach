@@ -271,6 +271,8 @@ export default function AppThread({
   // Where the window's text fields are, refreshed shortly after each
   // gesture settles, so tapping one can open the keyboard in the same tap.
   const fieldsTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const currentThread = useRef(thread.id);
+  currentThread.current = thread.id;
   const refreshFields = useCallback(
     (delay = 400) => {
       clearTimeout(fieldsTimer.current);
@@ -278,7 +280,7 @@ export default function AppThread({
         const id = thread.id;
         threadFields(peer, id)
           .then((result) => {
-            if (id === thread.id) fields.current = result.fields;
+            if (id === currentThread.current) fields.current = result.fields;
           })
           .catch(() => {});
       }, delay);

@@ -69,6 +69,8 @@ export default function AgentWorkspaceFrame({
     return () => document.removeEventListener("pointerdown", closeOutside);
   }, []);
   const left = Math.max(0, Math.ceil((expiry - now) / 60000));
+  const leftWords = left >= 60 ? `${Math.floor(left / 60)} h${left % 60 ? ` ${left % 60} min` : ""}` : `${left} min`;
+  const toolsOn = destinations.some((item) => item.id === "tools" && item.available);
   const expired = !standing && expiry <= now;
   const secondary = destinations.filter(
     (item) => !PRIMARY.includes(item.id),
@@ -87,7 +89,7 @@ export default function AgentWorkspaceFrame({
         id={`agent-nav-${id}`}
         aria-label={label}
         aria-current={section === id ? "page" : undefined}
-        aria-controls={`agent-section-${id}`}
+        aria-controls={section === id ? `agent-section-${id}` : undefined}
         disabled={!available}
         title={available ? detail : `${label}: not shared by the owner`}
         onClick={() => open(id)}
@@ -107,9 +109,9 @@ export default function AgentWorkspaceFrame({
             <span
               className={`aw-session ${expired ? "is-expired" : ""}`}
               aria-label="Session status"
-              title={`${accessName} · ${expired ? "Access ended" : standing ? "Until the owner ends it" : `${left} min left`}`}
+              title={`${accessName} · ${expired ? "Access ended" : standing ? "Until the owner ends it" : `${leftWords} left`}`}
             >
-              <i /> {expired ? "Ended" : standing ? "Guest" : `${left} min`}
+              <i /> {expired ? "Ended" : standing ? "Guest" : leftWords}
             </span>
           </div>
           <nav aria-label="Workspace navigation" className="aw-nav">
@@ -152,7 +154,7 @@ export default function AgentWorkspaceFrame({
           </nav>
         </div>
       </header>
-      {activity && section !== "tools" && (
+      {activity && section !== "tools" && toolsOn && (
         <div className="aw-activity" role="status">
           <span className="aw-pulse" /> <span>{activity}</span>
           <button type="button" onClick={() => navigate("tools")}>

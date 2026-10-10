@@ -292,7 +292,7 @@ test("skills UI: groups, pills, toggle and a two-step install", async () => {
     assert.equal(field.getAttribute("autocomplete"), "off");
     assert.equal(field.value, "");
     const btn = (label) => [...doc.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent.trim() === label);
-    btn("spy on").click();
+    btn("spy").click();
     await dom.waitFor(() => sent.length === 1);
     assert.deepEqual(sent[0], ["enable", { key: "spy", enabled: true }]);
     const account = doc.querySelector('[aria-label="helper HELPER_ACCOUNT"]');

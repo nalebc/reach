@@ -100,9 +100,10 @@ export function createAgentWatch({
   start(claudeProjects, { recursive: true }, (event, file) => {
     const name = path.basename(String(file || ""));
     if (!name.endsWith(".jsonl")) return;
-    // A sub-agent's own transcript (<session>/subagents/agent-….jsonl) is
-    // its chat changing: what the agent does shows there.
-    const parent = /([0-9a-f-]{36})[\\/]subagents[\\/][^\\/]+\.jsonl$/i.exec(String(file || ""))?.[1];
+    // A sub-agent's own transcript (<session>/subagents/agent-….jsonl, or
+    // a workflow's: <session>/subagents/workflows/<run>/…) is its chat
+    // changing: what the agent does shows there.
+    const parent = /([0-9a-f-]{36})[\\/]subagents[\\/](?:workflows[\\/][\w-]{1,80}[\\/])?[^\\/]+\.jsonl$/i.exec(String(file || ""))?.[1];
     const id = parent || name.slice(0, -6);
     if (UUID.test(id)) tell(`claude:${id}`, { agent: "claude", kind: "history", id });
   });

@@ -649,6 +649,29 @@ test("a Codex chat reads like the Codex app", async () => {
   assert.deepEqual(dom.errors, []);
 });
 
+// "Edited 2 files +2, 1 failed" where one write was declined: nothing was
+// written, and saying no isn't a failure. An edit's card shows its lines.
+test("a declined edit isn't counted as edited or failed; an edit's card shows what it writes", async () => {
+  mac.pages[`claude:${CLAUDE}`].items = [
+    { id: "u1", role: "user", kind: "text", text: "Write the colors" },
+    { id: "w1", role: "tool", kind: "file-change", text: "blue.txt", detail: "@@\n+Blue", status: "completed" },
+    { id: "w2", role: "tool", kind: "file-change", text: "color.txt", detail: "@@\n+Red", status: "declined" },
+  ];
+  mac.live = {
+    ...idleLive(),
+    version: 5,
+    status: "waiting",
+    prompts: [{ id: "p1", kind: "tool", tool: "Write", title: "color.txt", command: "/work/app/color.txt", preview: "+Green", reason: "", decisions: ["allow", "deny"] }],
+  };
+  await open(claudeSession());
+  await dom.waitFor(() => $(".as-run-head") && $(".as-prompt.tool"));
+  assert.equal($(".as-run-head span").textContent, "Edited blue.txt");
+  assert.deepEqual($$(".as-run-head b").map((b) => b.textContent), ["+1"]);
+  assert.deepEqual($$(".as-run-head em").map((e) => [e.textContent, e.className]), [["1 declined", "declined"]]);
+  assert.deepEqual($$(".as-prompt.tool pre").map((p) => p.textContent), ["/work/app/color.txt", "+Green"]);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("the Codex composer is one card with its controls inside, and the chat opens on its date", async () => {
   mac.pages[`codex:${CODEX}`].items = [
     {
@@ -1156,6 +1179,29 @@ test("an unlisted selected model stays visible, never checks the default, and a 
   assert.deepEqual(dom.errors, []);
 });
 
+test("a model only the installed Codex lists (not its service) gets its effort dots, but isn't offered to pick", async (t) => {
+  const selected = codexSession({ model: "gpt-6.1-sol", effort: "xhigh" });
+  mac.pages[`codex:${CODEX}`].session = selected;
+  const original = routes["/api/sessions/models"];
+  const newer = (id, name) => ({ id, name, efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium", images: true, isDefault: false, unconfirmed: true });
+  routes["/api/sessions/models"] = () => ({ ...CODEX_OFFERS, models: [...CODEX_OFFERS.models, newer("gpt-6.1-sol", "GPT-6.1 Sol"), newer("gpt-6.1-luna", "GPT-6.1 Luna")] });
+  t.after(() => { routes["/api/sessions/models"] = original; });
+  await open(selected, signedIn, { ...peer, url: "https://newer-model.test" });
+  await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
+  await click($(".as-model"));
+  assert.deepEqual($$(".ms-dots button").map((b) => b.getAttribute("aria-label")), ["Low", "Medium", "High", "Extra High"]);
+  await click($(".ms-strip-label"));
+  assert.equal(checkedModel(), "GPT-6.1 Sol");
+  for (const name of ["GPT-6.1 Sol", "GPT-6.1 Luna"]) {
+    assert.equal(modelRow(name).disabled, true);
+    assert.match(modelRow(name).textContent, /Not in this connection’s model list/);
+  }
+  assert.equal(modelRow("GPT-6 Sol").disabled, false);
+  assert.deepEqual(mac.sent, []);
+  await click($(".ms-done"));
+  assert.deepEqual(dom.errors, []);
+});
+
 test("Codex: the model and effort as words and dots over the composer, the models in Configure", async () => {
   const view = await open(codexSession());
   await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
@@ -1428,6 +1474,241 @@ test("a Claude desktop model refusal keeps the current model and the error in it
   assert.match($(".ms-sheet [role=alert]").textContent, /current selection is unchanged/);
   assert.match($(".as-model").textContent, /Opus/);
   assert.equal(checkedModel(), "Opus");
+});
+
+// Oct 9 (MODELS-2, PARITY-1): a level the chat never reported is not its
+// level. The catalog's default shows as "Default", never as if picked.
+const effortRows = () => $$(".ms-card[aria-label=Effort] button");
+const effortRow = (name) => effortRows().find((b) => b.querySelector(".ms-text > span").textContent === name);
+test("Claude: an unknown effort shows as Default, never as the catalog's level", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high"], defaultEffort: "high", isDefault: true }];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ effort: null });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-effort-unknown.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  assert.equal($(".as-model-effort")?.textContent || "", "", "no level the chat never reported");
+  await click($(".as-model"));
+  const row = await dom.waitFor(() => $(".ms-row"));
+  assert.equal(row.querySelector(".ms-value").textContent, "Default");
+  await click(row);
+  assert.deepEqual(effortRows().filter((b) => b.getAttribute("aria-checked") === "true"), [], "nothing checked as if chosen");
+  assert.match(effortRow("High").textContent, /Default/);
+  // A model picked meanwhile goes alone: the default isn't sent as a pick.
+  await click($(".ms-sheet button[aria-label=Back]"));
+  await click(modelRow("Opus 5.5"));
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/model")));
+  assert.deepEqual(mac.sent.find((m) => m.route.endsWith("/model")).body, { model: "opus" });
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Codex: an unknown effort reads Default over the dots, not the default's name", async () => {
+  const session = codexSession({ effort: null });
+  mac.pages[`codex:${CODEX}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://codex-effort-unknown.test" });
+  await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
+  assert.equal($(".as-model-effort")?.textContent || "", "");
+  await click($(".as-model"));
+  assert.equal($(".ms-strip-label").textContent.trim(), "GPT-6 Astra Default");
+  assert.deepEqual($$(".ms-dots [aria-checked=true]"), []);
+  assert.deepEqual(dom.errors, []);
+});
+
+// PARITY-4: setChoice({}) after a send turned a pick back into the default
+// while the chat's read had no level yet.
+test("Claude: a level picked and sent stays when the chat's next read has none", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high"], defaultEffort: "high", isDefault: true }];
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  // A chat Reach runs: the level goes with the next message.
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { ...JSON.parse(init.body), applied: false });
+  t.after(() => { CLAUDE_OFFERS.models = offers; routes[route] = previous; });
+  const session = claudeSession({ effort: null, live: undefined, inApp: false, origin: "reach", held: "reach" });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-effort-sent.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  await click(effortRow("Medium"));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  assert.equal($(".as-model-effort").textContent, "Medium");
+  await typeInto($("textarea"), "go");
+  await click(button("Send"));
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/messages")));
+  assert.equal(mac.sent.find((m) => m.route.endsWith("/messages")).body.effort, "medium");
+  mac.bump();
+  await settle(150);
+  assert.equal($(".as-model-effort").textContent, "Medium", "a read without a level keeps the pick");
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  assert.equal(effortRow("Medium").getAttribute("aria-checked"), "true");
+  await click($(".ms-pop .ms-scrim"));
+  // A level the chat reports itself (changed in the app) still wins.
+  mac.pages[`claude:${CLAUDE}`].session = { ...session, effort: "low" };
+  mac.bump();
+  await dom.waitFor(() => $(".as-model-effort")?.textContent === "Low");
+  assert.deepEqual(dom.errors, []);
+});
+
+// The catalog names one model three ways ("default", "opus", the API id).
+test("Claude: the chat's model is checked once whichever name it goes by", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "default", resolvedModel: "claude-opus-5-5", name: "Default (recommended)", efforts: ["low", "high"], defaultEffort: "high", isDefault: true },
+    { id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "high"], defaultEffort: "high" },
+    { id: "haiku", resolvedModel: "claude-haiku-5-5", name: "Haiku 5.5", efforts: ["low", "high"], defaultEffort: "high" },
+  ];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  for (const [model, name] of [["claude-opus-5-5", "Opus 5.5"], ["opus", "Opus 5.5"], ["default", "Default (recommended)"], ["claude-haiku-5-5[1m]", "Haiku 5.5"]]) {
+    const session = claudeSession({ model, effort: "low" });
+    mac.pages[`claude:${CLAUDE}`].session = session;
+    const view = await open(session, signedIn, { ...peer, url: `https://claude-alias-${model.replace(/\W/g, "")}.test` });
+    await dom.waitFor(() => $(".as-model")?.textContent.includes(name.split(" ")[0]));
+    await click($(".as-model"));
+    await dom.waitFor(() => $(".ms-sheet.ms-claude"));
+    assert.deepEqual($$(".ms-card[aria-label=Models] [aria-checked=true] .ms-text > span").map((s) => s.textContent), [name], model);
+    await click($(".ms-pop .ms-scrim"));
+    await view.unmount();
+  }
+});
+
+// A level Claude Code adds that Reach has never heard of shows in its own
+// words, checked, never dropped (agent readers fail closed).
+test("Claude: an effort the catalog doesn't list still shows, checked", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "high"], defaultEffort: "high", isDefault: true }];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ effort: "turbo" });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-effort-new.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  assert.equal($(".as-model-effort").textContent, "turbo");
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  const unlisted = effortRow("turbo");
+  assert.ok(unlisted, "the chat's own level is listed");
+  assert.equal(unlisted.getAttribute("aria-checked"), "true");
+  assert.ok(unlisted.disabled);
+  assert.deepEqual(effortRows().filter((b) => b.getAttribute("aria-checked") === "true"), [unlisted]);
+});
+
+// MODELS-3: a settings change the Claude app couldn't take now said "It goes
+// in by itself after", which only queued messages do, and offered "Refresh
+// model list". Now: the Mac's words, and Try again (one tap, never a loop).
+test("Claude: a change the Mac couldn't make now says so honestly and offers Try again", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high"], defaultEffort: "high", isDefault: true }];
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  let tries = 0;
+  routes[route] = (init) => {
+    mac.sent.push({ route, body: JSON.parse(init.body) });
+    return ++tries === 1
+      ? Response.json({ error: "Waiting: another chat is updating the Claude app. It goes in by itself after.", kind: "busy", waiting: true }, { status: 409 })
+      : { effort: "medium", applied: true };
+  };
+  t.after(() => { CLAUDE_OFFERS.models = offers; routes[route] = previous; });
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ effort: "high" });
+  await open(mac.pages[`claude:${CLAUDE}`].session, signedIn, { ...peer, url: "https://claude-effort-busy.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  await click(effortRow("Medium"));
+  const alert = await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+  assert.match(alert.textContent, /another chat is updating the Claude app/);
+  assert.doesNotMatch(alert.textContent, /goes in by itself/);
+  assert.equal(button("Refresh model list"), undefined);
+  assert.equal(mac.sent.filter((m) => m.route === route).length, 1, "never retried by itself");
+  await click(button("Try again"));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  assert.deepEqual(mac.sent.filter((m) => m.route === route).map((m) => m.body), [{ effort: "medium" }, { effort: "medium" }]);
+  assert.equal($(".as-model-effort").textContent, "Medium");
+});
+
+test("Claude: a change the Mac answers with its own status shows its words; only a queued one counts as coming", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high"], defaultEffort: "high", isDefault: true }];
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  let answer;
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), answer);
+  t.after(() => { CLAUDE_OFFERS.models = offers; routes[route] = previous; });
+  mac.pages[`claude:${CLAUDE}`].session = claudeSession({ effort: "high" });
+  await open(mac.pages[`claude:${CLAUDE}`].session, signedIn, { ...peer, url: "https://claude-effort-status.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  // A status Reach doesn't know: nothing changed, in the Mac's words.
+  answer = { status: "held", message: "Claude is busy on the Mac. It goes in by itself after.", applied: false };
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  await click(effortRow("Low"));
+  await dom.waitFor(() => $(".ms-sheet [role=alert]"));
+  assert.match($(".ms-sheet [role=alert]").textContent, /Claude is busy on the Mac/);
+  assert.doesNotMatch($(".ms-sheet").textContent, /goes in by itself/);
+  assert.equal($(".as-model-effort").textContent, "High");
+  // Queued: the Mac says it goes in, and the pick shows.
+  answer = { status: "queued", message: "Claude is busy on the Mac. It goes in by itself after.", applied: false };
+  await click(button("Try again"));
+  await dom.waitFor(() => $(".ms-sheet .ms-note[role=status]"));
+  assert.match($(".ms-sheet .ms-note[role=status]").textContent, /goes in by itself/);
+  assert.equal($(".ms-sheet [role=alert]"), null);
+  assert.equal($(".as-model-effort").textContent, "Low");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Codex: a dot the Mac queued keeps the strip open with its words", async (t) => {
+  const route = `/api/sessions/codex/${CODEX}/model`, previous = routes[route];
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { status: "queued", message: "Codex is busy. It goes in by itself after.", applied: false });
+  t.after(() => { routes[route] = previous; });
+  await open(codexSession(), signedIn, { ...peer, url: "https://codex-effort-queued.test" });
+  await dom.waitFor(() => $(".as-model") && !$(".as-model").disabled);
+  await click($(".as-model"));
+  await click($('.ms-dots [aria-label="High"]'));
+  await dom.waitFor(() => $(".as-model-strip [role=status]"));
+  assert.match($(".as-model-strip [role=status]").textContent, /Codex is busy/);
+  assert.ok($(".ms-strip"));
+  assert.equal($(".as-model-effort").textContent, "High");
+});
+
+// MODELS-5: the Claude app's Ultracode, read from the chat (true only).
+test("Claude: an Ultracode chat shows Ultracode; any other value shows nothing extra", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "high", "xhigh"], defaultEffort: "high", isDefault: true }];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ effort: "xhigh", ultracode: true });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  const view = await open(session, signedIn, { ...peer, url: "https://claude-ultracode.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  // The level stays the pill's word, so a change still shows there.
+  assert.equal($(".as-model-effort").textContent, "Extra");
+  await click($(".as-model"));
+  const row = await dom.waitFor(() => $(".ms-row"));
+  assert.equal(row.querySelector(".ms-value").textContent, "Extra high · Ultracode");
+  await click(row);
+  assert.equal(effortRow("Extra high").getAttribute("aria-checked"), "true");
+  const ultra = effortRow("Ultracode");
+  assert.ok(ultra && ultra.disabled, "shown, not a toggle");
+  assert.equal(ultra.getAttribute("aria-checked"), "true");
+  await click($(".ms-pop .ms-scrim"));
+  await view.unmount();
+  const other = claudeSession({ effort: "xhigh", ultracode: "yes" });
+  mac.pages[`claude:${CLAUDE}`].session = other;
+  await open(other, signedIn, { ...peer, url: "https://claude-ultracode-other.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  assert.equal($(".as-model-effort").textContent, "Extra");
+  await click($(".as-model"));
+  assert.equal((await dom.waitFor(() => $(".ms-row"))).querySelector(".ms-value").textContent, "Extra high");
+});
+
+test("Claude: a level the catalog offers as ultracode reads Ultracode", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["high", "ultracode"], defaultEffort: "high", isDefault: true }];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ effort: "high" });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-ultracode-level.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => $(".ms-row")));
+  assert.deepEqual(effortRows().map((b) => b.querySelector(".ms-text > span").textContent), ["High", "Ultracode"]);
 });
 
 test("retrying an empty model list fetches new offers instead of reusing the empty cache", async (t) => {
@@ -2979,6 +3260,33 @@ test("the permission mode changes from the session, in each agent's own terms, i
   assert.deepEqual(dom.errors, []);
 });
 
+// "Reach can't pick that mode.": an open chat's menu offered Bypass, which
+// the mode route always refuses. Left out, unless the chat is in it.
+test("an open Claude chat's menu leaves out a mode Reach can't switch it to", async (t) => {
+  const names = () => $$(".as-mode-menu button .as-mode-menu-text > span").map((s) => s.textContent);
+  const original = routes["/api/sessions/models"];
+  routes["/api/sessions/models"] = (init, href) =>
+    href?.searchParams.get("agent") === "claude"
+      ? { ...CLAUDE_OFFERS, modes: [...CLAUDE_OFFERS.modes.slice(0, 4), { id: "bypassPermissions", label: "Bypass Permissions", switchable: false }] }
+      : original(init, href);
+  t.after(() => { routes["/api/sessions/models"] = original; });
+  for (const [mode, shown] of [["plan", false], ["bypassPermissions", true]]) {
+    mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined, mode });
+    await open(claudeSession({ live: undefined, mode }), signedIn, { ...peer, url: `https://modes-${mode}.test` });
+    await dom.waitFor(() => $(".as-mode"));
+    await click($(".as-mode"));
+    await dom.waitFor(() => $$(".as-mode-menu button").length >= 4);
+    assert.equal(names().includes("Bypass permissions"), shown, mode);
+    if (shown) {
+      const row = $$(".as-mode-menu button").find((b) => b.textContent.includes("Bypass permissions"));
+      assert.equal(row.disabled, true);
+      assert.equal(row.getAttribute("aria-checked"), "true");
+    }
+    for (const view of views.splice(0)) await view.unmount();
+  }
+  assert.deepEqual(dom.errors, []);
+});
+
 test("typing / in a Claude Code session offers its commands", async () => {
   mac.pages[`claude:${CLAUDE}`].session = claudeSession({ live: undefined });
   await open(claudeSession({ live: undefined }));
@@ -4253,7 +4561,9 @@ for (const agent of ["codex", "claude"]) test(`${agent}: cancelling an acknowled
   await dom.waitFor(() => $(".as-composer textarea"));
   await typeInto($(".as-composer textarea"), "Cancel me in the app");
   await click(button("Send"));
-  await dom.waitFor(() => $(".qm-row") || $(".qm-head"));
+  // The queue's own row (it can be edited), not the copy shown until then
+  // (sent while it works, the copy can only be removed).
+  await dom.waitFor(() => $(".qm-row [aria-label='Edit queued message']"));
   assert.equal(sends, 1);
   mac.bump({ outbox: [] }); // authoritative external cancellation, no transcript message
   await dom.waitFor(() => !$(".qm-row") && !$(".qm-head"));
@@ -4418,5 +4728,403 @@ test("without a microphone the memo says so and nothing breaks", async (t) => {
   await click(await dom.waitFor(() => button("Record a voice memo")));
   await dom.waitFor(() => /microphone/.test($(".as-hint")?.textContent || ""));
   assert.ok(button("Record a voice memo"), "ready to try again");
+  assert.deepEqual(dom.errors, []);
+});
+
+// Rewind was offered where it always failed: on a chat the Claude app runs
+// (refused: rewind it there), and Restore conversation on the first message.
+test("rewind isn't offered while the Claude app runs the chat, nor Restore conversation on its first message", async (t) => {
+  const items = [
+    { id: "u1", role: "user", kind: "text", text: "Start the plan", turnId: "t1" },
+    { id: "a1", role: "assistant", kind: "text", text: "Planned.", turnId: "t1" },
+    { id: "u2", role: "user", kind: "text", text: "Now the API", turnId: "t2" },
+  ];
+  mac.pages[`claude:${CLAUDE}`].items = items;
+  await open(claudeSession());
+  await dom.waitFor(() => $$(".as-user").length === 2);
+  assert.equal(button("Rewind to before this"), undefined, "held by the Claude app");
+  await views.splice(0)[0].unmount();
+  // Reach's own chat: offered; the first message's preview says only code can go back.
+  mac.pages[`claude:${NEW}`].items = items;
+  let answer = { canRewind: true, files: [], insertions: 0, deletions: 0, conversation: false };
+  const route = `/api/sessions/claude/${NEW}/rewind`;
+  routes[route] = () => answer;
+  t.after(() => delete routes[route]);
+  await open(claudeSession({ id: NEW, title: "Plan the API", live: undefined }));
+  await dom.waitFor(() => $$(".as-user").length === 2);
+  const rewinds = () => $$('button[aria-label="Rewind to before this"]');
+  assert.equal(rewinds().length, 2);
+  await click(rewinds()[0]);
+  await dom.waitFor(() => /first message/.test($(".as-rewind")?.textContent || ""));
+  assert.equal(button("Restore conversation"), undefined);
+  await click(button("Cancel"));
+  // A preview the Mac refused leaves nothing to restore.
+  answer = new Response(JSON.stringify({ error: "Claude is running this chat in the Claude app: rewind it there." }), { status: 409 });
+  await click(rewinds()[1]);
+  await dom.waitFor(() => /rewind it there/.test($(".as-rewind")?.textContent || ""));
+  assert.equal(button("Restore conversation").disabled, true);
+  assert.deepEqual(dom.errors, []);
+});
+
+// "Sending messages sometimes disappear and come back" (Oct 9 bug bash): a
+// sent message shows from the tap until the transcript has it, once.
+const visible = (text) => dom.document.body.textContent.includes(text);
+const times = (text) => dom.document.body.textContent.split(text).length - 1;
+
+test("a message the Mac's outbox acknowledged stays in sight until the outbox carries it", async (t) => {
+  const session = claudeSession({ status: "idle" });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  // Queued for the Claude app; the long poll hasn't brought the outbox yet.
+  routes[route] = () => ({ queued: true, delivered: false, messageId: "app-1", via: "app" });
+  t.after(() => { routes[route] = previous; });
+  await open(session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq-gap hello");
+  await click(button("Send"));
+  await settle(20);
+  assert.equal(times("zq-gap hello"), 1, "shown while the outbox doesn't have it yet");
+  mac.bump({ outbox: [{ id: "app-1", text: "zq-gap hello", images: 0, via: "app", sending: true }] });
+  await settle(200);
+  assert.equal(times("zq-gap hello"), 1, "then from the outbox, once");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a message the busy Claude app queued shows waiting, read-only, until the app takes it", async () => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "running" });
+  mac.live = { ...idleLive(), status: "running", outbox: [{ id: "app-2", text: "zq-enq later", images: 0, via: "app", sending: true }] };
+  await open(page.session);
+  await dom.waitFor(() => visible("zq-enq later"));
+  // Typed into the app, which queued it: the outbox lets go, the transcript
+  // has it only in Claude Code's queue.
+  page.session = { ...page.session, waiting: [{ id: "queued:0", text: "zq-enq later", images: 0 }] };
+  mac.bump({ outbox: [] });
+  await settle(300);
+  assert.equal(times("zq-enq later"), 1, "still in sight, once");
+  const row = $$(".qm-row").find((r) => /zq-enq later/.test(r.textContent));
+  assert.ok(row, "in the queue above the box");
+  assert.deepEqual([...row.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")).filter(Boolean), [], "nothing offered that can't work");
+  // The app's turn ends: taken, written as a user entry.
+  page.session = { ...page.session, waiting: [] };
+  page.items.push({ id: "u-enq", role: "user", kind: "text", text: "zq-enq later" });
+  mac.bump();
+  await dom.waitFor(() => !$(".qm-row"));
+  assert.equal(times("zq-enq later"), 1);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a message sent while Reach's Claude Code works waits above the box, not above the reply, until Claude takes it", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "running", live: undefined, inApp: false });
+  page.items.push({ id: "u0", role: "user", kind: "text", text: "count to 1500" });
+  mac.live = { ...idleLive(), status: "running", streaming: "one, two, three" };
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  routes[route] = () => {
+    mac.bump({ waiting: [{ id: "w1", text: "Reply with the word two", images: 0, at: Date.now() }] });
+    return { turnId: null, waitingId: "w1" };
+  };
+  t.after(() => { routes[route] = previous; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "Reply with the word two");
+  await click(button("Send"));
+  await settle(200);
+  assert.equal(times("Reply with the word two"), 1);
+  const row = $$(".qm-row").find((r) => /word two/.test(r.textContent));
+  assert.ok(row, "waiting above the box");
+  assert.ok(!row.querySelector("[aria-label='Remove queued message'], [aria-label='Edit queued message'], [aria-label='Send now']"), "in Claude Code's queue: nothing can take it back");
+  assert.ok(!$$(".as-user.pending").some((b) => /word two/.test(b.textContent)), "not left above the reply streaming");
+  // A reload: Reach still knows it waits.
+  for (const view of views.splice(0)) await view.unmount();
+  await open(page.session);
+  await dom.waitFor(() => $$(".qm-row").some((r) => /word two/.test(r.textContent)));
+  // Claude Code takes it (its replay) and the transcript has it.
+  page.items.push({ id: "u1", role: "user", kind: "text", text: "Reply with the word two" });
+  mac.bump({ waiting: [] });
+  await dom.waitFor(() => !$(".qm-row") && times("Reply with the word two") === 1);
+  assert.ok($$(".as-user").some((b) => /word two/.test(b.textContent)), "in the conversation now");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("two messages Claude Code takes together as one leave no ghost copies", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "running", live: undefined, inApp: false });
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  routes[route] = () => ({ turnId: null });
+  t.after(() => { routes[route] = previous; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq1 Reply one");
+  await click(button("Send"));
+  await settle(50);
+  await typeInto($(".as-composer textarea"), "zq2 Reply\ntwo");
+  await click(button("Send"));
+  await settle(50);
+  // Both taken as ONE user entry (two text blocks; the reader joins them).
+  page.items.push({ id: "u-merged", role: "user", kind: "text", text: "zq1 Reply one\nzq2 Reply\ntwo", parts: ["zq1 Reply one", "zq2 Reply\ntwo"] });
+  mac.bump();
+  await settle(400);
+  assert.deepEqual([$$(".as-user.pending").length, $$(".qm-row").length, times("zq1 Reply one")], [0, 0, 1]);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a repeated message clears its copy once the transcript has it, older pages loaded or not", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}`, previous = routes[route];
+  const session = claudeSession({ status: "idle", live: undefined, inApp: false });
+  const older = [
+    { id: "o1", role: "user", kind: "text", text: "continue" },
+    { id: "o2", role: "assistant", kind: "text", text: "ok 1" },
+    { id: "o3", role: "user", kind: "text", text: "continue" },
+    { id: "o4", role: "assistant", kind: "text", text: "ok 2" },
+  ];
+  const newest = [
+    { id: "n1", role: "user", kind: "text", text: "continue" },
+    { id: "n2", role: "assistant", kind: "text", text: "ok 3" },
+  ];
+  routes[route] = (init, url) => url.searchParams.get("before") ? { session, items: older, before: null } : { session, items: newest, before: "older" };
+  t.after(() => { routes[route] = previous; });
+  const msgRoute = `/api/sessions/claude/${CLAUDE}/messages`, prevMsg = routes[msgRoute];
+  routes[msgRoute] = () => ({ turnId: null });
+  t.after(() => { routes[msgRoute] = prevMsg; });
+  await open(session);
+  await click(await dom.waitFor(() => $(".as-older")));
+  await dom.waitFor(() => $$(".as-user").length === 3);
+  await typeInto($(".as-composer textarea"), "continue");
+  await click(button("Send"));
+  await settle(50);
+  newest.push({ id: "n3", role: "user", kind: "text", text: "continue" });
+  mac.bump();
+  await settle(400);
+  assert.deepEqual([$$(".as-user.pending").length, $$(".as-user").length], [0, 4]);
+  assert.deepEqual(dom.errors, []);
+});
+
+// A file attached on the phone went as its path after the words: the copy
+// drew an empty picture square, and never matched the transcript's message
+// (the path in it), so it stayed under Claude's reply for good.
+test("a message with a file attached shows once, with no picture square and no path", async (t) => {
+  routes["/api/sessions/files"] = () => ({ id: "a7ca5d97-1111-4222-8333-444455556666/note.txt", name: "note.txt" });
+  t.after(() => delete routes["/api/sessions/files"]);
+  const items = mac.pages[`codex:${CODEX}`].items;
+  await open(codexSession());
+  const field = await dom.waitFor(() => $('input[type="file"]'));
+  Object.defineProperty(field, "files", { configurable: true, value: [new dom.window.File(["hello"], "note.txt", { type: "text/plain" })] });
+  field.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await settle(50);
+  await typeInto($(".as-composer textarea"), "What does the attached file say?");
+  await dom.waitFor(() => !button("Send").disabled);
+  await click(button("Send"));
+  await dom.waitFor(() => $(".as-user.pending"));
+  assert.equal($(".as-user.pending .as-image-wait"), null, "a file is not a picture");
+  // Codex's own transcript keeps the path Reach sent it as.
+  items.push({ id: "u-file", role: "user", kind: "text", text: "What does the attached file say?\n\n/Users/me/.reach/agent-files/a7ca5d97-1111-4222-8333-444455556666/note.txt", turnId: "t9" });
+  mac.bump();
+  await dom.waitFor(() => !$(".as-user.pending"));
+  assert.equal(times("What does the attached file say?"), 1);
+  assert.deepEqual(dom.errors, []);
+});
+
+// The read right after a send still named the old model (the pick goes with
+// the message, applied:false): the old model came back over the new one.
+test("Claude: a model picked and sent stays while the chat's reads still name the old one", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [
+    { id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "high"], defaultEffort: "high", isDefault: true },
+    { id: "haiku", resolvedModel: "claude-haiku-5-5", name: "Haiku 5.5", efforts: ["low", "high"], defaultEffort: "high" },
+  ];
+  const route = `/api/sessions/claude/${CLAUDE}/model`, previous = routes[route];
+  routes[route] = (init) => (mac.sent.push({ route, body: JSON.parse(init.body) }), { ...JSON.parse(init.body), applied: false });
+  t.after(() => { CLAUDE_OFFERS.models = offers; routes[route] = previous; });
+  const page = mac.pages[`claude:${CLAUDE}`];
+  const session = claudeSession({ model: "claude-opus-5-5", live: undefined, inApp: false, origin: "reach", held: "reach" });
+  page.session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-model-sent.test" });
+  await dom.waitFor(() => $(".as-model-name")?.textContent === "Opus 5.5");
+  await click($(".as-model"));
+  await click(await dom.waitFor(() => modelRow("Haiku 5.5")));
+  await dom.waitFor(() => !$(".ms-sheet"));
+  await typeInto($("textarea"), "go");
+  await click(button("Send"));
+  await dom.waitFor(() => mac.sent.some((m) => m.route.endsWith("/messages")));
+  assert.equal(mac.sent.find((m) => m.route.endsWith("/messages")).body.model, "haiku");
+  await settle(150);
+  mac.bump();
+  await settle(150);
+  assert.equal($(".as-model-name").textContent, "Haiku 5.5", "a read still naming the old model is older than the send");
+  // Its reply ran on the old model after all (the pick didn't take): the chat's word wins.
+  page.items.push({ id: "u-go", role: "user", kind: "text", text: "go" }, { id: "a-go", role: "assistant", kind: "text", text: "ok" });
+  mac.bump();
+  await dom.waitFor(() => $(".as-model-name")?.textContent === "Opus 5.5");
+  assert.deepEqual(dom.errors, []);
+});
+
+// The server leaves out what's off: Ultracode turned off in the app stayed
+// on here (where it runs, who holds it and a move are reset the same way).
+test("a chat's Ultracode goes once a read leaves it out", async () => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ effort: null, ultracode: true });
+  await open(page.session);
+  await dom.waitFor(() => $(".as-model-effort")?.textContent === "Ultracode");
+  const { ultracode, ...off } = page.session;
+  page.session = off;
+  mac.bump();
+  await dom.waitFor(() => !$(".as-model-effort"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Claude: an Ultracode level with Ultracode on shows once", async (t) => {
+  const offers = CLAUDE_OFFERS.models;
+  CLAUDE_OFFERS.models = [{ id: "opus", resolvedModel: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "high"], defaultEffort: "high", isDefault: true }];
+  t.after(() => { CLAUDE_OFFERS.models = offers; });
+  const session = claudeSession({ effort: "ultracode", ultracode: true });
+  mac.pages[`claude:${CLAUDE}`].session = session;
+  await open(session, signedIn, { ...peer, url: "https://claude-ultracode-once.test" });
+  await dom.waitFor(() => $(".as-model")?.textContent.includes("Opus"));
+  await click($(".as-model"));
+  const row = await dom.waitFor(() => $(".ms-row"));
+  assert.equal(row.querySelector(".ms-value").textContent, "Ultracode");
+  await click(row);
+  assert.deepEqual(effortRows().map((b) => b.querySelector(".ms-text > span").textContent), ["Low", "High", "Ultracode"]);
+  await click($(".ms-pop .ms-scrim"));
+  assert.deepEqual(dom.errors, []);
+});
+
+// Sent while Claude Code worked and in no queue Reach sees: after Stop it
+// stayed above the box for good, with no way to remove it.
+test("a message sent while the agent works goes a moment after it stops, and its copy can be removed", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "running", live: undefined, inApp: false });
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  routes[route] = () => ({ turnId: null });
+  t.after(() => { routes[route] = previous; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq-stop one");
+  await click(button("Send"));
+  await typeInto($(".as-composer textarea"), "zq-stop two");
+  await click(button("Send"));
+  const row = (words) => $$(".qm-row").find((r) => r.textContent.includes(words));
+  // Claude's queue stacks them: opened, each one shows.
+  await click(await dom.waitFor(() => $(".qm-head")));
+  await dom.waitFor(() => row("zq-stop one") && row("zq-stop two"));
+  // Only the phone's copy: Remove lets it go, and asks the Mac nothing.
+  const sent = mac.sent.length;
+  await click(row("zq-stop two").querySelector("[aria-label='Remove queued message']"));
+  await dom.waitFor(() => !row("zq-stop two"));
+  assert.equal(mac.sent.length, sent);
+  // Stopped: the transcript never gets it, so it goes after a moment.
+  page.session = { ...page.session, status: "idle" };
+  mac.bump({ status: "idle" });
+  await settle(1000);
+  assert.ok(row("zq-stop one"), "kept a moment, in case the transcript has it");
+  await dom.waitFor(() => !row("zq-stop one"), 8000);
+  assert.equal(times("zq-stop one"), 0);
+  assert.deepEqual(dom.errors, []);
+});
+
+// The outbox let it go before the transcript had it: it vanished for a read.
+test("a message the outbox lets go stays in sight until the transcript has it, and goes if it never comes", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "idle" });
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  let n = 0;
+  routes[route] = () => ({ queued: true, delivered: false, messageId: `app-${++n}`, via: "app" });
+  t.after(() => { routes[route] = previous; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq-left taken");
+  await click(button("Send"));
+  mac.bump({ outbox: [{ id: "app-1", text: "zq-left taken", images: 0, via: "app", sending: true }] });
+  await settle(200);
+  mac.bump({ outbox: [] });
+  await settle(200);
+  assert.equal(times("zq-left taken"), 1, "taken: still in sight until the transcript has it");
+  page.items.push({ id: "u-left", role: "user", kind: "text", text: "zq-left taken" });
+  mac.bump();
+  await dom.waitFor(() => !$(".as-user.pending"));
+  assert.equal(times("zq-left taken"), 1);
+  // Cancelled in the app: nothing comes, and the copy goes after a moment.
+  await typeInto($(".as-composer textarea"), "zq-left cancelled");
+  await click(button("Send"));
+  mac.bump({ outbox: [{ id: "app-2", text: "zq-left cancelled", images: 0, via: "app" }] });
+  await settle(200);
+  mac.bump({ outbox: [] });
+  await settle(200);
+  assert.equal(times("zq-left cancelled"), 1);
+  await dom.waitFor(() => times("zq-left cancelled") === 0, 8000);
+  assert.deepEqual(dom.errors, []);
+});
+
+// Sent before the chat's first page came, an older "continue" in it read as
+// this one arrived: the copy went before the message did.
+test("a message sent before the chat's page came isn't taken for an older one with its words", async (t) => {
+  const route = `/api/sessions/claude/${CLAUDE}`, previous = routes[route];
+  const session = claudeSession({ status: "idle", live: undefined, inApp: false });
+  const items = [{ id: "o1", role: "user", kind: "text", text: "continue" }, { id: "o2", role: "assistant", kind: "text", text: "ok 1" }];
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  routes[route] = async () => (await gate, { session, items: [...items] });
+  const msgRoute = `/api/sessions/claude/${CLAUDE}/messages`, prevMsg = routes[msgRoute];
+  routes[msgRoute] = () => ({ turnId: null });
+  t.after(() => { routes[route] = previous; routes[msgRoute] = prevMsg; });
+  await open(session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "continue");
+  await click(button("Send"));
+  await settle(50);
+  release();
+  await dom.waitFor(() => $$(".as-user").some((b) => b.textContent.includes("continue") && !b.classList.contains("pending")));
+  await settle(100);
+  assert.equal($$(".as-user.pending").length, 1, "not arrived yet");
+  items.push({ id: "n1", role: "user", kind: "text", text: "continue" });
+  mac.bump();
+  await dom.waitFor(() => !$(".as-user.pending"));
+  assert.equal($$(".as-user").length, 2);
+  assert.deepEqual(dom.errors, []);
+});
+
+// Unseen in the outbox for 15 s only means it went in between two looks
+// while the live view answers: with it down, the copy was dropped unseen.
+test("a message the outbox acknowledged stays while the live view can't look", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "idle" });
+  const live = `/api/sessions/claude/${CLAUDE}/live`, prevLive = routes[live];
+  routes[live] = async () => (await settle(30), new Response("", { status: 502 }));
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  routes[route] = () => ({ queued: true, delivered: false, messageId: "app-down", via: "app" });
+  const now = Date.now;
+  t.after(() => { routes[live] = prevLive; routes[route] = previous; Date.now = now; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq-down hello");
+  await click(button("Send"));
+  await settle(100);
+  Date.now = () => now() + 16000;
+  dom.window.dispatchEvent(new dom.window.Event("online"));
+  await settle(200);
+  assert.equal(times("zq-down hello"), 1);
+  assert.deepEqual(dom.errors, []);
+});
+
+// The agent idle while the outbox still hands the message over: the copy
+// (its row hidden while handed over) went before the transcript had it.
+test("a message sent while the agent worked stays while the outbox still holds it, the agent idle", async (t) => {
+  const page = mac.pages[`claude:${CLAUDE}`];
+  page.session = claudeSession({ status: "running" });
+  mac.live = { ...idleLive(), status: "running" };
+  const route = `/api/sessions/claude/${CLAUDE}/messages`, previous = routes[route];
+  routes[route] = () => {
+    mac.bump({ outbox: [{ id: "app-idle", text: "zq-idle hello", images: 0, via: "app" }] });
+    return { queued: true, delivered: false, messageId: "app-idle", via: "app" };
+  };
+  t.after(() => { routes[route] = previous; });
+  await open(page.session);
+  await typeInto(await dom.waitFor(() => $(".as-composer textarea")), "zq-idle hello");
+  await click(button("Send"));
+  await dom.waitFor(() => $(".qm-row [aria-label='Edit queued message']"));
+  page.session = { ...page.session, status: "idle" };
+  mac.bump({ status: "idle", outbox: [{ id: "app-idle", text: "zq-idle hello", images: 0, via: "app", sending: true }] });
+  await settle(6500);
+  assert.equal(times("zq-idle hello"), 1, "still handed over: in sight");
+  page.items.push({ id: "u-idle", role: "user", kind: "text", text: "zq-idle hello" });
+  mac.bump({ outbox: [] });
+  await dom.waitFor(() => !$(".as-user.pending") && !$(".qm-row"));
+  assert.equal(times("zq-idle hello"), 1);
   assert.deepEqual(dom.errors, []);
 });

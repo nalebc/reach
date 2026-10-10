@@ -18,7 +18,7 @@ const gate = () => {
   return { entered, release, async wait() { enter(); await waiting; } };
 };
 
-async function fixture(t, { pause = null, phase = null } = {}) {
+async function fixture(t, { pause = null, phase = null, point = POINT } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-rewind-auth-"));
   const calls = { read: 0, point: 0, files: 0, conversation: 0 };
   const stopAt = async value => { if (value === phase) await pause.wait(); };
@@ -29,7 +29,7 @@ async function fixture(t, { pause = null, phase = null } = {}) {
     claude: {
       starts: async () => [],
       async read() { calls.read++; await stopAt("read"); return { session: { cwd: root }, items: [] }; },
-      async rewindPoint() { calls.point++; await stopAt("point"); return POINT; },
+      async rewindPoint() { calls.point++; await stopAt("point"); return point; },
     },
     claudeHost: {
       drives: () => false,
@@ -75,6 +75,19 @@ test("dry-run preparation also rechecks revoked authority before contacting Clau
   const result = f.call({ dryRun: true });
   await pause.entered; f.reach.auth.revoke(f.owner.clientId); pause.release();
   assert.equal((await result).status, 401); assert.equal(f.calls.files, 0);
+});
+
+// The first message has nothing before it: the preview says so, so the phone
+// doesn't offer Restore conversation (it was refused only after the tap).
+test("a preview of the chat's first message says its conversation can't go back", async t => {
+  const first = await fixture(t, { point: null });
+  const preview = await first.call({ dryRun: true });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.conversation, false);
+  assert.equal(preview.body.canRewind, true);
+  assert.equal((await first.call({ conversation: true })).status, 409);
+  const later = await fixture(t);
+  assert.equal((await later.call({ dryRun: true })).body.conversation, undefined);
 });
 
 test("revocation after an authorized file rewind prevents the subsequent conversation mutation", async t => {

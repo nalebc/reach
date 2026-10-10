@@ -10,8 +10,8 @@
 .files-crumbs {
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-height: 20px;
+  gap: 0;
+  min-height: 32px;
   overflow-x: auto;
   white-space: nowrap;
   scrollbar-width: none;
@@ -26,7 +26,8 @@
 }
 .files-crumbs button {
   flex-shrink: 0;
-  padding: 2px 3px;
+  min-height: 32px;
+  padding: 2px 8px;
   border: 0;
   border-radius: 5px;
   background: none;

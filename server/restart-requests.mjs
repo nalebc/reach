@@ -15,14 +15,29 @@ const LIFETIME = 30 * 60 * 1000;
 // counts as working and would hold it forever).
 const WAIT_LIMIT = 4 * 60 * 60 * 1000;
 
+// The chat that asked, from its agent's own environment (Claude Code gives
+// each command it runs CLAUDE_CODE_SESSION_ID; Codex, CODEX_THREAD_ID), so
+// the card opens it. Anything else: no chat, the card opens on Home.
+export function askingChat(env = process.env) {
+  for (const [agent, name] of [["claude", "CLAUDE_CODE_SESSION_ID"], ["codex", "CODEX_THREAD_ID"]])
+    if (CHAT_ID.test(String(env[name] || ""))) return { agent, id: env[name] };
+  return null;
+}
+const CHAT_ID = /^[\w-]{1,80}$/;
+const chatOf = (value) =>
+  isPlainRecord(value) && ["claude", "codex"].includes(value.agent) && CHAT_ID.test(String(value.id || ""))
+    ? { agent: value.agent, id: value.id }
+    : null;
+
 // The command's side: one request at a time; asking again keeps it.
-export function askRestart(dataDir, { app = "", now = Date.now() } = {}) {
+export function askRestart(dataDir, { app = "", chat = null, now = Date.now() } = {}) {
   const file = restartRequestFile(dataDir);
   const current = readRequest(file, now);
   if (current) return { request: current, again: true };
   const request = {
     id: crypto.randomUUID(),
     app: String(app).slice(0, 80),
+    ...(chatOf(chat) ? { chat: chatOf(chat) } : {}),
     requestedAt: now,
     expiresAt: now + LIFETIME,
   };
@@ -44,7 +59,7 @@ function readRequest(file, now = Date.now()) {
       Number.isFinite(r.expiresAt) &&
       r.expiresAt > now
     )
-      return { ...r, app: typeof r.app === "string" ? r.app.slice(0, 80) : "", after: r.after === true };
+      return { ...r, app: typeof r.app === "string" ? r.app.slice(0, 80) : "", chat: chatOf(r.chat), after: r.after === true };
   } catch {
     /* none */
   }

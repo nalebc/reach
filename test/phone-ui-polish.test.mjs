@@ -89,3 +89,19 @@ test("the model sheets show their handle and can be pulled down", () => {
   // The dots aren't drawn as the menu's checked rows (a box behind the knob).
   assert.match(css("model-sheet.css"), /\.as-mode-menu \.ms-dots button\[role="radio"\],\s*\.as-mode-menu \.ms-strip-label \{\s*padding: 0;\s*border-radius: 0;\s*background: none;/);
 });
+
+// Oct 9 (MODELS-2, PARITY-4, SWEEP-5): on a phone the effort word was hidden
+// from the composer, so a changed effort showed nothing; the model's name
+// gives way first now. The Effort row sat below 13 models (MODELS-2), and
+// Codex's strip drew over the chat's text (MODELS-6).
+test("a phone keeps the chat's effort in sight, the Effort row reachable, and Codex's strip readable", () => {
+  const chat = css("agent-session.css");
+  const narrow = /@media \(max-width: 560px\) \{([\s\S]*?)\n\}/.exec(chat)[1];
+  assert.doesNotMatch(narrow, /\.as-model-effort[^{]*\{\s*display: none/);
+  assert.match(chat, /\.as-tools > \.as-model > \.as-model-effort \{\s*flex: none;/);
+  const sheet = css("model-sheet.css");
+  assert.match(sheet, /\.ms-menu \.ms-card\.ms-row \{[^}]*position: sticky;[^}]*bottom: 0;[^}]*background: var\(--as-float/);
+  const strip = /\.as-mode-menu\.as-model-strip \{([^}]*)\}/.exec(sheet)[1];
+  assert.doesNotMatch(strip, /background: none/);
+  assert.match(strip, /background: var\(--as-bg/);
+});

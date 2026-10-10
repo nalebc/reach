@@ -182,7 +182,10 @@ export function routes(app, client, ctx) {
     if (!client.can("usage.cost")) return res.json({ supported: false });
     const now = Date.now();
     if (last && now - last.at < 30000) return res.json({ ...last.body, budget: readBudget(dataDir) });
-    const range = { startDate: dayKey(Math.min(now - 29 * DAY, new Date(new Date(now).setDate(1)).getTime())), endDate: dayKey(now), mode: "gateway" };
+    // 30 days, or from the 1st when that is earlier (the 31st), so the month is whole.
+    const startAt = Math.min(now - 29 * DAY, new Date(new Date(now).setDate(1)).getTime());
+    const agentDays = Math.round((now - startAt) / DAY) + 1;
+    const range = { startDate: dayKey(startAt), endDate: dayKey(now), mode: "gateway" };
     const [cost, sessions, status] = await Promise.allSettled([
       call("usage.cost", { days: 31, mode: "gateway" }),
       call("sessions.usage", { ...range, limit: 1000 }),
@@ -199,6 +202,7 @@ export function routes(app, client, ctx) {
       supported: true,
       scope: all ? "all" : "default",
       ...spend,
+      agentDays,
       agents: all && Array.isArray(all.aggregates.byAgent)
         ? all.aggregates.byAgent
             .filter((a) => a && /^[\w-]{1,64}$/.test(String(a.agentId)))

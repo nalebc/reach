@@ -26,7 +26,9 @@ export function parsePairLink(raw: string): PairLink | null {
       url.protocol !== "https:" ||
       url.username ||
       url.password ||
-      (target === "connect" && !url.hostname.endsWith(".ts.net"))
+      // Both kinds name a computer on the tailnet: a code sent anywhere else
+      // would hand the pairing to whoever made the QR.
+      !url.hostname.endsWith(".ts.net")
     )
       return null;
     return {

@@ -256,7 +256,7 @@ export async function restartOpenClawGateway({
         windowsHide: true,
       });
     else
-      await run(env.SHELL || "/bin/sh", ["-lc", "openclaw gateway restart"], {
+      await run(env.SHELL || "/bin/sh", ["-lc", "exec openclaw gateway restart"], {
         timeout: 25000,
       });
   } catch {
@@ -287,9 +287,13 @@ export async function runOpenClawMaintenance(action, {
   runtime ??= await availableUpdateRuntime({ platform });
   const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
   let command = commands[action];
-  if (runtime && platform !== "win32") {
-    command = `export PATH=${quote(path.dirname(runtime))}:"$PATH"; ${command}`;
-    if (action === "repair-service") command += ` --runtime-path ${quote(runtime)}`;
+  if (platform !== "win32") {
+    // exec: a timeout kills openclaw itself, not just the login shell.
+    command = `exec ${command}`;
+    if (runtime) {
+      if (action === "repair-service") command += ` --runtime-path ${quote(runtime)}`;
+      command = `export PATH=${quote(path.dirname(runtime))}:"$PATH"; ${command}`;
+    }
   }
   let output, failed = false, failureReason = "", updateResult;
   try {
@@ -397,7 +401,11 @@ export function routes(
     const [answer, readyz, storage] = await Promise.all([
       client.can("health")
         ? client.call("health", {}, undefined, 5000).then(
-            (snap) => ({ ok: snap?.ok !== false, ms: now() - started }),
+            (snap) => ({
+              ok: snap?.ok !== false,
+              verified: snap?.ok === true,
+              ms: now() - started,
+            }),
             () => ({ ok: false, ms: now() - started }),
           )
         : null,
@@ -410,15 +418,19 @@ export function routes(
         ? server.version
         : undefined;
     const failing = readyz.supported ? readyz.failing : [];
+    // Healthy only when something was verified; otherwise unknown.
+    const verified = (answer && answer.verified) || readyz.supported;
     const status =
       (answer && !answer.ok) || failing.length || storage.warn
         ? "attention"
-        : answer && answer.ms > SLOW_MS
+        : answer && answer.verified && answer.ms > SLOW_MS
           ? "slow"
-          : "ok";
+          : verified
+            ? "ok"
+            : "unknown";
     res.json({
       status,
-      gateway: answer
+      gateway: answer && (answer.verified || !answer.ok)
         ? { supported: true, answered: answer.ok, ms: answer.ms, ...(version ? { version } : {}) }
         : { supported: false },
       uptime: readyz.supported && readyz.uptimeMs !== undefined

@@ -277,7 +277,10 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
     }
   };
   // Pause one agent on the Mac: it keeps looking, its actions wait.
+  const pausing = useRef(new Set<string>());
   const pause = async (agent: BrowserAgentSession, paused: boolean) => {
+    if (pausing.current.has(agent.id)) return;
+    pausing.current.add(agent.id);
     setActionError("");
     try {
       await request(peer, "/api/browser/agents/pause", { method: "POST", body: JSON.stringify({ clientId: agent.id, paused }) });
@@ -286,6 +289,8 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       toast(paused ? `${agent.name} paused` : `${agent.name} resumed`);
     } catch (failure) {
       if (alive.current) setActionError((failure as Error).message);
+    } finally {
+      pausing.current.delete(agent.id);
     }
   };
   const active = agents.filter((agent) => activeSession(agent, now));

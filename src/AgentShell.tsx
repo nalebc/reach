@@ -45,7 +45,7 @@ export default function AgentShell({ peer, roots, onError }: Props) {
   };
   return (
     <section className="ag-shell" aria-label="Commands">
-      <p className="browser-policy">Commands run as the owner, from the folder below, up to 60 seconds each. Everything is logged for them.</p>
+      <p className="browser-policy">Runs as the owner, 60 seconds at most. Logged.</p>
       {roots.length > 1 && (
         <OptionButtons label="Shared folder" value={currentRoot} onChange={(index) => { setRoot(Number(index)); setCwd(""); }}
           options={roots.map((folder) => ({ value: folder.index, label: folder.name, icon: <Folder size={16} />, title: folder.path }))} />

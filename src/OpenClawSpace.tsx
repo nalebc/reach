@@ -186,7 +186,7 @@ function Conversation({
   }, [deleting]);
   const [refresh, setRefresh] = useState(0);
   const [limit, setLimit] = useState(200);
-  const { data, error } = usePolling<History>(
+  const { data, error, notice } = usePolling<History>(
     peer,
     `${base}/history?${new URLSearchParams({ key: session.key, limit: String(limit) })}`,
     1800,
@@ -496,6 +496,11 @@ function Conversation({
       {!!data?.approvals.length && (
         <NeedsYouStrip items={approvalItems(peer, data.approvals, reload, onScreen)} />
       )}
+      {!error && !problem && !data?.error && notice && (
+        <p className="claw-notice" role="status">
+          {notice}
+        </p>
+      )}
       {(error || problem || data?.error) && (
         <p className="claw-error" role="alert">
           {error || problem || data?.error}
@@ -597,6 +602,18 @@ export default function OpenClawSpace({
   }, [searchOpen]);
   // The chats, or one of the pages the ChatGPT app keeps in its side menu.
   const [page, setPage] = useState<"home" | "scheduled" | "customize" | "agents" | "skills">("home");
+  // Another computer shows its own OpenClaw, never the last one's chat or page.
+  const peerKey = `${peer.id}|${peer.url}|${peer.token}`;
+  const [seenPeer, setSeenPeer] = useState(peerKey);
+  if (seenPeer !== peerKey) {
+    setSeenPeer(peerKey);
+    setOpened(null);
+    setPage("home");
+    setQuery("");
+    setSearchOpen(false);
+    setStartProblem("");
+    setStarting(false);
+  }
   const sessions = data?.sessions || [];
   const words = query.trim().toLowerCase();
   const found = sessions.filter((s) =>

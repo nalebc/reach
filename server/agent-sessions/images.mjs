@@ -132,7 +132,7 @@ export function imageTokens(size, agent) {
 // Any file attached to a message from the phone (a PDF, a log, a zip): kept
 // privately under an id Reach made, with its own name, and handed to the
 // agent as a path, as each agent's composer references a file.
-const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^/\\\0]{1,120}$/;
+const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?!\.{1,2}$)[^/\\\0]{1,120}$/;
 export const safeFileName = (name) =>
   String(name || "file")
     .replace(/[\x00-\x1f\x7f/\\:]+/g, "-")

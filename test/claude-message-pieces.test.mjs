@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseClaudeTranscript } from "../server/agent-sessions/claude-transcript.mjs";
+import { askKey, parseClaudeTranscript } from "../server/agent-sessions/claude-transcript.mjs";
 
 // What a Claude chat showed as the person's words: the Claude app's
 // <system-reminder> (its 7 KB of instructions, added when a chat moves into
@@ -75,4 +75,62 @@ test("Claude's words keep their id when something above them comes or goes, so t
   const empty = line({ ...base, type: "attachment", uuid: "q1", parentUuid: "a1", timestamp: at(3), attachment: { type: "queued_command", humanTurn: true, prompt: "" } });
   const idOf = (lines) => parseClaudeTranscript(lines.join("\n")).items.find((i) => i.text === "Done.").id;
   assert.equal(idOf([...start, queued, reply]), idOf([...start, empty, reply]));
+});
+
+// "Sending messages sometimes disappear and come back": one typed into the
+// busy Claude app waits in Claude Code's queue (only queue-operation lines,
+// outside the chain) for seconds to minutes; the phone showed nothing until
+// Claude took it. Lines as Claude Code 2.1.295 writes them (78001d5b): the
+// app's carry the words; Reach's own process's carry none.
+test("a message waiting in Claude Code's queue shows as waiting until Claude takes it", () => {
+  const q = (operation, s, extra = {}) => line({ type: "queue-operation", operation, timestamp: at(s), sessionId: ID, ...extra });
+  const start = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: "start a long job" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "Working on it" }] } }),
+  ];
+  const waiting = (lines) => parseClaudeTranscript([...start, ...lines].join("\n")).waiting.map((w) => w.text);
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "zq9 from the phone" })]), ["zq9 from the phone"]);
+  // Taken in order; one folded into the turn running goes by its words.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("dequeue", 5)]), ["two"]);
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("remove", 5, { content: "two", reason: "absorbed_mid_turn" })]), ["one"]);
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("popAll", 5)]), []);
+  // Reach's own process (no words: claude-host shows those), a background
+  // task's notice: never shown as yours. Pairing still counts them.
+  assert.deepEqual(waiting([q("enqueue", 3), q("enqueue", 4, { content: "<task-notification>\n<task-id>b1</task-id>\n</task-notification>" }), q("enqueue", 5, { content: "mine" }), q("dequeue", 6)]), ["mine"]);
+  // An operation Reach doesn't know takes nothing away.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "kept" }), q("someday", 4)]), ["kept"]);
+  // Review (Oct 9): a remove whose words match none took the oldest away.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("remove", 5, { content: "three" })]), ["one", "two"]);
+  // One without words (Reach's own) pairs with one without words.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4), q("remove", 5)]), ["one"]);
+  // Waiting entries never join the conversation itself.
+  assert.deepEqual(parseClaudeTranscript([...start, q("enqueue", 3, { content: "zq9" })].join("\n")).items.map((i) => i.text), ["start a long job", "Working on it"]);
+});
+
+// A call still running carries the key of its whole input (agent-asks.mjs
+// checks a re-asked permission against it), though most of it isn't kept.
+test("a running call carries the key of its whole input", () => {
+  const input = { command: "npm test", description: "Run the tests", timeout: 600000 };
+  const text = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: "test" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input }, { type: "tool_use", id: "toolu_2", name: "Read", input: { file_path: "/p/a" } }] } }),
+    line({ ...base, type: "user", uuid: "u2", parentUuid: "a1", timestamp: at(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "x" }] } }),
+  ].join("\n");
+  const [, bash, read] = parseClaudeTranscript(text).items;
+  assert.equal(bash.key, askKey("Bash", input));
+  assert.equal(read.key, undefined);
+});
+
+// Two messages taken as one keep each one's words (the phone's copies of
+// both stayed as ghosts); a file attached on the phone shows by its name,
+// not as the path Reach sent it as (SWEEP-1).
+test("messages taken together keep their parts; attached files show by name", () => {
+  const file = "@/Users/me/reach/.reach/quick/agent-files/a7ca5d97-1111-4222-8333-444455556666/note.txt";
+  const text = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: [{ type: "text", text: "zq1 Reply one" }, { type: "text", text: "zq2 Reply\ntwo" }] } }),
+    line({ ...base, type: "user", uuid: "u2", parentUuid: "u1", timestamp: at(2), message: { role: "user", content: [{ type: "text", text: `What does it say?\n\n${file}` }] } }),
+  ].join("\n");
+  const [merged, attached] = parseClaudeTranscript(text).items;
+  assert.deepEqual([merged.text, merged.parts], ["zq1 Reply one\nzq2 Reply\ntwo", ["zq1 Reply one", "zq2 Reply\ntwo"]]);
+  assert.deepEqual([attached.text, attached.attachments, attached.parts], ["What does it say?", ["note.txt"], undefined]);
 });

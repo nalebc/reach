@@ -52,8 +52,8 @@ const regionAround = (cx: number, cy: number): Region => ({
 });
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const place = (spot: Spot) => `${percent(spot.x)}, ${percent(spot.y)}`;
-const typed = (text: string) =>
-  `typed ${JSON.stringify(text.length > 40 ? text.slice(0, 37) + "…" : text)}`;
+// What was typed stays off the status line: only how much.
+const typed = (text: string) => `typed ${text.length} character${text.length === 1 ? "" : "s"}`;
 const KEYS: { label: string; key: string }[] = [
   { label: "Enter", key: "enter" },
   { label: "Tab", key: "tab" },
@@ -328,8 +328,14 @@ export default function AgentScreen({
       if (alive && !inFlight.current)
         schedule(Math.max(0, FRAME_GAP_MS - (Date.now() - lastShot.current)));
     };
+    // A tab coming back to the front fetches a frame at once.
+    const shown = () => {
+      if (!document.hidden && alive && !running.current && !inFlight.current) schedule(0);
+    };
+    document.addEventListener("visibilitychange", shown);
     void loop();
     return () => {
+      document.removeEventListener("visibilitychange", shown);
       alive = false;
       clearTimeout(timer);
       inFlight.current?.abort();
@@ -454,7 +460,7 @@ export default function AgentScreen({
       while (queue.current.length && mounted.current) {
         const group = queue.current.shift()!;
         for (const step of group) {
-          if (!step.quiet) tell(`${step.words}…`);
+          if (!step.quiet) tell(step.action.type === "type" ? "Typing…" : `${step.words}…`);
           let result: { app?: string };
           try {
             result = await post({ action: step.action });
@@ -1154,19 +1160,21 @@ export default function AgentScreen({
           >
             {full ? <Minimize size={18} /> : <Maximize size={18} />}
           </button>
-          <button
-            type="button"
-            aria-label="Screen options"
-            title="More"
-            aria-haspopup="dialog"
-            onClick={() => setPanel("more")}
-          >
-            <MoreHorizontal size={20} />
-          </button>
+          {(control || !(zoomPick || zoom)) && (
+            <button
+              type="button"
+              aria-label="Screen options"
+              title="More"
+              aria-haspopup="dialog"
+              onClick={() => setPanel("more")}
+            >
+              <MoreHorizontal size={20} />
+            </button>
+          )}
         </div>
       </div>
       {panel === "shortcuts" && control && (
-        <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)}>
+        <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)} returnFocus={() => keysRef.current}>
           <ScreenActions
             platform="darwin"
             disabled={!canAct || actionBusy}
@@ -1222,7 +1230,7 @@ export default function AgentScreen({
         </ScreenPopup>
       )}
       {panel === "more" && (
-        <ScreenPopup title="Screen options" onClose={() => setPanel(null)}>
+        <ScreenPopup title="Screen options" onClose={() => setPanel(null)} returnFocus={() => keysRef.current}>
           <div className="ap-options">
             {!(zoomPick || zoom) && (
               <button

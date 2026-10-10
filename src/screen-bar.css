@@ -88,3 +88,21 @@
   color: #e9f2ef;
   font-size: 12px;
 }
+
+/* Setup card (screen viewing off) and the app launcher under Actions. */
+.screen-setup {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.screen-open-shortcuts {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.screen-open-shortcuts h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.75;
+}

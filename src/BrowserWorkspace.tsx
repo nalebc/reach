@@ -115,6 +115,8 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
   const [screenUrl, setScreenUrl] = useState("");
   const [screenAt, setScreenAt] = useState<Date | null>(null);
   const [screenBusy, setScreenBusy] = useState(false);
+  // The last picture is kept but marked old when the Mac stops answering.
+  const [screenStale, setScreenStale] = useState(false);
   const [screenDraft, setScreenDraft] = useState(false);
   const screenDraftRef = useRef(false);
   const [filesRevision, setFilesRevision] = useState(0);
@@ -383,7 +385,8 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
         return;
       const controller = new AbortController();
       screenOperation.current = controller;
-      const timeout = setTimeout(() => controller.abort(), 35000);
+      let timedOut = false;
+      const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 35000);
       setScreenBusy(true);
       try {
         if (direction) {
@@ -426,8 +429,10 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
         screenObject.current = image;
         setScreenUrl(image);
         setScreenAt(new Date());
+        setScreenStale(false);
         setError("");
       } catch (e) {
+        if (mounted.current && (timedOut || !controller.signal.aborted)) setScreenStale(true);
         if (!controller.signal.aborted && mounted.current) fail(e);
       } finally {
         clearTimeout(timeout);
@@ -547,12 +552,6 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
   }[];
 
   const destinations: AgentDestination[] = [
-    {
-      id: "tools",
-      label: "Tools",
-      detail: "Named tasks need a laptop-control invitation.",
-      available: false,
-    },
     {
       id: "screen",
       label: "Screen",
@@ -709,8 +708,10 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
                   </p>
                 </div>
                 <div className="browser-screen-toolbar">
-                  <span className="browser-screen-status" aria-live="off">
-                    {screenAt
+                  <span className={`browser-screen-status${screenStale ? " is-stale" : ""}`} aria-live={screenStale ? "polite" : "off"}>
+                    {screenStale
+                      ? "The Mac's screen isn't answering"
+                      : screenAt
                       ? `Updated ${screenAt.toLocaleTimeString()}`
                       : screenBusy
                         ? "Connecting to screen…"
@@ -726,6 +727,7 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
                   </button>
                 </div>
               </div>
+              <div className={screenStale ? "browser-screen-stale" : undefined}>
               <BrowserScreenControls
                 peer={peer}
                 src={screenUrl}
@@ -734,6 +736,7 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
                 onError={fail}
                 onDraftChange={holdScreenDraft}
               />
+              </div>
               {!screenUrl && (
                 <div className="browser-screen-placeholder" role="status">
                   <Monitor size={32} />

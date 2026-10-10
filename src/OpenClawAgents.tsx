@@ -64,7 +64,7 @@ export function ClawAgentsPanel({ peer, query, refresh }: { peer: Peer; query: s
       active = false;
       clearTimeout(timer);
     };
-  }, [peer, refresh]);
+  }, [peer.id, peer.url, peer.token, refresh]);
   const words = query.trim().toLowerCase();
   const agents = (data?.agents || []).filter((a) =>
     `${a.name} ${a.id} ${a.model}`.toLowerCase().includes(words),
@@ -176,7 +176,7 @@ function ApprovalRules({ peer, refresh, agents }: { peer: Peer; refresh: number;
     return () => {
       active = false;
     };
-  }, [peer, refresh, loadedAt]);
+  }, [peer.id, peer.url, peer.token, refresh, loadedAt]);
   useEffect(() => {
     if (!confirm) return;
     const timer = setTimeout(() => setConfirm(""), 4000);

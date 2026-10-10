@@ -23,6 +23,8 @@ export class BrowserScreenSnapshots {
   idle = null;
   generation = 0;
   retryAt = 0;
+  failures = 0;
+  lastGood = null;
 
   stop(message = "Screen capture stopped.") {
     this.generation++;
@@ -103,10 +105,16 @@ export class BrowserScreenSnapshots {
       check();
       return validate(frame);
     };
+    // A frame that failed everywhere is replaced by the last good one (marked
+    // stale) when it is recent, so the picture degrades instead of stopping.
+    const staleFrame = () => this.lastGood && this.now() - this.lastGood.at < 60000
+      ? Object.assign(Buffer.from(this.lastGood.frame), { stale: true }) : null;
     const operation = {};
     operation.cancel = cancel;
     const work = (async () => {
-      if (this.now() < this.retryAt) return fallback();
+      if (this.now() < this.retryAt) {
+        try { return await fallback(); } catch (error) { const old = staleFrame(); if (old && generation === this.generation) return old; throw error; }
+      }
       try {
         const expired = new Promise((_, reject) => {
           timeout = setTimeout(() => {
@@ -118,7 +126,10 @@ export class BrowserScreenSnapshots {
           }, this.timeoutMs);
           timeout.unref?.();
         });
-        return await Promise.race([native(), expired]);
+        const frame = await Promise.race([native(), expired]);
+        this.failures = 0;
+        this.lastGood = { frame, at: this.now() };
+        return frame;
       } catch (error) {
         clearTimeout(timeout);
         if (generation !== this.generation) throw error;
@@ -128,13 +139,22 @@ export class BrowserScreenSnapshots {
         authorize();
         this.source?.stop();
         this.source = null;
-        this.retryAt = this.now() + this.retryMs;
-        if (!this.fallback) throw error;
-        const frame = await this.fallback();
-        if (generation !== this.generation)
-          throw fail(409, "Screen capture stopped.");
-        authorize();
-        return validate(frame);
+        // Back off 2 s, 4 s, 8 s ... up to retryMs, then try native again.
+        this.failures++;
+        this.retryAt = this.now() + Math.min(this.retryMs, 2000 * 2 ** (this.failures - 1));
+        const old = () => (generation === this.generation ? staleFrame() : null);
+        if (!this.fallback) { const frame = old(); if (frame) return frame; throw error; }
+        try {
+          const frame = await this.fallback();
+          if (generation !== this.generation)
+            throw fail(409, "Screen capture stopped.");
+          authorize();
+          return validate(frame);
+        } catch (fallbackError) {
+          const frame = fallbackError?.status === 409 ? null : old();
+          if (frame) return frame;
+          throw fallbackError;
+        }
       } finally {
         clearTimeout(timeout);
       }

@@ -119,7 +119,7 @@ export function toolPageOperation(request) {
       if (secure(element))
         fail("protected", "Password and sign-in-code fields are unavailable.");
       return String(
-        "value" in element && element.tagName !== "A"
+        ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)
           ? element.value
           : element.getAttribute("download") ||
               element.innerText ||

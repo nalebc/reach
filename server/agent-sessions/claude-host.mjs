@@ -9,6 +9,7 @@
 import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent } from "./compatibility.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
 import { createClaudeRewinds } from "./claude-rewinds.mjs";
+import { editDiff } from "./claude-transcript.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { execFile, spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -28,16 +29,24 @@ export function claudeModes(help = "") {
   const order = Object.keys(MODE_NAMES);
   // Help worded differently one day: the modes Reach knows, not none.
   const listed = [...choices.matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
-  for (const id of listed) MODES.add(id);
+  // A mode a newer Claude Code adds shows under its own id (the phone may
+  // start a chat in it; SWITCHABLE_MODES still keeps open chats to known
+  // ones). Never "dontAsk": it is for scripts, not a person.
   const ids = (listed.length ? listed : order).filter((id) => id !== "dontAsk");
+  for (const id of ids) MODES.add(id);
   const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
   return ids.sort((a, b) => rank(a) - rank(b)).map((id) => ({ id, label: MODE_NAMES[id] || id }));
 }
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 // --permission-mode choices in 2.1.289; the Claude app records "default" for Manual.
 // A mode a newer Claude Code lists in its --help joins them (claudeModes).
-const MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
+const KNOWN_MODES = new Set(["acceptEdits", "auto", "bypassPermissions", "manual", "plan"]);
+const MODES = new Set(KNOWN_MODES);
 export const claudeMode = (mode) => (mode === "default" ? "manual" : MODES.has(mode) ? mode : null);
+// The modes the phone may switch an open chat to (the mode route's, and the
+// models list marks the rest so the phone doesn't offer them): never Bypass,
+// nor a mode Reach doesn't know yet. A new chat may start in more.
+export const SWITCHABLE_MODES = ["manual", "default", "acceptEdits", "plan", "auto"];
 // The mode a chat runs in: its own, or Manual (asks each step) for one Reach
 // can't name to Claude Code. Without a mode Claude Code would run its own
 // default, which may allow more than the phone shows (fail-open audit, Oct 8).
@@ -84,6 +93,21 @@ export function claudeActivity(block) {
     default:
       return block?.name ? `Using ${block.name}` : null;
   }
+}
+
+// What an edit asked for will change, as Claude Code's own dialog shows it:
+// its lines as a diff ("+" written, "-" replaced), bounded for the phone's
+// poll. Never logged (a file's content can hold secrets).
+const PREVIEW_MAX = 4000;
+function editPreview(tool, input) {
+  if (!["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(tool)) return "";
+  const diff =
+    tool === "NotebookEdit"
+      ? editDiff("Write", { content: typeof input.new_source === "string" ? input.new_source : "" })
+      : editDiff(tool, input);
+  // Without its file lines (the card names the file) or a first "@@".
+  const text = diff.split("\n").slice(2).join("\n").replace(/^@@\n?/, "");
+  return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}\n…` : text;
 }
 
 // One permission request as the phone shows it.
@@ -133,12 +157,14 @@ export function describeClaudePrompt(id, request = {}) {
   // later (fail-open audit, Oct 8).
   const suggestions = offered.length && offered.every(understoodSuggestion) ? offered : [];
   const shown = input.command ?? input.file_path ?? input.notebook_path ?? input.url ?? input.pattern ?? input.host;
+  const preview = editPreview(request.tool_name, input);
   return {
     id,
     kind: "tool",
     tool: request.tool_name || "",
     title: typeof request.description === "string" ? request.description : `Allow ${String(name)}?`,
     command: shown !== undefined ? String(shown) : JSON.stringify(input).slice(0, 600),
+    ...(preview ? { preview } : {}),
     reason: typeof request.decision_reason === "string" ? request.decision_reason : "",
     input,
     suggestions,
@@ -226,6 +252,28 @@ export function readWorking(file, at = Date.now()) {
   }
 }
 
+// How many messages Reach sent one replay is: Claude Code takes several
+// waiting ones as one message, their pieces one after another (2.1.295:
+// two sent mid-turn came back as one replay of two text blocks; counted as
+// one, the chat read Working for good). Each is matched by its words
+// (pictures by kind), in order; none matching counts the oldest, never more.
+export function taken(sent, content) {
+  const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
+  let at = 0;
+  let count = 0;
+  for (const message of sent) {
+    let i = at;
+    const fits = message.blocks.every((b) => {
+      while (i < blocks.length && !(blocks[i]?.type === b.type && (b.type !== "text" || blocks[i].text === b.text))) i++;
+      return i++ < blocks.length;
+    });
+    if (!fits) break;
+    at = i;
+    count++;
+  }
+  return Math.max(1, count);
+}
+
 export function createClaudeHost({
   locate, // async () => absolute path of the claude CLI, or null
   spawn = spawnChild,
@@ -248,6 +296,9 @@ export function createClaudeHost({
   // The chats mid-turn, kept on disk at each turn's start and end: a restart
   // (or a crash) ends their processes, and the next Reach continues them.
   workingFile = null,
+  // After a stop Claude Code acknowledged with nothing left in its queue,
+  // this long with no word from it means it had nothing running.
+  stopSettleMs = 3000,
 }) {
   const sessions = new Map();
   const rewinds = createClaudeRewinds({ file: rewindFile });
@@ -401,6 +452,8 @@ export function createClaudeHost({
     s.background = 0;
     s.startedBackground = s.tasksSeen = false;
     s.unread = 0;
+    s.sent = [];
+    clearTimeout(s.settle);
     s.status = "idle";
     s.streaming = "";
     s.activity = null;
@@ -535,7 +588,8 @@ export function createClaudeHost({
         // mid-turn that it folds into the turn already running.
         if (m.isReplay) {
           s.replays = true;
-          s.unread = Math.max(0, (s.unread || 0) - 1);
+          (s.sent ||= []).splice(0, taken(s.sent, m.message?.content));
+          s.unread = s.sent.length;
         }
         if ((m.message?.content || []).some?.((b) => b?.type === "tool_result")) s.activity = null;
         break;
@@ -551,10 +605,20 @@ export function createClaudeHost({
         // or "aborted_tools"); it is a stop, not a failure.
         if (m.is_error && !s.stopping && !/^aborted/.test(m.terminal_reason || ""))
           s.error = String(m.result || "Claude Code stopped with an error.");
+        // How much each model holds, as Claude Code itself reports it
+        // (modelUsage[model].contextWindow, 2.1.295): an Opus 5.5 chat runs
+        // at 1M with no "[1m]" in any id. Only a whole number is taken, and
+        // only for this chat (another on the same model may run at 200K).
+        if (m.modelUsage && typeof m.modelUsage === "object")
+          for (const [model, use] of Object.entries(m.modelUsage))
+            if (Number.isSafeInteger(use?.contextWindow) && use.contextWindow > 0 && (s.windows ||= new Map()).size < 16) s.windows.set(model, use.contextWindow);
         if (!s.turns) {
           s.stopping = false;
           s.status = "idle";
           s.prompts.clear();
+          // Nothing it hasn't taken is left (one never echoed included).
+          s.sent = [];
+          s.unread = 0;
           rest(s);
         }
         break;
@@ -602,6 +666,9 @@ export function createClaudeHost({
       ...(resume && s.resumeAt ? ["--resume-session-at", s.resumeAt] : []),
       ...(s.settings.model ? ["--model", s.settings.model] : []),
       ...(s.settings.effort ? ["--effort", s.settings.effort] : []),
+      // The Claude app's Ultracode, kept when Reach continues the chat: a
+      // per-session settings key ("--settings or apply_flag_settings", 2.1.295).
+      ...(s.settings.ultracode ? ["--settings", JSON.stringify({ ultracode: true })] : []),
       ...(mode ? ["--permission-mode", mode] : []),
       // The hook knows (a team's lead now; false: its team stopped); what
       // the start gave covers its first launch.
@@ -615,6 +682,7 @@ export function createClaudeHost({
     // Starting a preview/helper does not consume a pending continuation.
     // It is cleared only after its user message is accepted below.
     s.launchedEffort = s.settings.effort || null;
+    s.launchedUltracode = !!s.settings.ultracode;
     let buffer = "";
     proc.stdout.setEncoding?.("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -634,6 +702,7 @@ export function createClaudeHost({
         } catch {
           continue; // not a message (a stray print): nothing to read
         }
+        s.heard = (s.heard || 0) + 1;
         try {
           handle(s, message);
         } catch (error) {
@@ -660,6 +729,8 @@ export function createClaudeHost({
       if (s.turns) s.error ||= "Claude Code stopped before finishing.";
       s.turns = 0;
       s.unread = 0;
+      s.sent = [];
+      clearTimeout(s.settle);
       s.status = "idle";
       s.prompts.clear();
       s.streaming = "";
@@ -699,8 +770,13 @@ export function createClaudeHost({
 
   async function turn(s, input) {
     s.cutOff = false;
+    // Each message until Claude Code takes it (its replay). One sent while a
+    // turn runs waits in Claude Code's own queue meanwhile: the phone shows
+    // it waiting (it went out of view, or away on a reload, until taken).
+    const sent = { id: randomUUID(), blocks: input.map((b) => (b.type === "text" ? { type: "text", text: b.text } : { type: b.type })), during: s.turns > 0, at: now() };
+    (s.sent ||= []).push(sent);
     s.turns++;
-    s.unread = (s.unread || 0) + 1;
+    s.unread = s.sent.length;
     s.wrote = true;
     s.status = s.status === "waiting" ? "waiting" : "running";
     s.error = null;
@@ -708,6 +784,7 @@ export function createClaudeHost({
     changed(s);
     try { await write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id }); }
     catch (error) { s.error = error.message; end(s); changed(s); throw error; }
+    return sent;
   }
 
   return {
@@ -741,12 +818,21 @@ export function createClaudeHost({
     },
     // The mode Reach last gave this chat's Claude Code (or it reported).
     modeOf: (id) => sessions.get(id)?.settings?.mode || null,
+    // What a chat Reach runs was launched with (its effort while the
+    // process lives: a pick made since waits for its next launch).
+    settingsOf(id) {
+      const s = sessions.get(id);
+      if (!s) return null;
+      return { model: s.settings.model || null, effort: (s.proc ? s.launchedEffort : s.settings.effort) || null, mode: s.settings.mode || null };
+    },
+    // The context window Claude Code reported for a model in this chat, or null.
+    contextWindow: (id, model) => (typeof model === "string" && sessions.get(id)?.windows?.get(model)) || null,
     // A phone has the session open right now (its live view is waiting).
     watched: (id) => {
       const s = sessions.get(id);
       return !!s && (!!s.waiters.size || now() < (s.watchedUntil || 0));
     },
-    async send(id, { text, images, model, effort, mode, cwd } = {}) {
+    async send(id, { text, images, model, effort, mode, cwd, ultracode } = {}) {
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const input = claudeContent({ text, images }, readFile);
       const s = state(id);
@@ -759,8 +845,9 @@ export function createClaudeHost({
       if (pendingRewind) s.resumeAt = pendingRewind.target === "start" ? null : pendingRewind.target;
       if (cwd) s.cwd = cwd;
       if (effort) s.settings.effort = effort;
+      if (typeof ultracode === "boolean") s.settings.ultracode = ultracode;
       // A thinking level is a launch setting: change it between turns.
-      if (s.proc && !s.turns && !s.background && effort && effort !== s.launchedEffort) end(s);
+      if (s.proc && !s.turns && !s.background && ((effort && effort !== s.launchedEffort) || (typeof ultracode === "boolean" && ultracode !== s.launchedUltracode))) end(s);
       if (!s.proc) {
         if (model) s.settings.model = model;
         if (mode) s.settings.mode = mode;
@@ -777,7 +864,7 @@ export function createClaudeHost({
         }
       }
       if (pendingRewind) rewinds.set(id, { ...pendingRewind, phase: "dispatching" });
-      await turn(s, input);
+      const sent = await turn(s, input);
       // Persist consumption only after sending; an uncertain write leaves the
       // dispatch marker in place, including after a Reach restart.
       if (pendingRewind) {
@@ -786,7 +873,8 @@ export function createClaudeHost({
       }
       s.resumeAt = null;
       s.rewound = null;
-      return { turnId: null };
+      // Waiting in Claude Code's queue: the id it shows by (view().waiting).
+      return { turnId: null, ...(sent.during ? { waitingId: sent.id } : {}) };
       });
       s.sending = operation;
       return operation.finally(() => { s.pendingSends--; });
@@ -818,13 +906,37 @@ export function createClaudeHost({
     },
     async stop(id) {
       const s = sessions.get(id);
-      if (!s?.proc || !s.turns) throw bad(`Reach isn't running anything here. Stop it on your ${computerWord(platform)}.`, 409);
+      if (!s?.proc || (!s.turns && !s.background)) throw bad(`Reach isn't running anything here. Stop it on your ${computerWord(platform)}.`, 409);
       s.stopping = true;
       // Not stopped after all: a later error in this turn is a real one.
-      await control(s, { subtype: "interrupt" }).catch((error) => {
+      const answer = await control(s, { subtype: "interrupt" }).catch((error) => {
         s.stopping = false;
         throw error;
       });
+      // Claude Code acknowledges a stop even with nothing running, and then
+      // sends no result (2.1.295: still_queued [], nothing after). The chat
+      // read Working for good and Stop did nothing. Not a word from it a
+      // moment later, its queue empty: it has stopped. Anything else it says
+      // (a result, a tool still ending) keeps the turn as it is.
+      if (Array.isArray(answer?.still_queued) && !answer.still_queued.length) {
+        const proc = s.proc;
+        const heard = s.heard;
+        clearTimeout(s.settle);
+        s.settle = setTimeout(() => {
+          if (s.proc !== proc || !s.stopping || !s.turns || s.heard !== heard) return;
+          s.turns = 0;
+          s.sent = [];
+          s.unread = 0;
+          s.stopping = false;
+          s.status = "idle";
+          s.prompts.clear();
+          s.streaming = "";
+          s.activity = null;
+          rest(s);
+          changed(s);
+        }, stopSettleMs);
+        s.settle.unref?.();
+      }
       record();
       return { stopped: true };
     },
@@ -893,13 +1005,13 @@ export function createClaudeHost({
     release(id) {
       const s = sessions.get(id);
       if (!s?.proc) return false;
-      if (s.turns) throw bad("Reach is running this session. Stop it or let it finish first.", 409);
+      if (s.turns || s.background) throw bad("Reach is running this session. Stop it or let it finish first.", 409);
       end(s);
       return true;
     },
     view(id) {
       const s = sessions.get(id);
-      if (!s) return { version: 0, status: null, error: null, prompts: [], streaming: "", activity: null, items: 0 };
+      if (!s) return { version: 0, status: null, error: null, prompts: [], streaming: "", activity: null, items: 0, waiting: [] };
       return {
         version: s.version,
         status: s.status,
@@ -908,6 +1020,13 @@ export function createClaudeHost({
         streaming: s.streaming,
         activity: s.activity,
         items: s.items,
+        // Sent while it worked, in Claude Code's queue until it takes them.
+        waiting: (s.sent || []).filter((m) => m.during).map(({ id, blocks, at }) => ({
+          id,
+          text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n"),
+          images: blocks.filter((b) => b.type === "image").length,
+          at,
+        })),
       };
     },
     changes(id, since, ms = 25000, signal) {
@@ -984,6 +1103,7 @@ export function createClaudeHost({
         proc.on("exit", () => finish(empty));
         proc.stderr?.on("data", () => {});
         proc.stdin.on?.("error", () => finish(empty));
+        proc.stdout.setEncoding?.("utf8");
         proc.stdout.on("data", (chunk) => {
           buffer += chunk;
           for (let i; (i = buffer.indexOf("\n")) >= 0; ) {

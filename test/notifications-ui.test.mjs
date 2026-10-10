@@ -225,17 +225,22 @@ test("an outdated request stays reviewable and displays the server error", async
       target: { page: "overview", needs: "agent-admission:123" },
     },
   ];
-  globalThis.fetch = dom.window.fetch = async (url, init = {}) =>
-    new URL(url).pathname.endsWith("/actions")
+  let reads = 0;
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const route = new URL(url).pathname;
+    if (route === "/api/notifications") reads++;
+    return route.endsWith("/actions")
       ? new Response(
           '{"error":"This request changed or was already answered."}',
           { status: 409 },
         )
       : original(url, init);
+  };
   const view = await mount();
   await dom.waitFor(() => view.container.querySelector(".notification-count"));
   view.container.querySelector(".notification-bell").click();
   await dom.waitFor(() => view.container.querySelector(".notification-card"));
+  const before = reads;
   [...view.container.querySelectorAll("button")]
     .find((button) => button.textContent === "Deny")
     .click();
@@ -245,6 +250,40 @@ test("an outdated request stays reviewable and displays the server error", async
     view.container.querySelector(".notification-avatar.agent") !== null,
     true,
   );
+  // It looks again at once, not at the next 30-second check.
+  await dom.waitFor(() => reads > before);
+  await view.unmount();
+  globalThis.fetch = dom.window.fetch = original;
+});
+
+test("a card answered elsewhere goes as soon as an answer to it is refused", async () => {
+  const original = globalThis.fetch;
+  items = [
+    {
+      id: "restart:1",
+      source: "restart",
+      revision: "c".repeat(64),
+      title: "Restart Reach?",
+      sender: "Claude",
+      icon: "agent",
+      kind: "permission",
+      actions: [{ id: "after", label: "Restart when done", tone: "primary" }],
+      target: { page: "overview", needs: "restart:1" },
+    },
+  ];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (!new URL(url).pathname.endsWith("/actions")) return original(url, init);
+    items = [];
+    return new Response('{"error":"This request changed or was already answered."}', { status: 409 });
+  };
+  const view = await mount();
+  await dom.waitFor(() => view.container.querySelector(".notification-count"));
+  view.container.querySelector(".notification-bell").click();
+  await dom.waitFor(() => view.container.querySelector(".notification-card"));
+  [...view.container.querySelectorAll("button")]
+    .find((button) => button.textContent === "Restart when done")
+    .click();
+  await dom.waitFor(() => !view.container.querySelector(".notification-card"));
   await view.unmount();
   globalThis.fetch = dom.window.fetch = original;
 });

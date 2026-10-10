@@ -644,3 +644,19 @@ test("gateway errors never return raw auth details or credentials", async (t) =>
   assert.equal(response.bytes.toString().includes(secret), false);
   assert.equal(response.bytes.toString().includes("Internal"), false);
 });
+
+test("on the Unix-socket ingress each internet source has its own in-flight allowance", async (t) => {
+  const f = setup(t);
+  const envelope = signed(f.key, { operation: "claim", invitation: f.grant().invitation });
+  // Production shape: the socket has no address; Tailscale names the source.
+  const from = (source) => ({ hold: true, ip: "", headers: { "x-forwarded-for": source } });
+  const held = Array.from({ length: 8 }, () => send(f.gateway, envelope, from("203.0.113.9")));
+  const other = send(f.gateway, envelope, from("198.51.100.7"));
+  other.req.end(JSON.stringify(envelope));
+  assert.notEqual((await other.done).status, 429, "one busy source must not lock out another");
+  for (const entry of held) {
+    entry.res.destroy();
+    entry.req.emit("aborted");
+    entry.req.end();
+  }
+});

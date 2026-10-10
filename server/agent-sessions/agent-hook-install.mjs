@@ -63,8 +63,14 @@ function edit(settingsPath, backupDir, change) {
   return { changed: true };
 }
 
-const isReach = (entry) =>
-  (entry?.hooks || []).some((h) => MARKS.some((mark) => String(h?.command || "").includes(mark)));
+// Reach's command runs one of its scripts, by path (<Reach>/scripts/<mark>),
+// as its own argument: a user's hook that only has a similar name in it
+// (my-agent-hook.mjs, or a comment) isn't Reach's.
+const scriptsOf = (command) =>
+  [...String(command || "").matchAll(/'((?:[^']|'\\'')*)'|(\S+)/g)].map((m) => (m[1] ?? m[2]).replace(/'\\''/g, "'"));
+const isReachCommand = (command) =>
+  scriptsOf(command).some((token) => MARKS.includes(path.basename(token)) && path.basename(path.dirname(token)) === "scripts");
+const isReach = (entry) => (entry?.hooks || []).some((h) => isReachCommand(h?.command));
 
 // Each of Reach's hook events, with its entry: the request held for the
 // phone (as long as a question may wait), and the mode check before each

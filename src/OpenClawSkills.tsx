@@ -215,7 +215,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                       <button
                         role="switch"
                         aria-checked={skill.state !== "off"}
-                        aria-label={`${skill.name} on`}
+                        aria-label={skill.name}
                         className={`claw-skill-switch ${skill.state !== "off" ? "on" : ""}`}
                         disabled={!!busy}
                         onClick={() => void toggle(skill)}

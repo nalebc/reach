@@ -66,8 +66,12 @@ async function scanApps() {
   return appCache;
 }
 export async function launchApp(appId) {
-  if (!appCache.length) await apps();
-  const app = appCache.find((a) => a.id === appId);
+  // apps() refreshes a list older than 30 s; an app installed since is found.
+  let app = (await apps()).find((a) => a.id === appId);
+  if (!app && appCacheAt) {
+    appCacheAt = 0;
+    app = (await apps()).find((a) => a.id === appId);
+  }
   if (!app)
     throw fail(404, "Choose an application from this computer’s app list.");
   if (process.platform === "darwin")

@@ -133,9 +133,18 @@ export function KindIcon({
 type Listing = { items: FileEntry[]; truncated: boolean };
 const listings = new Map<string, Listing>();
 const loading = new Map<string, Promise<Listing>>();
-function loadListing(peer: Peer, root: number, dir: string, hidden: boolean) {
+function loadListing(
+  peer: Peer,
+  root: number,
+  dir: string,
+  hidden: boolean,
+  fresh = false,
+) {
   const key = JSON.stringify([peer.url, peer.token, root, dir, hidden]);
   let pending = loading.get(key);
+  // After a change (upload, unzip, new folder) a request already in flight
+  // may predate it: start a new one and let only the newest write the cache.
+  if (fresh && pending) pending = undefined;
   if (!pending) {
     pending = request(
       peer,
@@ -148,12 +157,17 @@ function loadListing(peer: Peer, root: number, dir: string, hidden: boolean) {
           items: r.items as FileEntry[],
           truncated: !!r.truncated,
         };
-        listings.delete(key);
-        listings.set(key, listing);
-        if (listings.size > 60) listings.delete(listings.keys().next().value!);
+        if (loading.get(key) === pending) {
+          listings.delete(key);
+          listings.set(key, listing);
+          if (listings.size > 60)
+            listings.delete(listings.keys().next().value!);
+        }
         return listing;
       })
-      .finally(() => loading.delete(key));
+      .finally(() => {
+        if (loading.get(key) === pending) loading.delete(key);
+      });
     loading.set(key, pending);
   }
   return { key, pending };
@@ -262,6 +276,7 @@ export default function Files({
   const canWrite = features.writeFiles;
   const canExtract = features.owner && canWrite;
   const guest = device.access?.kind === "guest";
+  const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const searchField = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -278,7 +293,9 @@ export default function Files({
   }, [root, dir]);
   useEffect(() => {
     let active = true;
-    const { key, pending } = loadListing(peer, root, dir, hidden);
+    const fresh = freshListing.current;
+    freshListing.current = false;
+    const { key, pending } = loadListing(peer, root, dir, hidden, fresh);
     const cached = listings.get(key);
     setEntries(cached?.items || []);
     setLoading(!cached);
@@ -321,7 +338,10 @@ export default function Files({
     document.addEventListener("visibilitychange", visible);
     return () => document.removeEventListener("visibilitychange", visible);
   }, []);
-  const refresh = () => setRevision((n) => n + 1);
+  const refresh = () => {
+    freshListing.current = true;
+    setRevision((n) => n + 1);
+  };
   const go = (path: string) => {
     setMissing(null);
     setDir(path);
@@ -597,7 +617,7 @@ export default function Files({
               onShare={() => sharer.share(file)}
             />
           ),
-          <button key="d" onClick={() => void download(file)} disabled={busy}>
+          <button key="d" onClick={() => void download(file)}>
             <Download size={16} /> Download
           </button>,
           canExtract && isArchive(file.name) && (
@@ -1536,7 +1556,11 @@ function Viewer({
   // Images and PDFs are shared from the copy fetched for the preview, not a
   // second one.
   useEffect(() => {
-    if (mode !== "image" && mode !== "pdf") sharer.warm(file);
+    // Text the preview endpoint refuses (over 1 MB) isn't worth a 20 MB copy.
+    if (mode === "image" || mode === "pdf") return;
+    if ((mode === "text" || mode === "document") && file.size > 1024 * 1024)
+      return;
+    sharer.warm(file);
   }, [peer.url, peer.token, root, file.path, file.modified, file.size, mode]);
   // The write happens inside the tap: phones refuse clipboard writes after it.
   const copy = () => {

@@ -488,9 +488,15 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         : minutes === 60
           ? "1 hour"
           : `${minutes} minutes`;
-  const dayAllowed = (options?.maxFunnelSeconds ?? 3600) >= 86400;
+  // Before the Mac's options arrive (its app list can take a while), the
+  // durations every current Reach allows are offered; an older Mac that
+  // allows less says so, and the server refuses what it doesn't allow.
+  const dayAllowed = (options?.maxFunnelSeconds ?? 86400) >= 86400;
   // Always is for page agents only: a tools agent's key is single-use.
-  const alwaysAllowed = connect === "page" && options?.standingAllowed === true;
+  const alwaysAllowed = connect === "page" && (options ? options.standingAllowed === true : true);
+  useEffect(() => {
+    if ((minutes === ALWAYS && !alwaysAllowed) || (minutes === 1440 && !dayAllowed)) setMinutes(60);
+  }, [alwaysAllowed, dayAllowed]);
   const summary = !preset
     ? ""
     : `${name.trim()} gets ${
@@ -828,7 +834,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           )}
           <button
             className="ag-primary ag-wide"
-            disabled={busy || !!missing || !options}
+            disabled={busy || !!missing}
             onClick={() => void create()}
           >
             <Link2 size={18} aria-hidden="true" />

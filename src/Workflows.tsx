@@ -47,18 +47,20 @@ export type Workflow = {
   tasks: WorkflowTask[];
 };
 // A task as the editor holds it (with its id once the Mac has it).
-export type TaskDraft = { id?: string; title: string; agent: string; kind: "build" | "review"; task: string; together: boolean };
+export type TaskDraft = { id?: string; key?: string; title: string; agent: string; kind: "build" | "review"; task: string; together: boolean };
 
 const BASE = "/api/sessions/workflows";
 const at = (id: string, rest = "") => `${BASE}/${encodeURIComponent(id)}${rest}`;
+// "key" only keeps a new row's identity on this screen; the Mac never sees it.
+const bare = (tasks?: TaskDraft[]) => tasks?.map(({ key: _key, ...rest }) => rest);
 export const createWorkflow = (peer: Peer, body: { title?: string; cwd: string; tasks?: TaskDraft[] }) =>
-  post<{ workflow: Workflow }>(peer, BASE, body);
+  post<{ workflow: Workflow }>(peer, BASE, body.tasks ? { ...body, tasks: bare(body.tasks) } : body);
 export const planWorkflow = (
   peer: Peer,
   body: { agent: string; cwd: string; text: string; images?: string[]; model?: string; effort?: string; speed?: string },
 ) => post<{ workflow: Workflow; threadId: string }>(peer, `${BASE}/plan`, body);
 const editWorkflow = (peer: Peer, id: string, body: { title?: string; tasks?: TaskDraft[] }) =>
-  post<{ workflow: Workflow }>(peer, at(id), body);
+  post<{ workflow: Workflow }>(peer, at(id), body.tasks ? { ...body, tasks: bare(body.tasks) } : body);
 type Action = "run" | "stop" | "resume" | "proposal" | "again" | "remove";
 const workflowAction = (peer: Peer, id: string, action: Action) =>
   post<{ workflow?: Workflow; stopped?: boolean; removed?: boolean }>(peer, at(id, `/${action}`));
@@ -321,6 +323,7 @@ function Editor({
   latest.current = { title, tasks, workflow };
   // Changes made here, and how many of them the Mac has.
   const edits = useRef(0);
+  const newKeys = useRef(0);
   const saved = useRef(0);
   // The workflow as this editor's own last save left it.
   const ours = useRef(0);
@@ -394,7 +397,7 @@ function Editor({
   );
   const changeTasks = (next: TaskDraft[], show = open) => {
     edits.current++;
-    setTasks(next);
+    setTasks(next.map((t) => (t.id || t.key ? t : { ...t, key: `k${++newKeys.current}` })));
     setOpen(show);
     schedule();
   };
@@ -440,7 +443,7 @@ function Editor({
           const draft = t as TaskDraft;
           return (
             <Row
-              key={draft.id || `new:${i}`}
+              key={draft.key || draft.id || `new:${i}`}
               n={n}
               task={draft}
               logos={logos}

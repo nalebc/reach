@@ -1,4 +1,9 @@
 import { getConfig, createAuth, AGENT_SCOPES } from "../server/core.mjs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { stateDir } from "./home.mjs";
+// The same data folder ./reach uses (state/quick), whatever folder this runs in.
+process.env.REACH_DATA ||= path.join(stateDir(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")), "quick");
 const args = process.argv.slice(2);
 const value = (key, fallback) =>
   args.includes(key) ? args[args.indexOf(key) + 1] : fallback;

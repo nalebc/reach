@@ -39,6 +39,12 @@ function entryOf(command, exists = fs.existsSync) {
     if (!script || !exists(script)) script = (command.slice(0, end).match(/(\S+)$/) || [""])[0];
     return { root: path.dirname(path.dirname(script)), rest: command.slice(end).trim() };
   }
+  // Relative to the working directory: `node scripts/bootstrap.mjs`.
+  for (const entry of ENTRIES) {
+    const rel = entry.slice(1);
+    const found = command.match(new RegExp(`^\\S*node\\s+${rel.replace(/[.]/g, "\\.")}(?=\\s|$)`));
+    if (found) return { root: path.dirname(path.dirname(rel)), rest: command.slice(found[0].length).trim() };
+  }
   return null;
 }
 
@@ -70,12 +76,27 @@ const lockHolder = (root) => {
 
 // Every Reach running (never `self`), each with everything it started and the
 // terminals among those. `root` limits it to one folder's.
-export function reachHosts(table, { self = process.pid, root = null, exists, locked = lockHolder } = {}) {
+// A Reach started as `node scripts/bootstrap.mjs` (npm run go) shows a path
+// relative to its working directory; that directory is read for it alone.
+const cwdOfPid = (pid) => {
+  try {
+    const out = execFileSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
+    return out.split("\n").find((l) => l.startsWith("n"))?.slice(1) || "";
+  } catch {
+    return "";
+  }
+};
+export function reachHosts(table, { self = process.pid, root = null, exists, locked = lockHolder, cwdOf = cwdOfPid } = {}) {
   const children = new Map();
   for (const p of table) children.set(p.ppid, [...(children.get(p.ppid) || []), p]);
   const below = (pid) => (children.get(pid) || []).flatMap((c) => [c, ...below(c.pid)]);
   return table
     .map((p) => ({ p, entry: p.pid === self ? null : entryOf(p.command, exists) }))
+    .map(({ p, entry }) => {
+      if (!entry || path.isAbsolute(entry.root) || !/(^|\s)node(\s|$)|\/node\s/.test(p.command)) return { p, entry };
+      const cwd = cwdOf(p.pid);
+      return { p, entry: cwd ? { ...entry, root: path.resolve(cwd, entry.root) } : entry };
+    })
     .filter(({ p, entry }) => {
       if (!entry) return false;
       // A host runs with no command (flags only); `reach approve` and the

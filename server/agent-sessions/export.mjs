@@ -39,7 +39,7 @@ export function chatMarkdown({ title = "", agent = "", cwd = "", items = [], exp
         if (q.answer != null) out.push("**You**", "", quote(q.answer), "");
       }
     } else if (item.kind === "command") {
-      steps.push(`Ran \`${String(item.text || "").split("\n")[0].slice(0, 200)}\`${item.status === "failed" ? " (failed)" : ""}`);
+      steps.push(`Ran \`${String(item.text || "").split("\n")[0].slice(0, 200)}\`${item.status === "failed" || item.status === "declined" ? ` (${item.status})` : ""}`);
     } else if (item.kind === "file-change") {
       steps.push(`Edited ${item.text}`);
     } else if (item.kind === "agent") {

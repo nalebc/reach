@@ -36,12 +36,12 @@ const envKeys = [
 export function privateNodePath(root, arch = process.arch) {
   if (!["arm64", "x64"].includes(arch))
     throw Error("Unsupported Mac architecture.");
-  const expected = path.join(
-    stateDir(root),
-    "runtime",
-    `node-v22.23.3-darwin-${arch}`,
-    "bin/node",
+  // ./reach caches the runtime in <folder>/.reach/runtime whatever REACH_HOME
+  // says; the state folder's own copy is used when there is one.
+  const candidates = [stateDir(root), path.join(root, ".reach")].map((dir) =>
+    path.join(dir, "runtime", `node-v22.23.3-darwin-${arch}`, "bin/node"),
   );
+  const expected = candidates.find((c) => fs.existsSync(c)) || candidates[0];
   if (!fs.existsSync(expected) || fs.realpathSync.native(expected) !== expected)
     throw Error(
       "Reach's private Node runtime is missing. Run ./reach install to prepare it; system Node is not used for the service.",
@@ -265,7 +265,7 @@ export async function backgroundService(options, root, deps = {}) {
     throw e;
   }
   (deps.print || console.log)(
-    `Reach installed. Starts at sign-in and restarts after exit.\nPrivate link: ${origin}\nLogs: ${logDir}\nRun ./reach status, ${preferences ? "then open the link on your phone and run ./reach approve." : "then ./reach pair to connect your phone."}\nSleep prevention: ${stayAwakeMode(resolved.stayAwake)} (system and display). macOS locking and FileVault still apply.`,
+    `Reach installed. Starts at sign-in and restarts after exit.\nPrivate link: ${origin}\nLogs: ${logDir}\nRun ./reach status, ${preferences ? "then open the link on your phone and run ./reach approve." : "then ./reach pair to connect your phone."}\nSleep prevention: ${stayAwakeMode(resolved.stayAwake)} (system and display). macOS locking and FileVault still apply.\nNote: the service runs without a Terminal window, so it has no Screen Recording or Accessibility (no live screen, no control) and can't approve new phones. Use ./reach restart for that.`,
   );
   return { origin, node, dataDir, logDir, options: resolved };
 }

@@ -48,3 +48,61 @@ for (const kind of ["agent", "all"]) {
     assert.deepEqual(dom.errors, []);
   });
 }
+
+// As the Claude app files them: a worktree chat under its repo, by the app's
+// own project (originCwd) or the worktree's path.
+for (const kind of ["agent", "all"]) {
+  test(`${kind} list groups Claude worktree chats under their repo`, async () => {
+    const chat = (id, cwd, extra = {}) => ({
+      agent: "claude", id, title: `Chat ${id}`, cwd, branch: "", origin: "app", inApp: true,
+      updatedAt: Date.now(), createdAt: Date.now() - 1000, status: "idle", preview: "", archived: false, ...extra,
+    });
+    const view = await dom.render(dom.React.createElement(kind === "agent" ? ChatList : ChatHub, {
+      peer, logos: {}, agent: "claude", apps: [], appPending: {}, pending: 0,
+      sessions: [chat("a", "/r"), chat("b", "/r/.claude/worktrees/x"), chat("c", "/elsewhere/w", { project: "/r" })],
+      relays: [], onOpen: () => {}, onNew: () => {}, onAgentChange: () => {},
+    }));
+    await settle();
+    const groups = [...dom.document.querySelectorAll(".chat-project-group")];
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].querySelectorAll(".chat-card").length, 3);
+    await view.unmount();
+    assert.deepEqual(dom.errors, []);
+  });
+}
+
+test("Codex chats group as the Codex app's projects: by its name, its subfolders included", async () => {
+  const chat = (id, cwd, ago) => ({ ...sessions[0], id, title: `Chat ${id}`, cwd, updatedAt: Date.now() - ago });
+  const view = await dom.render(dom.React.createElement(ChatList, {
+    peer, logos: {}, agent: "codex", apps: [], appPending: {}, pending: 0,
+    onOpen: () => {}, onNew: () => {}, onAgentChange: () => {},
+    sessions: [chat("a", "/work/durable", 1), chat("b", "/work/durable/api", 2), chat("c", "/work/durable-old", 3), chat("d", "/work/other", 4)],
+    projects: [{ id: "p1", name: "durable-session", roots: ["/work/durable"] }],
+  }));
+  await settle();
+  const groups = [...dom.document.querySelectorAll(".chat-project-group")].map((g) => [
+    g.querySelector(".chat-project-name").textContent,
+    g.querySelectorAll(".chat-card").length,
+  ]);
+  assert.deepEqual(groups, [["durable-session", 2], ["durable-old", 1], ["other", 1]]);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
+test("on a Windows PC, Codex chats in a project's subfolder group under it too", async () => {
+  const chat = (id, cwd, ago) => ({ ...sessions[0], id, title: `Chat ${id}`, cwd, updatedAt: Date.now() - ago });
+  const view = await dom.render(dom.React.createElement(ChatList, {
+    peer: { ...peer, platform: "win32" }, logos: {}, agent: "codex", apps: [], appPending: {}, pending: 0,
+    onOpen: () => {}, onNew: () => {}, onAgentChange: () => {},
+    sessions: [chat("a", "C:\\work\\durable", 1), chat("b", "C:\\work\\durable\\api", 2), chat("c", "C:\\work\\durable-old", 3)],
+    projects: [{ id: "p1", name: "durable-session", roots: ["C:\\work\\durable\\"] }],
+  }));
+  await settle();
+  const groups = [...dom.document.querySelectorAll(".chat-project-group")].map((g) => [
+    g.querySelector(".chat-project-name").textContent,
+    g.querySelectorAll(".chat-card").length,
+  ]);
+  assert.deepEqual(groups, [["durable-session", 2], ["durable-old", 1]]);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});

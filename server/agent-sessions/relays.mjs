@@ -28,6 +28,8 @@ const KINDS = ["build", "review", "send", "back", "report", "record", "post"];
 export const MAX_STEPS = 3;
 // A relay left waiting this long stops (set it up again if still wanted).
 export const WAIT_MS = 24 * 60 * 60 * 1000;
+// Auto-continue held for a free provider: how often availability is read.
+export const HOLD_RETRY_MS = 60 * 1000;
 const BUSY = new Set(["running", "waiting"]);
 const ID = /^[\w-]{1,80}$/;
 
@@ -218,13 +220,20 @@ export function createRelays({
   const listeners = new Set();
   // A reply seen once, waiting to be seen again settleMs later: relay id → { item, at }.
   const candidates = new Map();
+  // Held auto-continues: when availability was last read (in memory).
+  const tried = new Map();
   const save = () => {
     revision++;
     // Finished ones are kept a week (a workflow's own a day: it reads them
     // at once), at most 100 in all.
     const week = now() - 7 * 24 * 60 * 60 * 1000;
     const day = now() - 24 * 60 * 60 * 1000;
-    relays = relays.filter((r) => ["waiting", "sending"].includes(r.state) || r.updatedAt > (internal(r) ? day : week)).slice(-100);
+    // Active ones (waiting, sending, holding) are always kept; only finished ones are capped.
+    const active = (r) => ["waiting", "sending", "holding"].includes(r.state);
+    relays = relays.filter((r) => active(r) || r.updatedAt > (internal(r) ? day : week));
+    const keepFinished = Math.max(0, 100 - relays.filter(active).length);
+    let finishedSeen = relays.filter((r) => !active(r)).length;
+    relays = relays.filter((r) => active(r) || finishedSeen-- <= keepFinished);
     if (file) {
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(relays), { mode: 0o600 });
@@ -244,6 +253,8 @@ export function createRelays({
     steps: r.steps.map(({ kind, agent, to, instructions }) => ({ kind, ...(agent ? { agent } : {}), ...(to ? { to } : {}), ...(instructions ? { instructions } : {}) })),
     chain: r.chain.map(({ agent, id, title }) => ({ agent, id, title: title || "" })),
     sent: r.sent,
+    // Auto-continue with no provider free yet: waiting for the first one back.
+    ...(r.holding ? { holding: true } : {}),
     // A helper's report: whether its turn ended on a reply, an error or a stop.
     ...(r.outcome ? { outcome: r.outcome } : {}),
   });
@@ -254,8 +265,10 @@ export function createRelays({
   const stop = (r, problem) => {
     r.state = "stopped";
     r.problem = problem;
+    r.holding = null;
     r.updatedAt = now();
     candidates.delete(r.id);
+    tried.delete(r.id);
     save();
     // A workflow says it its own way (workflows.mjs).
     if (!internal(r)) void say(r, "Relay stopped", problem);
@@ -274,18 +287,55 @@ export function createRelays({
       if (r.chain.length > 1 || page?.session?.movedFrom)
         return void stop(r, ONCE);
       if (r.priority) {
+        // No provider free: held, and the first one back takes the work (in
+        // the priority order when several are back at once), this chat's own
+        // included. Looked at again at most once a minute.
+        const hold = () => {
+          if (r.state !== "waiting") return;
+          tried.set(r.id, now());
+          if (r.holding) return;
+          r.holding = { item: page?.items?.at(-1)?.id || "" };
+          r.waitingSince = now();
+          r.problem = "";
+          r.updatedAt = now();
+          save();
+          void say(r, "Auto-continue waiting", `${agentName(src.agent)} ran out of usage and no other provider is free yet. Continues with the first one back.`);
+        };
         let health;
         try {
           health = await chats.health({ fresh: true });
         } catch {
-          if (r.state === "waiting") stop(r, "Couldn't check provider availability. Set up auto-continue again to retry.");
-          return;
+          return void hold();
         }
         // Cancellation or revocation may arrive while health is loading.
         if (r.state !== "waiting") return;
         const used = new Set(r.chain.map((c) => c.agent));
-        const target = r.priority.find((a) => !used.has(a) && !continueUnavailable(a, health));
-        if (!target) return void stop(r, "No unused provider in your priority order is available. Check sign-in and usage, then enable auto-continue again.");
+        const target = r.priority.find((a) => (r.holding ? a === src.agent || !used.has(a) : !used.has(a)) && !continueUnavailable(a, health));
+        if (!target) return void hold();
+        if (target === src.agent) {
+          // This chat's own provider came back first: it continues here.
+          const denied = authorized(r.owner);
+          if (denied) return void stop(r, denied);
+          r.state = "sending";
+          r.updatedAt = now();
+          save();
+          try {
+            await sessions.send(src.agent, src.id, {
+              text: "Your usage is back. Continue where you left off.",
+              requestId: `continue-${r.id}-here`, authorize: allowed(r.owner),
+            });
+            r.state = "done";
+            r.holding = null;
+            r.problem = "";
+            r.updatedAt = now();
+            tried.delete(r.id);
+            save();
+            void say(r, "Auto-continued", `${agentName(src.agent)} has usage again. Continued in the same chat.`);
+          } catch (e) {
+            stop(r, e?.message || "Couldn't continue in this chat.");
+          }
+          return;
+        }
         r.next = r.steps.findIndex((s) => s.agent === target);
         step = r.steps[r.next];
       }
@@ -316,6 +366,8 @@ export function createRelays({
         r.sent.push({ kind: "build", to: { agent: moved.agent, id: moved.id }, at: now() });
         r.next++;
         r.state = moved.resumed ? "done" : "stopped";
+        r.holding = null;
+        tried.delete(r.id);
         r.since = null;
         r.expect = "";
         r.problem = moved.resumed ? "" : moved.resumeError || "The chat moved, but couldn't continue. Open it to retry.";
@@ -470,6 +522,10 @@ export function createRelays({
         for (const r of waiting) {
           if (r.state !== "waiting") continue;
           if (now() - (r.waitingSince || r.createdAt) > WAIT_MS) {
+            if (r.holding) {
+              stop(r, "No provider was free within a day. Enable auto-continue again if you still want it.");
+              continue;
+            }
             stop(r, `Waited a day for ${agentName(r.chain.at(-1).agent)} to finish.${internal(r) ? "" : " Set it up again if you still want it."}`);
             continue;
           }
@@ -491,6 +547,20 @@ export function createRelays({
             continue;
           }
           const items = page.items || [];
+          if (r.holding) {
+            // Continued by hand meanwhile: back to watching for the next limit.
+            if (items.at(-1)?.id !== r.holding.item) {
+              r.since = r.holding.item;
+              r.holding = null;
+              r.waitingSince = now();
+              r.updatedAt = now();
+              tried.delete(r.id);
+              save();
+            } else {
+              if (now() - (tried.get(r.id) || 0) >= HOLD_RETRY_MS) await fire(r, page, null).catch(() => {});
+              continue;
+            }
+          }
           const outcome = turnOutcome(items);
           const ours = startsWith(outcome.request, r.expect);
           const eligible = r.trigger === "usage"

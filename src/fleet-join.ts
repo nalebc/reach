@@ -149,6 +149,8 @@ export function useFleetJoin(
         tried.add(origin);
         const joined = await joinComputer(origin, name);
         if (joined && !stopped) latest.current.onJoined(joined);
+        // Asleep or unreachable this time: tried again on the next pass.
+        else if (!joined) tried.delete(origin);
       }
     };
     void run();

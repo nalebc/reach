@@ -234,7 +234,8 @@ async function putChunkThroughTailnet(
   // (AbortSignal.any is missing on older iOS.)
   const stop = new AbortController();
   const abort = () => stop.abort();
-  const timer = setTimeout(abort, IDLE_MS * 4);
+  // fetch reports no progress: allow time in proportion to the chunk (about 64 KB/s floor).
+  const timer = setTimeout(abort, IDLE_MS * 4 + (chunk.size / 65536) * 1000);
   signal.addEventListener("abort", abort);
   try {
     const response = await fetch(
@@ -429,6 +430,10 @@ async function sendFile(
         await pause(Math.min(15000, 1000 * 2 ** (tries - 1)), signal);
       }
     }
+  } catch (e) {
+    // A failed upload frees its server session; leftovers count toward the limit.
+    if (!signal.aborted) cancel();
+    throw e;
   } finally {
     signal.removeEventListener("abort", cancel);
   }

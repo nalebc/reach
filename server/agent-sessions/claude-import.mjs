@@ -212,7 +212,9 @@ export function createClaudeRefresh({
   const save = () => {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(file, JSON.stringify([...pending]), { mode: 0o600 });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify([...pending]), { mode: 0o600 });
+      fs.renameSync(tmp, file);
     } catch {
       /* kept in memory until Reach restarts */
     }
@@ -330,6 +332,7 @@ export const recordShape = (r) =>
   typeof r.isArchived === "boolean" &&
   typeof r.permissionMode === "string";
 const APP_MODES = new Set(["default", "acceptEdits", "plan", "auto"]);
+const APP_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 // Writes the app's record for a session; true when the app has a record for
 // it now (written here or already there).
@@ -350,6 +353,9 @@ export function writeClaudeRecord(id, info, { records = RECORDS, now = Date.now 
     isArchived: false,
     ...(typeof info.title === "string" && info.title.trim() ? { title: info.title.trim().slice(0, 200), titleSource: "auto" } : {}),
     ...(typeof info.model === "string" && info.model ? { model: info.model } : {}),
+    // The app launches the chat with the record's effort (--effort); only a
+    // level its menu has, so an unknown word never breaks its launch.
+    ...(APP_EFFORTS.has(info.effort) ? { effort: info.effort } : {}),
     permissionMode: APP_MODES.has(info.mode) ? info.mode : "default",
     ...(typeof target.sample.chromePermissionMode === "string" ? { chromePermissionMode: target.sample.chromePermissionMode } : {}),
     sessionPermissionUpdates: [],

@@ -3,6 +3,7 @@
 // at that same address, so it never sees this page (older Reach: it is sent to
 // the private address). Without the app, sign in to Tailscale right here in
 // the browser and run Reach through the page's own tailnet node.
+import "./abort-polyfill";
 import { watchForApp } from "./app-watch";
 import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";
@@ -178,7 +179,10 @@ function render(parts: {
 
 async function loadConfig(): Promise<StartConfig | null> {
   try {
-    const response = await fetch("/reach-start.json", { cache: "no-store" });
+    const response = await fetch("/reach-start.json", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000),
+    });
     return parseStartConfig(await response.json());
   } catch {
     return null;

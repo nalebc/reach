@@ -14,6 +14,15 @@ import { createClaudeAccountUsage } from "./account-usage.mjs";
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const origins = { "claude-desktop": "app", cli: "cli", "sdk-cli": "reach" };
+// A chat's own folder: the Claude app's record of it (a worktree chat's is
+// the worktree), else the folder its transcript is kept under (Claude Code
+// names it after the folder, and resumes it there), else where it began.
+// Never the last line's: a Bash `cd` changes that (Oct 9).
+const folderOf = (file, parsed, appRecord) => {
+  if (typeof appRecord?.cwd === "string" && appRecord.cwd) return appRecord.cwd;
+  const named = path.basename(path.dirname(file));
+  return (parsed.cwds || []).find((cwd) => cwd.replace(/[^a-zA-Z0-9]/g, "-") === named) || parsed.cwd || "";
+};
 const signIn = (stdout) => {
   const status = JSON.parse(String(stdout));
   if (typeof status.loggedIn !== "boolean") throw new Error("Unexpected status.");
@@ -187,8 +196,13 @@ export function createClaudeSessions({
       agent: "claude",
       id,
       title: appRecord?.title || parsed.title || "Untitled Claude session",
-      cwd: parsed.cwd || appRecord?.cwd || "",
-      branch: parsed.gitBranch || "",
+      cwd: folderOf(file, parsed, appRecord),
+      // The project the Claude app files it under: a worktree chat's repo
+      // (its record's originCwd), while cwd stays the worktree it runs in.
+      ...(typeof appRecord?.originCwd === "string" && appRecord.originCwd ? { project: appRecord.originCwd } : {}),
+      // Claude Code writes "HEAD" outside a git repo (and on a detached HEAD,
+      // where the Claude app shows no branch either): no branch.
+      branch: parsed.gitBranch && parsed.gitBranch !== "HEAD" ? parsed.gitBranch : "",
       origin: appRecord ? "app" : origins[parsed.entrypoint] || "cli",
       inApp: !!appRecord,
       appSessionId: appRecord?.sessionId || null,
@@ -201,7 +215,13 @@ export function createClaudeSessions({
       archived: !!appRecord?.isArchived,
       // What the Claude app shows under its composer, from its own record.
       model: appRecord?.model || parsed.model || null,
-      effort: appRecord?.effort || null,
+      // The app's pick (it applies before the next turn), else the level its
+      // latest reply ran at; null is unknown, never a guessed default.
+      effort: appRecord?.effort || parsed.effort || null,
+      // The app's own, alone: only it confirms a pick made in the app.
+      ...(appRecord ? { appEffort: appRecord.effort || null } : {}),
+      // The Claude app's Ultracode, a per-chat option beside its effort.
+      ...(appRecord?.sessionSettings?.ultracode === true ? { ultracode: true } : {}),
       // The app's pick for its chats; else the mode its latest message ran in.
       mode: appRecord?.permissionMode || parsed.mode || null,
       // The transcript ends mid-turn (a prompt or a tool call, no answer
@@ -282,6 +302,7 @@ export function createClaudeSessions({
       const tools = new Map(), results = new Map();
       for (const line of source.split("\n")) {
         let entry; try { entry = JSON.parse(line); } catch { continue; }
+        if (!entry || typeof entry !== "object") continue;
         if (!Array.isArray(entry.message?.content)) continue;
         for (const block of entry.message.content) {
           if (block.type === "tool_use") tools.set(block.id, block.input);
@@ -387,6 +408,8 @@ export function createClaudeSessions({
           ...(await summary(found, byCli.get(id))),
           subagents,
           todos: parsed.todos || [],
+          // Sent while it worked, still in Claude Code's queue (claude-transcript.mjs).
+          waiting: parsed.waiting || [],
           // The app's model naming a 1M window ("…[1m]") widens it.
           ...(parsed.context ? { context: at === undefined && /\[1m\]/i.test(byCli.get(id)?.model || "") ? { ...parsed.context, window: 1000000 } : parsed.context } : {}),
         },
@@ -569,10 +592,12 @@ export function createClaudeSessions({
     // --resume (live detection).
     async starts() {
       const out = [];
+      const byCli = await records().catch(() => new Map());
       for (const t of await transcripts()) {
         try {
           const parsed = await parse(t.file);
-          if (parsed.items.length) out.push({ id: t.id, cwd: parsed.cwd, firstAt: parsed.firstAt ?? parsed.items[0]?.at ?? 0 });
+          // Where its process runs: the same folder the list shows.
+          if (parsed.items.length) out.push({ id: t.id, cwd: folderOf(t.file, parsed, byCli.get(t.id)), firstAt: parsed.firstAt ?? parsed.items[0]?.at ?? 0 });
         } catch {}
       }
       return out;

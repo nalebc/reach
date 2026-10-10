@@ -26,7 +26,7 @@ import "./openclaw-health.css";
 
 type Part<T> = ({ supported: true } & T) | { supported: false };
 type Health = {
-  status: "ok" | "slow" | "attention";
+  status: "ok" | "slow" | "attention" | "unknown";
   gateway: Part<{ answered: boolean; ms: number; version?: string }>;
   uptime: Part<{ ms: number }>;
   channels: Part<{ failing: string[] }>;
@@ -34,7 +34,12 @@ type Health = {
   storage: Part<{ dbBytes: number; walBytes: number; warn: boolean }>;
 };
 
-const WORD = { ok: "Healthy", slow: "Slow", attention: "Needs attention" };
+const WORD = {
+  ok: "Healthy",
+  slow: "Slow",
+  attention: "Needs attention",
+  unknown: "Not checked",
+};
 // Read at most this often, whatever else changes.
 const EVERY_MS = 30000;
 
@@ -225,7 +230,9 @@ function HealthSheet({
               {issues.join(" ") ||
                 (gateway.supported && gateway.answered
                   ? "Connected and ready for conversations."
-                  : "No issues reported by available checks.")}
+                  : health.status === "unknown"
+                    ? "Reach couldn't verify the Gateway yet."
+                    : "No issues reported by available checks.")}
             </p>
           </div>
         </section>

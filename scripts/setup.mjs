@@ -220,7 +220,7 @@ function makeSteps(root, deps) {
             {
               value: "background",
               label: "Yes, start it at login and keep it running",
-              description: "Installs a background service (you can remove it).",
+              description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
             },
           ],
         });

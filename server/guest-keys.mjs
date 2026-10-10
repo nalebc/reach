@@ -95,6 +95,8 @@ export function createGuestKeys({
         "Tailscale didn't accept the OAuth client. Check its ID and secret.",
       );
     const body = await response.json();
+    if (typeof body?.access_token !== "string" || !body.access_token)
+      throw fail(502, "Tailscale didn't return an access token. Try again.");
     cached = {
       clientId: creds.clientId,
       token: body.access_token,
@@ -278,7 +280,13 @@ export function createGuestKeys({
       const verdict = check.ok ? (await check.text()).trim() : "";
       const problem = !check.ok
         ? await reason(check)
-        : verdict && JSON.parse(verdict).message;
+        : verdict && (() => {
+            try {
+              return JSON.parse(verdict).message;
+            } catch {
+              return "Tailscale's answer couldn't be read.";
+            }
+          })();
       if (problem)
         throw fail(
           409,

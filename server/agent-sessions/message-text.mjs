@@ -38,3 +38,18 @@ export function repeatedImages(value) {
   const match = String(value ?? "").match(/<reach-image\b[^>]*\bcount="(\d{1,2})"/);
   return match ? Number(match[1]) : 0;
 }
+
+// Files attached on the phone go after the words as their paths in Reach's
+// agent-files/<id>/<name> (server/index.mjs withFiles): "@path" for Claude
+// Code, the path for Codex. The chat shows the words and each file's name;
+// the path showed in the person's bubble, and the sent copy never matched it.
+// Only such a trailing run of lines: an "@file" the person typed stays.
+const ATTACHED_FILE = /^@?\/.*\/agent-files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/([^/\\\n]{1,120})$/;
+export function attachedFiles(value) {
+  const text = String(value ?? "");
+  const lines = text.split("\n");
+  let end = lines.length;
+  while (end > 0 && ATTACHED_FILE.test(lines[end - 1])) end--;
+  if (end === lines.length) return { text, files: [] };
+  return { text: lines.slice(0, end).join("\n").trim(), files: lines.slice(end).map((line) => ATTACHED_FILE.exec(line)[1]) };
+}

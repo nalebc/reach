@@ -59,9 +59,12 @@ export function protectedAppReason(app) {
     return "Passwords, security prompts and Reach's lifeline are always protected.";
   return null;
 }
+const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper"]);
 export const terminalLikeApp = (app) => {
   const all = `${lower(app?.bundleId)} ${lower(app?.name)} ${lower(app?.id)}`;
-  return TERMINAL_LIKE.some((word) => all.includes(word));
+  // Short names only count as whole words ("Zed", not "Authorized"; "Rio", not "Portfolio").
+  const tokens = new Set(all.split(/[^a-z0-9]+/).filter(Boolean));
+  return TERMINAL_LIKE.some((word) => SHORT_TERMINAL_WORDS.has(word) ? tokens.has(word) : all.includes(word));
 };
 // Only unambiguous, explicit HTTP(S) URLs may discard their path/query for
 // Reach's host check. Keep the old conservative match for everything else.

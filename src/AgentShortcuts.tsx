@@ -94,7 +94,7 @@ export default function AgentShortcuts({
       controller.abort();
       clearInterval(timer);
     };
-  }, [peer, revision, visible]);
+  }, [peer.url, peer.token, revision, visible]);
   const mutate = async (item: Shortcut, method: "PATCH" | "DELETE") => {
     if (busy.current) return;
     busy.current = true;
@@ -201,7 +201,7 @@ export default function AgentShortcuts({
               </span>
             </summary>
             <div className="as-card-body">
-              <ol className="as-steps">
+              <ol className="ag-steps">
                 {item.steps.map((step, index) => (
                   <li key={index}>
                     {stepWords(step)}
@@ -233,14 +233,11 @@ export default function AgentShortcuts({
         ))}
         {!shortcuts.length && (
           <p className="ag-quiet">
-            The agent records a task, verifies it worked, and saves it for next
-            time. You don’t need to record or run anything here.
+            The agent records and saves tasks itself.
           </p>
         )}
         <p className="ag-quiet">
-          Website steps use your browser’s existing sign-in session. Password
-          fields stop for you to sign in. Other typed text is supplied by the
-          agent for each run. Saved steps use a window and focus fingerprint; window titles and form values are not stored.
+          Passwords are never saved; you sign in when asked.
         </p>
       </div>
     </details>

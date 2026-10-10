@@ -80,13 +80,12 @@ test('authorization is checked again between lease acquisition and execute', asy
 test('cancel holds a running lease until stopped work settles; future operations from the same session remain possible', async t => {
   const f = await fixture(t), hold = f.gate(), agent = f.agent('one'); let guard, signal, nextStarted = false;
   const first = agent.run(async context => { guard = context.authorize; signal = context.signal; await hold.promise; });
-  const rejected = assert.rejects(first, /stopped/);
   await tick(); f.coordinator.cancelClient('one');
   assert.equal(signal.aborted, true); assert.throws(guard, /stopped/);
   assert.equal(f.coordinator.listOwner()[0].stopping, true);
   const next = f.agent('two').run(() => { nextStarted = true; });
   await tick(); assert.equal(nextStarted, false);
-  hold.resolve(); await rejected; await next;
+  hold.resolve(); await first; await next; // work that finished anyway is reported as completed, not failed
   await agent.run(() => 'new operation');
   assert.equal(nextStarted, true);
 });
@@ -195,10 +194,10 @@ test('an asynchronous finish hook retains the lease until approval invalidation 
 
 test('closing rejects queued and future work and waits for active work to stop', async t => {
   const f = await fixture(t), hold = f.gate();
-  const first = f.agent('one').run(() => hold.promise), firstRejected = assert.rejects(first, /stopped/);
+  const first = f.agent('one').run(() => hold.promise), firstDone = first;
   const second = f.agent('two').run(() => {}), secondRejected = assert.rejects(second, /stopped/);
   await tick(); f.coordinator.close(); await secondRejected;
   assert.equal(f.coordinator.listOwner().length, 1);
   await assert.rejects(f.agent('new', 'third').run(() => {}), { status: 503 });
-  hold.resolve(); await firstRejected;
+  hold.resolve(); await firstDone; // completed work is not reported as failed
 });

@@ -41,6 +41,7 @@ test("QR links support private address-only approval and preserve legacy explici
     "https://user:password@computer.example.ts.net",
     "reach://connect?u=https://public.example",
     `reach://pair?u=${encodeURIComponent(origin)}&c=1234`,
+    "reach://pair?u=https://evil.example&c=12345678&n=My%20Mac",
     "javascript:alert(1)",
   ])
     assert.equal(parsePairLink(bad), null, bad);

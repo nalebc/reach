@@ -14,7 +14,7 @@ import {
   type RelayStep,
 } from "./agent-sessions";
 import "./relays.css";
-import { CONTINUE_PRIORITY, checkContinuePriority, continueUnavailable } from "../server/agent-sessions/auto-continue.mjs";
+import { CONTINUE_PRIORITY, canContinue, checkContinuePriority, continueUnavailable } from "../server/agent-sessions/auto-continue.mjs";
 
 // Working across agents (docs/ACROSS_AGENTS.md): a second opinion on a reply,
 // and relays (what one agent did goes on to another when it finishes). The
@@ -54,7 +54,9 @@ export function relayLine(relay: Relay, here: ChatRef) {
   if (relay.trigger === "usage") {
     const target = agentLabel(relay.steps[relay.next]?.agent || relay.steps[0]?.agent || "");
     if (relay.state === "waiting") return relay.priority
-      ? `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Continues once; unavailable providers are skipped (24 hours).`
+      ? relay.holding
+        ? `Out of usage. Waiting for the first free provider: ${relay.priority.map(agentLabel).join(", ")}.`
+        : `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Continues once with the first free provider (24 hours).`
       : `Auto-continue in ${target} if usage runs out (24 hours).`;
     if (relay.state === "sending") return `Continuing in ${target}…`;
     if (relay.state === "done") return `Auto-continued in ${agentLabel(relay.chain.at(-1)?.agent || relay.steps[0]?.agent || "")}.`;
@@ -570,7 +572,8 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
     } catch { return [...CONTINUE_PRIORITY]; }
   });
   const priority = order.filter((a) => included.includes(a));
-  const ready = priority.some((a) => a !== session.agent && !continueUnavailable(a, health));
+  // Out of usage or signed out now is fine: the first one back takes it.
+  const ready = priority.some((a) => a !== session.agent && canContinue(a));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const reorder = (index: number, offset: number) => setOrder((previous) => {
@@ -593,7 +596,7 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
     }
   };
   return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
-    <p className="relay-say">When usage runs out, continue with the first available provider in this order, with the conversation history. This happens once: the continued chat isn't moved again on its own.</p>
+    <p className="relay-say">When usage runs out, continue with the first free provider, with the conversation history. If none is free, it waits: the first one back takes the work, this one included. If several are free, this order decides.</p>
     <ol className="continue-priority" aria-label="Provider priority">
       {order.map((agent, index) => {
         const unavailable = continueUnavailable(agent, health);
@@ -603,15 +606,15 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
             <input type="checkbox" checked={included.includes(agent)} disabled={busy || current}
               aria-label={`Use ${agentLabel(agent)}`}
               onChange={(e) => setIncluded((list) => e.target.checked ? [...list, agent] : list.filter((a) => a !== agent))} />
-            <span><strong>{agentLabel(agent)}</strong><small>{current ? "Current provider" : unavailable ? `${unavailable} · skipped` : "Available"}</small></span>
+            <span><strong>{agentLabel(agent)}</strong><small>{current ? "Current provider · waits" : !canContinue(agent) ? `${unavailable} · skipped` : unavailable ? `${unavailable} · waits` : "Available"}</small></span>
           </label>
           <button aria-label={`Move ${agentLabel(agent)} up`} disabled={busy || index === 0} onClick={() => reorder(index, -1)}><ArrowUp size={16} /></button>
           <button aria-label={`Move ${agentLabel(agent)} down`} disabled={busy || index === order.length - 1} onClick={() => reorder(index, 1)}><ArrowDown size={16} /></button>
         </li>;
       })}
     </ol>
-    <p className="relay-say">Watches for 24 hours and skips providers that are unavailable. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
-    {!ready && <p className="relay-problem">Select another available provider. Sign in or reconnect on this computer if needed.</p>}
+    <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
+    {!ready && <p className="relay-problem">Select another provider Reach can continue in.</p>}
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
       {busy ? <Loader2 size={16} className="spin" /> : "Enable auto-continue"}

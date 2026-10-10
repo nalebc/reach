@@ -2,8 +2,8 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { startDom } from "./dom/harness.mjs";
 
-// Home at a glance: the Ask bar, usage under the computer's name, and chats
-// that just finished keeping their circle.
+// Home at a glance: who else is on the computer, and chats that just
+// finished keeping their circle.
 const peer = { id: "mac", name: "Mac", url: "https://mac.test", token: "t", platform: "darwin" };
 let dom, React, HomeLive;
 before(async () => {
@@ -14,6 +14,8 @@ before(async () => {
     },
   });
   React = dom.React;
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   ({ default: HomeLive } = await dom.load("/src/HomeLive.tsx"));
 });
 after(() => dom?.close());
@@ -29,25 +31,6 @@ const chat = (id, status, ago, extra = {}) => ({
   archived: false,
   ...extra,
 });
-const health = [
-  {
-    agent: "codex",
-    installed: true,
-    signedIn: true,
-    usable: true,
-    usage: { available: true, windows: [{ id: "5h", label: "5 hours", usedPercent: 62, resetsAt: null, severity: "" }] },
-  },
-  {
-    agent: "claude",
-    installed: true,
-    signedIn: true,
-    usable: false,
-    resetsAt: Date.now() + 3600000,
-    usage: { available: true, windows: [] },
-  },
-  // Usage unknown: no chip, never shown as having usage.
-  { agent: "gemini", installed: true, signedIn: false },
-];
 const home = (props = {}) =>
   React.createElement(HomeLive, {
     features: { terminal: false, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: false, writeFiles: false },
@@ -68,7 +51,6 @@ const home = (props = {}) =>
     onShortcuts() {},
     refreshSessions() {},
     toast() {},
-    agentHealth: health,
     ...props,
   });
 
@@ -94,31 +76,31 @@ test("chats that just finished keep their circle a few minutes, marked done or f
   await view.unmount();
 });
 
-test("usage chips show known usage only, and open the usage sheet", async () => {
-  const view = await dom.render(home({ agentSessions: [] }));
-  await dom.waitFor(() => dom.document.querySelector(".home-usage"));
-  const chips = [...dom.document.querySelectorAll(".home-usage-chip")].map((c) => [c.className, c.textContent]);
-  assert.deepEqual(chips, [
-    ["home-usage-chip rest", "62%"],
-    ["home-usage-chip out", "Out"],
-  ]);
-  dom.document.querySelector(".home-usage").click();
-  await dom.waitFor(() => dom.document.querySelector(".usage-sheet"));
+test("who else is on the computer: a pill under its name, and who does what", async () => {
+  const devices = [
+    { id: "me", name: "This phone", kind: "phone", self: true, activity: "connected" },
+    { id: "p2", name: "iPad", kind: "tablet", self: false, activity: "viewing" },
+    { id: "a1", name: "Helper", kind: "computer", self: false, activity: "controlling", access: [{ kind: "agent", expiresAt: 0 }] },
+  ];
+  const view = await dom.render(
+    home({
+      agentSessions: [],
+      features: { terminal: false, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: true, writeFiles: false },
+      connections: { mac: { state: "connected", devices } },
+    }),
+  );
+  const pill = await dom.waitFor(() => dom.document.querySelector(".home-here"));
+  assert.ok(pill.classList.contains("controlling"));
+  assert.match(pill.textContent, /Helper is controlling/);
+  pill.click();
+  await dom.waitFor(() => dom.document.querySelectorAll(".home-here-row").length === 2);
+  const rows = [...dom.document.querySelectorAll(".home-here-row")].map((r) => r.textContent);
+  assert.deepEqual(rows, ["iPadWatching the screen", "HelperControlling the screen · Agent"]);
+  assert.deepEqual(dom.errors, []);
   await view.unmount();
-});
-
-test("the Ask bar opens New conversation in the app last picked in Chat", async () => {
-  dom.window.localStorage.setItem("reach.chatAgent", "claude");
-  const asked = [];
-  const view = await dom.render(home({ agentSessions: [], compose: (agent) => asked.push(agent) }));
-  const bar = await dom.waitFor(() => dom.document.querySelector(".home-ask"));
-  assert.match(bar.textContent, /Ask Claude Code/);
-  bar.click();
-  assert.deepEqual(asked, ["claude"]);
-  await view.unmount();
-  // Without Chat (a guest), no Ask bar.
-  const guest = await dom.render(home({ agentSessions: [] }));
-  await dom.waitFor(() => dom.document.querySelector(".home-usage"));
-  assert.equal(dom.document.querySelector(".home-ask"), null);
-  await guest.unmount();
+  // Alone on it: no pill.
+  const alone = await dom.render(home({ agentSessions: [], connections: { mac: { state: "connected", devices: [devices[0]] } } }));
+  await dom.waitFor(() => dom.document.querySelector(".home-live"));
+  assert.equal(dom.document.querySelector(".home-here"), null);
+  await alone.unmount();
 });

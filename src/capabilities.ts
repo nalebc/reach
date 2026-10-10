@@ -53,7 +53,6 @@ export function workspaceCapabilities(
 export type WorkspaceCapabilities = ReturnType<typeof workspaceCapabilities>;
 export function pageAccessible(page: string, features: WorkspaceCapabilities) {
   if (page === "overview") return true;
-  if (page === "chat") return features.codex;
   // Transcripts of every AI session: the owner only (server: admin scope).
   if (page === "sessions") return features.owner;
   if (page === "terminal") return features.terminal;
@@ -73,9 +72,7 @@ export function morePlaces(
   features: WorkspaceCapabilities,
   codex?: CodexStatus,
 ) {
-  const waiting = (id: string) => id === "chat" && codex?.state === "checking";
-  const places = pages.filter(
-    (id) => !bar.includes(id) && (pageAccessible(id, features) || waiting(id)),
-  );
-  return { places, pending: places.filter(waiting) };
+  void codex;
+  const places = pages.filter((id) => !bar.includes(id) && pageAccessible(id, features));
+  return { places, pending: [] as string[] };
 }

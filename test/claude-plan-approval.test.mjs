@@ -63,6 +63,29 @@ test("the phone shows the plan and sends the choice, or what to change", async (
   }
 });
 
+// "Ran a command 1 failed" for a step the person said no to: declined, in
+// Reach or on the Mac. Any other error stays a failure.
+test("a tool the person declined reads as declined, not failed", async () => {
+  const { parseClaudeTranscript } = await import("../server/agent-sessions/claude-transcript.mjs");
+  const line = (e) => JSON.stringify(e) + "\n";
+  const tool = (id, name, input) => ({ type: "tool_use", id, name, input });
+  const result = (id, content) => ({ type: "tool_result", tool_use_id: id, content, is_error: true });
+  const source =
+    line({ type: "user", uuid: "u1", parentUuid: null, cwd: "/w", message: { role: "user", content: "go" } }) +
+    line({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", content: [
+      tool("t1", "Bash", { command: "make deploy" }),
+      tool("t2", "Write", { file_path: "/w/color.txt", content: "Red" }),
+      tool("t3", "Bash", { command: "false" }),
+    ] } }) +
+    line({ type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: [
+      result("t1", "The user declined this from Reach."),
+      result("t2", "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."),
+      result("t3", "Exit code 1"),
+    ] } });
+  const v = parseClaudeTranscript(source);
+  assert.deepEqual(["t1", "t2", "t3"].map((id) => v.items.find((i) => i.id === id).status), ["declined", "declined", "failed"]);
+});
+
 test("Claude's edits show their diff; its todo list stands as it last left it", async () => {
   const { parseClaudeTranscript } = await import("../server/agent-sessions/claude-transcript.mjs");
   const line = (e) => JSON.stringify(e) + "\n";

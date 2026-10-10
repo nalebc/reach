@@ -399,7 +399,7 @@ test("batched quality reports keep their own slow-link and recovery transitions"
   }
 });
 
-test("no fresh picture for 5 s brings the loading scene back", async () => {
+test("no fresh picture keeps the last picture and names the cause while reconnecting", async () => {
   const { view, state } = await watch();
   const socket = FakeSocket.all[0];
   socket.says({ type: "ready", format: "h264", display: "1" });
@@ -416,8 +416,10 @@ test("no fresh picture for 5 s brings the loading scene back", async () => {
     socket.close();
     await settle(3000);
     assert.equal(state().ready, true, "still the last picture at 3 s");
-    await dom.waitFor(() => !state().ready, 3500);
+    await settle(3500);
+    assert.equal(state().ready, true, "still the last picture past 5 s");
     assert.equal(state().connecting, true);
+    assert.ok(state().cause, "the cause is named");
   } finally {
     globalThis.WebSocket = FakeSocket;
   }

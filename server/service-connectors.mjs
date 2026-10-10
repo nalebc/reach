@@ -191,6 +191,9 @@ export function createServiceConnectors(tools) {
       if (result.status !== "completed" || result.resultExpired)
         throw new ServiceConnectorError(
           problems[result.code] ||
+            (result.status === "uncertain"
+              ? "The live page could not be verified, and the action may have happened. Check the service in the browser on the Mac before retrying."
+              : null) ||
             "The live page could not be verified. Check the service in the browser on the Mac, then retry. No service result was returned.",
         );
       return result;

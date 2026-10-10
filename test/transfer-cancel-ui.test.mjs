@@ -100,3 +100,27 @@ test("a dropped answer to the last step still ends as uploaded, not failed", asy
   assert.equal(completes, 2);
   assert.equal(jobs[0].state, "done");
 });
+
+test("a failed (not canceled) upload also deletes its server session", async (t) => {
+  const original = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = class {
+    upload = {};
+    open() {}
+    setRequestHeader() {}
+    send() {
+      this.status = 400;
+      this.responseText = JSON.stringify({ error: "Not allowed" });
+      queueMicrotask(() => this.onload());
+    }
+    abort() {}
+  };
+  t.after(() => { globalThis.XMLHttpRequest = original; });
+  function Probe() { jobs = transfers.useTransfers(); return null; }
+  view = await dom.render(dom.React.createElement(Probe));
+  transfers.uploadFiles(peer, 0, "", [new File(["bytes"], "file.txt")], (name) => landed.push(name));
+  await dom.waitFor(() => finish);
+  finish({ id: "upload-1", offset: 0, chunk: 1024 });
+  await dom.waitFor(() => jobs[0]?.state === "failed", 5000);
+  assert.ok(calls.some(([route, method]) => route === "session" && method === "DELETE"));
+  assert.deepEqual(landed, []);
+});

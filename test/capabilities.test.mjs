@@ -53,7 +53,6 @@ test("platform, permissions and ready tools determine every workspace entry", ()
       "terminal",
       "apps",
       "screen",
-      "chat",
       "invite",
       "settings",
     ])
@@ -201,39 +200,16 @@ test("device discovery hides inaccessible tools and backend still rejects forbid
   assert.equal(detections, 1);
 });
 
-test("More keeps Codex's row, waiting, while the computer checks it", () => {
-  const pages = [
-    "overview",
-    "sessions",
-    "files",
-    "apps",
-    "terminal",
-    "chat",
-    "screen",
-  ];
+test("More lists the pages outside the bottom bar, nothing waits on Codex", () => {
+  const pages = ["overview", "sessions", "files", "apps", "terminal", "screen"];
   const bar = ["overview", "sessions", "screen", "terminal"];
-  const checking = { state: "checking" };
-  const caps = workspaceCapabilities(host("darwin"), checking);
-  assert.deepEqual(morePlaces(pages, bar, caps, checking), {
-    places: ["files", "apps", "chat"],
-    pending: ["chat"],
-  });
-  const ready = { state: "ready" };
-  assert.deepEqual(
-    morePlaces(pages, bar, workspaceCapabilities(host("darwin"), ready), ready),
-    { places: ["files", "apps", "chat"], pending: [] },
-  );
-  // Not there at all: no row.
-  const missing = { state: "missing" };
-  assert.deepEqual(
-    morePlaces(
-      pages,
-      bar,
-      workspaceCapabilities(host("darwin"), missing),
-      missing,
-    ),
-    { places: ["files", "apps"], pending: [] },
-  );
+  for (const state of ["checking", "ready", "missing"]) {
+    const codex = { state };
+    assert.deepEqual(
+      morePlaces(pages, bar, workspaceCapabilities(host("darwin"), codex), codex),
+      { places: ["files", "apps"], pending: [] },
+    );
+  }
 });
 
 

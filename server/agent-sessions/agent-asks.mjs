@@ -8,7 +8,8 @@
 // held for the phone, with nothing taken from the Mac. Claude Code doesn't
 // end the hook when the Mac answers: Reach ends the ask itself once Claude
 // Code no longer waits on a permission (its session registry), and the hook
-// exits with no answer.
+// exits with no answer. Reach quitting (a restart) answers "retry": the hook
+// asks the next Reach again, and Claude Code's dialog stays open meanwhile.
 // Codex is not answered here: its PermissionRequest hook runs before its own
 // review (not a person's decision); the Codex app's approvals are answered
 // through its IPC (codex-desktop.mjs).
@@ -18,6 +19,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { claudeAnswer, describeClaudePrompt } from "./claude-host.mjs";
+import { askKey } from "./claude-transcript.mjs";
 import { computerWord } from "../computer-word.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -86,13 +88,27 @@ export function hasAskRules(cwd, { read = fs.readFileSync, home = os.homedir() }
   return false;
 }
 export function switchesAlone(tool, input, cwd, mode, { real, askRules = hasAskRules } = {}) {
-  if (BOOKKEEPING.has(tool)) return true;
   if (askRules(cwd)) return false;
+  if (BOOKKEEPING.has(tool)) return true;
   if (!Object.hasOwn(READS, tool) || input === null || typeof input !== "object" || Array.isArray(input)) return false;
   const field = READS[tool];
   if (Object.entries(input).some(([k, v]) => k !== field && pathLike(v))) return false;
   if (input[field] == null) return OPTIONAL.has(tool) && realInside(cwd, cwd, real);
   return realInside(cwd, input[field], real);
+}
+// A request asked again after Reach was away (a restart) is still the one
+// Claude Code waits on: its registry waits on a permission (a question:
+// "input needed"), and a call still running in its transcript is this one
+// (by Claude Code's id for it, else its tool and whole input). A transcript
+// Reach can't read (null) leaves the registry alone to say. Anything else
+// (a dialog of Claude Code's own, another call since): not shown again.
+export function stillAsked(waitingFor, items, request) {
+  if (waitingFor !== "permission prompt" && !(waitingFor === "input needed" && request?.tool_name === "AskUserQuestion")) return false;
+  if (items == null) return true;
+  if (!Array.isArray(items)) return false;
+  return items.some(
+    (i) => i?.role === "tool" && i.status === "running" && (typeof request.tool_use_id === "string" ? i.id === request.tool_use_id : !!i.key && i.key === request.key),
+  );
 }
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
 const key = (agent, sessionId) => `${agent}:${sessionId}`;
@@ -121,6 +137,10 @@ export function createAgentAsks({
   // (agent, session): Claude Code still waits on a permission or question
   // there (true), no longer (false), or can't tell (null).
   waiting = async () => null,
+  // (agent, session, { tool_name, tool_use_id?, key }): a request asked again
+  // after Reach was away is still the one Claude Code waits on (true); else
+  // it steps aside (stillAsked).
+  asking = async () => null,
   // Where a mode picked on the phone waits, one file per session (named by
   // it, holding the mode): Reach's PreToolUse hook (scripts/agent-mode-hook.sh)
   // looks there before each tool call. None: kept in memory only.
@@ -178,8 +198,9 @@ export function createAgentAsks({
     let ask = null;
     let done = false;
     // Ends the ask once: a decision for the agent, or none (answered on the
-    // Mac, or the hook gone).
-    const finish = (decision, why) => {
+    // Mac, or the hook gone), or "ask again" (Reach is quitting).
+    // after: runs only once the answer was written to the hook.
+    const finish = (decision, why, after) => {
       if (done) return;
       done = true;
       if (ask) {
@@ -187,9 +208,16 @@ export function createAgentAsks({
         clearInterval(ask.watch);
         remember(ask.id, why);
         changed(ask.agent, ask.sessionId);
+        // Answered on the Mac: a mode waiting there wasn't taken with it, and
+        // the next tool call would be made to ask again for it, reads too.
+        // Not for one asked again: it may be an older request than the pick.
+        if (why === "mac" && !ask.again && modes.has(key(ask.agent, ask.sessionId))) applied(ask.agent, ask.sessionId);
       }
       try {
-        socket.end(`${JSON.stringify(decision ? { decision } : {})}\n`);
+        // Only a hook still there gets it (and the mode is then spent).
+        const open = socket.writable !== false && !socket.destroyed;
+        socket.end(`${JSON.stringify(decision ? { decision } : why === "restart" ? { retry: true } : {})}\n`);
+        if (open) after?.();
       } catch {
         /* the hook is gone */
       }
@@ -200,7 +228,7 @@ export function createAgentAsks({
     socket.on("data", async (chunk) => {
       if (ask || done) return;
       buffer += chunk;
-      if (buffer.length > 1024 * 1024) return socket.destroy();
+      if (buffer.length > 9 * 1024 * 1024) return socket.destroy();
       const at = buffer.indexOf("\n");
       if (at < 0) return;
       let input;
@@ -218,10 +246,25 @@ export function createAgentAsks({
         skip(agent, input.session_id)
       )
         return finish(null);
-      const queued = modes.get(key(agent, input.session_id));
+      // Asked again after Reach was away (a restart, or not running yet):
+      // only while Claude Code still waits on this very request, never one
+      // the Mac has answered meanwhile. It never takes a mode picked on the
+      // phone (nor switches one alone): it may be from before the pick.
+      const again = input.again === true;
+      if (again) {
+        const request = {
+          tool_name: input.tool_name,
+          key: askKey(input.tool_name, input.tool_input),
+          ...(typeof input.tool_use_id === "string" ? { tool_use_id: input.tool_use_id } : {}),
+        };
+        const still = await Promise.resolve()
+          .then(() => asking(agent, input.session_id, request))
+          .catch(() => null);
+        if (still !== true || done) return finish(null);
+      }
+      const queued = !again && modes.get(key(agent, input.session_id));
       if (queued && switchesAlone(input.tool_name, input.tool_input, input.cwd, queued)) {
-        applied(agent, input.session_id);
-        return finish({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: queued, destination: "session" }] }, "mode");
+        return finish({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: queued, destination: "session" }] }, "mode", () => applied(agent, input.session_id));
       }
       const shown = await Promise.resolve()
         .then(() => shows(agent, input.session_id))
@@ -239,10 +282,12 @@ export function createAgentAsks({
       } catch {
         return finish(null, "mac");
       }
-      ask = { id, agent, sessionId: input.session_id, prompt, finish, at: Date.now(), seen: false };
+      ask = { id, agent, sessionId: input.session_id, prompt, finish, at: Date.now(), seen: again, again, notWaiting: 0 };
       asks.set(id, ask);
       changed(agent, ask.sessionId);
-      // Answered on the Mac: Claude Code stops waiting, and says so.
+      // Answered on the Mac: Claude Code stops waiting, and says so. Twice
+      // in a row (a can't-tell read between starts over): one odd read
+      // doesn't take the request off the phone.
       let checking = false;
       ask.watch = setInterval(async () => {
         if (checking || done) return;
@@ -252,8 +297,11 @@ export function createAgentAsks({
             .then(() => waiting(agent, ask.sessionId))
             .catch(() => null);
           if (done) return;
-          if (now === true) ask.seen = true;
-          else if (now === false && (ask.seen || Date.now() - ask.at > unseenMs)) finish(null, "mac");
+          if (now === true) {
+            ask.seen = true;
+            ask.notWaiting = 0;
+          } else if (now === null) ask.notWaiting = 0;
+          else if (now === false && ++ask.notWaiting >= 2 && (ask.seen || Date.now() - ask.at > unseenMs)) finish(null, "mac");
         } finally {
           checking = false;
         }
@@ -293,12 +341,11 @@ export function createAgentAsks({
       const decision = claudeAnswer(ask.prompt, answer, platform); // 400 for anything not offered
       // A mode picked on the phone goes in with this answer (Claude Code
       // takes setMode only with an allow). A plan's own pick wins.
-      const mode = modes.get(key(agent, sessionId));
+      const mode = !ask.again && modes.get(key(agent, sessionId));
       if (mode && decision.behavior === "allow" && !decision.updatedPermissions?.some((p) => p?.type === "setMode")) {
         decision.updatedPermissions = [...(decision.updatedPermissions || []), { type: "setMode", mode, destination: "session" }];
-        applied(agent, sessionId, false);
       }
-      ask.finish(decision, "phone");
+      ask.finish(decision, "phone", mode && decision.updatedPermissions?.some((p) => p?.mode === mode) ? () => applied(agent, sessionId, false) : undefined);
       return { answered: true };
     },
     // A mode for a session Reach doesn't run: Claude Code has no way in for it
@@ -312,14 +359,20 @@ export function createAgentAsks({
       changed(agent, sessionId);
     },
     queuedMode: (agent, sessionId) => modes.get(key(agent, sessionId)) || null,
+    // Taken another way (Reach runs the chat's next turn in it, or it's
+    // archived): Claude Code there is no longer made to ask for it.
+    clearMode(agent, sessionId) {
+      if (modes.has(key(agent, sessionId))) applied(agent, sessionId);
+    },
     version: (agent, sessionId) => versions.get(key(agent, sessionId)) || 0,
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    // Reach is quitting: every held ask stays with the Mac's dialog.
+    // Reach is quitting: every held ask stays with the Mac's dialog, and its
+    // hook asks the next Reach again.
     close() {
-      for (const ask of [...asks.values()]) ask.finish(null, "mac");
+      for (const ask of [...asks.values()]) ask.finish(null, "restart");
       if (listening) {
         server.close();
         fs.rmSync(socketPath, { force: true });

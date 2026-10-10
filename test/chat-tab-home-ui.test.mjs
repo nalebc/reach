@@ -136,3 +136,69 @@ test("the active Chat tab returns directly to the selected provider's list from 
     await dom.close();
   }
 });
+
+// A notification's Open request from the Chat tab opens that chat. Before,
+// going to Chat while on Chat reset it to its list, dropping the chat the
+// notification had just asked for.
+test("Open request on a notification opens its chat even when Chat is already open", async () => {
+  const peer = { id: "mac", name: "Mac", url: "https://reach.test", token: "fixture", platform: "darwin" };
+  const session = { key: "agent:main:reach-1234", title: "Weekend plans", agentId: "main", channel: "webchat", writable: true, updatedAt: Date.now(), model: "test", status: "idle" };
+  const base = "/api/sessions/openclaw";
+  const dom = await startDom({
+    mobile: true,
+    routes: {
+      "/api/device": () => ({ id: "mac", name: "Mac", platform: "darwin", roots: [], memory: { total: 1, free: 1 }, network: { connected: true, peers: [] }, capabilities: { files: true, terminal: true, apps: true, screen: true } }),
+      "/api/terminals": () => ({ sessions: [] }),
+      "/api/codex": () => ({ sessions: [] }),
+      "/api/activity": () => ({ activities: [] }),
+      "/api/sessions": () => ({ sessions: [], errors: {} }),
+      "/api/sessions/health": () => ({ agents: [{ agent: "openclaw", name: "OpenClaw", installed: true, signedIn: true, supported: true }] }),
+      "/api/sessions/logos": () => ({ version: "1", logos: {} }),
+      "/api/notifications": () => ({
+        items: [{ id: "chat:openclaw:1", source: "openclaw", sender: "OpenClaw", icon: "openclaw", kind: "permission", title: "Permission needed", revision: "d".repeat(64), actions: [], target: { page: "sessions", agent: "openclaw", id: session.key } }],
+        unavailable: [],
+      }),
+      [base + "/overview"]: () => ({ connected: true, sessions: [session], approvals: [] }),
+      [base + "/history"]: () => ({ session, items: [], streaming: "", error: "", approvals: [] }),
+      [base + "/channels"]: () => ({ channels: [] }),
+      [base + "/agents"]: () => ({ supported: true, agents: [] }),
+      [base + "/automations"]: () => ({ jobs: [] }),
+    },
+  });
+  const socket = globalThis.WebSocket;
+  globalThis.WebSocket = class {
+    close() {}
+    send() {}
+  };
+  // jsdom has no modal dialogs; the bell's panel opens in one.
+  dom.window.HTMLDialogElement.prototype.showModal = function () {
+    this.open = true;
+  };
+  dom.window.HTMLDialogElement.prototype.close = function () {
+    this.open = false;
+  };
+  let view;
+  const button = (label) =>
+    [...dom.document.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === label || (b.querySelector("strong")?.textContent || b.textContent).trim() === label,
+    );
+  try {
+    localStorage.setItem("reach.devices", JSON.stringify([peer]));
+    localStorage.setItem("reach.active", peer.id);
+    localStorage.setItem("reach.chatAgent", "openclaw");
+    sessionStorage.setItem("reach.place", JSON.stringify({ peer: peer.id, page: "sessions" }));
+    const { default: App } = await dom.load("/src/App.tsx");
+    view = await dom.render(dom.React.createElement(App));
+    await dom.waitFor(() => button("Customize") && dom.document.querySelector(".notification-count"));
+    assert.equal(dom.document.querySelector(".claw-conversation"), null, "on Chat's list");
+    dom.document.querySelector(".notification-bell").click();
+    await dom.waitFor(() => button("Open request"));
+    button("Open request").click();
+    await dom.waitFor(() => dom.document.querySelector(".claw-conversation"));
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await view?.unmount();
+    globalThis.WebSocket = socket;
+    await dom.close();
+  }
+});

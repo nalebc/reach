@@ -1,0 +1,202 @@
+/* Settings as ChatGPT lays them out: who it is on top, then short grouped
+   lists (a line icon, a name, a value, a chevron), hairlines between rows
+   from the name on. Reach's own dark green and its mascot. */
+.settings-workspace.gs {
+  max-width: 620px;
+  margin: 0 auto;
+  padding-bottom: 24px;
+}
+.gs-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 8px;
+  text-align: center;
+}
+.gs-mascot {
+  width: 64px;
+  height: 82px;
+  margin-bottom: 4px;
+  filter: drop-shadow(0 8px 22px color-mix(in srgb, var(--lime, #b9efd4) 22%, transparent));
+}
+.gs-mascot .brand-courier {
+  width: 100%;
+  height: 100%;
+}
+.gs-head h1 {
+  margin: 0;
+  font: 650 21px/1.2 system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.3px;
+  color: #f1f6f2;
+}
+.gs-head p {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted, #93a096);
+}
+
+/* A section's name, small and quiet above its group. */
+.gs-title {
+  margin: 26px 18px 8px;
+  font: 600 14px system-ui, -apple-system, sans-serif;
+  color: var(--muted, #93a096);
+}
+.gs-group {
+  overflow: hidden;
+  border-radius: 20px;
+  background: #161e1a;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+}
+.gs-group.gs-end {
+  margin-top: 26px;
+}
+.gs-row {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 54px;
+  padding: 8px 16px;
+  border: 0;
+  background: none;
+  color: #eef4ef;
+  font: 400 16px system-ui, -apple-system, sans-serif;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+button.gs-row:active:not(:disabled) {
+  background: rgb(255 255 255 / 0.05);
+}
+button.gs-row:disabled {
+  opacity: 1;
+}
+/* The hairline starts at the name, as in iOS lists. */
+.gs-row + .gs-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 51px;
+  height: 1px;
+  background: rgb(255 255 255 / 0.07);
+}
+.gs-row > svg:first-child {
+  flex: 0 0 auto;
+  width: 21px;
+  height: 21px;
+  color: #dfe7e1;
+  stroke-width: 1.75;
+}
+.gs-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.gs-label small {
+  font-size: 12.5px;
+  color: var(--muted, #93a096);
+}
+.gs-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted, #93a096);
+  text-align: right;
+}
+.gs-chevron {
+  flex: 0 0 auto;
+  margin-right: -4px;
+  color: #6f7c73;
+}
+.gs-row .switch {
+  flex: 0 0 auto;
+}
+/* Rows whose value is a sentence wrap instead of cutting it. */
+.gs-row.gs-wrap {
+  align-items: flex-start;
+}
+.gs-row.gs-wrap .gs-value {
+  max-width: 70%;
+  white-space: normal;
+}
+.gs-path {
+  font: 13px "SFMono-Regular", Consolas, monospace;
+  direction: rtl;
+  text-align: left;
+}
+.gs-danger {
+  color: #f08a7a;
+}
+.gs-danger > svg:first-child {
+  color: #f08a7a;
+}
+.gs-note {
+  justify-content: center;
+  color: var(--muted, #93a096);
+}
+.gs-text-button {
+  flex: 0 0 auto;
+  padding: 6px 2px;
+  border: 0;
+  background: none;
+  color: #f08a7a;
+  font: 500 14px system-ui, sans-serif;
+}
+.gs-foot {
+  margin: 8px 18px 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted, #93a096);
+}
+/* Back to Settings from a page under it (Agents). */
+.gs-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 12px -4px;
+  padding: 6px 8px 6px 2px;
+  border: 0;
+  background: none;
+  color: var(--lime, #b9efd4);
+  font: 500 15px system-ui, sans-serif;
+}
+.gs-back svg {
+  transform: rotate(180deg);
+}
+/* Sheets opened from a row: the same lists, on the sheet. */
+.gs-sheet .gs-title:first-child {
+  margin-top: 4px;
+}
+.gs-sheet .gs-group + .gs-title {
+  margin-top: 20px;
+}
+/* A row's state at a glance: a small dot before its line. */
+.gs-label small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 1px;
+}
+.gs-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.gs-dot.on {
+  background: var(--lime, #b9efd4);
+}
+.gs-dot.off {
+  background: #f08a7a;
+}

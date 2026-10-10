@@ -112,3 +112,10 @@ test("a reach restart run in a terminal is the running Reach once it holds its f
   assert.equal(whereItRuns(h), "in a Terminal window (ttys000)");
   assert.deepEqual(h.descendants.map((d) => d.pid), [71]);
 });
+
+test("a Reach started with a relative script path (npm run go) is found through its working directory", async () => {
+  const { reachHosts } = await import("../scripts/instances.mjs");
+  const table = [{ pid: 700, ppid: 1, tty: "ttys001", command: "node scripts/bootstrap.mjs" }];
+  const found = reachHosts(table, { self: 1, cwdOf: (pid) => (pid === 700 ? "/Users/me/reach" : "") });
+  assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, "/Users/me/reach"]]);
+});

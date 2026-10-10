@@ -132,7 +132,13 @@ export function createTeams({
   const teamFor = (token) => {
     if (typeof token !== "string" || token.length < 32) return null;
     const given = hash(token);
-    return teams.find((t) => t.key && crypto.timingSafeEqual(Buffer.from(t.key, "hex"), given)) || null;
+    return (
+      teams.find((t) => {
+        if (typeof t.key !== "string") return false;
+        const stored = Buffer.from(t.key, "hex");
+        return stored.length === given.length && crypto.timingSafeEqual(stored, given);
+      }) || null
+    );
   };
   // A helper chat for one task: started like a relay's step, its result
   // followed back to the lead.
@@ -159,6 +165,7 @@ export function createTeams({
       task: task.id,
       team: t.id,
     }).id;
+  const reserved = new WeakMap();
   const tools = {
     async team_roster(t) {
       return {
@@ -175,12 +182,25 @@ export function createTeams({
       if (kind !== "build" && kind !== "review") throw bad('kind is "build" or "review".');
       const task = words(args?.task, TEAM_LIMITS.task);
       if (!task) throw bad("Say what the task is.");
-      if (t.used >= TEAM_LIMITS.steps) throw bad(`This team has used its ${TEAM_LIMITS.steps} hand-offs. Finish the work yourself or tell the person.`);
-      if (t.tasks.filter((x) => x.state === "working").length >= TEAM_LIMITS.working)
+      const inFlight = reserved.get(t) || { count: 0, seq: 0 };
+      if (t.used + inFlight.count >= TEAM_LIMITS.steps) throw bad(`This team has used its ${TEAM_LIMITS.steps} hand-offs. Finish the work yourself or tell the person.`);
+      if (t.tasks.filter((x) => x.state === "working").length + inFlight.count >= TEAM_LIMITS.working)
         throw bad(`${TEAM_LIMITS.working} helpers are already working. Wait for a result before handing off more.`);
       const title = words(args?.title, TEAM_LIMITS.title) || words(task.split("\n")[0], TEAM_LIMITS.title);
-      const id = `t${t.tasks.length + 1}`;
-      const { chat, text } = await startHelper(t, { helper, kind, title, task });
+      // Reserve the id and the slot before awaiting, so concurrent calls
+      // get distinct ids and count against the limits.
+      const taken = Math.max(0, ...t.tasks.map((x) => Number(String(x.id).slice(1)) || 0));
+      inFlight.seq = Math.max(inFlight.seq, taken) + 1;
+      inFlight.count++;
+      reserved.set(t, inFlight);
+      const id = `t${inFlight.seq}`;
+      let started;
+      try {
+        started = await startHelper(t, { helper, kind, title, task });
+      } finally {
+        inFlight.count--;
+      }
+      const { chat, text } = started;
       t.used++;
       const entry = { id, helper, kind, title, chat, state: "working", startedAt: now(), updatedAt: now() };
       t.tasks.push(entry);

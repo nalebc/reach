@@ -42,3 +42,19 @@ test("a second Enter while a line is sending doesn't run it twice, and later typ
   for (const f of finish.splice(0)) f();
   await view.unmount();
 });
+
+test("a multi-line paste runs each line as its own command, in order", async () => {
+  sent.length = 0;
+  const view = await dom.render(dom.React.createElement(MacTerminalView, { peer, tab: { id: "t1", name: "zsh" }, onGone() {} }));
+  const term = Terminal.instances.at(-1);
+  term.type("ls\rrm x");
+  await settle();
+  assert.deepEqual(sent, ["ls"], "first line goes alone");
+  finish.shift()();
+  await settle();
+  term.type("\r");
+  await settle();
+  assert.deepEqual(sent, ["ls", "rm x"], "the rest stays a separate command");
+  for (const f of finish.splice(0)) f();
+  await view.unmount();
+});

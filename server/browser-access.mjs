@@ -117,11 +117,22 @@ export function browserAccessRoutes(
     authorize();
     return selected ? options.filter((t) => selected.includes(t.id)) : options;
   };
+  // A list that hangs (an app catalog or Terminal not answering) must not
+  // hold the invite form: after a few seconds it counts as unavailable.
+  const inTime = (promise, ms = 4000) => {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timed out")), ms);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
   app.get("/api/agents/browser-options", async (req, res) => {
     owner(req);
     let apps = [], appAccessError;
     if (appAccessAvailable) {
-      try { apps = (await appAccess.options(() => owner(req))).map(({id,name,protected:protectedApp,reason}) => ({id,name,protected:!!protectedApp,reason})); }
+      try { apps = (await inTime(appAccess.options(() => owner(req)))).map(({id,name,protected:protectedApp,reason}) => ({id,name,protected:!!protectedApp,reason})); }
       catch (error) { appAccessError = error.status ? error.message : "Protected app sharing is unavailable. Check macOS permissions."; }
     }
     owner(req);
@@ -131,7 +142,7 @@ export function browserAccessRoutes(
     let presetApps = [], presetAppsError;
     if (desktop?.available?.()) {
       try {
-        presetApps = (await desktop.catalog(() => owner(req))).map((app) => {
+        presetApps = (await inTime(desktop.catalog(() => owner(req)))).map((app) => {
           const reason = protectedAppReason(app);
           return { id: app.id, name: app.name, bundleId: app.bundleId || "", running: app.running === true,
             protected: !!reason, ...(reason ? { reason } : {}), ...(terminalLikeApp(app) ? { runsCommands: true } : {}) };
@@ -139,7 +150,12 @@ export function browserAccessRoutes(
       } catch (error) { presetAppsError = error.status ? error.message : "The app list is unavailable right now."; }
     }
     owner(req);
-    res.json({terminals:await terminalOptions(() => owner(req)),screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
+    const terminals = await inTime(terminalOptions(() => owner(req))).catch((error) => {
+      if (error?.status) throw error;
+      return [];
+    });
+    owner(req);
+    res.json({terminals,screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
       desktopAvailable: !!desktop?.available?.(), protectedFilesSupported, presetApps, ...(presetAppsError ? { presetAppsError } : {}),
       // The longest a preset invitation may last over the public link; the
       // form offers a day only when the server allows it.
@@ -666,6 +682,8 @@ export function browserAccessRoutes(
     if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser"].includes(key)) || typeof body.url !== "string")
       throw fail(400, "Give a web address, and optionally a browser.");
     const authorize = () => presetClient(req, "browser:open");
+    if (body.browser !== undefined && (typeof body.browser !== "string" || !body.browser.trim()))
+      throw fail(400, "Choose the browser by name or path.");
     const browser = body.browser === undefined ? undefined
       : typeof body.browser === "string" && body.browser.startsWith("/") ? body.browser
         : await appByName(client, String(body.browser || ""), authorize);

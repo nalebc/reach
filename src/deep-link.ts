@@ -84,17 +84,19 @@ export function useOpenWantedNeed(items: { key: string; actions?: { opens?: bool
     const stop = onWantedNeed(() => setWanted(wantedNeed()));
     return () => void stop();
   }, []);
+  // Forgotten 20 s after it was wanted, however often the page re-renders.
+  useEffect(() => {
+    if (!wanted) return;
+    const giveUp = setTimeout(() => wantNeed(null), 20000);
+    return () => clearTimeout(giveUp);
+  }, [wanted]);
   useEffect(() => {
     if (!wanted) return;
     const item = items.find((i) => i.key === wanted);
-    if (item) {
-      wantNeed(null);
-      const opens = item.actions?.find((a) => a.opens);
-      if (opens) opens.run();
-      else window.dispatchEvent(new CustomEvent("reach-focus-need", { detail: item.key }));
-      return;
-    }
-    const giveUp = setTimeout(() => wantNeed(null), 20000);
-    return () => clearTimeout(giveUp);
+    if (!item) return;
+    wantNeed(null);
+    const opens = item.actions?.find((a) => a.opens);
+    if (opens) opens.run();
+    else window.dispatchEvent(new CustomEvent("reach-focus-need", { detail: item.key }));
   });
 }

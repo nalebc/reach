@@ -4,7 +4,7 @@ import { createBrowserHostGuard } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
 import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
-import { browserPrivatePaths, isBrowserPrivatePath, validateBrowserRoot } from "./browser-private-paths.mjs";
+import { agentShellSandbox, browserPrivatePaths, isBrowserPrivatePath, validateBrowserRoot } from "./browser-private-paths.mjs";
 import { browserFileOperation } from "./browser-file-boundary.mjs";
 import { DevicePresence, presenceConnection } from "./presence.mjs";
 import {
@@ -26,6 +26,7 @@ import {
   createAppShortcuts,
 } from "./app-shortcuts.mjs";
 import express from "express";
+import net from "node:net";
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -103,6 +104,7 @@ import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
 import { createUsageWatch } from "./agent-sessions/usage-watch.mjs";
@@ -199,7 +201,7 @@ export async function createReach(overrides = {}) {
           ...overrides.passkeys,
         })
       : null;
-  let privateServer;
+  let privateServer, privateSocket;
   const approvalCleanup = approvals
     ? setInterval(() => approvals.list(), 30000)
     : null;
@@ -874,7 +876,10 @@ export async function createReach(overrides = {}) {
   // The shell for Full control agents (server/agent-shell.mjs): logged with
   // the other agent commands.
   const agentShell = createAgentShell({ commandLog: browserCommandLog, hosts: () => reachAddresses(config), protectedPaths: () => browserPaths(),
-    protectedPids: () => [process.pid, process.ppid], record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
+    protectedPids: () => [process.pid, process.ppid], record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}),
+    // Every agent command runs in a macOS sandbox that keeps Reach's socket,
+    // data and code, and Tailscale's, out of reach (security audit, Oct 9).
+    sandbox: () => process.platform === "darwin" ? agentShellSandbox(config, { sockets: privateSocket ? [path.dirname(privateSocket)] : [] }) : null });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1110,7 +1115,7 @@ export async function createReach(overrides = {}) {
       );
     const created = approvals.request(
       req.reachIdentity,
-      req.body.name,
+      req.body?.name,
       config.tailscaleOwner,
     );
     // Another browser on a device you approved already (it shares that
@@ -1286,7 +1291,7 @@ export async function createReach(overrides = {}) {
     platform: process.platform,
   });
   app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) => {
-    const joined = auth.redeemGuest(req.body.invitation, req.reachIdentity);
+    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity);
     if (joined.status === "pending") {
       record("agent", "An invited agent is waiting for connection approval");
       notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
@@ -1308,8 +1313,8 @@ export async function createReach(overrides = {}) {
   app.post("/api/pair", (req, res) =>
     res.json({
       ...auth.pair(
-        req.body.code,
-        req.body.name,
+        req.body?.code,
+        req.body?.name,
         req.reachIdentity?.nodeId || req.socket.remoteAddress,
         req.reachIdentity,
       ),
@@ -1335,20 +1340,28 @@ export async function createReach(overrides = {}) {
         403,
         "This Mac uses agent profiles. Ask its owner for a scoped CLI credential.",
       );
-    const address = req.socket.remoteAddress;
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    const address =
+      req.reachIdentity?.nodeId ||
+      (forwarded && net.isIP(forwarded) ? forwarded : "") ||
+      req.socket.remoteAddress ||
+      "unknown";
     const now = Date.now();
-    const recent = (requestAttempts.get(address) || []).filter(
-      (t) => t > now - 60000,
-    );
+    for (const [key, times] of requestAttempts) {
+      const live = times.filter((t) => t > now - 60000);
+      if (live.length) requestAttempts.set(key, live);
+      else requestAttempts.delete(key);
+    }
+    const recent = requestAttempts.get(address) || [];
     if (recent.length >= 5)
       throw fail(429, "Too many access requests. Try again in one minute.");
     requestAttempts.set(address, [...recent, now]);
     if (pendingRequests().length >= 20)
       throw fail(429, "Too many pending requests. Review them in Reach first.");
-    const name = String(req.body.name || "")
+    const name = String(req.body?.name || "")
       .trim()
       .slice(0, 80);
-    const scopes = req.body.scopes;
+    const scopes = req.body?.scopes;
     if (!name) throw fail(400, "Give this agent a name.");
     if (
       !Array.isArray(scopes) ||
@@ -1560,11 +1573,12 @@ export async function createReach(overrides = {}) {
       res.destroy();
       req.destroy();
     };
+    const untilExpiry = (client.expiresAt || Date.parse(client.createdAt) + 30 * 86400000) - Date.now();
     const deadline = setTimeout(
       () => {
         if (!allowed(verify(req, credential))) disconnect();
       },
-      Math.min(2147483647, Math.max(0, client.expiresAt - Date.now())),
+      Number.isFinite(untilExpiry) ? Math.min(2147483647, Math.max(0, untilExpiry)) : 2147483647,
     );
     const check = setInterval(() => {
       if (!allowed(verify(req, credential))) disconnect();
@@ -1638,14 +1652,14 @@ export async function createReach(overrides = {}) {
   });
   app.get("/api/settings", (req, res) => res.json(settings));
   app.post("/api/settings/pause", async (req, res) => {
-    if (typeof req.body.paused !== "boolean")
+    if (typeof req.body?.paused !== "boolean")
       throw fail(400, "Send paused as true or false.");
-    res.json(await setPaused(req.body.paused));
+    res.json(await setPaused(req.body?.paused));
   });
   app.post("/api/settings", (req, res) => {
-    if (typeof req.body.screen !== "boolean")
+    if (typeof req.body?.screen !== "boolean")
       throw fail(400, "Send screen as true or false.");
-    settings.screen = config.screen = req.body.screen;
+    settings.screen = config.screen = req.body?.screen;
     if (!config.screen) {
       browserApprovals.cancelPending();
         browserAppAccess.clear();
@@ -1655,7 +1669,7 @@ export async function createReach(overrides = {}) {
       browserScreenSnapshots.stop();
       remoteScreens.stop();
       appScreens.stop();
-      void appThreads.closeAll();
+      appThreads.closeAll()?.catch?.(() => {});
       closeInput();
     }
     atomicJson(settingsFile, settings);
@@ -1677,9 +1691,9 @@ export async function createReach(overrides = {}) {
       (x) => x.id === req.params.id && x.status === "pending",
     );
     if (!r) throw fail(404, "This request expired or was already answered.");
-    if (!["approve", "deny"].includes(req.body.decision))
+    if (!["approve", "deny"].includes(req.body?.decision))
       throw fail(400, "Choose approve or deny.");
-    if (req.body.decision === "approve") {
+    if (req.body?.decision === "approve") {
       r.token = auth.issue(r.name, r.scopes, "agent").token;
       r.status = "approved";
       record("agent", `Authorized ${r.name}`);
@@ -1734,9 +1748,9 @@ export async function createReach(overrides = {}) {
       const peers = Object.values(st?.Peer || {});
       const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
       const result = await guestKeys.setupFromAccessToken({
-        accessToken: req.body.accessToken,
+        accessToken: req.body?.accessToken,
         authorize,
-        narrowDefaultWildcard: req.body.narrowDefaultWildcard === true,
+        narrowDefaultWildcard: req.body?.narrowDefaultWildcard === true,
         addresses: [
           v4(st?.Self),
           ...(fleet?.links() || []).map((l) =>
@@ -1789,7 +1803,7 @@ export async function createReach(overrides = {}) {
       ttlSeconds: ttl,
       keySeconds,
       authorize,
-      clientIds: (Array.isArray(req.body.clientIds) ? req.body.clientIds : [])
+      clientIds: (Array.isArray(req.body?.clientIds) ? req.body?.clientIds : [])
         .filter((id) => typeof id === "string" && guests.has(id))
         .slice(0, 10),
     });
@@ -1811,7 +1825,7 @@ export async function createReach(overrides = {}) {
     if (Object.keys(req.body || {}).some((key) => key !== "decision"))
       throw fail(400, "Approve or deny the exact connection shown.");
     const result = auth.decideAgentAdmission(req.params.requestId, req.body?.decision);
-    record("agent", req.body.decision === "approve"
+    record("agent", req.body?.decision === "approve"
       ? "Approved an invited agent's connection" : "Denied an invited agent's connection");
     for (const nudge of presenceNudges) nudge();
     res.json(result);
@@ -1820,7 +1834,7 @@ export async function createReach(overrides = {}) {
     if (req.client.kind === "guest")
       throw fail(403, "Only the computer's owner can invite agents.");
     const grant = auth.inviteAgent(req.body || {});
-    record("agent", `Invited agent ${req.body.name}`);
+    record("agent", `Invited agent ${req.body?.name}`);
     res.status(201).json(grant);
   });
   app.post("/api/guests", async (req, res) => {
@@ -1829,7 +1843,7 @@ export async function createReach(overrides = {}) {
     const grant = auth.inviteGuest(req.body);
     // With an invite key, the guest needs no Tailscale account or app.
     let key;
-    if (req.body.key === true) {
+    if (req.body?.key === true) {
       try {
         if (!guestKeys?.configured())
           throw fail(
@@ -1837,7 +1851,7 @@ export async function createReach(overrides = {}) {
             "Set up invite keys first: run ./reach invites on this computer.",
           );
         key = await guestKeys.createInvite({
-          ttlSeconds: req.body.ttlSeconds,
+          ttlSeconds: req.body?.ttlSeconds,
           clientIds: [grant.clientId],
           authorize,
         });
@@ -1848,7 +1862,7 @@ export async function createReach(overrides = {}) {
     }
     record(
       "guest",
-      `Invited ${req.body.name} until ${new Date(grant.expiresAt).toISOString()}`,
+      `Invited ${req.body?.name} until ${new Date(grant.expiresAt).toISOString()}`,
     );
     const url = new URL(
       "/guest",
@@ -1868,11 +1882,11 @@ export async function createReach(overrides = {}) {
   app.post("/api/guests/:id/access", async (req, res) => {
     const id = req.params.id;
     const existing = auth.list().find((client) => client.id === id);
-    if (existing?.policy?.browser && req.body?.screen && req.body.screen !== "off" &&
-        req.body.screen !== existing.policy.screen && !browserScreenAvailable())
+    if (existing?.policy?.browser && req.body?.screen && req.body?.screen !== "off" &&
+        req.body?.screen !== existing.policy.screen && !browserScreenAvailable())
       throw fail(403, "Turn on screen viewing in Reach before sharing it.");
     if (existing?.policy?.browser && Array.isArray(req.body?.terminalIds)) {
-      const selected = req.body.terminalIds;
+      const selected = req.body?.terminalIds;
       const available = terminals.list().map((terminal) => `reach:${terminal.id}`);
       if (selected.some((id) => typeof id === "string" && id.startsWith("desktop:")) && desktopTerminals.platform === "darwin") {
         const result = await desktopTerminals.list(() => req.reauthorize());
@@ -1888,15 +1902,15 @@ export async function createReach(overrides = {}) {
     // A preset agent: the screen presets need this Mac's screen helpers, and
     // chosen or hidden apps are matched to the Mac's catalog first.
     if (previousClient?.policy?.preset !== undefined && req.body && typeof req.body === "object") {
-      const preset = req.body.preset ?? previousClient.policy.preset;
+      const preset = req.body?.preset ?? previousClient.policy.preset;
       if (["full", "apps", "readonly"].includes(preset) && !agentDesktop?.available?.())
         throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
-      const chosen = Array.isArray(req.body.apps) && req.body.apps.length, hidden = Array.isArray(req.body.hidden) && req.body.hidden.length;
+      const chosen = Array.isArray(req.body?.apps) && req.body?.apps.length, hidden = Array.isArray(req.body?.hidden) && req.body?.hidden.length;
       if (chosen || hidden) {
         if (!agentDesktop) throw fail(503, "The app list is unavailable on this computer.");
         const catalog = await agentDesktop.catalog(() => req.reauthorize());
-        if (chosen) req.body.apps = presetAppsFromCatalog(catalog, req.body.apps);
-        if (hidden) req.body.hidden = presetAppsFromCatalog(catalog, req.body.hidden, { allowProtected: true });
+        if (chosen) req.body.apps = presetAppsFromCatalog(catalog, req.body?.apps);
+        if (hidden) req.body.hidden = presetAppsFromCatalog(catalog, req.body?.hidden, { allowProtected: true });
       }
       req.reauthorize();
     }
@@ -2095,10 +2109,10 @@ export async function createReach(overrides = {}) {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const showHidden = req.query.hidden === "1";
     const privates = privateRoots();
+    const shown = entries.filter((e) => showHidden || !e.name.startsWith("."));
     const items = (
       await Promise.all(
-        entries
-          .filter((e) => showHidden || !e.name.startsWith("."))
+        shown
           .slice(0, 2000)
           .map(async (e) => {
             try {
@@ -2134,7 +2148,7 @@ export async function createReach(overrides = {}) {
     res.json({
       items,
       path: req.query.path || "",
-      truncated: entries.length > 2000,
+      truncated: shown.length > 2000,
     });
   });
   app.get("/api/files/content", async (req, res) => {
@@ -2155,7 +2169,8 @@ export async function createReach(overrides = {}) {
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
     const sharedRoot = (current.agentRoots || config.roots)[Number(req.query.root ?? 0)];
-    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
+    const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
+    res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
   });
   // A short-lived link to one file, for the browser's own download manager.
   app.get("/api/files/download-link", async (req, res) => {
@@ -2227,10 +2242,10 @@ export async function createReach(overrides = {}) {
   });
   app.put("/api/files/text", (req, res) => {
     if (
-      typeof req.body.text !== "string" ||
-      Buffer.byteLength(req.body.text) > 128 * 1024 ||
-      req.body.text.includes("\0") ||
-      !/^[a-f0-9]{64}$/.test(req.body.sha256 || "")
+      typeof req.body?.text !== "string" ||
+      Buffer.byteLength(req.body?.text) > 128 * 1024 ||
+      req.body?.text.includes("\0") ||
+      !/^[a-f0-9]{64}$/.test(req.body?.sha256 || "")
     )
       throw fail(
         400,
@@ -2243,11 +2258,11 @@ export async function createReach(overrides = {}) {
     const previous = fs.readFileSync(file);
     if (previous.includes(0))
       throw fail(415, "Binary files cannot be edited as text.");
-    if (hash(previous) !== req.body.sha256)
+    if (hash(previous) !== req.body?.sha256)
       throw fail(409, "This file changed. Read it again before writing.");
     const temporary = path.join(path.dirname(file), `.reach-edit-${id()}`);
     try {
-      fs.writeFileSync(temporary, req.body.text, {
+      fs.writeFileSync(temporary, req.body?.text, {
         flag: "wx",
         mode: stat.mode & 0o777,
       });
@@ -2256,7 +2271,7 @@ export async function createReach(overrides = {}) {
       fs.rmSync(temporary, { force: true });
     }
     record("file", `Updated ${path.basename(file)}`);
-    res.json({ ok: true, sha256: hash(req.body.text) });
+    res.json({ ok: true, sha256: hash(req.body?.text) });
   });
   const uploads = path.join(config.dataDir, "uploads");
   fs.mkdirSync(uploads, { recursive: true });
@@ -2381,8 +2396,8 @@ export async function createReach(overrides = {}) {
     res.json(await resumable.cancel(req.params.id, req.client)),
   );
   app.post("/api/files/folder", async (req, res) => {
-    const dir = resolve(req.body.root, req.body.path || "", req.client);
-    const name = req.body.name;
+    const dir = resolve(req.body?.root, req.body?.path || "", req.client);
+    const name = req.body?.name;
     if (!validLeafName(name))
       throw fail(
         400,
@@ -2405,9 +2420,9 @@ export async function createReach(overrides = {}) {
     owner();
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) ||
         Object.keys(req.body).some(key => !["root", "path"].includes(key)) ||
-        !Number.isSafeInteger(req.body.root) || req.body.root < 0 || typeof req.body.path !== "string" || !req.body.path)
+        !Number.isSafeInteger(req.body?.root) || req.body?.root < 0 || typeof req.body?.path !== "string" || !req.body?.path)
       throw fail(400, "Choose an archive in a shared folder.");
-    const root = req.body.root, relative = req.body.path;
+    const root = req.body?.root, relative = req.body?.path;
     const file = resolve(root, relative, owner());
     if (!archiveBase(path.basename(file))) throw fail(415, "Only ZIP, TAR and gzip-compressed TAR archives can be opened here.");
     if (archiveInFlight) throw fail(429, "Wait for the current archive to finish opening.");
@@ -2438,10 +2453,10 @@ export async function createReach(overrides = {}) {
     return j;
   };
   app.post("/api/jobs", (req, res) => {
-    const cwd = resolve(req.body.root, req.body.path || "", req.client);
+    const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const timeoutMs =
-      req.body.timeoutMs ?? Math.min(60000, req.client.maxJobMs || 3600000);
+      req.body?.timeoutMs ?? Math.min(60000, req.client.maxJobMs || 3600000);
     if (req.client.maxJobMs && timeoutMs > req.client.maxJobMs)
       throw fail(403, "Job duration exceeds this agent profile limit.");
     const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id);
@@ -2479,7 +2494,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/terminals/desktop", async (req, res) => {
     notPaused();
     const result = await desktopTerminals.create(
-      req.body.provider,
+      req.body?.provider,
       authorizeDesktopTerminal(req),
     );
     record("terminal", "Opened a Mac terminal");
@@ -2552,8 +2567,8 @@ export async function createReach(overrides = {}) {
   const locateAgent = overrides.agentCommand || agentCommand;
   let agentsFound = null;
   const installedAgents = () => {
-    if (!agentsFound || Date.now() - agentsFound.at > 300000)
-      agentsFound = {
+    if (!agentsFound || Date.now() - agentsFound.at > 300000) {
+      const entry = {
         at: Date.now(),
         list: Promise.all(
           Object.keys(AGENTS).map(async (name) =>
@@ -2561,6 +2576,10 @@ export async function createReach(overrides = {}) {
           ),
         ).then((names) => names.filter(Boolean)),
       };
+      agentsFound = entry;
+      // A failed lookup is not remembered.
+      entry.list.catch(() => { if (agentsFound === entry) agentsFound = null; });
+    }
     return agentsFound.list;
   };
   app.get("/api/terminals/agents", async (req, res) =>
@@ -3037,7 +3056,7 @@ export async function createReach(overrides = {}) {
   // One of Codex's own commands from "/", run in the chat (status, compact,
   // review, …); only those its menu offers.
   app.post("/api/sessions/:agent/:id/commands", async (req, res) => {
-    const name = typeof req.body?.name === "string" ? req.body.name : "";
+    const name = typeof req.body?.name === "string" ? req.body?.name : "";
     const result = await agentSessions.runCommand(req.params.agent, req.params.id, name, req.body?.args);
     record("session", `Ran /${name.slice(0, 40)} in ${agentLabel(req.params.agent)}`);
     res.json(result);
@@ -3199,13 +3218,13 @@ export async function createReach(overrides = {}) {
       {
         ...options,
         // A Codex skill picked from "/", by name (its path is Codex's own).
-        ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body.skill)
-          ? { skill: req.body.skill }
+        ...(req.params.agent === "codex" && typeof req.body?.skill === "string" && /^[\w:.-]{1,120}$/.test(req.body?.skill)
+          ? { skill: req.body?.skill }
           : {}),
         // An answer to what Codex asked: into its running turn, not the queue.
         ...(req.params.agent === "codex" && req.body?.steer === true ? { steer: true } : {}),
         // Codex's plan mode for this turn and on (the Codex app's Plan toggle).
-        ...(req.params.agent === "codex" && ["plan", "default"].includes(req.body?.collaboration) ? { collaboration: req.body.collaboration } : {}),
+        ...(req.params.agent === "codex" && ["plan", "default"].includes(req.body?.collaboration) ? { collaboration: req.body?.collaboration } : {}),
         owner: req.client.id,
       },
     );
@@ -3295,7 +3314,7 @@ export async function createReach(overrides = {}) {
     macOwner(req);
     const mode = req.body?.mode;
     // Claude: never Bypass. Codex: its own menu's choices, as when sending.
-    const allowed = req.params.agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only", "custom"] : ["manual", "default", "acceptEdits", "plan", "auto"];
+    const allowed = req.params.agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only", "custom"] : SWITCHABLE_MODES;
     if (!allowed.includes(mode)) throw fail(400, "Reach can't pick that mode.");
     res.json(await agentSessions.mode(req.params.agent, req.params.id, { mode }));
   });
@@ -3337,7 +3356,7 @@ export async function createReach(overrides = {}) {
   // A chat renamed, as in its app.
   app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
     if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");
-    const result = await agentSessions.rename(req.params.agent, req.params.id, req.body.title);
+    const result = await agentSessions.rename(req.params.agent, req.params.id, req.body?.title);
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
   });
@@ -3375,7 +3394,9 @@ export async function createReach(overrides = {}) {
   // Long poll: answers when the session changes (streamed text, prompts,
   // status) or after 25 seconds.
   app.get("/api/sessions/:agent/:id/live", async (req, res) => {
-    chatOpenAt.set(`${req.params.agent}:${req.params.id}`, Date.now());
+    const openKey = `${req.params.agent}:${req.params.id}`;
+    chatOpenAt.delete(openKey);
+    chatOpenAt.set(openKey, Date.now());
     if (chatOpenAt.size > 500) chatOpenAt.delete(chatOpenAt.keys().next().value);
     const since = Number(req.query.since);
     const gone = new AbortController();
@@ -3397,17 +3418,17 @@ export async function createReach(overrides = {}) {
       res.json(agentSessions.view(req.params.agent, req.params.id));
   });
   app.post("/api/terminals", async (req, res) => {
-    const run = req.body.run;
+    const run = req.body?.run;
     if (run !== undefined && !Object.hasOwn(AGENTS, run))
       throw fail(400, "Choose Codex or Claude Code.");
-    const cwd = resolve(req.body.root, req.body.path || "", req.client);
+    const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const command = run ? await locateAgent(run) : "";
     if (run && !command)
       throw fail(404, `${AGENTS[run]} isn't installed on this computer.`);
     const terminal = terminals.create({
       cwd,
-      name: req.body.name || (run ? AGENTS[run] : undefined),
+      name: req.body?.name || (run ? AGENTS[run] : undefined),
       clientId: req.client.id,
       command,
     });
@@ -3459,7 +3480,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/apps/shortcuts", async (req, res) => {
     shortcutOwner(req, res);
     notPaused();
-    const result = await appShortcuts.run(req.body.id, () =>
+    const result = await appShortcuts.run(req.body?.id, () =>
       shortcutOwner(req, res),
     );
     record("app", result.name);
@@ -3482,7 +3503,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/apps/launch", async (req, res) => {
     notPaused();
-    const result = await launchApp(req.body.id);
+    const result = await launchApp(req.body?.id);
     record("app", `Opened ${result.name}`);
     res.json(result);
   });
@@ -3515,6 +3536,11 @@ export async function createReach(overrides = {}) {
     if (!config.screen) throw fail(403, "Turn on screen viewing first.");
   };
   const threadApp = (id) => appThreads.get(id)?.appId ?? "";
+  const threadAppOr404 = (id) => {
+    const thread = appThreads.get(id);
+    if (!thread) throw fail(404, "That app window closed.");
+    return thread.appId ?? "";
+  };
   app.get("/api/screen/apps", (req, res) => {
     appOwner(req);
     res.set("Cache-Control", "no-store").json(
@@ -3553,18 +3579,18 @@ export async function createReach(overrides = {}) {
     res.json(thread);
   });
   app.patch("/api/screen/apps/:id", async (req, res) => {
-    appOwner(req, threadApp(req.params.id));
+    appOwner(req, threadAppOr404(req.params.id));
     appManager(req);
     notPaused();
     res.json(await appThreads.rotate(req.params.id, req.body));
   });
   app.post("/api/screen/apps/:id/activate", async (req, res) => {
-    appOwner(req, threadApp(req.params.id));
+    appOwner(req, threadAppOr404(req.params.id));
     notPaused();
     res.json(await appThreads.activate(req.params.id));
   });
   app.delete("/api/screen/apps/:id", async (req, res) => {
-    appOwner(req, threadApp(req.params.id));
+    appOwner(req, threadAppOr404(req.params.id));
     appManager(req);
     notPaused();
     res.json(await appThreads.close(req.params.id));
@@ -3578,14 +3604,14 @@ export async function createReach(overrides = {}) {
       throw fail(403, "This invitation can watch apps, not control them.");
   };
   app.post("/api/screen/apps/:id/quit", async (req, res) => {
-    appOwner(req, threadApp(req.params.id));
+    appOwner(req, threadAppOr404(req.params.id));
     if (!req.client.scopes.includes("admin"))
       throw fail(403, "Only a paired person can quit apps.");
     notPaused();
     res.json(await appThreads.quit(req.params.id, req.body?.confirm === true));
   });
   app.get("/api/screen/apps/:id/fields", async (req, res) => {
-    appOwner(req, threadApp(req.params.id));
+    appOwner(req, threadAppOr404(req.params.id));
     appControl(req);
     notPaused();
     res.set("Cache-Control", "no-store").json(await appThreads.fields(req.params.id));
@@ -3773,12 +3799,12 @@ export async function createReach(overrides = {}) {
     );
   });
   app.post("/api/screen/control", (req, res) => {
-    if (!config.screen && req.body.enabled)
+    if (!config.screen && req.body?.enabled)
       throw fail(403, "Turn on screen viewing first.");
     let lease;
     try {
-      lease = screenControl.acquire(req.client, req.body.enabled, {
-        takeover: req.body.takeover === true,
+      lease = screenControl.acquire(req.client, req.body?.enabled, {
+        takeover: req.body?.takeover === true,
       });
     } catch (e) {
       // Someone else controls: say who, so the phone can watch (or offer
@@ -3788,7 +3814,7 @@ export async function createReach(overrides = {}) {
         .status(409)
         .json({ error: e.message, holder: e.holder, canTakeOver: e.canTakeOver });
     }
-    if (!req.body.enabled) closeInput(req.client.id);
+    if (!req.body?.enabled) closeInput(req.client.id);
     for (const nudge of presenceNudges) nudge();
     const { taken, ...grant } = lease;
     if (taken) {
@@ -3858,15 +3884,15 @@ export async function createReach(overrides = {}) {
     }
   });
   app.post("/api/chats", async (req, res) => {
-    const cwd = resolve(req.body.root, req.body.path || "", req.client);
+    const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
-    const chat = await codex.create(cwd, req.body.name, req.client.id);
+    const chat = await codex.create(cwd, req.body?.name, req.client.id);
     record("chat", `Started ${chat.name}`);
     res.json(chat);
   });
   app.get("/api/chats/:id", (req, res) => res.json(codex.get(req.params.id)));
   app.post("/api/chats/:id/messages", async (req, res) =>
-    res.json(await codex.message(req.params.id, req.body.text)),
+    res.json(await codex.message(req.params.id, req.body?.text)),
   );
   app.post("/api/chats/:id/stop", async (req, res) => {
     await codex.stop(req.params.id);
@@ -3927,13 +3953,19 @@ export async function createReach(overrides = {}) {
     check();
     const stop = () => { res.destroy(); req.destroy(); };
     const identityCleanup = trackIdentity(req, stop);
-    const timer = setInterval(() => { try { check(); } catch { stop(); } }, 100);
+    let checkedAt = 0;
+    const timer = setInterval(() => {
+      // The credential file is re-read at most once a second.
+      if (Date.now() - checkedAt < 1000) return;
+      try { check(); checkedAt = Date.now(); } catch { stop(); }
+    }, 100);
     timer.unref();
     const cleanup = () => { clearInterval(timer); identityCleanup(); };
     res.once("close", cleanup); res.once("finish", cleanup);
     res.setHeader("Cache-Control", "no-store");
     const sharedRoot = (client.agentRoots || config.roots)[Number(link.root ?? 0)];
-    res.download(path.relative(sharedRoot, file), path.basename(file), { root: sharedRoot });
+    const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
+    res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
   });
   serveBuild(app, express, dist);
   // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,
@@ -4170,14 +4202,17 @@ export async function createReach(overrides = {}) {
       return;
     }
     let accessDeadline;
+    const expiryOf = (c) => c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000;
     const expires = (client) => {
+      const left = expiryOf(client) - Date.now();
+      if (!Number.isFinite(left)) return;
       accessDeadline = setTimeout(
         () => {
           const current = auth.list().find((entry) => entry.id === client.id);
-          if (!current || Date.now() >= current.expiresAt) ws.close(4001, "Access expired");
+          if (!current || Date.now() >= expiryOf(current)) ws.close(4001, "Access expired");
           else expires(current);
         },
-        Math.min(2147483647, Math.max(0, client.expiresAt - Date.now())),
+        Math.min(2147483647, Math.max(0, left)),
       );
       accessDeadline.unref();
     };
@@ -4336,16 +4371,21 @@ export async function createReach(overrides = {}) {
     }
 
     let session, listener, credential;
+    let authorizedAt = 0;
     const stillAuthorized = () => {
       if (!credential) return true;
+      // The credential file is re-read at most once a second.
+      if (Date.now() - authorizedAt < 1000) return true;
       const client = verify(req, credential);
       if (
         client?.scopes.includes("terminal") &&
         (!client.agentRoots ||
           !session ||
           client.agentRoots.some((root) => within(root, session.cwd)))
-      )
+      ) {
+        authorizedAt = Date.now();
         return true;
+      }
       // The phone's terminal reconnects on any close but 4001 (Sessions.tsx).
       if (!client && transientDenial(req, credential))
         ws.close(1012, "Checking the connection");
@@ -4588,6 +4628,7 @@ export async function createReach(overrides = {}) {
     async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
+      privateSocket = socketPath;
       privateServer = await listenPrivateIngress({
         socketPath,
         app,
@@ -4624,6 +4665,7 @@ export async function createReach(overrides = {}) {
       notifications.close();
       openClawWatch.close();
       clearInterval(snapshotSweep);
+      usageWatch.stop?.();
       browserOperations.close();
       browserApprovals.close();
       browserAppAccess.close();
@@ -4695,7 +4737,11 @@ if (
   });
   for (const signal of ["SIGINT", "SIGTERM"])
     process.once(signal, async () => {
-      await reach.close();
+      try {
+        await reach.close();
+      } catch (error) {
+        console.error("Reach did not close cleanly:", error?.message || error);
+      }
       process.exit(0);
     });
 }

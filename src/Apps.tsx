@@ -218,6 +218,10 @@ export default function Apps({
             clearTimeout(held.current.timer);
             held.current.timer = setTimeout(() => {
               held.current.fired = true;
+              // Android may suppress the click that would clear this.
+              held.current.timer = setTimeout(() => {
+                held.current.fired = false;
+              }, 1200);
               void open(app);
             }, 550);
           },

@@ -1,4 +1,7 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
@@ -15,6 +18,82 @@ const exec = promisify(execFile);
 export const serviceVersionOf = (agent) =>
   typeof agent === "string" ? /^[\w.-]+\/(\d+\.\d+\.\d+[\w.+-]*)/.exec(agent.trim())?.[1] || null : null;
 
+// "0.158.0-alpha.2.1" older than "0.162.0-alpha.2" (major.minor.patch);
+// either unreadable: not older.
+export function olderVersion(a, b) {
+  const parts = (v) => /^(\d+)\.(\d+)\.(\d+)/.exec(String(v || ""))?.slice(1).map(Number);
+  const x = parts(a), y = parts(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i];
+  return false;
+}
+
+// The model and effort new chats use, as config.toml sets them at its top
+// level (a [profile] table's own `model` is not the default), or in the
+// profile its top level picks (`profile = "x"`), which Codex reads first.
+export function codexDefaults(home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
+  let text = "";
+  try { text = fs.readFileSync(path.join(home, "config.toml"), "utf8"); } catch { return {}; }
+  const top = text.split(/^\s*\[/m)[0];
+  const tables = text.slice(top.length).split(/^(?=\s*\[)/m);
+  const value = (key, part = top) => new RegExp(`^\\s*${key}\\s*=\\s*(?:"([^"\\n]+)"|'([^'\\n]+)')`, "m").exec(part)?.slice(1).find(Boolean) || null;
+  const profile = value("profile");
+  // [profiles.x], [profiles."x"] or [profiles.'x'] itself, not a table inside it.
+  const table = profile
+    ? tables.find((t) => {
+        const name = /^\s*\[\s*profiles\s*\.\s*(?:"([^"]+)"|'([^']+)'|([\w-]+))\s*\]/.exec(t);
+        return name && name.slice(1).find(Boolean) === profile;
+      })
+    : null;
+  const body = table ? table.slice(table.indexOf("]") + 1) : "";
+  const pick = (key) => (body && value(key, body)) || value(key);
+  return { model: pick("model"), effort: pick("model_reasoning_effort") };
+}
+
+// The installed CLI's own model catalog, from a one-shot app-server of its
+// own over stdio (initialize, model/list, gone). The shared daemon can run an
+// older Codex than the CLI (verified: service 0.158 while the CLI is 0.162),
+// and its catalog then lacks newer models the Codex app offers.
+export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = start(file, ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+    let buffer = "";
+    // Whole characters: a chunk can end inside one (a model's description).
+    child.stdout.setEncoding("utf8");
+    const done = (settle, value) => {
+      clearTimeout(timer);
+      try { child.kill(); } catch {}
+      settle(value);
+    };
+    const timer = setTimeout(() => done(reject, new Error("Codex did not answer (model/list).")), timeout);
+    const send = (message) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+    child.on("error", (e) => done(reject, e));
+    child.on("exit", () => done(reject, new Error("Codex stopped before listing its models.")));
+    child.stdin.on("error", () => {});
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      for (let i; (i = buffer.indexOf("\n")) >= 0; ) {
+        const line = buffer.slice(0, i);
+        buffer = buffer.slice(i + 1);
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        // Replies only (a request from the server has a method).
+        if (!object(message) || message.method) continue;
+        if (message.id === 1) {
+          if (message.error) return done(reject, new Error("Codex did not start."));
+          send({ method: "initialized" });
+          send({ id: 2, method: "model/list", params: {} });
+        } else if (message.id === 2) {
+          if (message.error) return done(reject, new Error(message.error.message || "Codex could not list its models."));
+          try { done(resolve, validateCodexResult("model/list", message.result)); }
+          catch (e) { done(reject, e); }
+        }
+      }
+    });
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "reach", title: "Reach", version: "0.1.0" } } });
+  });
+}
+
 export function createCodexDaemon({
   locate = findCodexExecutable,
   run = exec,
@@ -24,6 +103,9 @@ export function createCodexDaemon({
   check = run === exec ? (file) => probeAgent("codex", file) : async () => ({ status: "available", version: null }),
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Only the real Codex is asked for its CLI catalog and config defaults.
+  listCliModels = run === exec ? cliModelList : null,
+  defaults = run === exec ? codexDefaults : null,
 } = {}) {
   let socket = null;
   let ready = null;
@@ -185,8 +267,26 @@ export function createCodexDaemon({
       catch { pending.delete(id); clearTimeout(timer); reject(readOnlyRpc(method) ? new Error("Codex disconnected.") : uncertainDelivery("codex")); }
     });
   }
+  // The CLI's catalog, kept a while per CLI version (a fresh app-server each
+  // time would be slow); a failure too, so a stuck CLI doesn't hold every
+  // model sheet for its timeout. Started, never waited for: the first model
+  // sheet doesn't wait on it (up to its timeout), the next one has it; the
+  // list it had stays in use while a newer one comes.
+  let cliCatalog = null;
+  const cliModels = listCliModels && (async (cliVersion) => {
+    if (!cliCatalog || cliCatalog.version !== cliVersion || Date.now() - cliCatalog.at > 10 * 60 * 1000) {
+      const file = await locate();
+      if (!file) throw new Error("Codex is not installed.");
+      const entry = { version: cliVersion, at: Date.now(), list: cliCatalog?.version === cliVersion ? cliCatalog.list : null };
+      cliCatalog = entry;
+      listCliModels(file).then((list) => { entry.list = list; }, () => {});
+    }
+    return cliCatalog.list;
+  });
   return {
     compatibility,
+    ...(cliModels ? { cliModels } : {}),
+    ...(defaults ? { defaults: () => defaults() } : {}),
     async rpc(method, params = {}) {
       if (closed) throw closedError();
       if (issues.size) await compatibility();

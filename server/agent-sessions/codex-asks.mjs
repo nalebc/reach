@@ -13,6 +13,15 @@
 import fs from "node:fs/promises";
 
 const ESCALATED = /["']?sandbox_permissions["']?\s*:\s*["']require_escalated["']/;
+// The parsed field, not the whole string: command text may quote the phrase.
+// Arguments that aren't JSON keep the old text match.
+const escalated = (call) => {
+  try {
+    const args = JSON.parse(call);
+    if (args && typeof args === "object" && !Array.isArray(args)) return args.sandbox_permissions === "require_escalated";
+  } catch {}
+  return ESCALATED.test(call);
+};
 const JUSTIFICATION = /["']?justification["']?\s*:\s*"((?:[^"\\]|\\.)*)"/;
 const COMMAND = /["']?(?:cmd|command)["']?\s*:\s*"((?:[^"\\]|\\.)*)"/;
 const unescape = (s) => {
@@ -67,7 +76,7 @@ function scan(text) {
     if ((p.type !== "function_call" && p.type !== "custom_tool_call") || answered.has(p.call_id) || answeredHere.has(String(p.call_id)))
       continue;
     const call = String(p.arguments ?? p.input ?? "");
-    if (ESCALATED.test(call)) pending = { call, at: Date.parse(e.timestamp), callId: p.call_id ? String(p.call_id) : null };
+    if (escalated(call)) pending = { call, at: Date.parse(e.timestamp), callId: p.call_id ? String(p.call_id) : null };
   }
   return { pending, reviewer, whole: false };
 }

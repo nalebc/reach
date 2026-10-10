@@ -18,7 +18,9 @@ const TEAM_AGENTS = ["codex", "claude"];
 export const teamLedBy = (teams: Team[], chat: ChatRef) =>
   teams.find((t) => t.state === "active" && t.lead.agent === chat.agent && t.lead.id === chat.id) || null;
 export function teamHelping(teams: Team[], chat: ChatRef) {
+  // A stopped team (listed a day after) no longer claims its helpers.
   for (const team of teams) {
+    if (team.state !== "active") continue;
     const task = team.tasks.find((x) => x.chat.agent === chat.agent && x.chat.id === chat.id);
     if (task) return { team, task };
   }

@@ -89,7 +89,7 @@ export function describePrompt(method, params = {}) {
         ...base,
         kind: "file-change",
         title: "Make these changes?",
-        files: Object.keys(params.fileChanges || {}),
+        files: params.fileChanges && typeof params.fileChanges === "object" && !Array.isArray(params.fileChanges) ? Object.keys(params.fileChanges) : [],
         reason: params.reason || "",
         grantRoot: params.grantRoot || null,
         decisions,
@@ -501,8 +501,10 @@ export function createCodexLive({
           t.status = s.activeFlags?.some((f) => f === "waitingOnApproval" || f === "waitingOnUserInput")
             ? "waiting"
             : "running";
-        else if (s.type === "idle") t.status = "idle";
-        else return;
+        else if (s.type === "idle") {
+          t.status = "idle";
+          t.turnId = null; // a finished turn must not be interrupted by Stop
+        } else return;
         break;
       }
       case "item/started": {
@@ -576,11 +578,16 @@ export function createCodexLive({
     await owner.claim(threadId, resumed);
     authorize();
   }
-  async function runningOnDisk(threadId) {
+  // interrupted: a turn "interrupted" with no end time counts as running (an
+  // engine holding the thread runs it). With false it counts as over, as in
+  // codex.mjs when no other engine holds the thread (turnOpen): a message
+  // must not wait in Codex's queue for a turn nothing is running.
+  async function runningOnDisk(threadId, { interrupted = true } = {}) {
     const r = await daemon
       .rpc("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" })
       .catch(() => null);
     const turn = r?.data?.[0];
+    if (!interrupted && turn?.status === "interrupted" && !turn.completedAt) return false;
     return !!turn && !finished(turn);
   }
   // The thread is held by another engine (usually the Codex app showing it).
@@ -958,7 +965,7 @@ export function createCodexLive({
       // Use the already discovered writer when Codex owns this task. This
       // also preserves per-turn settings such as Plan without taking over.
       if (nativeTurns && !subscribed.has(threadId) && !steer && typeof desktop.startTurn === "function") {
-        if (await runningOnDisk(threadId)) return queueElsewhere(threadId, input);
+        if (await runningOnDisk(threadId, { interrupted: false })) return queueElsewhere(threadId, input);
         const planned = collaboration === "plan" || collaboration === "default" ? {
           collaborationMode: { mode: collaboration, settings: {
             model: model || (await daemon.rpc("thread/read", { threadId, includeTurns: false }).catch(() => null))?.thread?.model || await withModel(),
@@ -1129,6 +1136,8 @@ export function createCodexLive({
         });
       } catch (e) {
         release(threadId);
+        // An empty thread nobody asked for is archived, as fork() does.
+        await daemon.rpc("thread/archive", { threadId }).catch(() => {});
         throw e;
       }
       begin(threadId, r.turn);
@@ -1268,6 +1277,7 @@ export function createCodexLive({
         changed(threadId);
         return done;
       }
+      let reverted = false;
       try {
         const r = await daemon.rpc("thread/items/list", { threadId, limit: 50, sortDirection: "desc" });
         const latest = (r?.data || []).find((entry) => entry?.item?.type === "userMessage");
@@ -1280,6 +1290,7 @@ export function createCodexLive({
             : content.map((c, i) => (i === at ? { ...c, text: words, text_elements: [] } : c));
         authorize();
         await daemon.rpc("thread/revert", { threadId, beforeTurnId: turnId });
+        reverted = true;
         authorize();
         const started = await daemon.rpc("turn/start", { threadId, input, clientUserMessageId: randomUUID() });
         authorize();
@@ -1287,6 +1298,8 @@ export function createCodexLive({
         return { edited: true, turnId: started.turn?.id || null };
       } catch (e) {
         try { authorize(); release(threadId); } catch {}
+        // The old message is already gone: hand the edited text back, never lose it silently.
+        if (reverted) throw bad(`The edit could not be sent and the earlier message was removed. Your edited text was: ${words}`, e?.status || 502);
         throw e;
       }
     },

@@ -247,7 +247,7 @@ export function createAgentTools(
         "The returned file is empty or exceeds 8 MiB.",
         413,
       );
-    if (files.size >= 30)
+    if ([...files.values()].filter((f) => f.clientId === client.id).length >= 30)
       throw problem(
         "file_limit",
         "The private file handle limit was reached. Wait for unused files to expire.",
@@ -457,13 +457,19 @@ export function createAgentTools(
       const key = `${client.id}:${input.requestId}`;
       if (input.values !== undefined && !isPlainRecord(input.values))
         throw fail(400, "Tool values must be a plain object.");
+      // Hash the normalized values so a retry that spells out a default matches.
+      let hashValues = input.values || {};
+      try {
+        const known = definitions().find(
+          (entry) => entry.definition.id === input.id,
+        )?.definition;
+        if (known) hashValues = toolInputs(known, hashValues);
+      } catch {}
       const hash = digest([
         input.id,
         input.browser,
         Object.fromEntries(
-          Object.entries(input.values || {}).sort(([a], [b]) =>
-            a.localeCompare(b),
-          ),
+          Object.entries(hashValues).sort(([a], [b]) => a.localeCompare(b)),
         ),
       ]);
       if (ledger.has(key)) {
@@ -547,7 +553,15 @@ export function createAgentTools(
         controller,
       };
       ledger.set(key, entry);
-      persistLedger();
+      try {
+        persistLedger();
+      } catch (error) {
+        running = null;
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancel);
+        ledger.delete(key);
+        throw error;
+      }
       const current = () => {
         const latest = check(authorize);
         if (
@@ -870,15 +884,22 @@ export function createAgentTools(
                 if (step.op === "click") {
                   root = null;
                   if (result.nextUrl) {
-                    checkURL(result.nextUrl, definition);
-                    await bind(result.nextUrl);
+                    try {
+                      checkURL(result.nextUrl, definition);
+                      await bind(result.nextUrl);
+                    } catch (error) {
+                      // The click already happened; count it and report uncertainty
+                      // so the agent does not click again.
+                      entry.completedSteps = index + 1;
+                      throw Object.assign(error, { uncertain: true });
+                    }
                   }
                 }
                 if (step.op === "collect") {
                   if (
                     !Array.isArray(result.items) ||
                     result.items.length > 30 ||
-                    handles.size + result.items.length > 1000
+                    [...handles.values()].filter((h) => h.clientId === client.id).length + result.items.length > 1000
                   )
                     throw problem(
                       "limit",
@@ -1064,8 +1085,10 @@ export function createAgentTools(
       } finally {
         clearTimeout(deadline);
         signal?.removeEventListener("abort", cancel);
-        persistLedger();
         running = null;
+        try {
+          persistLedger();
+        } catch {}
       }
       return copy(results.get(key));
     },
@@ -1124,7 +1147,12 @@ export function agentToolRoutes(app, { tools }) {
       agent(req),
       body(req, ["id", "browser", "requestId", "values"]),
     );
-    req.reauthorize();
+    try {
+      req.reauthorize();
+    } catch (error) {
+      // A finished run's result must not be lost because access lapsed mid-run.
+      if (result?.status !== "completed") throw error;
+    }
     res.json(result);
   });
   app.get("/api/browser/tools/operations/:requestId", (req, res) =>

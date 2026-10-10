@@ -1089,3 +1089,29 @@
   color: var(--text-strong);
   background: color-mix(in srgb, currentColor 7%, transparent);
 }
+
+.claw-message.from-agent {
+  max-width: 100%;
+  margin-right: auto;
+}
+.claw-connection-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+}
+.claw-connection-error .claw-error {
+  margin: 0;
+}
+.claw-notice {
+  margin: 6px 0;
+  color: var(--claw-muted, var(--muted));
+  font-size: 12px;
+  line-height: 1.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .claw-working-dot {
+    animation: none;
+  }
+}

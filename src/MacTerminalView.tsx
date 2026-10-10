@@ -174,8 +174,24 @@ export default function MacTerminalView({
         sending = false;
       }
     };
+    // A paste with line breaks runs as separate lines, in order.
+    let lines = Promise.resolve();
+    const pasteLines = (parts: string[]) => {
+      lines = lines.then(async () => {
+        for (let i = 0; i < parts.length && !stopped; i++) {
+          pending.current += parts[i].replace(/[\x00-\x1f\x7f]/g, "");
+          if (i === parts.length - 1) break;
+          while (sending && !stopped) await new Promise((r) => setTimeout(r, 30));
+          if (stopped) return;
+          await submit.current();
+        }
+        draw();
+      });
+    };
     const input = term.onData((data) => {
-      if (data === "\r") void submit.current();
+      if (data.length > 1 && /[\r\n]/.test(data) && !/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/.test(data))
+        pasteLines(data.split(/\r\n|\r|\n/));
+      else if (data === "\r") void submit.current();
       else if (data === "\x7f") {
         pending.current = Array.from(pending.current).slice(0, -1).join("");
         draw();

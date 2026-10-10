@@ -1,3 +1,4 @@
+import net from "node:net";
 import crypto from "node:crypto";
 import { browserRouteAllowed } from "./browser-access.mjs";
 
@@ -282,7 +283,12 @@ export function createFunnelAgentGateway({
         Number(req.headers["content-length"]) > BODY_LIMIT)
     )
       throw failure(413);
-    const ip = bucket(ips, req.socket?.remoteAddress || "unknown", 240, now());
+    // Funnel traffic reaches Reach over its private Unix socket, where the
+    // socket has no address: Tailscale's X-Forwarded-For names the source.
+    const forwarded = req.headers["x-forwarded-for"];
+    const source = typeof forwarded === "string" && net.isIP(forwarded.trim())
+      ? forwarded.trim() : req.socket?.remoteAddress || "unknown";
+    const ip = bucket(ips, source, 240, now());
     if (active >= 32 || ip.active >= 8) throw failure(429);
     active++;
     ip.active++;

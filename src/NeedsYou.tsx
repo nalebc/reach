@@ -68,6 +68,9 @@ export function MacPasswordField({ placeholder, submit, onState }: { placeholder
           await submit(secret);
           setSent(true);
           onState?.("sent");
+          // A mistyped password leaves the same dialog up: after a moment the
+          // field opens again for another try.
+          setTimeout(() => setSent(false), 6000);
         } catch (error) {
           setProblem((error as Error).message);
           onState?.("error");
@@ -133,7 +136,15 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
     try {
       const words = await action.run();
       if (typeof words === "string") setSaid((list) => ({ ...list, [item.key]: words }));
-      if (action.completes) setCompleted((list) => ({ ...list, [item.key]: true }));
+      if (action.completes) {
+        setCompleted((list) => ({ ...list, [item.key]: true }));
+        // Still on screen a while later (the click didn't land): its buttons
+        // work again rather than staying dead.
+        setTimeout(() => setCompleted((list) => {
+          const { [item.key]: _, ...rest } = list;
+          return rest;
+        }), 8000);
+      }
     } catch (e) {
       setProblems((list) => ({ ...list, [item.key]: (e as Error).message }));
     } finally {
@@ -156,6 +167,18 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
             className={`need-card ${item.more ? "openable" : ""} ${item.screen ? "has-screen" : ""} ${item.body ? "has-body" : ""}`}
             aria-label={item.title}
             onClick={item.more ? () => setOpened((o) => (o === item.key ? null : item.key)) : undefined}
+            // Openable by keyboard and switch control too, not only a tap.
+            {...(item.more
+              ? {
+                  tabIndex: 0,
+                  "aria-expanded": opened === item.key,
+                  onKeyDown: (e: React.KeyboardEvent) => {
+                    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                    e.preventDefault();
+                    setOpened((o) => (o === item.key ? null : item.key));
+                  },
+                }
+              : {})}
           >
             <span className="need-icon">{item.icon}</span>
             <div className="need-text">

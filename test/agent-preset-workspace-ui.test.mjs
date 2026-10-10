@@ -1151,6 +1151,8 @@ for (const actionFailure of [false, true])
     );
     views.add(view);
     const c = view.container;
+    // The apps list only polls while its section is showing.
+    await click(c.querySelector('[aria-label="Workspace navigation"] [aria-label="Apps"]'));
     if (actionFailure) {
       const app = await dom.waitFor(() =>
         c.querySelector(

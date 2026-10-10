@@ -498,3 +498,13 @@ test("the Claude app is found by its bundle id wherever it lives, its process pa
   assert.equal(await claudeAppRunning(mac(null)), false);
   assert.equal(await claudeAppStartedAt(mac(null)), null);
 });
+
+test("a chat joins the Claude app at its own effort: only a level the app's menu has", () => {
+  const { records, dir } = appRecords();
+  const read = (id) => JSON.parse(fs.readFileSync(path.join(dir, `local_${id}.json`), "utf8"));
+  assert.equal(writeClaudeRecord(A, { cwd: "/Users/me/site", mode: "manual", effort: "low" }, { records }), true);
+  assert.equal(read(A).effort, "low");
+  // A word the app may not launch with is left out, never written.
+  assert.equal(writeClaudeRecord(C, { cwd: "/Users/me/site", mode: "manual", effort: "ultra" }, { records }), true);
+  assert.equal("effort" in read(C), false);
+});

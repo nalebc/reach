@@ -92,11 +92,10 @@ import Apps from "./Apps";
 import { InviteSheet } from "./InviteSheet";
 import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
-import { ReachScene } from "./ReachIdentity";
+import { BrandCourier, ReachScene } from "./ReachIdentity";
 import MascotIntro from "./MascotIntro";
 import MoreSheet from "./MoreSheet";
 import MobileNav from "./MobileNav";
-import { AppIcon, ComputerIcon } from "./AppIcon";
 import { Sparkles as SparklesIcon, MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
@@ -104,6 +103,7 @@ import { accessChanged } from "./live-access";
 import { useFleetJoin } from "./fleet-join";
 import { groupDevices } from "./device-groups";
 import { FaceIdSettings } from "./FaceIdSettings";
+import "./settings-list.css";
 import { NotificationBell, NotificationCenter } from "./Notifications";
 import { wantPrompt } from "./notification-focus";
 import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
@@ -246,7 +246,6 @@ function ReachWorkspace() {
   const [chatTarget, setChatTarget] = useState<{
     agent: AgentName | "openclaw";
     id: string;
-    compose?: boolean;
   } | null>(null);
   const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
@@ -254,11 +253,7 @@ function ReachWorkspace() {
     .sort((a, b) => mobileOrder.indexOf(a.id) - mobileOrder.indexOf(b.id));
   const connectionGeneration = useRef(0);
   useEffect(() => {
-    if (
-      device &&
-      !pageAccessible(page, features) &&
-      !(page === "chat" && codexStatus.state === "checking")
-    )
+    if (device && !pageAccessible(page, features))
       setPage("overview");
     if (!features.shortcuts) setQuickLaunch(false);
     if (
@@ -513,12 +508,14 @@ function ReachWorkspace() {
     };
   }, [peer?.id, peer?.url, peer?.token]);
   const [inviteKind, setInviteKind] = useState<"person" | "browser">("person");
-  const navigate = (id: string) => {
+  const navigate = (id: string, { opening = false } = {}) => {
     if (id === "invite") setInviteKind("person");
     if (!pageAccessible(id, features)) return;
     // Re-selecting Chat is a shortcut to its root, from any nested view.
     // Keep the chosen provider and shared feed; discard only local navigation.
-    if (id === "sessions" && page === "sessions") {
+    // Not when going there to open a chat (a notification's): that would
+    // drop the chat it was just given.
+    if (id === "sessions" && page === "sessions" && !opening) {
       setChatTarget(null);
       setLinkTarget(null);
       setChatHomeRevision((n) => n + 1);
@@ -656,7 +653,7 @@ function ReachWorkspace() {
     if (target.page === "sessions" && target.agent === "openclaw") setChatAgent("openclaw");
     if (target.page === "apps" && target.threadId) requestOpenThread(peer.id, target.threadId);
     if (target.needs) wantNeed(target.needs);
-    navigate(target.page);
+    navigate(target.page, { opening: true });
   }
   return (
     <NotificationCenter peer={peer} enabled={!!device && !!features.settings} changes={live} onOpen={({ target }) => openTargetNow(target)}>
@@ -688,7 +685,7 @@ function ReachWorkspace() {
             YOUR COMPUTERS
             <button
               className="icon-button"
-              title="Add computer"
+              title="Add computer" aria-label="Add computer"
               onClick={() => setPairing(true)}
             >
               <Plus size={15} />
@@ -765,7 +762,7 @@ function ReachWorkspace() {
             </span>
             <button
               className="icon-button"
-              title="Refresh connection"
+              title="Refresh connection" aria-label="Refresh connection"
               onClick={refreshDevice}
             >
               <RefreshCw size={17} />
@@ -849,7 +846,10 @@ function ReachWorkspace() {
                     pending={requests.filter((r) => deferred.includes(r.id))}
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
-                    openChat={() => navigate("sessions")}
+                    openChat={(id) => {
+                      setChatTarget({ agent: "codex", id });
+                      navigate("sessions");
+                    }}
                     openTerminal={(id) => {
                       setTerminalId(id);
                       navigate("terminal");
@@ -866,15 +866,6 @@ function ReachWorkspace() {
                       pageAccessible("sessions", features)
                         ? (s) => {
                             setChatTarget({ agent: s.agent, id: s.id });
-                            navigate("sessions");
-                          }
-                        : undefined
-                    }
-                    agentHealth={agentFeed.health}
-                    compose={
-                      pageAccessible("sessions", features)
-                        ? (agent) => {
-                            setChatTarget({ agent, id: "", compose: true });
                             navigate("sessions");
                           }
                         : undefined
@@ -1592,6 +1583,24 @@ function SessionModal({
     </Modal>
   );
 }
+// A person or device's access in a few words, for its row in Settings:
+// a red dot when it has ended, green while a guest's or agent's lasts.
+const shortWhen = (at: number) => {
+  const d = new Date(at);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+function accessState(
+  c: { kind?: string; expiresAt?: number; status?: string },
+  self: boolean,
+): { dot?: "on" | "off"; text: string } {
+  const who = c.kind === "guest" ? "Guest" : c.kind === "agent" ? "Agent" : self ? "This device" : "Paired";
+  if (c.expiresAt && c.expiresAt <= Date.now()) return { dot: "off", text: `${who} · Expired` };
+  if (c.kind === "guest" || c.kind === "agent")
+    return { dot: "on", text: c.expiresAt ? `${who} · Until ${shortWhen(c.expiresAt)}` : `${who} · Until you end it` };
+  return { text: who };
+}
 export function SettingsPage({
   features,
   invite,
@@ -1671,222 +1680,240 @@ export function SettingsPage({
   }, [peer.id, peer.url, peer.token, pageVisible]);
   const peopleAndDevices = clients.filter((client) => !(client.kind === "agent" && client.policy?.browser));
   const browserAgentCount = clients.filter((client) => client.kind === "agent" && client.policy?.browser && (client.expiresAt || 0) > Date.now()).length;
-  return (
-    <div className="settings-workspace">
-      <PageTitle
-        title="Settings"
-        eyebrow={device.name}
-        description="Your computer and who can use it."
-      />
-      <div
-        className="settings-segments"
-        role="group"
-        aria-label="Settings sections"
-      >
-        <button
-          aria-pressed={settingsView === "general"}
-          onClick={() => setSettingsView("general")}
-        >
-          General
+  const groups = groupDevices(peopleAndDevices).sort((a, b) => {
+    const rank = (kind?: string) => (kind === "guest" ? 1 : kind === "agent" ? 2 : 0);
+    return rank(a.kind) - rank(b.kind);
+  });
+  // A person or device opened from the list: its access, in a sheet.
+  const [openId, setOpenId] = useState("");
+  const opened = groups.find((g) => g.id === openId);
+  const [details, setDetails] = useState(false);
+  const online = true;
+  const host = (() => {
+    try {
+      return new URL(peer.url).hostname.endsWith(".ts.net") ? "Tailscale" : "Direct";
+    } catch {
+      return "";
+    }
+  })();
+  const revoke = async (c: (typeof groups)[number]) => {
+    if (!confirm(`Revoke access for ${c.name}?`)) return;
+    try {
+      // Every browser on that device.
+      for (const id of c.ids)
+        await request(peer, `/api/clients/${id}`, { method: "DELETE" });
+      setOpenId("");
+      if (c.ids.includes(current)) forget();
+      else load();
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
+  if (settingsView === "agents")
+    return (
+      <div className="settings-workspace gs">
+        <button className="gs-back" onClick={() => setSettingsView("general")}>
+          <ChevronRight size={18} /> Settings
         </button>
-        <button
-          aria-pressed={settingsView === "access"}
-          onClick={() => setSettingsView("access")}
-        >
-          Access <span>{groupDevices(peopleAndDevices).length}</span>
-        </button>
-        <button aria-pressed={settingsView === "agents"} onClick={() => setSettingsView("agents")}>Agents <span>{browserAgentCount}</span></button>
+        <BrowserAgents peer={peer} device={device} invite={inviteAgent || invite} toast={toast} />
       </div>
-      <div className="settings-general" hidden={settingsView !== "general"}>
+    );
+  return (
+    // As ChatGPT lays out its settings: who it is on top, then short
+    // grouped lists (a line icon, a name, a value, a chevron). Reach's own
+    // dark green and its mascot.
+    <div className="settings-workspace gs">
+      <header className="gs-head">
+        <span className="gs-mascot" aria-hidden="true">
+          <BrandCourier active />
+        </span>
+        <h1>{device.name}</h1>
+        <p>
+          <span className={`status-text ${online ? "on" : ""}`}>Connected</span>
+          <span>{platform(device.platform)}</span>
+          {host && <span>{host}</span>}
+        </p>
+      </header>
+
+      <h2 className="gs-title">This computer</h2>
+      <div className="gs-group">
+        {features.screenSetup && (
+          <div className="gs-row">
+            <MonitorPlay size={21} />
+            <span className="gs-label">Screen viewing</span>
+            <button
+              role="switch"
+              aria-checked={device.capabilities.screen}
+              aria-label="Screen viewing"
+              className={`switch ${device.capabilities.screen ? "on" : ""}`}
+              onClick={toggleScreen}
+            >
+              <span />
+            </button>
+          </div>
+        )}
+        <button className="gs-row" onClick={() => setDetails(true)}>
+          <Folder size={21} />
+          <span className="gs-label">Shared folders</span>
+          <span className="gs-value">{device.roots.length}</span>
+          <ChevronRight className="gs-chevron" size={18} />
+        </button>
         <InterfaceUpdates />
-        <section className="panel settings-panel computer-settings-card">
-          <div className="settings-device">
-            <ComputerIcon platform={device.platform} size="large" />
-            <div>
-              <h2>{device.name}</h2>
-              <span className="muted settings-device-status">
-                <span className="status-text on">Connected</span>
-                <span>{platform(device.platform)}</span>
+      </div>
+
+      <h2 className="gs-title">People &amp; devices</h2>
+      <div className="gs-group">
+        <button className="gs-row" onClick={invite}>
+          <UserRoundPlus size={21} />
+          <span className="gs-label">Invite someone</span>
+          <ChevronRight className="gs-chevron" size={18} />
+        </button>
+        {groups.map((c) => (
+          <button className="gs-row" key={c.id} onClick={() => setOpenId(c.id)}>
+            {c.kind === "guest" ? (
+              <KeyRound size={21} />
+            ) : c.kind === "agent" ? (
+              <SparklesIcon size={21} />
+            ) : (
+              <Smartphone size={21} />
+            )}
+            <span className="gs-label">
+              {c.name}
+              <small>
+                {accessState(c, c.ids.includes(current)).dot && (
+                  <i className={`gs-dot ${accessState(c, c.ids.includes(current)).dot}`} />
+                )}
+                {accessState(c, c.ids.includes(current)).text}
+              </small>
+            </span>
+            <ChevronRight className="gs-chevron" size={18} />
+          </button>
+        ))}
+        {clientsLoading && !groups.length && (
+          <div className="gs-row gs-note">
+            <Spinner />
+          </div>
+        )}
+        {clientsError && (
+          <div className="gs-row gs-note">
+            <ErrorLine error={clientsError} />
+          </div>
+        )}
+        <button className="gs-row" onClick={() => setSettingsView("agents")}>
+          <Bot size={21} />
+          <span className="gs-label">Agents</span>
+          <span className="gs-value">{browserAgentCount || ""}</span>
+          <ChevronRight className="gs-chevron" size={18} />
+        </button>
+      </div>
+
+      <FaceIdSettings peer={peer} />
+      {/* Notifications live in the bell's panel only: nothing about them here. */}
+
+      <div className="gs-group gs-end">
+        <button className="gs-row gs-danger" onClick={forget}>
+          <LogOut size={21} />
+          <span className="gs-label">Forget this computer</span>
+        </button>
+      </div>
+
+      {details && (
+        <ScreenPopup title="This computer" className="gs-sheet" onClose={() => setDetails(false)}>
+          <div className="gs-group">
+            <div className="gs-row">
+              <span className="gs-label">Name</span>
+              <span className="gs-value">{device.name}</span>
+            </div>
+            <div className="gs-row">
+              <span className="gs-label">System</span>
+              <span className="gs-value">
+                {platform(device.platform)} · {device.arch}
               </span>
             </div>
-          </div>
-          <details className="settings-details">
-            <summary>Connection & shared folders</summary>
-            <dl>
-              <dt>Name</dt>
-              <dd>{device.name}</dd>
-              <dt>Address</dt>
-              <dd>{peer.url}</dd>
-              <dt>System</dt>
-              <dd>
-                {platform(device.platform)} · {device.arch}
-              </dd>
-              <dt>Shared folders</dt>
-              <dd>
-                {device.roots.map((r) => (
-                  <div key={r.id}>{r.path}</div>
-                ))}
-              </dd>
-            </dl>
-            <p className="muted">
-              Shared folders limit the file browser. Terminal and command access
-              run with your computer account’s permissions.
-            </p>
-          </details>
-        </section>
-        {features.screenSetup && (
-          <section className="panel settings-panel">
-            <h2>Screen & control</h2>
-            <div className="switch-row">
-              <AppIcon tone="screen" size="small">
-                <MonitorPlay size={17} strokeWidth={2} />
-              </AppIcon>
-              <div>
-                <strong>Screen viewing</strong>
-                <small>
-                  Enable viewing from your devices.
-                </small>
-              </div>
-              <button
-                role="switch"
-                aria-checked={device.capabilities.screen}
-                aria-label="Screen viewing"
-                className={`switch ${device.capabilities.screen ? "on" : ""}`}
-                onClick={toggleScreen}
-              >
-                <span />
-              </button>
+            <div className="gs-row">
+              <span className="gs-label">Address</span>
+              <span className="gs-value">{new URL(peer.url).host}</span>
             </div>
-          </section>
-        )}
-      </div>
-      <div className="settings-access" hidden={settingsView !== "access"}>
-        <button className="invite-banner" onClick={invite}>
-          <AppIcon tone="invite" size="small">
-            <UserRoundPlus size={17} strokeWidth={2} />
-          </AppIcon>
-          <span>
-            <strong>Invite someone</strong>
-            <small>Share selected folders or your screen, temporarily.</small>
-          </span>
-          <ChevronRight size={18} />
-        </button>
-        <section className="panel settings-panel">
-          <h2>People &amp; devices</h2>
-          <ErrorLine error={clientsError} />
-          {clientsLoading ? (
-            <Spinner />
-          ) : (
-            !clientsError &&
-            !peopleAndDevices.length && <p>No devices or guests to show.</p>
-          )}
-          <p className="muted">
-            Change permissions, adjust time, or remove access.
-          </p>
-          {groupDevices(peopleAndDevices)
-            .sort((a, b) => {
-              const rank = (kind?: string) =>
-                kind === "guest" ? 1 : kind === "agent" ? 2 : 0;
-              return rank(a.kind) - rank(b.kind);
-            })
-            .map((c, i, all) => (
-              <div className="access-entry" key={c.id}>
-                {(i === 0 || c.kind !== all[i - 1].kind) && (
-                  <h3 className="access-group-title">
-                    {c.kind === "guest"
-                      ? "Invited people"
-                      : c.kind === "agent"
-                        ? "Advanced agent connections"
-                        : "Paired devices"}
-                  </h3>
-                )}
-                <div className="client-row">
-                  <AppIcon
-                    tone={
-                      c.kind === "guest"
-                        ? "people"
-                        : c.kind === "agent"
-                          ? "agents"
-                          : "device"
-                    }
-                    size="small"
-                  >
-                    {c.kind === "guest" ? (
-                      <KeyRound size={16} strokeWidth={2} />
-                    ) : c.kind === "agent" ? (
-                      <SparklesIcon size={17} strokeWidth={2} />
-                    ) : (
-                      <Smartphone size={17} strokeWidth={2} />
-                    )}
-                  </AppIcon>
-                  <div>
-                    <strong>
-                      {c.name}
-                      {c.ids.includes(current) ? " · this device" : ""}
-                    </strong>
-                    <DeviceAccessBadge
-                      access={[
-                        {
-                          kind:
-                            c.kind === "guest"
-                              ? "invited"
-                              : c.kind === "agent"
-                                ? "agent"
-                                : "paired",
-                          expiresAt: c.expiresAt || 0,
-                        },
-                      ]}
-                    />
-                    <small>
-                      {accessSummary(c)}
-                    </small>
-                    <details className="access-metadata">
-                      <summary>Access details</summary>
-                      <small>
-                        {c.kind === "guest" ? "invited" : "added"}{" "}
-                        {new Date(c.createdAt).toLocaleDateString()}
-                        {c.expiresAt &&
-                          ` · ${c.expiresAt <= Date.now() ? "Expired" : c.kind === "guest" || c.kind === "agent" ? "Access ends" : "Sign-in expires"} ${new Date(c.expiresAt).toLocaleString()}`}
-                        {c.kind === "guest" && ` · ${c.status}`}
-                      </small>
-                    </details>
-                  </div>
-                  <div className="access-row-actions">
-                  {canEditAccess(c) && <button className="button secondary small" aria-label={appScopedAccess(c) ? `Manage ${c.name}’s app requests` : `Edit ${c.name}’s access`} onClick={() => setEditing(c)}>{appScopedAccess(c) ? "Manage app requests" : "Edit access"}</button>}
-                  <button
-                    className="button ghost small danger revoke-access"
-                    aria-label={`Revoke ${c.name}`}
-                    onClick={async () => {
-                      if (!confirm(`Revoke access for ${c.name}?`)) return;
-                      try {
-                        // Every browser on that device.
-                        for (const id of c.ids)
-                          await request(peer, `/api/clients/${id}`, {
-                            method: "DELETE",
-                          });
-                        if (c.ids.includes(current)) forget();
-                        else load();
-                      } catch (e) {
-                        toast((e as Error).message);
-                      }
-                    }}
-                  >
-                    <span>Remove</span>
-                  </button>
-                  </div>
-                </div>
+          </div>
+          <h2 className="gs-title">Shared folders</h2>
+          <div className="gs-group">
+            {device.roots.map((r) => (
+              <div className="gs-row" key={r.id}>
+                <Folder size={21} />
+                <span className="gs-label gs-path">{r.path}</span>
               </div>
             ))}
-        </section>
-        <FaceIdSettings peer={peer} />
-        {/* Notifications live in the bell's panel only: nothing about them here. */}
-      </div>
-      {settingsView === "agents" && <BrowserAgents peer={peer} device={device} invite={inviteAgent || invite} toast={toast} />}
+          </div>
+          <p className="gs-foot">
+            Files are limited to these folders. Terminals run as your computer
+            account.
+          </p>
+        </ScreenPopup>
+      )}
+      {opened && (
+        <ScreenPopup title={opened.name} className="gs-sheet" onClose={() => setOpenId("")}>
+          <div className="gs-group">
+            <div className="gs-row">
+              <span className="gs-label">Access</span>
+              <span className="gs-value">
+                <DeviceAccessBadge
+                  access={[
+                    {
+                      kind: opened.kind === "guest" ? "invited" : opened.kind === "agent" ? "agent" : "paired",
+                      expiresAt: opened.expiresAt || 0,
+                    },
+                  ]}
+                />
+              </span>
+            </div>
+            <div className="gs-row gs-wrap">
+              <span className="gs-label">Can</span>
+              <span className="gs-value">{accessSummary(opened)}</span>
+            </div>
+            <div className="gs-row">
+              <span className="gs-label">{opened.kind === "guest" ? "Invited" : "Added"}</span>
+              <span className="gs-value">{new Date(opened.createdAt).toLocaleDateString()}</span>
+            </div>
+            {!!opened.expiresAt && (
+              <div className="gs-row">
+                <span className="gs-label">
+                  {opened.expiresAt <= Date.now()
+                    ? "Expired"
+                    : opened.kind === "guest" || opened.kind === "agent"
+                      ? "Access ends"
+                      : "Sign-in expires"}
+                </span>
+                <span className="gs-value">{new Date(opened.expiresAt).toLocaleString()}</span>
+              </div>
+            )}
+          </div>
+          <div className="gs-group gs-end">
+            {canEditAccess(opened) && (
+              <button
+                className="gs-row"
+                aria-label={appScopedAccess(opened) ? `Manage ${opened.name}’s app requests` : `Edit ${opened.name}’s access`}
+                onClick={() => {
+                  setOpenId("");
+                  setEditing(opened);
+                }}
+              >
+                <span className="gs-label">
+                  {appScopedAccess(opened) ? "Manage app requests" : "Edit access"}
+                </span>
+                <ChevronRight className="gs-chevron" size={18} />
+              </button>
+            )}
+            <button
+              className="gs-row gs-danger"
+              aria-label={`Revoke ${opened.name}`}
+              onClick={() => void revoke(opened)}
+            >
+              <span className="gs-label">Remove access</span>
+            </button>
+          </div>
+        </ScreenPopup>
+      )}
       {editing && <AccessEditor key={`${peer.id}:${editing.id}`} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); void load(); toast(removed ? "Access removed" : "Access updated"); }} />}
-      <button className="forget-computer" onClick={forget}>
-        <LogOut size={17} />
-        Forget this computer
-      </button>
     </div>
   );
 }

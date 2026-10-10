@@ -242,7 +242,7 @@ export function NewChat({
                 ? "guardian-approvals"
                 : r.mode || "auto",
             );
-          const first = r.models.find((m) => m.isDefault) || r.models[0];
+          const first = r.models.find((m) => m.isDefault) || r.models.find((m) => !m.unconfirmed);
           if (first) {
             modelDefaults.current = false;
             setModel(first.id);
@@ -281,7 +281,11 @@ export function NewChat({
           ),
         ];
   const uploading = images.some((i) => !i.id && !i.error);
+  // Out of usage (Codex's own word, never a guess): said in the box, and
+  // nothing starts until it's back.
+  const out = health.find((h) => h.agent === agent)?.usable === false ? health.find((h) => h.agent === agent) : undefined;
   const ready =
+    !out &&
     !busy &&
     !uploading &&
     !!cwd &&
@@ -556,7 +560,7 @@ export function NewChat({
         />
       )}
       <div className="as-box">
-        <div className="as-field">
+        <div className={`as-field${out ? " out-of-usage" : ""}`}>
           {images.length > 0 && (
             <div className="as-attachments">
               {images.map((i) => (
@@ -584,7 +588,11 @@ export function NewChat({
             ref={input}
             rows={3}
             value={text}
-            placeholder={flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"}
+            placeholder={
+              out
+                ? `Out of ${agentLabel(agent)} usage${out.resetsAt ? ` until ${resetTime(out.resetsAt, false)}` : ""}`
+                : flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"
+            }
             aria-label={flow ? `Workflow planned by ${agentLabel(agent)}` : team ? `New team led by ${agentLabel(agent)}` : `New ${agentLabel(agent)} chat`}
             disabled={busy}
             onChange={(e) => setText(e.target.value)}
@@ -790,6 +798,7 @@ function AgentStatus({
 // Out of usage: one quiet line, Notify me (when it's back) and Upgrade.
 function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentName; name: string; health: AgentHealth }) {
   const back = useNotifyBack(peer, agent, undefined, !!health.notifyWhenBack);
+  const upgradeUrl = usageLink(agent, { detail: "usageLimitExceeded", text: "usage limit" })?.url;
   return (
       <div className="chat-status out-of-usage">
         <span>
@@ -808,26 +817,59 @@ function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentNam
           {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
           {back.on ? "Notifying" : "Notify me"}
         </button>
-        <a
-          className="as-banner-btn primary"
-          href={
-            usageLink(agent, {
-              detail: "usageLimitExceeded",
-              text: "usage limit",
-            })?.url
-          }
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Sparkle size={14} fill="currentColor" /> Upgrade
-        </a>
+        {upgradeUrl && (
+          <a
+            className="as-banner-btn primary"
+            href={upgradeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Sparkle size={14} fill="currentColor" /> Upgrade
+          </a>
+        )}
       </div>
   );
 }
 
-// compose: Home's Ask bar opens New conversation in that app (its text, if
-// any, already waits as the new chat's draft).
-type Target = { agent: AgentName | "openclaw"; id: string; compose?: boolean };
+type Target = { agent: AgentName | "openclaw"; id: string };
+
+// A touch screen: focusing a field on open would pop the keyboard at once.
+function coarsePointer() {
+  try { return !!window.matchMedia?.("(pointer: coarse)").matches; } catch { return false; }
+}
+
+// The phone's back gesture closes the open chat, as in the native apps: one
+// history entry while a chat is open (it left Reach before, a full reload).
+// A chat closed in Reach takes its entry away again; that pop isn't a
+// gesture, and a chat opened meanwhile gets its entry back.
+let chatShown = false;
+// A reload keeps the entry's state: marked a chat's, the first chat shown
+// pushed none and Back reloaded the page. Unmarked once, it gets its own.
+if (typeof window !== "undefined" && window.history.state?.reachChat)
+  window.history.replaceState({ ...window.history.state, reachChat: false }, "");
+const chatEntry = () => {
+  if (!window.history.state?.reachChat) window.history.pushState({ ...window.history.state, reachChat: true }, "");
+};
+function useBackCloses(shown: boolean, close: () => void) {
+  const closeNow = useRef(close);
+  closeNow.current = close;
+  useEffect(() => {
+    if (!shown) return;
+    chatShown = true;
+    chatEntry();
+    const onPop = () => {
+      if (!window.history.state?.reachChat) closeNow.current();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      chatShown = false;
+      window.removeEventListener("popstate", onPop);
+      if (!window.history.state?.reachChat) return;
+      window.addEventListener("popstate", () => chatShown && chatEntry(), { once: true });
+      window.history.back();
+    };
+  }, [shown]);
+}
 
 export default function EverythingChat({
   peer,
@@ -892,13 +934,29 @@ export default function EverythingChat({
   // The apps a new chat can be started in (not All).
   const startApps = apps.filter((app) => app.agent !== "all");
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
-  // The app a new chat starts in: the one shown, or from All, the first.
-  const newApp = picked.agent === "all" ? apps.find((app) => app.agent !== "all") || picked : picked;
+  // The list follows the app of a chat opened or started, but All stays All:
+  // Back from a chat opened there landed on Codex's list. New chat keeps its
+  // own pick for that.
+  const [newPick, setNewPick] = useState<string | null>(null);
+  const follow = (agent: string) => picked.agent !== "all" && setAgent(agent);
+  const pickNew = (agent: string) => (setNewPick(agent), follow(agent));
+  // The app a new chat starts in: the one picked, the one shown, or from All,
+  // the first that can answer now (not one out of usage; unknown usage still can).
+  const canAnswer = (agent: string) => {
+    const h = health.find((item) => item.agent === agent);
+    return !!h && h.installed && h.signedIn && !h.error && h.usable !== false;
+  };
+  const newApp =
+    startApps.find((app) => app.agent === newPick) ||
+    (picked.agent === "all"
+      ? apps.find((app) => AGENTS.includes(app.agent as AgentName) && canAnswer(app.agent)) || apps.find((app) => app.agent !== "all") || picked
+      : picked);
   useEffect(() => {
     // The app last picked isn't here (anymore): All when there is one.
     if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent(apps.some((app) => app.agent === "all") ? "all" : "codex");
   }, [health, apps, savedAgent]);
   const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
+  const newAgent: AgentName = newApp.agent === "claude" || newApp.agent === "gemini" ? newApp.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review">("");
   // A new chat's folder, when one was asked for (a chat's menu on the list).
@@ -912,9 +970,12 @@ export default function EverythingChat({
   const [newKind, setNewKind] = useState<"" | "workflow">("");
   // Closed (a chat started, another sheet): the next New chat starts as usual.
   useEffect(() => {
-    if (sheet !== "new") setNewKind("");
+    if (sheet !== "new") (setNewKind(""), setNewPick(null));
+    // Opened from All with no app picked: the app it opens on stays while
+    // typing, whatever the agents' health says next.
+    else if (!newPick && picked.agent === "all") setNewPick(newApp.agent);
   }, [sheet]);
-  useClaudeFonts(peer, current === "claude" || open?.agent === "claude");
+  useClaudeFonts(peer, current === "claude" || newAgent === "claude" || open?.agent === "claude");
   const openChat = (s: AgentSession) => {
     if ((s.agent as string) === "openclaw") {
       setAgent("openclaw");
@@ -923,21 +984,23 @@ export default function EverythingChat({
       setClawOpen(s.id);
       return;
     }
-    setAgent(s.agent);
+    follow(s.agent);
     setSheet("");
     setOpen(s);
   };
+  // A link that arrived before the list did opened a stub; swap in the real
+  // chat once the list has it.
+  const stubKey = useRef("");
+  useEffect(() => {
+    if (!stubKey.current || !sessions) return;
+    const real = sessions.find((s) => `${s.agent}:${s.id}` === stubKey.current);
+    if (real) {
+      stubKey.current = "";
+      setOpen((cur) => (cur && `${cur.agent}:${cur.id}` === `${real.agent}:${real.id}` ? real : cur));
+    }
+  }, [sessions]);
   useEffect(() => {
     if (!target) return;
-    if (target.compose) {
-      setAgent(target.agent);
-      setOpen(null);
-      setClawOpen(null);
-      setNewFolder("");
-      setSheet("new");
-      onTargetOpened?.();
-      return;
-    }
     if (target.agent === "openclaw") {
       setAgent("openclaw"); setSheet(""); setOpen(null); setClawOpen(target.id);
       onTargetOpened?.(); return;
@@ -945,6 +1008,7 @@ export default function EverythingChat({
     const found = sessions?.find(
       (s) => s.agent === target.agent && s.id === target.id,
     );
+    stubKey.current = found ? "" : `${target.agent}:${target.id}`;
     openChat(
       found || {
         agent: target.agent,
@@ -962,7 +1026,11 @@ export default function EverythingChat({
       },
     );
     onTargetOpened?.();
-  }, [target?.agent, target?.id, target?.compose]);
+  }, [target?.agent, target?.id]);
+  useBackCloses(!!open, () => {
+    setOpen(null);
+    void reload();
+  });
   // The chat open now, so a reload comes back to it (src/deep-link.ts).
   useEffect(() => {
     rememberPlace(peer.id, { chat: open ? { agent: open.agent, id: open.id } : null });
@@ -1014,7 +1082,7 @@ export default function EverythingChat({
             allNeeds.filter((item) => item.key.startsWith(app.agent + ":")).length),
     ]),
   );
-  const status = health.find((h) => h.agent === current);
+  const status = health.find((h) => h.agent === newAgent);
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
   // A chat the All page points at, as the list has it (or enough to open it).
   const openRef = (ref: { agent: string; id: string; title?: string }) =>
@@ -1091,6 +1159,7 @@ export default function EverythingChat({
           setup={needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} /> : undefined}
           notice={app.supported && appHealth?.installed && !needsSetup ? <AgentUpdate peer={peer} agent={agent} /> : undefined}
           workflows={flowEntry}
+          projects={(shared || own).projects}
           errors={errors[app.agent] ? { [app.agent]: errors[app.agent] } : {}}
           failure={failure} onOpen={openChat}
           onNew={(cwd) => { setNewFolder(cwd || ""); setSheet("new"); }}
@@ -1136,7 +1205,7 @@ export default function EverythingChat({
               void reload();
             }}
             onNew={() => {
-              setAgent(open.agent);
+              pickNew(open.agent);
               setNewFolder("");
               setSheet("new");
             }}
@@ -1153,7 +1222,7 @@ export default function EverythingChat({
             <ChatAppPicker
               apps={startApps}
               value={newApp.agent}
-              onChange={setAgent}
+              onChange={pickNew}
               logos={logos}
               pending={appPending}
               health={health}
@@ -1190,7 +1259,7 @@ export default function EverythingChat({
             <>
               <AgentStatus
                 peer={peer}
-                agent={current}
+                agent={newAgent}
                 health={status}
                 logos={logos}
                 recheck={recheck}
@@ -1200,13 +1269,13 @@ export default function EverythingChat({
                   key={newFolder + newKind}
                   folder={newFolder}
                   peer={peer}
-                  agent={current}
+                  agent={newAgent}
                   sessions={sessions || []}
                   onStarted={openChat}
-                  autoFocus
+                  autoFocus={!coarsePointer()}
                   health={health}
                   logos={logos}
-                  onAgent={setAgent}
+                  onAgent={pickNew}
                   startAs={newKind}
                   onWorkflow={(w) => {
                     setSheet("");
@@ -1414,7 +1483,7 @@ function NewClawChat({
             placeholder="What would you like OpenClaw to do?"
             rows={3}
             value={text}
-            autoFocus
+            autoFocus={!coarsePointer()}
             onChange={(e) => setText(e.target.value)}
             disabled={busy}
           />

@@ -104,6 +104,38 @@ test("a Claude chat's sub-agents: done with its last words, running with what it
   assert.deepEqual(await claudeSubagents({ transcript: path.join(project, "none.jsonl"), sessionId: "abc", notes: [], items: [] }), []);
 });
 
+test("a workflow's agents show too: one folder per run, ended as its journal says", async () => {
+  const { project, transcript, dir } = chat();
+  made.push(project);
+  const run = path.join(dir, "workflows", "wf_1234-abc");
+  fs.mkdirSync(run, { recursive: true });
+  for (const [id, label] of [["w1", "investigate:parity"], ["w2", "investigate:send"]]) {
+    fs.writeFileSync(path.join(run, `agent-${id}.meta.json`), JSON.stringify({ agentType: "workflow-subagent", description: label, workflowPhase: "Investigate", requestShape: "foreground" }));
+    fs.writeFileSync(path.join(run, `agent-${id}.jsonl`), line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Read", input: { file_path: "/w/a.mjs" } }] }, timestamp: "2026-10-09T09:00:00Z" }));
+  }
+  fs.writeFileSync(
+    path.join(run, "journal.jsonl"),
+    line({ type: "launched" }) +
+      line({ type: "started", agentId: "w1", label: "investigate:parity" }) +
+      line({ type: "started", agentId: "w2", label: "investigate:send" }) +
+      line({ type: "result", key: "v2:abc", agentId: "w1" }) +
+      line({ type: "something-new", agentId: "w2" }) +
+      "not json\n",
+  );
+  const parsed = parseClaudeTranscript(fs.readFileSync(transcript, "utf8"));
+  const by = Object.fromEntries((await claudeSubagents({ transcript, sessionId: SESSION, notes: parsed.tasks, items: parsed.items })).map((a) => [a.id, a]));
+  assert.equal(by.w1.name, "investigate:parity");
+  assert.equal(by.w1.phase, "Investigate");
+  assert.equal(by.w1.workflow, true);
+  assert.equal(by["agent-busy2"].workflow, undefined);
+  assert.equal(by.w1.status, "done");
+  // An entry Reach doesn't know never ends an agent.
+  assert.equal(by.w2.status, "running");
+  assert.equal(by.w2.activity, "Reading a.mjs");
+  // The chat's own sub-agents are still there.
+  assert.equal(by["agent-done1"].status, "done");
+});
+
 test("Codex's sub-agents come from its own collab items, with their reported status", () => {
   const spawn = { type: "collabAgentToolCall", id: "c1", tool: "spawnAgent", status: "completed", prompt: "Check the tests\nthoroughly", model: "gpt-5", senderThreadId: "t0", receiverThreadIds: ["t1"], agentsStates: { t1: { status: "pendingInit", message: null } } };
   const wait = { type: "collabAgentToolCall", id: "c2", tool: "wait", status: "completed", senderThreadId: "t0", receiverThreadIds: ["t1"], agentsStates: { t1: { status: "completed", message: "All green." } } };
@@ -180,6 +212,10 @@ test("a sub-agent writing its own transcript tells its chat changed", async () =
   watch.onChange((news) => told.push(news));
   listeners.get("/projects")("change", `-Users-me-site/${SESSION}/subagents/agent-a28230b100dfc3978.jsonl`);
   listeners.get("/projects")("change", "-Users-me-site/other/subagents/agent-x.jsonl");
-  assert.deepEqual(told, [{ agent: "claude", kind: "history", id: SESSION }]);
+  // A workflow's agent, one folder down, tells its chat too.
+  const OTHER = "8ec9aa10-513d-46d2-82ab-e51b3ac7a965";
+  listeners.get("/projects")("change", `-Users-me-site/${OTHER}/subagents/workflows/wf_37c2-72d/agent-a1.jsonl`);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(told.sort((a, b) => a.id.localeCompare(b.id)), [{ agent: "claude", kind: "history", id: SESSION }, { agent: "claude", kind: "history", id: OTHER }]);
   watch.close();
 });

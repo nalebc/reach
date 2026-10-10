@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ScanFace } from "lucide-react";
+import { ChevronRight, ScanFace } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import {
   createWithFaceId,
@@ -73,37 +73,43 @@ export function FaceIdSettings({ peer }: { peer: Peer }) {
     }
     void load();
   };
+  // Nothing to show or add here: no section at all.
+  if (!keys.length && !(ready && here)) return null;
   return (
-    <section className="panel settings-panel faceid" aria-label="Face ID">
-      <h2>Face ID for new browsers</h2>
-      <p>Approve a new browser of yours with Face ID, not at this computer.</p>
-      {keys.map((k) => (
-        <div className="faceid-row" key={k.id}>
-          <ScanFace size={18} />
-          <span>
-            <strong>{k.label}</strong>
-            <small>
-              {k.usedAt
-                ? `Last used ${day(k.usedAt)}`
-                : `Added ${day(k.createdAt)}`}
-            </small>
-          </span>
-          <button
-            className="text-button"
-            aria-label={`Remove ${k.label}`}
-            onClick={() => void remove(k)}
-          >
-            Remove
+    <section className="faceid" aria-label="Face ID">
+      <h2 className="gs-title">Face ID</h2>
+      <div className="gs-group">
+        {keys.map((k) => (
+          <div className="gs-row" key={k.id}>
+            <ScanFace size={21} />
+            <span className="gs-label">
+              {k.label}
+              <small>
+                {k.usedAt ? `Last used ${day(k.usedAt)}` : `Added ${day(k.createdAt)}`}
+              </small>
+            </span>
+            <button
+              className="gs-text-button"
+              aria-label={`Remove ${k.label}`}
+              onClick={() => void remove(k)}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {ready && here && (
+          <button className="gs-row" disabled={!options} onClick={add}>
+            <ScanFace size={21} />
+            <span className="gs-label">
+              {keys.length ? "Add this phone’s Face ID" : "Use Face ID"}
+            </span>
+            <ChevronRight className="gs-chevron" size={18} />
           </button>
-        </div>
-      ))}
-      {ready && here && (
-        <button className="button full" disabled={!options} onClick={add}>
-          <ScanFace size={17} />
-          {keys.length ? "Add this phone’s Face ID too" : "Use Face ID"}
-        </button>
-      )}
-      {note && <p className="form-note">{note}</p>}
+        )}
+      </div>
+      <p className="gs-foot">
+        {note || "Approve a new browser of yours with Face ID, not at this computer."}
+      </p>
     </section>
   );
 }

@@ -165,6 +165,19 @@ test("Claude's suppressed permanent permission choice never appears or accepts a
   assert.throws(() => claudeAnswer(prompt, { decision: "allowAlways" }), /not available/);
 });
 
+// "Approving blind": an edit's card named only the file. It shows what will
+// be written or replaced, as Claude Code's own dialog does, bounded.
+test("an edit's approval shows what it will change", () => {
+  const show = (tool_name, input) => describeClaudePrompt("p", { tool_name, input }).preview;
+  assert.equal(show("Write", { file_path: "/work/a.txt", content: "hello\nworld\n" }), "+hello\n+world");
+  assert.equal(show("Edit", { file_path: "/work/a.txt", old_string: "Red", new_string: "Blue" }), "-Red\n+Blue");
+  assert.equal(show("MultiEdit", { file_path: "/work/a.txt", edits: [{ old_string: "a", new_string: "b" }, { old_string: "c", new_string: "d" }] }), "-a\n+b\n@@\n-c\n+d");
+  assert.equal(show("NotebookEdit", { notebook_path: "/work/n.ipynb", new_source: "print(1)" }), "+print(1)");
+  assert.equal(show("Bash", { command: "ls" }), undefined);
+  const long = show("Write", { file_path: "/work/a.txt", content: "x".repeat(20000) });
+  assert.ok(long.length < 4100 && long.endsWith("…"));
+});
+
 test("a Claude approval with unknown delivery remains visible without offering to send it twice", async () => {
   const claude = fakeClaude(), h = host(claude);
   await h.send(ID, { text: "hello", cwd: "/work/app" });
@@ -776,6 +789,36 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   sessions.close();
 });
 
+// Right after a turn, Reach's own process is still exiting: a message then
+// was refused as "open in a terminal". It waits for that process instead.
+test("Reach's own exiting Claude Code process isn't another holder: the next message waits it out and goes", async (t) => {
+  const claude = fakeClaude();
+  const own = { pid: 5151, alive: true };
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "/work/site", status: "idle" }, items: [], before: null }),
+    },
+    live: async () => new Map(own.alive ? [[ID, { where: "reach", pid: own.pid, tty: "ttys001", exact: true, busy: false }]] : []),
+    claudeHost: host(claude),
+    signIn: {},
+    liveMs: -1,
+    queueMs: 10,
+    kill: () => assert.fail("Reach's own process is never signalled"),
+    alive: () => own.alive,
+    takeOverMs: 500,
+  });
+  t.after(() => sessions.close());
+  setTimeout(() => (own.alive = false), 30);
+  await sessions.send("claude", ID, { text: "right after" });
+  assert.deepEqual(claude.last().args.slice(-2), ["--resume", ID]);
+  assert.equal(claude.last().lines.at(-1).message.content[0].text, "right after");
+});
+
 test("a message waiting for the Claude app is never lost: it shows, survives a Reach restart, says why it can't go yet, and goes once it can", async () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reach-outbox-")), "agent-outbox.json");
   // The Claude app's process for the session, busy with a turn.
@@ -954,6 +997,14 @@ test("a Claude app session waiting on you shows what it asks, and a message from
   // too, but it isn't a permission for the last command.
   app.waiting = "dialog open";
   assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "dialog", text: "Claude Code has something open for you to answer." });
+  // Neither is a sandboxed command's network request, an MCP server's ask
+  // for input, or a word a newer Claude Code adds: said in its words.
+  app.waiting = "sandbox request";
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "dialog", text: "A sandboxed command needs network access." });
+  app.waiting = "input needed";
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "dialog", text: "Claude Code is waiting: input needed." });
+  app.waiting = "worker request";
+  assert.deepEqual((await sessions.read("claude", ID)).session.asking, { kind: "dialog", text: "Claude Code is waiting: worker request." });
   sessions.close();
 });
 
@@ -1573,6 +1624,73 @@ test("a message sent mid-turn ends with that turn's result, not Working for good
   proc.print(replay("and another"));
   proc.print({ type: "result", subtype: "success", is_error: false, result: "Another done." });
   assert.equal(h.view(ID).status, "idle");
+});
+
+// Two messages sent while Claude Code works, taken together: its transcript
+// had two enqueues, two dequeues and ONE user entry with both, echoed as one
+// replay (Claude Code 2.1.295). Counted as one, the chat read Working for
+// good and Stop did nothing (Claude Code answers an idle interrupt with no
+// result).
+test("messages Claude Code takes together end idle, and show waiting until it takes them", async () => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  const replay = (...texts) => ({ type: "user", isReplay: true, parent_tool_use_id: null, message: { content: texts.map((text) => ({ type: "text", text })) } });
+  assert.deepEqual(await h.send(ID, { text: "count to 700", cwd: "/work/app" }), { turnId: null });
+  const proc = claude.last();
+  proc.print(replay("count to 700"));
+  assert.deepEqual(h.view(ID).waiting, [], "a message that starts a turn never waits");
+  const one = await h.send(ID, { text: "zq1" });
+  await h.send(ID, { text: "zq2" });
+  assert.match(one.waitingId, UUID);
+  assert.deepEqual(h.view(ID).waiting.map(({ id, text, images }) => [id === one.waitingId, text, images]), [[true, "zq1", 0], [false, "zq2", 0]]);
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "one two ... seven hundred" });
+  assert.equal(h.view(ID).status, "running");
+  proc.print(replay("zq1", "zq2"));
+  assert.deepEqual(h.view(ID).waiting, [], "taken: in the transcript now");
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "one\ntwo" });
+  assert.equal(h.view(ID).status, "idle", "status after Claude Code answered both");
+
+  // A replay Reach can't tell apart takes one message, never more.
+  await h.send(ID, { text: "a" });
+  await h.send(ID, { text: "b" });
+  proc.print(replay("something else"));
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "?" });
+  assert.equal(h.view(ID).status, "running", "b hasn't been taken");
+  proc.print(replay("b"));
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "b" });
+  assert.equal(h.view(ID).status, "idle");
+});
+
+test("a stop with nothing running ends Working; a stop Claude Code is still ending keeps it", async () => {
+  const claude = fakeClaude();
+  const h = host(claude, { stopSettleMs: 20 });
+  const replay = (text) => ({ type: "user", isReplay: true, parent_tool_use_id: null, message: { content: [{ type: "text", text }] } });
+  await h.send(ID, { text: "go", cwd: "/w" });
+  const proc = claude.last();
+  // Answered as Claude Code answers a stop: success, its queue empty.
+  const write = proc.stdin.write;
+  proc.stdin.write = (text, callback) => {
+    const message = JSON.parse(text);
+    if (message.request?.subtype !== "interrupt") return write(text, callback);
+    callback?.();
+    queueMicrotask(() => proc.print({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: { still_queued: [] } } }));
+  };
+  // Still ending a tool: it says more, so the turn stays until its result.
+  await h.stop(ID);
+  proc.print({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", content: "ok" }] } });
+  await settle(40);
+  assert.equal(h.view(ID).status, "running");
+  proc.print({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_tools" });
+  assert.equal(h.view(ID).status, "idle");
+  // Working for good (a result that never came): Stop ends it.
+  await h.send(ID, { text: "again" });
+  proc.print(replay("again"));
+  await h.send(ID, { text: "x" });
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "done" });
+  assert.equal(h.view(ID).status, "running");
+  assert.deepEqual(await h.stop(ID), { stopped: true });
+  await settle(40);
+  assert.deepEqual([h.view(ID).status, h.view(ID).waiting, h.running(ID)], ["idle", [], false]);
 });
 
 // "I keep changing permissions to Auto but it reverts to Manual." The

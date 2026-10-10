@@ -21,7 +21,8 @@ export type Usage = {
 
 export function usageOf(health?: AgentHealth): Usage | null {
   if (!health?.signedIn) return null;
-  const windows = health.usage?.windows || [];
+  // A window without a readable percentage tells nothing (never "NaN% used").
+  const windows = (health.usage?.windows || []).filter((w) => Number.isFinite(w.usedPercent));
   const fullest = windows.reduce<(typeof windows)[number] | undefined>(
     (best, w) => (!best || w.usedPercent > best.usedPercent ? w : best),
     undefined,

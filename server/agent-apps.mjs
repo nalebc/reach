@@ -371,9 +371,20 @@ export class AgentApps {
     this.opening.add(appId);
     try {
       let thread;
+      let lend = now.alone === true;
+      // The owner may have sat down while the app list was read: decide again
+      // right before the native open, and let it wait if so.
+      if (lend) {
+        const again = await this.situation({ id: "", name: "" });
+        if (again.wait) throw again.wait;
+        if (!again.alone)
+          throw waiting(
+            `${again.why}, and opening that app would take their window. Try again ${again.retry}.`,
+          );
+      }
       try {
         thread = await this.threads.open(appId, AGENT_PHONE, {
-          lend: now.alone === true,
+          lend,
         });
       } catch (e) {
         if (e.code !== "lend") throw e;

@@ -5,7 +5,8 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createAgentAsks, hasAskRules, switchesAlone } from "../server/agent-sessions/agent-asks.mjs";
+import { createAgentAsks, hasAskRules, stillAsked, switchesAlone } from "../server/agent-sessions/agent-asks.mjs";
+import { askKey } from "../server/agent-sessions/claude-transcript.mjs";
 
 const SESSION = "34ab778a-0bc2-4a3d-a86b-887f8209431d";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,6 +143,123 @@ test("a denied request keeps the picked mode for the next one", async (t) => {
   assert.equal(socket.result.decision.behavior, "deny");
   assert.equal(socket.result.decision.updatedPermissions, undefined);
   assert.equal(asks.queuedMode("claude", SESSION), "plan");
+});
+
+// Answered on the Mac, the pick wasn't taken: no longer queued (every later
+// tool call, reads too, was made to ask for it), and the phone sees the mode
+// the chat is in. Taken another way (clearMode): the same.
+test("a request answered on the Mac lets go of the picked mode", async (t) => {
+  let waiting = true;
+  const { asks, send } = setup(t, { waiting: async () => waiting });
+  asks.queueMode("claude", SESSION, "acceptEdits");
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  waiting = false;
+  assert.ok(await until(() => !asks.has("claude", SESSION)));
+  assert.equal(asks.queuedMode("claude", SESSION), null);
+  asks.queueMode("claude", SESSION, "plan");
+  asks.clearMode("claude", SESSION);
+  assert.equal(asks.queuedMode("claude", SESSION), null);
+});
+
+// One odd registry read ("not waiting" once, then waiting again) doesn't
+// take a request off the phone while the Mac still shows it.
+test("one not-waiting read alone doesn't end a held request", async (t) => {
+  const reads = [true, false, true, true, true, true, true, true];
+  const { asks, send } = setup(t, { waiting: async () => (reads.length ? reads.shift() : true) });
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  await until(() => !reads.length, 2000);
+  assert.equal(asks.has("claude", SESSION), true);
+});
+
+// A read Reach can't tell about ("can't tell") is no evidence either way:
+// it doesn't join two "not waiting" reads apart into a pair.
+test("a can't-tell read between two not-waiting reads doesn't end a held request", async (t) => {
+  const reads = [true, false, null, false, true, true, true, true];
+  const { asks, send } = setup(t, { waiting: async () => (reads.length ? reads.shift() : true) });
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  await until(() => !reads.length, 2000);
+  assert.equal(asks.has("claude", SESSION), true);
+});
+
+// Review (Oct 9): asked again after a restart, a request was shown while
+// Claude Code waited on anything at all, so one the Mac had answered came
+// back. It's shown only when Reach can tell it's still that very request.
+test("a request asked again is shown only when it's still the one Claude Code waits on", async (t) => {
+  const seen = [];
+  let still = false;
+  const { asks, socket, send } = setup(t, { asking: async (agent, id, request) => (seen.push(request), still) });
+  send("Bash", { command: "npm test" }, { again: true, tool_use_id: "toolu_1" });
+  assert.ok(await until(() => socket.result));
+  assert.deepEqual(socket.result, {});
+  assert.equal(asks.has("claude", SESSION), false);
+  assert.equal(seen[0].tool_use_id, "toolu_1");
+  assert.equal(seen[0].key, askKey("Bash", { command: "npm test" }));
+  still = true;
+  const again = setup(t, { asking: async () => still });
+  again.send("Bash", { command: "npm test" }, { again: true });
+  assert.ok(await until(() => again.asks.has("claude", SESSION)));
+});
+
+test("a request asked again never takes a mode picked on the phone", async (t) => {
+  const { asks, socket, send } = setup(t, { asking: async () => true });
+  asks.queueMode("claude", SESSION, "auto");
+  // A step every mode takes alone: not allowed by Reach itself on a re-ask.
+  send("TodoWrite", { todos: [] }, { again: true });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  assert.equal(socket.result, undefined);
+  const [prompt] = asks.prompts("claude", SESSION);
+  asks.answer("claude", SESSION, prompt.id, { decision: "allow" });
+  assert.equal(socket.result.decision.behavior, "allow");
+  assert.equal(socket.result.decision.updatedPermissions, undefined);
+  assert.equal(asks.queuedMode("claude", SESSION), "auto");
+  // Nor lets go of it when the Mac answers it.
+  let waiting = true;
+  const mac = setup(t, { asking: async () => true, waiting: async () => waiting });
+  mac.asks.queueMode("claude", SESSION, "plan");
+  mac.send("Bash", { command: "ls" }, { again: true });
+  assert.ok(await until(() => mac.asks.has("claude", SESSION)));
+  waiting = false;
+  assert.ok(await until(() => !mac.asks.has("claude", SESSION)));
+  assert.equal(mac.asks.queuedMode("claude", SESSION), "plan");
+});
+
+// What a re-ask is checked against: Claude Code's registry waiting on a
+// permission (a question: "input needed"), and a running call in its
+// transcript that is this request (by its id, else its tool and input).
+test("a re-asked request matches Claude Code's wait and its running call", () => {
+  const key = askKey("Bash", { command: "npm test" });
+  const running = [{ id: "toolu_1", role: "tool", status: "running", key }];
+  const bash = { tool_name: "Bash", key };
+  assert.equal(stillAsked("permission prompt", running, bash), true);
+  assert.equal(stillAsked("dialog open", running, bash), false);
+  assert.equal(stillAsked("input needed", running, bash), false);
+  assert.equal(stillAsked(null, running, bash), false);
+  // Answered on the Mac and on to another call: not this one.
+  assert.equal(stillAsked("permission prompt", [{ ...running[0], status: "completed" }, { id: "toolu_2", role: "tool", status: "running", key: askKey("Bash", { command: "rm -rf build" }) }], bash), false);
+  assert.equal(stillAsked("permission prompt", [], bash), false);
+  // By id when Claude Code gives one.
+  assert.equal(stillAsked("permission prompt", running, { ...bash, tool_use_id: "toolu_1" }), true);
+  assert.equal(stillAsked("permission prompt", running, { ...bash, tool_use_id: "toolu_9" }), false);
+  // The transcript can't be read: the registry alone.
+  assert.equal(stillAsked("permission prompt", null, bash), true);
+  const ask = { tool_name: "AskUserQuestion", key: askKey("AskUserQuestion", { questions }) };
+  assert.equal(stillAsked("input needed", [{ id: "q", role: "tool", status: "running", key: ask.key }], ask), true);
+  // The key reads the input whole, in any key order.
+  assert.equal(askKey("Edit", { a: 1, b: { c: 2, d: 3 } }), askKey("Edit", { b: { d: 3, c: 2 }, a: 1 }));
+  assert.notEqual(askKey("Edit", { a: 1 }), askKey("Write", { a: 1 }));
+});
+
+// Reach quitting answers "ask again", not the Mac's empty answer: the hook
+// asks the next Reach (agent-asks.test.mjs runs it end to end).
+test("a request held when Reach quits is told to ask again", async (t) => {
+  const { asks, socket, send } = setup(t);
+  send("Bash", { command: "npm test" });
+  assert.ok(await until(() => asks.has("claude", SESSION)));
+  asks.close();
+  assert.deepEqual(socket.result, { retry: true });
 });
 
 // Fail-open audit (Oct 8): Reach can't see why Claude Code asked, so only a

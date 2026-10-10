@@ -189,7 +189,7 @@ export function createAgentShortcuts({
       // Read before the action, append only after its confirmed success.
       let front;
       if (action.type !== "open")
-        front = await desktop.front(client, authorize);
+        front = await desktop.front(client, authorize).catch(() => undefined);
       const result = await operation();
       if (recordings.get(client.id) !== entry) return result;
       try {

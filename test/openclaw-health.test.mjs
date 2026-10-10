@@ -185,7 +185,7 @@ test("restart runs fixed args in a login shell with a timeout; never echoes its 
   const runs = [];
   const configuration = async () => ({ url: "ws://127.0.0.1:18789" });
   await restartOpenClawGateway({ configuration, run: async (...a) => runs.push(a), env: { SHELL: "/bin/zsh" }, platform: "darwin" });
-  assert.deepEqual(runs, [["/bin/zsh", ["-lc", "openclaw gateway restart"], { timeout: 25000 }]]);
+  assert.deepEqual(runs, [["/bin/zsh", ["-lc", "exec openclaw gateway restart"], { timeout: 25000 }]]);
   await assert.rejects(
     restartOpenClawGateway({ configuration, run: async () => { throw new Error(`stderr ${SECRETS.openai}`); }, env: {}, platform: "linux" }),
     (e) => e.status === 503 && !e.message.includes("sk-") && /openclaw gateway restart/.test(e.message),
@@ -298,7 +298,11 @@ test("health: each missing part says supported:false", async () => {
     { gateway: { supported: false }, uptime: { supported: false }, channels: { supported: false }, memory: { supported: false }, storage: { supported: false } },
   );
   assert.equal(f.calls.length, 0);
+  assert.equal(h.status, "unknown");
   assert.deepEqual(await f.hit("GET", "/health/logs"), { supported: false });
+  // A snapshot without ok verifies nothing.
+  const blank = fixture({ health: () => ({}), ready: async () => ({ supported: false }), files: async () => ({ supported: false }) });
+  assert.equal((await blank.hit("GET", "/health")).status, "unknown");
 });
 
 test("the state files are walked at most once a minute", async () => {

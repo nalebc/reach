@@ -62,13 +62,17 @@ export default function TransferTray() {
   const failed = transfers.filter((t) => t.state === "failed");
   const done = active.reduce((n, t) => n + t.done, 0),
     total = active.reduce((n, t) => n + t.total, 0);
-  const kind = (active[0] || transfers[0]).kind;
+  const finished = transfers.filter((t) => t.state === "done");
+  const kind = (active[0] || failed[0] || finished[0] || transfers[0]).kind;
+  const finishedOfKind = finished.filter((t) => t.kind === kind);
   const Icon = kind === "upload" ? ArrowUp : kind === "send" ? Send : ArrowDown;
   const summary = active.length
     ? `${verbs[kind][0]} ${active.length === 1 ? active[0].name : `${active.length} files`}`
     : failed.length
       ? `${failed.length === 1 ? failed[0].name : `${failed.length} transfers`} stopped`
-      : `${verbs[kind][1]} ${transfers.length === 1 ? transfers[0].name : `${transfers.length} files`}`;
+      : finishedOfKind.length
+        ? `${verbs[kind][1]} ${finishedOfKind.length === 1 ? finishedOfKind[0].name : `${finishedOfKind.length} files`}`
+        : "Transfers";
   return (
     <section
       className={`transfer-tray ${open ? "is-open" : ""} ${failed.length && !active.length ? "is-failed" : ""}`}

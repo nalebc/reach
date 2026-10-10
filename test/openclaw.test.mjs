@@ -1083,7 +1083,7 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
   // The command is OpenClaw's own service start, with fixed arguments.
   const ran = [];
   await startOpenClawGateway({ configuration: async () => ({}), env: { SHELL: "/bin/zsh" }, platform: "darwin", run: async (...args) => ran.push(args) });
-  assert.deepEqual(ran.map(([cmd, args]) => [cmd, args]), [["/bin/zsh", ["-lc", "openclaw gateway start"]]]);
+  assert.deepEqual(ran.map(([cmd, args]) => [cmd, args]), [["/bin/zsh", ["-lc", "exec openclaw gateway start"]]]);
   await assert.rejects(
     startOpenClawGateway({ configuration: async () => { throw Object.assign(new Error("remote"), { status: 503 }); }, run: async (...args) => ran.push(args) }),
     /remote/,

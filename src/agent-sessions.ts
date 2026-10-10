@@ -24,6 +24,8 @@ export type AgentSession = {
   id: string;
   title: string;
   cwd: string;
+  // The project the Claude app files it under (a worktree chat's repo).
+  project?: string;
   branch: string;
   origin: "app" | "cli" | "reach";
   inApp: boolean;
@@ -44,7 +46,11 @@ export type AgentSession = {
   context?: { used: number; window: number | null };
   // Claude's todo list as it stands.
   todos?: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[];
+  // Sent while Claude worked, in Claude Code's own queue (the Claude app's).
+  waiting?: OutboxMessage[];
   effort?: string | null;
+  // The Claude app's Ultracode, on for this chat (its effort menu; Oct 9).
+  ultracode?: boolean;
   // Codex's speed (service tier) the chat runs at, when it says.
   speed?: string | null;
   // Which engine holds a Codex thread right now.
@@ -111,6 +117,8 @@ export type SessionItem = {
   repeats?: number;
   // Pieces sent as they are, by what they are: "Voice message", "PDF"…
   attachments?: string[];
+  // Several messages the agent took as one: each one's words.
+  parts?: string[];
   // Chats mentioned with "@", by name (shown on the phone, not sent by the agent).
   mentions?: { from: string; chat: string }[];
   // A slash command as typed ("/context"); Codex skills sent with a message.
@@ -174,6 +182,8 @@ export type SessionPrompt = {
   // Claude Code's plan, ready to go (kind "plan"), as markdown.
   plan?: string;
   command?: string;
+  // Claude Code: what an edit will change, as diff lines (bounded).
+  preview?: string;
   cwd?: string;
   reason?: string;
   files?: string[];
@@ -203,6 +213,8 @@ export type LiveView = {
   // Messages waiting their turn on the Mac: Claude's sent from the phone,
   // Codex's in the Codex app's own queue.
   outbox?: OutboxMessage[];
+  // Sent while Claude worked, in Claude Code's own queue (Reach's process).
+  waiting?: OutboxMessage[];
 };
 export type OutboxMessage = {
   id: string;
@@ -213,6 +225,11 @@ export type OutboxMessage = {
   via?: "app";
   // Send now pressed, or being handed over right now.
   sending?: boolean;
+  // In Claude Code's own queue: nothing can change it from here.
+  held?: boolean;
+  // Only the phone's copy (sent while the agent worked, in no queue Reach
+  // sees): Remove lets the copy go, nothing else.
+  local?: boolean;
 };
 export type AgentModel = {
   id: string;
@@ -231,6 +248,9 @@ export type AgentModel = {
   // Codex: its speeds (service tiers), as the app's Speed menu lists them.
   speeds?: { id: string; name: string; note?: string }[];
   defaultSpeed?: string | null;
+  // Codex: in the installed Codex's catalog (or config.toml) but not the
+  // service Reach runs chats on; shown, not offered to pick.
+  unconfirmed?: boolean;
 };
 // A dialog macOS itself shows (server/mac-prompts.mjs), answered at the Mac.
 export type MacPrompt = {
@@ -253,7 +273,9 @@ export type MacPrompt = {
 export type AgentProject = { id: string; name: string; roots: string[] };
 // A permission mode as the agent offers it now (server/agent-sessions:
 // Codex's permission profiles, Claude Code's --permission-mode choices).
-export type AgentMode = { id: string; label: string; note?: string };
+// switchable false: an open chat can't be switched to it from the phone
+// (Claude Code's Bypass); a new chat may still start in it.
+export type AgentMode = { id: string; label: string; note?: string; switchable?: boolean };
 // The modes to offer for a model: the agent's list, without Auto for a
 // Claude model that doesn't take it.
 export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
@@ -329,6 +351,10 @@ export function whereLabel(s: AgentSession) {
 
 export const projectName = (cwd: string) =>
   cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
+// A chat's project: a Claude app worktree belongs to its project's folder.
+export const projectOf = (cwd: string) => (cwd || "").replace(/[\\/]\.claude[\\/]worktrees[\\/][^\\/]+[\\/]?$/, "");
+// The project a chat groups under: the Claude app's, else its folder's.
+export const projectOfChat = (s: { cwd: string; project?: string }) => s.project || projectOf(s.cwd);
 
 // The words each app uses for thinking levels and permission modes (read
 // from the Codex app's strings and the Claude app's composer).
@@ -342,6 +368,7 @@ const EFFORTS: Record<string, string> = {
   max: "Max",
   ultra: "Ultra",
   persistent: "Persistent",
+  ultracode: "Ultracode",
 };
 export const effortLabel = (effort?: string | null, agent: AgentName = "codex") =>
   !effort ? "" : agent === "claude" && effort === "xhigh" ? "Extra" : EFFORTS[effort] || effort;
@@ -397,6 +424,8 @@ export type RelayStep = {
 export type Relay = {
   trigger?: "reply" | "usage";
   priority?: string[];
+  // Auto-continue out of usage with no provider free yet: waiting for one.
+  holding?: boolean;
   id: string;
   state: "waiting" | "sending" | "done" | "stopped" | "uncertain";
   problem: string;
@@ -625,7 +654,8 @@ export const readStranded = (peer: Peer) =>
 export const sendStranded = (peer: Peer, id: string, to: { agent: AgentName; id: string }) =>
   post(peer, `/api/sessions/stranded/${encodeURIComponent(id)}/send`, to);
 // Rewind to before a message (Claude Code's own rewind).
-export type RewindPreview = { canRewind: boolean; error?: string; files: string[]; insertions: number; deletions: number };
+// conversation false: the chat's first message (only its code can go back).
+export type RewindPreview = { canRewind: boolean; error?: string; files: string[]; insertions: number; deletions: number; conversation?: boolean };
 export const rewindSession = (
   peer: Peer,
   s: { agent: AgentName; id: string },
@@ -667,9 +697,10 @@ export const syncAgentDraft = (peer: Peer, s: { agent: AgentName; id: string }, 
 export const setAgentMode = (peer: Peer, s: { agent: AgentName; id: string }, mode: string) =>
   post<{ mode: string; applied: boolean; next?: "request" }>(peer, `${sessionPath(s)}/mode`, { mode });
 export const setAgentModel = (peer: Peer, s: { agent: AgentName; id: string }, choice: { model?: string; effort?: string; speed?: string }) =>
-  post<{ model: string; effort?: string; applied: boolean }>(peer, `${sessionPath(s)}/model`, choice);
+  // `status`/`message`: the Mac's own word on a change it didn't make now.
+  post<{ model: string; effort?: string; applied: boolean; status?: string; message?: string; queued?: boolean }>(peer, `${sessionPath(s)}/model`, choice);
 export const sendMessage = (peer: Peer, s: { agent: AgentName; id: string }, body: Outgoing) =>
-  post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string }>(
+  post<{ turnId?: string; steered?: boolean; queued?: boolean; delivered?: boolean; messageId?: string; waitingId?: string }>(
     peer,
     `${sessionPath(s)}/messages`,
     body,
@@ -873,8 +904,12 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
   const [view, setView] = useState<LiveView>(EMPTY);
   const key = s ? `${peer.url} ${peer.token} ${s.agent} ${s.id}` : "";
   const [poke, setPoke] = useState(0);
+  // When it last answered; 0 while it can't (a copy waiting on the outbox
+  // only counts as gone while it answers).
+  const [seenAt, setSeenAt] = useState(0);
   useEffect(() => {
     setView(EMPTY);
+    setSeenAt(0);
     if (!s) return;
     const controller = new AbortController();
     let version: number | null = null;
@@ -892,8 +927,10 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
           failures = 0;
           version = next.version;
           setView(next);
+          setSeenAt(Date.now());
         } catch {
           if (controller.signal.aborted) return;
+          setSeenAt(0);
           // Back off while the Mac is out of reach.
           await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** failures++)));
         }
@@ -901,5 +938,5 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
     })();
     return () => controller.abort();
   }, [key, poke]);
-  return { view, refresh: () => setPoke((n) => n + 1) };
+  return { view, seenAt, refresh: () => setPoke((n) => n + 1) };
 }

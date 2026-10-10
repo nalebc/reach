@@ -85,7 +85,8 @@ export function routes(app, client, { base, authorize }) {
         409,
         "This OpenClaw version doesn't offer guided setup in Reach.",
       );
-    if (busy || sessionId || status === "uncertain")
+    // A start that failed before any session existed has nothing to recover.
+    if (busy || sessionId)
       throw fail(
         409,
         "A setup may already be running. Check its status first.",

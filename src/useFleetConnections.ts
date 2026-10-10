@@ -49,6 +49,7 @@ export function useFleetConnections(peers: Peer[]) {
           ws = new WebSocket(url);
         } catch {
           update("disconnected");
+          timer = setTimeout(connect, Math.min(10000, 1000 * 2 ** attempts++));
           return;
         }
         const socket = ws;

@@ -253,14 +253,15 @@
     animation: none;
   }
 }
-/* The strip sits centered over the composer, not in a menu box. */
+/* The strip sits centered over the composer, not in a menu box: on the
+   chat's own background, or it drew over the chat's text (MODELS-6). */
 .as-mode-menu.as-model-strip {
   right: 8px;
   left: 8px !important;
   width: auto;
   align-items: stretch;
-  background: none;
-  box-shadow: none;
+  background: var(--as-bg, #181818);
+  box-shadow: 0 -12px 16px var(--as-bg, #181818);
 }
 /* Not the menu's own button look (its checked rows get a background). */
 .as-mode-menu .ms-dots button[role="radio"] {
@@ -410,12 +411,26 @@
   width: 18px;
   height: 18px;
 }
-/* Effort, under the models after a hairline: its level, and › to change it. */
+/* Effort, under the models after a hairline: its level, and › to change it.
+   Held at the menu's foot, so a long model list never hides it (MODELS-2). */
 .ms-menu .ms-card.ms-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   margin-top: 4px;
   border-top: 1px solid var(--as-line, #2a2a2a);
   border-radius: 0 0 12px 12px;
+  background: var(--as-float, #303030);
   font-size: 15px;
+}
+/* Pressed, it stays opaque over the models scrolling under it. */
+.ms-menu .ms-card.ms-row:not(:disabled):is(:active, :focus-visible) {
+  background: color-mix(in srgb, var(--as-text, #ececec) 7%, var(--as-float, #303030));
+}
+@media (hover: hover) {
+  .ms-menu .ms-card.ms-row:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--as-text, #ececec) 7%, var(--as-float, #303030));
+  }
 }
 .ms-menu .ms-note {
   margin: 2px 10px;

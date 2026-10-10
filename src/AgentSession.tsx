@@ -51,7 +51,7 @@ import {
 import type { Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { createDraftSync } from "./draft-sync";
-import { mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
+import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
 import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
@@ -275,6 +275,14 @@ function Copyable({
   return (
     <div
       className={`as-msg ${side} ${shown ? "shown" : ""}`}
+      tabIndex={bare ? undefined : 0}
+      onKeyDown={(e) => {
+        if (bare || e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setShown(!shown);
+        }
+      }}
       onClick={(e) => {
         if (bare || (e.target as HTMLElement).closest("a, button, summary, img, input, textarea")) return;
         if (String(window.getSelection?.() || "")) return;
@@ -362,6 +370,23 @@ const QUERY = "(max-width: 1024px), (pointer: coarse)";
 // How long a message just sent shows as sent while it's handed over, before
 // the queue says why it waits.
 const HANDOVER_MS = 4000;
+// How long a message the Mac's outbox acknowledged may go unseen there (it
+// went in between two looks) before only the transcript can end it.
+const OUTBOX_WAIT_MS = 15000;
+// How long a copy stays once where it waited let it go (the outbox, Claude
+// Code's queue, or the agent stopped): the transcript has it by then, or it
+// went nowhere (Oct 9).
+const GONE_MS = 5000;
+// A message's words as the person typed them: without what Reach put
+// around them (chats mentioned, files attached as their paths).
+const sentWords = (text: string) => attachedFiles(visibleUserText(text)).text.trim();
+// The transcript has a message sent from here: a user message that wasn't
+// there when it was sent, with its words, or with them as one of its parts
+// (Claude Code takes several sent while it works as one). Counting copies
+// in the newest page failed as it slid on, or with older pages loaded.
+// Sent before the chat's first page came (known null): nothing arrived yet.
+const arrivedAs = (i: SessionItem, p: { text: string; known: Set<string> | null }) =>
+  i.role === "user" && !!p.known && !p.known.has(i.id) && [i.text, ...(i.parts || [])].some((t) => sentWords(t) === p.text.trim());
 // How long the agent has been at it ("1m 5s"), ticking on its own each second.
 function Elapsed({ since, after = "" }: { since: number; after?: string }) {
   const [now, setNow] = useState(Date.now());
@@ -416,10 +441,13 @@ const plural = (n: number, one: string, many: string) =>
   n === 1 ? one : many.replace("#", String(n));
 
 // "Edited App.tsx, ran 2 commands" with the diff size, like both apps show.
+// An edit declined or failed wrote nothing: not counted as edited.
+const wrote = (i: SessionItem) =>
+  i.kind === "file-change" && i.status !== "declined" && i.status !== "failed";
 function runSummary(items: SessionItem[]) {
   const files = [
     ...new Set(
-      items.filter((i) => i.kind === "file-change").map((i) => i.text),
+      items.filter(wrote).map((i) => i.text),
     ),
   ];
   const commands = items.filter((i) => i.kind === "command").length;
@@ -441,7 +469,7 @@ function runSummary(items: SessionItem[]) {
   let added = 0;
   let removed = 0;
   for (const i of items)
-    if (i.kind === "file-change" && i.detail)
+    if (wrote(i) && i.detail)
       for (const line of i.detail.split("\n")) {
         if (/^\+(?!\+\+)/.test(line)) added++;
         else if (/^-(?!--)/.test(line)) removed++;
@@ -453,6 +481,8 @@ function ToolRun({ items }: { items: SessionItem[] }) {
   const [open, setOpen] = useState(false);
   const { text, added, removed } = runSummary(items);
   const failed = items.filter((i) => i.status === "failed").length;
+  // Said no to (on the phone or the Mac): not a failure.
+  const declined = items.filter((i) => i.status === "declined").length;
   const running = items.some(
     (i) => i.status === "running" || i.status === "inProgress",
   );
@@ -468,6 +498,7 @@ function ToolRun({ items }: { items: SessionItem[] }) {
         {added > 0 && <b className="plus">+{added}</b>}
         {removed > 0 && <b className="minus">-{removed}</b>}
         {failed > 0 && <em>{failed} failed</em>}
+        {declined > 0 && <em className="declined">{declined} declined</em>}
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
       {open && items.map((item) => <ToolStep key={item.id} item={item} />)}
@@ -480,13 +511,17 @@ function ToolStep({ item }: { item: SessionItem }) {
   const Icon = toolIcon(item.kind);
   return (
     <div className={`as-step ${item.status === "failed" ? "failed" : ""}`}>
-      <button
-        onClick={() => item.detail && setOpen(!open)}
-        aria-expanded={open}
-      >
-        <Icon size={13} />
-        <code>{teamToolLabel(item.text || "") || item.text || "(step)"}</code>
-      </button>
+      {item.detail ? (
+        <button onClick={() => setOpen(!open)} aria-expanded={open}>
+          <Icon size={13} />
+          <code>{teamToolLabel(item.text || "") || item.text || "(step)"}</code>
+        </button>
+      ) : (
+        <div className="as-step-plain">
+          <Icon size={13} />
+          <code>{teamToolLabel(item.text || "") || item.text || "(step)"}</code>
+        </div>
+      )}
       {open && item.detail && <pre>{item.detail}</pre>}
     </div>
   );
@@ -609,7 +644,7 @@ export function ModeMenu({
   onClose,
 }: {
   agent: AgentName;
-  choices: { id: string; label: string; note?: string }[];
+  choices: { id: string; label: string; note?: string; switchable?: boolean }[];
   current: string | null;
   // The mode button: the menu opens just above it.
   anchor: HTMLElement | null;
@@ -631,15 +666,18 @@ export function ModeMenu({
   const settingsDefault = (id: string) => inline && id === "default";
   const rank = (id: string) =>
     settingsDefault(id) ? -1 : CLAUDE_MODE_ORDER.includes(id) ? CLAUDE_MODE_ORDER.indexOf(id) : CLAUDE_MODE_ORDER.length;
+  // An open chat isn't offered a mode Reach refuses to switch it to
+  // (Bypass): left out, unless it's the one the chat is in.
+  const offered = inline ? choices : choices.filter((m) => m.switchable !== false || m.id === current);
   const list =
     agent === "claude"
-      ? [...choices].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: (!settingsDefault(m.id) && modeLabel("claude", m.id)) || m.label, note: "" }))
-      : choices.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
+      ? [...offered].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ ...m, label: (!settingsDefault(m.id) && modeLabel("claude", m.id)) || m.label, note: "" }))
+      : offered.map((m) => ({ ...m, note: CODEX_MODE_NOTES[m.id] ?? m.note ?? "" }));
   return (
     <ComposerMenu anchor={anchor} inline={inline} label="Permissions" className={agent} onClose={onClose}>
       {agent === "codex" && <p className="as-mode-menu-title">How should ChatGPT actions be approved?</p>}
       {list.map((m) => (
-        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked || busy} onClick={() => onPick(m.id)}>
+        <button key={m.id} role="menuitemradio" aria-checked={m.id === current} disabled={!!locked || busy || (!inline && m.switchable === false)} onClick={() => onPick(m.id)}>
           <span className="as-mode-menu-text">
             <span>{m.label}</span>
             {m.note && <small>{m.note}</small>}
@@ -708,6 +746,14 @@ function ComposerMenu({
   return page ? createPortal(menu, page) : menu;
 }
 
+// The Mac's words on a settings change it didn't make. "It goes in by itself"
+// is the outbox's promise; a settings change makes it only when the Mac says
+// it queued the change (MODELS-3, Oct 9).
+const settingsWords = (said: unknown, body?: { status?: unknown; queued?: unknown } | null) => {
+  const text = typeof said === "string" ? said.trim() : "";
+  return body?.status === "queued" || body?.queued === true ? text : text.replace(/\s*It goes in by itself after\.?/gi, "").trim();
+};
+
 // The model and effort, picked as each app has you pick them (ModelSheet.tsx):
 // Claude's "Model" sheet; Codex's words and effort dots over the
 // composer, its models in "Configure".
@@ -719,7 +765,10 @@ function ModelMenu({
   speed,
   busy,
   error,
+  notice,
   working,
+  ultracode,
+  failed,
   onRetry,
   onPick,
   onClose,
@@ -731,20 +780,26 @@ function ModelMenu({
   speed?: string | null;
   busy?: boolean;
   error?: string;
+  notice?: string;
   working?: boolean;
+  ultracode?: boolean;
+  // The pick the Mac refused, for its Try again.
+  failed?: { next: { model?: string; effort?: string; speed?: string }; stay?: boolean } | null;
   onRetry: () => void;
   // `stay`: the dots keep the strip open, as the app's slider stays.
   onPick: (choice: { model?: string; effort?: string; speed?: string }, stay?: boolean) => void;
   onClose: () => void;
 }) {
   const [configuring, setConfiguring] = useState(false);
-  const shared = { agent, models, model, effort, speed, busy, error, working, onRetry, onClose };
+  const onAgain = failed ? () => onPick(failed.next, failed.stay) : undefined;
+  const shared = { agent, models, model, effort, speed, busy, error, notice, working, ultracode, onRetry, onAgain, onClose };
   if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next)} />;
   if (configuring || !models.length || error)
     return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, true)} />;
   return (
     <ComposerMenu anchor={null} label="Model and effort" className="codex as-model-strip" onClose={onClose}>
       {working && <p className="as-mode-menu-locked">Applies to the next turn.</p>}
+      {notice && <p className="as-mode-menu-locked" role="status">{notice}</p>}
       <CodexEffortStrip {...shared} onPick={(next) => onPick(next, true)} onConfigure={() => setConfiguring(true)} />
     </ComposerMenu>
   );
@@ -798,7 +853,7 @@ function SentImages({
   const sources = urls || loaded;
   const [open, setOpen] = useState<number | null>(null);
   // Gone from the Mac (a temporary file the app attached): said, not blank.
-  if (!urls && loaded.length && loaded.every((l) => !l))
+  if ((!urls && !item) || (!urls && loaded.length && loaded.every((l) => !l)))
     return (
       <span className="as-tag">
         {count} image{count === 1 ? "" : "s"}
@@ -1372,6 +1427,8 @@ export function PromptCard({
         <strong>{prompt.title}</strong>
       </header>
       {prompt.command && <CommandPreview text={prompt.command} />}
+      {/* What an edit will write or replace ("+" and "-" lines). */}
+      {prompt.preview && <CommandPreview text={prompt.preview} />}
       {prompt.cwd && <small>in {prompt.cwd}</small>}
       {prompt.files?.length ? (
         <ul className="as-prompt-files">
@@ -1472,6 +1529,7 @@ export function PromptCard({
               {(current.other || !current.options.length) && (
                 <input
                   type={current.secret ? "password" : "text"}
+                  aria-label={current.options.length ? `Something else: ${current.question}` : current.question || "Your answer"}
                   placeholder={
                     current.options.length ? "Something else…" : "Your answer"
                   }
@@ -1659,16 +1717,25 @@ export default function AgentSessionView({
   const [reviewId, setReviewId] = useState("");
   useWantedPrompt(initial.agent, initial.id, setReviewId);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // Sent but not yet in the transcript; `seen` counts the same text already there.
-  // messageId: where it waits in the Mac's outbox, when it waits there.
+  // Sent but not yet in the transcript; `known`: the user messages there
+  // when it was sent (null until the first page came). messageId: where it
+  // waits in the Mac's outbox, when it waits there (inOutbox once seen
+  // there); waitingId: in Claude Code's own queue (live.waiting, inWaiting
+  // once seen there). during: sent while the agent worked. leftAt: when
+  // where it waited let it go (GONE_MS).
   const [pending, setPending] = useState<
     {
       id: string;
       text: string;
       images: number;
       urls?: string[];
-      seen: number;
+      known: Set<string> | null;
       messageId?: string;
+      waitingId?: string;
+      inOutbox?: boolean;
+      inWaiting?: boolean;
+      during?: boolean;
+      leftAt?: number;
       at: number;
     }[]
   >([]);
@@ -1680,6 +1747,9 @@ export default function AgentSessionView({
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelError, setModelError] = useState("");
   const [modelSaving, setModelSaving] = useState(false);
+  // The Mac's word on a pick it queued, and a pick it refused (Try again).
+  const [modelNote, setModelNote] = useState("");
+  const [failedPick, setFailedPick] = useState<{ next: { model?: string; effort?: string; speed?: string }; stay?: boolean } | null>(null);
   const savingModel = useRef<object | null>(null);
   const [modelReload, setModelReload] = useState(0);
   const [modes, setModes] = useState<AgentMode[] | null>(null);
@@ -1696,7 +1766,10 @@ export default function AgentSessionView({
   const savingMode = useRef(false);
   const modeButton = useRef<HTMLButtonElement>(null);
   const pickedMode = useRef<{ mode: string; at: number } | null>(null);
-  const { view: live } = useSessionLive(peer, initial);
+  const { view: live, seenAt: liveSeenAt } = useSessionLive(peer, initial);
+  // When the live view last answered (0: not answering now), for reads.
+  const liveSeen = useRef(0);
+  liveSeen.current = liveSeenAt;
   const reviewCount = live.prompts.length || (info.asking ? 1 : 0);
   const selectedPrompt =
     live.prompts.find((p) => p.id === reviewId) || live.prompts[0];
@@ -1760,7 +1833,24 @@ export default function AgentSessionView({
   // credential invalidates pending replies before they can update this view,
   // retry, or drain a queued reread. A generation also separates effect
   // re-activation (Strict Mode) from the previous setup's pending requests.
-  const readLife = useMemo(() => ({ active: false, generation: 0, settingsGeneration: 0, settingsReadPending: false }), [peer.url, peer.token, initial.agent, initial.id]);
+  // `sent`: the model/effort picked here and sent with a message, kept until
+  // the chat reports a level of its own (PARITY-4): with what the chat had
+  // before (`before`), when, and the message it went with. `reads`: when
+  // each read in flight began.
+  const readLife = useMemo(
+    () => ({
+      active: false,
+      generation: 0,
+      settingsGeneration: 0,
+      settingsReadPending: false,
+      sent: {} as { model?: string; effort?: string; before?: { model?: string | null; effort?: string | null }; at?: number; message?: { text: string; known: Set<string> | null } },
+      reads: new Set<{ at: number }>(),
+    }),
+    [peer.url, peer.token, initial.agent, initial.id],
+  );
+  // The catalog, for a read naming the sent model by another of its names.
+  const modelsNow = useRef<AgentModel[]>([]);
+  modelsNow.current = models;
   useLayoutEffect(() => {
     readLife.active = true;
     readLife.generation++;
@@ -1789,6 +1879,9 @@ export default function AgentSessionView({
       }
       const turn = { again: false };
       if (!first) reading.current = turn;
+      const started = { at: Date.now() };
+      const startedAt = started.at;
+      readLife.reads.add(started);
       try {
         const r = await readSession(
           peer,
@@ -1818,12 +1911,31 @@ export default function AgentSessionView({
           else if (first) void again.current(false);
           else turn.again = true;
         }
+        // A read that names no level (unknown, PARITY-1) never turns a level
+        // sent from here back into the default. One naming what the chat had
+        // before is older than the send (the immediate read after it said
+        // the old model again) until the agent answered that message, or a
+        // while later; the level sent, or any other, wins.
+        const sent = readLife.sent;
+        const at = sent.message ? r.items.findIndex((i) => arrivedAs(i, sent.message!)) : -1;
+        const answered = at >= 0 && r.items.slice(at + 1).some((i) => i.role === "assistant");
+        const same = (key: "model" | "effort", a?: string | null, b?: string | null) =>
+          !!a && !!b && (a === b || (key === "model" && !!currentModel(modelsNow.current, a) && currentModel(modelsNow.current, a) === currentModel(modelsNow.current, b)));
+        for (const key of ["model", "effort"] as const)
+          if (sent[key]) {
+            const named = session[key];
+            if (named && (same(key, named, sent[key]) || !same(key, named, sent.before?.[key]) || answered || Date.now() - (sent.at || 0) > 10 * 60 * 1000))
+              delete sent[key];
+            else delete session[key];
+          }
         // A question answered elsewhere is simply gone from the new read.
         // A mode waiting for Claude's next step is gone once it's taken; a
         // read begun before the pick reached Reach doesn't drop it.
         const picked = pickedMode.current;
         const keepPick = !session.pendingMode && picked && Date.now() - picked.at < 5000 && session.mode !== picked.mode;
-        setInfo((old) => ({ ...old, asking: undefined, context: undefined, pendingMode: keepPick ? picked.mode : undefined, ...session }));
+        // The server leaves out what's off (Ultracode, where it runs, who
+        // holds it, a move): gone from the read, gone here too.
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ultracode: undefined, live: undefined, held: undefined, movedTo: undefined, pendingMode: keepPick ? picked.mode : undefined, ...session }));
         setItems((current) => {
           if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
@@ -1833,15 +1945,30 @@ export default function AgentSessionView({
         });
         if (first) setBefore(r.before);
         setLoadError("");
-        // A sent message is shown until the transcript has one more copy of it
-        // than when it was sent (a repeated "continue" must not clear early).
+        // A sent message is shown until the transcript has it (arrivedAs).
+        // One sent before the first page came learns what was there from a
+        // read begun before it was sent (one begun after may have it
+        // already); only when none is left does a later one do, its
+        // matching messages counted as arrived.
+        const users = r.items.filter((i) => i.role === "user");
         setPending((list) =>
-          list.filter(
-            (p) =>
-              r.items.filter(
-                (i) => i.role === "user" && visibleUserText(i.text).trim() === p.text.trim(),
-              ).length <= p.seen,
-          ),
+          list
+            .map((p) =>
+              p.known
+                ? p
+                : startedAt < p.at
+                  ? { ...p, known: new Set(users.map((i) => i.id)) }
+                  : [...readLife.reads].some((t) => t.at < p.at)
+                    ? p
+                    : { ...p, known: new Set(users.filter((i) => !arrivedAs(i, { text: p.text, known: new Set() })).map((i) => i.id)) },
+            )
+            .filter(
+              (p) =>
+                !r.items.some((i) => arrivedAs(i, p)) &&
+                // Unseen in the outbox only counts while the live view
+                // answers, with a look since it was sent.
+                !(p.messageId && !p.inOutbox && liveSeen.current > p.at && Date.now() - p.at > OUTBOX_WAIT_MS),
+            ),
         );
       } catch (e) {
         if (!current()) return;
@@ -1852,6 +1979,7 @@ export default function AgentSessionView({
           if (current()) void again.current(first);
         }, Math.min(8000, 1000 * 2 ** (failed.current - 1)));
       } finally {
+        readLife.reads.delete(started);
         if (current() && reading.current === turn) {
           reading.current = null;
           if (turn.again) void again.current(false);
@@ -1937,7 +2065,15 @@ export default function AgentSessionView({
       want.tries++;
       findingPlace.current = true;
       void older().finally(() => (findingPlace.current = false));
-    } else place.current = null;
+    } else {
+      // The mark never turned up: back to the end, following new output.
+      place.current = null;
+      if (want.tries > 0) {
+        el.scrollTop = el.scrollHeight;
+        atBottom.current = true;
+        setReadingHistory(false);
+      }
+    }
   }, [items, before]);
   const placeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const keepPlace = () => {
@@ -2123,7 +2259,7 @@ export default function AgentSessionView({
     !working &&
     lastItem?.kind === "error" &&
     !!usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) &&
-    (health.find((h) => h.agent === agent)?.usable !== true || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
+    (health.find((h) => h.agent === agent)?.usable === false || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
   // Close to its limit (90% and up) and not out yet: said above the message
   // box before it runs out; a tap shows its limits. Out, the strip below
   // says so instead.
@@ -2174,6 +2310,8 @@ export default function AgentSessionView({
   const modelId = choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
   const selectedModel = currentModel(models, modelId);
+  // The level always (a change must show); Ultracode only when no level is named.
+  const effortShown = effortLabel(effort, agent) || (agent === "claude" && info.ultracode === true ? effortLabel("ultracode", agent) : "");
   const modelLabel =
     selectedModel?.name ||
     (agent === "codex"
@@ -2294,15 +2432,15 @@ export default function AgentSessionView({
     if (!attachments.length && slashMenu.runOnSend(text)) return;
     const skill = slashMenu.skill;
     const ready = attachments.filter((a) => a.id);
-    const seen = (items || []).filter(
-      (i) => i.role === "user" && visibleUserText(i.text).trim() === text.trim(),
-    ).length;
+    // Pictures only: a file showed as an empty picture square.
+    const pictures = ready.filter((a) => !a.file);
     const message = {
       id: `pending-${Date.now()}`,
       text,
-      images: ready.length,
-      urls: ready.map((a) => a.url),
-      seen,
+      images: pictures.length,
+      urls: pictures.map((a) => a.url),
+      known: items ? new Set(items.filter((i) => i.role === "user").map((i) => i.id)) : null,
+      during: working,
       at: Date.now(),
     };
     const keep = { text, attachments, mentions };
@@ -2330,15 +2468,25 @@ export default function AgentSessionView({
       });
       if (skill) slashMenu.clearSkill();
       sentUrls.current.push(...ready.map((a) => a.url));
-      // The acknowledged queue now owns this message. Keep no optimistic
-      // copy: cancelling it in the native app does not create a transcript
-      // message, so a copy waiting for that transcript would survive forever.
-      if (r.messageId) setPending((list) => list.filter((p) => p !== message));
+      // Where it waits: the copy shows until the outbox (or Claude Code's
+      // queue) carries it, then goes with the outbox entry (see below).
+      // Dropped at once, it was nowhere until the next live look.
+      if (r.messageId || r.waitingId)
+        setPending((list) => list.map((p) => (p.id === message.id ? { ...p, messageId: r.messageId, waitingId: r.waitingId } : p)));
+      // The pick went with the message: the chat's now, until it says otherwise.
+      const sent = { ...(!heldByApp && choice.model ? { model: choice.model } : {}), ...(!heldByApp && choice.effort ? { effort: choice.effort } : {}) };
+      if (sent.model || sent.effort) {
+        // What the chat had before: a read still naming it is older.
+        const before = { ...readLife.sent.before };
+        for (const key of ["model", "effort"] as const) if (sent[key] && !readLife.sent[key]) before[key] = info[key];
+        Object.assign(readLife.sent, sent, { before, at: message.at, message: { text: message.text, known: message.known } });
+        setInfo((old) => ({ ...old, ...sent }));
+      }
       setChoice({});
       setNote("");
       void load(false);
     } catch (e) {
-      setPending((list) => list.filter((p) => p !== message));
+      setPending((list) => list.filter((p) => p.id !== message.id));
       setText(keep.text);
       setAttachments(keep.attachments);
       setMentions(keep.mentions);
@@ -2482,6 +2630,57 @@ export default function AgentSessionView({
     !working &&
     (!!m.sending || pending.some((p) => (p.messageId === m.id || p.text === m.text) && Date.now() - p.at < HANDOVER_MS));
   const queued = (live.outbox || []).filter((m) => !removedQueue.includes(m.id) && !handingOver(m));
+  // Acknowledged by the Mac's outbox: shown from there once it carries it.
+  // Once the outbox (or Claude Code's queue) lets it go, or the agent stops
+  // with it sent while it worked, the copy stays GONE_MS: the transcript has
+  // it by then (taken), or it went nowhere (cancelled in the app, which
+  // writes nothing to the transcript: a copy waiting for it survived
+  // forever; dropped at once, it vanished for a read).
+  useEffect(() => {
+    const ids = new Set((live.outbox || []).map((m) => m.id));
+    const waits = new Set((live.waiting || []).map((m) => m.id));
+    setPending((list) => {
+      const next = list.map((p) => {
+        const inOutbox = p.inOutbox || (!!p.messageId && ids.has(p.messageId));
+        const inWaiting = p.inWaiting || (!!p.waitingId && waits.has(p.waitingId));
+        // Idle with it still in a queue: the queue shows it, it isn't gone.
+        const carried = (!!p.messageId && ids.has(p.messageId)) || (!!p.waitingId && waits.has(p.waitingId));
+        const left = (inOutbox && !ids.has(p.messageId!)) || (inWaiting && !waits.has(p.waitingId!)) || (!!p.during && !working && !carried);
+        const leftAt = left ? p.leftAt || Date.now() : undefined;
+        return inOutbox === !!p.inOutbox && inWaiting === !!p.inWaiting && leftAt === p.leftAt ? p : { ...p, inOutbox, inWaiting, leftAt };
+      });
+      return next.every((p, i) => p === list[i]) ? list : next;
+    });
+  }, [live.outbox, live.waiting, working, pending]);
+  useEffect(() => {
+    const due = pending.filter((p) => p.leftAt).map((p) => p.leftAt! + GONE_MS - Date.now());
+    if (!due.length) return;
+    const timer = setTimeout(
+      () => setPending((list) => list.filter((p) => !p.leftAt || Date.now() - p.leftAt < GONE_MS)),
+      Math.max(0, Math.min(...due)) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [pending]);
+  // In Claude Code's own queue, sent while it worked: Reach's process says
+  // (live), the Claude app's transcript says (info). They only show, above
+  // the box, until Claude takes them; they went out of view (above the reply
+  // streaming) or away on a reload until then. Nothing can change them.
+  const held: OutboxMessage[] = [
+    ...(live.waiting || []),
+    ...(working ? (info.waiting || []).filter((w) => !(live.outbox || []).some((m) => sentWords(m.text) === sentWords(w.text))) : []),
+  ].map((m) => ({ ...m, held: true }));
+  const inQueue = (p: (typeof pending)[number]) =>
+    queued.some((m) => m.id === p.messageId || m.text === p.text) ||
+    held.some((m) => m.id === p.waitingId || sentWords(m.text) === p.text.trim());
+  // Sent while it worked: waits with them until the transcript has it. In
+  // no queue Reach can see, only this phone's copy: Remove lets it go.
+  const waitingRows: OutboxMessage[] = [
+    ...held,
+    ...pending
+      .filter((p) => p.during && !removedQueue.includes(p.messageId || "") && !inQueue(p))
+      .map((p) => ({ id: p.id, text: p.text, images: p.images, at: p.at, held: true, local: true })),
+  ];
+  const queueRows = [...waitingRows, ...queued];
   // Still on its way a few seconds later: once, it moves to the queue.
   useEffect(() => {
     const left = pending.map((p) => HANDOVER_MS - (Date.now() - p.at)).filter((ms) => ms > 0);
@@ -2741,16 +2940,23 @@ export default function AgentSessionView({
             ) : rewinding.preview ? (
               <p>No code changed since then.</p>
             ) : null}
+            {rewinding.preview?.conversation === false && (
+              <p>It's the chat's first message: {rewinding.preview.files.length && rewinding.preview.canRewind ? "only its code can go back." : "start a new chat instead."}</p>
+            )}
             {rewinding.error && <p className="bad">{rewinding.error}</p>}
             <div className="as-rewind-actions">
-              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
+              {!!rewinding.preview?.files.length && rewinding.preview.canRewind && rewinding.preview.conversation !== false && (
                 <button className="primary" disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: true }, "both")}>
                   {rewinding.busy === "both" ? <Loader2 size={14} className="spin" /> : "Restore code and conversation"}
                 </button>
               )}
-              <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || rewinding.busy === "preview"} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
-                {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
-              </button>
+              {/* The first message has no conversation before it (the server refuses), and a
+                  preview that failed (the chat held elsewhere) leaves nothing to restore. */}
+              {rewinding.preview?.conversation !== false && (
+                <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || (!rewinding.preview && !!rewinding.error)} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
+                  {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
+                </button>
+              )}
               {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
                 <button disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: false }, "code")}>
                   {rewinding.busy === "code" ? <Loader2 size={14} className="spin" /> : "Restore code only"}
@@ -2849,7 +3055,8 @@ export default function AgentSessionView({
                 bare={!b.item.text.trim()}
                 onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
                 onFork={agent === "codex" && b.item.turnId ? () => void forkFrom(b.item.turnId!) : undefined}
-                onRewind={agent === "claude" && !b.item.slash && info.status !== "running" && info.status !== "waiting" ? () => void openRewind(b.item) : undefined}
+                // Not while the Claude app or a terminal runs it: the server refuses (rewind it there).
+                onRewind={agent === "claude" && !b.item.slash && info.status !== "running" && info.status !== "waiting" && info.live?.where !== "claude-app" && info.live?.where !== "terminal" ? () => void openRewind(b.item) : undefined}
               >
               <div className="as-user">
                 {b.item.queued && (
@@ -2943,10 +3150,7 @@ export default function AgentSessionView({
             />
           )}
         {pending
-          .filter(
-            (p) =>
-              !removedQueue.includes(p.messageId || "") && !queued.some((m) => m.id === p.messageId || m.text === p.text),
-          )
+          .filter((p) => !p.during && !removedQueue.includes(p.messageId || "") && !inQueue(p))
           .map((p) => (
             <div key={p.id} className="as-user pending">
               {p.images ? (
@@ -3221,9 +3425,12 @@ export default function AgentSessionView({
             speed={choice.speed || info.speed || null}
             busy={modelsLoading || modelSaving}
             error={modelError}
+            notice={modelNote}
             working={working}
-            onRetry={() => setModelReload((n) => n + 1)}
-            onClose={() => setPicking(false)}
+            ultracode={info.ultracode === true}
+            failed={failedPick}
+            onRetry={() => (setFailedPick(null), setModelReload((n) => n + 1))}
+            onClose={() => (setPicking(false), setModelNote(""), setFailedPick(null))}
             onPick={async (next, stay) => {
               // The speed changes the chat's own setting at once, as in the
               // Codex app (thread settings; the app's when it holds the chat).
@@ -3232,13 +3439,26 @@ export default function AgentSessionView({
               const operation = {};
               const generation = readLife.generation;
               const current = () => readLife.active && readLife.generation === generation && savingModel.current === operation;
+              const asked = { next, stay };
               savingModel.current = operation;
               readLife.settingsGeneration++;
               setModelSaving(true);
               setModelError("");
+              setModelNote("");
+              setFailedPick(null);
               try {
                 const result = await setAgentModel(peer, initial, next);
                 if (!current()) return;
+                // The Mac's own status, read fail-closed (MODELS-3): applied,
+                // or queued/no status (it goes with the next message), else
+                // nothing changed and its words say why.
+                const status = typeof result.status === "string" ? result.status : null;
+                const said = settingsWords(result.message, result);
+                if (result.applied !== true && status && status !== "queued") {
+                  setModelError(said || "Not changed.");
+                  setFailedPick(asked);
+                  return;
+                }
                 if (result.applied) {
                   // Once native settings are confirmed, follow subsequent
                   // desktop/device changes instead of pinning this old pick.
@@ -3249,9 +3469,15 @@ export default function AgentSessionView({
                     ...(next.effort !== undefined ? { effort: undefined } : {}),
                   }));
                 } else setChoice((previous) => ({ ...previous, ...next }));
-                if (!stay) setPicking(false);
+                // Its word stays in sight until the menu is closed.
+                if (said && result.applied !== true) setModelNote(said);
+                else if (!stay) setPicking(false);
               } catch (e) {
-                if (current()) setModelError((e as Error).message);
+                if (current()) {
+                  const body = (e as { body?: { message?: unknown; status?: unknown; queued?: unknown } }).body;
+                  setModelError(settingsWords((e as Error).message || body?.message, body) || "Not changed.");
+                  setFailedPick(asked);
+                }
               } finally {
                 if (current()) {
                   readLife.settingsGeneration++;
@@ -3291,10 +3517,10 @@ export default function AgentSessionView({
         {/* Claude's todo list, pinned above the composer as in the Claude app. */}
         {!!info.todos?.length && info.todos.some((t) => t.status !== "completed") && <TodoStrip todos={info.todos} />}
         {/* Right on top of the message box, as both apps put their queue. */}
-        {!!queued.length && (
+        {!!queueRows.length && (
           <QueuedMessages
             agent={agent}
-            messages={queued}
+            messages={queueRows}
             busy={queueBusy}
             canEdit={!queueBusy}
             onEdit={async (m, words) => {
@@ -3309,6 +3535,7 @@ export default function AgentSessionView({
               finally { setQueueBusy(null); }
             }}
             onRemove={async (m) => {
+              if (m.local) return setPending((old) => old.filter((p) => p.id !== m.id));
               setQueueBusy(m.id);
               try {
                 await cancelQueuedMessage(peer, initial, m.id);
@@ -3441,7 +3668,7 @@ export default function AgentSessionView({
           <div className="as-tools">
             <button
               className="as-icon"
-              aria-label="Add images"
+              aria-label="Add files"
               onClick={() => picker.current?.click()}
             >
               <Plus size={18} />
@@ -3497,7 +3724,9 @@ export default function AgentSessionView({
                 }}
               >
                 <span className="as-model-name">{modelLabel || "Model"}</span>{" "}
-                <span className="as-model-effort">{effortLabel(effort || selectedModel?.defaultEffort, agent)}</span>
+                {/* The chat's own level (never the catalog's default), in
+                    sight on a phone too: a change shows here (MODELS-2). */}
+                {effortShown && <span className="as-model-effort">{effortShown}</span>}
                 <ChevronDown size={14} />
               </button>
             )}
@@ -3527,7 +3756,7 @@ export default function AgentSessionView({
             )}
             {/* One round button, as in both apps: send, or stop while it works
               and nothing is typed. */}
-            {working && !text.trim() ? (
+            {working && !text.trim() && !attachments.length && !slashMenu.skill ? (
               <button
                 className="as-send stop"
                 aria-label="Stop"

@@ -84,7 +84,8 @@ export function createTurnWatch({
       return;
     }
     // Working again (or still): the turn hasn't ended after all.
-    if (!page?.session || BUSY.has(page.session.status) || BUSY.has(last.get(key))) return;
+    // Only a plain "idle" is an ended turn; a status Reach doesn't know isn't.
+    if (!page?.session || page.session.status !== "idle" || BUSY.has(last.get(key))) return;
     await Promise.resolve()
       .then(() => onEnded({ session: { ...s, ...page.session, agent: s.agent, id: s.id }, outcome: turnOutcome(page.items || []) }))
       .catch(() => {});
@@ -108,7 +109,7 @@ export function createTurnWatch({
           const key = `${s.agent}:${s.id}`;
           const before = last.get(key);
           last.set(key, s.status || "idle");
-          if (!seeded || !BUSY.has(before) || BUSY.has(s.status) || pending.has(key)) continue;
+          if (!seeded || !BUSY.has(before) || s.status !== "idle" || pending.has(key)) continue;
           const timer = setTimer(() => void confirm(s), settleMs);
           timer?.unref?.();
           pending.set(key, timer);

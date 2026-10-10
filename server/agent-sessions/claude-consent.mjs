@@ -7,7 +7,7 @@ import { object } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
-import { claudeAppShown } from "./claude-import.mjs";
+import { claudeAppShown, idleSeconds } from "./claude-import.mjs";
 import { computerWord } from "../computer-word.mjs";
 
 const exec = promisify(execFile);
@@ -51,6 +51,10 @@ export function createClaudeConsent({
   shown = () => claudeAppShown(),
   wait = (ms) => new Promise((r) => setTimeout(r, ms)),
   switchMs = 1500,
+  // Showing another session moves the Claude window: only once the Mac has
+  // had no input this long (as claude-compose.mjs), never under the owner.
+  idle = idleSeconds,
+  awayMs = 30 * 1000,
   // The helper confirms the card closed; the transcript follows (reading a
   // long one takes a moment).
   confirmMs = 10000,
@@ -86,6 +90,9 @@ export function createClaudeConsent({
       if (list[0]?.id !== id) {
         const record = list.find((s) => s.id === id);
         if (!record) throw bad(`The Claude app doesn't list this session. Answer it on your ${computerWord(platform)}.`, 409);
+        const seconds = await Promise.resolve(idle()).catch(() => null);
+        if (!Number.isFinite(seconds) || seconds * 1000 < awayMs)
+          throw bad(`Someone is using your ${computerWord(platform)}: Reach won't switch the Claude app's chat under them. Answer it there, or try again once it's idle.`, 409);
         guard();
         await open(`claude://code/continue?session=${record.session}`, { background: true });
         await wait(switchMs);

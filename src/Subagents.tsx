@@ -30,7 +30,9 @@ function StatusMark({ status }: { status: Status }) {
 export function SubagentCard({ item, agent, onStop }: { item: SessionItem; agent?: Subagent; onStop?: (task: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const status: Status = agent?.status || item.agentStatus || (item.status === "failed" ? "failed" : item.status === "running" ? "running" : "done");
+  // Ended only on a word that says so: an unknown one reads as still running.
+  const status: Status = agent?.status || item.agentStatus ||
+    (item.status === "failed" ? "failed" : ["completed", "done", "stopped", "cancelled"].includes(String(item.status)) ? "done" : "running");
   const activity = agent?.activity || item.activity || "";
   // A background agent's call returns at once ("launched"): its own last words say more.
   const result = agent?.result || (item.background ? "" : item.detail || "");

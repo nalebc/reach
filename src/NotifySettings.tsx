@@ -321,6 +321,7 @@ export function NotificationSetup({
   if (!allowed)
     return (
       <section className="ns" aria-label="Notification setup">
+        <span>This device can't change notifications for this computer.</span>
         <button className="ns-link" onClick={() => void state.refresh()}>
           Check again
         </button>

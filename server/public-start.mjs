@@ -28,7 +28,8 @@ const TYPES = {
 };
 export const PUBLIC_CSP =
   "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
-const NAME = /^\/[\w.-]+$/;
+// One file name: no "." or ".." (they name folders).
+const NAME = /^\/(?!\.{1,2}$)[\w.-]+$/;
 
 // Where the browser client was built, if it was: { wasm, exec } file names.
 export function readTailnetManifest(dir) {

@@ -2,20 +2,26 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { holdPage, holdTouches } from "./page-hold";
 import { dragToClose } from "./sheet-drag";
+import "./screen-popup.css";
 export default function ScreenPopup({
   title,
   onClose,
   children,
   className = "",
+  returnFocus,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   className?: string;
+  /** Where focus goes when the popup closes, if not back to the button that opened it. */
+  returnFocus?: () => HTMLElement | null;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closing = useRef(onClose);
   closing.current = onClose;
+  const focusBack = useRef(returnFocus);
+  focusBack.current = returnFocus;
   useEffect(() => {
     const element = dialog.current;
     const focus = document.activeElement as HTMLElement | null;
@@ -36,7 +42,7 @@ export default function ScreenPopup({
       stopDrag();
       letTouchesGo();
       letGo();
-      focus?.focus?.({ preventScroll: true });
+      (focusBack.current?.() ?? focus)?.focus?.({ preventScroll: true });
     };
   }, []);
   return (

@@ -43,7 +43,7 @@ function toolLine(item) {
         : item.kind === "web"
           ? `Looked up ${oneLine(item.text, 300)}`
           : `Used ${oneLine(item.text, 200)}`;
-  const how = item.status === "failed" ? " (failed)" : item.status === "running" ? " (still running when the chat moved)" : "";
+  const how = item.status === "failed" || item.status === "declined" ? ` (${item.status})` : item.status === "running" ? " (still running when the chat moved)" : "";
   return `• ${what}${how}`;
 }
 

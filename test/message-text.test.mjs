@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { visibleUserText } from "../server/agent-sessions/message-text.mjs";
+import { attachedFiles, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { codexItem, codexSession } from "../server/agent-sessions/codex.mjs";
 
 const wrapped = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>\n<in-app-browser-context source="ambient-ui-state">\nBrowser context, not the message\n</in-app-browser-context>\n\n## My request:\nFix the chat';
@@ -23,4 +23,14 @@ test("the Claude app's instructions never show as the person's words", () => {
   // Quoted or explained further down, it stays as written.
   const quoted = "What is this?\n<system-reminder>x</system-reminder>";
   assert.equal(visibleUserText(quoted), quoted);
+});
+
+// "The bubble shows Reach's internal file path" (a file attached on the
+// phone): the words and the file's name, never the path; an "@file" the
+// person typed, or a path elsewhere in the words, stays.
+test("files attached on the phone show by name, not as Reach's paths", () => {
+  const dir = "/Users/me/reach/.reach/quick/agent-files/a7ca5d97-1111-4222-8333-444455556666";
+  assert.deepEqual(attachedFiles(`What does it say?\n\n@${dir}/note.txt\n@${dir}/my plan.pdf`), { text: "What does it say?", files: ["note.txt", "my plan.pdf"] });
+  assert.deepEqual(attachedFiles(`${dir}/note.txt`), { text: "", files: ["note.txt"] }, "Codex: the bare path");
+  for (const text of ["Look at @src/app.ts", `@${dir}/note.txt\nthen fix it`, "@/etc/hosts"]) assert.deepEqual(attachedFiles(text), { text, files: [] });
 });

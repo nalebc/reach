@@ -408,6 +408,8 @@ svg {
   justify-content: center;
   border: 0;
   background: transparent;
+  min-width: 40px;
+  min-height: 40px;
   padding: 8px;
   border-radius: 7px;
   color: #99ab9d;

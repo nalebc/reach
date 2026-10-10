@@ -19,6 +19,7 @@ type Spend =
       today: number;
       month: number;
       days30: number;
+      agentDays?: number;
       partial: boolean;
       agents: { id: string; cost: number }[] | null;
       limits: { name: string; windows: { label: string; usedPercent: number }[] }[];
@@ -149,7 +150,7 @@ function SpendSheet({ peer, spend, onChanged }: { peer: Peer; spend: Ready<Spend
       </ul>
       {!!spend.agents?.length && (
         <section>
-          <h3>Agents · 30 days</h3>
+          <h3>Agents · {spend.agentDays || 30} days</h3>
           <ul className="claw-spend-rows">
             {spend.agents.map((a) => (
               <Row key={a.id} label={a.id}>
@@ -331,7 +332,7 @@ function Routing({ peer }: { peer: Peer }) {
                 </button>
               )}
               <button type="button" className="claw-secondary" disabled={!!busy || r.readOnly} onClick={() => setCheap(r.cheapest || r.models[0]?.id || "")}>
-                Cheap heartbeat
+                Cheaper background work
               </button>
             </span>
           </li>

@@ -168,10 +168,17 @@ test("a restart names the Claude chats it would cut off and can wait for them to
   let card = restartNotification(request);
   assert.match(card.summary, /^Claw UI rebuild is still working\./);
   assert.deepEqual(card.actions.map((a) => a.id), ["after", "restart", "deny"]);
+  // Other chats starting or finishing a turn don't outdate a card on the phone.
+  working = [{ id: "b", title: "Home ideas" }, { id: "c", title: "Bug hunt" }];
+  assert.equal(restartNotification(restarts.list()[0]).revision, card.revision);
+  working = [{ id: "a", title: "Claw UI rebuild" }];
   assert.deepEqual(restarts.decide(request.id, "after"), { status: "waiting" });
   [request] = restarts.list();
+  const asked = card;
   card = restartNotification(request);
   assert.equal(card.title, "Reach restarts when chats finish");
+  // Answered: the card it was is outdated.
+  assert.notEqual(card.revision, asked.revision);
   assert.deepEqual(card.actions.map((a) => a.id), ["restart", "deny"]);
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(restarted, 0);
@@ -179,6 +186,25 @@ test("a restart names the Claude chats it would cut off and can wait for them to
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(restarted, 1);
   assert.equal(fs.existsSync(restartRequestFile(dir)), false);
+  // Asked from a chat: the card names it and opens it.
+  const { askingChat } = await import("../server/restart-requests.mjs");
+  assert.deepEqual(askingChat({ CLAUDE_CODE_SESSION_ID: "8ec9aa10-513d-46d2-82ab-e51b3ac7a965" }), { agent: "claude", id: "8ec9aa10-513d-46d2-82ab-e51b3ac7a965" });
+  assert.deepEqual(askingChat({ CODEX_THREAD_ID: "01a11cff-9d8d-76d2-b114-c412e165f663" }), { agent: "codex", id: "01a11cff-9d8d-76d2-b114-c412e165f663" });
+  assert.equal(askingChat({ CLAUDE_CODE_SESSION_ID: "../x y" }), null);
+  assert.equal(askingChat({}), null);
+  working = [{ id: "s1", title: "Home ideas" }];
+  askRestart(dir, { app: "Claude", chat: { agent: "claude", id: "s1" } });
+  card = restartNotification(restarts.list()[0]);
+  assert.deepEqual(card.target, { page: "sessions", agent: "claude", id: "s1" });
+  assert.equal(card.detail, "Asked in Home ideas");
+  restarts.decide(restarts.list()[0].id, "deny");
+  // A chat Reach can't name or open: Home's card, as before.
+  askRestart(dir, { app: "Claude", chat: { agent: "other", id: "s1" } });
+  card = restartNotification(restarts.list()[0]);
+  assert.equal(card.target.page, "overview");
+  assert.equal(card.detail, "Computer restart");
+  restarts.decide(restarts.list()[0].id, "deny");
+  working = [];
   // Nothing working: the card is as before.
   askRestart(dir, { app: "Claude" });
   assert.deepEqual(restartNotification(restarts.list()[0]).actions.map((a) => a.id), ["restart", "deny"]);

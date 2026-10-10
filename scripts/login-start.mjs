@@ -86,7 +86,11 @@ export function loginStart(command, { root, home = os.homedir(), uid = process.g
   // starts; it's stopped, and its file kept in .reach/backups.
   const companion = path.join(agents, `${companionLabel}.plist`);
   let replaced = false;
-  if (fs.existsSync(companion) && fs.readFileSync(companion, "utf8").includes(`<string>${xml(root)}</string>`)) {
+  if (fs.existsSync(companion) && (() => {
+    const text = fs.readFileSync(companion, "utf8");
+    // Older plists named the folder; current ones the program path.
+    return text.includes(`<string>${xml(root)}</string>`) || text.includes(`<string>${xml(path.join(root, "scripts/bootstrap.mjs"))}</string>`);
+  })()) {
     if (loaded(companionLabel)) launchctl(["bootout", `${domain}/${companionLabel}`]);
     const backups = path.join(root, ".reach/backups");
     fs.mkdirSync(backups, { recursive: true, mode: 0o700 });

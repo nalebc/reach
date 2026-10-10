@@ -314,7 +314,7 @@ export async function request<T = any>(
       Error(
         response.status === 401
           ? "Pair this device again. Its access has expired or was revoked."
-          : body.error,
+          : body?.error || "This computer could not complete the request.",
       ),
       // `body`: the rest of the answer (who controls the screen, for one).
       { status: response.status, body },

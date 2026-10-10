@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fail, isPlainRecord } from "./core.mjs";
@@ -10,6 +11,28 @@ import { commandRefusal, hiddenControls } from "./agent-guard.mjs";
 // Reach's own variables), a time and output limit, and the deny list from
 // agent-guard.mjs checked first. Every attempt is logged for the owner.
 const controls = hiddenControls;
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+// The macOS sandbox every agent command runs in: Reach's own things stay out
+// of reach at the operating-system level, however a command spells them (the
+// deny list above only reads the command's text). Its socket and Tailscale's
+// can't be connected to, its data (credentials) can't be read or written, its
+// code can't be changed, and no other app is asked to run something outside
+// the sandbox (Apple Events, open, osascript). Everything else stays as the
+// owner's account allows: Full control is still full control.
+const quote = (value) => `"${String(value).replace(/["\\]/g, (char) => `\\${char}`)}"`;
+export function shellSandboxProfile({ readDeny = [], writeDeny = [], socketDeny = [], ports = [] } = {}) {
+  const subpaths = (list) => list.map((item) => `(subpath ${quote(item)})`).join(" ");
+  return [
+    "(version 1)",
+    "(allow default)",
+    readDeny.length ? `(deny file-read* ${subpaths(readDeny)})` : "",
+    writeDeny.length ? `(deny file-write* ${subpaths(writeDeny)})` : "",
+    socketDeny.length ? `(deny network-outbound ${socketDeny.map((item) => `(remote unix-socket (subpath ${quote(item)}))`).join(" ")})` : "",
+    ports.length ? `(deny network-outbound ${ports.map((port) => `(remote ip "localhost:${Number(port)}")`).join(" ")})` : "",
+    "(deny appleevent-send)",
+    '(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))',
+  ].filter(Boolean).join("\n");
+}
 export function createAgentShell({
   commandLog = null,
   hosts = () => [],
@@ -19,6 +42,9 @@ export function createAgentShell({
   record = () => {},
   now = Date.now,
   run = null,            // test override: ({ command, cwd, env, timeoutMs, maxOutput, signal }) => { output, exitCode, timedOut }
+  // What the sandbox denies ({readDeny, writeDeny, socketDeny, ports}); null
+  // off macOS. On macOS without sandbox-exec, commands are refused.
+  sandbox = () => null,
   timeoutMs = 60000,
   maxOutput = 256 * 1024,
   maxConcurrent = 4,
@@ -26,7 +52,12 @@ export function createAgentShell({
   const busy = new Set();
   const execute = run || (({ command, cwd, env, signal }) => new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason);
-    const child = spawn("/bin/zsh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const rules = sandbox();
+    if (rules && !fs.existsSync(SANDBOX_EXEC))
+      return reject(Object.assign(new Error("This Mac can't sandbox agent commands, so none run."), { status: 503 }));
+    const child = rules
+      ? spawn(SANDBOX_EXEC, ["-p", shellSandboxProfile(rules), "/bin/zsh", "-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
+      : spawn("/bin/zsh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks = []; let size = 0, truncated = false, timedOut = false, finished = false;
     const collect = (chunk) => {
       if (size >= maxOutput) { truncated = true; return; }

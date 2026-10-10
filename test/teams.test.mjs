@@ -262,3 +262,17 @@ test("a helper that doesn't start uses none of the hand-offs, and no team starts
   await assert.rejects(closed.create({ owner: "phone", lead: "claude", helpers: ["codex"], cwd: "/work/app", text: "Go" }), /couldn't open the team's private socket/);
   assert.equal(fs.existsSync(path.join(dir, "closed")), false);
 });
+
+test("concurrent hand-offs get distinct ids and count against the working limit", async () => {
+  const { dir, teams } = stage();
+  const { team } = await teams.create({ owner: "phone", lead: "claude", helpers: ["codex"], cwd: "/work/app", text: "Lots" });
+  const token = tokenOf(dir, team);
+  const calls = Array.from({ length: TEAM_LIMITS.working + 2 }, (_, i) =>
+    teams.call(token, "team_delegate", { helper: "codex", kind: "build", task: `Part ${i}` }),
+  );
+  const settled = await Promise.allSettled(calls);
+  const ok = settled.filter((r) => r.status === "fulfilled").map((r) => r.value.task_id);
+  assert.equal(ok.length, TEAM_LIMITS.working, "no more than the working limit start");
+  assert.equal(new Set(ok).size, ok.length, "ids are distinct");
+  assert.equal(settled.filter((r) => r.status === "rejected").length, 2);
+});

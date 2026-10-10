@@ -41,7 +41,15 @@ export function createFaceJoin({
           "Too many new browsers this hour. Try again later, or sign in with Tailscale.",
         );
       made.push(now());
-      const { key, hostname } = await guestKeys.createFaceKey();
+      let minted;
+      try {
+        minted = await guestKeys.createFaceKey();
+      } catch (error) {
+        // Tailscale failing doesn't use up one of the hour's sign-ins.
+        made.pop();
+        throw error;
+      }
+      const { key, hostname } = minted;
       // Revocation can happen while Tailscale is minting the key.
       if (!passkeys.list().some((p) => p.id === passkey.id))
         throw fail(401, "That passkey was removed. Sign in again.");

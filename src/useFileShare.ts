@@ -51,8 +51,14 @@ function prepare(peer: Peer, root: number, entry: FileEntry, blob?: Blob) {
       // Keep recent copies within a memory budget, oldest out first.
       const size = () =>
         [...copies.values()].reduce((n, c) => n + (c.file?.size || 0), 0);
-      while (size() > BUDGET && copies.size > 1)
-        copies.delete(copies.keys().next().value!);
+      // Oldest finished copy out first; never one still being fetched, nor this one.
+      while (size() > BUDGET) {
+        const oldest = [...copies.entries()].find(
+          ([, c]) => c !== copy && c.file,
+        );
+        if (!oldest) break;
+        copies.delete(oldest[0]);
+      }
       return copy.file;
     })
     .catch((e) => {

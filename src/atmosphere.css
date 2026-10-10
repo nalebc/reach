@@ -1019,9 +1019,6 @@ select:focus {
 .simple-screen.screen-expanded .screen-state {
   min-width: 0;
 }
-.simple-screen.screen-typing > .simple-screen-dock {
-  display: none;
-}
 @media (max-height: 480px) and (pointer: coarse) {
   .screen-typing > .screen-toolbar {
     display: none;

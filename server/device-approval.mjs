@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { atomicJson, loadJson, fail, hash, ALL_SCOPES } from "./core.mjs";
+import { atomicJson, loadJson, fail, hash, sameHash, ALL_SCOPES } from "./core.mjs";
 import {
   ownerIdentity,
   sameIdentity,
@@ -49,7 +49,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
     for (const name of fs.readdirSync(dir)) {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
       const value = loadJson(path.join(dir, name), null);
-      if (!value || value.expiresAt <= now()) {
+      if (!value || !(value.expiresAt > now())) {
         fs.rmSync(path.join(dir, name), { force: true });
         fs.rmSync(path.join(dir, name + ".decision"), { force: true });
       } else {
@@ -141,11 +141,11 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       if (
         !ownerIdentity(identity, owner) ||
         !r ||
-        r.expiresAt <= now() ||
+        !(r.expiresAt > now()) ||
         r.status !== "pending" ||
         typeof secret !== "string" ||
         secret.length > 100 ||
-        hash(secret) !== r.secretHash ||
+        !sameHash(hash(secret), r.secretHash) ||
         !sameIdentity(r.identity, identity) ||
         fs.existsSync(file(id) + ".decision")
       )
@@ -160,10 +160,10 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       if (
         !ownerIdentity(identity, owner) ||
         !r ||
-        r.expiresAt <= now() ||
+        !(r.expiresAt > now()) ||
         typeof secret !== "string" ||
         secret.length > 100 ||
-        hash(secret) !== r.secretHash ||
+        !sameHash(hash(secret), r.secretHash) ||
         !sameIdentity(r.identity, identity)
       )
         throw fail(

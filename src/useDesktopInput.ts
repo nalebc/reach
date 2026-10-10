@@ -161,8 +161,9 @@ export function useDesktopInput(
             };
           return;
         }
-        if (m.type !== "ack" || !queue)
-          throw Error("Invalid input acknowledgment.");
+        // Unknown or out-of-order messages (a second "ready", an early
+        // "fields") are harmless; only a malformed ack fails the control.
+        if (m.type !== "ack" || !queue) return;
         const ms = queue.acknowledge(m.id, m);
         if (performance.now() - measured > 500) {
           measured = performance.now();

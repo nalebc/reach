@@ -230,3 +230,12 @@ test("public receipt polling only writes credentials when collecting an approved
   assert.equal(f.auth.verify(access.token, f.identity).id, approved.clientId);
   unchanged(() => assert.throws(() => f.poll(approved), { status: 409 }));
 });
+
+test("a corrupt credential store is never replaced by the next write", (t) => {
+  const f = fixture(t);
+  f.browser();
+  const file = path.join(f.config.dataDir, "clients.json");
+  fs.writeFileSync(file, "[{\"truncated");
+  assert.throws(() => f.browser(), (error) => error.status === 503);
+  assert.equal(fs.readFileSync(file, "utf8"), "[{\"truncated", "the damaged file is left for recovery");
+});

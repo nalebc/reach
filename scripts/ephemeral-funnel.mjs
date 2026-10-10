@@ -215,7 +215,10 @@ export class EphemeralFunnel {
   async stop() {
     this.stopped = true;
     this.clearEvery(this.monitor);
-    await this.closeWorker();
+    // Route off first, while the janitor still holds its lease: if Reach is
+    // cut short (hard exit deadline, slow tailscale), the janitor sees its
+    // parent gone and switches the route off itself.
     await this.release();
+    await this.closeWorker();
   }
 }

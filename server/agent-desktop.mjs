@@ -10,7 +10,7 @@ import { presetScopes } from "./agent-presets.mjs";
 // started with that session's rules. Agents act one at a time: the Mac has one
 // pointer and one keyboard, so an agent holds it for a short lease that each
 // of its actions extends, and the others are told who has it. Screenshots are
-// reads and run side by side. The owner's own hands (checked natively) and the
+// reads, serialised per agent (a second request shares or waits for the first). The owner's own hands (checked natively) and the
 // owner's phone (checked here) always come first.
 const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 };
 const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked" });
@@ -45,13 +45,15 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
     ...texts.map((line) => ({ x: line.x, mid: line.y + line.h / 2, line: line.heading ? `# ${line.text}` : line.text })),
-  ].sort((a, b) => Math.abs(a.mid - b.mid) < 0.006 ? a.x - b.x : a.mid - b.mid);
+  ].sort((a, b) => a.mid - b.mid);
+  // Group by height first (a consistent order), then read each row left to right.
   const rows = [];
   for (const entry of entries) {
     const last = rows.at(-1);
-    if (last && Math.abs(entry.mid - last.mid) < 0.006) last.parts.push(entry.line);
-    else rows.push({ mid: entry.mid, parts: [entry.line] });
+    if (last && Math.abs(entry.mid - last.mid) < 0.006) last.parts.push(entry);
+    else rows.push({ mid: entry.mid, parts: [entry] });
   }
+  for (const row of rows) row.parts = row.parts.sort((a, b) => a.x - b.x).map((entry) => entry.line);
   const head = [`${app}${title ? ` — ${title}` : ""}`,
     snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : "", ""];
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
@@ -116,7 +118,7 @@ const HELPER_FAILURES = {
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
-const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open"]);
+const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check"]);
 const helperFailure = (reason, request, dispatched = false) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
@@ -338,7 +340,7 @@ export function createAgentDesktop(config, {
     return pending ? { clientId: pending.client.id, name: String(pending.client.name || "Another agent").slice(0, 80) }
       : lease.until > now() ? { clientId: lease.holder, name: lease.name } : null;
   };
-  const observe = (client) => { looks.set(client.id, now()); };
+  const observe = (client, at = now()) => { looks.set(client.id, at); };
   // Who holds the Mac for chats' desktop work, by name, or false. Pending
   // native input remains authoritative even after revocation or an expired
   // idle lease, until the old helper has actually exited.
@@ -401,6 +403,8 @@ export function createAgentDesktop(config, {
       // requests used to queue behind each other and swamp macOS's capture
       // service until no picture came back at all.
       const running = capturing.get(latest.id);
+      // The look counts from when the picture was asked for, not when it came back.
+      let askedAt = running && running.width >= width ? running.askedAt : now();
       let result;
       if (running && running.width >= width) result = await running.promise;
       else {
@@ -416,7 +420,7 @@ export function createAgentDesktop(config, {
           checkState(client, authorize, "browser:screen", state);
           return value;
         })();
-        const entry = { width, promise };
+        const entry = { width, promise, askedAt };
         capturing.set(latest.id, entry);
         try { result = await promise; } finally { if (capturing.get(latest.id) === entry) capturing.delete(latest.id); }
       }
@@ -424,7 +428,7 @@ export function createAgentDesktop(config, {
       if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
-      observe(latest);
+      observe(latest, askedAt);
       return { jpeg, width: result.width, height: result.height, hidden: result.hidden || 0 };
     },
     /** What is in front: the app, its window title, whether it takes commands or a password, and why it is closed to the agent if it is. */
@@ -435,7 +439,6 @@ export function createAgentDesktop(config, {
       const result = answer(await state.helper.send({ op: "front" }));
       checkState(client, authorize, "browser:screen", state);
       const holder = currentHolder();
-      observe(latest);
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),
@@ -444,10 +447,13 @@ export function createAgentDesktop(config, {
     /** What can be clicked in the front window, numbered, from the accessibility tree. */
     async elements(client, authorize) {
       const latest = live(client, authorize, "browser:control");
+      const askedAt = now();
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
       const result = answer(await state.helper.send({ op: "elements" }));
       checkState(client, authorize, "browser:control", state);
+      // The numbered labels read the live screen: that is a look.
+      observe(latest, askedAt);
       const fraction = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
       const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
         .filter((item) => Number.isInteger(item?.n))
@@ -472,9 +478,9 @@ export function createAgentDesktop(config, {
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
       checkFresh(latest);
-      take(latest);
       try {
         if (action.type === "type") {
+          take(latest);
           const front = answer(await state.helper.send({ op: "front" }));
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
           if (action.secret) {
@@ -482,7 +488,9 @@ export function createAgentDesktop(config, {
             // where they would run or show as a command.
             if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
           } else if (front.secure) throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
-          const reason = action.secret ? null : typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+          // Vault values still never go to Reach's own pages or protected paths;
+          // only the shell deny list is skipped for them.
+          const reason = typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
           if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           action.terminalLikeChecked = front.terminalLike === true;
         }

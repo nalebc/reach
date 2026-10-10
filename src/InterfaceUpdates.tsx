@@ -7,33 +7,28 @@ import {
 } from "./build-reload";
 
 const messages = {
-  checking: "Checking for updates…",
+  checking: "Checking…",
   current: "Up to date",
-  offline: "Couldn’t check. Reach will try again when connected.",
-  waiting:
-    "Update ready. Finish typing or close the live stream to install it.",
-  reloading: "Installing the update…",
+  offline: "Offline",
+  waiting: "Ready, installs when idle",
+  reloading: "Installing…",
 };
 
+// One row in Settings' list: the state as its value; tap to check now.
+// Interface updates install on their own when Reach is idle.
 export default function InterfaceUpdates() {
   const state = useSyncExternalStore(subscribeUpdates, getUpdateState);
   return (
-    <section className="panel settings-panel interface-updates">
-      <h2>Reach updates</h2>
-      <p>
-        Interface updates install automatically when Reach is idle. Keep using
-        the same Home Screen icon.
-      </p>
-      <p role="status" aria-live="polite">
+    <button
+      className="gs-row interface-updates"
+      disabled={state === "checking" || state === "reloading" || state === "waiting"}
+      onClick={() => checkForUpdates()}
+    >
+      <RefreshCw size={21} className={state === "checking" ? "spin" : ""} />
+      <span className="gs-label">Reach updates</span>
+      <span className="gs-value" role="status" aria-live="polite">
         {messages[state]}
-      </p>
-      <button
-        className="button secondary"
-        disabled={state === "checking" || state === "reloading"}
-        onClick={() => checkForUpdates()}
-      >
-        <RefreshCw size={16} /> Check for updates
-      </button>
-    </section>
+      </span>
+    </button>
   );
 }

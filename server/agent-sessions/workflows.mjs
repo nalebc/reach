@@ -491,6 +491,8 @@ export function createWorkflows({
       if (r) {
         p.relay = null;
         p.seenAt = now();
+        // An error's item is seen too, so it isn't recorded again on every file change.
+        if (r.item) p.seenItem = r.item;
         if (r.state === "done" && r.outcome === "reply") {
           p.reply = r.item;
           let answer = "";
@@ -520,7 +522,7 @@ export function createWorkflows({
       // Idle: watched again once its chat moves (you wrote in it).
       const row = (await list()).find((s) => s.agent === p.agent && s.id === p.id);
       if (row && w.state === "draft" && !p.relay && (BUSY.has(row.status) || Number(row.updatedAt) > (p.seenAt || 0))) {
-        p.relay = relays.watch({ owner: w.owner, from: { agent: p.agent, id: p.id, title: p.title, cwd: w.cwd }, since: p.reply || null, workflow: w.id, task: "plan" });
+        p.relay = relays.watch({ owner: w.owner, from: { agent: p.agent, id: p.id, title: p.title, cwd: w.cwd }, since: p.seenItem || p.reply || null, workflow: w.id, task: "plan" });
         save();
       }
     }

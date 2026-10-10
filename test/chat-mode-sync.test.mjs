@@ -41,13 +41,15 @@ const claudeWith = (session, extra = {}) => {
     daemon: { rpc: async () => ({}), onNotification() {} },
     codex: {},
     codexLive: { drives: () => false },
-    claude: { health: async () => ({ agent: "claude", installed: true, signedIn: true }), read: async () => ({ session, items: [] }) },
+    claude: { health: async () => ({ agent: "claude", installed: true, signedIn: true }), read: async () => ({ session, items: [] }), ...extra.claude },
     claudeHost: {
       onRelease() {},
       drives: () => !!extra.driving,
       send: async (id, body) => (sent.push(body.mode ?? null), { turnId: null }),
       mode: async (id, mode) => (modes.push(mode), !!extra.driving),
+      ...extra.host,
     },
+    ...(extra.live ? { live: extra.live, liveMs: -1 } : {}),
     signIn: {},
     ...(extra.claudeCompose ? { claudeCompose: extra.claudeCompose } : {}),
     claudeImports: { add: async () => {}, close() {} },
@@ -134,4 +136,132 @@ test("rejected Codex settings and sends preserve the confirmed mode; native chan
   nativeMode = "guardian-approvals";
   changed(CODEX);
   assert.equal(modes.get(CODEX), "guardian-approvals");
+});
+
+// "Mode changes don't take effect": a pick queued for Claude Code's next
+// request in another app stayed queued when Reach ran the next turn itself
+// (the app closed, a terminal chat), which went in the old mode while the
+// PreToolUse hook made each of its steps ask.
+test("a turn Reach runs itself goes in a mode queued for the chat, and takes it", async () => {
+  for (const session of [
+    { agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "plan" },
+    { agent: "claude", id: ID, cwd: "/work/app", inApp: true, appTitle: "Chat", mode: "plan" },
+  ]) {
+    let queued = "acceptEdits";
+    const { sessions, sent } = claudeWith(session, {
+      agentAsks: { close() {}, queuedMode: () => queued, clearMode: () => (queued = null) },
+    });
+    await sessions.send("claude", ID, { text: "go on" });
+    assert.deepEqual(sent, ["acceptEdits"]);
+    assert.equal(queued, null);
+    sessions.close();
+  }
+  // Manual waits as Claude Code's "default": it runs as Manual.
+  let queued = "default";
+  const { sessions, sent } = claudeWith({ agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "auto" }, {
+    agentAsks: { close() {}, queuedMode: () => queued, clearMode: () => (queued = null) },
+  });
+  await sessions.send("claude", ID, { text: "go on" });
+  assert.deepEqual(sent, ["manual"]);
+  sessions.close();
+});
+
+// Review (Oct 9): the queued pick was let go of as soon as Reach accepted a
+// message, though it waited in the outbox (the app busy) or was taken back:
+// the app's next request went without it. Kept until Reach's own Claude
+// Code really runs it.
+test("a mode queued for the chat stays queued while its message waits, until Reach runs it", async () => {
+  let queued = "acceptEdits";
+  let holders = new Map([[ID, { where: "claude-app", pid: 7, exact: true, busy: true, waiting: null }]]);
+  const sent = [];
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: {},
+    codexLive: { drives: () => false },
+    claude: { starts: async () => [], health: async () => ({ agent: "claude", installed: true, signedIn: true }), read: async () => ({ session: { agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "plan" }, items: [] }) },
+    claudeHost: { onRelease() {}, drives: () => false, send: async (id, body) => (sent.push([body.mode, queued]), { turnId: null }) },
+    live: async () => holders,
+    liveMs: -1,
+    queueMs: 20,
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks: { close() {}, queuedMode: () => queued, clearMode: () => (queued = null) },
+    processes: async () => [],
+  });
+  try {
+    const first = await sessions.send("claude", ID, { text: "go on" });
+    assert.equal(first.queued, true);
+    assert.equal(queued, "acceptEdits");
+    // Taken back: the pick still waits for the app's next request.
+    await sessions.cancelQueued("claude", ID, first.messageId);
+    assert.equal(queued, "acceptEdits");
+    await sessions.send("claude", ID, { text: "go on" });
+    assert.equal(queued, "acceptEdits");
+    // The app let go: Reach runs it, in the pick, and takes it then.
+    holders = new Map();
+    for (let i = 0; i < 200 && !sent.length; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(sent, [["acceptEdits", null]]);
+    assert.equal(queued, null);
+  } finally {
+    sessions.close();
+  }
+});
+
+// Review (Oct 9): already in the mode Reach's Claude Code would run it in,
+// an older pick queued for the app's next request stayed and went in later.
+test("a mode that's already in lets go of an older queued one", async () => {
+  let queued = "plan";
+  const { sessions } = claudeWith({ agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "default" }, {
+    host: { mode: async () => false, modeOf: () => "auto" },
+    claude: { starts: async () => [] },
+    live: async () => new Map(),
+    agentAsks: { close() {}, queuedMode: () => queued, clearMode: () => (queued = null), queueMode: () => {} },
+  });
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: true });
+  assert.equal(queued, null);
+  sessions.close();
+});
+
+// A chat Reach ran and let go of between turns, nobody else holding it:
+// Reach runs its next turn in the pick, so it's in now, not queued for a
+// hook that would only make Reach's own run ask at every step.
+test("a mode picked for a chat Reach runs next is in at once, not queued", async () => {
+  const queued = [];
+  let kept = null;
+  const extra = {
+    host: { mode: async (id, mode) => ((kept = mode), false), modeOf: () => kept },
+    claude: { starts: async () => [] },
+    agentAsks: { close() {}, queueMode: (...a) => queued.push(a) },
+  };
+  let { sessions } = claudeWith({ agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "default" }, { ...extra, live: async () => new Map() });
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: true });
+  assert.deepEqual(queued, []);
+  sessions.close();
+  // Open in a terminal now: that Claude Code takes it with its next request.
+  ({ sessions } = claudeWith({ agent: "claude", id: ID, cwd: "/work/app", inApp: false, mode: "default" }, {
+    ...extra,
+    live: async () => new Map([[ID, { where: "terminal", pid: 7, exact: true }]]),
+  }));
+  assert.deepEqual(await sessions.mode("claude", ID, { mode: "plan" }), { mode: "plan", applied: false, next: "request" });
+  assert.deepEqual(queued, [["claude", ID, "plan"]]);
+  sessions.close();
+});
+
+// "Mode changes don't stick": a plan approved into Manual on the phone went
+// back to Plan once the Claude app took the chat (it adopts the transcript's
+// mode, and the switch is in no line of it). Released, the mode Reach's
+// Claude Code was in goes with Claude Code's next request there.
+test("a mode Reach's Claude Code switched to goes with the chat into the Claude app", async () => {
+  for (const [shown, expected] of [["plan", [["claude", ID, "default"]]], ["default", []]]) {
+    let release;
+    const queued = [];
+    const { sessions } = claudeWith({ agent: "claude", id: ID, cwd: "/work/app", inApp: true, appTitle: "Chat", mode: shown }, {
+      host: { onRelease: (listener) => (release = listener), modeOf: () => "default" },
+      agentAsks: { close() {}, queueMode: (...a) => queued.push(a) },
+    });
+    release(ID, { wrote: false });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(queued, expected, shown);
+    sessions.close();
+  }
 });

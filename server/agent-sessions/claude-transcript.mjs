@@ -6,9 +6,12 @@
 // - Results of parallel tool calls branch off the chain; they are attached to
 //   their tool_use by id, wherever they sit in the file.
 // - Messages typed while a turn runs are "queued_command" attachments.
+// - Until Claude Code takes them, they wait in its queue: "queue-operation"
+//   lines outside the chain (enqueue; dequeue, remove, popAll).
 // Nothing here executes or follows paths from the transcript.
 
-import { repeatedImages, visibleUserText } from "./message-text.mjs";
+import crypto from "node:crypto";
+import { attachedFiles, repeatedImages, visibleUserText } from "./message-text.mjs";
 import { partLabel, partLabels } from "./message-parts.mjs";
 
 const clip = (text, max) => {
@@ -26,6 +29,14 @@ const textOf = (content) =>
           .map((b) => b.text)
           .join("\n")
       : "";
+// One tool call, named by its tool and whole input (keys in any order): a
+// permission Claude Code asks again for is checked against the call still
+// running in its transcript (agent-asks.mjs), its hook giving no call id
+// (PermissionRequest, Claude Code 2.1.296).
+const sorted = (v) =>
+  Array.isArray(v) ? v.map(sorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
+export const askKey = (tool, input) =>
+  crypto.createHash("sha256").update(JSON.stringify([String(tool ?? ""), sorted(input ?? {})])).digest("hex").slice(0, 16);
 const relative = (file, cwd) =>
   cwd && typeof file === "string" && file.startsWith(`${cwd}/`)
     ? file.slice(cwd.length + 1)
@@ -68,6 +79,13 @@ export function consentOf(name, input = {}) {
   }
 }
 
+// A step the person said no to, in Reach (its deny) or Claude Code's own
+// dialog (its rejection), is declined, not failed. Only those exact words:
+// any other error stays a failure.
+const DECLINED = /^(The user declined this from Reach\.|The user doesn't want to proceed with this tool use\.)/;
+const toolStatus = (result) =>
+  result ? (result.is_error ? (DECLINED.test(result.output) ? "declined" : "failed") : "completed") : "running";
+
 function toolItem(block, result, cwd) {
   const input = block.input || {};
   const consent = consentOf(block.name, input);
@@ -75,7 +93,7 @@ function toolItem(block, result, cwd) {
     return {
       id: block.id,
       role: "tool",
-      status: result ? (result.is_error ? "failed" : "completed") : "running",
+      status: toolStatus(result),
       kind: "tool",
       text: consent.title,
       detail: result ? result.output : "",
@@ -88,7 +106,7 @@ function toolItem(block, result, cwd) {
   const base = {
     id: block.id,
     role: "tool",
-    status: result ? (result.is_error ? "failed" : "completed") : "running",
+    status: toolStatus(result),
   };
   switch (block.name) {
     case "Bash":
@@ -183,12 +201,13 @@ const KEEP = {
 function slimToolUse(b) {
   const input = b.input && typeof b.input === "object" ? b.input : {};
   const keep = KEEP[b.name] || (consentOf(b.name, input) ? ["apps", "reason", "path"] : null);
-  if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600) };
+  const key = askKey(b.name, b.input);
+  if (!keep) return { type: "tool_use", id: b.id, name: b.name, input: {}, detail: clip(JSON.stringify(input), 600), key };
   const short = (v) => (typeof v === "string" ? clip(v, EDIT_MAX) : v);
   const kept = Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, short(input[k])]));
   if (Array.isArray(kept.edits))
     kept.edits = kept.edits.slice(0, 30).map((e) => ({ old_string: short(e?.old_string ?? ""), new_string: short(e?.new_string ?? "") }));
-  return { type: "tool_use", id: b.id, name: b.name, input: kept };
+  return { type: "tool_use", id: b.id, name: b.name, input: kept, key };
 }
 const EDIT_MAX = 12000;
 
@@ -289,6 +308,10 @@ function slimEntry(e, results, maxOutput) {
       }
     }
     out.message = { content: kept, ...(e.message.model ? { model: e.message.model } : {}) };
+    // The effort this turn ran at (Claude Code 2.1.29x writes it on each
+    // reply), read as a word so a new level still shows by its own name.
+    const effort = e.type === "assistant" ? [e.effort, e.perTurnEffort].find((v) => typeof v === "string" && /^[a-z][a-z0-9_-]{0,23}$/.test(v)) : undefined;
+    if (effort) out.effort = effort;
     // Keep bounded usage on its own entry so rewinds and alternate branches
     // report the selected history, not whichever reply was last in the file.
     if (e.type === "assistant" && !e.isSidechain && e.message.usage && e.message.model !== "<synthetic>") {
@@ -333,6 +356,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   // mode: the permission mode its latest message was sent in (Claude Code
   // writes it on each of your messages), to resume it in the same one.
   const meta = { title: "", cwd: "", gitBranch: "", entrypoint: "", sessionId: "", mode: "" };
+  const cwds = new Set();
   let last = null;
   let firstAt = null;
   let updatedAt = null;
@@ -341,6 +365,12 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   // Where each line holding pictures sits in the file (when the reader is
   // told where its text starts), so one picture can be read back alone.
   const imageLines = new Map();
+  // Claude Code's own queue: sent while it worked, not taken yet. The Claude
+  // app writes their words (Claude Code 2.1.295); Reach's own process writes
+  // none (claude-host knows those). [{ id, text, images, key, at }]
+  const queue = [];
+  let enqueued = 0;
+  const queueKey = (content) => `${textOf(content)}\u0000${Array.isArray(content) ? content.filter((b) => b?.type === "image").length : 0}`;
   return {
     add(source, { offset } = {}) {
       let position = Number.isFinite(offset) ? offset : null;
@@ -358,8 +388,34 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         if (line.includes("<task-notification>"))
           for (const note of taskNotes(e.content ?? e.attachment?.prompt ?? e.message?.content))
             if (!tasks.has(note.id) || e.timestamp >= (tasks.get(note.id).timestamp || "")) tasks.set(note.id, { ...note, timestamp: e.timestamp || "" });
+        if (e.type === "queue-operation") {
+          const content = typeof e.content === "string" || Array.isArray(e.content) ? e.content : null;
+          if (e.operation === "enqueue")
+            queue.push({
+              id: `queued:${enqueued++}`,
+              text: content === null ? null : clip(textOf(content), 20000),
+              images: Array.isArray(content) ? content.filter((b) => b?.type === "image").length : 0,
+              key: content === null ? null : queueKey(content),
+              at: e.timestamp ? Date.parse(e.timestamp) : undefined,
+            });
+          else if (e.operation === "dequeue") queue.shift();
+          // Folded into the turn running (absorbed_mid_turn) or taken out:
+          // that one, by its words (one without words, the oldest without);
+          // none matching takes nothing (never another one's words).
+          else if (e.operation === "remove") {
+            const at = queue.findIndex((q) => q.key === (content === null ? null : queueKey(content)));
+            if (at >= 0) queue.splice(at, 1);
+          } else if (e.operation === "popAll") queue.length = 0;
+          // Any other: nothing taken (it keeps showing as waiting).
+        }
         if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
-        if (e.cwd) meta.cwd = e.cwd;
+        // The folder the session began in, never where a Bash `cd` left its
+        // shell (a chat moved to a project "sub" after `cd sub`); the others
+        // seen, for the one its transcript's folder is named after (claude.mjs).
+        if (typeof e.cwd === "string" && e.cwd) {
+          meta.cwd ||= e.cwd;
+          if (cwds.size < 64) cwds.add(e.cwd);
+        }
         if (e.gitBranch) meta.gitBranch = e.gitBranch;
         if (e.type === "user" && typeof e.permissionMode === "string" && e.permissionMode) meta.mode = e.permissionMode;
         if (e.sessionId && !meta.sessionId) meta.sessionId = e.sessionId;
@@ -413,6 +469,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       // Todo list calls, in order (todoList).
       const todoCalls = [];
       let model = null; // the latest model that answered
+      let effort = null; // the effort its latest reply ran at (null: unknown)
       let firstUser = "";
       // What Claude remembers of the chat: its latest summary (written when it
       // compacted) and the items since (moving a chat carries this; move.mjs).
@@ -433,10 +490,10 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             // come as pieces (it showed "[object Object],[object Object]").
             const pieces = Array.isArray(a.prompt) ? a.prompt : [{ type: "text", text: String(a.prompt) }];
             const raw = pieces.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
-            const words = visibleUserText(raw);
+            const { text: words, files } = attachedFiles(visibleUserText(raw));
             const pictures = pieces.filter((b) => b?.type === "image").length;
             const repeats = repeatedImages(raw);
-            const attachments = partLabels(pieces);
+            const attachments = [...partLabels(pieces), ...files];
             if (words || pictures || repeats || attachments.length)
               items.push({ id: e.uuid, role: "user", kind: "text", text: words, ...(pictures ? { images: pictures } : {}), ...(repeats ? { repeats } : {}), ...(attachments.length ? { attachments } : {}), queued: true, at });
           }
@@ -453,16 +510,18 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
           // Without what an app put ahead of the person's words (the Claude
           // app's <system-reminder> when a chat moves into it).
-          const said = blocks
-            .filter((b) => b && b.type === "text" && typeof b.text === "string" && b.text)
-            .map((b) => b.text)
-            .join("\n");
-          const text = visibleUserText(said);
+          const words = blocks.filter((b) => b && b.type === "text" && typeof b.text === "string" && b.text);
+          const said = words.map((b) => b.text).join("\n");
+          // Files attached on the phone show by name, not as Reach's paths.
+          const { text, files } = attachedFiles(visibleUserText(said));
+          // Several messages Claude Code took as one: each as it was sent, so
+          // the phone knows its own copies in it (a ghost of each stayed).
+          const parts = words.length > 1 ? words.map((b) => attachedFiles(visibleUserText(b.text)).text) : [];
           // Pictures the chat already had, sent as a note (image-repeats.mjs).
           const repeats = repeatedImages(said);
           const images = blocks.filter((b) => b?.type === "image").length;
           // A voice note or document it took as is (slimmed to its label).
-          const attachments = blocks.map((b) => (b?.type === "attachment" ? b.label : partLabel(b))).filter(Boolean);
+          const attachments = [...blocks.map((b) => (b?.type === "attachment" ? b.label : partLabel(b))).filter(Boolean), ...files];
           // A background task's notice (a watcher reporting, a task ending) is
           // written as a user turn but isn't from you: as in the Claude app,
           // only text outside the notice shows, as a quiet line.
@@ -498,6 +557,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             ...(images ? { images } : {}),
             ...(repeats ? { repeats } : {}),
             ...(attachments.length ? { attachments } : {}),
+            ...(parts.length ? { parts } : {}),
             at,
           });
         } else if (e.type === "assistant" && e.isApiErrorMessage) {
@@ -518,7 +578,10 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           });
         } else if (e.type === "assistant") {
           const content = Array.isArray(e.message?.content) ? e.message.content : [];
-          if (e.message?.model && e.message.model !== "<synthetic>") model = e.message.model;
+          if (e.message?.model && e.message.model !== "<synthetic>") {
+            model = e.message.model;
+            effort = e.effort || null;
+          }
           // Ids by the block's place in its own message, never the chat's:
           // one item more or fewer above shifted every id after it, and the
           // phone dropped the older pages it held and redrew the rows.
@@ -526,7 +589,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             if (b?.type === "text" && b.text?.trim())
               items.push({ id: `${e.uuid}:${n}`, role: "assistant", kind: "text", text: b.text, at });
             else if (b?.type === "tool_use") {
-              items.push({ ...toolItem(b, results.get(b.id), meta.cwd), at });
+              // A call still running: its key (a re-asked permission is checked against it).
+              items.push({ ...toolItem(b, results.get(b.id), meta.cwd), ...(b.key && !results.has(b.id) ? { key: b.key } : {}), at });
               if (b.name === "TodoWrite" || b.name === "TaskCreate" || b.name === "TaskUpdate")
                 todoCalls.push({ name: b.name, input: b.input || {}, result: results.get(b.id)?.output });
             }
@@ -535,7 +599,9 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
       }
       return {
         ...meta,
+        cwds: [...cwds],
         model,
+        effort,
         title: meta.title || firstUser.split("\n")[0].slice(0, 120),
         // When the session started: matches it to an app process started
         // without --resume (see processes.mjs).
@@ -545,6 +611,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         ...(memory ? { memory } : {}),
         tasks: [...tasks.values()],
         todos: todoList(todoCalls),
+        // Sent while it worked and still in its queue (not a background
+        // task's notice; not Reach's own process, whose lines have no words).
+        waiting: queue
+          .filter((q) => q.text !== null && (q.text.trim() || q.images) && !q.text.includes("<task-notification>"))
+          .map(({ id, text, images, at }) => ({ id, text, images, at })),
         // Token usage cannot establish a model's capacity. Only explicit
         // capacity metadata permits a percentage; otherwise show the count.
         ...(context ? { context } : {}),

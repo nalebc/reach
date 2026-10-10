@@ -59,9 +59,13 @@ export function onPairLink(handle: (link: PairLink) => void) {
   window.addEventListener("hashchange", acceptBrowser);
   if (!isNative)
     return () => window.removeEventListener("hashchange", acceptBrowser);
+  // The launch URL and appUrlOpen can both carry the same link: handle it
+  // once. Only for a moment, so a link whose pairing failed (expired code,
+  // offline) works again when it is opened again.
   const seen = (code: string) => {
-    if (localStorage.getItem("reach.lastPairCode") === code) return true;
-    localStorage.setItem("reach.lastPairCode", code);
+    const [last, at] = (localStorage.getItem("reach.lastPairCode") || "").split(":");
+    if (last === code && Date.now() - Number(at) < 10_000) return true;
+    localStorage.setItem("reach.lastPairCode", `${code}:${Date.now()}`);
     return false;
   };
   const accept = (url?: string) => {

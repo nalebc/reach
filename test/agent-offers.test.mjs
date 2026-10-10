@@ -82,6 +82,163 @@ test("Codex's models, efforts with its own descriptions, speeds and modes come f
   assert.deepEqual(calls.sort(), ["experimentalFeature/list", "model/list", "permissionProfile/list"]);
 });
 
+test("a Codex service older than the installed CLI: the CLI's newer models and config.toml's model are listed, unconfirmed, never the default", async () => {
+  const model = (id, extra = {}) => ({
+    id,
+    displayName: id.toUpperCase(),
+    supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "xhigh" }],
+    defaultReasoningEffort: "medium",
+    ...extra,
+  });
+  const fake = ({ service = "0.158.0-alpha.2.1", cli = "0.162.0-alpha.2", config = {} } = {}) => {
+    const asked = [];
+    return {
+      asked,
+      rpc: async (method) =>
+        method === "model/list" ? { data: [model("gpt-6-astra", { isDefault: true }), model("gpt-6-sol")] } : {},
+      onNotification() {},
+      compatibility: async () => ({ status: "available", version: cli, serviceVersion: service }),
+      cliModels: async (version) => {
+        asked.push(version);
+        return { data: [model("gpt-6.1-sol", { isDefault: true }), model("gpt-6-astra"), model("gpt-old", { hidden: true })] };
+      },
+      defaults: () => config,
+    };
+  };
+  const ids = (offered) => offered.models.map((m) => `${m.id}${m.isDefault ? "*" : ""}${m.unconfirmed ? "?" : ""}`);
+  let daemon = fake({ config: { model: "gpt-6.1-sol", effort: "xhigh" } });
+  let offered = await createCodexSessions({ daemon, appState: () => ({}) }).models();
+  assert.deepEqual(ids(offered), ["gpt-6-astra*", "gpt-6-sol", "gpt-6.1-sol?"]);
+  // Its efforts are Codex's own (an open gpt-6.1-sol chat gets its dots).
+  assert.deepEqual(offered.models[2].efforts, ["medium", "xhigh"]);
+  assert.deepEqual(daemon.asked, ["0.162.0-alpha.2"]);
+  // Same version, or one unreadable: the daemon's list only.
+  for (const versions of [{ service: "0.162.0-alpha.2" }, { service: null }]) {
+    daemon = fake(versions);
+    assert.deepEqual(ids(await createCodexSessions({ daemon, appState: () => ({}) }).models()), ["gpt-6-astra*", "gpt-6-sol"]);
+    assert.deepEqual(daemon.asked, []);
+  }
+  // config.toml's model, listed nowhere: by its own name, with no invented efforts.
+  daemon = fake({ service: "0.162.0", config: { model: "gpt-9-new", effort: "xhigh" } });
+  offered = await createCodexSessions({ daemon, appState: () => ({}) }).models();
+  assert.deepEqual(ids(offered), ["gpt-6-astra*", "gpt-6-sol", "gpt-9-new?"]);
+  assert.deepEqual([offered.models[2].name, offered.models[2].efforts], ["gpt-9-new", []]);
+  // config.toml's model the service has: what new chats start on, at its effort.
+  daemon = fake({ config: { model: "gpt-6-sol", effort: "xhigh" } });
+  offered = await createCodexSessions({ daemon, appState: () => ({}) }).models();
+  assert.deepEqual(ids(offered).slice(0, 2), ["gpt-6-astra", "gpt-6-sol*"]);
+  assert.equal(offered.models[1].defaultEffort, "xhigh");
+});
+
+test("Codex's CLI catalog comes from a one-shot app-server that is always stopped", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { cliModelList, codexDefaults, olderVersion } = await import("../server/agent-sessions/codex-daemon.mjs");
+  const run = (answer) => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), killed: false });
+    child.kill = () => { child.killed = true; };
+    child.stdin.on("data", (chunk) => {
+      for (const line of String(chunk).split("\n").filter(Boolean)) {
+        const m = JSON.parse(line);
+        if (m.id === 1) child.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\n");
+        if (m.id === 2) child.stdout.write(JSON.stringify({ id: 2, ...answer }) + "\n");
+      }
+    });
+    return child;
+  };
+  let child;
+  const start = (answer) => (file, args) => { assert.deepEqual(args, ["app-server"]); return (child = run(answer)); };
+  assert.deepEqual(await cliModelList("/codex", { start: start({ result: { data: [] } }) }), { data: [] });
+  assert.ok(child.killed);
+  await assert.rejects(cliModelList("/codex", { start: start({ result: { data: [{ id: "m", supportedReasoningEfforts: {} }] } }) }), { code: "AGENT_INCOMPATIBLE" });
+  assert.ok(child.killed);
+  await assert.rejects(cliModelList("/codex", { start: () => (child = Object.assign(run({}), { stdin: new PassThrough() })), timeout: 20 }), /did not answer/);
+  assert.ok(child.killed);
+  assert.equal(olderVersion("0.158.0-alpha.2.1", "0.162.0-alpha.2"), true);
+  assert.equal(olderVersion("0.162.0", "0.162.0-alpha.2"), false);
+  assert.equal(olderVersion(null, "0.162.0"), false);
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-codex-config-"));
+  fs.writeFileSync(path.join(home, "config.toml"), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = \'xhigh\'\n[profiles.fast]\nmodel = "gpt-6-luna"\n');
+  assert.deepEqual(codexDefaults(home), { model: "gpt-6.1-sol", effort: "xhigh" });
+  fs.writeFileSync(path.join(home, "config.toml"), '[profiles.fast]\nmodel = "gpt-6-luna"\n');
+  assert.deepEqual(codexDefaults(home), { model: null, effort: null });
+  assert.deepEqual(codexDefaults(path.join(home, "missing")), {});
+});
+
+// A reply split inside a character (a description's "é") read as two broken
+// halves; and the first model sheet waited up to 8 s on the CLI.
+test("Codex's CLI catalog keeps whole characters, and the first model sheet doesn't wait for it", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { cliModelList, createCodexDaemon } = await import("../server/agent-sessions/codex-daemon.mjs");
+  const model = { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", description: "Réfléchit — plus vite", supportedReasoningEfforts: [], defaultReasoningEffort: "medium" };
+  const start = () => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), kill() {} });
+    child.stdin.on("data", (chunk) => {
+      for (const line of String(chunk).split("\n").filter(Boolean)) {
+        const m = JSON.parse(line);
+        if (m.id === 1) child.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\n");
+        if (m.id === 2) {
+          const bytes = Buffer.from(JSON.stringify({ id: 2, result: { data: [model] } }) + "\n");
+          const cut = bytes.indexOf(Buffer.from("é")) + 1;
+          child.stdout.write(bytes.subarray(0, cut));
+          setTimeout(() => child.stdout.write(bytes.subarray(cut)), 5);
+        }
+      }
+    });
+    return child;
+  };
+  assert.equal((await cliModelList("/codex", { start })).data[0].description, "Réfléchit — plus vite");
+  let answer;
+  const asked = [];
+  const daemon = createCodexDaemon({
+    locate: async () => "/fake/codex",
+    run: async () => ({ stdout: "{}" }),
+    listCliModels: (file) => (asked.push(file), new Promise((resolve) => (answer = resolve))),
+  });
+  const quick = (p) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve("waited"), 100))]);
+  assert.equal(await quick(daemon.cliModels("0.162.0")), null, "started, not waited for");
+  assert.equal(await quick(daemon.cliModels("0.162.0")), null, "still coming: asked once");
+  assert.deepEqual(asked, ["/fake/codex"]);
+  answer({ data: [model] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await quick(daemon.cliModels("0.162.0")), { data: [model] });
+});
+
+// `profile = "x"` at the top: Codex starts chats on that profile's model.
+test("Codex's config defaults come from the profile config.toml picks, then its top level", async () => {
+  const { codexDefaults } = await import("../server/agent-sessions/codex-daemon.mjs");
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-codex-profile-"));
+  const write = (text) => fs.writeFileSync(path.join(home, "config.toml"), text);
+  write('profile = "fast"\nmodel = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n[profiles.slow]\nmodel = "gpt-6-astra"\n[profiles.fast]\nmodel = "gpt-6-luna"\n[profiles.fast.extra]\nmodel = "nope"\n');
+  assert.deepEqual(codexDefaults(home), { model: "gpt-6-luna", effort: "xhigh" }, "the profile's model, the top level's effort");
+  write("profile = 'my.fast'\nmodel = \"gpt-6.1-sol\"\n\n[profiles.\"my.fast\"]\nmodel_reasoning_effort = \"low\"\n");
+  assert.deepEqual(codexDefaults(home), { model: "gpt-6.1-sol", effort: "low" });
+  write('profile = "gone"\nmodel = "gpt-6.1-sol"\n[profiles.fast]\nmodel = "gpt-6-luna"\n');
+  assert.deepEqual(codexDefaults(home), { model: "gpt-6.1-sol", effort: null });
+});
+
+// A project root without a folder (or not an object) dropped the whole list.
+test("the Codex app's projects keep only roots that are folders", async () => {
+  const daemon = {
+    rpc: async (method) =>
+      method === "project/list"
+        ? { data: [{ id: "p1", name: "app", roots: [{ path: "/work/app" }, null, { path: 7 }, {}, { path: "" }, "x"] }, { id: "p2", roots: null }] }
+        : {},
+    onNotification() {},
+  };
+  assert.deepEqual(await createCodexSessions({ daemon, appState: () => ({}) }).projects(), [
+    { id: "p1", name: "app", roots: ["/work/app"] },
+    { id: "p2", name: "", roots: [] },
+  ]);
+});
+
 test("Claude Code's modes come from its own --help, in its order and words; Auto only for models that take it", async () => {
   assert.deepEqual(claudeModes(HELP), [
     { id: "manual", label: "Manual" },
@@ -121,7 +278,9 @@ test("Claude Code's modes come from its own --help, in its order and words; Auto
     ],
   );
   assert.deepEqual(offered.models.map(m => m.resolvedModel), ["claude-opus-5-5", "claude-haiku-4-5-20251001"], "native session IDs must map to their catalog alias and effort options");
-  assert.deepEqual(offered.modes, claudeModes(HELP));
+  // Bypass is listed, marked as one an open chat isn't switched to (the
+  // mode route refuses it); a new chat may still start in it.
+  assert.deepEqual(offered.modes, claudeModes(HELP).map((m) => (m.id === "bypassPermissions" ? { ...m, switchable: false } : m)));
   sessions.close();
 });
 

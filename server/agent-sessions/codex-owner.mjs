@@ -387,6 +387,8 @@ export function createCodexOwner({
         p.status === "disconnected"
       ) {
         for (const clients of followers.values()) clients.delete(p.clientId);
+        for (const key of [...queueBaselines.keys()])
+          if (key.endsWith(`:${p.clientId}`)) queueBaselines.delete(key);
       } else if (
         message.method === "thread-stream-following-changed" &&
         p.hostId === "local" &&
@@ -461,6 +463,7 @@ export function createCodexOwner({
     clientId = null;
     buffer = Buffer.alloc(0);
     followers.clear();
+    queueBaselines.clear();
     revisions.clear();
     if (!closed && owned.size && enabled && !retry) {
       retry = setTimeout(() => {
@@ -563,12 +566,18 @@ export function createCodexOwner({
       if (!owned.has(id)) ownerships.set(id, Symbol(id));
       owned.set(id, { ...(owned.get(id) || {}), ...values });
       await open().catch(() => {});
-      if (clientId)
-        broadcast(
-          "thread-stream-following-status-requested",
-          { conversationId: id, hostId: "local" },
-          1,
-        );
+      if (clientId) {
+        try {
+          broadcast(
+            "thread-stream-following-status-requested",
+            { conversationId: id, hostId: "local" },
+            1,
+          );
+        } catch {
+          // A half-closed socket is a disconnect; the thread already exists.
+          if (socket) disconnected(socket);
+        }
+      }
     },
     has: (id) => owned.has(id),
     hasFollowers: (id) => !!followers.get(id)?.size,

@@ -25,8 +25,18 @@ export function usePolling<T extends { version?: string }>(
   refresh: number,
   watch?: string,
 ) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState("");
+  // Data belongs to the computer that answered; another computer starts clean.
+  const peerKey = `${peer.id}|${peer.url}|${peer.token}`;
+  const [kept, setKept] = useState<{ key: string; data: T | null; error: string; notice: string }>({
+    key: peerKey,
+    data: null,
+    error: "",
+    notice: "",
+  });
+  const fresh = kept.key === peerKey;
+  const data = fresh ? kept.data : null;
+  const error = fresh ? kept.error : "";
+  const notice = fresh ? kept.notice : "";
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -39,10 +49,8 @@ export function usePolling<T extends { version?: string }>(
           const result = await request<T>(peer, route, {
             signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20000)]),
           });
-          if (active) {
-            setData(result);
-            setError("");
-          }
+          if (active)
+            setKept((k) => ({ key: peerKey, data: result, error: "", notice: k.key === peerKey ? k.notice : "" }));
           if (watch && watching && typeof result?.version === "string") {
             const asked = Date.now();
             try {
@@ -50,16 +58,29 @@ export function usePolling<T extends { version?: string }>(
                 signal: AbortSignal.any([abort.signal, AbortSignal.timeout(60000)]),
               });
             } catch (e) {
+              if (!active) throw e;
               // An older Mac without it: asked every `interval`.
-              if ((e as { status?: number }).status !== 404) throw e;
-              watching = false;
+              if ((e as { status?: number }).status === 404) watching = false;
+              else {
+                // Keep the last data; a slow watch never blocks the chat.
+                setKept((k) => ({ ...k, key: peerKey, notice: "Live updates are paused. Retrying…" }));
+                return;
+              }
             }
+            setKept((k) => (k.notice ? { ...k, notice: "" } : k));
             // Read again at once, never in a tight loop.
             if (watching) next = Math.max(0, 250 - (Date.now() - asked));
           }
         }
       } catch (e) {
-        if (active) setError((e as Error).message);
+        if (active) {
+          const name = (e as Error).name;
+          const message =
+            name === "TimeoutError" || name === "AbortError"
+              ? "OpenClaw is slow to answer. Retrying…"
+              : (e as Error).message;
+          setKept((k) => ({ key: peerKey, data: k.key === peerKey ? k.data : null, error: message, notice: "" }));
+        }
       } finally {
         if (active) timer = setTimeout(poll, next);
       }
@@ -71,5 +92,5 @@ export function usePolling<T extends { version?: string }>(
       clearTimeout(timer);
     };
   }, [peer.id, peer.url, peer.token, route, interval, refresh]);
-  return { data, error };
+  return { data, error, notice };
 }

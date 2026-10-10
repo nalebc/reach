@@ -185,11 +185,12 @@ export function readSessionRegistry({
   return found;
 }
 
-export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry } = {}) {
+export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid } = {}) {
   const { stdout } = await run("ps", ["-axo", "pid=,ppid=,etime=,tty=,command="], {
     maxBuffer: 8 * 1024 * 1024,
   });
-  const processes = claudeProcesses(parsePs(stdout, now()));
+  const procs = parsePs(stdout, now());
+  const processes = claudeProcesses(procs);
   const unknown = processes.filter((p) => !p.sessionId).map((p) => p.pid);
   let cwds = new Map();
   if (unknown.length) {
@@ -209,5 +210,9 @@ export async function liveClaudeSessions(starts, { run = exec, now = Date.now, r
   const ttys = new Map(processes.map((p) => [p.pid, p.tty]));
   for (const [id, entry] of registry())
     live.set(id, { ...live.get(id), ...entry, tty: entry.tty || live.get(id)?.tty || ttys.get(entry.pid) || null });
+  // Reach's own Claude Code (its replies) says "interactive" on the tty Reach
+  // runs in: it read as a terminal's while it exited after a turn (the chat
+  // went Reach → Terminal → Claude app). Its parent says whose it is.
+  for (const entry of live.values()) if (procs.get(entry.pid)?.ppid === self) entry.where = "reach";
   return live;
 }

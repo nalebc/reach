@@ -267,3 +267,13 @@
   font: inherit;
   font-size: 13px;
 }
+
+/* A finger-sized tap area around the small control; it looks the same. */
+.need-dots button {
+  position: relative;
+}
+.need-dots button::after {
+  content: "";
+  position: absolute;
+  inset: -12px -6px;
+}

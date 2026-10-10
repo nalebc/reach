@@ -825,9 +825,12 @@ export function InviteSheet({
     const ours = links[g.id]?.created;
     if (ours) await cancel(ours);
     else
-      await request(peer, `/api/clients/${g.id}`, { method: "DELETE" }).catch(
-        () => {},
-      );
+      // The same invitation on your other computers ends too, as when it
+      // was made here (after a reload the link's record is gone).
+      for (const x of await sameInvitation(g))
+        await request(x.peer, `/api/clients/${x.guest.id}`, {
+          method: "DELETE",
+        }).catch(() => {});
     if (made?.clientId === g.id) setMade(null);
     void loadGuests();
   };
@@ -1246,6 +1249,7 @@ export function InviteSheet({
                         autoCorrect="off"
                         spellCheck={false}
                         placeholder="Paste Tailscale’s share link"
+                        aria-label="Tailscale’s share link"
                         value={share}
                         onChange={(e) => setShare(e.target.value)}
                       />
@@ -1262,6 +1266,7 @@ export function InviteSheet({
                     <div className="ivt-link-row">
                       <input
                         className="ivt-link-field"
+                        aria-label="Invitation link"
                         readOnly
                         value={madeLink.link}
                         onFocus={(e) => e.target.select()}

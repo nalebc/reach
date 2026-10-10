@@ -1,3 +1,4 @@
+import "./abort-polyfill";
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ScreenBoundary from "./ScreenBoundary";

@@ -39,10 +39,17 @@ export async function tailscaleJson(args) {
       windowsHide: true,
     });
     return JSON.parse(stdout);
-  } catch {
-    throw Error(
-      "Tailscale is unavailable. Install and sign in to Tailscale on this computer and your phone, then rerun Reach.",
-    );
+  } catch (error) {
+    // A missing program is not a program that didn't answer.
+    if (error?.code === "ENOENT")
+      throw Error(
+        "Tailscale is unavailable. Install and sign in to Tailscale on this computer and your phone, then rerun Reach.",
+      );
+    const why = String(error?.killed || error?.signal ? "it took too long" : error?.stderr || error?.message || "")
+      .trim()
+      .split("\n")[0]
+      .slice(0, 160);
+    throw Error(`Tailscale didn't answer${why ? `: ${why}` : ""}. Check that it is running and signed in, then rerun Reach.`);
   }
 }
 export function serveConfigs(config) {

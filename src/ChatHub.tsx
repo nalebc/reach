@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, SquarePen, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, cancelRelay, projectName, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
+import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
 import { mergeHealth } from "./usage";
 import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
 import { relayLine } from "./Relays";
@@ -37,7 +37,7 @@ type Activity = {
 type Hit = { agent: string; id: string; role: string; at: number; snippet: string; title: string; cwd: string; listed: boolean };
 
 // A chat's project: a Claude app worktree belongs to its project's folder.
-export const projectOf = (cwd: string) => (cwd || "").replace(/[\\/]\.claude[\\/]worktrees[\\/][^\\/]+[\\/]?$/, "");
+export { projectOf } from "./agent-sessions";
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
 // The chats that changed one file, each name once: two chats with the same
 // name (a chat and the one split off from it, say) are "two Claude Code chats
@@ -256,7 +256,7 @@ export default function ChatHub({
   });
   const usage = useMemo(
     () => mergeHealth([health, ...others.map((c) => (Array.isArray(healths[c.id]?.value?.agents) ? healths[c.id].value!.agents! : []))]),
-    [health, healths],
+    [health, healths, others],
   );
   // The computers whose chats aren't here, and why (one still being asked
   // isn't said: its chats usually follow in a moment).
@@ -291,7 +291,7 @@ export default function ChatHub({
     const map = new Map<string, { computer: Peer; root: string; list: AgentSession[] }>();
     for (const { computer, sessions } of chatLists)
       for (const s of sessions) {
-        const root = projectOf(s.cwd);
+        const root = projectOfChat(s);
         const key = `${computer.id}\n${root}`;
         const group = map.get(key) || { computer, root, list: [] };
         group.list.push(s);
@@ -420,7 +420,7 @@ export default function ChatHub({
             const open = opened.includes(key);
             // Two chats changing one file: on the same computer only.
             const overlaps = activityOf(computer)?.overlaps;
-            const warn = (Array.isArray(overlaps) ? overlaps : []).filter((o) => root && o.file.startsWith(root.replace(/[\\/]$/, "") + "/"));
+            const warn = (Array.isArray(overlaps) ? overlaps : []).filter((o) => root && o.file.replace(/\\/g, "/").startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/"));
             const agents = [...new Set(list.map((s) => s.agent))];
             return (
               <section

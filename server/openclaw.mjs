@@ -95,6 +95,11 @@ export async function localOpenClawConfig({
       "Reach could not read the OpenClaw configuration. Check OPENCLAW_CONFIG_PATH on this computer.",
     );
   }
+  if (!config || typeof config !== "object" || Array.isArray(config))
+    throw fail(
+      503,
+      "Reach could not read the OpenClaw configuration. Check OPENCLAW_CONFIG_PATH on this computer.",
+    );
   if (config.gateway?.mode === "remote")
     throw fail(
       503,
@@ -1770,7 +1775,7 @@ export function createOpenClaw({
       authorize();
       if (typeof text !== "string" || !text.trim() || text.length > 100000)
         throw fail(400, "Write what you'd like OpenClaw to do.");
-      if (typeof requestId !== "string" || !/^[\w-]{8,100}$/.test(requestId))
+      if (typeof requestId !== "string" || !/^[\w-]{8,96}$/.test(requestId))
         throw fail(400, "A message request ID is required.");
       const known = starts.get(requestId);
       const choices = JSON.stringify([agentId, model, thinkingLevel]);
@@ -2035,7 +2040,7 @@ export async function startOpenClawGateway({
         windowsHide: true,
       });
     else
-      await run(env.SHELL || "/bin/sh", ["-lc", "openclaw gateway start"], {
+      await run(env.SHELL || "/bin/sh", ["-lc", "exec openclaw gateway start"], {
         timeout: 30000,
       });
   } catch {

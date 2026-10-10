@@ -139,6 +139,7 @@ function desktopWorld() {
         async send(request, beforeSend) {
           beforeSend?.(); requests.push(request);
           if (request.op === "shot") return await (screenAnswer?.() || { ok: true, jpeg: Buffer.from([255,216,255]).toString("base64"), width:100, height:100 });
+          if (request.op === "elements") return { ok: true, snapshot: "s1", app: "Safari", title: "", items: [], texts: [] };
           if (request.op === "front") return { ok: true, app:"Safari", bundle:"com.apple.Safari" };
           if (request.op === "open" || request.op === "act") return await (inputAnswer?.() || { ok: true, app:"Safari", bundle:"com.apple.Safari" });
           throw Error("Unexpected fixture operation");
@@ -187,6 +188,32 @@ test("an agent looks again before acting once a chat drove the Mac", async t => 
   await w.desktop.screenshot(client, w.authorize(client));
   await click();
   assert.equal(w.requests.filter(request => request.op === "act").length, 2);
+});
+
+test("describing the screen counts as a look, so its labels can be clicked after a chat drove the Mac", async t => {
+  const w = desktopWorld(); t.after(() => w.close());
+  const client = w.add();
+  const click = () => w.desktop.act(client, { type: "click", x: 0.5, y: 0.5 }, w.authorize(client));
+  await w.desktop.screenshot(client, w.authorize(client));
+  w.tick(10);
+  await assert.rejects(w.automation.run(() => { throw Object.assign(Error("not yet"), { waiting: true }); }));
+  assert.equal(await w.automation.run(guard => { guard(); return "typed"; }), "typed");
+  w.tick(10);
+  await assert.rejects(click(), error => error.stale === true);
+  w.tick(10);
+  await w.desktop.elements(client, w.authorize(client));
+  await click();
+  assert.equal(w.requests.filter(request => request.op === "act").length, 1);
+});
+
+test("a secret typed into a field still refuses protected pages", async t => {
+  const w = desktopWorld(); t.after(() => w.close());
+  const client = w.add();
+  await w.desktop.screenshot(client, w.authorize(client));
+  await assert.rejects(w.desktop.act(client, { type: "type", text: "javascript:alert(1)", secret: true }, w.authorize(client)), error => error.kind === "blocked");
+  assert.equal(w.requests.filter(request => request.op === "act").length, 0);
+  await w.desktop.act(client, { type: "type", text: "hunter2", secret: true }, w.authorize(client));
+  assert.equal(w.requests.filter(request => request.op === "act").length, 1);
 });
 
 test("a chat waiting on a busy agent gets the next turn, named", async t => {

@@ -26,7 +26,11 @@ export function serviceState(root, { run, home = os.homedir(), uid = process.get
   const plist = path.join(home, "Library/LaunchAgents", `${serviceLabel}.plist`);
   const installed = fs.existsSync(plist);
   const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const ours = installed && fs.readFileSync(plist, "utf8").includes(`<key>WorkingDirectory</key><string>${xml(root)}</string>`);
+  // This folder's job: by its program path (older plists also named the
+  // folder as the working directory). Same test as background-service.mjs.
+  const text = installed ? fs.readFileSync(plist, "utf8") : "";
+  const ours = installed && (text.includes(`<string>${xml(path.join(root, "scripts/bootstrap.mjs"))}</string>`) ||
+    text.includes(`<key>WorkingDirectory</key><string>${xml(root)}</string>`));
   let loaded = false;
   let pid = null;
   try {
@@ -104,14 +108,23 @@ export async function stopReach(
   // The background service goes through launchd (it would come back
   // otherwise); a restart starts it again in one step.
   const serviceHost = (h) => serviceRunning && (h.service || h.pid === service.pid);
-  if (serviceRunning) launchctl(restarting ? ["kickstart", "-k", service.target] : ["bootout", service.target]);
+  // A restart starts the service again only after the other hosts exited, so
+  // two Reaches never run at once.
+  if (serviceRunning && !restarting) launchctl(["bootout", service.target]);
+  // Another user's Reach can't be signalled (EPERM): said, never "Stopped".
+  const foreign = new Set();
+  const send = (pid, signal) => {
+    try {
+      kill(pid, signal);
+    } catch (error) {
+      if (error.code === "EPERM") foreign.add(pid);
+    }
+  };
   // The others the way Ctrl+C stops them; harder only if they hang.
   const others = hosts.filter((h) => !serviceHost(h));
-  for (const host of others)
-    try {
-      kill(host.pid, "SIGINT");
-    } catch {}
+  for (const host of others) send(host.pid, "SIGINT");
   const waitGone = async (pids, ms) => {
+    pids = pids.filter((pid) => !foreign.has(pid));
     for (const until = Date.now() + ms; pids.some((pid) => alive(kill, pid)) && Date.now() < until; ) await wait(200);
     return pids.filter((pid) => alive(kill, pid));
   };
@@ -119,15 +132,10 @@ export async function stopReach(
   const gone = restarting ? others : hosts;
   const hostPids = gone.map((h) => h.pid);
   let left = await waitGone(hostPids, graceMs);
-  for (const pid of left)
-    try {
-      kill(pid, "SIGTERM");
-    } catch {}
+  for (const pid of left) send(pid, "SIGTERM");
   left = await waitGone(left, termMs);
-  for (const pid of left)
-    try {
-      kill(pid, "SIGKILL");
-    } catch {}
+  for (const pid of left) send(pid, "SIGKILL");
+  if (serviceRunning && restarting) launchctl(["kickstart", "-k", service.target]);
   // Helpers a stopped Reach left running (its tunnel, stay-awake, …).
   const leftovers = gone.flatMap((h) => h.descendants.map((d) => d.pid)).filter((pid) => alive(kill, pid));
   for (const pid of leftovers)
@@ -139,7 +147,7 @@ export async function stopReach(
       kill(pid, "SIGKILL");
     } catch {}
   if (restarting && !serviceRunning) {
-    if ((await waitGone(hostPids, 2000)).length)
+    if ((await waitGone(hostPids, 2000)).length || others.some((h) => foreign.has(h.pid)))
       throw Error("Reach did not stop. Its route was not transferred; try again after it exits.");
     const file = path.join(state(root), "serve-owner.json");
     const sources = [...new Set(others.flatMap((host) =>
@@ -149,7 +157,8 @@ export async function stopReach(
     ))];
     await handoffRoute({ file, sources });
   }
-  const stopped = others.length;
+  const stopped = others.filter((h) => !foreign.has(h.pid)).length;
+  for (const pid of foreign) print(`Reach (process ${pid}) is owned by another user; it can't be stopped from here.`);
   if (serviceRunning && !restarting)
     print("The background service stopped; it starts again at your next sign-in, or with ./reach restart.");
   if (stopped) print(`Stopped ${stopped === 1 ? "Reach" : `${stopped} Reaches`}${terminals.length ? ` and ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} in it` : ""}.`);

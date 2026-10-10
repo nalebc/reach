@@ -106,9 +106,9 @@ export function createBrowserOperationCoordinator({ waitTimeoutMs = 30000, maxWa
             check(entry);
             await onWrite(context);
             check(entry);
-            const value = await entry.execute({ authorize: () => check(entry), signal: entry.controller.signal });
-            check(entry);
-            return value;
+            // A change that already completed is reported as completed, even if
+            // access was revoked or the run was stopped while it finished.
+            return await entry.execute({ authorize: () => check(entry), signal: entry.controller.signal });
           } finally { await onWriteFinished(context); }
         }).then(value => settle(entry.resolve, value), error => settle(entry.reject, error));
       }

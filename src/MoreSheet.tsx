@@ -2,9 +2,9 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   Folder,
   LayoutGrid,
-  MessageSquare,
   Plus,
   Settings,
   UserRoundPlus,
@@ -13,19 +13,16 @@ import {
 import ScreenPopup from "./ScreenPopup";
 import { BrandCourier } from "./ReachIdentity";
 import { AppIcon, ComputerIcon } from "./AppIcon";
-import { AgentLogo, useAgentLogos } from "./agent-logos";
 import { platform, type Device, type Peer } from "./api";
 import type { FleetConnections } from "./useFleetConnections";
 import "./more-sheet.css";
 
-// Everything not in the bottom bar, as Claude and Codex lay out their menus:
-// the computer you're on at the top (tap to switch), then the places as a
-// clean list of line icons, then Settings. Reach's own touch: the mascot,
-// dark glass and a little lime light.
+// Everything not in the bottom bar, as ChatGPT lays out its settings: the
+// mascot on top, the computer you're on (tap to switch), then the places
+// and Settings as short grouped lists with chevrons. Reach's dark green.
 const PLACES: Record<string, { label: string; glyph: ReactNode }> = {
   files: { label: "Files", glyph: <Folder size={21} /> },
   apps: { label: "Apps", glyph: <LayoutGrid size={21} /> },
-  chat: { label: "Codex", glyph: <MessageSquare size={21} /> },
   invite: { label: "Invite someone", glyph: <UserRoundPlus size={21} /> },
 };
 
@@ -61,8 +58,6 @@ export default function MoreSheet({
   onClose: () => void;
 }) {
   const [switching, setSwitching] = useState(false);
-  const owner = !device?.access || device.access.scopes.includes("admin");
-  const logos = useAgentLogos(owner ? peer : null);
   const online = connections[peer.id]?.state === "connected";
   const host = (() => {
     try {
@@ -87,7 +82,6 @@ export default function MoreSheet({
         <span className="more-mascot" aria-hidden="true">
           <BrandCourier active />
         </span>
-        <strong>More</strong>
         <button className="glass-button" aria-label="Close" onClick={onClose}>
           <X size={18} />
         </button>
@@ -163,14 +157,9 @@ export default function MoreSheet({
               aria-disabled={pending.includes(id) || undefined}
               onClick={() => !pending.includes(id) && onNavigate(id)}
             >
-              {id === "chat" && logos.codex ? (
-                <AppIcon size="small" real>
-                  <AgentLogo agent="codex" logos={logos} size={28} />
-                </AppIcon>
-              ) : (
-                <AppIcon size="small">{PLACES[id].glyph}</AppIcon>
-              )}
+              <AppIcon size="small">{PLACES[id].glyph}</AppIcon>
               <span className="more-row-label">{PLACES[id].label}</span>
+              <ChevronRight className="more-go" size={18} />
             </button>
           ))}
         </nav>
@@ -188,6 +177,7 @@ export default function MoreSheet({
               <Settings size={21} />
             </AppIcon>
             <span className="more-row-label">Settings</span>
+            <ChevronRight className="more-go" size={18} />
           </button>
         </nav>
       )}

@@ -83,6 +83,22 @@ test("stop: each the way Ctrl+C stops it, then the helpers it left; another fold
   assert.ok(w.alive.has(400) && w.alive.has(500));
 });
 
+test("another user's Reach (EPERM) is reported, never counted as stopped", async () => {
+  const w = world();
+  const kill = (pid, signal) => {
+    if (pid === 300) {
+      if (signal === 0) return;
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    }
+    return w.kill(pid, signal);
+  };
+  const printed = [];
+  const done = await stopReach(ROOT, base(w, { yes: true, kill, print: (t) => printed.push(t) }));
+  assert.equal(done.stopped, 2);
+  assert.ok(printed.some((t) => /owned by another user/.test(t)));
+  assert.ok(!printed.some((t) => /Stopped 3/.test(t)));
+});
+
 test("a Reach that hangs on Ctrl+C is ended harder, step by step", async () => {
   const w = world({ hung: [200], helpersLinger: false });
   await stopReach(ROOT, base(w, { yes: true }));
@@ -104,10 +120,15 @@ test("its terminals close with it: said first and asked; without a terminal to a
   assert.equal((await stopReach(ROOT, base(agreed, { interactive: true, ask: async () => "y" }))).stopped, 3);
 });
 
-const serviceHome = (root = ROOT) => {
+// The plist background-service.mjs writes today (program path, working
+// directory "/"), or the older one that named the folder.
+const serviceHome = (root = ROOT, { legacy = false } = {}) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-stop-"));
   fs.mkdirSync(path.join(home, "Library/LaunchAgents"), { recursive: true });
-  fs.writeFileSync(path.join(home, "Library/LaunchAgents/com.reach.companion.plist"), `<plist><dict><key>WorkingDirectory</key><string>${root}</string></dict></plist>`);
+  const body = legacy
+    ? `<key>WorkingDirectory</key><string>${root}</string>`
+    : `<key>ProgramArguments</key><array><string>/node</string><string>${path.join(root, "scripts/bootstrap.mjs")}</string><string>--service</string></array><key>WorkingDirectory</key><string>/</string>`;
+  fs.writeFileSync(path.join(home, "Library/LaunchAgents/com.reach.companion.plist"), `<plist><dict>${body}</dict></plist>`);
   return home;
 };
 const launchd = (loaded) => {
@@ -149,6 +170,12 @@ test("the background service stops through launchd (it would come back otherwise
   startService(ROOT, { launchctl: stoppedService.launchctl, home, uid: 501 });
   assert.deepEqual(stoppedService.calls.at(-1), ["bootstrap", "gui/501", path.join(home, "Library/LaunchAgents/com.reach.companion.plist")]);
   fs.rmSync(home, { recursive: true, force: true });
+  // An older plist that named the folder is still this folder's.
+  const legacy = serviceHome(ROOT, { legacy: true });
+  const again = launchd(false);
+  startService(ROOT, { launchctl: again.launchctl, home: legacy, uid: 501 });
+  assert.deepEqual(again.calls.at(-1)[0], "bootstrap");
+  fs.rmSync(legacy, { recursive: true, force: true });
 });
 
 test("nothing running: it says so", async () => {
@@ -173,6 +200,8 @@ test("restarted without a terminal (as agents do), Reach opens in Terminal, wher
 test("the commands: stop and restart, with --yes; --yes means nothing to other commands", () => {
   assert.deepEqual([parseOptions(["stop"]).command, parseOptions(["stop"]).yes], ["stop", undefined]);
   assert.deepEqual([parseOptions(["restart", "--yes"]).command, parseOptions(["restart", "-y"]).yes], ["restart", true]);
+  assert.deepEqual([parseOptions(["--yes", "restart"]).command, parseOptions(["-y", "stop"]).yes], ["restart", true]);
+  assert.throws(() => parseOptions(["--yes", "status"]), /Unknown option: --yes/);
   assert.throws(() => parseOptions(["status", "--yes"]), /Unknown option: --yes/);
   assert.throws(() => parseOptions(["stop", "--folder", "/x"]), /does not accept setup options/);
 });

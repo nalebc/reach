@@ -493,6 +493,54 @@ test("with one agent, there's no All page; a new chat from All starts in a real 
   assert.deepEqual(dom.errors, []);
 });
 
+test("from All, New chat starts in an agent that can answer, and one out of usage says so in its box and won't start", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  // Codex out of usage; Claude's usage unknown (never read as out).
+  await home([codexSession(), claudeSession()], both({ usable: false, resetsAt: Date.now() + 3600000 }, { usable: null }));
+  await click(await dom.waitFor(() => button("New chat")));
+  const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
+  const pressed = () => [...sheet.querySelectorAll(".chat-app-token")].find((b) => b.getAttribute("aria-pressed") === "true");
+  assert.equal(pressed()?.getAttribute("aria-label"), "Claude Code");
+  assert.equal(sheet.querySelector("textarea").getAttribute("aria-label"), "New Claude Code chat");
+  await typeInto(sheet.querySelector("textarea"), "Fix the header");
+  assert.equal(button("Start").disabled, false);
+  // Codex picked anyway: its box says it's out, and Start waits.
+  await click([...sheet.querySelectorAll(".chat-app-token")].find((b) => b.getAttribute("aria-label") === "Codex"));
+  const box = await dom.waitFor(() => sheet.querySelector('textarea[aria-label="New Codex chat"]'));
+  assert.match(box.getAttribute("placeholder"), /^Out of Codex usage until /);
+  assert.ok(box.closest(".as-field").classList.contains("out-of-usage"));
+  await typeInto(box, "Fix the header");
+  assert.equal(button("Start").disabled, true);
+  assert.deepEqual(dom.errors, []);
+});
+
+// From All with no app picked, the app was worked out again on every
+// render from the agents' health: one coming back mid-typing switched it.
+test("from All, New chat stays on the agent it opened on while the agents' health changes", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  let setHealth;
+  function Live() {
+    const [health, set] = React.useState(both({ usable: false }, { usable: true }));
+    setHealth = set;
+    return React.createElement(EverythingChat, {
+      peer,
+      feed: { sessions: [codexSession(), claudeSession()], errors: {}, health, failure: "", relays: [], reload: async () => {}, recheck: () => {} },
+    });
+  }
+  await mount(React.createElement(Live));
+  await click(await dom.waitFor(() => button("New chat")));
+  const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
+  assert.equal(sheet.querySelector("textarea").getAttribute("aria-label"), "New Claude Code chat");
+  await typeInto(sheet.querySelector("textarea"), "Fix the header");
+  // Codex's usage is back, Claude's runs out: the box stays Claude Code's.
+  dom.update(() => setHealth(both({ usable: true }, { usable: false })));
+  await settle(50);
+  const box = sheet.querySelector("textarea");
+  assert.equal(box.getAttribute("aria-label"), "New Claude Code chat");
+  assert.equal(box.value, "Fix the header");
+  assert.deepEqual(dom.errors, []);
+});
+
 const teamOf = (extra = {}) => ({
   id: "team-1",
   state: "active",
@@ -879,6 +927,41 @@ test("Chat starts on All until you pick an app, then keeps the one you picked", 
   assert.deepEqual(dom.errors, []);
 });
 
+// Opening a chat from All switched the list to that chat's app (and kept it):
+// Back landed on Codex. The phone's back gesture left Reach instead of
+// closing the chat.
+test("a chat opened from All goes back to All, by Back or the phone's back gesture", async () => {
+  const shownApp = () => $(".chat-current-name")?.textContent;
+  const history = dom.window.history;
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  await home([codexSession(), claudeSession()]);
+  const card = () => $$(".chat-hub .chat-card").find((c) => /Fix login/.test(c.textContent));
+  await click(await dom.waitFor(card));
+  await dom.waitFor(() => $(".as-page"));
+  assert.equal(history.state?.reachChat, true, "the open chat is a history entry");
+  await click(button("Back to all sessions"));
+  await dom.waitFor(() => $(".chat-hub"));
+  assert.equal(shownApp(), "All");
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");
+  await dom.waitFor(() => !history.state?.reachChat);
+  // The back gesture closes it, and the list is All.
+  await click(await dom.waitFor(card));
+  await dom.waitFor(() => $(".as-page") && history.state?.reachChat);
+  history.back();
+  await dom.waitFor(() => $(".chat-hub") && !$(".as-page"));
+  assert.equal(shownApp(), "All");
+  // An app picked in New chat is the sheet's: closed, the list is still All.
+  await click(button("New chat"));
+  const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
+  await click(sheet.querySelector('.chat-app-rail button[aria-label="Claude Code"]'));
+  await dom.waitFor(() => sheet.querySelector("textarea")?.getAttribute("aria-label") === "New Claude Code chat");
+  await click(button("Close new conversation"));
+  await dom.waitFor(() => !$(".chat-create-sheet"));
+  assert.equal(shownApp(), "All");
+  assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");
+  assert.deepEqual(dom.errors, []);
+});
+
 test("two chats with the same name changing one file read as two chats, not one name twice", async (t) => {
   const now = Date.now();
   routes["/api/sessions/activity"] = () => ({
@@ -914,7 +997,7 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   await click(await dom.waitFor(() => button("More")));
   await click($$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
-  assert.match(sheet.textContent, /24 hours and skips providers that are unavailable/);
+  assert.match(sheet.textContent, /If none is free, it waits: the first one back takes the work/);
   assert.match(sheet.textContent, /Read-only in Reach · skipped/);
   assert.equal(mac.sent.length, 0);
   await click(button("Move Claude Code up"));

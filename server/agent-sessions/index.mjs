@@ -15,12 +15,12 @@ import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
-import { createClaudeHost } from "./claude-host.mjs";
+import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createAppCards } from "./app-cards.mjs";
-import { agentAskSocket, createAgentAsks } from "./agent-asks.mjs";
+import { agentAskSocket, createAgentAsks, stillAsked } from "./agent-asks.mjs";
 import { agentHookCommand, agentModeHookCommand, claudeHookState, installClaudeHook, uninstallClaudeHook } from "./agent-hook-install.mjs";
 import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
@@ -53,6 +53,14 @@ export function nativeLink(session) {
   }
   return null;
 }
+
+// What Claude Code waits on besides a tool's permission (its registry's
+// waitingFor), in its notifications' words (2.1.295); any other, its word.
+const CLAUDE_WAITS = {
+  "dialog open": "Claude Code has something open for you to answer.",
+  "sandbox request": "A sandboxed command needs network access.",
+  "goal proposal": "Claude proposed a session goal.",
+};
 
 // Optional apps appear in Chat only when this computer has their app, CLI,
 // or (for an independently running OpenClaw Gateway) local configuration.
@@ -285,6 +293,9 @@ export function createAgentSessions({
             cwd: session.cwd,
             title: session.title,
             model: session.model,
+            // The app resumes it at the record's effort: without one it ran at
+            // the app's default (a Haiku · Low chat went on at Medium).
+            effort: claudeHost.settingsOf?.(id)?.effort || session.effort,
             mode: claudeHost.modeOf?.(id) || session.mode,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
@@ -299,6 +310,14 @@ export function createAgentSessions({
     return a;
   };
   const blocked = (message) => Object.assign(new Error(message), { status: 409 });
+  // A model or effort pick the Mac couldn't take now: nothing retries it, so
+  // never "It goes in by itself after" (a message's promise, not a pick's).
+  const settingNotChanged = (e) => {
+    if (e?.kind !== "busy") throw e;
+    const said = String(e.message || "");
+    const why = /^Waiting: (.+?)\.\s*It goes in by itself after\.$/.exec(said)?.[1];
+    throw Object.assign(e, { message: why ? `Not changed: ${why}. Try again in a moment.` : `Not changed. ${said}` });
+  };
   // Which Claude sessions have a process right now; shared for a moment so
   // the list and an open session don't each run ps.
   let liveCache = null;
@@ -366,7 +385,15 @@ export function createAgentSessions({
       // answered: busy again within a moment, verified with 2.1.293).
       waiting: async (agent, id) => {
         const entry = registry().get(id);
-        return entry ? !!entry.waiting : false;
+        return entry ? !!entry.waiting : null;
+      },
+      // Asked again after a restart: what Claude Code waits on, and the call
+      // still running in its newest page (unread: the registry alone).
+      asking: async (agent, id, request) => {
+        const waitingFor = registry().get(id)?.waiting || null;
+        if (!waitingFor) return false;
+        const items = await claude.read(id, { limit: 20 }).then((r) => (Array.isArray(r?.items) ? r.items : null), () => null);
+        return stillAsked(waitingFor, items, request);
       },
     });
   if (listenForAsks) agentAsks.listen?.().catch(() => {});
@@ -436,6 +463,33 @@ export function createAgentSessions({
     session.effort ||= effort;
     session.mode ||= mode;
   };
+  // The level a chat goes on at when none is picked: the one it last ran
+  // at, only if the model it goes on with takes it (Claude Code's catalog;
+  // the levels it knows when that can't be read in a moment). A chat Reach
+  // runs, launched with none, runs at that level already: none, so it isn't
+  // relaunched for it.
+  const KNOWN_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  const keptEffort = async (id, session, model) => {
+    const level = session.effort;
+    if (typeof level !== "string" || !/^[a-z][a-z0-9_-]{0,23}$/.test(level)) return null;
+    if (claudeHost.drives(id) && claudeHost.settingsOf && !claudeHost.settingsOf(id)?.effort) return null;
+    const catalog = await Promise.race([
+      Promise.resolve().then(() => claudeHost.models?.()),
+      new Promise((r) => setTimeout(r, 2000).unref?.()),
+    ]).catch(() => null);
+    const entry = Array.isArray(catalog) && model ? catalog.find((m) => m && (m.value === model || m.resolvedModel === model)) : null;
+    const levels = !entry ? KNOWN_EFFORTS : entry.supportsEffort === true && Array.isArray(entry.supportedEffortLevels) ? entry.supportedEffortLevels : [];
+    return levels.includes(level) ? level : null;
+  };
+  // A chat Reach runs: what it launched it with, from the first frame (it
+  // read "Default · High" through a Haiku · Low turn). Its effort is what
+  // the process runs at; its model (an alias, "haiku") only fills a gap.
+  const withHost = (session) => {
+    const settings = claudeHost.settingsOf?.(session.id);
+    if (!settings) return;
+    session.model ||= settings.model;
+    session.effort = settings.effort || session.effort;
+  };
   // One Claude Code session, wherever it's used. Claude Code lets one process
   // write a session at a time (a second --resume would start a copy), and the
   // Claude app keeps a process only for sessions you've looked at in the last
@@ -490,6 +544,12 @@ export function createAgentSessions({
       return new Map();
     })).get(id);
     if (!holder || claudeHost.drives(id)) return null;
+    // Reach's own process, exiting after it was let go: Reach's again once it's gone.
+    if (holder.where === "reach") {
+      const end = Date.now() + takeOverMs;
+      while (alive(holder.pid) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+      if (!alive(holder.pid)) return null;
+    }
     if (holder.where === "terminal")
       throw blocked(`This session is open in a terminal on your ${computerWord(platform)}. Reply there or from the Terminal tab.`);
     if (holder.where !== "claude-app" || !holder.exact)
@@ -647,9 +707,12 @@ export function createAgentSessions({
           if (next.via === "app") {
             const { session } = await claude.read(id, { limit: 1 });
             message.cwd = session.cwd;
-            if (!message.mode && session.mode) message.mode = session.mode;
+            if (!message.mode && session.mode && !(["bypassPermissions", "dontAsk"].includes(session.mode))) message.mode = session.mode;
           }
           if (!outbox.begin(id, next.id)) break;
+          // Reach's own Claude Code runs it in the mode queued for the chat:
+          // taken now (kept while it waited, for the app's next request).
+          if (message.mode && claudeMode(agentAsks.queuedMode?.("claude", id)) === claudeMode(message.mode)) agentAsks.clearMode?.("claude", id);
           await claudeHost.send(id, message);
           outbox.remove(id, messageId);
           direct.delete(messageId);
@@ -659,6 +722,7 @@ export function createAgentSessions({
           // Not in the Claude app's list, and Claude Code has no such chat
           // either: it was deleted. Its messages wait for the phone instead.
           if (e?.unlisted && claude.exists && !(await claude.exists(id).catch(() => true))) {
+            direct.delete(next.id);
             outbox.strand(id);
             continue;
           }
@@ -671,6 +735,7 @@ export function createAgentSessions({
             continue;
           }
           if (e?.retryable === false || (next.delivery === "sending" && !e?.waiting)) {
+            direct.delete(next.id);
             outbox.pause(id, next.id, e?.retryable === false ? e.message : uncertainDelivery("claude").message);
             break;
           }
@@ -682,6 +747,9 @@ export function createAgentSessions({
       }
     } finally {
       delivering.delete(id);
+      // Cancelled, stranded or paused messages no longer go direct.
+      const left = new Set(outbox.sessions().flatMap((sid) => outbox.list(sid).map((m) => m.id)));
+      for (const m of [...direct]) if (!left.has(m)) direct.delete(m);
     }
   };
   // Paused by a restart while going into the Claude app: the chat says
@@ -713,8 +781,22 @@ export function createAgentSessions({
     if (keepOut("claude", id)) return;
     // One waiting to join the app's list goes now; one the app lists and
     // Reach wrote to gets its window reloaded.
-    if (claudeImports.pending?.().includes(id)) void claudeImports.check?.();
+    const joining = claudeImports.pending?.().includes(id);
+    if (joining) void claudeImports.check?.();
     else if (wrote) void claudeRefresh.add(id);
+    // A mode it switched to mid-turn (a plan approved into Manual) is in no
+    // line of its transcript, and the Claude app takes the transcript's when
+    // it adopts the chat: it goes with Claude Code's next request there, as
+    // a pick from the phone does (never through the app's menu).
+    const mode = claudeMode(claudeHost.modeOf?.(id));
+    if (mode)
+      void Promise.resolve()
+        .then(() => claude.read(id, { limit: 1 }))
+        .then(({ session }) => {
+          if (!session || (!session.inApp && !joining) || claudeMode(session.mode) === mode) return;
+          agentAsks.queueMode?.("claude", id, mode === "manual" ? "default" : mode);
+        })
+        .catch(() => {});
   });
   // Who replies in each agent's chats from Reach. Gemini CLI's are read
   // only: Google stopped serving it to personal accounts (verified Oct 5,
@@ -1062,10 +1144,11 @@ export function createAgentSessions({
       const running = await liveNow();
       // Reach's own reply process isn't where a session lives (it showed as "Terminal").
       for (const s of sessions)
-        if (s.agent === "claude" && running.has(s.id) && !claudeHost.drives(s.id)) withLive(s, running.get(s.id));
+        if (s.agent === "claude" && running.has(s.id) && !claudeHost.drives(s.id) && running.get(s.id).where !== "reach") withLive(s, running.get(s.id));
     } catch {
       /* Live status is a hint; the list stands without it. */
     }
+    for (const s of sessions) if (s.agent === "claude" && claudeHost.drives(s.id)) withHost(s);
     for (const s of sessions) statusOf(s.agent)(s);
     for (const s of sessions) settleWaiting(s);
     // Continued from the other agent: said in the list, with its app.
@@ -1206,8 +1289,21 @@ export function createAgentSessions({
       // The mode Reach gave it comes first: the transcript keeps the mode of
       // the last message, so a pick of Auto went back to Manual on the next.
       const ours = !session.inApp || claudeHost.drives(id) ? claudeHost.modeOf?.(id) : null;
-      const kept = body.mode || ours || session.mode;
-      const message = { ...body, cwd: session.cwd, ...(kept ? { mode: kept } : {}) };
+      // A pick waiting for Claude Code's next request elsewhere (the app, a
+      // terminal): a turn Reach runs itself goes in it (and takes it).
+      const queuedMode = claudeMode(agentAsks.queuedMode?.("claude", id));
+      // Never a Bypass or dontAsk the transcript last recorded: those only
+      // ever come from an explicit pick, never carried over on resume.
+      const recorded = ["bypassPermissions", "dontAsk"].includes(session.mode) ? null : session.mode;
+      const kept = body.mode || queuedMode || ours || recorded;
+      // Its effort too (the app's pick, else what it last ran at): resumed
+      // without it, a chat set to Max went on at Claude Code's default.
+      const effort = body.effort || (await keptEffort(id, session, body.model || session.model));
+      const message = {
+        ...body, cwd: session.cwd, ...(kept ? { mode: kept } : {}), ...(effort ? { effort } : {}),
+        // The app's Ultracode, on or off as its record has it.
+        ...(session.inApp ? { ultracode: session.ultracode === true } : {}),
+      };
       const holder = await holderOf(id);
       // A chat the Claude app lists, with the app open: typed into the app
       // itself, so its window shows it at once (Reach's own Claude Code
@@ -1232,6 +1328,10 @@ export function createAgentSessions({
       // terminal): it joins the app's list once Reach lets go of it; never
       // a team's lead.
       if (!session.inApp && !keepOut(agent, id)) void claudeImports.add(id);
+      // Reach's own Claude Code runs it in that mode: no longer queued, so
+      // the PreToolUse hook doesn't make every step of the run ask for it.
+      // Only now: one waiting in the outbox (or taken back) keeps it.
+      if (queuedMode) agentAsks.clearMode?.("claude", id);
       return claudeHost.send(id, message);
     },
     async start(agent, body) {
@@ -1264,7 +1364,7 @@ export function createAgentSessions({
             const name = entry && claudeModelName(entry.resolvedModel);
             if (!name)
               throw Object.assign(new Error("Claude didn't identify that desktop model. Your current selection is unchanged."), { status: 409 });
-            const result = await claudeCompose.model(id, { title: session.appTitle || "Untitled", model: name });
+            const result = await claudeCompose.model(id, { title: session.appTitle || "Untitled", model: name }).catch(settingNotChanged);
             listChanged();
             if (result?.model !== name || result.unconfirmed)
               throw Object.assign(new Error("Claude didn't confirm the model change. Check the model in Claude before trying again."), { status: 409 });
@@ -1274,11 +1374,16 @@ export function createAgentSessions({
           if (effort && (model && model !== session.model || effort !== session.effort)) {
             if (!claudeCompose.effort)
               throw Object.assign(new Error("Reach can't change the thinking level in this Claude app. Check its current settings."), { status: 409 });
-            const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort });
+            const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort }).catch(settingNotChanged);
             listChanged();
             // A click alone is not acknowledgement. The app's own record can
-            // confirm a chip that has not redrawn; otherwise keep uncertainty.
-            if ((result?.effort !== effort || result.unconfirmed) && (await claude.read(id, { limit: 1 })).session.effort !== effort)
+            // confirm a chip that has not redrawn (never the level a reply
+            // ran at); otherwise keep uncertainty.
+            const recorded = async () => {
+              const now = (await claude.read(id, { limit: 1 })).session;
+              return now.appEffort !== undefined ? now.appEffort : now.effort;
+            };
+            if ((result?.effort !== effort || result.unconfirmed) && (await recorded()) !== effort)
               throw Object.assign(new Error("Claude didn't confirm the thinking level. Check it in Claude before trying again."), { status: 409 });
           }
           return { model, effort, applied: true };
@@ -1300,6 +1405,20 @@ export function createAgentSessions({
       // A chat Reach runs: changed in its Claude Code right away.
       if (agent === "claude" && (await claudeHost.mode?.(id, mode))) return { mode, applied: true };
       if (agent !== "claude") return { mode, applied: false };
+      // One Reach ran and let go of between turns, that no other app holds
+      // now: Reach's own Claude Code runs its next turn, in this mode (kept
+      // for it above). Queued for a hook, it waited on a step that never came
+      // and made each step of Reach's own run ask.
+      if (claudeHost.modeOf?.(id) === mode) {
+        liveCache = null;
+        const live = await liveNow().catch(() => null);
+        const { session } = await claude.read(id, { limit: 1 });
+        if (live && !live.has(id) && !session.inApp) {
+          // An older pick queued for another app's next request: not that.
+          agentAsks.clearMode?.("claude", id);
+          return { mode, applied: true };
+        }
+      }
       // The Claude app or a terminal: Claude Code takes a mode from outside
       // only with a hook's answer (setMode), so it's switched with the next
       // request the phone allows there. Never by clicking the app's menu.
@@ -1324,6 +1443,8 @@ export function createAgentSessions({
       // The Codex app keeps its own list: told, or it shows the chat until
       // it restarts. Archived either way, so a closed app is no failure.
       if (agent === "codex") await codexDesktop.archived?.(id, archived !== false).catch(() => {});
+      // A mode still waiting for it is let go of with it.
+      if (agent === "claude" && archived !== false) agentAsks.clearMode?.("claude", id);
       listChanged();
       return done;
     },
@@ -1370,7 +1491,13 @@ export function createAgentSessions({
       if (holder && holder.where !== "reach") throw Object.assign(new Error(`Claude is running this chat in ${holder.where === "claude-app" ? "the Claude app" : "a terminal"}: rewind it there.`), { status: 409 });
       const { session } = await claude.read(id, { limit: 1 });
       authorize();
-      if (dryRun) return claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true, authorize });
+      if (dryRun) {
+        // The chat's first message: only its code can go back (Restore conversation is refused below).
+        const first = (await claude.rewindPoint(id, messageId).catch(() => undefined)) === null;
+        authorize();
+        const preview = await claudeHost.rewindFiles(id, { messageId, cwd: session.cwd, dryRun: true, authorize });
+        return first ? { ...preview, conversation: false } : preview;
+      }
       if (!code && !conversation) throw Object.assign(new Error("Choose what to rewind."), { status: 400 });
       const entry = conversation ? await claude.rewindPoint(id, messageId) : undefined;
       authorize();
@@ -1610,16 +1737,9 @@ export function createAgentSessions({
       if (agent === "codex") return codex.models();
       if (agent === "gemini") return { models: [], modes: [], mode: null };
       const [list, modes] = await Promise.all([claudeHost.models(), claudeHost.modes?.().catch(() => []) || []]);
-      // The level Claude Code runs a chat at when it names none: its
-      // CLAUDE_CODE_EFFORT_LEVEL, else your settings' effortLevel. The phone
-      // showed "Default" where Claude Code used "High".
-      let settingsEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL || null;
-      if (!settingsEffort) {
-        try {
-          const level = JSON.parse(fs.readFileSync(claudeSettingsPath, "utf8")).effortLevel;
-          if (typeof level === "string") settingsEffort = level;
-        } catch {}
-      }
+      // No default effort: Claude Code names none in its catalog, and the
+      // settings' effortLevel ("high") wasn't it (chats that named none ran
+      // at medium, Oct 9). A chat shows the level it ran at, else nothing.
       // Read field by field: a field a newer Claude Code shapes otherwise is
       // left out (an entry without an id, a level that isn't a word), never
       // the whole picker lost or a substring taken for a level.
@@ -1632,14 +1752,16 @@ export function createAgentSessions({
           name: m.value === "default" ? text(m.displayName) || m.value : claudeModelName(m.resolvedModel) || text(m.displayName) || m.value,
           description: text(m.description),
           efforts: m.supportsEffort === true ? words(m.supportedEffortLevels) : [],
-          defaultEffort: m.supportsEffort === true && words(m.supportedEffortLevels).includes(settingsEffort) ? settingsEffort : null,
+          defaultEffort: null,
           images: true,
           isDefault: m.value === "default",
           // Auto mode only on models that support it, as Claude Code offers it.
           autoMode: !!m.supportsAutoMode,
           fast: !!m.supportsFastMode,
         })),
-        modes,
+        // Shown as Claude Code lists them; one an open chat can't switch to
+        // from the phone is said so (the mode route refuses it).
+        modes: modes.map((m) => (SWITCHABLE_MODES.includes(m?.id) ? m : { ...m, switchable: false })),
         mode: null,
       };
     },
@@ -1778,7 +1900,7 @@ export function createAgentSessions({
       // Its sub-agents can be stopped one by one while Reach's own Claude
       // Code runs the chat (stop_task).
       if (agent === "claude" && result.session?.subagents?.length && claudeHost.drives(id))
-        result.session.subagents = result.session.subagents.map((s) => (s.status === "running" ? { ...s, stoppable: true } : s));
+        result.session.subagents = result.session.subagents.map((s) => (s.status === "running" && !s.workflow ? { ...s, stoppable: true } : s));
       if (origin?.to.hidden) {
         // Its first messages are the history written for it: shown once,
         // as the original chat's (Claude pages count from its start).
@@ -1805,8 +1927,16 @@ export function createAgentSessions({
       if (agent === "codex" && codexLive.drives(id)) result.session.held = "reach";
       if (agent === "claude") {
         const running = await liveNow().catch(() => new Map());
-        if (claudeHost.drives(id)) result.session.held = "reach";
-        else if (running.has(id)) withLive(result.session, running.get(id));
+        if (claudeHost.drives(id)) {
+          result.session.held = "reach";
+          withHost(result.session);
+        } else if (running.has(id) && running.get(id).where !== "reach") withLive(result.session, running.get(id));
+        // Waiting in Claude Code's queue only while another app's Claude Code
+        // holds it: a crashed app's would show for good (Reach's own: view()).
+        if (result.session.waiting?.length && (claudeHost.drives(id) || running.get(id)?.where === "reach" || !running.has(id))) result.session.waiting = [];
+        // Its context window as Claude Code reported it for this chat's model.
+        const window = result.session.context && !result.session.context.window && claudeHost.contextWindow?.(id, result.session.model);
+        if (window) result.session.context = { ...result.session.context, window };
         // A mode picked on the phone, taken with Claude Code's next request.
         const pending = !claudeHost.drives(id) && agentAsks.queuedMode?.("claude", id);
         if (pending) result.session.pendingMode = pending;
@@ -1852,12 +1982,16 @@ export function createAgentSessions({
         // a notice to acknowledge), never shown as a permission for a tool.
         // Answered from the phone only through Claude Code's hook (the
         // prompts above): never by pressing or typing in the app.
-        if (result.session.live.waiting === "dialog open")
-          result.session.asking = { kind: "dialog", text: "Claude Code has something open for you to answer." };
-        else if (tool?.status === "running")
+        // Anything else it waits on (an MCP server's request for input, a
+        // sandboxed command's network access, a word a newer Claude Code
+        // adds) is said in its words, never as the last tool's permission.
+        const waitsOn = result.session.live.waiting;
+        if (tool?.status === "running" && (waitsOn === "permission prompt" || (waitsOn === "input needed" && tool.questions)))
           result.session.asking = tool.questions
             ? { kind: "question", questions: tool.questions }
             : { kind: "permission", text: tool.text, command: tool.kind === "command" };
+        else if (waitsOn !== "permission prompt")
+          result.session.asking = { kind: "dialog", text: (Object.hasOwn(CLAUDE_WAITS, waitsOn) && CLAUDE_WAITS[waitsOn]) || `Claude Code is waiting: ${String(waitsOn).slice(0, 80)}.` };
         // Not answerable from the phone yet: Reach's hook isn't in Claude
         // Code's settings (or points at an old place); one tap puts it there.
         const hook = result.session.asking && result.session.asking.kind !== "dialog" ? phoneAnswersState() : "on";

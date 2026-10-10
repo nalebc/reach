@@ -151,7 +151,12 @@ export function desktopConnection(
                 ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
               continue;
             }
-            throw fail(408, "Desktop action became stale.");
+            // Only that action is dropped, and the phone is told; control stays.
+            const late = fail(408, "That action waited too long and was dropped. Try again.");
+            item.reject?.(late);
+            if (item.id !== undefined && !closed && ws.readyState === 1)
+              ws.send(JSON.stringify({ type: "ack", id: item.id, ok: false, error: late.message }));
+            continue;
           }
           result = await helper.send(item.action);
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");

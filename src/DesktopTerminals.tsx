@@ -111,7 +111,7 @@ export default function DesktopTerminals({
       clearTimeout(timer);
       mounted.current = false;
     };
-  }, []);
+  }, [peer.url, peer.token]);
   useEffect(() => {
     setText("");
     setDraft("");

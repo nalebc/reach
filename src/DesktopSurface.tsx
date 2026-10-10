@@ -25,6 +25,7 @@ export default function DesktopSurface({
   height,
   ready,
   connecting,
+  stale = false,
   canControl,
   mode,
   drag,
@@ -52,6 +53,8 @@ export default function DesktopSurface({
   height: number;
   ready: boolean;
   connecting: boolean;
+  // Reconnecting behind the last picture: it stays, dimmed.
+  stale?: boolean;
   canControl: boolean;
   mode: string;
   drag: boolean;
@@ -391,7 +394,13 @@ export default function DesktopSurface({
           () => {},
         );
       }
-      if (point && mode !== "pan" && canControl) {
+      // A held right or middle mouse button isn't a press or a drag.
+      if (
+        point &&
+        mode !== "pan" &&
+        canControl &&
+        event.button <= 0
+      ) {
         moveCursor(point);
         const begin = () => {
           if (
@@ -673,6 +682,8 @@ export default function DesktopSurface({
             width: imageW,
             height: imageH,
             visibility: ready ? "visible" : "hidden",
+            opacity: stale ? 0.45 : 1,
+            transition: "opacity 0.4s ease",
           }}
         />
         {!ready && !connecting && (

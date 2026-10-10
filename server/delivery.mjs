@@ -7,6 +7,14 @@ const accepts = (req, encoding) =>
     String(req.headers["accept-encoding"] || ""),
   );
 
+// Who this Reach is, for its own other computers on the tailnet (fleet.mjs):
+// the same answer the public start page gives at /reach-start.json. Set by
+// the launcher once its address is known; until then the route passes.
+let startInfo = null;
+export function setStartInfo(read) {
+  startInfo = typeof read === "function" ? read : null;
+}
+
 // The built interface. Files under /assets carry a content hash in their name,
 // so they never change: cache them for a year and serve the copy precompressed
 // at build time. The page itself is revalidated on every open.
@@ -30,9 +38,13 @@ export function serveBuild(app, express, dist) {
     send(res, next, "agent.html", { headers: { "Cache-Control": "no-store" } }),
   );
   const exists = new Map();
+  // Only found files are remembered: a miss (any name a client tries) is
+  // looked up again, so the map can't grow without bound.
   const has = (file) => {
-    if (!exists.has(file)) exists.set(file, fs.existsSync(file));
-    return exists.get(file);
+    if (exists.has(file)) return true;
+    const found = fs.existsSync(file);
+    if (found) exists.set(file, true);
+    return found;
   };
   app.use("/assets", (req, res, next) => {
     if (!["GET", "HEAD"].includes(req.method) || !/^\/[\w.-]+$/.test(req.path))
@@ -52,6 +64,12 @@ export function serveBuild(app, express, dist) {
         return send(res, next, name + ext, { cacheControl: false });
       }
     send(res, next, name, { cacheControl: false });
+  });
+  app.get("/reach-start.json", (req, res, next) => {
+    const info = startInfo?.();
+    if (!info) return next();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(info);
   });
   const page = path.join(dist, "index.html");
   app.use(

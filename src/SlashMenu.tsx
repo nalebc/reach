@@ -188,6 +188,13 @@ export function useSlashMenu({
         // said once; Send again sends it as typed ("/tmp is full" can be words).
         const name = /^\/([A-Za-z][\w:.-]*)(?:\s|$)/.exec(message.trim())?.[1];
         // An MCP server's prompt (/mcp__server__prompt) can come after the list.
+        // Commands not loaded yet: hold this send once rather than spend a
+        // turn on what may be a local command.
+        if (name && commands === null && warned.current !== message) {
+          warned.current = message;
+          setResult({ name, error: "Still loading commands. Send again in a moment." });
+          return true;
+        }
         if (!name || name.startsWith("mcp__") || !commands?.length || commands.some((c) => c.name === name) || warned.current === message)
           return false;
         warned.current = message;

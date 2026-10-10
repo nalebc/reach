@@ -151,3 +151,15 @@
   color: var(--as-accent);
   font-size: 12.5px;
 }
+
+/* A finger-sized tap area around the small control; it looks the same. */
+.sm-chip button,
+.sm-card-head button {
+  position: relative;
+}
+.sm-chip button::after,
+.sm-card-head button::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}

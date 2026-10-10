@@ -53,7 +53,7 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.as-steps {
+.ag-steps {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -62,7 +62,7 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.as-steps small {
+.ag-steps small {
   display: block;
   color: var(--ag-muted);
 }

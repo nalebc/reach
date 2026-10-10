@@ -191,6 +191,8 @@
 }
 .browser-screen-toolbar { display: flex; align-items: center; gap: 14px; }
 .browser-screen-status { font-size: 11px; color: var(--muted, #93a096); }
+.browser-screen-status.is-stale { color: #f0b429; }
+.browser-screen-stale img, .browser-screen-stale canvas { opacity: 0.5; }
 .browser-screen-image {
   display: block;
   width: 100%;
@@ -227,7 +229,6 @@
   .browser-file-layout.has-preview { grid-template-columns: minmax(0, 1fr); }
   .browser-file-content { border-left: 0; border-top: 1px solid var(--hairline, #ffffff12); }
   .browser-file-layout.has-preview .browser-file-list { max-height: 260px; }
-  .browser-screen-status { display: none; }
   .browser-search { flex-wrap: wrap; }
   .browser-search select { flex-basis: 100%; max-width: 100%; }
   .browser-search input { width: 60%; }

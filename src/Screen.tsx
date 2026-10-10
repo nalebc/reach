@@ -304,7 +304,15 @@ export default function Screen({
   useEffect(() => {
     void loadDisplays();
   }, [loadDisplays]);
-  const typing = !!typingTarget && usable && !panel;
+  // Feedback ("Drag released") fades after a few seconds.
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = setTimeout(() => setFeedback(""), 4000);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+  // Typing doesn't unmount when the picture goes stale: queued edits stay.
+  const typingAllowed = control && input.ready && live && visible;
+  const typing = !!typingTarget && typingAllowed && !panel;
   const { fullscreen, expanded, mobile, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
   // Fullscreen hides the bars until the screen is touched; they stay while
@@ -584,7 +592,9 @@ export default function Screen({
         title="Your screen"
         description="Pick up where you left off."
       />
-      <ErrorLine error={paused ? "" : error || stream.error} />
+      <ErrorLine
+        error={paused || (enabled && expanded) ? "" : error || stream.error}
+      />
       {!enabled ? (
         <section className="panel screen-setup">
           {ask && (
@@ -634,14 +644,16 @@ export default function Screen({
               <span
                 className={`screen-status-dot ${live && stream.ready && !stream.connecting ? (stream.slow ? "slow" : "active") : ""}`}
               />
-              {!live || paused
+              {paused
                 ? "Paused"
                 : stream.error && !stream.ready
                   ? "Can't show the screen"
-                  : stream.connecting
+                  : !live
+                    ? "Paused"
+                    : stream.connecting
                     ? stream.ready
-                      ? "Reconnecting…"
-                      : "Connecting…"
+                      ? stream.cause || "Reconnecting…"
+                      : stream.cause || "Connecting…"
                     : stream.ready
                       ? stream.slow
                         ? "Slow connection · lowering quality"
@@ -720,6 +732,7 @@ export default function Screen({
             connecting={
               live && visible && !paused && !stream.ready && !stream.error
             }
+            stale={live && !paused && stream.ready && stream.connecting}
             canControl={usable}
             initialCursor={input.initialCursor}
             mode={mode}
@@ -812,7 +825,8 @@ export default function Screen({
                   aria-label={control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
                   title={control ? "Stop controlling" : holder?.canTakeOver ? "Take over" : "Control your computer"}
                   aria-pressed={control}
-                  disabled={!stream.ready || busy || !live}
+                  // Stop stays available through a reconnect.
+                  disabled={busy || (!control && (!stream.ready || !live))}
                   onClick={() => void toggleControl()}
                 >
                   <MousePointer2 size={19} />

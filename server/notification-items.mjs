@@ -305,6 +305,9 @@ export function restartNotification(request, terminals = 0) {
   const names = working.length > 2 ? `${working.slice(0, 2).join(", ")} and ${working.length - 2} more` : working.join(" and ");
   const ends = `${terminals ? `Its ${terminals === 1 ? "terminal" : `${terminals} terminals`} and live screens end.` : "Live screens end."}`;
   const waiting = request.after && working.length;
+  // The chat that asked, when Reach knows it: the card opens it.
+  const chat = request.chat && ["claude", "codex"].includes(request.chat.agent) ? request.chat : null;
+  const from = chat && (Array.isArray(request.working) ? request.working : []).find((c) => c?.id === chat.id)?.title;
   return sealNotification(
     {
       id: `restart:${request.id}`,
@@ -313,7 +316,7 @@ export function restartNotification(request, terminals = 0) {
       icon: "agent",
       title: waiting ? "Reach restarts when chats finish" : "Restart Reach?",
       kind: "permission",
-      detail: "Computer restart",
+      detail: from ? `Asked in ${clean(from, 60)}` : "Computer restart",
       summary: waiting
         ? `Waiting for ${names}.`
         : working.length
@@ -322,7 +325,9 @@ export function restartNotification(request, terminals = 0) {
       signature: request.id,
       createdAt: request.requestedAt,
       expiresAt: request.expiresAt,
-      target: { page: "overview", needs: `restart:${request.id}` },
+      target: chat
+        ? { page: "sessions", agent: chat.agent, id: chat.id }
+        : { page: "overview", needs: `restart:${request.id}` },
       actions: waiting
         ? [
             { id: "restart", label: "Restart now" },
@@ -339,7 +344,10 @@ export function restartNotification(request, terminals = 0) {
               { id: "deny", label: "Not now", tone: "deny" },
             ],
     },
-    { type: "restart", id: request.id, evidence: [request.requestedAt, terminals, !!request.after, ...working] },
+    // Which chats work changes every few seconds (each turn, each sub-agent):
+    // only whether any do changes what the card offers, so a card a moment
+    // old still answers.
+    { type: "restart", id: request.id, evidence: [request.requestedAt, terminals, !!request.after, working.length > 0] },
   );
 }
 // Notification content carries the event and its context. System attribution

@@ -835,3 +835,15 @@ test("an owner's disable remains effective for the current run after a quick re-
   assert.equal(result.code, "access_changed");
   assert.equal(f.driver.counters.clicks, 0);
 });
+
+test("a failing ledger write never leaves the Mac stuck as busy", async (t) => {
+  const f = setup(t);
+  await f.tools.define(f.authorize, exampleTool());
+  const ledger = path.join(f.dataDir, "agent-tool-runs.json");
+  fs.rmSync(ledger, { force: true });
+  fs.mkdirSync(ledger); // the atomic rename onto a directory fails
+  await f.run("example_task").catch(() => {});
+  fs.rmSync(ledger, { recursive: true, force: true });
+  const next = await f.run("example_task");
+  assert.equal(next.status, "completed", "the next run is not refused as busy");
+});

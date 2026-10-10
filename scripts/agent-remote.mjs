@@ -567,7 +567,13 @@ export function viaShared(conn) {
       const lines = readline.createInterface({ input: s });
       lines.on("error", () => {});
       lines.on("line", (line) => {
-        const r = JSON.parse(line);
+        let r;
+        try {
+          r = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (!r || typeof r !== "object") return;
         const w = waiting.get(r.id);
         waiting.delete(r.id);
         if (r.error) w?.reject(agentRequestError(r.details?.status, r.details || { error: r.error }));

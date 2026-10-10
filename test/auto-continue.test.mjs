@@ -225,3 +225,60 @@ test("usage meters Reach can't read are unavailable, not empty and fine", async 
   assert.equal(claudeUsage({ limits: "x" }).available, false);
   assert.equal(claudeUsage({ five_hour: { utilization: 12 } }).available, true);
 });
+
+// Oct 9: none free when usage runs out → it waits; the first one back takes it.
+test("with no provider free, it waits and the first one back takes the work", async t => {
+  const h = priorityStage(t, { priority: ["codex", "claude", "openclaw"] });
+  for (const x of h.health) if (x.agent !== "openclaw") x.usable = false;
+  h.health.find(x => x.agent === "openclaw").connected = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  assert.equal(h.moves.length, 0);
+  assert.equal(h.relays.list()[0].state, "waiting");
+  assert.equal(h.relays.list()[0].holding, true);
+  h.health.find(x => x.agent === "openclaw").connected = true;
+  await h.relays.check();
+  assert.equal(h.moves.length, 0, "read again at most once a minute");
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.deepEqual(h.moves.map(m => m.options.to), ["openclaw"]);
+  assert.equal(h.relays.list()[0].state, "done");
+});
+
+test("when several come back at once, the order decides; this chat's own provider counts", async t => {
+  const h = priorityStage(t, { priority: ["claude", "codex", "openclaw"] });
+  for (const x of h.health) x.usable = false;
+  h.health.find(x => x.agent === "openclaw").connected = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  h.health.find(x => x.agent === "openclaw").connected = true;
+  h.health.find(x => x.agent === "codex").usable = true;
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.equal(h.moves.length, 0);
+  assert.deepEqual(h.sends.map(s => [s.agent, s.id]), [["codex", "original"]]);
+  assert.equal(h.relays.list()[0].state, "done");
+});
+
+test("a held watch expires after a day and lets go when continued by hand", async t => {
+  const h = priorityStage(t);
+  for (const x of h.health) x.usable = false;
+  h.health.find(x => x.agent === "openclaw").connected = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  h.pages.codex.items.push({ id: "by-hand", role: "user", kind: "text", text: "Go on" });
+  await h.relays.check();
+  assert.equal(h.relays.list()[0].holding, undefined);
+  assert.equal(h.relays.list()[0].state, "waiting");
+  h.limit("codex");
+  h.pages.codex.items.at(-1).id = "limit-2";
+  await h.settle();
+  assert.equal(h.relays.list()[0].holding, true);
+  h.advance(WAIT_MS + 1);
+  await h.relays.check();
+  assert.equal(h.relays.list()[0].state, "stopped");
+  assert.match(h.relays.list()[0].problem, /No provider was free/);
+});

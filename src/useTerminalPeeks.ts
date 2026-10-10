@@ -39,13 +39,16 @@ export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
     };
     let stopped = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
+    const misses: Record<string, number> = {};
     const watch = (id: string) => {
       const url = new URL("/ws/terminal", peer.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       sockets.push(ws);
-      ws.onopen = () =>
+      ws.onopen = () => {
+        misses[id] = 0;
         ws.send(JSON.stringify({ type: "auth", token: peer.token, sessionId: id }));
+      };
       ws.onmessage = (event) => {
         let message;
         try {
@@ -62,8 +65,17 @@ export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
       };
       // Reconnect after a dropped connection (Wi-Fi change, phone sleep).
       ws.onclose = (event) => {
-        if (!stopped && event.code !== 4001)
-          timers.push(setTimeout(() => !stopped && watch(id), 2000));
+        if (stopped || event.code === 4001) return;
+        // Back off up to 30 s, and wait for the page to be visible again.
+        const n = misses[id] || 0;
+        misses[id] = n + 1;
+        const delay = Math.min(30000, 2000 * 2 ** n);
+        const retry = () => {
+          if (stopped) return;
+          if (document.hidden) timers.push(setTimeout(retry, 5000));
+          else watch(id);
+        };
+        timers.push(setTimeout(retry, delay));
       };
     };
     ids.forEach(watch);

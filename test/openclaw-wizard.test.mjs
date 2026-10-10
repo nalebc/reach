@@ -112,3 +112,15 @@ test("guided setup renders choices, checks, confirmations and secret inputs with
     assert.deepEqual(dom.errors, []);
   } finally { await dom.close(); }
 });
+
+test("a failed start with no session can be started again", async () => {
+  let fails = true;
+  const f = fixture(() => {
+    if (fails) { fails = false; throw new Error("timeout"); }
+    return { sessionId: "s2", ...prompt("note") };
+  });
+  await f.hit("start"); await tick();
+  assert.equal((await f.hit()).status, "uncertain");
+  await f.hit("start"); await tick();
+  assert.equal((await f.hit()).status, "running");
+});
