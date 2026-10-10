@@ -37,6 +37,20 @@ test("one contained folder is kept with ordinary dotfiles and no archive permiss
   if (process.platform !== "win32") assert.equal((await fsp.stat(path.join(f.shared, "Project", "README.md"))).mode & 0o7777, 0o600);
 });
 
+test("a Mac's unflagged UTF-8 names open as written; old DOS names still read as DOS", async t => {
+  const f = await fixture(t, "Trip.zip", zipFixture([
+    { name: "Trip/Résumé final.pdf", data: "pdf", utf8: false },
+    { name: "Trip/📷 Beach 🎉.heic", data: "heic", utf8: false, deflate: true },
+    { name: "Trip/plain.txt", data: "ascii", utf8: false },
+    // 0x82 alone is not UTF-8: DOS code page 437's é.
+    { name: "Trip/café.txt", raw: Buffer.from([...Buffer.from("Trip/caf"), 0x82, ...Buffer.from(".txt")]), data: "dos", utf8: false },
+  ]));
+  assert.equal(await f.run(), "Trip");
+  assert.deepEqual((await fsp.readdir(path.join(f.shared, "Trip"))).map(n => n.normalize("NFC")).sort(),
+    ["café.txt", "plain.txt", "Résumé final.pdf", "📷 Beach 🎉.heic"].map(n => n.normalize("NFC")).sort());
+  assert.equal(await fsp.readFile(path.join(f.shared, "Trip", "📷 Beach 🎉.heic"), "utf8"), "heic");
+});
+
 test("TAR, gzip TAR and long PAX names use the portable bounded parser", async t => {
   for (const [name, gzip] of [["Bundle.tar", false], ["Bundle.tar.gz", true], ["Bundle.tgz", true]]) {
     const long = "long".repeat(30) + ".txt";

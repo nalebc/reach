@@ -18,6 +18,17 @@ export const archiveBase = (name) => {
 };
 export const ARCHIVE_LIMITS = Object.freeze({ inputBytes: 64 << 20, outputBytes: 256 << 20, fileBytes: 64 << 20, entries: 4096, timeoutMs: 60_000 });
 const invalid = () => fail(422, "This archive contains invalid, conflicting, or unsafe entries. Nothing was opened.");
+// Zips made on a Mac (Finder's Compress, `zip`) store UTF-8 names without
+// the flag that says so; read as the old DOS encoding, "Résumé.pdf" came out
+// as "R├⌐sum├⌐.pdf". A flagged name, or one with Info-ZIP's Unicode field,
+// stays as decoded; otherwise non-ASCII bytes that are valid UTF-8 are read
+// as UTF-8, and anything else as DOS.
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const zipName = (entry) => {
+  if (entry.generalPurposeBitFlag & 0x800 || entry.extraFields.some(field => field.id === 0x7075) ||
+      !entry.fileNameRaw.some(byte => byte >= 0x80)) return entry.fileName;
+  try { return utf8.decode(entry.fileNameRaw); } catch { return entry.fileName; }
+};
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const unchanged = (a, b) => same(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const entryParts = (name) => {
@@ -118,7 +129,7 @@ export async function extractArchive(file, { authorize = () => {}, stagingRoot =
           // progress. Observe errors immediately; consume also checks the
           // stored error before piping, so an early failure cannot be lost.
           stream.on("error", () => {});
-          try { await consume(entry.fileName, directory ? "directory" : "file", entry.uncompressedSize, stream, entry.crc32); }
+          try { await consume(zipName(entry), directory ? "directory" : "file", entry.uncompressedSize, stream, entry.crc32); }
           finally { stream.destroy(); }
         }
       } finally { zip.close(); }

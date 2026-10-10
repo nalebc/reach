@@ -97,7 +97,7 @@ export function createUploads({
           size,
           received: 0,
           file,
-          writing: false,
+          writing: null,
           touched: Date.now(),
         });
         return { id, offset: 0, chunk: CHUNK };
@@ -114,37 +114,59 @@ export function createUploads({
     // Appends one chunk read from `body` (a stream) at `offset`.
     async write(id, client, offset, body) {
       const session = own(id, client);
-      if (session.writing)
-        throw fail(409, "This upload is already receiving data.");
+      // A phone that changed networks mid-chunk sends it again while the
+      // computer can still hold the old request, open and silent, for
+      // minutes: the newer request replaces it. It starts once the old one's
+      // file is closed, so no stale byte lands after it.
+      while (session.writing) {
+        const previous = session.writing;
+        previous.stop();
+        await previous.closed;
+        if (session.writing === previous) session.writing = null;
+      }
+      if (sessions.get(session.id) !== session)
+        throw fail(404, "This upload is no longer available. Start it again.");
       if (offset !== session.received)
         throw Object.assign(fail(409, "Continue from the offset given."), {
           offset: session.received,
         });
       const room = Math.min(MAX_CHUNK, session.size - session.received);
-      session.writing = true;
+      const out = fs.createWriteStream(session.file, {
+        flags: "r+",
+        start: offset,
+      });
+      const writing = {
+        // A chunk that fully arrived is left to finish writing.
+        stop: () => {
+          if (!body.complete) body.destroy();
+        },
+        closed: new Promise((resolve) => out.once("close", resolve)),
+      };
+      session.writing = writing;
       try {
         const written = await new Promise((resolve, reject) => {
           let count = 0;
-          const out = fs.createWriteStream(session.file, {
-            flags: "r+",
-            start: offset,
-          });
+          const quit = (error) => {
+            body.unpipe(out);
+            out.destroy();
+            reject(error);
+          };
           body.on("data", (chunk) => {
             count += chunk.length;
             if (count > room) {
               // Stop writing, discard the rest, and answer before closing.
-              body.unpipe(out);
-              out.destroy();
+              quit(fail(413, "This chunk is larger than expected."));
               body.resume();
-              reject(fail(413, "This chunk is larger than expected."));
             }
           });
-          body.on("error", reject);
+          body.on("error", quit);
+          // Closed before its end reached the file (cut off mid-chunk, or
+          // destroyed while bytes still waited): the file is closed too.
           body.on("close", () => {
-            if (body.complete === false)
-              reject(fail(400, "The connection dropped mid-chunk."));
+            if (!body.readableEnded)
+              quit(fail(400, "The connection dropped mid-chunk."));
           });
-          out.on("error", reject);
+          out.on("error", quit);
           out.on("finish", () => resolve(count));
           body.pipe(out);
         });
@@ -152,7 +174,8 @@ export function createUploads({
         session.received += written;
         return { offset: session.received };
       } finally {
-        session.writing = false;
+        await writing.closed;
+        if (session.writing === writing) session.writing = null;
       }
     },
     // Moves the finished file into `folder`, never over an existing file.

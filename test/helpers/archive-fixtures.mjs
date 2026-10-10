@@ -4,17 +4,20 @@ import tar from "tar-stream";
 const crc32 = crc.unsigned;
 
 // Small genuine ZIP fixtures, independent of whichever `tar` the host ships.
-// This writes fixture bytes only; production decoding uses yauzl.
+// This writes fixture bytes only; production decoding uses yauzl. Names are
+// flagged UTF-8 unless `utf8: false` (as a Mac's zips leave them); `raw`
+// gives the stored name bytes outright.
 export function zipFixture(entries) {
   const local = [], central = []; let offset = 0;
   for (const entry of entries) {
-    const name = Buffer.from(entry.name), body = Buffer.from(entry.data || ""), method = entry.deflate ? 8 : 0;
+    const name = entry.raw || Buffer.from(entry.name), body = Buffer.from(entry.data || ""), method = entry.deflate ? 8 : 0;
+    const flag = entry.utf8 === false ? 0 : 0x800;
     const compressed = method ? deflateRawSync(body) : body;
     const header = Buffer.alloc(30); header.writeUInt32LE(0x04034b50); header.writeUInt16LE(20, 4);
-    header.writeUInt16LE(0x800, 6); header.writeUInt16LE(method, 8); header.writeUInt32LE(crc32(body), 14);
+    header.writeUInt16LE(flag, 6); header.writeUInt16LE(method, 8); header.writeUInt32LE(crc32(body), 14);
     header.writeUInt32LE(compressed.length, 18); header.writeUInt32LE(entry.size ?? body.length, 22); header.writeUInt16LE(name.length, 26);
     const index = Buffer.alloc(46); index.writeUInt32LE(0x02014b50); index.writeUInt16LE(0x314, 4); index.writeUInt16LE(20, 6);
-    index.writeUInt16LE(0x800 | (entry.encrypted ? 1 : 0), 8); index.writeUInt16LE(method, 10); index.writeUInt32LE(crc32(body), 16);
+    index.writeUInt16LE(flag | (entry.encrypted ? 1 : 0), 8); index.writeUInt16LE(method, 10); index.writeUInt32LE(crc32(body), 16);
     index.writeUInt32LE(compressed.length, 20); index.writeUInt32LE(entry.size ?? body.length, 24); index.writeUInt16LE(name.length, 28);
     index.writeUInt32LE(((entry.mode ?? (entry.name.endsWith("/") ? 0o40755 : 0o100644)) << 16) >>> 0, 38); index.writeUInt32LE(offset, 42);
     local.push(header, name, compressed); central.push(index, name); offset += header.length + name.length + compressed.length;

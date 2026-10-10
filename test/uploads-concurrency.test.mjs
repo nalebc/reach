@@ -85,3 +85,51 @@ test("completing an upload again, after its answer was lost, reports the same su
   // Another device can't learn about it.
   await assert.rejects(uploads.complete(id, { id: "other" }, folder), { status: 404 });
 });
+
+// A request body as the server holds it: `complete` once every byte arrived.
+const held = async (bytes, complete) => {
+  const { PassThrough } = await import("node:stream");
+  const body = new PassThrough();
+  body.complete = complete;
+  body.write(bytes);
+  return body;
+};
+const within = (promise, ms = 2000) =>
+  Promise.race([
+    promise.then(() => "settled", () => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("hung"), ms)),
+  ]);
+
+test("a newer chunk replaces a silent one still open, and lands alone", async (t) => {
+  const { uploads, create } = await fixture(t);
+  const { id } = await create("phone", "clip.mov");
+  uploads.get(id).size = 10;
+  // The phone changed networks mid-chunk: the old request stays open, silent.
+  const silent = await held(Buffer.from("stale"), false);
+  const old = uploads.write(id, { id: "phone" }, 0, silent).catch((e) => e);
+  await new Promise((resolve) => setImmediate(resolve));
+  const { Readable } = await import("node:stream");
+  const again = Readable.from([Buffer.from("0123456789")]);
+  again.complete = true;
+  assert.deepEqual(await uploads.write(id, { id: "phone" }, 0, again), { offset: 10 });
+  assert.equal((await old).status, 400);
+  assert.equal(await fs.readFile(uploads.get(id).file, "utf8"), "0123456789");
+});
+
+test("a chunk whose connection is destroyed before its bytes reach the file never holds the upload", async (t) => {
+  const { uploads, create } = await fixture(t);
+  const { id } = await create("phone", "clip.mov");
+  uploads.get(id).size = 10;
+  // Every byte arrived, but the request is torn down (an expired identity,
+  // say) before it drained into the file.
+  const body = await held(Buffer.from("01234"), true);
+  const first = uploads.write(id, { id: "phone" }, 0, body);
+  body.destroy();
+  assert.equal(await within(first), "settled");
+  await assert.rejects(first, { status: 400 });
+  const { Readable } = await import("node:stream");
+  const again = Readable.from([Buffer.from("0123456789")]);
+  again.complete = true;
+  assert.equal(await within(uploads.write(id, { id: "phone" }, 0, again)), "settled");
+  assert.equal(uploads.status(id, { id: "phone" }).offset, 10);
+});

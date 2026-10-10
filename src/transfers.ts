@@ -400,8 +400,12 @@ async function sendFile(
           ));
         } catch (lost) {
           checkCanceled(signal);
-          if ((lost as { status?: number }).status !== 404 || ++restarts > 2)
-            throw lost;
+          const status = (lost as { status?: number }).status;
+          // Still no network: try the chunk again from where it was (the
+          // computer answers with its own offset if that moved on). Each
+          // failed chunk counts toward the limit above.
+          if (status !== 404 && retryable(lost)) continue;
+          if (status !== 404 || ++restarts > 2) throw lost;
           session = await begin();
           if (signal.aborted) cancel();
           checkCanceled(signal);
