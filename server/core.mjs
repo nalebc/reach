@@ -1426,6 +1426,15 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return result;
   }
+  // Whose unopened invitation this is, without spending it: for telling a
+  // person why they can't come in yet (index.mjs, the host guard).
+  function unopenedInvitation(invitation) {
+    if (typeof invitation !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(invitation)) return null;
+    const digest = hash(invitation), now = Date.now();
+    const client = loadJson(file, []).find((c) => sameHash(c.inviteHash, digest) && c.expiresAt > now &&
+      !(c.inviteExpiresAt && c.inviteExpiresAt <= now));
+    return client ? { id: client.id, kind: client.kind, name: client.name } : null;
+  }
   function listAgentAdmissions() {
     return loadJson(file, []).filter((client) =>
       client.kind === "agent" && admissionStatus(client) === "pending",
@@ -1764,6 +1773,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     rotateCredential,
     rotateFunnelCredential,
     claimHostedInvitation,
+    unopenedInvitation,
     refreshHosted,
     hostedKeys,
     splitHostedToken,

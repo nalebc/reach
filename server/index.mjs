@@ -1,6 +1,6 @@
 import { browserAgentRoutes } from "./browser-agents.mjs";
 import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
-import { createBrowserHostGuard } from "./browser-host-guard.mjs";
+import { createBrowserHostGuard, personGuardMessage } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
 import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
@@ -1268,13 +1268,38 @@ export async function createReach(overrides = {}) {
     res.once("finish", cleanup);
     next();
   });
+  // A person kept out while an agent has Full control or Apps (the host
+  // guard): you hear who, once per person every ten minutes, so you can end
+  // or pause the agent to let them in.
+  const keptOut = new Map();
+  const personKeptOut = (person) => {
+    const now = Date.now();
+    for (const [id, at] of keptOut) if (now - at > 600_000) keptOut.delete(id);
+    if (keptOut.has(person.id)) return;
+    keptOut.set(person.id, now);
+    const name = person.name || "Someone";
+    record("agent", `${name} couldn't come in: an agent has full control of this Mac`);
+    notify({ category: "access", title: `${name} couldn't come in`, body: "An agent has full control of this Mac right now, so people are kept out. End or pause it in Agents & people to let them in.", icon: "agent", tag: `person-kept-out-${person.id}` });
+  };
   app.use("/api", async (req, res, next) => {
     if (agentsActive()) {
       await browserHostGuard.refresh();
       const token = req.headers.authorization?.replace(/^Bearer /, "");
       const context = funnelRequests.get(req);
       const client = context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
-      if (!auth.isBrowserAppAdmission(req)) browserHostGuard.assertRequest(req, client);
+      if (!auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
+        // A person, opening their invitation or with access already: told
+        // plainly that someone else has the Mac. The rule itself is unchanged.
+        const route = (req.originalUrl || req.url || "").split("?", 1)[0];
+        const invited = req.method === "POST" && ["/api/guest/redeem", "/api/invitations/redeem"].includes(route)
+          ? auth.unopenedInvitation(req.body?.invitation) : null;
+        const person = client?.kind === "guest" ? client : invited?.kind === "guest" ? invited : null;
+        if (person) {
+          personKeptOut(person);
+          throw fail(403, personGuardMessage);
+        }
+        browserHostGuard.assertRequest(req, client);
+      }
     }
     next();
   });
