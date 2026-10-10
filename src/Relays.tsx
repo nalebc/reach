@@ -99,7 +99,7 @@ export const armedAutoContinue = (relays: Relay[], here: ChatRef) =>
     (r) => r.trigger === "usage" && r.state === "waiting" && !r.holding && r.chain.some((c) => c.agent === here.agent && c.id === here.id),
   ) || null;
 // Turned off by you (relays.mjs cancel): nothing to tell.
-const quietRelay = (r: Relay) =>
+export const quietRelay = (r: Relay) =>
   r.trigger === "usage" && ((r.state === "waiting" && !r.holding) || (r.state === "stopped" && r.problem === "Cancelled."));
 
 // Above the message box: each relay this chat is part of, with the way to

@@ -5,7 +5,7 @@ import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
 import { mergeHealth } from "./usage";
 import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
-import { relayLine } from "./Relays";
+import { quietRelay, relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
 import {
   chatComputers,
@@ -309,7 +309,11 @@ export default function ChatHub({
     }),
   );
   const live = relays.filter(
-    (r) => !r.steps.some((s) => (s.kind as string) === "report") && (["waiting", "sending"].includes(r.state) || Date.now() - r.updatedAt < 60 * 60 * 1000),
+    (r) =>
+      !r.steps.some((s) => (s.kind as string) === "report") &&
+      // Auto-continue that only waits for a limit is a sign in its chat (Relays.tsx).
+      !quietRelay(r) &&
+      (["waiting", "sending"].includes(r.state) || Date.now() - r.updatedAt < 60 * 60 * 1000),
   );
   const crews = teams.filter((t) => t.state === "active");
   const cancel = async (r: Relay) => {

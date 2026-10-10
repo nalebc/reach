@@ -448,6 +448,20 @@ test("the All page groups every agent's chats by project, warns of files two cha
         chain: [{ agent: "codex", id: CODEX, title: "Fix login" }],
         sent: [],
       },
+      // Auto-continue that only waits for a limit: a sign in its chat, not a handoff here.
+      {
+        id: "r2",
+        trigger: "usage",
+        priority: ["claude", "codex"],
+        state: "waiting",
+        problem: "",
+        createdAt: now,
+        updatedAt: now,
+        next: 0,
+        steps: [{ kind: "send", to: { agent: "codex", id: CLAUDE } }],
+        chain: [{ agent: "claude", id: CLAUDE, title: "Refactor auth" }],
+        sent: [],
+      },
     ],
   });
   const hub = await dom.waitFor(() => $(".chat-hub"));
@@ -465,6 +479,8 @@ test("the All page groups every agent's chats by project, warns of files two cha
   assert.deepEqual(journal, []);
   // Relays under way, with Cancel.
   assert.match($(".hub-relays").textContent, /Fix login.*When Codex finishes: Claude Code builds it/);
+  assert.equal($$(".hub-relays .relay-row").length, 1);
+  assert.doesNotMatch($(".hub-relays").textContent, /Auto-continue/);
   // One search: names at once, what was said from the Mac.
   await click($('.chat-hub .chat-mobile-tools [aria-label="Search chats"]'));
   await typeInto($('input[aria-label="Search all chats"]'), "token");
