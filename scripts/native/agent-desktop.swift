@@ -182,6 +182,41 @@ func coveredControl<T>(_ hit: T, _ target: T, parent: (T) -> T?, equal: (T, T) -
   }
   return false
 }
+// How well a control on screen matches the name the agent gave: the same
+// (ignoring case and spacing) grades 3, starting with it 2, containing it 1,
+// nothing 0.
+func nameMatch(_ name: String, _ wanted: String) -> Int {
+  let squeeze = { (text: String) in lower(text).split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+  let have = squeeze(name), want = squeeze(wanted)
+  if have.isEmpty || want.isEmpty { return 0 }
+  if have == want { return 3 }
+  if have.hasPrefix(want) { return 2 }
+  if have.contains(want) { return 1 }
+  return 0
+}
+// Which control the agent means, from each one's grade and its distance from
+// where the control was last seen (infinite when nowhere in particular): the
+// best grade; among equals, one clearly nearer than the rest. Otherwise none,
+// with how many were equally good, so the agent says which.
+func pickControl(_ graded: [(grade: Int, distance: Double)]) -> (index: Int?, candidates: Int) {
+  let best = graded.map { $0.grade }.max() ?? 0
+  if best == 0 { return (nil, 0) }
+  let top = graded.enumerated().filter { $0.element.grade == best }
+  if top.count == 1 { return (top[0].offset, 1) }
+  let nearest = top.sorted { $0.element.distance < $1.element.distance }
+  if nearest[0].element.distance.isFinite, nearest[1].element.distance > nearest[0].element.distance + 24 { return (nearest[0].offset, top.count) }
+  return (nil, top.count)
+}
+// What the agent typed from its vault, wherever the screen shows it again (a
+// field's value, "Signed in as …"): dots before the agent reads it. Values
+// under three characters aren't tracked: they would blank ordinary text.
+func hideSecrets(_ text: String, _ secrets: [String]) -> String {
+  var out = text
+  for secret in secrets where secret.count >= 3 && out.range(of: secret, options: .caseInsensitive) != nil {
+    out = out.replacingOccurrences(of: secret, with: "•••", options: .caseInsensitive)
+  }
+  return out
+}
 // END PURE DESKTOP POLICY
 
 // BEGIN PURE DESKTOP TEXT
@@ -478,26 +513,60 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     _ = try checkPoint(p, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
   case "element":
-    // A numbered label: its live center, then an ordinary checked click.
+    // A numbered label, as the control is now: a fresh read of the screen
+    // finds the same role and name nearest to where it was, so a redraw since
+    // the agent looked changes nothing. Unnamed, or renamed since (Play →
+    // Pause): where it is now, if it still is.
     guard let snap = action["snapshot"] as? String, let n = action["n"] as? Int,
-      let list = snapshots.last(where: { $0.id == snap })?.elements, n >= 1, n <= list.count else {
+      let snapshot = snapshots.last(where: { $0.id == snap }), n >= 1, n <= snapshot.controls.count else {
       try refuse("That label is from an older look. Look at the labels again.", "retry")
     }
-    guard let rect = frameOf(list[n - 1]), rect.width > 0, rect.height > 0 else { try refuse("That element is gone. Look again.", "retry") }
-    let visible = rect.intersection(display)
-    guard !visible.isNull, visible.width >= 1, visible.height >= 1 else { try refuse("That element is out of view. Scroll to it first.", "retry") }
-    var hit: AXUIElement?
-    if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(visible.midX), Float(visible.midY), &hit) == .success, let hit,
-       coveredControl(hit, list[n - 1], parent: { elementAttr($0, kAXParentAttribute) }, equal: { CFEqual($0, $1) },
-         sameApp: { pidOf($0) == pidOf($1) },
-         overlay: { ["AXSheet", "AXMenu", "AXPopover", "AXDrawer"].contains(string($0, kAXRoleAttribute))
-           || ["AXDialog", "AXSystemDialog", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog"].contains(string($0, kAXSubroleAttribute)) }) {
-      try refuse("A dialog or menu now covers that control. Describe the screen again and answer it first.", "retry")
+    let remembered = snapshot.controls[n - 1]
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid else { try refuse("Another app is in front now. Describe the screen again.", "retry") }
+    let screen = try readScreen(rules, text: false)
+    let control: Control
+    if !remembered.name.isEmpty,
+       let found = try? findControl(screen, name: remembered.name, role: String(remembered.role.dropFirst(2)), near: CGPoint(x: remembered.frame.midX, y: remembered.frame.midY)) {
+      control = found
+    } else if let rect = frameOf(remembered.element), rect.width > 0, rect.height > 0 {
+      control = Control(element: remembered.element, role: remembered.role, name: remembered.name, secure: remembered.secure, frame: rect)
+    } else { try refuse("That control is gone. Describe the screen again.", "retry") }
+    return try clickControl(control, in: screen, action, display, rules, expected)
+  case "press":
+    // A control by its name, as the screen describes it: no number needed.
+    guard let wanted = action["name"] as? String, !wanted.isEmpty, wanted.count <= 120 else { try refuse("Name the control to press.", "invalid") }
+    let screen = try readScreen(rules, text: false)
+    let control = try findControl(screen, name: wanted, role: action["role"] as? String)
+    return try clickControl(control, in: screen, action, display, rules, expected)
+  case "fill":
+    // A form in one go: each field found by its label, clicked, typed into
+    // through the same checks as typing (a password field takes a vault value
+    // only; vault values never go into a terminal); Enter at the end if asked.
+    guard let fields = action["fields"] as? [[String: Any]], !fields.isEmpty, fields.count <= 12 else { try refuse("Give the fields to fill.", "invalid") }
+    var screen = try readScreen(rules, text: false)
+    var filled: [String] = []
+    for (index, field) in fields.enumerated() {
+      guard let label = field["label"] as? String, !label.isEmpty, label.count <= 120, let text = field["text"] as? String, !text.isEmpty else {
+        try refuse("Each field needs a label and text.", "invalid")
+      }
+      let secret = field["secret"] as? Bool == true
+      // Typing can change the form (a new field appears, one goes): read again.
+      if index > 0 { screen = try readScreen(rules, text: false) }
+      let control = try findControl(screen, name: label, fields: true)
+      if control.secure && !secret { try refuse(secureReason) }
+      _ = try clickControl(control, in: screen, [:], display, rules, expected)
+      usleep(150_000)
+      if action["replace"] as? Bool == true, !control.secure {
+        _ = try perform(["type": "key", "key": "a", "modifiers": ["cmd"]], display, rules, expected)
+      }
+      var typing: [String: Any] = ["type": "type", "text": text]
+      if secret { typing["secret"] = true }
+      if let checked = action["terminalLikeChecked"] { typing["terminalLikeChecked"] = checked }
+      _ = try perform(typing, display, rules, expected)
+      filled.append(control.name)
     }
-    var click: [String: Any] = ["type": "click", "x": Double((visible.midX - display.minX) / display.width), "y": Double((visible.midY - display.minY) / display.height)]
-    if let button = action["button"] { click["button"] = button }
-    if let count = action["count"] { click["count"] = count }
-    return try perform(click, display, rules, expected)
+    if action["submit"] as? Bool == true { _ = try perform(["type": "key", "key": "enter"], display, rules, expected) }
+    reached = ["app": screen.app, "bundle": screen.bundle, "filled": filled]
   case "click":
     let p = try point("x", "y")
     let target = try checkPoint(p, rules, expected)
@@ -541,6 +610,7 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     let secret = action["secret"] as? Bool == true
     if target.element.secure && !secret { try refuse(secureReason) }
     if secret && target.terminalLike { try refuse("Vault values don't go into a terminal. Click the sign-in field first.") }
+    if secret { rememberSecret(text) }
     // The server checked the text as prose or as a command; if the focus
     // moved to a terminal since, it must look again.
     if target.terminalLike && action["terminalLikeChecked"] as? Bool != true { try refuse("A terminal is in front now. Try again.", "retry") }
@@ -584,6 +654,29 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
   return reached
 }
 
+// A field showing what the agent typed from its vault (an email, say) is
+// blacked out of its screenshot, as its value is left out of the screen as
+// text. Best effort: a window that can't be read is shown as it is.
+func redacted(_ image: CGImage, _ rules: Rules) -> CGImage {
+  guard !typedSecrets.isEmpty, let screen = try? readScreen(rules, text: false) else { return image }
+  let boxes = screen.controls.enumerated().compactMap { index, control -> CGRect? in
+    guard fieldRoles.contains(control.role), !control.secure, let value = screen.values[index], value.contains("•••") else { return nil }
+    return control.frame
+  }
+  guard !boxes.isEmpty, let space = CGColorSpace(name: CGColorSpace.sRGB),
+    let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+  let scale = CGFloat(image.width) / screen.display.width
+  context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+  context.setFillColor(CGColor(gray: 0, alpha: 1))
+  for box in boxes {
+    // Accessibility counts from the top left; the context from the bottom left.
+    let x = (box.minX - screen.display.minX) * scale, w = box.width * scale
+    let y = CGFloat(image.height) - (box.maxY - screen.display.minY) * scale, h = box.height * scale
+    context.fill(CGRect(x: x - 2, y: y - 2, width: w + 4, height: h + 4))
+  }
+  return context.makeImage() ?? image
+}
 @available(macOS 14.0, *)
 func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -629,7 +722,7 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   config.showsCursor = true
   config.capturesAudio = false
   let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-  let bitmap = NSBitmapImageRep(cgImage: image)
+  let bitmap = NSBitmapImageRep(cgImage: redacted(image, rules))
   guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7]), data.count < 6 * 1024 * 1024 else {
     try refuse("The screen couldn't be encoded.", "unavailable")
   }
@@ -723,12 +816,31 @@ func openURL(_ text: String, _ browserPath: String, _ rules: Rules) throws -> [S
 // server's check of typed text (a terminal takes commands).
 
 // Numbered elements: what can be clicked in the front window, read from the
-// accessibility tree. The agent picks one by number; the click lands at its
-// live center through the same checks as any click (perform "element").
-var snapshots: [(id: String, elements: [AXUIElement])] = []
+// accessibility tree. The agent picks one by number, or names it (press,
+// fill); the click lands at its live center through the same checks as any
+// click (clickControl).
+struct Control { let element: AXUIElement; let role: String; let name: String; let secure: Bool; let frame: CGRect }
+struct Screen {
+  let pid: pid_t, app: String, bundle: String, title: String
+  let controls: [Control], values: [Int: String]
+  let texts: [(String, CGRect)], headings: [CGRect]
+  let truncated: Bool, display: CGRect
+}
+var snapshots: [(id: String, pid: pid_t, controls: [Control])] = []
 let labelRoles: Set<String> = ["AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
   "AXComboBox", "AXTextField", "AXTextArea", "AXSecureTextField", "AXSearchField", "AXMenuItem", "AXMenuBarItem",
   "AXTab", "AXDisclosureTriangle", "AXIncrementor", "AXSlider", "AXSwitch", "AXToggle", "AXDockItem"]
+let fieldRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXSecureTextField"]
+// What the agent typed from its vault (type or fill with secret): never shown
+// back to it, in the screen as text or a screenshot. In this process only,
+// for this session.
+var typedSecrets: [String] = []
+func rememberSecret(_ text: String) {
+  let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard value.count >= 3, !typedSecrets.contains(value) else { return }
+  typedSecrets.append(value)
+  if typedSecrets.count > 16 { typedSecrets.removeFirst() }
+}
 func frameOf(_ element: AXUIElement) -> CGRect? {
   var p = CGPoint.zero, size = CGSize.zero
   guard let position = attr(element, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
@@ -748,9 +860,11 @@ func labelName(_ element: AXUIElement, _ role: String, secure: Bool) -> String {
   if let named = known[string(element, kAXSubroleAttribute)] { parts.insert(named, at: 0) }
   parts.append(string(element, kAXHelpAttribute))
   let name = parts.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.first { !$0.isEmpty } ?? ""
-  return String(name.prefix(60))
+  return hideSecrets(String(name.prefix(60)), typedSecrets)
 }
-func elements(_ rules: Rules) throws -> [String: Any] {
+// The front window read through accessibility: its controls, what fields
+// hold, and (unless skipped) what a person reads there. One walk, bounded.
+func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
   if rules.mode == "view" { try refuse("This agent can only look.") }
   guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is in front.", "retry") }
   let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
@@ -759,8 +873,7 @@ func elements(_ rules: Rules) throws -> [String: Any] {
   // Chromium and Electron build their web trees only for assistive apps.
   AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
   let display = CGDisplayBounds(CGMainDisplayID())
-  var found: [(AXUIElement, String, String, Bool, CGRect)] = []
-  // The screen as text too: what a person reads there, in the same walk.
+  var found: [Control] = []
   var texts: [(String, CGRect)] = [], headings: [CGRect] = [], values: [Int: String] = [:]
   var textChars = 0
   var roots: [AXUIElement] = []
@@ -783,16 +896,18 @@ func elements(_ rules: Rules) throws -> [String: Any] {
     if role == "AXMenu" { continue } // closed menus' items are not on screen
     let subrole = string(node, kAXSubroleAttribute)
     let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
-    if role == "AXHeading", let rect = frameOf(node) { headings.append(rect) }
-    if role == "AXStaticText", texts.count < 500, textChars < 20000 {
-      let words = (string(node, kAXValueAttribute).isEmpty ? string(node, kAXTitleAttribute) : string(node, kAXValueAttribute))
-        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-      if !words.isEmpty, let rect = frameOf(node), rect.width >= 1, rect.height >= 1 {
-        let visible = rect.intersection(display)
-        if !visible.isNull, visible.height >= 2 {
-          let line = String(words.prefix(300))
-          texts.append((line, visible))
-          textChars += line.count
+    if wantText, role == "AXHeading", let rect = frameOf(node) { headings.append(rect) }
+    if role == "AXStaticText" {
+      if wantText, texts.count < 500, textChars < 20000 {
+        let words = (string(node, kAXValueAttribute).isEmpty ? string(node, kAXTitleAttribute) : string(node, kAXValueAttribute))
+          .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if !words.isEmpty, let rect = frameOf(node), rect.width >= 1, rect.height >= 1 {
+          let visible = rect.intersection(display)
+          if !visible.isNull, visible.height >= 2 {
+            let line = hideSecrets(String(words.prefix(300)), typedSecrets)
+            texts.append((line, visible))
+            textChars += line.count
+          }
         }
       }
       continue
@@ -801,12 +916,13 @@ func elements(_ rules: Rules) throws -> [String: Any] {
       if let rect = frameOf(node), rect.width >= 4, rect.height >= 4 {
         let visible = rect.intersection(display)
         if !visible.isNull, visible.width >= 2, visible.height >= 2, attr(node, kAXEnabledAttribute) as? Bool != false {
-          // What a field holds is on screen already; a password field's never.
-          if !secure, ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) {
+          // What a field holds is on screen already; a password field's never,
+          // nor what the agent typed from its vault.
+          if !secure, fieldRoles.contains(role) {
             let value = string(node, kAXValueAttribute).split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            if !value.isEmpty { values[found.count] = String(value.prefix(120)) }
+            if !value.isEmpty { values[found.count] = hideSecrets(String(value.prefix(120)), typedSecrets) }
           }
-          found.append((node, role, labelName(node, role, secure: secure), secure, visible))
+          found.append(Control(element: node, role: role, name: labelName(node, role, secure: secure), secure: secure, frame: visible))
         }
       }
       // A control's own parts (a link's text, a button's image) are the control.
@@ -819,30 +935,77 @@ func elements(_ rules: Rules) throws -> [String: Any] {
     let ay = (a.midY / 12).rounded(), by = (b.midY / 12).rounded()
     return ay != by ? ay < by : a.minX < b.minX
   }
-  let indexed = found.enumerated().map { ($0.offset, $0.element) }.sorted { order($0.1.4, $1.1.4) }
-  found = indexed.map { $0.1 }
-  let foundValues = Dictionary(uniqueKeysWithValues: indexed.enumerated().compactMap { position, entry in values[entry.0].map { (position, $0) } })
+  let indexed = found.enumerated().map { ($0.offset, $0.element) }.sorted { order($0.1.frame, $1.1.frame) }
+  let kept = Array(indexed.prefix(250))
+  let keptValues = Dictionary(uniqueKeysWithValues: kept.enumerated().compactMap { position, entry in values[entry.0].map { (position, $0) } })
   texts.sort { order($0.1, $1.1) }
-  let kept = Array(found.prefix(250))
-  let id = UUID().uuidString.prefix(8).lowercased()
-  snapshots.append((id: String(id), elements: kept.map { $0.0 }))
+  return Screen(pid: front.processIdentifier, app: name, bundle: bundle, title: windowTitle, controls: kept.map { $0.1 }, values: keptValues,
+    texts: texts, headings: headings, truncated: found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000, display: display)
+}
+func elements(_ rules: Rules) throws -> [String: Any] {
+  let screen = try readScreen(rules)
+  let id = String(UUID().uuidString.prefix(8).lowercased())
+  snapshots.append((id: id, pid: screen.pid, controls: screen.controls))
   if snapshots.count > 4 { snapshots.removeFirst(snapshots.count - 4) }
+  let display = screen.display
   let place = { (rect: CGRect) -> [String: Any] in
     ["x": Double((rect.minX - display.minX) / display.width), "y": Double((rect.minY - display.minY) / display.height),
      "w": Double(rect.width / display.width), "h": Double(rect.height / display.height)]
   }
-  let items: [[String: Any]] = kept.enumerated().map { index, item in
-    var entry: [String: Any] = ["n": index + 1, "role": String(item.1.dropFirst(2)), "name": item.2, "secure": item.3]
-    if let value = foundValues[index] { entry["value"] = value }
-    return entry.merging(place(item.4)) { first, _ in first }
+  let items: [[String: Any]] = screen.controls.enumerated().map { index, item in
+    var entry: [String: Any] = ["n": index + 1, "role": String(item.role.dropFirst(2)), "name": item.name, "secure": item.secure]
+    if let value = screen.values[index] { entry["value"] = value }
+    return entry.merging(place(item.frame)) { first, _ in first }
   }
-  let lines: [[String: Any]] = texts.map { text, rect in
+  let lines: [[String: Any]] = screen.texts.map { text, rect in
     var entry: [String: Any] = ["text": text]
-    if headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
+    if screen.headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
     return entry.merging(place(rect)) { first, _ in first }
   }
-  return ["ok": true, "snapshot": String(id), "app": name, "title": windowTitle, "items": items, "texts": lines,
-          "truncated": found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000]
+  return ["ok": true, "snapshot": id, "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
+}
+// The control the agent named, in a fresh read of the screen: the best match
+// by name (and role, when given; fields only, for a form); among equals the
+// one nearest to where it was last seen. Several equally good: the agent
+// says which, by number.
+func findControl(_ screen: Screen, name: String, role: String? = nil, fields: Bool = false, near: CGPoint? = nil) throws -> Control {
+  let graded = screen.controls.map { control -> (grade: Int, distance: Double) in
+    let roleOk = role.map { lower(control.role) == "ax" + lower($0) || lower(control.role) == lower($0) } ?? true
+    let kindOk = !fields || fieldRoles.contains(control.role) || control.secure
+    let distance = near.map { hypot(control.frame.midX - $0.x, control.frame.midY - $0.y) } ?? Double.infinity
+    return (grade: roleOk && kindOk ? nameMatch(control.name, name) : 0, distance: distance)
+  }
+  let pick = pickControl(graded)
+  if let index = pick.index { return screen.controls[index] }
+  let what = fields ? "field" : "control", shown = String(name.prefix(60))
+  if pick.candidates > 1 { try refuse("\(pick.candidates) \(what)s match \"\(shown)\". Describe the screen and press one by its number.", "invalid") }
+  try refuse("No \(what) named \"\(shown)\" is on screen. Describe the screen.", "retry")
+}
+// A click at a control's live center, judged like any click. Refused when
+// another app's window, or a dialog, sheet or menu of this app, has covered
+// the control since the agent looked: the click would land on that instead.
+func clickControl(_ control: Control, in screen: Screen, _ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expected: [String: String]?) throws -> [String: Any] {
+  let visible = control.frame.intersection(display)
+  guard !visible.isNull, visible.width >= 1, visible.height >= 1 else { try refuse("That control is out of view. Scroll to it first.", "retry") }
+  let center = CGPoint(x: visible.midX, y: visible.midY)
+  if let window = windowAt(center), window.pid > 0, window.pid != screen.pid,
+     pointerIdentityKnown(window.bundle, window.name, window.path, Int(window.pid)), !systemSurfaces.contains(lower(window.bundle)) {
+    try refuse("Another app's window now covers that control. Describe the screen again.", "retry")
+  }
+  var hit: AXUIElement?
+  if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(center.x), Float(center.y), &hit) == .success, let hit, pidOf(hit) == screen.pid,
+     coveredControl(hit, control.element, parent: { elementAttr($0, kAXParentAttribute) }, equal: { CFEqual($0, $1) },
+       sameApp: { pidOf($0) == pidOf($1) },
+       overlay: { ["AXSheet", "AXMenu", "AXPopover", "AXDrawer"].contains(string($0, kAXRoleAttribute))
+         || ["AXDialog", "AXSystemDialog", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog"].contains(string($0, kAXSubroleAttribute)) }) {
+    try refuse("A dialog or menu now covers that control. Describe the screen again and answer it first.", "retry")
+  }
+  var click: [String: Any] = ["type": "click", "x": Double((center.x - display.minX) / display.width), "y": Double((center.y - display.minY) / display.height)]
+  if let button = action["button"] { click["button"] = button }
+  if let count = action["count"] { click["count"] = count }
+  var result = try perform(click, display, rules, expected)
+  result["pressed"] = control.name
+  return result
 }
 
 func front(_ rules: Rules) -> [String: Any] {

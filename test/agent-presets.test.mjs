@@ -101,6 +101,7 @@ test("the route allowlist follows the preset exactly", () => {
     ["GET", "/browser/desktop/screen", { full: true, apps: true, files: false, readonly: true }],
     ["GET", "/browser/desktop/front", { full: true, apps: true, files: false, readonly: true }],
     ["POST", "/browser/desktop/input", { full: true, apps: true, files: false, readonly: false }],
+    ["POST", "/browser/desktop/wait", { full: true, apps: true, files: false, readonly: false }],
     ["POST", "/browser/desktop/open", { full: true, apps: true, files: false, readonly: false }],
     ["GET", "/browser/desktop/apps", { full: true, apps: true, files: false, readonly: false }],
     ["POST", "/browser/shell", { full: true, apps: false, files: false, readonly: false }],

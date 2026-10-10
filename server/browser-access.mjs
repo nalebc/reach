@@ -675,6 +675,7 @@ export function browserAccessRoutes(
         // half a batch done.
         normalizeAction(item);
         if (typeof item.text === "string") typed += item.text.length;
+        if (Array.isArray(item.fields)) for (const field of item.fields) typed += String(field?.text || "").length;
       }
     }
     if (waited > BATCH.waits) throw fail(400, "Wait at most 6 seconds in one batch.");
@@ -718,6 +719,37 @@ export function browserAccessRoutes(
         }
       }
       return reply;
+    });
+  });
+  // The Mac waits for its own screen to show some text or a control (a page
+  // loading, a dialog appearing), so an agent far away doesn't ask again and
+  // again: a look every 400 ms, up to 15 s, then the screen as text either way.
+  app.post("/api/browser/desktop/wait", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    const body = req.body;
+    const wanted = isPlainRecord(body) ? [body.text, body.name].filter((value) => value !== undefined) : [];
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["text", "name", "timeoutMs"].includes(key)) || wanted.length !== 1 ||
+        typeof wanted[0] !== "string" || !wanted[0].trim() || wanted[0].length > 200 || hasReviewControls(wanted[0]) ||
+        (body.timeoutMs !== undefined && (!Number.isInteger(body.timeoutMs) || body.timeoutMs < 500 || body.timeoutMs > 15000)))
+      throw fail(400, "Wait for text or a control's name, up to 15000 ms.");
+    const authorize = () => presetClient(req, "browser:control");
+    const squeeze = (value) => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const target = squeeze(wanted[0]);
+    const started = Date.now(), deadline = started + (body.timeoutMs ?? 8000);
+    await answer(res, async () => {
+      for (;;) {
+        const found = await desktop.elements(client, authorize);
+        const matched = body.text !== undefined
+          ? found.texts.some((line) => squeeze(line.text).includes(target)) || squeeze(found.title).includes(target) ||
+            found.items.some((item) => squeeze(item.name).includes(target) || squeeze(item.value).includes(target))
+          : found.items.some((item) => squeeze(item.name) === target || squeeze(item.name).startsWith(target));
+        if (matched || Date.now() >= deadline)
+          return { found: matched, waitedMs: Date.now() - started,
+            screen: { snapshot: found.snapshot, app: found.app, title: found.title, truncated: found.truncated, text: describeScreen(found) } };
+        authorize();
+        await pause(Math.min(400, Math.max(0, deadline - Date.now())));
+      }
     });
   });
   app.get("/api/browser/desktop/apps", async (req, res) => {

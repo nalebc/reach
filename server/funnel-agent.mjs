@@ -137,7 +137,7 @@ function permittedPath(method, value) {
     (method === "POST" &&
       ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
         // Preset sessions: one input action, opening an app, one command, one file change.
-        "/api/browser/desktop/input", "/api/browser/desktop/open", "/api/browser/desktop/open-url", "/api/browser/shell", "/api/browser/files/change",
+        "/api/browser/desktop/input", "/api/browser/desktop/wait", "/api/browser/desktop/open", "/api/browser/desktop/open-url", "/api/browser/shell", "/api/browser/files/change",
         "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
         "/api/browser/tools/define", "/api/browser/tools/run",
         "/api/browser/services/request", "/api/browser/services/run"].includes(route)) ||

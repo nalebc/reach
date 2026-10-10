@@ -257,3 +257,31 @@ test("a batch of actions in one request, stopping at the first refused, with the
   const single = await input({ action: { type: "key", key: "enter" } });
   assert.equal(single.body.app, "Google Chrome");
 });
+
+// The Mac waits for its own screen (a page to load, a dialog) instead of the
+// agent asking again and again; press and fill ride in batches.
+test("the Mac waits for text or a control to appear; press and fill ride in batches", privateIngressTest, async (t) => {
+  const { extras, log } = stand();
+  const f = await presetFixture(t, { desktopExtras: extras });
+  const full = await f.join({ preset: "full" });
+  const wait = (body) => full.as("/api/browser/desktop/wait", { method: "POST", body });
+  const seen = await wait({ text: "pampers swaddlers" });
+  assert.equal(seen.status, 200, JSON.stringify(seen.body));
+  assert.equal(seen.body.found, true);
+  assert.match(seen.body.screen.text, /Pampers Swaddlers/);
+  assert.equal((await wait({ name: "add to" })).body.found, true, "a control by the start of its name");
+  const started = Date.now();
+  const missing = await wait({ text: "Order placed", timeoutMs: 900 });
+  assert.equal(missing.body.found, false);
+  assert.ok(missing.body.waitedMs >= 800 && Date.now() - started < 5000, `waited ${missing.body.waitedMs} ms`);
+  assert.match(missing.body.screen.text, /Uber Eats/, "the screen as text comes back either way");
+  for (const body of [{}, { text: "a", name: "b" }, { text: "" }, { text: "a", timeoutMs: 100 }, { text: "a", extra: 1 }, { text: "x".repeat(201) }])
+    assert.equal((await wait(body)).status, 400, JSON.stringify(body));
+  const batch = await full.as("/api/browser/desktop/input", { method: "POST", body: { actions: [{ type: "press", name: "Search" }, { type: "fill", fields: [{ label: "Search", text: "diapers" }], submit: true }], describe: true } });
+  assert.equal(batch.status, 200, JSON.stringify(batch.body));
+  assert.equal(batch.body.done, 2);
+  assert.deepEqual(log.filter(([op]) => op === "act").map(([, , action]) => action.type), ["press", "fill"]);
+  assert.match(batch.body.screen.text, /Fields: "Search"/);
+  const ro = await f.join({ preset: "readonly", name: "Reader" });
+  assert.equal((await ro.as("/api/browser/desktop/wait", { method: "POST", body: { text: "x" } })).status, 403, "waiting is control");
+});

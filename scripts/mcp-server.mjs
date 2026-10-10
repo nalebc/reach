@@ -5,7 +5,7 @@ import readline from "node:readline";
 import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest, SAVED_TOOLS_HINT } from "../server/browser-tools.mjs";
 
-const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
+const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
 const BROWSER_TOOL_SCOPES = {
   reach_services: "browser:read", reach_service_request: "browser:read",
   reach_tools: "browser:control", reach_tool_protocol: "browser:control", reach_define_tool: "browser:control", reach_tool_operation: "browser:control",
@@ -17,12 +17,13 @@ const BROWSER_TOOL_SCOPES = {
   // Preset sessions (server/agent-presets.mjs): the Mac itself, within the preset.
   reach_screenshot: "browser:screen", reach_front: "browser:screen", reach_act: "browser:control",
   reach_elements: "browser:control", reach_describe_screen: "browser:control",
+  reach_press: "browser:control", reach_fill: "browser:control", reach_wait_for: "browser:control",
   reach_desktop_apps: "browser:open", reach_open_app: "browser:open", reach_open_url: "browser:open", reach_change_file: "browser:write",
   reach_shell: "browser:shell", reach_shell_history: "browser:shell",
   reach_shortcuts: "browser:control", reach_record_shortcut: "browser:control", reach_save_shortcut: "browser:control", reach_discard_shortcut: "browser:control", reach_run_shortcut: "browser:control",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell"]);
+const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell"]);
 const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
 
 const location = {

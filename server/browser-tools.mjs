@@ -42,6 +42,9 @@ const desktopActions = [
   // A control from reach_describe_screen, pressed at its live center on the
   // Mac: no screenshot, no coordinates (agent-desktop.mjs normalizeAction).
   object({ type: kinds("element"), snapshot: { ...string(40), pattern: "^[A-Za-z0-9-]{1,40}$", description: "The snapshot from reach_describe_screen or reach_elements." }, n: { ...integer(1, 500), description: "The control's [number] there." }, button: kinds(["left", "right"]), count: integer(1, 3) }, ["type", "snapshot", "n"]),
+  // The same by name (press), and a form's fields by their labels (fill).
+  object({ type: kinds("press"), name: { ...string(120), description: "The control's name as the screen describes it." }, role: { ...string(40), pattern: "^[A-Za-z]{1,40}$", description: "Narrow to a role: Button, Link, Tab, MenuItem, CheckBox…" }, button: kinds(["left", "right"]), count: integer(1, 3) }, ["type", "name"]),
+  object({ type: kinds("fill"), fields: { type: "array", minItems: 1, maxItems: 12, items: object({ label: { ...string(120), description: "The field's label or placeholder as the screen describes it." }, text: string(2000), secret: { type: "boolean", enum: [true], description: "A username, email or password from your vault: typed unseen, never echoed." } }, ["label", "text"]) }, submit: { type: "boolean", enum: [true], description: "Press Enter after the last field." }, replace: { type: "boolean", enum: [true], description: "Clear each field first (not a password field)." } }, ["type", "fields"]),
 ];
 // A pause between batched actions, for a page or menu to appear.
 const waitAction = object({ type: kinds("wait"), ms: { ...integer(50, 2000), description: "Milliseconds, up to 2000." } }, ["type", "ms"]);
@@ -67,6 +70,9 @@ function presetTools(access) {
   if (access.control) tools.push(
     definition("reach_describe_screen", "Describe the screen", "Start here: the front window as text, from the Mac's accessibility tree. Its app and title, the text a person reads there in reading order, and every button, link and field inline as [n] Role \"name\". Click one with reach_act {type: \"element\", snapshot, n}; no screenshot needed. Describe again after the screen changes. Pictures, maps and games have no text: use reach_screenshot for those.", object(), {}),
     definition("reach_elements", "Numbered elements", "The same as reach_describe_screen, as data: {snapshot, app, title, items: [{n, role, name, value, x, y, w, h}], texts: [{text, heading, x, y, w, h}]} (fractions of the screen). Click one exactly with reach_act {type: \"element\", snapshot, n}.", object(), {}),
+    definition("reach_press", "Press a control by name", "Press a button, link, tab or menu item by the name reach_describe_screen shows, no number needed: the exact name first, then one starting with it. Several match: refused with the count (press one by number). Nothing matches: describe the screen. Works inside reach_act batches as {type: \"press\", name}. Add describe: true for the screen as text after.", object({ name: string(120), role: { ...string(40), pattern: "^[A-Za-z]{1,40}$", description: "Narrow to a role: Button, Link, Tab, MenuItem, CheckBox…" }, button: kinds(["left", "right"]), count: integer(1, 3), describe: { type: "boolean", enum: [true] } }, ["name"]), { name: "Add to cart", describe: true }),
+    definition("reach_fill", "Fill a form", "Type into a form's fields by their labels, all in one call (reach_describe_screen lists them under Fields): each field is clicked, then typed into; submit: true presses Enter at the end; replace: true clears a field first (text appends otherwise). For a username, email or password from your vault, set secret: true on that field: it goes in unseen and is never shown back to you; only a secret goes into a password field. Works inside reach_act batches as {type: \"fill\", fields}.", object({ fields: { type: "array", minItems: 1, maxItems: 12, items: object({ label: string(120), text: string(2000), secret: { type: "boolean", enum: [true] } }, ["label", "text"]) }, submit: { type: "boolean", enum: [true] }, replace: { type: "boolean", enum: [true] }, describe: { type: "boolean", enum: [true] } }, ["fields"]), { fields: [{ label: "Email", text: "from your vault", secret: true }, { label: "Password", text: "from your vault", secret: true }], submit: true, describe: true }),
+    definition("reach_wait_for", "Wait for the screen", "The Mac waits until its screen shows some text, or a control by name (a page loaded, a dialog appeared), up to 15 seconds, then returns the screen as text; found: false after the wait. One call instead of describing again and again.", object({ text: string(200), name: string(120), timeoutMs: integer(500, 15000) }), { text: "Order placed", timeoutMs: 8000 }),
     definition("reach_act", "Act on the screen", "Act on the Mac: one action, or actions: up to 10 in order (they stop at the first one refused). Prefer {type: \"element\", snapshot, n} from reach_describe_screen, then type and key: for example [element 3, type \"diapers\", key enter]. Add {type: \"wait\", ms} where a page has to load. Add describe: true to get the screen as text back in the same call, with a fresh snapshot: act and see in one step, no screenshot. Each action is checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner paused you or is controlling the Mac; wait), retry (the screen changed; describe again).", object({ action: { oneOf: desktopActions }, actions: { type: "array", minItems: 1, maxItems: 10, items: { oneOf: [...desktopActions, waitAction] } }, describe: { type: "boolean", enum: [true], description: "Return the screen as text after acting." } }), { actions: [{ type: "element", snapshot: "SNAPSHOT", n: 3 }, { type: "type", text: "diapers" }, { type: "key", key: "enter" }], describe: true }),
   );
   if (access.open) tools.push(
@@ -278,6 +284,17 @@ export function browserToolRequest(name, args, access) {
     case "reach_act":
       if (("action" in input) === ("actions" in input)) invalid("Send action, or actions: a list of up to 10.");
       return { route: "/api/browser/desktop/input", method: "POST", body: { ...("action" in input ? { action: input.action } : { actions: input.actions }), ...(input.describe ? { describe: true } : {}) }, response: "json" };
+    case "reach_press": {
+      const { describe, ...rest } = input;
+      return { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "press", ...rest }, ...(describe ? { describe: true } : {}) }, response: "json" };
+    }
+    case "reach_fill": {
+      const { describe, ...rest } = input;
+      return { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "fill", ...rest }, ...(describe ? { describe: true } : {}) }, response: "json" };
+    }
+    case "reach_wait_for":
+      if (("text" in input) === ("name" in input)) invalid("Wait for text, or for a control's name.");
+      return { route: "/api/browser/desktop/wait", method: "POST", body: input, response: "json" };
     case "reach_desktop_apps": return get("/api/browser/desktop/apps");
     case "reach_open_app": return { route: "/api/browser/desktop/open", method: "POST", body: { app: input.app }, response: "json" };
     case "reach_change_file": return { route: "/api/browser/files/change", method: "POST", body: input, response: "json" };

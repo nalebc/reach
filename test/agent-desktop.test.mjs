@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { AgentDesktopHelper, createAgentDesktop, normalizeAction, reachAddresses } from "../server/agent-desktop.mjs";
+import { AgentDesktopHelper, createAgentDesktop, describeScreen, normalizeAction, reachAddresses } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
 // The server side of an agent's screen and input, against a stand-in for the
@@ -181,6 +181,44 @@ test("typing asks what is in front first: terminals take the deny list, password
   // Clicks and keys go straight to the checker.
   await w.desktop.act(full, { type: "key", key: "enter" }, authorize(full));
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "front").length, 7, "every typed text asked what was in front first");
+});
+
+// Press by name and fill a form: found on the Mac, checked like a click and
+// like typing; a form's vault values never go to a terminal.
+test("press and fill: named controls and a form's fields, checked like a click and typing", async () => {
+  const w = world();
+  const full = w.make("muse", "full");
+  await w.desktop.act(full, { type: "press", name: "  Add to cart ", role: "Button" }, authorize(full));
+  assert.deepEqual(w.helpers.at(-1).requests.filter((r) => r.op === "act").at(-1).action, { type: "press", name: "Add to cart", role: "Button" });
+  for (const bad of [{ type: "press" }, { type: "press", name: "" }, { type: "press", name: "x", role: "not a role" }, { type: "press", name: "x", x: 0.5 },
+    { type: "fill", fields: [] }, { type: "fill", fields: [{ label: "Email" }] }, { type: "fill", fields: [{ label: "Email", text: "a", secret: false }] },
+    { type: "fill", fields: [{ label: "Email", text: "a", extra: 1 }] }, { type: "fill", fields: [{ label: "Email", text: "x".repeat(1500) }, { label: "Name", text: "y".repeat(600) }] },
+    { type: "fill", fields: [{ label: "Email", text: "a" }], submit: false }, { type: "fill", fields: Array.from({ length: 13 }, () => ({ label: "a", text: "b" })) }])
+    await rejects(() => w.desktop.act(full, bad, authorize(full)), 400);
+  const filled = await w.desktop.act(full, { type: "fill", fields: [{ label: "Email", text: "me@example.com", secret: true }, { label: "Password", text: "hunter2", secret: true }], submit: true }, authorize(full));
+  assert.deepEqual(filled, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" }, "what was typed never comes back");
+  const sent = w.helpers.at(-1).requests.filter((r) => r.op === "act").at(-1).action;
+  assert.deepEqual([sent.type, sent.submit, sent.terminalLikeChecked, sent.fields.length], ["fill", true, false, 2]);
+  w.setFront({ app: "Terminal", bundle: "com.apple.Terminal", terminalLike: true });
+  await rejects(() => w.desktop.act(full, { type: "fill", fields: [{ label: "Email", text: "me@example.com", secret: true }] }, authorize(full)), 403, /don't go into a terminal/, "blocked");
+  await rejects(() => w.desktop.act(full, { type: "fill", fields: [{ label: "Command", text: "sudo rm -rf /" }] }, authorize(full)), 403, /needs your password/, "blocked");
+  w.setFront({ app: "Google Chrome", bundle: "com.google.Chrome", terminalLike: false });
+  await rejects(() => w.desktop.act(full, { type: "fill", fields: [{ label: "Address", text: "chrome://password-manager/passwords" }] }, authorize(full)), 403, /saved passwords/, "blocked");
+  // A press goes straight to the Mac, which finds the control and judges the
+  // click there, as for any click.
+  w.setFront({ blocked: "" });
+  await w.desktop.act(full, { type: "press", name: "Allow" }, authorize(full));
+  assert.deepEqual(w.helpers.at(-1).requests.filter((r) => r.op === "act").at(-1).action, { type: "press", name: "Allow" });
+});
+
+test("the screen as text lists a form's fields, for one fill", () => {
+  const text = describeScreen({ app: "Safari", title: "Sign in", snapshot: "s1", texts: [], items: [
+    { n: 1, role: "TextField", name: "Email", x: 0.1, y: 0.1, w: 0.2, h: 0.02 },
+    { n: 2, role: "SecureTextField", name: "Password", secure: true, x: 0.1, y: 0.2, w: 0.2, h: 0.02 },
+    { n: 3, role: "Button", name: "Sign in", x: 0.1, y: 0.3, w: 0.1, h: 0.02 }] });
+  assert.match(text, /\[2\] SecureTextField "Password" \(password field: sign in from your vault\)/);
+  assert.match(text, /Fields: "Email", "Password" \(password\)\. Fill them in one call: reach_fill/);
+  assert.doesNotMatch(describeScreen({ app: "Calculator", items: [{ n: 1, role: "Button", name: "7", x: 0, y: 0, w: 0.1, h: 0.1 }], texts: [] }), /Fields:/);
 });
 
 // Security audit L6: an app the owner hid is never named to the agent.

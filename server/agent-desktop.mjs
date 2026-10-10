@@ -39,6 +39,7 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 // The front window as one readable text (reach_describe_screen): its app and
 // title, then what is there in reading order, each control inline as
 // [n] Role "name" (= what a field holds), clickable by its number.
+const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
 export function describeScreen({ app = "", title = "", snapshot = "", items = [], texts = [], truncated = false } = {}) {
   const control = (item) => `[${item.n}] ${item.role}${item.name ? ` "${item.name}"` : ""}` +
     (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
@@ -57,7 +58,11 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
   const head = [`${app}${title ? ` — ${title}` : ""}`,
     snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : "", ""];
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
-  return (head.join("\n") + body + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
+  const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
+  const form = fields.length
+    ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}; a value from your vault with "secret":true.`
+    : "";
+  return (head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
 }
 
 export function normalizeAction(value) {
@@ -108,7 +113,33 @@ export function normalizeAction(value) {
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
       return { type: "element", snapshot: value.snapshot, n: value.n, ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}) };
     }
-    default: throw fail(400, "Choose one action: click, move, drag, scroll, type, key or element.");
+    // A control by its name, as the screen describes it (press), and a form's
+    // fields by their labels, typed in one go (fill): found on the Mac.
+    case "press": {
+      only("type", "name", "role", "button", "count");
+      const name = typeof value.name === "string" ? value.name.trim() : "";
+      if (!name || name.length > 120 || hiddenControls.test(name)) throw fail(400, "Name the control, up to 120 characters.");
+      if (value.role !== undefined && (typeof value.role !== "string" || !/^[A-Za-z]{1,40}$/.test(value.role))) throw fail(400, "Give the control's role as one word, such as Button.");
+      if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
+      if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
+      return { type: "press", name, ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}) };
+    }
+    case "fill": {
+      only("type", "fields", "submit", "replace");
+      if (!Array.isArray(value.fields) || !value.fields.length || value.fields.length > 12) throw fail(400, "Fill 1 to 12 fields.");
+      const fields = value.fields.map((field) => {
+        if (!plain(field) || Object.keys(field).some((key) => !["label", "text", "secret"].includes(key))) throw fail(400, "Each field takes label, text and secret.");
+        const label = typeof field.label === "string" ? field.label.trim() : "";
+        if (!label || label.length > 120 || hiddenControls.test(label)) throw fail(400, "Name each field by its label, up to 120 characters.");
+        if (typeof field.text !== "string" || !field.text || field.text.length > 2000 || hiddenControls.test(field.text)) throw fail(400, "Type up to 2000 characters into a field, without hidden controls.");
+        if (field.secret !== undefined && field.secret !== true) throw fail(400, "Mark only a vault value as secret.");
+        return field.secret ? { label, text: field.text, secret: true } : { label, text: field.text };
+      });
+      if (fields.reduce((sum, field) => sum + field.text.length, 0) > 2000) throw fail(400, "Type at most 2000 characters in one fill.");
+      for (const flag of ["submit", "replace"]) if (value[flag] !== undefined && value[flag] !== true) throw fail(400, `Set ${flag} to true, or leave it out.`);
+      return { type: "fill", fields, ...(value.submit ? { submit: true } : {}), ...(value.replace ? { replace: true } : {}) };
+    }
+    default: throw fail(400, "Choose one action: click, move, drag, scroll, type, key, element, press or fill.");
   }
 }
 
@@ -475,8 +506,11 @@ export function createAgentDesktop(config, {
         .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
           x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
         .filter((line) => (budget -= line.text.length) >= 0);
+      // The form at a glance: its fields, for reach_fill in one call.
+      const fields = items.filter((item) => FIELD_ROLES.has(item.role))
+        .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
       return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
-        title: String(result.title || "").slice(0, 200), items, texts, truncated: result.truncated === true || budget < 0 };
+        title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {
@@ -486,19 +520,24 @@ export function createAgentDesktop(config, {
       checkState(client, authorize, "browser:control", state);
       checkFresh(latest);
       try {
-        if (action.type === "type") {
+        // Typed text (type), or a form's fields (fill): checked against what
+        // is in front before anything is sent.
+        const typing = action.type === "type" ? [action] : action.type === "fill" ? action.fields : [];
+        if (typing.length) {
           take(latest);
           const front = answer(await state.helper.send({ op: "front" }));
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
-          if (action.secret) {
-            // Vault values (usernames, emails, passwords) never go to a terminal,
-            // where they would run or show as a command.
-            if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
-          } else if (front.secure) throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
-          // Vault values still never go to Reach's own pages or protected paths;
-          // only the shell deny list is skipped for them.
-          const reason = typedTextRefusal(action.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
-          if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
+          for (const entry of typing) {
+            if (entry.secret) {
+              // Vault values (usernames, emails, passwords) never go to a terminal,
+              // where they would run or show as a command.
+              if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
+            } else if (front.secure && action.type === "type") throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
+            // Vault values still never go to Reach's own pages or protected paths;
+            // only the shell deny list is skipped for them.
+            const reason = typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+            if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
+          }
           action.terminalLikeChecked = front.terminalLike === true;
         }
         checkState(client, authorize, "browser:control", state);

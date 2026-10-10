@@ -51,6 +51,17 @@ test("the helper never names an app the owner hid (audit L6)", async () => {
   assert.match(front, /if blocked == hiddenReason \{\n\s+return \["ok": true, "app": "", "bundle": "", "title": ""/);
 });
 
+test("a numbered press re-finds its control; press and fill go through the same checks; vault values are hidden", async () => {
+  const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
+  const perform = source.split("func perform(")[1].split("\n@available")[0];
+  assert.match(perform, /case "element":[\s\S]*?readScreen\(rules, text: false\)[\s\S]*?clickControl\(control, in: screen/);
+  assert.match(perform, /case "press":[\s\S]*?findControl\(screen, name: wanted, role: action\["role"\] as\? String\)/);
+  assert.match(perform, /case "fill":[\s\S]*?if control\.secure && !secret \{ try refuse\(secureReason\) \}[\s\S]*?\["type": "type", "text": text\]/);
+  assert.match(perform, /if secret \{ rememberSecret\(text\) \}/, "a vault value typed is remembered");
+  assert.match(source.split("func readScreen(")[1].split("\nfunc elements(")[0], /hideSecrets\(String\(words\.prefix\(300\)\), typedSecrets\)[\s\S]*hideSecrets\(String\(value\.prefix\(120\)\), typedSecrets\)/, "text and field values");
+  assert.match(source.split("func shot(")[1], /redacted\(image, rules\)/, "and screenshots");
+});
+
 test("selected-app screenshots preserve the protected-window exclusions", async () => {
   const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
   const screenshot = source.split("func shot(")[1].split("func catalog(")[0];
@@ -232,6 +243,22 @@ check(!covered(12, 10), "a link of the same page takes the click, as a real one 
 check(covered(20, 10), "a dialog's button over it")
 check(covered(2, 10), "a dialog over it")
 check(covered(300, 10), "another app's window over it")
+// Naming a control: the same name, then one starting with it, then one
+// containing it; spacing and case don't matter.
+check(nameMatch("Add to cart", "add to cart") == 3 && nameMatch("Add to cart", "Add") == 2 && nameMatch("Add to cart", "cart") == 1, "name grades")
+check(nameMatch("Add to cart", "remove") == 0 && nameMatch("", "x") == 0 && nameMatch("x", "") == 0, "no match, nothing named")
+check(nameMatch("  Sign   in ", "sign in") == 3, "spacing and case")
+// Picking among matches: the best grade; among equals, the clearly nearest.
+check(pickControl([(grade: 2, distance: Double.infinity), (grade: 3, distance: Double.infinity), (grade: 1, distance: Double.infinity)]).index == 1, "the best grade")
+let twins = pickControl([(grade: 3, distance: Double.infinity), (grade: 3, distance: Double.infinity)])
+check(twins.index == nil && twins.candidates == 2, "two the same, nowhere in particular: the agent says which")
+check(pickControl([(grade: 3, distance: 300), (grade: 3, distance: 4)]).index == 1, "the one where it was")
+check(pickControl([(grade: 3, distance: 10), (grade: 3, distance: 20)]).index == nil, "two about as near: ambiguous")
+check(pickControl([(grade: 0, distance: 1), (grade: 0, distance: 2)]).index == nil && pickControl([(grade: 0, distance: 1)]).candidates == 0, "nothing matches")
+// What the agent typed from its vault never comes back to it.
+check(hideSecrets("Signed in as jane@example.com", ["jane@example.com"]) == "Signed in as •••", "a vault value in text")
+check(hideSecrets("JANE@EXAMPLE.COM", ["jane@example.com"]) == "•••", "whatever its case")
+check(hideSecrets("ab", ["ab"]) == "ab" && hideSecrets("Add to cart", ["x"]) == "Add to cart", "short values and other text left alone")
 print("OK")
 `;
     await fs.writeFile(path.join(directory, "policy.swift"), "import Foundation\nimport Security\n" + policy + "\n" + identity);

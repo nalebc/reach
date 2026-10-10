@@ -11,8 +11,8 @@ const names = (preset, extra) => toolsFor(presetScopes({ preset, ...extra }), ac
 
 test("preset credentials advertise the preset's tools over MCP", () => {
   const reusable = ["reach_tools", "reach_tool_protocol", "reach_define_tool", "reach_tool_operation", "reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"];
-  assert.deepEqual(names("full"), ["reach_access", "reach_screenshot", "reach_front", "reach_describe_screen", "reach_elements", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_open_url", ...reusable, "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file", "reach_shell", "reach_shell_history"]);
-  assert.deepEqual(names("apps"), ["reach_access", "reach_screenshot", "reach_front", "reach_describe_screen", "reach_elements", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_open_url", ...reusable]);
+  assert.deepEqual(names("full"), ["reach_access", "reach_screenshot", "reach_front", "reach_describe_screen", "reach_elements", "reach_press", "reach_fill", "reach_wait_for", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_open_url", ...reusable, "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file", "reach_shell", "reach_shell_history"]);
+  assert.deepEqual(names("apps"), ["reach_access", "reach_screenshot", "reach_front", "reach_describe_screen", "reach_elements", "reach_press", "reach_fill", "reach_wait_for", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_open_url", ...reusable]);
   assert.deepEqual(names("files"), ["reach_access", "reach_list_files", "reach_search_files", "reach_read_file"]);
   assert.deepEqual(names("files", { write: true }), ["reach_access", "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file"]);
   assert.deepEqual(names("readonly"), ["reach_access", "reach_screenshot", "reach_front", "reach_list_files", "reach_search_files", "reach_read_file"]);
@@ -21,7 +21,7 @@ test("preset credentials advertise the preset's tools over MCP", () => {
 test("hints say what touches the Mac and what can't be undone", () => {
   const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "full" }), access("full")).map((tool) => [tool.name, tool.annotations]));
   for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_describe_screen", "reach_elements", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);
-  for (const name of ["reach_act", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
+  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
   for (const name of ["reach_change_file", "reach_shell", "reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
   assert.equal(tools.reach_act.destructiveHint, false);
   assert.ok(Object.values(tools).every((annotations) => annotations.openWorldHint === false));
@@ -30,7 +30,7 @@ test("hints say what touches the Mac and what can't be undone", () => {
 
 test("a credential whose scopes were narrowed loses the matching tools", () => {
   const lowered = presetScopes({ preset: "readonly" });
-  assert.ok(!toolsFor(lowered, access("full")).some((tool) => ["reach_act", "reach_shell", "reach_change_file", "reach_open_app", "reach_open_url", "reach_describe_screen", "reach_elements"].includes(tool.name)));
+  assert.ok(!toolsFor(lowered, access("full")).some((tool) => ["reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_shell", "reach_change_file", "reach_open_app", "reach_open_url", "reach_describe_screen", "reach_elements"].includes(tool.name)));
 });
 
 
@@ -96,4 +96,22 @@ test("reach_act sends a batch and describe in one request; one form at a time", 
   for (const args of [{}, { action: actions[0], actions }, { actions: [] }, { actions: Array.from({ length: 11 }, () => actions[3]) },
     { action: { type: "wait", ms: 400 } }, { actions: [{ type: "wait", ms: 5000 }] }, { actions, describe: false }])
     assert.throws(() => browserToolRequest("reach_act", args, full), /Invalid tool arguments/, JSON.stringify(args).slice(0, 60));
+});
+
+// Press by name, fill a form, wait for the screen: one request each, with
+// the same checks on the Mac as a click or typing; in batches too.
+test("press, fill and wait_for map to the Mac's routes", async () => {
+  const { browserToolRequest } = await import("../server/browser-tools.mjs");
+  const full = access("full");
+  assert.deepEqual(browserToolRequest("reach_press", { name: "Add to cart", role: "Button", describe: true }, full),
+    { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "press", name: "Add to cart", role: "Button" }, describe: true }, response: "json" });
+  const fields = [{ label: "Email", text: "from the vault", secret: true }, { label: "Password", text: "from the vault", secret: true }];
+  assert.deepEqual(browserToolRequest("reach_fill", { fields, submit: true }, full),
+    { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "fill", fields, submit: true } }, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_wait_for", { text: "Order placed", timeoutMs: 3000 }, full),
+    { route: "/api/browser/desktop/wait", method: "POST", body: { text: "Order placed", timeoutMs: 3000 }, response: "json" });
+  assert.equal(browserToolRequest("reach_act", { actions: [{ type: "press", name: "Search" }, { type: "fill", fields: [{ label: "Search", text: "diapers" }], submit: true }] }, full).body.actions.length, 2);
+  for (const [name, args] of [["reach_press", {}], ["reach_press", { name: "x", role: "not a role" }], ["reach_fill", { fields: [] }], ["reach_fill", { fields: [{ label: "Email" }] }],
+    ["reach_fill", { fields, secret: true }], ["reach_fill", { fields: [{ label: "a", text: "b", secret: false }] }], ["reach_wait_for", {}], ["reach_wait_for", { text: "a", name: "b" }], ["reach_wait_for", { text: "a", timeoutMs: 100 }]])
+    assert.throws(() => browserToolRequest(name, args, full), /Invalid tool arguments/, `${name} ${JSON.stringify(args)}`);
 });
