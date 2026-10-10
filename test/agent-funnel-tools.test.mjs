@@ -169,7 +169,9 @@ test("through the gateway, an agent trades its credential and the new one works;
   const fresh = funnelApi({ conn, credential: { origin: ORIGIN, token: traded.token }, key, gateway });
   assert.ok((await fresh("/api/browser")).roots, "the new credential works");
   assert.ok((await api("/api/browser")).roots, "the old one, for two minutes");
-  // Another key can't trade this credential.
+  // Another key can't trade this credential: with only a trading agent
+  // holding the window, a stranger is shut out at the door, before the
+  // gateway even sees the request.
   const stranger = funnelGateway(ORIGIN, agentKey(fs.mkdtempSync(path.join(f.root, "x-"))), { send: f.send });
-  assert.equal((await stranger.request(traded.token, "POST", "/api/device/rotate", {})).status, 401);
+  assert.equal((await stranger.request(traded.token, "POST", "/api/device/rotate", {})).status, 404);
 });

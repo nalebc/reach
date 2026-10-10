@@ -702,10 +702,10 @@ test("fresh keys and addresses fill no table an agent with access needs", { time
     const key = signingKey();
     for (let n = 0; n < 180; n++) {
       const response = await f.call(signed(key, { operation: "claim", invitation: random() }), { ip: `172.16.${k}.1` });
-      if (response.status === 429) { refused++; break; }
+      if ([429, 503].includes(response.status)) { refused++; break; }
     }
   }
-  assert.ok(refused > 0, "the shared replay space filled");
+  assert.ok(refused > 0, "the shared replay space filled, or the flood breaker tripped");
   for (let i = 0; i < 5; i++) assert.equal((await f.call(f.request(token), known)).status, 200);
 });
 
@@ -744,4 +744,29 @@ test("the private address is accepted when named, the public one as ever, nothin
     assert.equal((await f.call(claim(), { headers: { host } })).status, 421, host);
   const plain = setup(t);
   assert.equal((await plain.call(signed(plain.key, { operation: "claim", invitation: plain.grant().invitation }), { headers: { host: `${new URL(ORIGIN).host}:8443` } })).status, 421, "not named: not accepted");
+});
+
+// A flood of strangers (Oct 10): past 300 unknown keys in a minute, every
+// stranger is refused for five minutes before anything is read or checked;
+// the owner is told once; agents with access feel nothing.
+test("a flood of strangers is refused for five minutes before anything is parsed; agents with access are unaffected", { timeout: 60000 }, async (t) => {
+  let clock = Date.now();
+  const floods = [];
+  const f = setup(t, { now: () => clock, onFlood: (count) => floods.push(count) });
+  const token = await f.join();
+  const known = { headers: { "reach-key": thumbprintOf(f.key) } };
+  // The join was two strangers' requests (its claim, its poll): its key
+  // wasn't known until it had joined.
+  for (let index = 0; index < 298; index++) {
+    const response = await f.call(signed(signingKey(), { operation: "claim", invitation: random() }), { ip: `10.${index >> 8}.${index & 255}.1` });
+    assert.notEqual(response.status, 503, `stranger ${index}`);
+  }
+  const refused = await f.call(signed(signingKey(), { operation: "claim", invitation: random() }), { ip: "10.9.9.9" });
+  assert.equal(refused.status, 503);
+  assert.deepEqual(floods, [301], "told once, with the count");
+  assert.equal((await f.call(signed(signingKey(), { operation: "claim", invitation: random() }), { ip: "10.9.9.8" })).status, 503, "still flooded");
+  assert.deepEqual(floods, [301], "told once per episode");
+  assert.equal((await f.call(f.request(token), known)).status, 200, "its own lane");
+  clock += 5 * 60_000 + 1;
+  assert.notEqual((await f.call(signed(signingKey(), { operation: "claim", invitation: random() }), { ip: "10.9.9.7" })).status, 503, "five minutes on: strangers again");
 });

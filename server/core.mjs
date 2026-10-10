@@ -319,6 +319,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     }
     const reused = clients.find((c) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until <= now));
     if (!reused) return true;
+    rememberEnded(reused);
     changeClients((latest) => latest.filter((c) => c.id !== reused.id));
     clients = loadJson(file, []);
     for (const listener of reuseListeners) try { listener(reused); } catch { /* the access ended regardless */ }
@@ -1389,13 +1390,32 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         client.admission.grant !== admissionGrant(client)) return null;
     return applyAgentPolicy(client, config);
   }
-  // The browser keys of public-link agents that still have access (the one
-  // in use, the one the owner approved): the public gateway keeps capacity
-  // for them that no stranger's traffic can take (security audit M3).
+  // The browser keys of public-link agents that have access (the one in
+  // use, the one the owner approved), and of ones that ended lately: the
+  // public door opens to them alone when nothing else needs it, the gateway
+  // keeps capacity for them no stranger's traffic can take (audit M3), and an
+  // agent that ended hears that it ended instead of finding nothing.
+  const ENDED_KEYS_MS = 7 * 86400_000;
+  const endedKeys = new Map();
+  let endedVersion = 0;
+  const rememberEnded = (client) => {
+    for (const key of [client?.browserBinding, client?.approvedBinding]) if (validBrowserBinding(key)) endedKeys.set(key, Date.now() + ENDED_KEYS_MS);
+    while (endedKeys.size > 256) endedKeys.delete(endedKeys.keys().next().value);
+    endedVersion++;
+  };
+  // Read again only when the store changed (its mtime) or a key ended: exact
+  // at every request, at the cost of a stat.
+  let keysMemo = { mtime: null, ended: -1, at: 0, keys: new Set() };
   function funnelKeys() {
     const now = Date.now();
-    return new Set(loadJson(file, []).filter((c) => isFunnelBrowser(c) && c.expiresAt > now)
-      .flatMap((c) => [c.browserBinding, c.approvedBinding]).filter(validBrowserBinding));
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
+    if (keysMemo.mtime === mtime && keysMemo.ended === endedVersion && now - keysMemo.at < 60_000) return keysMemo.keys;
+    for (const [key, until] of endedKeys) if (until <= now) endedKeys.delete(key);
+    const keys = new Set([...loadJson(file, []).filter((c) => isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
+      .flatMap((c) => [c.browserBinding, c.approvedBinding]), ...endedKeys.keys()].filter(validBrowserBinding));
+    keysMemo = { mtime, ended: endedVersion, at: now, keys };
+    return keys;
   }
   function verifyFunnel(token, keyThumbprint) {
     if (typeof token !== "string" || !token || token.length > 256 ||
@@ -1434,6 +1454,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const now = Date.now();
     endIdle(now);
     let result = { open: false, until: 0, reason: null };
+    // Whether anyone without a key Reach knows must get in: an invitation
+    // waiting to be claimed, an agent's page (a browser agent, or a Tools
+    // agent in its first hour, before its first credential trade). When only
+    // trading Tools agents hold the window, the door takes known keys alone
+    // (keyed; index.mjs).
+    let strangers = false;
     for (const client of loadJson(file, [])) {
       // A person's or a CLI agent's unopened invitation needs the start page
       // too: to sign in without the Tailscale app, or to fetch agent.mjs. The
@@ -1441,6 +1467,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       if (!isFunnelBrowser(client) && client.policy?.browser !== true && ["guest", "agent"].includes(client.kind) &&
           client.inviteHash && !client.hash && client.expiresAt > now) {
         const until = Math.min(client.expiresAt, client.inviteExpiresAt || client.expiresAt);
+        if (until > now) strangers = true;
         if (until > now && until > result.until) result = { open: true, until, reason: "invitation" };
         continue;
       }
@@ -1452,12 +1479,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       // so it keeps nothing open; security audit L4.)
       if (standingPolicy(client.policy) && client.admission?.status === "collected" &&
           client.admission.grant === admissionGrant(client)) {
+        if (!(client.rotatedAt > 0)) strangers = true;
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "standing" };
         continue;
       }
       // Approved once: its link works again until the access ends (rebind),
       // so the page stays up for it until then.
       if (rebindable(client, now)) {
+        if (!(client.rotatedAt > 0)) strangers = true;
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "granted" };
         continue;
       }
@@ -1471,9 +1500,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         until = Math.min(client.expiresAt, client.browserIdleExpiresAt);
         reason = "session";
       }
+      if (until > now) strangers = true;
       if (until > now && until > result.until) result = { open: true, until, reason };
     }
-    return result;
+    return { ...result, ...(result.open && !strangers ? { keyed: true } : {}) };
   }
   function issue(name, scopes, kind = "device", options = {}) {
     let policy,
@@ -1614,7 +1644,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       return false;
     },
     revoke(clientId) {
-      changeClients((latest) => latest.filter((c) => c.id !== clientId));
+      changeClients((latest) => {
+        rememberEnded(latest.find((c) => c.id === clientId));
+        return latest.filter((c) => c.id !== clientId);
+      });
     },
     pairing,
   };

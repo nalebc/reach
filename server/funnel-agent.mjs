@@ -218,6 +218,8 @@ export function createFunnelAgentGateway({
   // agent on the owner's tailnet reaches the gateway there, signed for the
   // same audience, with no public door needed.
   privateHost = null,
+  // Told once per flood: how many strangers' requests came in that minute.
+  onFlood = () => {},
   now = Date.now,
 }) {
   const publicOrigin = new URL(origin);
@@ -234,6 +236,14 @@ export function createFunnelAgentGateway({
     keys = new Map(),
     knownKeyRates = new Map();
   const pools = { known: { active: 0, max: 32 }, unknown: { active: 0, max: 32 } };
+  // A flood of strangers (keys Reach doesn't know): past this many in a
+  // minute, every stranger is refused for five minutes before a byte of body
+  // is read or a signature checked. Known keys have their own lane and feel
+  // nothing. (Floods reach Tailscale's relays before this Mac; this keeps
+  // the Mac's own work near zero.)
+  const FLOOD_PER_MINUTE = 300, FLOOD_PAUSE_MS = 5 * 60_000;
+  const strangers = { minute: 0, count: 0 };
+  let floodUntil = 0;
   // The replay cache lives in memory: nothing signed before this gateway
   // started is accepted, so a restart opens no replay window (audit L6).
   const startedAt = now();
@@ -343,6 +353,17 @@ export function createFunnelAgentGateway({
       ? forwarded.trim() : req.socket?.remoteAddress || "unknown";
     const hint = req.headers["reach-key"];
     const known = typeof hint === "string" && knownKeys().has(hint);
+    if (!known) {
+      const current = now();
+      if (current < floodUntil) throw failure(503);
+      const minute = Math.floor(current / 60_000);
+      if (strangers.minute !== minute) { strangers.minute = minute; strangers.count = 0; }
+      if (++strangers.count > FLOOD_PER_MINUTE) {
+        floodUntil = current + FLOOD_PAUSE_MS;
+        try { onFlood(strangers.count); } catch { /* told, or not */ }
+        throw failure(503);
+      }
+    }
     const pool = known ? pools.known : pools.unknown;
     const ip = known ? null : bucket(ips, sourceKey(source), 240, now());
     if (pool.active >= pool.max || (ip && ip.active >= 8)) throw failure(429);

@@ -207,6 +207,10 @@ async function setup(t) {
       req.end(body === undefined ? undefined : JSON.stringify(body));
     });
   const key = signingKey();
+  // As the page and the runtime send it: the key named up front (Reach-Key),
+  // the computer's own fingerprint of the key that signs.
+  const thumbprint = (signer) => crypto.createHash("sha256")
+    .update(JSON.stringify({ crv: "P-256", kty: "EC", x: signer.jwk.x, y: signer.jwk.y })).digest("base64url");
   const gateway = (input, options = {}, signer = key) =>
     raw("/agent-gateway", {
       method: "POST",
@@ -215,6 +219,7 @@ async function setup(t) {
       headers: {
         Origin: ORIGIN,
         "Sec-Fetch-Site": "same-origin",
+        "Reach-Key": thumbprint(signer),
         ...options.headers,
       },
     });
@@ -272,6 +277,8 @@ async function setup(t) {
     key,
     raw,
     gateway,
+    thumbprint,
+    dist,
     ownerCall,
     invite,
     join,
@@ -755,4 +762,50 @@ test("an agent whose access ended hears that it ended, on either route, even wit
   f.reach.setPaused(true);
   assert.equal((await f.gateway({ operation: "reconnect", invitation: expired.grant.invitation })).status, 503);
   f.reach.setPaused(false);
+});
+
+// The public door (Oct 10): shut to strangers before a byte is parsed, open
+// to keys Reach knows (agents with access, and ones that ended lately, so
+// they hear that they ended), and open to everyone only while a stranger
+// must get in: an invitation waiting, or an agent whose page has to load.
+test("the public door: shut to strangers, open to known keys, open to all only while a stranger must get in", async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(path.join(f.dist, "agent.mjs"), "// the runtime\n");
+  const stranger = signingKey();
+  assert.equal(f.reach.auth.funnelWindow().open, false);
+  const probe = await f.gateway({ operation: "claim", invitation: "x".repeat(43) }, {}, stranger);
+  assert.equal(probe.status, 404);
+  assert.equal(probe.headers["reach-not-run"], undefined, "nothing ran: not even the gateway's refusal");
+  assert.equal((await f.raw("/agent.mjs")).status, 404);
+  // An invitation waiting: open to all, since a fresh key must be able to claim it.
+  const grant = await f.ownerCall("/api/agents/browser-invitations", { method: "POST", body: { name: "Muse", transport: "funnel", preset: "readonly", standing: true } });
+  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  assert.equal((await f.raw("/agent.mjs")).status, 200);
+  const agent = signingKey();
+  const claim = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, {}, agent);
+  assert.equal(claim.status, 202, JSON.stringify(claim.body));
+  f.reach.auth.decideAgentAdmission(claim.body.requestId, "approve");
+  const joined = await f.gateway({ operation: "status", requestId: claim.body.requestId, secret: claim.body.requestSecret }, {}, agent);
+  assert.equal(joined.body.status, "approved");
+  // Joined, not trading yet (a page, or a Tools agent in its first hour): its page must load.
+  assert.ok(!f.reach.auth.funnelWindow().keyed);
+  assert.equal((await f.raw("/agent.mjs")).status, 200);
+  // It trades its credential and uses the new one: a Tools agent, alone. Known keys only.
+  const traded = await f.gateway({ operation: "request", token: joined.body.token, method: "POST", path: "/api/device/rotate", body: {} }, {}, agent);
+  assert.equal(traded.status, 200, JSON.stringify(traded.body));
+  const token = traded.body.token;
+  assert.equal((await f.gateway({ operation: "request", token, method: "GET", path: "/api/browser", body: null }, {}, agent)).status, 200);
+  assert.deepEqual((({ open, keyed }) => [open, keyed])(f.reach.auth.funnelWindow()), [true, true]);
+  assert.equal((await f.raw("/agent.mjs")).status, 404, "a stranger: nothing");
+  assert.equal((await f.raw("/agent.mjs", { headers: { "Reach-Key": f.thumbprint(agent) } })).status, 200, "the agent's own runtime download");
+  const shut = await f.gateway({ operation: "claim", invitation: "x".repeat(43) }, {}, stranger);
+  assert.equal(shut.status, 404, "a stranger's signed request: nothing");
+  assert.equal(shut.headers["reach-not-run"], undefined);
+  assert.equal((await f.gateway({ operation: "request", token, method: "GET", path: "/api/browser", body: null }, {}, agent)).status, 200, "the agent: everything");
+  // Ended by the owner: the agent hears so, from anywhere, for a while.
+  f.reach.auth.revoke(grant.body.clientId);
+  assert.equal(f.reach.auth.funnelWindow().open, false);
+  const gone = await f.gateway({ operation: "request", token, method: "GET", path: "/api/browser", body: null }, {}, agent);
+  assert.equal(gone.status, 401);
+  assert.equal(gone.headers["reach-not-run"], "1");
 });

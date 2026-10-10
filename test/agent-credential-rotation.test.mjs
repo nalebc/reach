@@ -133,16 +133,19 @@ test("a public-link agent trades its credential with its key; a copy ends it; a 
   const key = binding();
   const first = join("Muse", key);
   assert.ok(auth.verifyFunnel(first.token, key));
+  assert.ok(!auth.funnelWindow().keyed, "not trading yet: its page may need the door open");
   assert.throws(() => auth.rotateFunnelCredential(first.token, binding()), { status: 403 }, "only with its own key");
   const { token: second } = auth.rotateFunnelCredential(first.token, key);
   assert.ok(auth.verifyFunnel(first.token, key), "until the new one is used, nothing changes");
   assert.ok(auth.verifyFunnel(second, key), "first use: it's the credential now");
+  assert.deepEqual((({ open, reason, keyed }) => [open, reason, keyed])(auth.funnelWindow()), [true, "standing", true], "a trading Tools agent alone: the door takes known keys only");
   assert.ok(auth.verifyFunnel(first.token, key), "two minutes of grace");
   advance(121_000);
   assert.ok(auth.verifyFunnel(second, key));
   assert.equal(auth.verifyFunnel(first.token, key), null, "the old one again: a copy is in use");
   assert.deepEqual(reused, [first.clientId]);
   assert.equal(auth.verifyFunnel(second, key), null, "both ended");
+  assert.ok(auth.funnelKeys().has(key), "an ended agent's key stays known a while: it hears that it ended");
   // A week unused ends an Always access, however it's reached.
   const other = binding();
   const access = join("Grok", other);

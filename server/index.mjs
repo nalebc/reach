@@ -4700,6 +4700,10 @@ export async function createReach(overrides = {}) {
         // 410) instead of finding nothing. Nothing opens without credentials:
         // with no window, no invitation, request or access is left to use.
         available: () => !paused && transportAvailable,
+        onFlood: (count) => {
+          record("security", `The public link had ${count} requests from strangers in a minute: strangers are refused for 5 minutes`);
+          notify({ category: "access", title: "Your public link is under a flood", body: "Strangers are refused for 5 minutes; your agents are unaffected. An agent joining right now would wait.", icon: "agent", tag: "funnel-flood" });
+        },
         device: invitationDevice,
         claimed: (joined) => {
           // The same browser reconnecting, or getting its waiting request
@@ -4769,6 +4773,10 @@ export async function createReach(overrides = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
       privateSocket = socketPath;
+      // Keys Reach knows (agents with access, or ended lately): the door's
+      // check before anything is parsed (core.mjs reads the store again only
+      // when it changed).
+      const knownKey = (value) => { try { return auth.funnelKeys().has(value); } catch { return false; } };
       privateServer = await listenPrivateIngress({
         socketPath,
         app,
@@ -4776,14 +4784,24 @@ export async function createReach(overrides = {}) {
         resolveIdentity,
         publicApp: publicApp && ((req, res) => {
           // Paused or between Tailscale blips: come back later (an agent's page
-          // keeps retrying). No window: there is nothing here.
-          const status = paused || !transportAvailable ? 503 : auth.funnelWindow().open ? 0 : 404;
-          // The signed agent gateway still answers, so an agent whose access
-          // ended hears that it ended (it can open nothing: see publicAgent).
-          if (!status || (status === 404 && req.method === "POST" && req.url === "/agent-gateway"))
-            return publicApp(req, res);
-          res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end(status === 503 ? "Unavailable." : "Not found.");
+          // keeps retrying).
+          if (paused || !transportAvailable) {
+            res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+            return res.end("Unavailable.");
+          }
+          // The public door (Oct 10): open to everyone only while something
+          // needs a stranger to come in (a pairing, an invitation waiting, an
+          // agent's page). Otherwise a request is answered only when it names
+          // a key Reach knows (an agent's own, or one that ended lately, so
+          // it hears that it ended): the signed gateway and the agent runtime
+          // download. Anything else gets 404 before a byte is parsed.
+          const window = auth.funnelWindow();
+          const key = req.headers["reach-key"];
+          const known = typeof key === "string" && key.length <= 64 && knownKey(key);
+          const forAgents = (req.method === "POST" && req.url === "/agent-gateway") || (req.method === "GET" && req.url === "/agent.mjs");
+          if ((window.open && !window.keyed) || (known && forAgents)) return publicApp(req, res);
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found.");
         }),
       });
     },
