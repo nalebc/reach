@@ -14,7 +14,6 @@
 //
 // JSON-RPC and results go to stdout; everything else to stderr.
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
@@ -27,7 +26,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { callTool, serveMcp, toolsFor } from "./mcp-server.mjs";
 import { createAgentClient, isScreenImageRoute } from "./agent-client.mjs";
-import { agentKey, funnelApi, funnelGateway, httpsSend } from "./agent-funnel.mjs";
+import { agentKey, funnelApi, funnelGateway } from "./agent-funnel.mjs";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const tailnetHost = (u) =>
@@ -673,7 +672,7 @@ export function rotateIfDue(conn, credential, call, { now = Date.now } = {}) {
 }
 
 // A computer's API, however this agent reaches it.
-export async function open(home, name, allowLocal, { tailnet = false } = {}) {
+async function open(home, name, allowLocal) {
   const conn = path.join(home, name);
   const credential = readCredential(conn);
   if (credential.expiresAt && Date.now() >= credential.expiresAt)
@@ -700,12 +699,7 @@ export async function open(home, name, allowLocal, { tailnet = false } = {}) {
       } catch { /* kept as it was */ }
     };
     const rotator = lock(conn);
-    // The owner's tailnet in the background (the process holding the folder,
-    // the agent's MCP server as a rule): once this agent's node is up, the
-    // computer's private address is reached through it; the public link
-    // meanwhile, and whenever the node is down.
-    const behind = rotator && tailnet ? backgroundTailnet({ home, conn, credential }) : null;
-    const api = funnelApi({ conn, credential, save, reload, gatewayOptions: behind ? { send: behind.send, retry: behind.retry } : { send: hooks.send } });
+    const api = funnelApi({ conn, credential, save, reload });
     return {
       credential,
       api: async (...args) => {
@@ -789,99 +783,6 @@ export const quote = (s, platform = process.platform) =>
     ? /^[\w.:\\/~-]+$/.test(s) ? s : `"${s}"`
     : /^[\w./~-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
 
-// What tests stand in for: the tailnet node, and the public link's transport.
-// The background join, alone in a process of its own (a child of `join`, or
-// of the agent's MCP server): the node registers with the invite key and the
-// credential records it (the `tailnet-join` verb). Nothing the tailnet
-// client does, downloading, WebAssembly, its control connection, can touch
-// the agent's own connection. Quiet: its output goes nowhere.
-function startTailnetJoin(name) {
-  try {
-    const child = spawn(process.execPath, [self(), "tailnet-join", "--computer", name], { detached: true, stdio: "ignore", env: process.env });
-    child.on("error", () => {});
-    child.unref();
-    return true;
-  } catch { return false; }
-}
-// What tests stand in for: the tailnet node, the public link's transport,
-// the background join's process.
-export const hooks = {
-  connectTailnet: (where) => connectTailnet(where),
-  send: (...args) => httpsSend(...args),
-  startTailnetJoin: (name) => startTailnetJoin(name),
-};
-// One gateway request through this agent's own node, shaped as the public
-// link's transport shapes it ({status, headers, bytes}). No answer at all is
-// "unreachable": the gateway moves on to the public link for now.
-async function nodeSend(node, endpoint, body, headers, timeoutMs) {
-  const call = node.fetch({
-    url: `${endpoint}/agent-gateway`,
-    method: "POST",
-    headers: Object.entries(headers).flat(),
-    body: new Uint8Array(Buffer.from(body, "utf8")),
-    redirect: "error",
-  });
-  const deadline = setTimeout(() => call.abort(), timeoutMs);
-  let head;
-  try {
-    head = await call.response;
-  } catch (error) {
-    clearTimeout(deadline);
-    throw Object.assign(error instanceof Error ? error : Error(String(error)), { unreachable: true });
-  }
-  try {
-    const chunks = [];
-    let size = 0;
-    for (let chunk; (chunk = await head.read());) {
-      size += chunk.length;
-      if (size > 8 * 1024 * 1024) {
-        head.cancel();
-        throw Error("Reach response exceeds 8 MiB.");
-      }
-      chunks.push(Buffer.from(chunk));
-    }
-    const responseHeaders = {};
-    for (let index = 0; index < head.headers.length; index += 2)
-      responseHeaders[String(head.headers[index]).toLowerCase()] = head.headers[index + 1];
-    return { status: head.status, headers: responseHeaders, bytes: Buffer.concat(chunks) };
-  } finally {
-    clearTimeout(deadline);
-  }
-}
-// The owner's tailnet behind a public-link connection (Oct 10: "automatically,
-// behind, without interruption"): the node this agent made when it joined, or
-// makes now while its invite key is good, comes up in the background. Once it
-// does, the computer's private address is reached through it, with the same
-// credential and key (the gateway answers there too); until then, and
-// whenever it's down, the public link. Nothing waits for it.
-function backgroundTailnet({ home, conn, credential }) {
-  const keyGood = typeof credential.tailnetKey === "string" && credential.tailnetKeyUntil > Date.now();
-  if (!credential.private || !(credential.tailnet === "joined" || keyGood)) return null;
-  let node = null, cameUp = false, starting = false;
-  const start = () => {
-    if (starting) return;
-    starting = true;
-    hooks.connectTailnet({ home, conn, start: credential.start, origin: credential.private, hostname: credential.hostname })
-      .then((joined) => { node = joined; cameUp = true; })
-      .catch(() => { /* the public link, then */ });
-  };
-  // Registered already: the node comes up here. Not yet: a process of its
-  // own registers it with the invite key (tailnet-join), the credential says
-  // "joined" once it has (read again before each request), and the node
-  // comes up here from then on.
-  if (credential.tailnet === "joined") start();
-  else hooks.startTailnetJoin(path.basename(conn));
-  return {
-    send: (endpoint, body, headers, timeoutMs, options) => {
-      if (!starting && credential.tailnet === "joined") start();
-      return endpoint === credential.private && node
-        ? nodeSend(node, endpoint, body, headers, timeoutMs)
-        : hooks.send(endpoint, body, headers, timeoutMs, options);
-    },
-    // The private address is tried again as soon as the node is up.
-    retry: () => { const now = cameUp; cameUp = false; return now; },
-  };
-}
 
 export async function join(o) {
   const link = parseAgentLink(
@@ -911,17 +812,16 @@ export async function join(o) {
   writePrivate(credentialFile, "{}");
   fs.rmSync(credentialFile);
   try {
-    let funnel = link.funnel === true;
-    let joining = null, tailnetTrouble = "";
+    const funnel = link.funnel === true;
     const direct = !funnel && (await reachableDirect(link.origin));
     // A public-link invitation, from a machine on the owner's tailnet: the
     // computer's private address first; the public link only when it
     // doesn't answer. Checked again on every call.
     const privately = funnel && !!link.private && (await reachableDirect(link.private));
     let admissionApi;
-    // No Tailscale key: every request signed by this agent's own key
-    // (scripts/agent-funnel.mjs), to whichever address answers.
-    const throughPublicLink = () => {
+    if (funnel) {
+      // No Tailscale key: every request signed by this agent's own key
+      // (scripts/agent-funnel.mjs), to whichever address answers.
       const gateway = funnelGateway(link.public, agentKey(conn), { endpoints: [...(privately ? [link.private] : []), link.public], ...(o.send ? { send: o.send } : {}) });
       admissionApi = async (route, _method, body) => {
         const status = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
@@ -929,33 +829,16 @@ export async function join(o) {
         if (answer.status >= 400) throw agentRequestError(answer.status, answer.json);
         return answer.json;
       };
-    };
-    if (funnel) throughPublicLink();
-    else if (direct)
+    } else if (direct)
       admissionApi = (route, _method, body) => admissionDirect(link.origin, route, body);
     else {
       if (!link.key)
         throw Error(
           "This machine isn't on that tailnet, and the link has no Tailscale key. Ask the owner to set up invite links in Reach (Share → Set up), then invite the agent again.",
         );
-      // The owner's tailnet in the background, the public link right now
-      // (Oct 10: "automatically, behind, without interruption"): this
-      // agent's node joins with the invite key while the same invitation is
-      // opened through the public link with the agent's own key. The
-      // computer takes it either way (core.mjs redeemInvitation). Once the
-      // node is up, calls go to the private address through it (open():
-      // backgroundTailnet); the public link meanwhile, or for good.
-      process.stderr.write("Reach: joining the owner's tailnet in the background…\n");
-      // In a process of its own, once the credential is written (below); a
-      // test stands its own node in (o.connect).
-      joining = o.connect
-        ? o.connect({ home, conn, ...link }).then(() => true, (error) => { tailnetTrouble = error.message; return false; })
-        : "behind";
-      funnel = true;
-      link.funnel = true;
-      link.public = link.start;
-      link.private = link.origin;
-      throughPublicLink();
+      process.stderr.write("Reach: joining the tailnet…\n");
+      const node = await connectTailnet({ home, conn, ...link });
+      admissionApi = tailnetApi(node, link.origin, "");
     }
     let joined = await admissionApi("/api/invitations/redeem", "POST", { invitation: link.secret });
     joined = await waitForAgentAdmission(joined, admissionApi);
@@ -972,9 +855,6 @@ export async function join(o) {
       // Its link: the same key reconnects through it when a session ends;
       // its private address, tried first on every call.
       ...(funnel ? { invitation: link.secret, private: link.private } : {}),
-      // Its invite key while the tailnet join runs on behind (open() picks
-      // it up until it's used or runs out); "joined" once the node is up.
-      ...(joining ? { tailnetKey: link.key, tailnetKeyUntil: Date.now() + 15 * 60_000 } : {}),
       clientId: joined.clientId,
       scopes: joined.scopes,
       expiresAt: joined.expiresAt,
@@ -997,22 +877,6 @@ export async function join(o) {
         "",
       ].join("\n"),
     );
-    if (joining === "behind") {
-      // The node joins in a process of its own, with nothing to wait for;
-      // the agent's MCP server brings it in once it's up (open()).
-      hooks.startTailnetJoin(name);
-      process.stderr.write("Reach: the owner's tailnet is joining in the background; calls move there once it's up, the public link meanwhile.\n");
-    } else if (joining) {
-      const up = await joining;
-      if (up === true) {
-        delete credential.tailnetKey;
-        delete credential.tailnetKeyUntil;
-        credential.tailnet = "joined";
-        writePrivate(credentialFile, JSON.stringify(credential, null, 2));
-        process.stderr.write("Reach: on the owner's tailnet too; calls go there from now on, the public link when it's away.\n");
-      } else
-        process.stderr.write(`Reach: ${tailnetTrouble || "the owner's tailnet is still joining"}; the public link for now, the tailnet in the background whenever this agent runs.\n`);
-    }
     return 0;
   } catch (e) {
     fs.rmSync(conn, { recursive: true, force: true });
@@ -1083,28 +947,11 @@ export async function main(argv = process.argv.slice(2)) {
     ].join("\n"));
     return 0;
   }
-  // The background join, in a process of its own (startTailnetJoin): the
-  // node registers with the invite key while it's good, the credential says
-  // "joined", and this process ends. Quietly: nothing to read.
-  if (verb === "tailnet-join") {
-    const conn = path.join(home, name);
-    const credential = readCredential(conn);
-    if (typeof credential.tailnetKey !== "string" || !(credential.tailnetKeyUntil > Date.now())) return 0;
-    try {
-      await connectTailnet({ home, conn, start: credential.start, origin: credential.private, hostname: credential.hostname, key: credential.tailnetKey, timeoutMs: 120000 });
-      const latest = readCredential(conn);
-      delete latest.tailnetKey;
-      delete latest.tailnetKeyUntil;
-      latest.tailnet = "joined";
-      writePrivate(path.join(conn, "credential.json"), JSON.stringify(latest, null, 2));
-    } catch { /* the public link, then */ }
-    return 0;
-  }
   if (verb === "mcp") {
     // Nothing but JSON-RPC on stdout.
     for (const k of ["log", "info", "debug", "warn"])
       console[k] = console.error;
-    const { api, credential } = await open(home, name, o.allowLocal, { tailnet: true });
+    const { api, credential } = await open(home, name, o.allowLocal);
     // Owner edits may change a browser preset during this process's lifetime.
     // Refresh the grant when the client asks for its current tools.
     await serveMcp({
