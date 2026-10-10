@@ -1072,7 +1072,7 @@ export function createAgentTools(
               ? "needs_owner"
               : "stopped";
         entry.code = error.code || error.kind || "stopped";
-        if (entry.code === "setup_required") onSetupRequired(input.browser);
+        if (entry.code === "setup_required") onSetupRequired(input.browser, client.name);
         results.set(key, {
           protocol: TOOL_PROTOCOL,
           id: definition.id,

@@ -80,3 +80,11 @@
 .ts-step .ag-secondary {
   flex: none;
 }
+.ts-allow {
+  margin-left: auto;
+}
+.ts-asking {
+  margin: 0 0 6px;
+  color: var(--ag-accent, #4ade80);
+  font-size: 13px;
+}

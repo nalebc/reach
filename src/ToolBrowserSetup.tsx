@@ -8,8 +8,8 @@ import "./tool-setup.css";
 // or Safari, with no round trips: macOS has to let Reach control that
 // browser, and the browser has to allow JavaScript from Apple Events. One
 // row once an agent's tool needed a browser that isn't set up, nothing
-// otherwise. The sheet shows both switches as they are; you turn them on
-// at the Mac.
+// otherwise. Allow flips the browser's switch for you and asks macOS; its
+// prompt comes to Needs you, where you answer it.
 type Automation = "allowed" | "ask" | "off" | "closed" | "asking" | "unknown";
 type Browser = {
   id: string;
@@ -42,6 +42,8 @@ export default function ToolBrowserSetup({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // macOS was just asked: its prompt is on the Mac, and in Needs you here.
+  const [asking, setAsking] = useState("");
   const wasNeeded = useRef(false);
   const load = useCallback(async () => {
     try {
@@ -69,13 +71,14 @@ export default function ToolBrowserSetup({
     const timer = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(timer);
   }, [open, load]);
-  const act = async (browser: string, action: "ask" | "settings") => {
+  const act = async (browser: string, action: "enable" | "settings") => {
     setBusy(browser);
     try {
-      await request(peer, "/api/agents/tool-setup", {
+      const result = await request<{ automation: Automation }>(peer, "/api/agents/tool-setup", {
         method: "POST",
         body: JSON.stringify({ browser, action }),
       });
+      setAsking(result.automation === "asking" ? browser : "");
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -109,8 +112,8 @@ export default function ToolBrowserSetup({
       {open && (
         <ScreenPopup title="Browser tools" onClose={() => setOpen(false)}>
           <p className="ag-quiet">
-            Agents' ready-made tasks run in your own browser on the Mac. Two
-            switches per browser, turned on once, by you.
+            Agents' ready-made tasks run in your own browser on the Mac. Allow
+            flips the browser's switch for you; macOS then asks you once.
           </p>
           {(error || setup?.problem) && (
             <p role="alert" className="error">
@@ -121,8 +124,24 @@ export default function ToolBrowserSetup({
             <section key={browser.id} className="ts-browser" aria-label={browser.id}>
               <h4>
                 {browser.id}
-                {browser.ready && <span className="ts-ready">Ready</span>}
+                {browser.ready ? (
+                  <span className="ts-ready">Ready</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="ag-primary ag-small ts-allow"
+                    disabled={!!busy}
+                    onClick={() => void act(browser.id, "enable")}
+                  >
+                    {busy === browser.id ? "Allowing…" : "Allow"}
+                  </button>
+                )}
               </h4>
+              {asking === browser.id && browser.automation !== "allowed" && (
+                <p className="ts-asking" role="status">
+                  macOS is asking on your Mac. Answer it there, or in Needs you here.
+                </p>
+              )}
               <div className="ts-step">
                 <span className={`ts-mark${browser.automation === "allowed" ? " is-on" : ""}`} aria-hidden="true">
                   {browser.automation === "allowed" ? <Check size={14} /> : "1"}
@@ -131,7 +150,7 @@ export default function ToolBrowserSetup({
                   <strong>macOS lets Reach control {browser.id}</strong>
                   <small>{AUTOMATION[browser.automation]}</small>
                 </span>
-                {browser.automation === "off" ? (
+                {browser.automation === "off" && (
                   <button
                     type="button"
                     className="ag-secondary ag-small"
@@ -140,16 +159,7 @@ export default function ToolBrowserSetup({
                   >
                     Open settings on the Mac
                   </button>
-                ) : browser.automation !== "allowed" ? (
-                  <button
-                    type="button"
-                    className="ag-secondary ag-small"
-                    disabled={!!busy}
-                    onClick={() => void act(browser.id, "ask")}
-                  >
-                    Ask on the Mac
-                  </button>
-                ) : null}
+                )}
               </div>
               <div className="ts-step">
                 <span className={`ts-mark${browser.javascript === "on" ? " is-on" : ""}`} aria-hidden="true">

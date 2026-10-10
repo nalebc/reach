@@ -884,7 +884,13 @@ export async function createReach(overrides = {}) {
   // Shown to the owner only once a tool needed it (routes below).
   const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
   const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
-    onSetupRequired: (browser) => toolSetup.needed(browser),
+    // The owner hears once that an agent's tool needs a browser; one tap in
+    // Agents → Browser tools allows it.
+    onSetupRequired: (browser, agentName) => {
+      if (!toolSetup.needed(browser)) return;
+      record("agent", `${agentName}'s tool needs ${browser} allowed`);
+      notify({ category: "access", title: `${pushLine(agentName, 48)}'s tool needs ${browser}`, body: "Allow it once: Agents → Browser tools → Allow.", icon: "agent", tag: `tool-setup-${browser}`, actions: [{ action: "open", title: "Allow" }] });
+    },
     ...(overrides.browserToolOptions || {}) });
   const agentServices = createAgentServices({ record, notify,
     connectors: createServiceConnectors(agentTools),
@@ -1954,10 +1960,10 @@ export async function createReach(overrides = {}) {
     toolSetupOwner(req);
     const body = req.body;
     if (!isPlainRecord(body) || Object.keys(body).some((key) => !["browser", "action"].includes(key)) ||
-        typeof body.browser !== "string" || !["ask", "settings"].includes(body.action))
-      throw fail(400, "Choose a browser, and ask or settings.");
+        typeof body.browser !== "string" || !["enable", "ask", "settings"].includes(body.action))
+      throw fail(400, "Choose a browser, and enable, ask or settings.");
     const result = await toolSetup[body.action](body.browser);
-    record("agent", body.action === "ask" ? `Asked macOS to let saved tools use ${result.id}` : `Opened Automation settings for ${result.id}`);
+    record("agent", { enable: `Allowed saved tools in ${result.id}: its switch flipped, macOS asked`, ask: `Asked macOS to let saved tools use ${result.id}`, settings: `Opened Automation settings for ${result.id}` }[body.action]);
     res.json(result);
   });
   app.post("/api/agents/invitations", (req, res) => {
