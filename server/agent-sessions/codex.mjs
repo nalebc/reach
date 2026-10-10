@@ -430,6 +430,25 @@ export function createCodexSessions({
     for (const listener of later) listener(ms, id);
   };
   const sentImages = new Map(); // "thread:item" → its pictures, as read last
+  // Pictures pasted in the Codex app come as base64 (~0.7 MB each): kept to
+  // 500 messages and 32 MB, oldest out first (500 alone could hold hundreds
+  // of MB: reliability audit, Oct 10). One left out is found again in the
+  // thread when the phone asks for it.
+  let sentImageBytes = 0;
+  const sourceBytes = (sources) => sources.reduce((sum, s) => sum + (typeof s?.url === "string" ? s.url.length : 0) + (typeof s?.path === "string" ? s.path.length : 0), 0);
+  const keepSentImages = (key, sources) => {
+    if (sentImages.has(key)) sentImageBytes -= sourceBytes(sentImages.get(key));
+    sentImages.delete(key);
+    const bytes = sourceBytes(sources);
+    if (bytes > 32 * 1024 * 1024) return;
+    sentImages.set(key, sources);
+    sentImageBytes += bytes;
+    while (sentImages.size && (sentImages.size > 500 || sentImageBytes > 32 * 1024 * 1024)) {
+      const [oldest, kept] = sentImages.entries().next().value;
+      sentImageBytes -= sourceBytes(kept);
+      sentImages.delete(oldest);
+    }
+  };
   const imageSources = (item) => (item.content || []).filter((c) => c?.type === "image" || c?.type === "localImage");
   const legacyEntries = (thread) => (thread.turns || []).flatMap(turn => (turn.items || []).map(item => ({ item, turnId: turn.id, startedAtMs: (turn.startedAt || thread.createdAt || 0) * 1000 })));
   return {
@@ -526,8 +545,7 @@ export function createCodexSessions({
       // Where each sent picture is, for the phone to ask for it (image()).
       for (const entry of r.data || [])
         if (entry?.item?.type === "userMessage" && imageSources(entry.item).length) {
-          sentImages.set(`${id}:${entry.item.id}`, imageSources(entry.item));
-          if (sentImages.size > 500) sentImages.delete(sentImages.keys().next().value);
+          keepSentImages(`${id}:${entry.item.id}`, imageSources(entry.item));
         }
       const items = withQuestionReplies((r.data || [])
         .map((entry) => codexItem(entry, { maxOutput }))

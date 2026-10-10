@@ -50,7 +50,12 @@ export function createClaudeSessions({
   // Claude history (its transcripts' size) stays whole in memory: past it,
   // the chats least recently written or opened keep only their summary.
   chunkBytes = 8 * 1024 * 1024,
-  budgetBytes = 512 * 1024 * 1024,
+  // A 64th of the Mac's memory, 64 to 256 MB of transcripts (parsed, they
+  // take about 0.76× their size): 512 MB kept ~390 MB in Reach for good
+  // (reliability audit, Oct 10). A chat nobody wrote to or opened for
+  // idleMs keeps only its summary too.
+  budgetBytes = Math.max(64 * 1024 * 1024, Math.min(256 * 1024 * 1024, Math.floor(os.totalmem() / 64))),
+  idleMs = 10 * 60 * 1000,
   now = Date.now,
 } = {}) {
   // Per transcript: the conversation, and while it is being written to, where
@@ -121,17 +126,17 @@ export function createClaudeSessions({
       entry.offset = at;
       Object.assign(entry, { head, size: stat.size, mtimeMs: stat.mtimeMs, parsed: entry.transcript.view(), at: now() });
       // Past the budget, the chats least recently written to or opened keep
-      // only their summary (never the one just read).
+      // only their summary, and so do chats idle for idleMs (never the one
+      // just read).
       let whole = 0;
       for (const other of cache.values()) if (other.parsed && !other.parsed.brief) whole += other.size || 0;
-      if (whole > budgetBytes)
-        for (const other of [...cache.values()].sort((a, b) => a.at - b.at)) {
-          if (whole <= budgetBytes) break;
-          if (other === entry || !other.parsed || other.parsed.brief) continue;
-          other.transcript = null;
-          other.parsed = brief(other.parsed);
-          whole -= other.size || 0;
-        }
+      for (const other of [...cache.values()].sort((a, b) => a.at - b.at)) {
+        if (other === entry || !other.parsed || other.parsed.brief) continue;
+        if (whole <= budgetBytes && now() - other.at <= idleMs) continue;
+        other.transcript = null;
+        other.parsed = brief(other.parsed);
+        whole -= other.size || 0;
+      }
       return entry.parsed;
     } finally {
       await handle.close();

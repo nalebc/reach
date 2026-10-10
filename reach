@@ -24,8 +24,74 @@ if [ "$PRIVATE_RUNTIME" = 1 ]; then
   REACH_INSTALL_PATH=$PATH
   export REACH_INSTALL_PATH
 fi
+# Reach running in this window starts again here when it stopped by itself
+# (server/crash-guard.mjs exits 70; 134 is Node out of memory), so a crash
+# while you're away is a short drop, not a dead Mac: after 1, 5, 15, then 30
+# seconds, at most 5 times in 10 minutes. Same window, same Screen Recording
+# and Accessibility. Ctrl+C, ./reach stop, a closed window and errors Reach
+# reported itself end it. Other commands and the background service (launchd
+# starts it again) run once, as before.
+run_reach() {
+  NODE_BIN=$1
+  shift
+  case "${1:-}" in
+    "" | -* | restart) ;;
+    *) exec "$NODE_BIN" "$REACH_DIR/scripts/bootstrap.mjs" "$@" ;;
+  esac
+  for ARG in "$@"; do
+    case "$ARG" in
+      --service | --background | --stop-background | --help | -h | --version | -v)
+        exec "$NODE_BIN" "$REACH_DIR/scripts/bootstrap.mjs" "$@" ;;
+    esac
+  done
+  REACH_SUPERVISED=1
+  export REACH_SUPERVISED
+  STARTS=""
+  while :; do
+    CODE=0
+    "$NODE_BIN" "$REACH_DIR/scripts/bootstrap.mjs" "$@" || CODE=$?
+    case "$CODE" in
+      70 | 134) ;;
+      *) exit "$CODE" ;;
+    esac
+    NOW=$(date +%s)
+    RECENT=""
+    COUNT=0
+    for T in $STARTS; do
+      if [ $((NOW - T)) -lt 600 ]; then
+        RECENT="$RECENT $T"
+        COUNT=$((COUNT + 1))
+      fi
+    done
+    if [ "$COUNT" -ge 5 ]; then
+      echo "Reach stopped unexpectedly 5 times in 10 minutes, so it isn't starting again by itself. What happened is in crash.log in Reach's data folder (.reach/quick). Run ./reach to start it." >&2
+      exit "$CODE"
+    fi
+    STARTS="$RECENT $NOW"
+    case "$COUNT" in
+      0) DELAY=1 ;;
+      1) DELAY=5 ;;
+      2) DELAY=15 ;;
+      *) DELAY=30 ;;
+    esac
+    echo "Reach: starting again in ${DELAY}s…"
+    sleep "$DELAY"
+    # It starts Reach again; what a restart stops is already stopped.
+    FIRST=1
+    for ARG do
+      if [ "$FIRST" = 1 ]; then
+        set --
+        FIRST=0
+      fi
+      case "$ARG" in
+        restart | --yes) ;;
+        *) set -- "$@" "$ARG" ;;
+      esac
+    done
+  done
+}
 if [ "$PRIVATE_RUNTIME" = 0 ] && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
-  exec node "$REACH_DIR/scripts/bootstrap.mjs" "$@"
+  run_reach node "$@"
 fi
 VERSION=22.23.3
 case "$(uname -s)-$(uname -m)" in
@@ -58,4 +124,4 @@ if [ ! -x "$RUNTIME/bin/node" ]; then
 fi
 PATH="$RUNTIME/bin:$PATH"
 export PATH
-exec "$RUNTIME/bin/node" "$REACH_DIR/scripts/bootstrap.mjs" "$@"
+run_reach "$RUNTIME/bin/node" "$@"

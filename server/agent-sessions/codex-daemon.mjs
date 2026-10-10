@@ -99,6 +99,9 @@ export function createCodexDaemon({
   run = exec,
   connectTimeout = 8000,
   requestTimeout = 30000,
+  // After a message Reach can't read, calls fail at once for this long, then
+  // one new connection is tried (not a Codex start on every poll).
+  protocolCooldown = 30000,
   Socket = WebSocket,
   check = run === exec ? (file) => probeAgent("codex", file) : async () => ({ status: "available", version: null }),
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
@@ -120,15 +123,29 @@ export function createCodexDaemon({
   let closed = false;
   let version = null;
   let serviceVersion = null;
+  // Off until Codex changes version: a method Codex says it doesn't have
+  // (-32601). Everything else odd (a message Reach can't read, a reply in a
+  // shape it doesn't know, a notification it couldn't take) fails that call
+  // or message alone, shows Codex as degraded, and clears once it works
+  // again: one odd reply used to switch a feature off for every chat until
+  // Reach restarted (reliability audit, Oct 10).
   const issues = new Map();
+  const recent = new Map();
+  let protocolUntil = 0;
+  const noteIssue = (key, error) => {
+    if (key === "protocol") protocolUntil = Date.now() + protocolCooldown;
+    if (!recent.has(key)) console.warn(`Reach: Codex ${key === "protocol" ? "sent a message Reach can't read" : key === "notifications" ? "sent an update Reach couldn't take" : `answered ${key} in a shape Reach doesn't know`}; that alone failed.`);
+    recent.set(key, error);
+  };
   async function compatibility() {
     const report = await check(await locate());
     if (version !== report.version) {
       const upgraded = version !== null;
-      issues.clear(); version = report.version;
+      issues.clear(); recent.clear(); version = report.version;
       if (upgraded) socket?.terminate(); // Re-negotiate rather than use an old daemon connection.
     }
-    return { ...report, ...(serviceVersion ? { serviceVersion } : {}), status: issues.size && report.status === "available" ? "degraded" : report.status, issues: [...issues.values()].map(e => ({ feature: e.feature, reason: e.message })) };
+    const all = new Map([...recent, ...issues]);
+    return { ...report, ...(serviceVersion ? { serviceVersion } : {}), status: all.size && report.status === "available" ? "degraded" : report.status, issues: [...all.values()].map(e => ({ feature: e.feature, reason: e.message })) };
   }
   const closedError = () => new Error("Codex session service is closed.");
   const fail = (message) => {
@@ -166,15 +183,17 @@ export function createCodexDaemon({
     }
     ws.on("message", (data) => {
       let message;
+      // Unreadable: this connection ends (what it was doing fails); the next
+      // call opens a new one.
       try {
         message = JSON.parse(data.toString());
       } catch {
-        issues.set("protocol", compatibilityError("codex", "protocol"));
+        noteIssue("protocol", compatibilityError("codex", "protocol"));
         ws.terminate();
         return;
       }
       if (!object(message)) {
-        issues.set("protocol", compatibilityError("codex", "protocol"));
+        noteIssue("protocol", compatibilityError("codex", "protocol"));
         ws.terminate();
         return;
       }
@@ -191,8 +210,11 @@ export function createCodexDaemon({
             p.reject(error);
           } else p.reject(Object.assign(new Error(message.error.message || "Codex request failed."), { data: message.error }));
         } else {
-          try { p.resolve(validateCodexResult(p.method, message.result)); }
-          catch (e) { issues.set(p.method, e); p.reject(e); }
+          let result;
+          try { result = validateCodexResult(p.method, message.result); }
+          catch (e) { noteIssue(p.method, e); p.reject(e); return; }
+          recent.delete(p.method);
+          p.resolve(result);
         }
       } else if (message.method && message.id !== undefined) {
         // A request from Codex to this client (approvals, questions). Exactly
@@ -225,7 +247,7 @@ export function createCodexDaemon({
         }
         for (const listener of listeners) {
           try { listener(message); }
-          catch { issues.set("notifications", compatibilityError("codex", "notifications")); }
+          catch { noteIssue("notifications", compatibilityError("codex", "notifications")); }
         }
       }
     });
@@ -236,7 +258,7 @@ export function createCodexDaemon({
       fail("Codex session service disconnected.");
       // Subscriptions belong to the connection; a new one starts clean.
       for (const listener of closeListeners) {
-        try { listener(); } catch { issues.set("notifications", compatibilityError("codex", "notifications")); }
+        try { listener(); } catch { noteIssue("notifications", compatibilityError("codex", "notifications")); }
       }
     });
     ws.on("error", () => {});
@@ -249,6 +271,9 @@ export function createCodexDaemon({
     // apart from the CLI Reach checks, so it's said as it is, or unknown.
     serviceVersion = serviceVersionOf(hello?.userAgent);
     ws.send(JSON.stringify({ method: "initialized" }));
+    // A new connection that works: what the last one couldn't read is past.
+    recent.delete("protocol");
+    recent.delete("notifications");
     for (const listener of readyListeners) {
       try { listener(); } catch {}
     }
@@ -291,7 +316,7 @@ export function createCodexDaemon({
       if (closed) throw closedError();
       if (issues.size) await compatibility();
       if (issues.has(method)) throw issues.get(method);
-      if (issues.has("protocol")) throw issues.get("protocol");
+      if (recent.has("protocol") && Date.now() < protocolUntil) throw recent.get("protocol");
       if (!ready)
         ready = open().catch((e) => {
           const failed = socket;

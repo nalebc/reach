@@ -237,6 +237,58 @@ const faceJoined = (client) =>
   client.tailscale?.faceJoin === true &&
   client.tailscale.tagged === true &&
   client.tailscale.userId === "";
+// The credential store's lock names its holder. A change takes milliseconds
+// (all synchronous), so a lock whose holder is gone, or held 10 s, was left by
+// a process that died mid-change (killed, out of memory, power lost); it used
+// to block every change for good, Revoke included (reliability audit, Oct 10).
+const LOCK_STALE_MS = 10000;
+export function takeCredentialLock(lock, { now = Date.now, isAlive } = {}) {
+  const alive = isAlive || ((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === "EPERM";
+    }
+  });
+  const busy = () => fail(409, "Credentials are being updated. Try again shortly.");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd;
+    try {
+      fd = fs.openSync(lock, "wx", 0o600);
+    } catch (error) {
+      if (error.code !== "EEXIST" || attempt) throw busy();
+      let stat, holder = null;
+      try {
+        stat = fs.statSync(lock);
+        holder = JSON.parse(fs.readFileSync(lock, "utf8"))?.pid;
+      } catch {
+        if (!stat) continue; // gone meanwhile: take it
+      }
+      const age = now() - stat.mtimeMs;
+      // A holder still writing its name gets a moment.
+      const stale = age > LOCK_STALE_MS || (Number.isInteger(holder) ? !alive(holder) : age > 2000);
+      if (!stale) throw busy();
+      // Still that same lock (not one taken meanwhile): removed, and said.
+      try {
+        if (fs.statSync(lock).ino !== stat.ino) throw busy();
+        fs.unlinkSync(lock);
+      } catch (removal) {
+        if (removal.status) throw removal;
+      }
+      console.warn("Reach: removed a credential lock left by a Reach that stopped mid-change.");
+      continue;
+    }
+    try {
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: now() }));
+    } catch {
+      /* unnamed: treated as stale after 2 s, like one whose holder died */
+    }
+    return fd;
+  }
+  throw busy();
+}
+
 export function createAuth(config, { rotatePairing = true } = {}) {
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
@@ -260,12 +312,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   };
   const changeClients = (change) => {
     const lock = `${file}.lock`;
-    let fd;
-    try {
-      fd = fs.openSync(lock, "wx", 0o600);
-    } catch {
-      throw fail(409, "Credentials are being updated. Try again shortly.");
-    }
+    const fd = takeCredentialLock(lock);
     try {
       // A corrupt or unreadable store must never be replaced by one new
       // client: that would erase every other credential (503, as reads do).
@@ -1018,6 +1065,13 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   // may move it (security audit L3).
   const WAITING_QUIET_MS = 60_000;
   const waitingSeen = new Map(); // admission requestId -> last check-in
+  // Check-ins a day old are long past any request's wait (they were kept for
+  // good: reliability audit, Oct 10).
+  const sawWaiting = (requestId, at) => {
+    waitingSeen.set(requestId, at);
+    if (waitingSeen.size > 200)
+      for (const [id, seen] of waitingSeen) if (at - seen > 86400000) waitingSeen.delete(id);
+  };
   let authStarted = Date.now();
   // The terms the owner approved must still be the record's terms: a change
   // that fails closed (another supervising phone, say) is never re-approved.
@@ -1137,7 +1191,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const status = admissionStatus(client, now);
     // Its answer was lost: the same waiting request (same code), a new secret.
     if (status === "pending") {
-      waitingSeen.set(client.admission.requestId, now);
+      sawWaiting(client.admission.requestId, now);
       const requestSecret = crypto.randomBytes(32).toString("base64url");
       client.admission.secretHash = hash(requestSecret);
       return receipt(requestSecret, { resumed: true });
@@ -1339,7 +1393,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
             client.tailscale.nodeId !== identity.nodeId || client.tailscale.userId !== (identity.userId || ""))))
         throw fail(401, "This agent connection receipt is invalid or belongs to another device.");
       const status = admissionStatus(client);
-      if (status === "pending") waitingSeen.set(requestId, Date.now());
+      if (status === "pending") sawWaiting(requestId, Date.now());
       if (["pending", "denied", "expired"].includes(status))
         return { result: { status, expiresAt: request.expiresAt } };
       if (status === "accepted")

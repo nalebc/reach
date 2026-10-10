@@ -151,6 +151,7 @@ export function createAgentAsks({
   const asks = new Map(); // id -> ask
   const ended = new Map(); // id -> why, for a late answer from the phone
   const versions = new Map(); // agent:session -> changes
+  let changes = 0;
   // A mode picked on the phone for a session Reach doesn't run, switched to
   // with the next answer the phone gives there (agent:session -> mode).
   const modes = new Map();
@@ -184,7 +185,13 @@ export function createAgentAsks({
   };
   const listeners = new Set();
   const changed = (agent, sessionId) => {
-    versions.set(key(agent, sessionId), (versions.get(key(agent, sessionId)) || 0) + 1);
+    // One count for all, so a chat's never repeats; the newest 1,000 chats'
+    // are kept (they grew with every chat ever asked about). A chat whose
+    // count went reads as changed: the phone just reads it again.
+    const k = key(agent, sessionId);
+    versions.delete(k);
+    versions.set(k, ++changes);
+    if (versions.size > 1000) versions.delete(versions.keys().next().value);
     for (const listener of listeners) listener(agent, sessionId);
   };
   const remember = (id, why) => {

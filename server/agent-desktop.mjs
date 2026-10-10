@@ -4,6 +4,7 @@ import { desktopBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
 import { hiddenControls, nativeRules, typedTextRefusal } from "./agent-guard.mjs";
 import { presetScopes } from "./agent-presets.mjs";
+import { createAgentPauses } from "./agent-pauses.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
 // (scripts/native/agent-desktop.swift): one helper process per agent session,
@@ -264,6 +265,8 @@ export function createAgentDesktop(config, {
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
+  // Where the owner's pauses are kept across restarts (agent-pauses.mjs).
+  pausesFile = null,
 } = {}) {
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
@@ -275,7 +278,7 @@ export function createAgentDesktop(config, {
   const capturing = new Map(); // clientId -> { width, promise } of the capture running now
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
-  const pausedAgents = new Set(); // by the owner, from the agent list
+  const pausedAgents = createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
   const start = async (rules) => {
@@ -638,14 +641,25 @@ export function createAgentDesktop(config, {
     /** Who holds the Mac and what each agent last did, for the owner. */
     activity() {
       return { holder: currentHolder(),
-        agents: Object.fromEntries([...activity].map(([id, entry]) => [id, { ...entry }])), paused: [...pausedAgents] };
+        agents: Object.fromEntries([...activity].map(([id, entry]) => [id, { ...entry }])), paused: pausedAgents.list() };
     },
-    /** The owner's pause: the agent keeps looking, but every action waits until resumed. */
+    /** The owner's pause: the agent keeps looking, but every action waits until resumed. Kept across restarts. */
     setPaused(id, paused) {
-      if (paused) { pausedAgents.add(id); release(id); } else pausedAgents.delete(id);
-      return pausedAgents.has(id);
+      if (paused) release(id);
+      return pausedAgents.set(id, paused);
     },
     isPaused: (id) => pausedAgents.has(id),
+    // Every one of these agents, at once: after Reach ended unexpectedly, or
+    // when the saved pauses couldn't be read (who was paused is unknown).
+    pauseAll(ids) {
+      for (const id of ids) release(id);
+      return pausedAgents.add(ids);
+    },
+    pausesUnreadable: () => pausedAgents.unreadable,
+    // Pauses of agents whose access has ended.
+    forgetPauses: (alive) => pausedAgents.prune(alive),
+    // The session's work ends; the owner's pause stays until they resume it
+    // or the agent's access ends (a Reopen or an access change never resumes it).
     cancelClient(id) {
       sessions.get(id)?.helper.stop();
       sessions.delete(id);
@@ -653,7 +667,6 @@ export function createAgentDesktop(config, {
       shots.delete(id);
       capturing.delete(id);
       looks.delete(id);
-      pausedAgents.delete(id);
       release(id);
     },
     close() {

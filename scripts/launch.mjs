@@ -26,6 +26,7 @@ import {
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
 import { createReach } from "../server/index.mjs";
+import { installCrashGuard } from "../server/crash-guard.mjs";
 import { atomicJson, loadJson } from "../server/core.mjs";
 import {
   prepareTailscale,
@@ -53,6 +54,12 @@ export async function launch(options, root) {
   const privateDir = stateDir(root);
   const dataDir = process.env.REACH_DATA || path.join(privateDir, "quick");
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  // An error nothing caught: said, kept, and Reach exits so ./reach (or the
+  // background service) starts it again (server/crash-guard.mjs).
+  // Set by ./reach for this run only, not handed on to terminals and agents.
+  const supervised = !!options.service || process.env.REACH_SUPERVISED === "1";
+  delete process.env.REACH_SUPERVISED;
+  installCrashGuard({ dataDir, supervised });
   const httpsPort = options.httpsPort || 8443;
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
@@ -92,6 +99,8 @@ export async function launch(options, root) {
       : {}),
     tailscaleOwner: preferences?.owner,
     privatePaths: [privateDir],
+    // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
+    tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },
     // Policies live with Reach's state, never inside an installed package.
     ...(options.agentPolicyFile
       ? { agentPolicyFile: options.agentPolicyFile, agentPolicyRequired: true }
@@ -159,6 +168,8 @@ export async function launch(options, root) {
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // Its Terminal window closed: stopped as asked, not an unexpected end.
+  process.on("SIGHUP", onSignal);
   try {
     await new Promise((resolve, reject) => {
       reach.server.once("error", reject);
@@ -225,8 +236,16 @@ export async function launch(options, root) {
         flags: "a",
         mode: 0o600,
       });
+      // A full disk or a removed folder ends this log, never Reach (it used
+      // to have no error listener: one failed write stopped Reach).
+      let logBroken = false;
+      rawLog.on("error", (error) => {
+        if (!logBroken) console.warn(`Reach: tailscale.log can't be written (${error.code || error.message}); its lines are skipped.`);
+        logBroken = true;
+      });
       log = {
         write: (chunk) => {
+          if (logBroken) return;
           const stamp = new Date().toISOString();
           const lines = String(chunk).split("\n").filter((line) => line.trim());
           if (lines.length) rawLog.write(lines.map((line) => `${stamp} ${line}`).join("\n") + "\n");
@@ -386,9 +405,21 @@ export async function launch(options, root) {
       );
       if (!options.service) {
         const seen = new Set();
+        let unreadable = false;
         approvalMonitor = setInterval(() => {
           const linked = reach.fleet?.links().length > 0;
-          for (const request of approvalStore(dataDir).list()) {
+          // Its folder unreadable for a moment (permissions, a full disk):
+          // said once, tried again next second, never Reach's end.
+          let requests;
+          try {
+            requests = approvalStore(dataDir).list();
+            unreadable = false;
+          } catch (error) {
+            if (!unreadable) console.warn(`Reach: device requests can't be read right now (${error.code || error.message}).`);
+            unreadable = true;
+            return;
+          }
+          for (const request of requests) {
             if (seen.has(request.id)) continue;
             if (request.approvedBy) {
               seen.add(request.id);

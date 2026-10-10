@@ -56,3 +56,29 @@ test("a chat's picture is found by its message, read lately or a page back", asy
   await assert.rejects(codex.image(ID, "a1", 0), (e) => e.status === 404);
   await assert.rejects(codex.image("not-a-thread", "u1", 0), (e) => e.status === 404);
 });
+
+test("pictures kept from a read stay within 32 MB; one left out is found again in the thread", async () => {
+  // 60 messages, each with a ~1 MB pasted picture (base64, as the Codex app keeps them).
+  const big = `data:image/png;base64,${PNG.toString("base64")}${"A".repeat(1024 * 1024)}`;
+  const items = Array.from({ length: 60 }, (_, n) => ({ item: { type: "userMessage", id: `u${n}`, content: [{ type: "text", text: `shot ${n}` }, { type: "image", url: big }] } }));
+  const calls = [];
+  const daemon = {
+    onNotification() {},
+    rpc: async (method) => {
+      calls.push(method);
+      if (method === "thread/read") return { thread: { id: ID } };
+      if (method === "thread/items/list") return { data: items };
+      return { data: [] };
+    },
+  };
+  const codex = createCodexSessions({ daemon, holder: async () => null, appState: () => ({ threads: {} }), runningElsewhere: (s) => s });
+  await codex.read(ID, { limit: 200 });
+  const listed = () => calls.filter((m) => m === "thread/items/list").length;
+  const before = listed();
+  // The newest are kept: asked for, no new look in the thread.
+  await codex.image(ID, "u59", 0).catch(() => null);
+  assert.equal(listed(), before, "kept from the read");
+  // The oldest went past 32 MB: looked up in the thread again.
+  await codex.image(ID, "u0", 0).catch(() => null);
+  assert.equal(listed(), before + 1, "found again in the thread");
+});

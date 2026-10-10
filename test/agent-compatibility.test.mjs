@@ -158,6 +158,7 @@ function transport(t, respond = () => ({}), options = {}) {
     run: async () => ({ stdout: '{"socketPath":"/fake.sock"}' }),
     Socket,
     requestTimeout: 25,
+    protocolCooldown: 40,
     ...options,
   });
   t.after(() => daemon.close());
@@ -224,9 +225,30 @@ test("notification exceptions are contained and malformed JSON closes only the a
     "notifications",
   );
   assert.doesNotThrow(() => sockets[0].emit("message", "null"));
-  await assert.rejects(daemon.rpc("thread/list"), {
-    code: "AGENT_INCOMPATIBLE",
-  });
+  assert.ok((await daemon.compatibility()).issues.some((issue) => issue.feature === "protocol"));
+  // For a moment calls fail at once (no new connection on every poll)...
+  await assert.rejects(daemon.rpc("thread/list"), { code: "AGENT_INCOMPATIBLE" });
+  assert.equal(sockets.length, 1);
+  // ...then one odd message has ended that connection, not Codex: the next
+  // call opens a new one, and once it works the issue is past (Oct 10).
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(await daemon.rpc("thread/list"), { data: [] });
+  assert.equal(sockets.length, 2);
+  const after = await daemon.compatibility();
+  assert.equal(after.issues.some((issue) => issue.feature === "protocol"), false);
+  assert.equal(after.status, "available");
+});
+test("a reply in an unexpected shape fails that call alone; the method works again when Codex answers well", async (t) => {
+  let odd = true;
+  const { daemon, calls } = transport(t, (m) =>
+    m.method === "thread/list" ? { result: { data: odd ? "changed" : [] } } : { result: { data: [] } },
+  );
+  await assert.rejects(daemon.rpc("thread/list"), { code: "AGENT_INCOMPATIBLE" });
+  assert.equal((await daemon.compatibility()).status, "degraded");
+  odd = false;
+  assert.deepEqual(await daemon.rpc("thread/list"), { data: [] });
+  assert.equal(calls.filter((m) => m.method === "thread/list").length, 2);
+  assert.equal((await daemon.compatibility()).status, "available");
 });
 test("a pending approval cannot be answered on a replacement socket", async (t) => {
   const { daemon, sockets, calls } = transport(t, () => ({

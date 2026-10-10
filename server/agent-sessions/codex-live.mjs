@@ -26,6 +26,7 @@ import { questionKey, questionReply, readQuestionReply } from "./codex-questions
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 import { computerWord } from "../computer-word.mjs";
+import { sweepAtRest } from "./at-rest.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Both messages the Codex app itself checks for.
@@ -264,26 +265,35 @@ export function createCodexLive({
   const subscribed = new Set();
   const reconnecting = new Set();
   let closed = false, connectionGeneration = 0;
+  const fresh = () => ({
+    status: "idle",
+    turnId: null,
+    lastCompleted: null,
+    error: null,
+    prompts: new Map(),
+    nativeRequests: new Map(),
+    streaming: null,
+    activity: null,
+    items: 0,
+    version: 0,
+    waiters: new Set(),
+    queue: null,
+    queueAt: 0,
+    queueReading: null,
+  });
   const state = (id) => {
-    if (!threads.has(id))
-      threads.set(id, {
-        status: "idle",
-        turnId: null,
-        lastCompleted: null,
-        error: null,
-        prompts: new Map(),
-        nativeRequests: new Map(),
-        streaming: null,
-        activity: null,
-        items: 0,
-        version: 0,
-        waiters: new Set(),
-        queue: null,
-        queueAt: 0,
-        queueReading: null,
-      });
-    return threads.get(id);
+    if (!threads.has(id)) threads.set(id, fresh());
+    const t = threads.get(id);
+    t.touchedAt = now();
+    return t;
   };
+  // Threads only asked about, at rest for 30 minutes, aren't kept for good
+  // (at-rest.mjs); one followed, subscribed or with anything going stays.
+  const restSweep = setInterval(() => sweepAtRest(threads, {
+    fresh, free: ["version", "touchedAt"], now: now(),
+    keep: (id) => subscribed.has(id) || reconnecting.has(id) || owner.hasFollowers?.(id),
+  }), 10 * 60 * 1000);
+  restSweep.unref?.();
   let api;
   const owner = ownerFactory({
     daemon,
@@ -822,7 +832,7 @@ export function createCodexLive({
     }
   }
   return api = {
-    close: () => { closed = true; connectionGeneration++; owner.close(); },
+    close: () => { closed = true; connectionGeneration++; clearInterval(restSweep); owner.close(); },
     drives: (threadId) => subscribed.has(threadId),
     currentMode: (threadId) => threads.get(threadId)?.mode || null,
     onChange(listener) {

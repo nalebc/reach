@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sweepAtRest } from "./at-rest.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code's permission modes as it lists them in --help, in the order and
@@ -324,27 +325,29 @@ export function createClaudeHost({
   const clean = Object.fromEntries(
     Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|REACH_)/.test(k) && k !== "CLAUDECODE"),
   );
+  const fresh = (id) => ({
+    id,
+    cwd: null,
+    proc: null,
+    status: "idle",
+    turns: 0,
+    prompts: new Map(),
+    streaming: "",
+    activity: null,
+    error: null,
+    items: 0,
+    version: 0,
+    waiters: new Set(),
+    settings: {},
+    pending: new Map(),
+    idle: null,
+    background: 0,
+  });
   const state = (id) => {
-    if (!sessions.has(id))
-      sessions.set(id, {
-        id,
-        cwd: null,
-        proc: null,
-        status: "idle",
-        turns: 0,
-        prompts: new Map(),
-        streaming: "",
-        activity: null,
-        error: null,
-        items: 0,
-        version: 0,
-        waiters: new Set(),
-        settings: {},
-        pending: new Map(),
-        idle: null,
-        background: 0,
-      });
-    return sessions.get(id);
+    if (!sessions.has(id)) sessions.set(id, fresh(id));
+    const s = sessions.get(id);
+    s.touchedAt = now();
+    return s;
   };
   // Told of each change to a session (the chat list hears of its status and
   // questions this way).
@@ -352,6 +355,12 @@ export function createClaudeHost({
   // What the last Reach left working, read once before this one writes.
   const recoveries = new Map(readWorking(workingFile, now()).map((chat) => [chat.id, chat]));
   let interrupted = [...recoveries.values()];
+  // Chats only asked about, at rest for 30 minutes, aren't kept for good
+  // (at-rest.mjs); one with anything running, waiting or chosen stays.
+  const restSweep = setInterval(() => sweepAtRest(sessions, {
+    fresh, free: ["id", "cwd", "version", "touchedAt", "watchedUntil"], keep: (id) => recoveries.has(id), now: now(),
+  }), 10 * 60 * 1000);
+  restSweep.unref?.();
   let recorded = null;
   // A process that died mid-turn (a restart's signal can reach it before
   // Reach's own close) stays on record until its chat gets a message again.
@@ -1131,6 +1140,7 @@ export function createClaudeHost({
       // next Reach to continue.
       record(now());
       closed = true;
+      clearInterval(restSweep);
       for (const s of sessions.values()) end(s);
     },
   };

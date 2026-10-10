@@ -67,6 +67,8 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
+import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
 import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
@@ -189,7 +191,16 @@ export async function createReach(overrides = {}) {
   // (security audit, Oct 9).
   const agentsSeenFile = path.join(config.dataDir, "agents-seen.json");
   const bootedAt = overrides.bootedAt || (() => Date.now() - os.uptime() * 1000);
-  let agentsSeenAt = Number(loadJson(agentsSeenFile, {})?.at) || 0, agentsSeenSaved = agentsSeenAt;
+  // A record that's there but can't be read counts as an agent here now: it
+  // must never read as "no agent was here" (reliability audit, Oct 10).
+  const seenOnDisk = () => {
+    try {
+      return Number(JSON.parse(fs.readFileSync(agentsSeenFile, "utf8"))?.at) || 0;
+    } catch (error) {
+      return error.code === "ENOENT" ? 0 : Date.now();
+    }
+  };
+  let agentsSeenAt = seenOnDisk(), agentsSeenSaved = agentsSeenAt;
   const agentsActive = () => {
     if (!browserHostGuard.isActive()) return false;
     agentsSeenAt = Date.now();
@@ -404,6 +415,11 @@ export async function createReach(overrides = {}) {
     maxPayload: 65536,
     perMessageDeflate: false,
   });
+  // How often a terminal's connection is asked if it's still there, and when
+  // a refusal at the 64-connection limit was last said (reliability audit,
+  // Oct 10).
+  const terminalPingMs = overrides.terminalPingMs || 30000;
+  let refusedFullAt = 0;
   const screenControl = new ScreenControl();
   let agentDesktop = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
@@ -877,7 +893,50 @@ export async function createReach(overrides = {}) {
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
     screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record,
+    pausesFile: path.join(config.dataDir, "agent-pauses.json"),
   }) : null);
+  // Agents that can see or use this Mac (Full control, Apps, Read-only).
+  const screenAgentIds = () => auth.list()
+    .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
+    .map((client) => client.id);
+  // Every such agent paused at once, and the owner told why: who was paused
+  // is unknown (the saved pauses unreadable) or Reach ended unexpectedly.
+  const pauseScreenAgents = (why) => {
+    if (!agentDesktop?.pauseAll) return [];
+    let added = [];
+    try {
+      added = agentDesktop.pauseAll(screenAgentIds());
+    } catch (error) {
+      console.warn(`Reach: ${error.message}`);
+    }
+    if (added.length) {
+      record("agent", `Paused ${added.length === 1 ? "an agent" : `${added.length} agents`}: ${why}`);
+      notify({ category: "access", title: added.length === 1 ? "An agent is paused" : `${added.length} agents are paused`, body: `${why} Resume them in Agents when you're ready.`, icon: "agent", tag: "agents-paused-restart" });
+    }
+    return added;
+  };
+  if (agentDesktop?.forgetPauses) {
+    agentDesktop.forgetPauses((id) => auth.list().some((client) => client.id === id));
+    if (agentDesktop.pausesUnreadable()) pauseScreenAgents("Reach couldn't read which agents you had paused, so it paused them all.");
+  }
+  // Logs capped, old command histories cleared, files sent from the phone
+  // cleared when the disk runs low, at start and every 6 hours
+  // (server/tidy.mjs). Tests opt in.
+  const tidying = overrides.tidy !== false && (overrides.tidy || !process.env.NODE_TEST_CONTEXT)
+    ? startTidying({ dataDir: config.dataDir, ...(typeof overrides.tidy === "object" ? overrides.tidy : {}) })
+    : null;
+  // The last Reach here ended without being asked to (crash-guard.mjs): what
+  // it left in memory is gone, so agents that can use this Mac wait for the
+  // owner, who hears why.
+  const runMarker = overrides.runMarker ?? !process.env.NODE_TEST_CONTEXT;
+  const lastRun = overrides.previousRun !== undefined ? overrides.previousRun : runMarker ? previousRun(config.dataDir) : null;
+  if (runMarker) markRunning(config.dataDir);
+  if (lastRun?.unclean) {
+    const why = restartReason(lastRun);
+    console.warn(`Reach: ${why.replace(/^Reach /, "")}`);
+    if (!pauseScreenAgents(why).length)
+      notify({ category: "computer", title: "Reach started again", body: why, tag: "reach-restarted" });
+  }
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
   // Saved tools on this Mac: where macOS Automation and the browser's own
   // setting stand, macOS's prompt on request, the settings page opened.
@@ -941,7 +1000,15 @@ export async function createReach(overrides = {}) {
     // input path. Selected-app input has its own native, window-bound guard.
     throw fail(403, "Whole-desktop agent control is no longer available. Ask the owner for a new Selected apps invitation.");
   };
-  const browserCommandLog = await createBrowserCommandLog({ dir: path.join(config.dataDir, "browser-commands") });
+  // A history that can't be opened (a link, loose permissions) turns agent
+  // commands off and says why; it never stops Reach from starting (it did:
+  // reliability audit, Oct 10).
+  const browserCommandLog = await createBrowserCommandLog({ dir: path.join(config.dataDir, "browser-commands") }).catch((error) => {
+    const why = `Agent commands are off: their history can't be kept (${error.message})`;
+    console.error(`Reach: ${why}`);
+    const off = async () => { throw fail(503, `${why}.`); };
+    return { append: off, history: off, close: async () => {} };
+  });
   // The shell for Full control agents (server/agent-shell.mjs): logged with
   // the other agent commands.
   const agentShell = createAgentShell({ commandLog: browserCommandLog, hosts: () => reachAddresses(config), protectedPaths: () => browserPaths(),
@@ -4165,6 +4232,16 @@ export async function createReach(overrides = {}) {
       return;
     }
     if (wss.clients.size >= 64) {
+      // Said (once a minute, with the count per kind), so a live screen that
+      // won't open has a named cause.
+      const now = Date.now();
+      if (now - refusedFullAt > 60000) {
+        refusedFullAt = now;
+        const kinds = {};
+        for (const client of wss.clients) kinds[client.reachChannel || "presence"] = (kinds[client.reachChannel || "presence"] || 0) + 1;
+        const route = String(req.url || "").split("?")[0].replace(/[^\w/-]/g, "").slice(0, 40) || "other";
+        console.warn(`Reach: refused a live connection (${route}): 64 are open already (${Object.entries(kinds).map(([kind, n]) => `${kind} ${n}`).join(", ")}).`);
+      }
       socket.destroy();
       return;
     }
@@ -4536,6 +4613,17 @@ export async function createReach(overrides = {}) {
     };
     const expiryCheck = setInterval(stillAuthorized, 1000);
     expiryCheck.unref();
+    // A phone that left without closing (a network change) answers no ping:
+    // its terminal connection ends within a minute instead of holding one of
+    // the 64 places until TCP notices (reliability audit, Oct 10).
+    let answered = true;
+    ws.on("pong", () => { answered = true; });
+    const liveness = setInterval(() => {
+      if (!answered) return ws.terminate();
+      answered = false;
+      try { ws.ping(); } catch { /* closing */ }
+    }, terminalPingMs);
+    liveness.unref();
     const deadline = setTimeout(() => ws.terminate(), 5000);
     const send = (data) => {
       if (ws.readyState === WebSocket.OPEN && stillAuthorized()) {
@@ -4597,6 +4685,7 @@ export async function createReach(overrides = {}) {
     ws.on("close", () => {
       clearTimeout(deadline);
       clearInterval(expiryCheck);
+      clearInterval(liveness);
       session?.listeners.delete(listener);
     });
     ws.on("error", () => {});
@@ -4818,6 +4907,10 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      // Asked to stop: the next start isn't after an unexpected end, even if
+      // what follows takes too long and the launcher exits anyway.
+      if (runMarker) markStopped(config.dataDir);
+      tidying?.stop();
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();

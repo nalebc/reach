@@ -107,6 +107,32 @@ test("within the budget nothing is reduced: an old chat opens from memory", asyn
   assert.equal(opened, 0);
 });
 
+test("a chat idle for ten minutes keeps only its summary, within the budget too; opening reads it whole", async () => {
+  const { root, folder } = await setup();
+  await fs.writeFile(path.join(folder, `${ID}.jsonl`), conversation(ID, 10));
+  await fs.writeFile(path.join(folder, `${OTHER}.jsonl`), conversation(OTHER, 3));
+  let clock = 1_000_000;
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records"), now: () => clock });
+  const before = await claude.read(ID, { limit: 500 });
+  await claude.list();
+  clock += 11 * 60 * 1000;
+  // Another chat is written to; this one was idle all along.
+  await fs.appendFile(path.join(folder, `${OTHER}.jsonl`), conversation(OTHER, 4).split("\n").slice(6, 8).join("\n") + "\n");
+  await claude.list();
+  const open = fs.open;
+  let opened = 0;
+  fs.open = async (...args) => { opened++; return open(...args); };
+  let again;
+  try { again = await claude.read(ID, { limit: 500 }); } finally { fs.open = open; }
+  assert.ok(opened > 0, "read again from its file");
+  assert.deepEqual(again.items, before.items);
+});
+
+test("the default budget is a 64th of the Mac's memory, 64 to 256 MB", async () => {
+  const source = await fs.readFile(new URL("../server/agent-sessions/claude.mjs", import.meta.url), "utf8");
+  assert.match(source, /budgetBytes = Math\.max\(64 \* 1024 \* 1024, Math\.min\(256 \* 1024 \* 1024, Math\.floor\(os\.totalmem\(\) \/ 64\)\)\)/);
+});
+
 test("a deleted transcript leaves the list and the cache", async () => {
   const { root, folder } = await setup();
   await fs.writeFile(path.join(folder, `${ID}.jsonl`), conversation(ID, 2));

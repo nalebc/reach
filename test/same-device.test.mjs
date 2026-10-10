@@ -196,3 +196,50 @@ test("matching by name only for browser sign-ins of the same kind", () => {
   assert.deepEqual(sameDevice(auth, req("nZ", "ipad-browser")), {}, "another account's device");
   assert.deepEqual(sameDevice(auth, req("nW", "android-browser")), {}, "guests don't count");
 });
+
+// The record that an agent had this Mac, there but unreadable, counts as an
+// agent here: it never reads as "no agent was here" (reliability audit, Oct 10).
+test(
+  "an unreadable record of agents counts as an agent here: identity alone approves nothing",
+  { skip: process.platform === "win32", timeout: 20000 },
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-vouch-torn-"));
+    const socketDir = await fs.mkdtemp("/tmp/reach-vouch-sock-");
+    const socketPath = path.join(socketDir, "s");
+    const dataDir = path.join(root, "private");
+    await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(dataDir, "agents-seen.json"), "{ torn", { mode: 0o600 });
+    const devices = new Map([["100.64.0.1", whois("nPhoneApp", "owner-iphone")]]);
+    let reach = null;
+    reach = await createReach({
+      roots: [root], dataDir, port: 0, tailscaleOwner: owner,
+      tailscaleIdentity: { lookup: async (ip) => devices.get(ip) },
+      browserHostGuard: { lookup: async () => macStatus, clients: () => reach?.auth.list() || [] },
+      bootedAt: () => Date.now() - 3600_000,
+    });
+    await reach.listenPrivate(socketPath);
+    const call = (route, from, body) =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          { socketPath, path: route, method: "POST",
+            headers: { Host: "localhost", "X-Forwarded-For": from, "Tailscale-User-Login": owner.login, "Content-Type": "application/json" } },
+          (res) => { let text = ""; res.on("data", (c) => (text += c)); res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(text || "null") })); },
+        );
+        req.once("error", reject);
+        req.end(JSON.stringify(body));
+      });
+    const connect = async (approve = false) => {
+      const r = (await call("/api/auth/requests", "100.64.0.1", { name: "Mine" })).json;
+      if (approve) approvalStore(dataDir).decide(r.id, "approve");
+      return (await call(`/api/auth/requests/${r.id}`, "100.64.0.1", { secret: r.secret })).json.status;
+    };
+    try {
+      assert.equal(await connect(true), "approved");
+      assert.equal(await connect(), "pending");
+    } finally {
+      await reach.close();
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(socketDir, { recursive: true, force: true });
+    }
+  },
+);
