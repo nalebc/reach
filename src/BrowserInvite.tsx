@@ -144,8 +144,8 @@ export const agentInviteMessage = (link: string, issued: Issued) => {
   if (tools)
     return `Connect to this Mac with one command on your computer (Node.js 22 or later); the owner matches your connection code once:\n\n${issued.command}\n\nThen list your tools with node ~/.reach-agent/agent.mjs tools and run one with node ~/.reach-agent/agent.mjs call TOOL '{json}', or add node ~/.reach-agent/agent.mjs mcp as an MCP server. ${grant}${protectedWords}${sharing} Never invite anyone, delegate access, or share this command or your credentials.`;
   const opening = issued.always
-    ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: open it again in any browser and you are back, with nothing to approve."
-    : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, open it again in any browser and you are back, with nothing to approve.";
+    ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: it brings this browser back at once; another browser needs a new code."
+    : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, it brings this browser back at once; another browser needs a new code.";
   return `${opening} ${grant}${protectedWords}${sharing} Code agents: window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
 };
 
@@ -816,9 +816,9 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           {minutes === ALWAYS && (
             <p className="ag-quiet">
               Until you end it in Settings → Agents.{" "}
-              {name.trim() || "The agent"} comes back through the same link
-              from any browser, with no new invite. Opening it elsewhere moves
-              the access there and disconnects the old browser.
+              {name.trim() || "The agent"} comes back through the same link,
+              with no new invite: at once in the same browser. In another
+              browser you match a new code, then the old one is disconnected.
             </p>
           )}
         </div>

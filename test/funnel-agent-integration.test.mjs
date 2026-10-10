@@ -671,8 +671,9 @@ test("one link over either route: an agent on the tailnet (even under the owner'
   const newKey = signingKey();
   const moved = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, {}, newKey);
   assert.equal(moved.status, 202, JSON.stringify(moved.body));
-  assert.equal(moved.body.moved, true);
-  assert.equal(f.reach.auth.listAgentAdmissions().length, 0, "nothing to approve again");
+  assert.equal(moved.body.moved, undefined);
+  assert.equal(f.reach.auth.listAgentAdmissions().length, 1, "the owner matches the new browser's code");
+  f.reach.auth.decideAgentAdmission(moved.body.requestId, "approve");
   const back = await f.gateway({ operation: "status", requestId: moved.body.requestId, secret: moved.body.requestSecret }, {}, newKey);
   assert.equal(back.body.status, "approved");
   assert.equal((await call("/api/browser", {})).status, 401, "the old browser is cut off");
@@ -698,11 +699,13 @@ test("through the gateway: the page reconnects on its own, never takes access fr
   const back = await f.gateway({ operation: "status", requestId: again.body.requestId, secret: again.body.requestSecret });
   assert.equal(back.body.status, "approved");
   assert.equal(f.reach.auth.listAgentAdmissions().length, 0);
-  // Opened in another browser: it moves there; the first browser's own
-  // reconnects are told it's in use elsewhere, refused before anything ran.
+  // Opened in another browser: once the owner matches its code it moves
+  // there; the first browser's own reconnects are told it's in use
+  // elsewhere, refused before anything ran.
   const other = signingKey();
   const moved = await f.gateway({ operation: "claim", invitation: grant.body.invitation }, {}, other);
-  assert.equal(moved.body.moved, true);
+  assert.equal(moved.body.status, "pending");
+  f.reach.auth.decideAgentAdmission(moved.body.requestId, "approve");
   const refused = await f.gateway({ operation: "reconnect", invitation: grant.body.invitation });
   assert.equal(refused.status, 423);
   assert.equal(refused.headers["reach-not-run"], "1");

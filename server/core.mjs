@@ -950,31 +950,47 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       kind: "agent",
       ...extra,
     });
-    if (rebindable(client, now)) {
-      const same = client.browserBinding === keyThumbprint;
-      if (!same && reconnect)
+    // The browser the owner approved last gets its access back at once
+    // (records from before Oct 9: the browser holding the approved access).
+    // Any other browser asks the owner again with a new code: a copied link
+    // alone never moves the access (security audit H3), and a browser the
+    // owner declined is refused. One already waiting keeps its code (below).
+    const approvedKey = client.approvedBinding ??
+      (["collected", "approved"].includes(client.admission?.status) ? client.browserBinding : undefined);
+    const trusted = approvedKey === keyThumbprint;
+    const waitingHere = client.browserBinding === keyThumbprint && admissionStatus(client, now) === "pending";
+    if (rebindable(client, now) && (trusted || !waitingHere)) {
+      if (client.browserBinding !== keyThumbprint && reconnect && !trusted)
         throw fail(423, "This agent's access is in use in another browser.");
+      if (!trusted && (client.deniedBindings || []).includes(keyThumbprint))
+        throw fail(403, "The owner declined this agent's connection from this browser.");
       const recent = (client.rebinds || []).filter((at) => at > now - 60000);
       if (recent.length >= REBINDS_PER_MINUTE)
         throw fail(429, "This link was opened too often just now. Wait a minute and try again.");
       client.rebinds = [...recent, now];
+      // What was approved stays recorded while another browser waits.
+      client.approvedAt ||= now;
+      if (approvedKey) client.approvedBinding = approvedKey;
       // The previous token and receipt end here, in the same write.
       for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt", "inviteHash", "inviteExpiresAt"]) delete client[key];
       client.browserBinding = keyThumbprint;
       const requestSecret = crypto.randomBytes(32).toString("base64url");
-      // Already approved: collected on the page's next check, any time while
-      // the access lasts (`moved`: the owner's edits carry over, as collected).
+      // `moved`: the owner's edits carry over, as for a collected session.
       client.admission = {
         requestId: id(),
         secretHash: hash(requestSecret),
         verificationCode: crypto.randomInt(100000, 1000000).toString(),
         requestedAt: now,
-        expiresAt: client.expiresAt,
-        status: "approved",
         moved: true,
         grant: admissionGrant(client),
+        // Its approved browser: collected on the page's next check, any time
+        // while the access lasts. Another: the owner's answer, for 5 minutes.
+        ...(trusted
+          ? { expiresAt: client.expiresAt, status: "approved" }
+          : { expiresAt: Math.min(now + 300000, client.expiresAt), status: "pending" }),
       };
-      return receipt(requestSecret, same ? { refreshed: true } : { moved: true });
+      // `moving`: an approved browser was cut off; the owner is asked.
+      return receipt(requestSecret, trusted ? { refreshed: true } : { moving: true });
     }
     if (client.admission?.status === "denied")
       throw fail(403, "The owner declined this agent's connection.");
@@ -1187,8 +1203,15 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       if (admissionStatus(client) !== "pending")
         throw fail(409, "This agent connection request is no longer pending.");
       client.admission.status = decision === "approve" ? "approved" : "denied";
-      // Lasting: its link then works again from any browser (rebindable).
-      if (decision === "approve") client.approvedAt = Date.now();
+      // Lasting: its link then reconnects this browser at once, and asks the
+      // owner again from any other (rebindable).
+      if (decision === "approve") {
+        client.approvedAt = Date.now();
+        if (client.browserBinding) client.approvedBinding = client.browserBinding;
+      } else if (client.admission.moved && client.browserBinding)
+        // A move declined: that browser is refused from then on; the agent's
+        // approved browser keeps its link.
+        client.deniedBindings = [...(client.deniedBindings || []), client.browserBinding].slice(-16);
       result = { requestId, clientId: client.id, status: client.admission.status };
       return latest;
     });

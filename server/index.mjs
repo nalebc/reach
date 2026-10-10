@@ -4590,17 +4590,14 @@ export async function createReach(overrides = {}) {
           // The same browser reconnecting, or getting its waiting request
           // again: nothing new for the owner.
           if (joined.refreshed || joined.resumed) return;
-          // Its approved link, opened in another browser: the access moved
-          // there and the browser it used is disconnected. Nothing to approve.
-          if (joined.moved) {
+          // Its approved link, opened in another browser: the browser it used
+          // is disconnected, and the new one waits for you to match its code
+          // (its approved browser can still take it back at once).
+          if (joined.moving) {
             endSession(joined.clientId);
             const name = auth.list().find((c) => c.id === joined.clientId)?.name || "An agent";
-            record("agent", `${name} opened its link in a new browser; the previous one was disconnected`);
-            notify({ category: "access", title: `${name} moved to a new browser`, body: "Its link was opened again. The browser it used before is disconnected. End its access in Settings → Agents if this wasn't it.", tag: `agent-moved-${joined.clientId}` });
-            for (const nudge of presenceNudges) nudge();
-            return;
-          }
-          record("agent", "An invited browser agent is waiting for connection approval");
+            record("agent", `${name}'s link was opened in another browser; the previous one was disconnected until you answer`);
+          } else record("agent", "An invited browser agent is waiting for connection approval");
           notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
           for (const nudge of presenceNudges) nudge();
         },

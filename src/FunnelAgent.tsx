@@ -258,7 +258,8 @@ export default function FunnelAgent({
           <p className="funnel-agent-footnote">
             Only the owner’s selected resources become available. Access lasts
             until their deadline or until they end it; your link brings you back
-            from any browser meanwhile. You cannot invite others or grant access.
+            in this browser meanwhile, or in another once the owner matches its
+            code. You cannot invite others or grant access.
           </p>
         )}
       </section>

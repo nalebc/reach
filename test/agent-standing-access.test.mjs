@@ -68,7 +68,7 @@ test("Always and approved timed sessions both outlive silent minutes and keep th
   assert.ok(f.auth.verifyFunnel(once.token, onceKey), "a timed session, once approved, lasts until its access ends");
 });
 
-test("one link: opened again in another browser after Muse joined, the access moves there and the old browser is cut off", (t) => {
+test("one link: opened again in another browser after Muse joined, the owner matches a new code, then the access moves there and the old browser is cut off", (t) => {
   const f = fixture(t);
   const grant = f.invite();
   const key = binding();
@@ -76,10 +76,11 @@ test("one link: opened again in another browser after Muse joined, the access mo
   const newKey = binding();
   const receipt = f.claim(grant, newKey);
   assert.equal(receipt.status, "pending");
-  assert.equal(receipt.moved, true);
+  assert.equal(receipt.moved, undefined);
   assert.equal(receipt.clientId, access.clientId, "the same access, not a new one");
-  assert.equal(f.auth.listAgentAdmissions().length, 0, "nothing to approve on the owner's phone");
+  assert.deepEqual(f.auth.listAgentAdmissions().map((r) => r.verificationCode), [receipt.verificationCode], "the owner matches the new browser's code");
   assert.equal(f.auth.verifyFunnel(access.token, key), null, "the browser it used is disconnected");
+  f.auth.decideAgentAdmission(receipt.requestId, "approve");
   const back = f.auth.pollFunnelAdmission(receipt.requestId, receipt.requestSecret, newKey);
   assert.equal(back.status, "approved");
   assert.equal(back.standing, true);
@@ -115,7 +116,7 @@ test("Stop ends Always access and closes the public link", (t) => {
   assert.equal(f.auth.funnelWindow().open, false);
 });
 
-test("Reopen link (owner API) disconnects the browser in use; the link keeps working, nothing to approve", (t) => {
+test("Reopen link (owner API) disconnects the browser in use; the link keeps working, a new browser with a new code", (t) => {
   const advance = clock(t);
   const f = fixture(t);
   const grant = f.invite();
@@ -127,16 +128,18 @@ test("Reopen link (owner API) disconnects the browser in use; the link keeps wor
   assert.equal(f.auth.verifyFunnel(old.token, oldKey), null, "the browser it used is disconnected");
   const newKey = binding();
   const receipt = f.claim(grant, newKey);
-  assert.equal(receipt.moved, true, "approved before: nothing to approve");
+  assert.equal(receipt.status, "pending", "a new browser: the owner matches its code");
   assert.equal(receipt.clientId, old.clientId, "the same access, not a new one");
-  assert.equal(f.auth.listAgentAdmissions().length, 0);
+  assert.equal(f.auth.listAgentAdmissions().length, 1);
+  f.auth.decideAgentAdmission(receipt.requestId, "approve");
   const back = f.auth.pollFunnelAdmission(receipt.requestId, receipt.requestSecret, newKey);
   assert.equal(back.standing, true);
   assert.ok(f.auth.verifyFunnel(back.token, newKey));
   f.auth.reopenBrowserInvitation(old.clientId);
   advance(16 * 60_000);
   // Still its one link for as long as the access lasts.
-  assert.equal(f.claim(grant, binding()).moved, true);
+  assert.equal(f.claim(grant, newKey).refreshed, true, "its approved browser: at once");
+  assert.equal(f.claim(grant, binding()).status, "pending");
   assert.equal(f.auth.funnelWindow().open, true);
   f.auth.revoke(old.clientId);
   assert.throws(() => f.claim(grant, binding()), { status: 401 }, "ended: the link is dead");
@@ -152,6 +155,7 @@ test("a timed invitation can be reopened while it has time left, never after", (
   f.auth.reopenBrowserInvitation(first.clientId);
   const key = binding();
   const moved = f.claim(grant, key);
+  f.auth.decideAgentAdmission(moved.requestId, "approve");
   assert.equal(f.auth.pollFunnelAdmission(moved.requestId, moved.requestSecret, key).status, "approved");
   advance(60 * 60_000);
   assert.throws(() => f.auth.reopenBrowserInvitation(first.clientId), { status: 404 });
