@@ -86,7 +86,7 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     for (const id of body.clientIds) {
       if (!clients.has(id)) { missing.push(id); continue; }
       endClient(id);
-      onStopped(id);
+      onStopped(clients.get(id));
       stopped.push(id);
     }
     res.json({ stopped, missing });

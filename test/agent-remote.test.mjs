@@ -269,9 +269,15 @@ test(
       ["127"],
     );
 
-    const left = await run(["leave"], { env });
+    // Leaving ends the access on the computer first: a copy of the folder
+    // taken before is worth nothing after.
+    const copied = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
+    assert.ok(reach.auth.verify(copied.token));
+    const left = await run(["leave", "--allow-local"], { env });
     assert.equal(left.code, 0, left.stderr);
     assert.equal(fs.existsSync(conn), false);
+    assert.equal(reach.auth.verify(copied.token), null, "its credential ended on the computer");
+    assert.ok(!reach.auth.list().some((c) => c.id === grant.clientId));
     const reused = await run(["join", link, "--allow-local"], { env });
     assert.equal(reused.code, 1);
     assert.match(

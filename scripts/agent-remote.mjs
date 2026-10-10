@@ -850,6 +850,9 @@ export async function main(argv = process.argv.slice(2)) {
   if (verb === "leave") {
     const conn = path.join(home, name);
     const credential = readCredential(conn);
+    // The computer ends this access first (its device leaves the owner's
+    // tailnet there too), so a copy of this folder is worth nothing after.
+    const end = async (api) => { try { await api()("/api/device/access", "DELETE"); } catch {} };
     if (credential.via === "tailnet") {
       if (!lock(conn))
         throw Error(
@@ -862,10 +865,12 @@ export async function main(argv = process.argv.slice(2)) {
           ...credential,
           timeoutMs: 20000,
         });
+        await end(() => tailnetApi(node, credential.origin, credential.token, { timeoutMs: 10000 }));
         node.logout();
         await new Promise((r) => setTimeout(r, 1500));
       } catch {}
-    }
+    } else if (credential.via === "direct")
+      await end(() => directApi(credential.origin, credential.token, o.allowLocal));
     fs.rmSync(conn, { recursive: true, force: true });
     process.stdout.write(`Left ${credential.computer}.\n`);
     return 0;

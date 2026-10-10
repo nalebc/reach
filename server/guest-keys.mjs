@@ -24,6 +24,9 @@ export function guestPolicy({ addresses, port }) {
 }
 const API = "https://api.tailscale.com";
 const ID = /^[a-z0-9]{10}$/;
+const NODE = /^[A-Za-z0-9_-]{1,200}$/;
+// The names Reach gives guest and Face ID devices, on any of your computers.
+const REACH_NAME = /^r[gf]-[0-9a-f]{4}-[a-z0-9]{10}(?:-\d+)?$/;
 
 export function createGuestKeys({
   dataDir,
@@ -63,11 +66,25 @@ export function createGuestKeys({
   const records = () => {
     const value = loadJson(recordFile, null);
     return Array.isArray(value?.invites)
-      ? value.invites.filter(
-          (r) => ID.test(r?.id) && Number.isFinite(r.expiresAt),
-        )
+      ? value.invites
+          .filter((r) => ID.test(r?.id) && Number.isFinite(r.expiresAt))
+          .map((r) => ({ ...r, nodeIds: Array.isArray(r.nodeIds) ? r.nodeIds.filter((n) => NODE.test(n)) : [] }))
       : [];
   };
+  // The node IDs of an invitation's devices, as Reach saw them sign in. A
+  // device can rename itself; its node ID is what's removed when the
+  // invitation ends (security audit H4).
+  const withNodes = (list, clientId, nodeIds) =>
+    list.map((r) => r.clientIds?.includes(clientId)
+      ? { ...r, nodeIds: [...new Set([...r.nodeIds, ...nodeIds.filter((n) => NODE.test(n))])].slice(-8) }
+      : r);
+  function noteDevices(entries) {
+    let list = records();
+    const before = JSON.stringify(list);
+    for (const { clientId, nodeId } of entries)
+      if (typeof clientId === "string" && NODE.test(nodeId || "")) list = withNodes(list, clientId, [nodeId]);
+    if (JSON.stringify(list) !== before) saveRecords(list);
+  }
   const saveRecords = (invites) =>
     atomicJson(recordFile, { version: 1, invites });
 
@@ -369,11 +386,17 @@ export function createGuestKeys({
     }
   }
 
-  // Revoking a guest on this computer ends its invite here: its device goes.
-  async function revokeClient(clientId) {
-    const list = records();
+  // Revoking a guest on this computer ends its invite here: its device goes,
+  // by the node ID it signed in with (`nodeIds`, read before it was revoked)
+  // as well as by its name.
+  async function revokeClient(clientId, nodeIds = []) {
+    nodeIds = nodeIds.filter((n) => typeof n === "string" && NODE.test(n));
+    let list = withNodes(records(), clientId, nodeIds);
     const ending = list.filter((r) => r.clientIds?.includes(clientId));
-    if (!ending.length) return 0;
+    if (!ending.length && !nodeIds.length) return 0;
+    // A device with no invitation recorded here (a key from before node IDs
+    // were kept): its node ID alone, ended.
+    if (!ending.length) list = [...list, { id: newId(), expiresAt: 0, clientIds: [clientId], nodeIds, keyId: "" }];
     // Ended now (kept as known, so its device goes without the grace period).
     saveRecords(
       list.map((r) =>
@@ -391,34 +414,48 @@ export function createGuestKeys({
     return reconcile();
   }
 
-  // Remove our guest devices whose invitation ended (or is unknown here).
-  // A device a few minutes old may still be redeeming its invitation.
-  async function reconcile() {
+  // Remove guest devices whose invitation ended (or is unknown here). An
+  // invitation ends at its deadline, when it's revoked, or once none of its
+  // clients still has access (`liveClients`: declined, unanswered, left).
+  // A device a few minutes old may still be redeeming its invitation. Only
+  // tag:reach-guest devices are ever removed; your own devices never are.
+  async function reconcile({ liveClients } = {}) {
     if (!credentials()) return 0;
-    const live = new Map(
-      records()
-        .filter((r) => r.expiresAt > now())
-        .map((r) => [r.id, r]),
-    );
+    const all = records();
+    const lasting = (r) => r.expiresAt > now() &&
+      (!liveClients || !r.clientIds?.length || r.clientIds.some((id) => liveClients.has(id)));
+    const live = new Map(all.filter(lasting).map((r) => [r.id, r]));
+    const liveNodes = new Set([...live.values()].flatMap((r) => r.nodeIds));
+    const endedNodes = new Set(all.filter((r) => !lasting(r)).flatMap((r) => r.nodeIds));
     const { devices = [] } = (await call("GET", "/tailnet/-/devices")) || {};
     let removed = 0;
     for (const d of devices) {
-      const name = shortName(d);
-      if (
-        !Array.isArray(d?.tags) ||
-        !d.tags.includes(GUEST_TAG) ||
-        !name.startsWith(prefix)
-      )
-        continue;
-      // Tailscale adds -1, -2… to repeated names.
-      const inviteId = name.slice(prefix.length).replace(/-\d+$/, "");
-      if (live.has(inviteId)) continue;
-      const known = records().some((r) => r.id === inviteId);
+      const name = shortName(d), node = String(d?.nodeId || d?.id || "");
+      if (!Array.isArray(d?.tags) || !d.tags.includes(GUEST_TAG) || !node || liveNodes.has(node)) continue;
       const created = Date.parse(d.created || "") || 0;
-      if (!known && now() - created < 10 * 60000) continue;
-      await call("DELETE", `/device/${encodeURIComponent(d.nodeId || d.id)}`);
+      let why = null;
+      if (endedNodes.has(node)) why = "invitation ended";
+      else if (name.startsWith(prefix)) {
+        // Tailscale adds -1, -2… to repeated names.
+        const inviteId = name.slice(prefix.length).replace(/-\d+$/, "");
+        if (live.has(inviteId)) continue;
+        const known = all.some((r) => r.id === inviteId);
+        if (!known && now() - created < 10 * 60000) continue;
+        why = "invitation ended";
+      } else if (!REACH_NAME.test(name) && now() - created >= 10 * 60000)
+        // A guest device that renamed itself: no name of Reach's, no node
+        // Reach knows of. It would otherwise stay on your tailnet.
+        why = "renamed guest device";
+      if (!why) continue;
+      await call("DELETE", `/device/${encodeURIComponent(node)}`);
       removed++;
-      log(`Removed guest device ${name} from your tailnet (invitation ended).`);
+      log(`Removed guest device ${name || node} from your tailnet (${why}).`);
+    }
+    if (liveClients) {
+      // What ended for want of a live client, ended for good.
+      const ended = all.filter((r) => r.expiresAt > now() && !lasting(r)).map((r) => r.id);
+      if (ended.length)
+        saveRecords(records().map((r) => (ended.includes(r.id) ? { ...r, expiresAt: 0 } : r)));
     }
     return removed;
   }
@@ -460,6 +497,7 @@ export function createGuestKeys({
     setup,
     setupFromAccessToken,
     createInvite,
+    noteDevices,
     revokeClient,
     reconcile,
     createFaceKey,

@@ -652,8 +652,10 @@ export function InviteSheet({
       });
       created = { peer: p, clientId: g.clientId, invitation: g.invitation };
       // Its key only needs to last until it joins. It comes from the agent's
-      // own computer when that one is set up, so ending its access there
-      // also removes its device from the tailnet.
+      // own computer, so ending its access there also removes its device
+      // from the tailnet. Not set up there: no key (shared as for anyone not
+      // on your tailnet), never one from another computer, which couldn't
+      // tell when this access ends.
       const keyFor = (ids: string[]) => ({
         ttlSeconds: agentDays * 86400,
         keySeconds: Math.max(60, Math.round((g.joinBy - Date.now()) / 1000)),
@@ -665,7 +667,6 @@ export function InviteSheet({
           key = await post(p, "/api/guests/key", keyFor([g.clientId]));
         } catch (e) {
           if (keyPeer.id === p.id) throw e;
-          key = await post(keyPeer, "/api/guests/key", keyFor([]));
         }
       const link = guestLinkUrl(
         startOf(p),

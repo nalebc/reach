@@ -304,12 +304,30 @@ export async function createReach(overrides = {}) {
     guestKeys
       .reconcileFace(faceDevices())
       .catch((e) => console.log(`Reach: ${e.message}`));
+  // Invited guests and agents that still have access here, and the node
+  // each signed in with (an invitation's device goes once none does).
+  const invitedClients = () =>
+    auth.list().filter((c) => c.kind === "guest" || c.policy?.invite);
   const tidyGuests = () =>
     guestKeys?.configured() &&
     Promise.all([
-      guestKeys.reconcile().catch((e) => console.log(`Reach: ${e.message}`)),
+      Promise.resolve()
+        .then(() => {
+          const invited = invitedClients();
+          guestKeys.noteDevices(invited.map((c) => ({ clientId: c.id, nodeId: c.tailscale?.nodeId })));
+          return guestKeys.reconcile({
+            liveClients: new Set(invited.filter((c) => c.expiresAt > Date.now() && !["denied", "expired"].includes(c.status)).map((c) => c.id)),
+          });
+        })
+        .catch((e) => console.log(`Reach: ${e.message}`)),
       tidyFace(),
     ]);
+  // Whatever way an invited client's access ends, its device leaves your
+  // tailnet: by the node it signed in with, read before it was revoked.
+  const releaseGuest = (client) =>
+    client && guestKeys
+      ?.revokeClient(client.id, client.tailscale?.nodeId ? [client.tailscale.nodeId] : [])
+      .catch((e) => console.log(`Reach: ${e.message}`));
   const guestTimers = [
     setTimeout(tidyGuests, 20000),
     setInterval(tidyGuests, 5 * 60000),
@@ -1669,13 +1687,12 @@ export async function createReach(overrides = {}) {
       ...(paused && { paused: true }),
     });
   });
+  // A guest or agent ends its own access (`agent.mjs leave`): everything it
+  // had open ends, and an invited device leaves your tailnet.
   app.delete("/api/device/access", (req, res) => {
-    auth.revoke(req.client.id);
-    agentServices.cancelClient(req.client.id);
-    browserApprovals.cancelClient(req.client.id);
-    browserAppAccess.cancelClient(req.client.id);
-    browserOperations.cancelClient(req.client.id);
-    browserScreenSnapshots.stop();
+    const client = auth.list().find((c) => c.id === req.client.id);
+    endClient(req.client.id);
+    if (client?.kind !== "device") void releaseGuest(client);
     res.type("json").send(JSON.stringify({ ok: true }));
   });
   app.get("/api/settings", (req, res) => res.json(settings));
@@ -1855,6 +1872,12 @@ export async function createReach(overrides = {}) {
     const result = auth.decideAgentAdmission(req.params.requestId, req.body?.decision);
     record("agent", req.body?.decision === "approve"
       ? "Approved an invited agent's connection" : "Denied an invited agent's connection");
+    // Declined on the tailnet: its device leaves at once. (A public-link
+    // agent declined in another browser keeps its access and has no device.)
+    if (result.status === "denied") {
+      const client = auth.list().find((c) => c.id === result.clientId);
+      if (client && client.browserTransport !== "funnel") void releaseGuest(client);
+    }
     for (const nudge of presenceNudges) nudge();
     res.json(result);
   });
@@ -2010,8 +2033,8 @@ export async function createReach(overrides = {}) {
   };
   browserAgentRoutes(app, {
     auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop,
-    onStopped: (id) => {
-      void guestKeys?.revokeClient(id).catch((e) => console.log(`Reach: ${e.message}`));
+    onStopped: (client) => {
+      void releaseGuest(client);
       record("agent", "Stopped a browser agent session");
     },
   });
@@ -2020,9 +2043,7 @@ export async function createReach(overrides = {}) {
     endClient(req.params.id);
     // A guest who came with an invite key leaves your tailnet too, and so
     // does a browser that signed in with Face ID.
-    void guestKeys
-      ?.revokeClient(req.params.id)
-      .catch((e) => console.log(`Reach: ${e.message}`));
+    void releaseGuest(client || { id: req.params.id });
     if (client?.tailscale?.faceJoin && guestKeys?.configured())
       void tidyFace();
     // Revoke once: your linked computers drop that device too.

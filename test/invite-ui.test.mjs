@@ -605,7 +605,9 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   await view.unmount();
 });
 
-test("an agent on a computer without the setup: its key comes from a linked one", async () => {
+// Security audit M5: a key from another computer couldn't tell when this
+// agent's access ends there, so its device would outlive it. None is made.
+test("an agent on a computer without the setup: no key from a linked one, a command for your tailnet", async () => {
   const log = computers({ keyed: ["mac-a"] });
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
@@ -623,11 +625,10 @@ test("an agent on a computer without the setup: its key comes from a linked one"
     [
       ["mac-b", "/api/agents/invitations", undefined],
       ["mac-b", "/api/guests/key", ["agent-mac-b"]],
-      ["mac-a", "/api/guests/key", []],
     ],
   );
   const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  assert.equal(parseGuestLink(new URL(commandLink(command)).hash).key, KEY.key);
+  assert.equal(parseGuestLink(new URL(commandLink(command)).hash).key || "", "");
   await view.unmount();
 });
 

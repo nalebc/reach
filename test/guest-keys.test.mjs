@@ -359,3 +359,117 @@ test(
     assert.equal((await call("/api/guests/keys", guest.token, { clientId: "x", clientSecret: "tskey-client-x" })).status, 403);
   },
 );
+
+// Security audit H4/M5: a guest device that renames itself still leaves by
+// the node ID it signed in with, and every way an invitation's access ends
+// (revoked, declined, unanswered, left) removes its device. Only
+// tag:reach-guest devices are ever touched.
+test("a device that renamed itself still leaves by its node ID; renamed guests go; yours never", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keys-"));
+  try {
+    const api = fakeTailscale();
+    const keys = createGuestKeys({ dataDir: dir, self: "dev-a", request: api.request });
+    await keys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    const a = await keys.createInvite({ ttlSeconds: 3600, clientIds: ["agent-a"] });
+    const b = await keys.createInvite({ ttlSeconds: 3600, clientIds: ["agent-b"] });
+    const now = new Date().toISOString(), old = new Date(Date.now() - 3600_000).toISOString();
+    // agent-a joined as its key said, then renamed itself.
+    keys.noteDevices([{ clientId: "agent-a", nodeId: "nA" }, { clientId: "agent-b", nodeId: "nB" }]);
+    api.devices = [
+      { nodeId: "nA", hostname: "innocent-laptop", tags: [GUEST_TAG], created: old },
+      { nodeId: "nB", hostname: "also-renamed", tags: [GUEST_TAG], created: old },
+      { nodeId: "nX", hostname: "someone-renamed", tags: [GUEST_TAG], created: old },
+      { nodeId: "nNew", hostname: "just-joined", tags: [GUEST_TAG], created: now },
+      { nodeId: "nOther", hostname: "rg-1234-abcdefghij", tags: [GUEST_TAG], created: old },
+      { nodeId: "nMine", hostname: "owner-iphone", created: old },
+      { nodeId: "nTagged", hostname: "server", tags: ["tag:server"], created: old },
+    ];
+    // Its live invitation keeps it, renamed or not; an unknown renamed
+    // guest device goes once it's past the join window.
+    await keys.reconcile();
+    assert.deepEqual(api.devices.map((d) => d.nodeId).sort(), ["nA", "nB", "nMine", "nNew", "nOther", "nTagged"]);
+    // Revoked: gone by its node ID, whatever it's called now.
+    assert.equal(await keys.revokeClient("agent-a"), 1);
+    assert.ok(!api.devices.some((d) => d.nodeId === "nA"));
+    // A node ID given at revocation, with no invitation recorded here.
+    api.devices.push({ nodeId: "nLegacy", hostname: "renamed-too", tags: [GUEST_TAG], created: now });
+    await keys.revokeClient("agent-legacy", ["nLegacy"]);
+    assert.ok(!api.devices.some((d) => d.nodeId === "nLegacy"));
+    // Declined, unanswered or left: no live client, the invitation ends.
+    await keys.reconcile({ liveClients: new Set() });
+    assert.ok(!api.devices.some((d) => d.nodeId === "nB"));
+    assert.equal(b.hostname.startsWith(keys.prefix), true);
+    // Never a device without the guest tag, nor another computer's guest.
+    assert.deepEqual(api.devices.map((d) => d.nodeId).sort(), ["nMine", "nNew", "nOther", "nTagged"]);
+    assert.ok(!api.deleted.some((d) => /device n(Mine|Tagged|Other)$/.test(d)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "an agent that leaves, or that you decline, takes its device off your tailnet, renamed or not",
+  { skip: process.platform === "win32", timeout: 20000 },
+  async (t) => {
+    const http = await import("node:http");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keys-end-"));
+    const socketDir = fs.mkdtempSync("/tmp/reach-keys-end-");
+    const socketPath = path.join(socketDir, "s");
+    const api = fakeTailscale();
+    const owner = { userId: "42", login: "o@example.test" };
+    const nodes = {
+      "100.64.0.9": { Node: { StableID: "nPhone", User: 42, Name: "phone.t.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" }, UserProfile: { ID: 42, LoginName: owner.login } },
+      "100.64.0.20": { Node: { StableID: "nAgentA", Tags: [GUEST_TAG], Name: "renamed-a.t.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" } },
+      "100.64.0.21": { Node: { StableID: "nAgentB", Tags: [GUEST_TAG], Name: "renamed-b.t.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" } },
+    };
+    const reach = await createReach({
+      roots: [dir], dataDir: path.join(dir, "private"), port: 0, tailscaleOwner: owner,
+      tailscaleIdentity: { lookup: async (ip) => nodes[ip] },
+      guestKeys: { request: api.request },
+    });
+    await reach.listenPrivate(socketPath);
+    t.after(async () => {
+      await reach.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(socketDir, { recursive: true, force: true });
+    });
+    await reach.guestKeys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    const phone = reach.auth.issue("My iPhone", ALL_SCOPES, "device", { tailscale: { userId: "42", nodeId: "nPhone" } });
+    const call = (route, from, token, method = "GET", body) =>
+      new Promise((resolve, reject) => {
+        const req = http.request({ socketPath, path: route, method, headers: {
+          Host: "localhost", "X-Forwarded-For": from, ...(from === "100.64.0.9" ? { "Tailscale-User-Login": owner.login } : {}),
+          Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) } },
+        (res) => { let text = ""; res.on("data", (c) => (text += c)); res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(text || "null") })); });
+        req.once("error", reject);
+        req.end(body ? JSON.stringify(body) : undefined);
+      });
+    const old = new Date(Date.now() - 3600_000).toISOString();
+    // Two agents, each with its own key; both devices renamed themselves.
+    const join = async (ip, node) => {
+      const grant = reach.auth.inviteAgent({ name: node, ttlSeconds: 3600, folders: [{ root: 0, path: "" }] });
+      await reach.guestKeys.createInvite({ ttlSeconds: 3600, clientIds: [grant.clientId] });
+      api.devices.push({ nodeId: node, hostname: `renamed-${node}`, tags: [GUEST_TAG], created: old });
+      const claim = reach.auth.redeemGuest(grant.invitation, { nodeId: node, userId: "", tagged: true, validUntil: Date.now() + 60000 });
+      return { grant, claim };
+    };
+    const until = async (gone) => {
+      for (let i = 0; i < 100 && api.devices.some((d) => d.nodeId === gone); i++) await new Promise((r) => setTimeout(r, 20));
+      return !api.devices.some((d) => d.nodeId === gone);
+    };
+    // A leaves on its own (agent.mjs leave).
+    const a = await join("100.64.0.20", "nAgentA");
+    reach.auth.decideAgentAdmission(a.claim.requestId, "approve");
+    const joined = reach.auth.pollAgentAdmission(a.claim.requestId, a.claim.requestSecret, { nodeId: "nAgentA", userId: "", tagged: true, validUntil: Date.now() + 60000 });
+    assert.ok(joined.token);
+    const left = await call("/api/device/access", "100.64.0.20", joined.token, "DELETE");
+    assert.equal(left.status, 200, JSON.stringify(left.json));
+    assert.ok(await until("nAgentA"), "its device left the tailnet");
+    assert.ok(!reach.auth.list().some((c) => c.id === a.grant.clientId), "its access ended first");
+    // B is declined on the phone.
+    const b = await join("100.64.0.21", "nAgentB");
+    const denied = await call(`/api/agents/admissions/${b.claim.requestId}`, "100.64.0.9", phone.token, "POST", { decision: "deny" });
+    assert.equal(denied.status, 200, JSON.stringify(denied.json));
+    assert.ok(await until("nAgentB"), "a declined agent's device leaves too");
+  },
+);
