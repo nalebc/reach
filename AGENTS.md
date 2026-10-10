@@ -15,3 +15,9 @@ If `./reach` says Reach is already running, don't start another copy. Tell the u
 Interface changes (`src/`, `public/`, `index.html`) need no restart: Reach rebuilds them and open phones reload on their own. Only server changes need one. When you run `./reach restart`, it asks the user on their phone (Needs you) and returns; Reach restarts when they tap Restart. Don't run it again while it's waiting.
 
 Restarting ends Reach's terminals and live streams. Run `./reach status` first, and ask the user before restarting while they use it. Never pass `--yes` to `stop` or `restart` (it closes Reach's terminals without asking) unless the user said so.
+
+## Running tests
+
+Run tests through npm so each test process carries the runaway guard (`test/helpers/runaway-guard.mjs`): `npm test` for everything, `npm run test:file -- test/x.test.mjs` for one or a few files. Never bare `node --test`. On Oct 9 failing assertions grew three test processes to 80 GB together and logged the Mac out; the guard keeps any single test under 2 GB.
+
+Don't start a full `npm test` while another one is running on this Mac (check `ps -Ao args | grep "node.*--test"`); run only the files your change touches.

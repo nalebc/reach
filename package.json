@@ -37,7 +37,8 @@
     "build": "node scripts/build-brand.mjs && tsc --noEmit && vite build && node scripts/compress-assets.mjs && node scripts/build-agent.mjs",
     "prepack": "node scripts/check-release.mjs && npm run build:release",
     "start": "node server/index.mjs",
-    "test": "node --test --test-timeout=60000 --test-concurrency=4 test/*.test.mjs",
+    "test": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000 --test-concurrency=4 test/*.test.mjs",
+    "test:file": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000",
     "test:typing": "REACH_TEST_TYPING_NATIVE=1 node --test test/typing-native.test.mjs",
     "pair": "node scripts/pair.mjs",
     "share": "node scripts/share.mjs",
@@ -50,7 +51,7 @@
     "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs",
     "build:release": "npm run build && node scripts/build-tailnet.mjs --required && node scripts/build-notices.mjs && node scripts/release-assets.mjs",
     "verify:package": "node scripts/smoke-package.mjs",
-    "test:ci": "node --test --test-timeout=60000 --test-concurrency=2 test/*.test.mjs"
+    "test:ci": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000 --test-concurrency=2 test/*.test.mjs"
   },
   "dependencies": {
     "buffer-crc32": "1.0.0",

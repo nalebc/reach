@@ -2,6 +2,8 @@ import path from "node:path";
 import { format } from "node:util";
 import { fileURLToPath } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
+// A failing assertion on a rendered element must not be able to exhaust the Mac.
+import "../helpers/runaway-guard.mjs";
 
 // Renders the real interface components in Node for regression tests: jsdom
 // is the page, Vite compiles the TSX the same way the app build does.
