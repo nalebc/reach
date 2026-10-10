@@ -14,6 +14,7 @@
 //
 // JSON-RPC and results go to stdout; everything else to stderr.
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
@@ -703,7 +704,7 @@ export async function open(home, name, allowLocal, { tailnet = false } = {}) {
     // the agent's MCP server as a rule): once this agent's node is up, the
     // computer's private address is reached through it; the public link
     // meanwhile, and whenever the node is down.
-    const behind = rotator && tailnet ? backgroundTailnet({ home, conn, credential, save }) : null;
+    const behind = rotator && tailnet ? backgroundTailnet({ home, conn, credential }) : null;
     const api = funnelApi({ conn, credential, save, reload, gatewayOptions: behind ? { send: behind.send, retry: behind.retry } : { send: hooks.send } });
     return {
       credential,
@@ -789,9 +790,25 @@ export const quote = (s, platform = process.platform) =>
     : /^[\w./~-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
 
 // What tests stand in for: the tailnet node, and the public link's transport.
+// The background join, alone in a process of its own (a child of `join`, or
+// of the agent's MCP server): the node registers with the invite key and the
+// credential records it (the `tailnet-join` verb). Nothing the tailnet
+// client does, downloading, WebAssembly, its control connection, can touch
+// the agent's own connection. Quiet: its output goes nowhere.
+function startTailnetJoin(name) {
+  try {
+    const child = spawn(process.execPath, [self(), "tailnet-join", "--computer", name], { detached: true, stdio: "ignore", env: process.env });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch { return false; }
+}
+// What tests stand in for: the tailnet node, the public link's transport,
+// the background join's process.
 export const hooks = {
   connectTailnet: (where) => connectTailnet(where),
   send: (...args) => httpsSend(...args),
+  startTailnetJoin: (name) => startTailnetJoin(name),
 };
 // One gateway request through this agent's own node, shaped as the public
 // link's transport shapes it ({status, headers, bytes}). No answer at all is
@@ -837,29 +854,30 @@ async function nodeSend(node, endpoint, body, headers, timeoutMs) {
 // does, the computer's private address is reached through it, with the same
 // credential and key (the gateway answers there too); until then, and
 // whenever it's down, the public link. Nothing waits for it.
-function backgroundTailnet({ home, conn, credential, save }) {
+function backgroundTailnet({ home, conn, credential }) {
   const keyGood = typeof credential.tailnetKey === "string" && credential.tailnetKeyUntil > Date.now();
   if (!credential.private || !(credential.tailnet === "joined" || keyGood)) return null;
-  const where = {
-    home, conn, start: credential.start, origin: credential.private, hostname: credential.hostname,
-    ...(credential.tailnet === "joined" ? {} : { key: credential.tailnetKey }),
+  let node = null, cameUp = false, starting = false;
+  const start = () => {
+    if (starting) return;
+    starting = true;
+    hooks.connectTailnet({ home, conn, start: credential.start, origin: credential.private, hostname: credential.hostname })
+      .then((joined) => { node = joined; cameUp = true; })
+      .catch(() => { /* the public link, then */ });
   };
-  let node = null, cameUp = false;
-  hooks.connectTailnet(where).then((joined) => {
-    node = joined;
-    cameUp = true;
-    if (credential.tailnet !== "joined") {
-      credential.tailnet = "joined";
-      delete credential.tailnetKey;
-      delete credential.tailnetKeyUntil;
-      save(credential);
-    }
-  }).catch(() => { /* the public link, then */ });
+  // Registered already: the node comes up here. Not yet: a process of its
+  // own registers it with the invite key (tailnet-join), the credential says
+  // "joined" once it has (read again before each request), and the node
+  // comes up here from then on.
+  if (credential.tailnet === "joined") start();
+  else hooks.startTailnetJoin(path.basename(conn));
   return {
-    send: (endpoint, body, headers, timeoutMs, options) =>
-      endpoint === credential.private && node
+    send: (endpoint, body, headers, timeoutMs, options) => {
+      if (!starting && credential.tailnet === "joined") start();
+      return endpoint === credential.private && node
         ? nodeSend(node, endpoint, body, headers, timeoutMs)
-        : hooks.send(endpoint, body, headers, timeoutMs, options),
+        : hooks.send(endpoint, body, headers, timeoutMs, options);
+    },
     // The private address is tried again as soon as the node is up.
     retry: () => { const now = cameUp; cameUp = false; return now; },
   };
@@ -928,8 +946,11 @@ export async function join(o) {
       // node is up, calls go to the private address through it (open():
       // backgroundTailnet); the public link meanwhile, or for good.
       process.stderr.write("Reach: joining the owner's tailnet in the background…\n");
-      joining = (o.connect || hooks.connectTailnet)({ home, conn, ...link })
-        .then(() => true, (error) => { tailnetTrouble = error.message; return false; });
+      // In a process of its own, once the credential is written (below); a
+      // test stands its own node in (o.connect).
+      joining = o.connect
+        ? o.connect({ home, conn, ...link }).then(() => true, (error) => { tailnetTrouble = error.message; return false; })
+        : "behind";
       funnel = true;
       link.funnel = true;
       link.public = link.start;
@@ -976,10 +997,13 @@ export async function join(o) {
         "",
       ].join("\n"),
     );
-    if (joining) {
-      // A few seconds for the node, if it's about to be up; else the next
-      // start of this agent (its MCP server) carries on in the background.
-      const up = await Promise.race([joining, new Promise((resolve) => setTimeout(resolve, 5000, null))]);
+    if (joining === "behind") {
+      // The node joins in a process of its own, with nothing to wait for;
+      // the agent's MCP server brings it in once it's up (open()).
+      hooks.startTailnetJoin(name);
+      process.stderr.write("Reach: the owner's tailnet is joining in the background; calls move there once it's up, the public link meanwhile.\n");
+    } else if (joining) {
+      const up = await joining;
       if (up === true) {
         delete credential.tailnetKey;
         delete credential.tailnetKeyUntil;
@@ -1057,6 +1081,23 @@ export async function main(argv = process.argv.slice(2)) {
       "  Gemini CLI      ~/.gemini/settings.json",
       "",
     ].join("\n"));
+    return 0;
+  }
+  // The background join, in a process of its own (startTailnetJoin): the
+  // node registers with the invite key while it's good, the credential says
+  // "joined", and this process ends. Quietly: nothing to read.
+  if (verb === "tailnet-join") {
+    const conn = path.join(home, name);
+    const credential = readCredential(conn);
+    if (typeof credential.tailnetKey !== "string" || !(credential.tailnetKeyUntil > Date.now())) return 0;
+    try {
+      await connectTailnet({ home, conn, start: credential.start, origin: credential.private, hostname: credential.hostname, key: credential.tailnetKey, timeoutMs: 120000 });
+      const latest = readCredential(conn);
+      delete latest.tailnetKey;
+      delete latest.tailnetKeyUntil;
+      latest.tailnet = "joined";
+      writePrivate(path.join(conn, "credential.json"), JSON.stringify(latest, null, 2));
+    } catch { /* the public link, then */ }
     return 0;
   }
   if (verb === "mcp") {

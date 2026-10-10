@@ -265,6 +265,37 @@ test("a Tools invitation made for the tailnet is opened through the public link 
   assert.match(JSON.stringify(await callTool(api, "reach_list_files", { root: 0, path: "" }, await api("/api/browser"))), /brief\.txt/);
   // The same invitation can't be opened over the tailnet any more.
   assert.throws(() => f.reach.auth.redeemGuest(grant.invitation, { nodeId: "n1", userId: "", tagged: true, validUntil: Date.now() + 60_000 }), { status: 401 });
+  // The agent's MCP server later: the join goes on in a process of its own
+  // (stood in for here) while calls take the public link; when it has
+  // registered the node, the node comes up in the server and calls move over.
+  const real = { ...hooks };
+  t.after(() => Object.assign(hooks, real));
+  let spawned = 0, nodeAsked = 0;
+  hooks.startTailnetJoin = () => { spawned++; return true; };
+  const node = fakeNode(f);
+  hooks.connectTailnet = async () => { nodeAsked++; return node; };
+  hooks.send = f.send;
+  const opened = await open(home, "mac", false, { tailnet: true });
+  assert.equal(spawned, 1, "the background join was started in its own process");
+  assert.equal(nodeAsked, 0, "no node in the server until the join has registered it");
+  f.sent.length = 0;
+  assert.ok((await opened.api("/api/browser")).roots);
+  assert.deepEqual(f.sent, [`${ORIGIN}:8443`, ORIGIN], "the public link meanwhile");
+  // The child registered the node and said so in the credential.
+  const joined = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
+  delete joined.tailnetKey;
+  delete joined.tailnetKeyUntil;
+  joined.tailnet = "joined";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fs.writeFileSync(path.join(conn, "credential.json"), JSON.stringify(joined, null, 2));
+  f.sent.length = 0;
+  assert.ok((await opened.api("/api/browser")).roots, "this call sees it and starts the node; the public link still");
+  assert.equal(nodeAsked, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  f.sent.length = 0;
+  assert.ok((await opened.api("/api/browser")).roots);
+  assert.equal(node.used, 1, "then through the node");
+  assert.deepEqual(f.sent, []);
 });
 
 test("once the agent's node is up, calls move to the computer's private address through it; the public link while it's down", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
