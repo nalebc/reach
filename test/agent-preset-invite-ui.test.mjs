@@ -69,7 +69,7 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   await choose(c, "Full control");
   assert.match(c.textContent, /commands can read sensitive files or change Reach/);
   assert.match(c.textContent, /guardrails, not a sandbox/);
-  assert.match(c.textContent, /Pause or end it anytime in Agents & people/);
+  assert.match(c.textContent, /Pause or end it anytime in Settings → Agents/);
   assert.match(c.textContent, /gets full control of this Mac for 30 minutes/);
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -171,7 +171,7 @@ test("Always sends no end time and tells the owner and the agent it lasts until 
   assert.equal(issued(calls).standing, true);
   assert.equal(issued(calls).ttlSeconds, undefined, "Always has no duration to send");
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
-  assert.match(c.textContent, /Until you end it in Agents & people/);
+  assert.match(c.textContent, /Until you end it in Settings → Agents/);
   assert.doesNotMatch(c.textContent, /Join by/);
   assert.match(message(c), /lasts until the owner ends it\. Keep this link: it brings this browser back at once; another browser needs a new code/);
   assert.doesNotMatch(message(c), /temporary/);
