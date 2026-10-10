@@ -159,17 +159,28 @@ func pointerIdentityKnown(_ bundleId: String, _ name: String, _ path: String, _ 
 func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
   !command && ["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"].contains(name)
 }
-// Whether a click at a numbered control's center reaches that control: what
-// is under the point is the control, inside it, or holds it. A dialog or
-// menu that has covered it since the agent looked is none of those, so a
-// click meant for the control never lands on it (batched actions included).
-func sameControl<T>(_ hit: T, _ target: T, parent: (T) -> T?, equal: (T, T) -> Bool) -> Bool {
+// Whether a numbered control has been covered since the agent looked: what
+// is under its center belongs to another app, or sits in a dialog, sheet,
+// menu or popover the control isn't in. Then a click meant for it would
+// land on that instead, so none is sent (batched actions included). Other
+// things of the same page under the point (a card's own link) take the
+// click as a real one would.
+func coveredControl<T>(_ hit: T, _ target: T, parent: (T) -> T?, equal: (T, T) -> Bool,
+                       sameApp: (T, T) -> Bool, overlay: (T) -> Bool) -> Bool {
   func chain(_ start: T) -> [T] {
     var out = [start]
     while out.count < 40, let up = parent(out[out.count - 1]) { out.append(up) }
     return out
   }
-  return chain(hit).contains { equal($0, target) } || chain(target).contains { equal($0, hit) }
+  if !sameApp(hit, target) { return true }
+  let hits = chain(hit), targets = chain(target)
+  if hits.contains(where: { equal($0, target) }) || targets.contains(where: { equal($0, hit) }) { return false }
+  // Up from what's under the point, until the branch the control is in.
+  for element in hits {
+    if targets.contains(where: { equal($0, element) }) { break }
+    if overlay(element) { return true }
+  }
+  return false
 }
 // END PURE DESKTOP POLICY
 
@@ -477,8 +488,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     guard !visible.isNull, visible.width >= 1, visible.height >= 1 else { try refuse("That element is out of view. Scroll to it first.", "retry") }
     var hit: AXUIElement?
     if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(visible.midX), Float(visible.midY), &hit) == .success, let hit,
-       !sameControl(hit, list[n - 1], parent: { elementAttr($0, kAXParentAttribute) }, equal: { CFEqual($0, $1) }) {
-      try refuse("Something now covers that control. Describe the screen again.", "retry")
+       coveredControl(hit, list[n - 1], parent: { elementAttr($0, kAXParentAttribute) }, equal: { CFEqual($0, $1) },
+         sameApp: { pidOf($0) == pidOf($1) },
+         overlay: { ["AXSheet", "AXMenu", "AXPopover", "AXDrawer"].contains(string($0, kAXRoleAttribute))
+           || ["AXDialog", "AXSystemDialog", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog"].contains(string($0, kAXSubroleAttribute)) }) {
+      try refuse("A dialog or menu now covers that control. Describe the screen again and answer it first.", "retry")
     }
     var click: [String: Any] = ["type": "click", "x": Double((visible.midX - display.minX) / display.width), "y": Double((visible.midY - display.minY) / display.height)]
     if let button = action["button"] { click["button"] = button }

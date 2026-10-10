@@ -109,7 +109,8 @@ export const windowsToolsCommand = (start: string, link: string, runtime?: strin
   const check = runtime && /^[0-9a-f]{64}$/.test(runtime)
     ? `if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${runtime}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; `
     : "";
-  return `$d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
+  // Windows PowerShell 5.1 may not offer TLS 1.2 on its own.
+  return `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
 };
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;

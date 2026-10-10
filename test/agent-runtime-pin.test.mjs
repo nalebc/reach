@@ -91,7 +91,7 @@ test("an agent invitation carries the SHA-256 of the runtime this computer serve
 test("Windows: the join in PowerShell, checked the same way; the runtime's pipe and quoting", async () => {
   const start = "https://mac.t.ts.net", link = "https://mac.t.ts.net/agent#i=x&t=funnel", sha = "a".repeat(64);
   const pinned = windowsToolsCommand(start, link, sha);
-  assert.equal(pinned, `$d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`);
+  assert.equal(pinned, `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`);
   assert.doesNotMatch(windowsToolsCommand(start, link), /Get-FileHash/, "an older computer: no hash to check");
   assert.doesNotMatch(pinned, /join '/, "the link goes in on standard input");
   const { socketOf, quote } = await import("../scripts/agent-remote.mjs");
