@@ -3809,7 +3809,6 @@ export default function AgentSessionView({
           onClose={() => setRelaySheet(null)} onStarted={relayStarted}
           onOff={(r) => {
             setOffRelays((ids) => [...ids, r.id]);
-            setRelaySheet(null);
             onRelaysChanged?.();
           }} />
       )}

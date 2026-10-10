@@ -419,6 +419,8 @@
 .continue-on > svg { flex: none; color: var(--reach-mint); }
 .continue-on strong, .continue-on small { display: block; }
 .continue-on small { opacity: .65; margin-top: 3px; }
+.relay-off { width: 100%; min-height: 44px; margin-top: 8px; border: 0; border-radius: 14px; background: none; color: var(--reach-ink); font: inherit; font-weight: 600; }
+.relay-off:disabled { opacity: .45; }
 
 /* Plain, always-visible choices for a handoff; extra steps are optional. */
 .handoff-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 13px; color: var(--reach-ink); }

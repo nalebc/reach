@@ -568,27 +568,31 @@ export function SecondOpinionButton({ onClick, labelled = false }: { onClick: ()
 // Uses the same persisted, cancellable watch as a relay, with a usage-only trigger.
 export function AutoContinueSheet({ peer, session, health, on = null, onClose, onStarted, onOff }: {
   peer: Peer; session: AgentSession; health: AgentHealth[];
-  // On already (armedAutoContinue): where it goes, and Turn off.
+  // On already (armedAutoContinue): its order can change, or it turns off.
   on?: Relay | null;
   onClose: () => void; onStarted: (started: RelayStarted) => void;
+  // The one that was on is off (turned off, or replaced by a new order).
   onOff?: (relay: Relay) => void;
 }) {
   const storageKey = `reach-continue-priority:${peer.id}`;
-  const [order, setOrder] = useState<string[]>(() => {
+  // On: its own order first. Off: the order remembered on this device.
+  const first = () => {
     try {
-      const saved = checkContinuePriority(JSON.parse(localStorage.getItem(storageKey) || "null"));
-      return [...saved, ...CONTINUE_PRIORITY.filter((a) => !saved.includes(a))];
-    } catch { return [...CONTINUE_PRIORITY]; }
+      return checkContinuePriority(on?.priority?.length ? on.priority : JSON.parse(localStorage.getItem(storageKey) || "null"));
+    } catch { return null; }
+  };
+  const [order, setOrder] = useState<string[]>(() => {
+    const saved = first();
+    return saved ? [...saved, ...CONTINUE_PRIORITY.filter((a) => !saved.includes(a))] : [...CONTINUE_PRIORITY];
   });
   const [included, setIncluded] = useState<string[]>(() => {
-    try {
-      const saved = checkContinuePriority(JSON.parse(localStorage.getItem(storageKey) || "null"));
-      return saved.includes(session.agent) ? saved : [...saved, session.agent];
-    } catch { return [...CONTINUE_PRIORITY]; }
+    const saved = first();
+    return !saved ? [...CONTINUE_PRIORITY] : saved.includes(session.agent) ? saved : [...saved, session.agent];
   });
   const priority = order.filter((a) => included.includes(a));
   // Out of usage or signed out now is fine: the first one back takes it.
   const ready = priority.some((a) => a !== session.agent && canContinue(a));
+  const changed = !!on && priority.join() !== (on.priority || []).join();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const reorder = (index: number, offset: number) => setOrder((previous) => {
@@ -596,46 +600,67 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     [next[index], next[index + offset]] = [next[index + offset], next[index]];
     return next;
   });
+  const start = async () => {
+    const started = await startRelay(peer, {
+      from: { agent: session.agent, id: session.id }, priority, trigger: "usage",
+    });
+    try { localStorage.setItem(storageKey, JSON.stringify(priority)); } catch { /* private browser */ }
+    onStarted(started);
+  };
   const enable = async () => {
     setBusy(true);
     setProblem("");
     try {
-      const started = await startRelay(peer, {
-        from: { agent: session.agent, id: session.id }, priority, trigger: "usage",
-      });
-      try { localStorage.setItem(storageKey, JSON.stringify(priority)); } catch { /* private browser */ }
-      onStarted(started);
+      await start();
     } catch (e) {
       setProblem((e as Error).message);
       setBusy(false);
     }
   };
-  if (on) {
-    const turnOff = async () => {
-      setBusy(true);
-      setProblem("");
-      try {
-        await cancelRelay(peer, on.id);
-        onOff?.(on);
-      } catch (e) {
-        setProblem((e as Error).message);
-        setBusy(false);
-      }
-    };
-    const until = new Date(on.createdAt + 24 * 60 * 60 * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
-    return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+  // A new order: the one on goes, one with the new order takes its place
+  // (Reach keeps one waiting per chat). Off in between, it says so.
+  const save = async () => {
+    if (!on) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      await cancelRelay(peer, on.id);
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+      return;
+    }
+    onOff?.(on);
+    try {
+      await start();
+    } catch (e) {
+      setProblem(`Auto-continue is off: ${(e as Error).message}`);
+      setBusy(false);
+    }
+  };
+  const turnOff = async () => {
+    if (!on) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      await cancelRelay(peer, on.id);
+      onOff?.(on);
+      onClose();
+    } catch (e) {
+      setProblem((e as Error).message);
+      setBusy(false);
+    }
+  };
+  const until = on && new Date(on.createdAt + 24 * 60 * 60 * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+    {on ? (
       <div className="continue-on">
         <RefreshCw size={18} aria-hidden />
-        <span><strong>On</strong><small>{(on.priority || []).map(agentLabel).join(" → ")} · until {until}</small></span>
+        <span><strong>On</strong><small>Until {until}</small></span>
       </div>
-      {problem && <p className="relay-problem" role="alert">{problem}</p>}
-      <button className="relay-go" disabled={busy} onClick={() => void turnOff()}>
-        {busy ? <Loader2 size={16} className="spin" /> : "Turn off"}
-      </button>
-    </ChatSheet>;
-  }
-  return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
-    <p className="relay-say">When usage runs out, continue with the first free provider, with the conversation history. If none is free, it waits: the first one back takes the work, this one included. If several are free, this order decides.</p>
+    ) : (
+      <p className="relay-say">When usage runs out, continue with the first free provider, with the conversation history. If none is free, it waits: the first one back takes the work, this one included. If several are free, this order decides.</p>
+    )}
     <ol className="continue-priority" aria-label="Provider priority">
       {order.map((agent, index) => {
         const unavailable = continueUnavailable(agent, health);
@@ -652,11 +677,22 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
         </li>;
       })}
     </ol>
-    <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Turn it off from the chat's menu. Your order is remembered on this device.</p>
+    {!on && <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Turn it off from the chat's menu. Your order is remembered on this device.</p>}
     {!ready && <p className="relay-problem">Select another provider Reach can continue in.</p>}
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
-    <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
-      {busy ? <Loader2 size={16} className="spin" /> : "Enable auto-continue"}
-    </button>
+    {!on ? (
+      <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
+        {busy ? <Loader2 size={16} className="spin" /> : "Enable auto-continue"}
+      </button>
+    ) : (
+      <>
+        {changed && (
+          <button className="relay-go" disabled={!ready || busy} onClick={() => void save()}>
+            {busy ? <Loader2 size={16} className="spin" /> : "Save order"}
+          </button>
+        )}
+        <button className="relay-off" disabled={busy} onClick={() => void turnOff()}>Turn off</button>
+      </>
+    )}
   </ChatSheet>;
 }
