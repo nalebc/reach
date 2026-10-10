@@ -90,23 +90,30 @@ export function reachHosts(table, { self = process.pid, root = null, exists, loc
   const children = new Map();
   for (const p of table) children.set(p.ppid, [...(children.get(p.ppid) || []), p]);
   const below = (pid) => (children.get(pid) || []).flatMap((c) => [c, ...below(c.pid)]);
+  const resolved = (p, entry) => {
+    if (!entry || path.isAbsolute(entry.root) || !/(^|\s)node(\s|$)|\/node\s/.test(p.command)) return entry;
+    const cwd = cwdOf(p.pid);
+    return cwd ? { ...entry, root: path.resolve(cwd, entry.root) } : entry;
+  };
+  const runsReach = (p, entry) => {
+    if (!entry) return false;
+    // A host runs with no command (flags only); `reach approve` and the
+    // like running beside it are left alone.
+    const args = entry.rest.split(/\s+/).filter(Boolean);
+    // `reach restart` run in a terminal goes on to run Reach itself: a
+    // Reach once it holds its folder's lock.
+    if (args[0] === "restart") return locked(entry.root) === p.pid;
+    return (!args.length || args[0].startsWith("-")) && !args.some((a) => ONE_OFF.has(a));
+  };
+  // `reach` from an npm install runs Reach as its own child, to start it
+  // again after a crash (scripts/supervise.mjs): that child is the Reach,
+  // whichever of the two asks (the child itself included).
+  const supervisor = (p) => /\/bin\/reach\.mjs(\s|$)/.test(p.command) &&
+    (children.get(p.pid) || []).some((c) => /\/scripts\/bootstrap\.mjs(\s|$)/.test(c.command) && runsReach(c, resolved(c, entryOf(c.command, exists))));
   return table
     .map((p) => ({ p, entry: p.pid === self ? null : entryOf(p.command, exists) }))
-    .map(({ p, entry }) => {
-      if (!entry || path.isAbsolute(entry.root) || !/(^|\s)node(\s|$)|\/node\s/.test(p.command)) return { p, entry };
-      const cwd = cwdOf(p.pid);
-      return { p, entry: cwd ? { ...entry, root: path.resolve(cwd, entry.root) } : entry };
-    })
-    .filter(({ p, entry }) => {
-      if (!entry) return false;
-      // A host runs with no command (flags only); `reach approve` and the
-      // like running beside it are left alone.
-      const args = entry.rest.split(/\s+/).filter(Boolean);
-      // `reach restart` run in a terminal goes on to run Reach itself: a
-      // Reach once it holds its folder's lock.
-      if (args[0] === "restart") return locked(entry.root) === p.pid;
-      return (!args.length || args[0].startsWith("-")) && !args.some((a) => ONE_OFF.has(a));
-    })
+    .map(({ p, entry }) => ({ p, entry: resolved(p, entry) }))
+    .filter(({ p, entry }) => runsReach(p, entry) && !supervisor(p))
     .filter(({ entry }) => !root || path.resolve(entry.root) === path.resolve(root))
     .map(({ p: host, entry }) => {
       const descendants = below(host.pid);

@@ -1,11 +1,14 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+# Through bin\reach.mjs: Reach itself starts again in this window when it
+# stopped by itself (scripts\supervise.mjs); other commands run once.
+$entry = Join-Path $root 'bin\reach.mjs'
 $node = Get-Command node -ErrorAction SilentlyContinue
 $npm = Get-Command npm -ErrorAction SilentlyContinue
 if ($node -and $npm) {
     & $node.Source -e 'process.exit(parseInt(process.versions.node)>=22?0:1)'
     if ($LASTEXITCODE -eq 0) {
-        & $node.Source (Join-Path $PSScriptRoot 'bootstrap.mjs') @args
+        & $node.Source $entry @args
         exit $LASTEXITCODE
     }
 }
@@ -32,5 +35,5 @@ if (-not (Test-Path $exe)) {
     } finally { Remove-Item -Recurse -Force $stage }
 }
 $env:PATH = "$runtime;$env:PATH"
-& $exe (Join-Path $PSScriptRoot 'bootstrap.mjs') @args
+& $exe $entry @args
 exit $LASTEXITCODE
