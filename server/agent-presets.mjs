@@ -57,8 +57,10 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
     throw invalid("This invitation contains unsupported fields.");
   const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [], standing } = input;
   if (!PRESETS.includes(preset)) throw invalid("Choose Full control, Apps, Files or Read only.");
-  if (standing !== undefined && (standing !== true || ttlSeconds !== undefined || transport !== "funnel"))
-    throw invalid("Always access is a link with no end time.");
+  // Always: no end time, over the public link or, for agents that join with
+  // their own invite key, over Tools (security audit, conditions for Always).
+  if (standing !== undefined && (standing !== true || ttlSeconds !== undefined))
+    throw invalid("Always access has no end time.");
   if (typeof name !== "string" || !name.trim() || name.length > 80 || controls(name) || /[\n\t]/.test(name) ||
       (!standing && (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400)) ||
       !Number.isInteger(joinSeconds) || joinSeconds < 60 || joinSeconds > 86400 ||

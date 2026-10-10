@@ -85,6 +85,9 @@ export function browserAccessRoutes(
     // The SHA-256 of the agent runtime the start page serves, pinned in a
     // Tools agent's command (security audit M8).
     agentRuntime = () => undefined,
+    // Whether this computer makes invite keys: Always over Tools needs the
+    // agent on its own invited device.
+    toolsStandingAllowed = () => false,
   },
 ) {
   const owner = (req) => {
@@ -165,7 +168,9 @@ export function browserAccessRoutes(
       // form offers a day only when the server allows it.
       maxFunnelSeconds: 86400,
       // Always: access until the owner ends it; the agent returns from the same browser.
-      standingAllowed: true});
+      standingAllowed: true,
+      // Always over Tools: only with invite keys (the agent's own device).
+      toolsStandingAllowed: toolsStandingAllowed() === true});
   });
   // The link the agent opens, once the credential exists. Funnel links are
   // prepared after issuing; a failure takes the credential back.
@@ -195,6 +200,8 @@ export function browserAccessRoutes(
   // access, including Full/Read only defaults. Only those presets may include
   // the exact owner Home; system/application roots remain unavailable.
   const createPresetInvitation = async (req, res, input) => {
+    if (input.standing && input.transport !== "funnel" && toolsStandingAllowed() !== true)
+      throw fail(409, "Always over Tools needs invite links set up on this computer, so the agent joins with its own key.");
     if (input.preset === "files" && !protectedFilesSupported)
       throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
     const filePolicy = { browser: true, preset: input.preset };

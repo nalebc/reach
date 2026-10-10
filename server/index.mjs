@@ -1872,9 +1872,22 @@ export async function createReach(overrides = {}) {
         409,
         "Set up invite keys first: run ./reach invites on this computer.",
       );
-    const ttl = req.body?.ttlSeconds;
-    if (!Number.isInteger(ttl) || ttl < 60 || ttl > 90 * 86400)
+    const invited = new Map(
+      auth
+        .list()
+        .filter((c) => c.kind === "guest" || c.policy?.invite)
+        .map((c) => [c.id, c]),
+    );
+    const guests = new Set(invited.keys());
+    // The device lasts as long as its access here, never longer, whatever
+    // the phone asks (Always included: its access's own end).
+    const ids = (Array.isArray(req.body?.clientIds) ? req.body.clientIds : []).filter((id) => invited.has(id));
+    const until = ids.length ? Math.max(...ids.map((id) => invited.get(id).expiresAt || 0)) : 0;
+    let ttl = req.body?.ttlSeconds;
+    if (ttl === undefined && until > Date.now()) ttl = Math.ceil((until - Date.now()) / 1000);
+    else if (!Number.isInteger(ttl) || ttl < 60 || ttl > 90 * 86400)
       throw fail(400, "Choose a duration from 1 minute to 90 days.");
+    if (until > Date.now()) ttl = Math.max(60, Math.min(ttl, Math.ceil((until - Date.now()) / 1000)));
     // An agent's key only needs to live until it joins.
     const keySeconds = req.body?.keySeconds;
     if (
@@ -1882,12 +1895,6 @@ export async function createReach(overrides = {}) {
       (!Number.isInteger(keySeconds) || keySeconds < 60 || keySeconds > ttl)
     )
       throw fail(400, "Invalid key lifetime.");
-    const guests = new Set(
-      auth
-        .list()
-        .filter((c) => c.kind === "guest" || c.policy?.invite)
-        .map((c) => c.id),
-    );
     await guestKeys.assertIsolated(await guestReach(), authorize);
     const key = await guestKeys.createInvite({
       ttlSeconds: ttl,
@@ -2168,6 +2175,7 @@ export async function createReach(overrides = {}) {
   agentServiceRoutes(app, agentServices);
   browserAccessRoutes(app, {
     agentRuntime,
+    toolsStandingAllowed: () => !!guestKeys?.configured(),
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,

@@ -42,14 +42,35 @@ const clock = (t) => {
   return (ms) => { offset += ms; };
 };
 
-test("Always is a public link with no end time", () => {
+test("Always has no end time, over the public link or Tools", () => {
   const base = { name: "Muse", transport: "funnel", preset: "readonly" };
   assert.equal(validateBrowserInvitation({ ...base, standing: true }).standing, true);
+  assert.equal(validateBrowserInvitation({ ...base, standing: true, transport: "tailnet" }).standing, true);
   for (const wrong of [
     { ...base, standing: true, ttlSeconds: 3600 },
-    { ...base, standing: true, transport: "tailnet" },
     { ...base, standing: false, ttlSeconds: 3600 },
   ]) assert.throws(() => validateBrowserInvitation(wrong), { status: 400 });
+});
+
+// Always over Tools (the audit's conditions for Always, Oct 9): only an agent
+// on the device its own invite key made, whose credential rotates and whose
+// copy is caught; a week unused ends it.
+test("Always over Tools: only an agent on its own invited device claims it, and a week unused ends it", (t) => {
+  const advance = clock(t);
+  const f = fixture(t);
+  const grant = f.auth.inviteBrowser({ name: "Builder", transport: "tailnet", preset: "readonly", standing: true });
+  const owned = { nodeId: "owner-laptop", userId: "real-owner", validUntil: Date.now() + 60_000 };
+  assert.throws(() => f.auth.redeemGuest(grant.invitation, owned), { status: 403 }, "not on its own invited device");
+  const tagged = () => ({ nodeId: "nAgent", userId: "", tagged: true, validUntil: Date.now() + 60_000 });
+  const claim = f.auth.redeemGuest(grant.invitation, tagged());
+  f.auth.decideAgentAdmission(claim.requestId, "approve");
+  const access = f.auth.pollAgentAdmission(claim.requestId, claim.requestSecret, tagged());
+  assert.ok(access.expiresAt > Date.now() + 365 * 86400_000, "no end time");
+  assert.ok(f.auth.verify(access.token, tagged()));
+  advance(6 * 86400_000);
+  assert.ok(f.auth.verify(access.token, tagged()), "six quiet days: still on");
+  advance(1 * 86400_000 + 60_000);
+  assert.equal(f.auth.verify(access.token, tagged()), null, "a week unused: ended");
 });
 
 test("Always and approved timed sessions both outlive silent minutes and keep the public link up", (t) => {

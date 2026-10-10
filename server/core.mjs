@@ -343,8 +343,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const client = clients.find(
       (c) =>
         (sameHash(c.hash, digest) || retired(c, true)) &&
-        // Rotating, then quiet for a week: the access ends.
-        !(c.rotatedAt > 0 && now - c.rotatedAt > ROTATION_IDLE_MS) &&
+        // An agent on its own invited device, quiet for a week since it
+        // joined or last rotated: the access ends.
+        !(c.kind === "agent" && c.tailscale?.tagged && (c.rotatedAt || Date.parse(c.redeemedAt || "") || 0) > 0 &&
+          now - (c.rotatedAt || Date.parse(c.redeemedAt || "")) > ROTATION_IDLE_MS) &&
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
         (!c.admission || (c.admission.status === "collected" &&
@@ -1154,6 +1156,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         if (!funnel && (config.tailscaleOwner || identity) &&
             (!identity?.nodeId || !(identity.validUntil > now)))
           throw fail(401, "A current Tailscale identity is required to claim this agent invitation.");
+        // Always over Tools: only an agent on the device its invite key made,
+        // whose credential rotates and whose copy is caught (audit M6).
+        if (!funnel && standingPolicy(client.policy) && identity?.tagged !== true)
+          throw fail(403, "Always access needs the agent to join with its invite key. Ask the owner for a new invitation.");
         const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
         const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
         if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)

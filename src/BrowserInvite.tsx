@@ -72,6 +72,8 @@ type Options = {
   protectedFilesSupported?: boolean;
   maxFunnelSeconds?: number;
   standingAllowed?: boolean;
+  // Always over Tools: this Mac makes invite keys (the agent's own device).
+  toolsStandingAllowed?: boolean;
   presetApps?: PresetApp[];
   presetAppsError?: string;
 };
@@ -398,7 +400,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           method: "POST",
           signal: controller.signal,
           body: JSON.stringify({
-            ttlSeconds: minutes * 60,
+            // Always: the Mac keeps the device as long as the access lasts.
+            ...(minutes === ALWAYS ? {} : { ttlSeconds: minutes * 60 }),
             keySeconds: Math.max(60, Math.round((result.joinBy - Date.now()) / 1000)),
             clientIds: [result.clientId],
           }),
@@ -415,7 +418,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           access: PRESET_WORDS[preset].title,
           expiresAt: result.expiresAt,
           joinBy: result.joinBy,
-          always: false,
+          always: minutes === ALWAYS,
           unpublished: false,
           unkeyed: !key,
           message: agentInviteMessage(link, { ...issuedTo, command }),
@@ -500,8 +503,11 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
   // durations every current Reach allows are offered; an older Mac that
   // allows less says so, and the server refuses what it doesn't allow.
   const dayAllowed = (options?.maxFunnelSeconds ?? 86400) >= 86400;
-  // Always is for page agents only: a tools agent's key is single-use.
-  const alwaysAllowed = connect === "page" && (options ? options.standingAllowed === true : true);
+  // Always: page agents, and tools agents that join with their own invite
+  // key (their credential renews itself and a copy is caught).
+  const alwaysAllowed = connect === "page"
+    ? (options ? options.standingAllowed === true : true)
+    : options?.toolsStandingAllowed === true;
   useEffect(() => {
     if ((minutes === ALWAYS && !alwaysAllowed) || (minutes === 1440 && !dayAllowed)) setMinutes(60);
   }, [alwaysAllowed, dayAllowed]);
@@ -821,12 +827,18 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
               any time from Settings → Agents.
             </p>
           )}
-          {minutes === ALWAYS && (
+          {minutes === ALWAYS && connect === "page" && (
             <p className="ag-quiet">
               Until you end it in Settings → Agents.{" "}
               {name.trim() || "The agent"} comes back through the same link,
               with no new invite: at once in the same browser. In another
               browser you match a new code, then the old one is disconnected.
+            </p>
+          )}
+          {minutes === ALWAYS && connect === "tools" && (
+            <p className="ag-quiet">
+              Until you end it in Settings → Agents, or a week unused. Its key
+              renews itself; a copy used elsewhere ends the access.
             </p>
           )}
         </div>

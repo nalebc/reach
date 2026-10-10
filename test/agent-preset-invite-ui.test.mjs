@@ -29,13 +29,13 @@ const click = async (element) => { assert.ok(element, "element exists"); element
 const button = (c, label) => [...c.querySelectorAll("button")].find((item) => item.textContent.trim() === label || item.getAttribute("aria-label") === label);
 const choose = (c, title) => click(c.querySelector(`[aria-label="Access preset"] input[aria-label="${title}"]`));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false } = {}) {
+function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}) });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [] });
     if (route === "/api/files") return reply({ items: [] });
@@ -192,7 +192,7 @@ test("Tools: the same preset over Tailscale, one command, and Reach's tools for 
   await choose(c, "Full control");
   assert.ok(button(c, "Always"), "a page agent may stay");
   await click(button(c, "Tools"));
-  assert.equal(button(c, "Always"), undefined, "a tools agent's key is single-use: no Always");
+  assert.equal(button(c, "Always"), undefined, "without invite keys here, no Always over Tools");
   assert.match(c.textContent, /runs one command, then uses Reach's tools/);
   await click(button(c, "Create invite link"));
   await dom.waitFor(() => made());
@@ -207,6 +207,26 @@ test("Tools: the same preset over Tailscale, one command, and Reach's tools for 
   assert.match(text, /node ~\/\.reach-agent\/agent\.mjs mcp as an MCP server/);
   assert.match(text, /"secret":true/);
   assert.doesNotMatch(text, /window\.reach|Sign in:/);
+});
+
+// Always over Tools (audit conditions for Always): offered when this Mac
+// makes invite keys; the Mac, not the phone, decides how long the device stays.
+test("Tools with invite keys: Always is offered, sent with no end time, the device kept by the Mac", async () => {
+  const calls = mock({ standingAllowed: true, toolsStandingAllowed: true });
+  const { c, made } = await open();
+  await choose(c, "Read only");
+  await click(button(c, "Tools"));
+  await click(button(c, "Always"));
+  assert.match(c.textContent, /or a week unused/);
+  assert.match(c.textContent, /a copy used elsewhere ends the access/);
+  await click(button(c, "Create invite link"));
+  await dom.waitFor(() => made());
+  assert.equal(issued(calls).transport, "tailnet");
+  assert.equal(issued(calls).standing, true);
+  assert.equal(issued(calls).ttlSeconds, undefined);
+  const key = calls.find(([, route]) => route === "/api/guests/key")[2];
+  assert.equal(key.ttlSeconds, undefined, "the Mac keeps the device as long as the access lasts");
+  assert.deepEqual(key.clientIds, ["muse"]);
 });
 
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));

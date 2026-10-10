@@ -479,3 +479,31 @@ test("from the phone: an open policy makes no invite key", routeTest, async (t) 
   assert.equal(api.authKeys, 0, "no key minted");
   assert.equal(f.reach.auth.list().filter((c) => c.kind === "guest").length, 0, "no guest left behind");
 });
+
+// Always over Tools: offered only with invite keys; the device is kept as
+// long as the access lasts, by the Mac, whatever the phone sends.
+test("Always over Tools needs invite keys; its device lasts as long as its access", routeTest, async (t) => {
+  const api = fakeTailscale();
+  api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+  const f = await routeFixture(t, { api });
+  const body = { name: "Builder", transport: "tailnet", preset: "files", folders: [{ root: 0, path: "" }], standing: true };
+  const refused = await f.post(f.phone.token, body, "/api/agents/browser-invitations");
+  assert.equal(refused.status, 409, refused.text);
+  assert.match(refused.json.error, /invite links/);
+  fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
+    version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+  }), { mode: 0o600 });
+  const made = await f.post(f.phone.token, body, "/api/agents/browser-invitations");
+  assert.equal(made.status, 201, made.text);
+  assert.ok(made.json.expiresAt > Date.now() + 365 * 86400_000);
+  const key = await f.post(f.phone.token, { keySeconds: 600, clientIds: [made.json.clientId] }, "/api/guests/key");
+  assert.equal(key.status, 201, key.text);
+  const record = JSON.parse(fs.readFileSync(path.join(f.dir, "private", "guest-keys.json"), "utf8")).invites.at(-1);
+  assert.ok(Math.abs(record.expiresAt - made.json.expiresAt) < 5000, "the device record ends with the access");
+  // A timed agent's device never outlasts its access, whatever the phone asks.
+  const timed = await f.post(f.phone.token, { ...body, standing: undefined, ttlSeconds: 3600 }, "/api/agents/browser-invitations");
+  const asked = await f.post(f.phone.token, { ttlSeconds: 90 * 86400, keySeconds: 600, clientIds: [timed.json.clientId] }, "/api/guests/key");
+  assert.equal(asked.status, 201, asked.text);
+  const kept = JSON.parse(fs.readFileSync(path.join(f.dir, "private", "guest-keys.json"), "utf8")).invites.at(-1);
+  assert.ok(kept.expiresAt <= timed.json.expiresAt + 5000);
+});
