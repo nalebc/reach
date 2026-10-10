@@ -52,10 +52,14 @@ const appList = (value, label) => {
 
 /** The owner's choice, checked: a preset plus what that preset needs, nothing more. */
 export function validatePresetInvitation(input, { folderCount } = {}) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds", "standing"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds", "standing", "hosted"];
   if (!plain(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw invalid("This invitation contains unsupported fields.");
-  const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [], standing } = input;
+  const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [], standing, hosted } = input;
+  // A hosted agent (an MCP client at a URL: claude.ai, ChatGPT, Muse, Grok)
+  // connects through the public link with OAuth (server/hosted-mcp.mjs).
+  if (hosted !== undefined && (hosted !== true || transport !== "funnel"))
+    throw invalid("A hosted agent connects through the public link.");
   if (!PRESETS.includes(preset)) throw invalid("Choose Full control, Apps, Files or Read only.");
   // Always: no end time, over the public link or, for agents that join with
   // their own invite key, over Tools (security audit, conditions for Always).
@@ -80,7 +84,7 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
   if (hiddenApps.length && !["full", "readonly"].includes(preset)) throw invalid("Hidden apps apply to Full control and Read only.");
   if (terminalIds.length && !["full", "readonly"].includes(preset)) throw invalid("Watching terminals applies to Full control and Read only.");
   for (const app of chosenApps) { const reason = protectedAppReason(app); if (reason) throw invalid(reason, 403); }
-  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)], ...(standing ? { standing } : {}) };
+  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)], ...(standing ? { standing } : {}), ...(hosted ? { hosted: true } : {}) };
 }
 
 /** The stored policy. `roots` are already chosen and checked against what Reach shares. */

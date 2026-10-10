@@ -408,6 +408,50 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return { token: next, expiresAt: current.expiresAt };
   }
+  // A hosted agent's refresh (hosted-mcp.mjs, hourly). Its refresh token is
+  // the credential that rotates (settleRotation: the new one takes over when
+  // first used, the one before works two more minutes, a copy used after that
+  // ends the access), and a fresh access token comes with each refresh; the
+  // one before stays good until its own hour ends, so a client's early
+  // refresh never catches itself. The connector that connected is the one
+  // that refreshes.
+  const HOSTED_ACCESS_MS = 3600_000;
+  const splitHostedToken = (value) => {
+    if (typeof value !== "string" || value.length > 256 || value.indexOf(".") !== 43) return null;
+    const binding = value.slice(0, 43), secret = value.slice(44);
+    if (!validBrowserBinding(binding) || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
+    return [binding, secret];
+  };
+  function refreshHosted(refreshToken, { clientId } = {}) {
+    const parts = splitHostedToken(refreshToken);
+    if (!parts) return null;
+    const [binding, secret] = parts;
+    clients = loadJson(file, []);
+    const now = Date.now();
+    const digest = hash(secret);
+    if (!settleRotation(digest, now)) return null;
+    const client = clients.find((c) => c.hosted === true && c.browserBinding === binding && holdsDigest(c, digest, now));
+    if (!client || idle(client, now) || !funnelSession(client, binding, now)) return null;
+    if (clientId !== undefined && client.hostedClientId && client.hostedClientId !== clientId) return null;
+    const nextRefresh = crypto.randomBytes(32).toString("base64url");
+    const nextAccess = crypto.randomBytes(32).toString("base64url");
+    let refreshed = false;
+    changeClients((latest) => {
+      const c = latest.find((entry) => entry.id === client.id && holdsDigest(entry, digest, now));
+      if (!c) return latest;
+      c.pendingHash = hash(nextRefresh);
+      if (typeof c.accessHash === "string" && c.accessUntil > now) c.accessPrevious = { hash: c.accessHash, until: c.accessUntil };
+      else delete c.accessPrevious;
+      c.accessHash = hash(nextAccess);
+      c.accessUntil = now + HOSTED_ACCESS_MS;
+      c.usedAt = now;
+      refreshed = true;
+      return latest;
+    });
+    clients = loadJson(file, []);
+    if (!refreshed) return null;
+    return { accessToken: `${binding}.${nextAccess}`, refreshToken: `${binding}.${nextRefresh}`, expiresIn: HOSTED_ACCESS_MS / 1000, clientId: client.id, expiresAt: client.expiresAt };
+  }
   function rotateCredential(token, identity) {
     const current = verify(token, identity);
     if (!current || current.kind !== "agent" || !current.tailscale?.tagged || current.browserTransport === "funnel")
@@ -792,7 +836,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       inviteHash: hash(token),
       // Kept after joining, so the owner can reopen the same link for a new
       // browser (reopenBrowserInvitation); it works only while reopened.
-      ...(checked.transport === "funnel" ? { linkHash: hash(token) } : {}),
+      ...(checked.transport === "funnel" && !checked.hosted ? { linkHash: hash(token) } : {}),
+      // A hosted agent (an MCP client at a URL: claude.ai, ChatGPT, Muse,
+      // Grok): it connects through OAuth, with the owner's code (hosted-mcp.mjs).
+      ...(checked.hosted ? { hosted: true } : {}),
       // Always joins like any link: once, within the join window.
       inviteExpiresAt: now + (checked.standing ? checked.joinSeconds : Math.min(checked.joinSeconds, checked.ttlSeconds)) * 1000,
       createdAt: new Date(now).toISOString(),
@@ -994,6 +1041,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     browserTransport: client.browserTransport,
     browserBinding: client.browserBinding,
     browserAppApprover: client.browserAppApprover,
+    hosted: client.hosted,
     // Only on invitations from the removed private-copy feature; the agent
     // policy refuses them.
     ...(client.browserWorkspaceId ? { browserWorkspaceId: client.browserWorkspaceId } : {}),
@@ -1027,6 +1075,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
       ...(client.policy.screen === "apps" ? { appAccess: client.policy.appAccess.map(({id,mode}) => ({id,mode})) } : {}),
       ...(client.browserTransport === "funnel" ? { browserTransport: "funnel" } : {}),
+      ...(client.hosted === true ? { hosted: true, ...(client.hostedClient ? { hostedClient: client.hostedClient } : {}) } : {}),
     } : {}),
     requestedAt: client.admission.requestedAt,
     expiresAt: client.admission.expiresAt,
@@ -1215,6 +1264,67 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       throw fail(401, "A valid browser key is required to reconnect.");
     return redeemInvitation(invitation, undefined, keyThumbprint, true);
   }
+  // An agent's claim becomes a request the owner answers: the invitation is
+  // spent, the claimant bound (its browser key, or its tailnet node), a code
+  // made for the owner to match. Shared by links and hosted agents.
+  function startAdmission(latest, client, now, { funnel, keyThumbprint, identity }) {
+    const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
+    const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
+    if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
+      throw fail(429, "An agent connection is already waiting. Finish it before opening another invitation.");
+    const recent = latest.filter((c) => c.admission?.requestedAt > now - 60000);
+    if (recent.length >= 60 || recent.filter((c) => claimSource(c) === source).length >= 10)
+      throw fail(429, "Too many agent connection requests. Wait a minute and try again.");
+    delete client.inviteHash;
+    delete client.hash;
+    delete client.inviteExpiresAt;
+    if (funnel) client.browserBinding = keyThumbprint;
+    if (identity?.nodeId) client.tailscale = {
+      userId: identity.userId || "",
+      nodeId: identity.nodeId,
+      ...(identity.tagged ? { tagged: true } : {}),
+    };
+    if (typeof identity?.nodeName === "string") client.nodeName = identity.nodeName.slice(0, 160);
+    const requestSecret = crypto.randomBytes(32).toString("base64url");
+    client.admission = {
+      requestId: id(),
+      secretHash: hash(requestSecret),
+      verificationCode: crypto.randomInt(100000, 1000000).toString(),
+      requestedAt: now,
+      expiresAt: Math.min(now + 300000, client.expiresAt),
+      status: "pending",
+      grant: admissionGrant(client),
+    };
+    return {
+      status: "pending",
+      requestId: client.admission.requestId,
+      requestSecret,
+      verificationCode: client.admission.verificationCode,
+      expiresAt: client.admission.expiresAt,
+      clientId: client.id,
+      kind: "agent",
+    };
+  }
+  // A hosted agent connecting (hosted-mcp.mjs: OAuth from claude.ai, ChatGPT,
+  // Muse, Grok...): the hosted invitation waiting is claimed for it, under a
+  // connection id that stands where a browser's key would. The owner matches
+  // the code as for any agent. Several waiting: the newest.
+  function claimHostedInvitation(binding, { name, clientId } = {}) {
+    if (!validBrowserBinding(binding)) throw fail(401, "A valid connection id is required.");
+    let result;
+    changeClients((latest) => {
+      const now = Date.now();
+      const waiting = latest.filter((c) => c.hosted === true && isFunnelBrowser(c) && c.inviteHash && !c.admission && !c.hash &&
+        c.expiresAt > now && c.inviteExpiresAt > now);
+      if (!waiting.length) throw fail(404, "No hosted agent invitation is waiting. In Reach, invite a hosted agent first.");
+      const client = waiting.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+      if (typeof name === "string" && name.trim()) client.hostedClient = name.trim().slice(0, 80);
+      if (typeof clientId === "string" && clientId) client.hostedClientId = clientId.slice(0, 128);
+      result = startAdmission(latest, client, now, { funnel: true, keyThumbprint: binding });
+      return latest;
+    });
+    return result;
+  }
   function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false) {
     const funnel = keyThumbprint !== undefined;
     if (
@@ -1230,7 +1340,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       const client = latest.find(
         (c) =>
           ["guest", "agent"].includes(c.kind) &&
-          (funnel ? isFunnelBrowser(c) : c.browserTransport !== "funnel" && !c.browserBinding) &&
+          (funnel ? isFunnelBrowser(c) && c.hosted !== true : c.browserTransport !== "funnel" && !c.browserBinding) &&
           sameHash(c.inviteHash, hash(invitation)) &&
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
@@ -1253,42 +1363,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         // whose credential rotates and whose copy is caught (audit M6).
         if (!funnel && standingPolicy(client.policy) && identity?.tagged !== true)
           throw fail(403, "Always access needs the agent to join with its invite key. Ask the owner for a new invitation.");
-        const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
-        const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
-        if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
-          throw fail(429, "An agent connection is already waiting. Finish it before opening another invitation.");
-        const recent = latest.filter((c) => c.admission?.requestedAt > now - 60000);
-        if (recent.length >= 60 || recent.filter((c) => claimSource(c) === source).length >= 10)
-          throw fail(429, "Too many agent connection requests. Wait a minute and try again.");
-        delete client.inviteHash;
-        delete client.hash;
-        delete client.inviteExpiresAt;
-        if (funnel) client.browserBinding = keyThumbprint;
-        if (identity?.nodeId) client.tailscale = {
-          userId: identity.userId || "",
-          nodeId: identity.nodeId,
-          ...(identity.tagged ? { tagged: true } : {}),
-        };
-        if (typeof identity?.nodeName === "string") client.nodeName = identity.nodeName.slice(0, 160);
-        const requestSecret = crypto.randomBytes(32).toString("base64url");
-        client.admission = {
-          requestId: id(),
-          secretHash: hash(requestSecret),
-          verificationCode: crypto.randomInt(100000, 1000000).toString(),
-          requestedAt: now,
-          expiresAt: Math.min(now + 300000, client.expiresAt),
-          status: "pending",
-          grant: admissionGrant(client),
-        };
-        result = {
-          status: "pending",
-          requestId: client.admission.requestId,
-          requestSecret,
-          verificationCode: client.admission.verificationCode,
-          expiresAt: client.admission.expiresAt,
-          clientId: client.id,
-          kind: "agent",
-        };
+        result = startAdmission(latest, client, now, { funnel, keyThumbprint, identity });
         return latest;
       }
       const token = crypto.randomBytes(32).toString("base64url");
@@ -1423,12 +1498,22 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       client.hash = hash(token);
       client.redeemedAt = new Date().toISOString();
       request.status = "collected";
-      if (funnel) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
+      if (funnel && client.hosted !== true) client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
+      // A hosted agent: the credential collected here is its refresh token;
+      // its first access token (an hour) comes with it. Collected but never
+      // used, an Always access still ends after the week.
+      const hostedAccess = client.hosted === true ? crypto.randomBytes(32).toString("base64url") : null;
+      if (hostedAccess) {
+        client.accessHash = hash(hostedAccess);
+        client.accessUntil = Date.now() + HOSTED_ACCESS_MS;
+        client.usedAt = Date.now();
+      }
       // Persist the consumed receipt and token hash in one atomic write before
       // returning. A dropped response can never mint a second credential.
       result = {
         status: "approved", token, clientId: client.id, kind: "agent",
         scopes: permitted.scopes, expiresAt: client.expiresAt,
+        ...(hostedAccess ? { accessToken: hostedAccess, accessSeconds: HOSTED_ACCESS_MS / 1000 } : {}),
         // Always: the page keeps this session in the browser's lasting storage.
         ...(standingPolicy(client.policy) ? { standing: true } : {}),
       };
@@ -1452,8 +1537,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   const ENDED_KEYS_MS = 7 * 86400_000;
   const endedKeys = new Map();
   let endedVersion = 0;
+  const endedHosted = new Map();
   const rememberEnded = (client) => {
-    for (const key of [client?.browserBinding, client?.approvedBinding]) if (validBrowserBinding(key)) endedKeys.set(key, Date.now() + ENDED_KEYS_MS);
+    for (const key of [client?.browserBinding, client?.approvedBinding]) if (validBrowserBinding(key)) {
+      endedKeys.set(key, Date.now() + ENDED_KEYS_MS);
+      if (client.hosted === true) endedHosted.set(key, Date.now() + ENDED_KEYS_MS);
+    }
     while (endedKeys.size > 256) endedKeys.delete(endedKeys.keys().next().value);
     endedVersion++;
   };
@@ -1471,12 +1560,39 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     keysMemo = { mtime, ended: endedVersion, at: now, keys };
     return keys;
   }
+  // The connection ids of hosted agents (hosted-mcp.mjs) with access, or
+  // ended lately: the door answers their bearer tokens, and keeps the token
+  // and discovery endpoints up for them, when nothing else opens it.
+  let hostedMemo = { mtime: null, ended: -1, at: 0, keys: new Set() };
+  function hostedKeys() {
+    const now = Date.now();
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
+    if (hostedMemo.mtime === mtime && hostedMemo.ended === endedVersion && now - hostedMemo.at < 60_000) return hostedMemo.keys;
+    for (const [key, until] of endedHosted) if (until <= now) endedHosted.delete(key);
+    const keys = new Set([...loadJson(file, []).filter((c) => c.hosted === true && isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
+      .map((c) => c.browserBinding), ...endedHosted.keys()].filter(validBrowserBinding));
+    hostedMemo = { mtime, ended: endedVersion, at: now, keys };
+    return keys;
+  }
   function verifyFunnel(token, keyThumbprint) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
     const digest = hash(token);
     clients = loadJson(file, []);
     const now = Date.now();
+    // A hosted agent (its connection id in place of a key): the bearer part
+    // is its access token, good for an hour, or the one before it until that
+    // one's hour ends. Its refresh token is the credential that rotates.
+    const hosted = clients.find((c) => c.hosted === true && c.browserBinding === keyThumbprint);
+    if (hosted) {
+      const liveAccess = (sameHash(hosted.accessHash, digest) && hosted.accessUntil > now) ||
+        (sameHash(hosted.accessPrevious?.hash, digest) && hosted.accessPrevious?.until > now);
+      if (!liveAccess || idle(hosted, now)) return null;
+      const session = funnelSession(hosted, keyThumbprint, now);
+      if (session) noteUse(hosted.id, now);
+      return session;
+    }
     if (!settleRotation(digest, now)) return null;
     const client = clients.find((entry) => holdsDigest(entry, digest, now));
     if (!client || idle(client, now)) return null;
@@ -1533,14 +1649,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       // so it keeps nothing open; security audit L4.)
       if (standingPolicy(client.policy) && client.admission?.status === "collected" &&
           client.admission.grant === admissionGrant(client)) {
-        if (!(client.rotatedAt > 0)) strangers = true;
+        if (!(client.rotatedAt > 0) && client.hosted !== true) strangers = true;
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "standing" };
         continue;
       }
       // Approved once: its link works again until the access ends (rebind),
       // so the page stays up for it until then.
       if (rebindable(client, now)) {
-        if (!(client.rotatedAt > 0)) strangers = true;
+        if (!(client.rotatedAt > 0) && client.hosted !== true) strangers = true;
         if (client.expiresAt > result.until) result = { open: true, until: client.expiresAt, reason: "granted" };
         continue;
       }
@@ -1550,6 +1666,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       else if (["pending", "approved"].includes(admissionStatus(client, now)) &&
           validBrowserBinding(client.browserBinding))
         until = Math.min(client.admission.expiresAt, client.expiresAt);
+      else if (client.hosted === true && funnelSession(client, client.browserBinding, now)) {
+        // A hosted agent's access: no page to keep up, so no stranger; the
+        // public link stays for its bearer tokens (the door, index.mjs).
+        until = client.expiresAt;
+        reason = "session";
+        if (until > now && until > result.until) result = { open: true, until, reason };
+        continue;
+      }
       else if (funnelSession(client, client.browserBinding, now)) {
         until = Math.min(client.expiresAt, client.browserIdleExpiresAt);
         reason = "session";
@@ -1624,6 +1748,10 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     funnelKeys,
     rotateCredential,
     rotateFunnelCredential,
+    claimHostedInvitation,
+    refreshHosted,
+    hostedKeys,
+    splitHostedToken,
     endIdle,
     // Reach is reachable again: waiting agents get their minute anew.
     restartQuietClock: () => { authStarted = Date.now(); },

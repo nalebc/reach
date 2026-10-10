@@ -183,7 +183,9 @@ export function browserAccessRoutes(
         owner(req);
         // The invite may have expired while Tailscale was starting.
         if (grant.joinBy <= Date.now()) throw fail(410, "This invitation has expired. Create a new one.");
-        url = `${origin}/agent-browser#invite=${grant.invitation}`;
+        // A hosted agent gets the address of Reach's MCP endpoint; the
+        // invitation itself stays here (hosted-mcp.mjs claims it).
+        url = input.hosted ? `${origin}/mcp` : `${origin}/agent-browser#invite=${grant.invitation}`;
       } catch (error) {
         auth.revoke(grant.clientId);
         throw error;
@@ -195,7 +197,11 @@ export function browserAccessRoutes(
     record("agent", `Invited ${input.name} through a browser`);
     // Tools agents (over Tailscale or the public link) pin their runtime.
     const runtime = agentRuntime();
-    res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}), ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime ? { runtime } : {}) });
+    const { invitation, ...issuedGrant } = grant;
+    res.status(201).json({ ...(input.hosted ? issuedGrant : grant), ...(url ? { url, transport: "funnel" } : {}),
+      // Its private address too, for a client on the owner's tailnet.
+      ...(input.hosted ? { hosted: true, privateUrl: `${config.publicOrigin}/mcp` } : {}),
+      ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime && !input.hosted ? { runtime } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing
   // access, including Full/Read only defaults. Only those presets may include

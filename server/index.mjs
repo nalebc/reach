@@ -132,6 +132,7 @@ import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
 import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
+import { createHostedMcp } from "./hosted-mcp.mjs";
 import { createToolSetup } from "./tool-setup.mjs";
 import { createBrowserApprovals, browserRequestActions } from "./browser-approvals.mjs";
 import { runTerminalCommand } from "./restricted-terminal.mjs";
@@ -1148,6 +1149,48 @@ export async function createReach(overrides = {}) {
   app.disable("x-powered-by");
   // A tailnet device may open the same invitation address. The same signed
   // gateway contract applies there too, before the ordinary private API.
+  // A hosted agent's tool call (hosted-mcp.mjs), carried to the inner routes
+  // as a request of Reach's own to its loopback port: the context the MCP
+  // endpoint verified stands as the request's identity, as the gateway's
+  // does. The id is one-time and the request must come from this machine.
+  const hostedContexts = new Map();
+  const hostedDispatch = (context, { timeout = 35000 } = {}) => new Promise((resolve, reject) => {
+    const address = server.address();
+    if (!address || typeof address !== "object") return reject(Object.assign(Error("Reach isn't serving its routes yet."), { status: 503 }));
+    const id = crypto.randomUUID();
+    for (const [key, entry] of hostedContexts) if (entry.until < Date.now()) hostedContexts.delete(key);
+    hostedContexts.set(id, { context, until: Date.now() + 60_000 });
+    const req = http.request({ host: "127.0.0.1", port: address.port, method: context.method, path: context.path,
+      headers: { host: new URL(config.publicOrigin).host, "x-reach-hosted": id, accept: "application/json, image/jpeg, image/png" }, timeout }, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 8 * 1024 * 1024) return req.destroy(Object.assign(Error("The response exceeds 8 MiB."), { status: 502 }));
+        chunks.push(chunk);
+      });
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
+      res.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(Object.assign(Error("The request took too long."), { status: 504 })));
+    req.once("error", (error) => { hostedContexts.delete(id); reject(error); });
+    req.end();
+  });
+  app.use((req, res, next) => {
+    const id = req.headers["x-reach-hosted"];
+    if (typeof id !== "string") return next();
+    const entry = hostedContexts.get(id);
+    hostedContexts.delete(id);
+    const local = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket?.remoteAddress);
+    if (!entry || !local || entry.until < Date.now()) { res.statusCode = 403; return res.end(); }
+    delete req.headers["x-reach-hosted"];
+    funnelRequests.set(req, entry.context);
+    req.reachIdentity = null;
+    for (const name of Object.keys(req.headers)) if (name.startsWith("tailscale-user-")) delete req.headers[name];
+    req.body = entry.context.body || {};
+    req.headers.authorization = `Bearer ${entry.context.token}`;
+    next();
+  });
   app.use((req, res, next) => publicAgent(req, res) || next());
   app.use((req, res, next) => {
     if (req.headers["tailscale-funnel-request"] !== undefined && !funnelRequests.has(req))
@@ -4779,6 +4822,23 @@ export async function createReach(overrides = {}) {
     });
     return true;
   };
+  // An agent asked to connect (a link opened, a hosted agent's OAuth): the
+  // owner's Needs you.
+  const agentClaimed = (joined) => {
+      // The same browser reconnecting, or getting its waiting request
+      // again: nothing new for the owner.
+      if (joined.refreshed || joined.resumed) return;
+      // Its approved link, opened in another browser: the browser it used
+      // is disconnected, and the new one waits for you to match its code
+      // (its approved browser can still take it back at once).
+      if (joined.moving) {
+        endSession(joined.clientId);
+        const name = auth.list().find((c) => c.id === joined.clientId)?.name || "An agent";
+        record("agent", `${name}'s link was opened in another browser; the previous one was disconnected until you answer`);
+      } else record("agent", joined.hosted ? "A hosted agent is waiting for connection approval" : "An invited browser agent is waiting for connection approval");
+      notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
+      for (const nudge of presenceNudges) nudge();
+  };
   publicAgent = config.publicOrigin?.startsWith("https://")
     ? createFunnelAgentGateway({
         auth,
@@ -4794,21 +4854,7 @@ export async function createReach(overrides = {}) {
           notify({ category: "access", title: "Your public link is under a flood", body: "Strangers are refused for 5 minutes; your agents are unaffected. An agent joining right now would wait.", icon: "agent", tag: "funnel-flood" });
         },
         device: invitationDevice,
-        claimed: (joined) => {
-          // The same browser reconnecting, or getting its waiting request
-          // again: nothing new for the owner.
-          if (joined.refreshed || joined.resumed) return;
-          // Its approved link, opened in another browser: the browser it used
-          // is disconnected, and the new one waits for you to match its code
-          // (its approved browser can still take it back at once).
-          if (joined.moving) {
-            endSession(joined.clientId);
-            const name = auth.list().find((c) => c.id === joined.clientId)?.name || "An agent";
-            record("agent", `${name}'s link was opened in another browser; the previous one was disconnected until you answer`);
-          } else record("agent", "An invited browser agent is waiting for connection approval");
-          notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
-          for (const nudge of presenceNudges) nudge();
-        },
+        claimed: agentClaimed,
         dispatch: (req, res, context) => {
           // Only the signature-verifying gateway can mark a request. Neither a
           // header nor a public token can manufacture a private Tailscale identity.
@@ -4830,6 +4876,29 @@ export async function createReach(overrides = {}) {
         },
       })
     : () => false;
+  // Reach as an MCP server at a URL (hosted-mcp.mjs): for agents that live
+  // in a service (claude.ai, ChatGPT, Muse, Grok) and connect through OAuth.
+  // The same tools, derived from the same preset; the owner approves with
+  // the same code. On both routes, like the gateway.
+  const hostedMcp = config.publicOrigin?.startsWith("https://")
+    ? createHostedMcp({
+        auth,
+        origin: new URL(config.publicOrigin).origin.replace(/:\d+$/, ""),
+        privateOrigin: new URL(config.publicOrigin).origin,
+        requestHost: serveRequestHost,
+        available: () => !paused && transportAvailable,
+        computerName: config.name,
+        dataDir: config.dataDir,
+        claimed: agentClaimed,
+        dispatch: hostedDispatch,
+        onFlood: (count) => {
+          record("security", `Reach's MCP address had ${count} requests from strangers in a minute: strangers are refused for 5 minutes`);
+          notify({ category: "access", title: "Your public link is under a flood", body: "Strangers are refused for 5 minutes; your agents are unaffected. An agent connecting right now would wait.", icon: "agent", tag: "funnel-flood" });
+        },
+      })
+    : null;
+  const gatewayAgent = publicAgent;
+  publicAgent = hostedMcp ? (req, res) => gatewayAgent(req, res) || hostedMcp.handle(req, res) : gatewayAgent;
   return {
     app,
     server,
@@ -4888,7 +4957,10 @@ export async function createReach(overrides = {}) {
           const key = req.headers["reach-key"];
           const known = typeof key === "string" && key.length <= 64 && knownKey(key);
           const forAgents = (req.method === "POST" && req.url === "/agent-gateway") || (req.method === "GET" && req.url === "/agent.mjs");
-          if ((window.open && !window.keyed) || (known && forAgents)) return publicApp(req, res);
+          // A hosted agent's bearer token, and the OAuth token and discovery
+          // endpoints while a hosted agent has access (hosted-mcp.mjs).
+          const hosted = hostedMcp?.admits(req) === true;
+          if ((window.open && !window.keyed) || (known && forAgents) || hosted) return publicApp(req, res);
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found.");
         }),
@@ -4911,6 +4983,7 @@ export async function createReach(overrides = {}) {
       // what follows takes too long and the launcher exits anyway.
       if (runMarker) markStopped(config.dataDir);
       tidying?.stop();
+      hostedMcp?.close();
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();

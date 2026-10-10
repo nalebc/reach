@@ -43,6 +43,10 @@ See [Browser agent tools](BROWSER_AGENT_TOOLS.md) for preset details and [API.md
 
 An agent invited from the phone (the one-command join in [the guide](GUIDE.md)) needs no token here: its join output prints the `claude mcp add`, `codex mcp add` and `gemini mcp add` lines, and `node ~/.reach-agent/agent.mjs config` prints the `mcpServers` JSON for Claude Desktop, Cursor, Windsurf, VS Code (under `servers`) or Gemini CLI's settings. The server speaks MCP 2024-11-05, 2025-03-26 and 2025-06-18 over stdio and offers tools only. The rest of this section is the scoped-credential adapter for an agent with a token of its own.
 
+### Hosted agents: Reach at a URL
+
+An agent that lives in a service and takes a connector address (claude.ai and Claude Desktop's custom connectors, ChatGPT, Muse, Grok, or `claude mcp add --transport http`) adds `https://<the Mac's public name>/mcp` (on the owner's tailnet, `https://<name>:8443/mcp`). The owner makes it on the phone: Invite → Agent → Connects: **Hosted**, with a preset and a duration or Always. The address is the same for every hosted agent; the invitation waiting is what opens the public door to it. The client discovers OAuth (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`), registers (`POST /oauth/register`, PKCE S256 required) and sends the owner to `/oauth/authorize`, a page with a six-digit code; the owner approves the connection in Reach → Needs you, as for any agent, and the page returns to the client with its code. `POST /oauth/token` then gives an access token (an hour) and a refresh token; every refresh rotates both, a refresh token used after its replacement took over ends the access, and an Always access unused for a week ends. `POST /mcp` speaks JSON-RPC over HTTP (initialize, ping, tools/list, tools/call; a notification gets 202; no event stream) with the preset's tools, exactly as over stdio (`server/hosted-mcp.mjs`).
+
 For a scoped command-line agent on an existing tailnet connection, run the adapter on the agent's machine. Use your client's stdio MCP configuration format. Typical JSON:
 
 ```json

@@ -27,7 +27,10 @@ const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut"
 const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
 // The protocol revisions Reach speaks: a client's own when it's one of them,
 // else the newest, and the client decides.
-const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
+export const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
+// What a client is told at initialize when the agent may drive the browser:
+// the same over stdio and at Reach's own /mcp endpoint (server/hosted-mcp.mjs).
+export const serverInstructions = (scopes) => scopes?.includes("browser:control") ? { instructions: `${SAVED_TOOLS_HINT} Chrome and Safari use the same protocol as the built-ins. Definitions contain only fixed steps and result checks. No arbitrary script or passwords. Supply a fresh UUID requestId for a new run; after a lost response use reach_tool_operation or retry the SAME requestId. An uncertain or stopped run reports partial progress: inspect the browser before continuing. Definition creation immediately adds a named tool to the list.` } : {};
 
 const location = {
   root: {
@@ -395,7 +398,7 @@ export function serveMcp({
           protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name, version: "0.1.0" },
-          ...(scopes?.includes("browser:control") ? { instructions: `${SAVED_TOOLS_HINT} Chrome and Safari use the same protocol as the built-ins. Definitions contain only fixed steps and result checks. No arbitrary script or passwords. Supply a fresh UUID requestId for a new run; after a lost response use reach_tool_operation or retry the SAME requestId. An uncertain or stopped run reports partial progress: inspect the browser before continuing. Definition creation immediately adds a named tool to the list.` } : {}),
+          ...serverInstructions(scopes),
         };
       else if (r.method === "ping") result = {};
       // Not offered, so an orderly client never asks; one that asks anyway

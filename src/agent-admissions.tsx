@@ -39,6 +39,9 @@ export type AgentAdmission = {
   accessExpiresAt: number;
   verificationCode: string;
   browserTransport?: "funnel" | "tailnet";
+  // A hosted agent (an MCP client at a URL), and the service it connects from.
+  hosted?: boolean;
+  hostedClient?: string;
   nodeName?: string;
   nodeId?: string;
 };
@@ -127,7 +130,7 @@ export function useAgentAdmissions(
         key: `agent-admission:${admission.requestId}`,
         icon: <Bot size={22} />,
         title: `${admission.name} wants to connect`,
-        detail: `First agent connection · code ${admission.verificationCode}`,
+        detail: `${admission.hosted ? "Hosted agent" : "First agent connection"} · code ${admission.verificationCode}`,
         actions: [
           {
             label: "Review connection",
@@ -259,7 +262,11 @@ export function AgentAdmissionReview({
             Let <bdi>{readable(admission.name)}</bdi> connect?
           </h3>
           <p>
-            {admission.browser ? "AI browser" : "Command-line agent"}
+            {admission.hosted
+              ? `Hosted agent${admission.hostedClient ? ` · ${admission.hostedClient}` : ""}`
+              : admission.browser
+                ? "AI browser"
+                : "Command-line agent"}
             <span aria-hidden="true"> · </span>
             <bdi>{peer.name}</bdi>
           </p>

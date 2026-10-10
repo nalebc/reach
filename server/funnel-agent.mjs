@@ -77,7 +77,7 @@ function publicKey(jwk) {
 
 // This is deliberately independent of the main application's route table.
 // Adding an owner API (or broadening browserRouteAllowed) cannot publish it.
-function permittedPath(method, value) {
+export function permittedPath(method, value) {
   if (
     typeof value !== "string" ||
     value.length > 8192 ||
