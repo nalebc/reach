@@ -45,6 +45,7 @@ export function createAgentShell({
   // What the sandbox denies ({readDeny, writeDeny, socketDeny, ports}); null
   // off macOS. On macOS without sandbox-exec, commands are refused.
   sandbox = () => null,
+  sandboxExec = SANDBOX_EXEC,
   timeoutMs = 60000,
   maxOutput = 256 * 1024,
   maxConcurrent = 4,
@@ -53,10 +54,10 @@ export function createAgentShell({
   const execute = run || (({ command, cwd, env, signal }) => new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason);
     const rules = sandbox();
-    if (rules && !fs.existsSync(SANDBOX_EXEC))
+    if (rules && !fs.existsSync(sandboxExec))
       return reject(Object.assign(new Error("This Mac can't sandbox agent commands, so none run."), { status: 503 }));
     const child = rules
-      ? spawn(SANDBOX_EXEC, ["-p", shellSandboxProfile(rules), "/bin/zsh", "-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
+      ? spawn(sandboxExec, ["-p", shellSandboxProfile(rules), "/bin/zsh", "-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
       : spawn("/bin/zsh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks = []; let size = 0, truncated = false, timedOut = false, finished = false;
     const collect = (chunk) => {

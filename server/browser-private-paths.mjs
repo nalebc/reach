@@ -13,7 +13,14 @@ const applicationRoot = fileURLToPath(new URL('../', import.meta.url));
 // What the macOS sandbox around agent commands denies (server/agent-shell.mjs):
 // Reach's code can't change, its data (credentials) can't be read or written,
 // and Tailscale's container (Reach's private socket, Tailscale's own) can't be
-// read, written or connected to, nor the keychains or login launch agents.
+// read, written or connected to, nor the keychains or your browsers' data
+// (signed-in sessions, Reach's own included). Nothing that runs later outside
+// the sandbox can be planted: login launch agents, shell startup files, SSH
+// keys that let someone in.
+const browserData = ["Google/Chrome", "Google/Chrome Beta", "Google/Chrome Dev", "Google/Chrome Canary", "Chromium",
+  "BraveSoftware", "Microsoft Edge", "Arc", "Vivaldi", "com.operasoftware.Opera", "Firefox", "Orion", "Comet", "Dia"];
+const startupFiles = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login",
+  ".profile", ".config/fish", ".ssh/authorized_keys", ".ssh/authorized_keys2", ".ssh/rc"];
 export function agentShellSandbox(config, { home = os.homedir(), appRoot = applicationRoot, sockets = [] } = {}) {
   const containers = path.join(home, "Library", "Group Containers");
   let tailscale = [];
@@ -22,10 +29,14 @@ export function agentShellSandbox(config, { home = os.homedir(), appRoot = appli
     const absolute = path.resolve(item);
     try { return [absolute, fs.realpathSync.native(absolute)]; } catch { return [absolute]; }
   }))];
-  const secrets = real([config.dataDir, path.join(appRoot, ".reach"), config.agentPolicyFile, ...tailscale, ...sockets, path.join(home, "Library", "Keychains"), path.join(home, ".tailscale")]);
+  const library = path.join(home, "Library");
+  const secrets = real([config.dataDir, path.join(appRoot, ".reach"), config.agentPolicyFile, ...tailscale, ...sockets,
+    path.join(library, "Keychains"), path.join(home, ".tailscale"),
+    ...browserData.map((name) => path.join(library, "Application Support", name)),
+    path.join(library, "Safari"), path.join(library, "Containers", "com.apple.Safari"), path.join(library, "Cookies")]);
   return {
     readDeny: secrets,
-    writeDeny: real([appRoot, ...secrets, path.join(home, "Library", "LaunchAgents")]),
+    writeDeny: real([appRoot, ...secrets, path.join(library, "LaunchAgents"), ...startupFiles.map((name) => path.join(home, name))]),
     socketDeny: real([config.dataDir, ...tailscale, ...sockets, "/var/run/tailscaled.socket", "/private/var/run/tailscaled.socket"]),
     ports: [config.port].filter((port) => Number.isInteger(port) && port > 0),
   };

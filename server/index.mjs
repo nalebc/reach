@@ -179,6 +179,33 @@ export async function createReach(overrides = {}) {
     app = express(),
     server = http.createServer(app);
   const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
+  // When a Full control or Apps agent last had this Mac, kept across Reach
+  // restarts. Any process on this Mac can claim one of your devices' Tailscale
+  // identities on Reach's private socket, and an agent may leave one running:
+  // from then until the Mac restarts, an identity alone approves nothing
+  // (security audit, Oct 9).
+  const agentsSeenFile = path.join(config.dataDir, "agents-seen.json");
+  const bootedAt = overrides.bootedAt || (() => Date.now() - os.uptime() * 1000);
+  let agentsSeenAt = Number(loadJson(agentsSeenFile, {})?.at) || 0, agentsSeenSaved = agentsSeenAt;
+  const agentsActive = () => {
+    if (!browserHostGuard.isActive()) return false;
+    agentsSeenAt = Date.now();
+    if (agentsSeenAt - agentsSeenSaved > 60000) {
+      agentsSeenSaved = agentsSeenAt;
+      try { atomicJson(agentsSeenFile, { at: agentsSeenAt }); } catch { /* still held in memory */ }
+    }
+    return true;
+  };
+  const agentsSinceBoot = () => agentsActive() || agentsSeenAt > bootedAt();
+  // Whether a device's Tailscale identity alone may approve a browser (another
+  // browser on that device, or one approved on a linked computer): never this
+  // Mac's own (whatever runs here has it), never since an agent had this Mac.
+  // Face ID and your approval are unaffected.
+  const identityVouches = async (identity) => {
+    if (!identity || agentsSinceBoot()) return false;
+    const host = await browserHostGuard.refresh().catch(() => null);
+    return !!host && identity.nodeId !== host && !agentsSinceBoot();
+  };
   const detectTools = createToolDetector(overrides.toolDetection);
   const resolveIdentity = createIdentityResolver(overrides.tailscaleIdentity);
   const approvals = config.tailscaleOwner
@@ -1090,7 +1117,7 @@ export async function createReach(overrides = {}) {
     next();
   });
   app.use("/api", async (req, res, next) => {
-    if (browserHostGuard.isActive()) {
+    if (agentsActive()) {
       await browserHostGuard.refresh();
       const token = req.headers.authorization?.replace(/^Bearer /, "");
       const context = funnelRequests.get(req);
@@ -1107,7 +1134,7 @@ export async function createReach(overrides = {}) {
       return res.status(403).json({ error: "This browser invitation cannot grant or request other access." });
     next();
   });
-  app.post("/api/auth/requests", (req, res) => {
+  app.post("/api/auth/requests", async (req, res) => {
     if (!approvals)
       throw fail(
         404,
@@ -1120,7 +1147,8 @@ export async function createReach(overrides = {}) {
     );
     // Another browser on a device you approved already (it shares that
     // device's Tailscale connection): the same device, approved.
-    const known = auth
+    const vouches = await identityVouches(req.reachIdentity);
+    const known = vouches && auth
       .list()
       .some(
         (c) =>
@@ -1134,7 +1162,7 @@ export async function createReach(overrides = {}) {
         approvals.decide(created.id, "approve", "this same device");
       } catch {}
     // Already approved on a linked computer: approve here too.
-    else
+    else if (vouches)
       void fleet?.approvedElsewhere(req.reachIdentity).then((from) => {
         if (!from) return;
         try {
@@ -1409,7 +1437,7 @@ export async function createReach(overrides = {}) {
   // asks first, so it never leaves a request waiting in a terminal.
   app.get("/api/auth/vouched", async (req, res) => {
     const id = req.reachIdentity;
-    if (!ownerIdentity(id, config.tailscaleOwner))
+    if (!ownerIdentity(id, config.tailscaleOwner) || !(await identityVouches(id)))
       return res.json({ approved: false });
     const here = auth
       .list()
