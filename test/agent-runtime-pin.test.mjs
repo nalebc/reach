@@ -11,10 +11,10 @@ import { startDom } from "./dom/harness.mjs";
 // Security audit M8: an agent's join command carries the SHA-256 of the
 // runtime the inviting computer serves. A download that isn't exactly it
 // never replaces the runtime the agent already has.
-let dom, toolsCommand;
+let dom, toolsCommand, windowsToolsCommand;
 before(async () => {
   dom = await startDom();
-  ({ toolsCommand } = await dom.load("/src/BrowserInvite.tsx"));
+  ({ toolsCommand, windowsToolsCommand } = await dom.load("/src/BrowserInvite.tsx"));
 });
 after(async () => dom?.close());
 
@@ -84,4 +84,19 @@ test("an agent invitation carries the SHA-256 of the runtime this computer serve
   fs.utimesSync(agentRuntimeFile, new Date(), new Date(Date.now() + 5000));
   const again = await post("/api/agents/invitations", { name: "Builder 2", ttlSeconds: 3600, folders: [{ root: 0, path: "" }] });
   assert.equal(again.body.runtime, crypto.createHash("sha256").update("// rebuilt\n").digest("hex"));
+});
+
+// Any laptop: on Windows the same join, in PowerShell (no curl, printf or ~),
+// and the runtime shares its connection through a named pipe.
+test("Windows: the join in PowerShell, checked the same way; the runtime's pipe and quoting", async () => {
+  const start = "https://mac.t.ts.net", link = "https://mac.t.ts.net/agent#i=x&t=funnel", sha = "a".repeat(64);
+  const pinned = windowsToolsCommand(start, link, sha);
+  assert.equal(pinned, `$d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`);
+  assert.doesNotMatch(windowsToolsCommand(start, link), /Get-FileHash/, "an older computer: no hash to check");
+  assert.doesNotMatch(pinned, /join '/, "the link goes in on standard input");
+  const { socketOf, quote } = await import("../scripts/agent-remote.mjs");
+  assert.match(socketOf("C:\\Users\\me\\.reach-agent\\mac", "win32"), /^\\\\\.\\pipe\\reach-agent-[0-9a-f]{24}$/);
+  assert.equal(socketOf("/home/me/.reach-agent/mac", "linux"), "/home/me/.reach-agent/mac/agent.sock");
+  assert.equal(quote("C:\\Users\\Jane Doe\\.reach-agent\\agent.mjs", "win32"), '"C:\\Users\\Jane Doe\\.reach-agent\\agent.mjs"');
+  assert.equal(quote("/home/jane/.reach-agent/agent.mjs", "linux"), "/home/jane/.reach-agent/agent.mjs");
 });

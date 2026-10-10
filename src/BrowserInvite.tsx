@@ -89,6 +89,8 @@ type Issued = {
   // Tools: the agent runs this once on its own computer, then calls Reach's
   // tools (command line or MCP) over the owner's Tailscale network.
   command?: string;
+  // The same, for Windows (PowerShell).
+  windowsCommand?: string;
 };
 // What a tools agent runs, once: Reach for agents from this computer's start
 // page, then joining with its link (as Command line invites do). With the
@@ -100,6 +102,14 @@ export const toolsCommand = (start: string, link: string, runtime?: string) => {
   return runtime && /^[0-9a-f]{64}$/.test(runtime)
     ? `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`
     : `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && ${join}`;
+};
+// The same for Windows, in PowerShell (5.1 and later ship with Windows 10
+// and 11): download, check its SHA-256, then the link on standard input.
+export const windowsToolsCommand = (start: string, link: string, runtime?: string) => {
+  const check = runtime && /^[0-9a-f]{64}$/.test(runtime)
+    ? `if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${runtime}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; `
+    : "";
+  return `$d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
 };
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
@@ -151,7 +161,7 @@ export const agentInviteMessage = (link: string, issued: Issued) => {
       ? " Start with reach_describe_screen: the screen as text, every button, link and field numbered; press one with reach_act {\"action\":{\"type\":\"element\",\"snapshot\":…,\"n\":…}}. Open apps and websites (in the owner's own browser) with reach_open_app and reach_open_url." + rules
       : " Use the live Screen as a person would: click, type and scroll on it, and click a numbered label to hit an exact element." + rules;
   if (tools)
-    return `Connect to this Mac with one command on your computer (Node.js 22 or later); the owner matches your connection code once:\n\n${issued.command}\n\nThen list your tools with node ~/.reach-agent/agent.mjs tools and run one with node ~/.reach-agent/agent.mjs call TOOL '{json}', or add node ~/.reach-agent/agent.mjs mcp as an MCP server. ${grant}${protectedWords}${sharing} Never invite anyone, delegate access, or share this command or your credentials.`;
+    return `Connect to this Mac with one command on your computer (Node.js 22 or later); the owner matches your connection code once:\n\n${issued.command}\n\n${issued.windowsCommand ? `On Windows, in PowerShell (then use node $HOME\\.reach-agent\\agent.mjs below):\n\n${issued.windowsCommand}\n\n` : ""}Then list your tools with node ~/.reach-agent/agent.mjs tools and run one with node ~/.reach-agent/agent.mjs call TOOL '{json}', or add node ~/.reach-agent/agent.mjs mcp as an MCP server. ${grant}${protectedWords}${sharing} Never invite anyone, delegate access, or share this command or your credentials.`;
   const opening = issued.always
     ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: it brings this browser back at once; another browser needs a new code."
     : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, it brings this browser back at once; another browser needs a new code.";
@@ -407,6 +417,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           funnel: true,
         }, "/agent");
         const command = toolsCommand(origin, link, result.runtime);
+        const windowsCommand = windowsToolsCommand(origin, link, result.runtime);
         setMade({
           link: command,
           name: name.trim(),
@@ -416,7 +427,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
           unkeyed: false,
-          message: agentInviteMessage(link, { ...issuedTo, command }),
+          message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
         });
         onCreated(created, link);
         return;
@@ -442,6 +453,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
         }, "/agent");
         const command = toolsCommand(start, link, result.runtime);
+        const windowsCommand = windowsToolsCommand(start, link, result.runtime);
         setMade({
           link: command,
           name: name.trim(),
@@ -451,7 +463,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           always: minutes === ALWAYS,
           unpublished: false,
           unkeyed: !key,
-          message: agentInviteMessage(link, { ...issuedTo, command }),
+          message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
         });
         onCreated(created, link);
         return;

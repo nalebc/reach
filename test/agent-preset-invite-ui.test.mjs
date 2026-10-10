@@ -261,6 +261,7 @@ test("Tools without invite links: one command through the public link, no key as
   const text = message(c);
   assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs https:\/\/mac\.tail\.ts\.net\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#i=[^']+&t=funnel' \| node ~\/\.reach-agent\/agent\.mjs join/);
   assert.doesNotMatch(text, /No Tailscale invite key/);
+  assert.match(text, /On Windows, in PowerShell[^\n]*:\n\n\$d = "\$HOME\\\.reach-agent"; .*Invoke-WebRequest -UseBasicParsing -Uri https:\/\/mac\.tail\.ts\.net\/agent\.mjs .*\| node "\$d\\agent\.mjs" join/);
 });
 
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));

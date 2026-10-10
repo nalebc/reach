@@ -13,6 +13,7 @@
 //   node agent.mjs status | call <tool> '<json>' | leave
 //
 // JSON-RPC and results go to stdout; everything else to stderr.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
@@ -528,10 +529,25 @@ export function lock(conn) {
   }
   return false;
 }
-const socketOf = (conn) => path.join(conn, "agent.sock");
+// Processes share one connection through a local socket: a file next to the
+// credential on macOS and Linux, a named pipe on Windows (it has no socket
+// files; the pipe's default access lets only this user write to it).
+export const socketOf = (conn, platform = process.platform) =>
+  platform === "win32"
+    ? `\\\\.\\pipe\\reach-agent-${crypto.createHash("sha256").update(path.resolve(conn)).digest("hex").slice(0, 24)}`
+    : path.join(conn, "agent.sock");
+const pipes = process.platform === "win32";
+// Whether a process already shares this connection.
+const listening = (file) => pipes
+  ? new Promise((resolve) => {
+      const s = net.connect(file);
+      s.once("connect", () => { s.destroy(); resolve(true); });
+      s.once("error", () => resolve(false));
+    })
+  : Promise.resolve(fs.existsSync(file));
 export function shareNode(conn, api) {
   const file = socketOf(conn);
-  fs.rmSync(file, { force: true });
+  if (!pipes) fs.rmSync(file, { force: true });
   const server = net.createServer((socket) => {
     // (readline repeats the socket's errors: a caller leaving isn't one.)
     const lines = readline.createInterface({ input: socket });
@@ -549,9 +565,9 @@ export function shareNode(conn, api) {
     });
     socket.on("error", () => {});
   });
-  server.listen(file, () => fs.chmodSync(file, 0o600));
+  server.listen(file, () => { if (!pipes) fs.chmodSync(file, 0o600); });
   server.unref();
-  process.once("exit", () => fs.rmSync(file, { force: true }));
+  if (!pipes) process.once("exit", () => fs.rmSync(file, { force: true }));
   return server;
 }
 export const GONE = "REACH_HOLDER_GONE";
@@ -698,7 +714,7 @@ async function open(home, name, allowLocal) {
         shared = true;
         return { api };
       }
-      if (fs.existsSync(socketOf(conn)))
+      if (await listening(socketOf(conn)))
         return { api: viaShared(conn), shared: true };
       await new Promise((r) => setTimeout(r, 250)); // it's still starting
     }
@@ -740,8 +756,12 @@ const readStdin = () =>
   });
 const self = () =>
   path.resolve(process.argv[1] || fileURLToPath(import.meta.url));
-const quote = (s) =>
-  /^[\w./~-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
+// A path as the agent's shell reads it: single quotes on macOS and Linux,
+// double quotes on Windows (cmd and PowerShell alike).
+export const quote = (s, platform = process.platform) =>
+  platform === "win32"
+    ? /^[\w.:\\/~-]+$/.test(s) ? s : `"${s}"`
+    : /^[\w./~-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
 
 export async function join(o) {
   const link = parseAgentLink(
