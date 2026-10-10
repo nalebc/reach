@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { fail, hasReviewControls, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
+import { fail, hasReviewControls, hostedConnector, isPlainRecord, validateBrowserInvitation } from "./core.mjs";
 import { fileRootName } from "./file-roots.mjs";
 import { validBrowserTerminalId } from "./agent-policy.mjs";
 import { validateBrowserRequest, browserRequestActions } from "./browser-approvals.mjs";
@@ -185,7 +185,7 @@ export function browserAccessRoutes(
         if (grant.joinBy <= Date.now()) throw fail(410, "This invitation has expired. Create a new one.");
         // A hosted agent gets the address of Reach's MCP endpoint; the
         // invitation itself stays here (hosted-mcp.mjs claims it).
-        url = input.hosted ? `${origin}/mcp` : `${origin}/agent-browser#invite=${grant.invitation}`;
+        url = input.hosted ? `${origin}/mcp/${hostedConnector(grant.invitation)}` : `${origin}/agent-browser#invite=${grant.invitation}`;
       } catch (error) {
         auth.revoke(grant.clientId);
         throw error;
@@ -200,7 +200,7 @@ export function browserAccessRoutes(
     const { invitation, ...issuedGrant } = grant;
     res.status(201).json({ ...(input.hosted ? issuedGrant : grant), ...(url ? { url, transport: "funnel" } : {}),
       // Its private address too, for a client on the owner's tailnet.
-      ...(input.hosted ? { hosted: true, privateUrl: `${config.publicOrigin}/mcp` } : {}),
+      ...(input.hosted ? { hosted: true, privateUrl: `${config.publicOrigin}/mcp/${hostedConnector(grant.invitation)}` } : {}),
       ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime && !input.hosted ? { runtime } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing

@@ -65,6 +65,10 @@ export const browserIdleEnded = (client, now = Date.now()) =>
   !(client.browserIdleExpiresAt > now);
 export const hash = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
+// A hosted agent's own address id (hosted-mcp.mjs: /mcp/<id>), derived from
+// its invitation: the owner's URL carries it, the record keeps its hash.
+export const hostedConnector = (invitation) =>
+  crypto.createHash("sha256").update(`reach-hosted-connector:${invitation}`).digest("base64url");
 // Two stored digests compared in constant time (a mismatch in length, or a
 // missing value, is simply no match).
 export function sameHash(a, b) {
@@ -422,7 +426,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     if (!validBrowserBinding(binding) || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
     return [binding, secret];
   };
-  function refreshHosted(refreshToken, { clientId } = {}) {
+  function refreshHosted(refreshToken, { clientId, connector } = {}) {
     const parts = splitHostedToken(refreshToken);
     if (!parts) return null;
     const [binding, secret] = parts;
@@ -433,6 +437,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const client = clients.find((c) => c.hosted === true && c.browserBinding === binding && holdsDigest(c, digest, now));
     if (!client || idle(client, now) || !funnelSession(client, binding, now)) return null;
     if (clientId !== undefined && client.hostedClientId && client.hostedClientId !== clientId) return null;
+    // Refreshed at its own address only.
+    if (connector !== undefined && !sameHash(client.connectorHash, hash(String(connector)))) return null;
     const nextRefresh = crypto.randomBytes(32).toString("base64url");
     const nextAccess = crypto.randomBytes(32).toString("base64url");
     let refreshed = false;
@@ -839,7 +845,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       ...(checked.transport === "funnel" && !checked.hosted ? { linkHash: hash(token) } : {}),
       // A hosted agent (an MCP client at a URL: claude.ai, ChatGPT, Muse,
       // Grok): it connects through OAuth, with the owner's code (hosted-mcp.mjs).
-      ...(checked.hosted ? { hosted: true } : {}),
+      ...(checked.hosted ? { hosted: true, connectorHash: hash(hostedConnector(token)) } : {}),
       // Always joins like any link: once, within the join window.
       inviteExpiresAt: now + (checked.standing ? checked.joinSeconds : Math.min(checked.joinSeconds, checked.ttlSeconds)) * 1000,
       createdAt: new Date(now).toISOString(),
@@ -1313,18 +1319,19 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     };
   }
   // A hosted agent connecting (hosted-mcp.mjs: OAuth from claude.ai, ChatGPT,
-  // Muse, Grok...): the hosted invitation waiting is claimed for it, under a
-  // connection id that stands where a browser's key would. The owner matches
-  // the code as for any agent. Several waiting: the newest.
-  function claimHostedInvitation(binding, { name, clientId } = {}) {
+  // Muse, Grok...): the invitation of the address it came to is claimed for
+  // it, under a connection id that stands where a browser's key would. The
+  // owner matches the code as for any agent. No address, nothing claimed.
+  function claimHostedInvitation(binding, { name, clientId, connector } = {}) {
     if (!validBrowserBinding(binding)) throw fail(401, "A valid connection id is required.");
     let result;
     changeClients((latest) => {
       const now = Date.now();
-      const waiting = latest.filter((c) => c.hosted === true && isFunnelBrowser(c) && c.inviteHash && !c.admission && !c.hash &&
-        c.expiresAt > now && c.inviteExpiresAt > now);
-      if (!waiting.length) throw fail(404, "No hosted agent invitation is waiting. In Reach, invite a hosted agent first.");
-      const client = waiting.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+      const client = typeof connector === "string" && /^[A-Za-z0-9_-]{43}$/.test(connector)
+        ? latest.find((c) => c.hosted === true && isFunnelBrowser(c) && sameHash(c.connectorHash, hash(connector)) &&
+          c.inviteHash && !c.admission && !c.hash && c.expiresAt > now && c.inviteExpiresAt > now)
+        : null;
+      if (!client) throw fail(404, "No hosted agent invitation is waiting at this address. In Reach, invite a hosted agent and use the address it shows.");
       if (typeof name === "string" && name.trim()) client.hostedClient = name.trim().slice(0, 80);
       if (typeof clientId === "string" && clientId) client.hostedClientId = clientId.slice(0, 128);
       result = startAdmission(latest, client, now, { funnel: true, keyThumbprint: binding });
@@ -1560,10 +1567,12 @@ export function createAuth(config, { rotatePairing = true } = {}) {
   const endedKeys = new Map();
   let endedVersion = 0;
   const endedHosted = new Map();
+  const endedConnectors = new Map();
   const rememberEnded = (client) => {
     for (const key of [client?.browserBinding, client?.approvedBinding]) if (validBrowserBinding(key)) {
       endedKeys.set(key, Date.now() + ENDED_KEYS_MS);
       if (client.hosted === true) endedHosted.set(key, Date.now() + ENDED_KEYS_MS);
+      if (client.hosted === true && typeof client.connectorHash === "string") endedConnectors.set(client.connectorHash, Date.now() + ENDED_KEYS_MS);
     }
     while (endedKeys.size > 256) endedKeys.delete(endedKeys.keys().next().value);
     endedVersion++;
@@ -1596,6 +1605,24 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       .map((c) => c.browserBinding), ...endedHosted.keys()].filter(validBrowserBinding));
     hostedMemo = { mtime, ended: endedVersion, at: now, keys };
     return keys;
+  }
+  // The address ids of hosted agents (hosted-mcp.mjs), hashed: an invitation
+  // waiting at it, an agent with access, or one that ended lately. The door
+  // answers a hosted agent's paths for these alone.
+  let connectorsMemo = { mtime: null, ended: -1, at: 0, map: new Map() };
+  function hostedConnectors() {
+    const now = Date.now();
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
+    if (connectorsMemo.mtime === mtime && connectorsMemo.ended === endedVersion && now - connectorsMemo.at < 60_000) return connectorsMemo.map;
+    for (const [key, until] of endedConnectors) if (until <= now) endedConnectors.delete(key);
+    const map = new Map([...endedConnectors.keys()].map((key) => [key, { waiting: false }]));
+    for (const c of loadJson(file, [])) {
+      if (c.hosted !== true || typeof c.connectorHash !== "string" || !(c.expiresAt > now - ENDED_KEYS_MS)) continue;
+      map.set(c.connectorHash, { waiting: !!c.inviteHash && !c.admission && !c.hash && c.expiresAt > now && c.inviteExpiresAt > now });
+    }
+    connectorsMemo = { mtime, ended: endedVersion, at: now, map };
+    return map;
   }
   function verifyFunnel(token, keyThumbprint) {
     if (typeof token !== "string" || !token || token.length > 256 ||
@@ -1667,6 +1694,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       }
       if (!isFunnelBrowser(client) || !(client.expiresAt > now) ||
           !applyAgentPolicy(client, config)) continue;
+      // Hosted agents keep nothing open: the door answers their own address
+      // alone (hosted-mcp.mjs admits).
+      if (client.hosted === true) continue;
       // Once joined, Always access keeps the public link up while the agent is
       // away, or its browser would have nothing to come back to.
       // (Only on the terms the owner approved: a changed grant can't act,
@@ -1690,14 +1720,6 @@ export function createAuth(config, { rotatePairing = true } = {}) {
       else if (["pending", "approved"].includes(admissionStatus(client, now)) &&
           validBrowserBinding(client.browserBinding))
         until = Math.min(client.admission.expiresAt, client.expiresAt);
-      else if (client.hosted === true && funnelSession(client, client.browserBinding, now)) {
-        // A hosted agent's access: no page to keep up, so no stranger; the
-        // public link stays for its bearer tokens (the door, index.mjs).
-        until = client.expiresAt;
-        reason = "session";
-        if (until > now && until > result.until) result = { open: true, until, reason };
-        continue;
-      }
       else if (funnelSession(client, client.browserBinding, now)) {
         until = Math.min(client.expiresAt, client.browserIdleExpiresAt);
         reason = "session";
@@ -1776,6 +1798,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     unopenedInvitation,
     refreshHosted,
     hostedKeys,
+    hostedConnectors,
     splitHostedToken,
     endIdle,
     // Reach is reachable again: waiting agents get their minute anew.

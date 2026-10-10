@@ -1,4 +1,5 @@
-// Reach as an MCP server at a URL (`/mcp`), for agents that live in a service
+// Reach as an MCP server at a URL (`/mcp/<id>`, each invitation its own), for
+// agents that live in a service
 // and take a connector address: claude.ai and Claude Desktop's custom
 // connectors, ChatGPT, Muse, Grok, or `claude mcp add --transport http`. They
 // get the same tools an invited agent gets, derived from the owner's preset on
@@ -6,10 +7,11 @@
 // specification asks: discovery (RFC 8414, RFC 9728), registration (RFC 7591),
 // an authorization code with PKCE, refresh tokens.
 //
-// The owner invites a hosted agent on the phone (the invitation opens the
-// public door), pastes the address into the agent, and when the agent
-// connects, the authorize page shows a code the owner matches in Reach, as for
-// any agent. Nothing here grants anything on its own: the owner's approval
+// The owner invites a hosted agent on the phone and pastes its address into
+// the agent: the invitation's own, so nothing at a shared address claims
+// anything (Oct 10: "the public link should not be the same for everyone").
+// When the agent connects, the authorize page shows a code the owner matches
+// in Reach, as for any agent. Nothing here grants anything on its own: the owner's approval
 // mints the credential (core.mjs claimHostedInvitation, pollFunnelAdmission),
 // and every tool call goes through Reach's inner routes under the preset's
 // allowlist, as the signed gateway's do (index.mjs hostedDispatch).
@@ -56,6 +58,27 @@ const escape = (value) =>
   String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const failure = (status, oauth, description) =>
   Object.assign(Error(description || MESSAGES[status] || "Request refused."), { status, ...(oauth ? { oauth, description } : {}) });
+// Every path of a hosted agent carries its address id (core.mjs
+// hostedConnector): the MCP endpoint, its discovery (RFC 9728, RFC 8414 with
+// the path inserted, and the OpenID forms), and its OAuth endpoints.
+const ID = "[A-Za-z0-9_-]{43}";
+const ROUTES = [
+  ["mcp", new RegExp(`^/mcp/(${ID})$`)],
+  ["resource", new RegExp(`^/\\.well-known/oauth-protected-resource/mcp/(${ID})$`)],
+  ["server", new RegExp(`^/\\.well-known/(?:oauth-authorization-server|openid-configuration)/mcp/(${ID})$`)],
+  ["server", new RegExp(`^/mcp/(${ID})/\\.well-known/(?:oauth-authorization-server|openid-configuration)$`)],
+  ["register", new RegExp(`^/mcp/(${ID})/oauth/register$`)],
+  ["authorize", new RegExp(`^/mcp/(${ID})/oauth/authorize$`)],
+  ["status", new RegExp(`^/mcp/(${ID})/oauth/authorize/(${ID})/status$`)],
+  ["token", new RegExp(`^/mcp/(${ID})/oauth/token$`)],
+];
+const routeOf = (pathname) => {
+  for (const [kind, pattern] of ROUTES) {
+    const match = pattern.exec(pathname);
+    if (match) return { kind, connector: match[1], pending: match[2] };
+  }
+  return null;
+};
 
 // A client's return address: https anywhere, http only on this machine
 // (a local MCP client's callback, RFC 8252), never with a fragment.
@@ -213,18 +236,18 @@ export function createHostedMcp({
 
   // What a client finds out about this server (RFC 9728, RFC 8414), at
   // whichever of the computer's addresses it asked.
-  const resourceMetadata = (base) => ({
-    resource: `${base}/mcp`,
-    authorization_servers: [base],
+  const resourceMetadata = (base, connector) => ({
+    resource: `${base}/mcp/${connector}`,
+    authorization_servers: [`${base}/mcp/${connector}`],
     bearer_methods_supported: ["header"],
     scopes_supported: [SCOPE],
     resource_name: `Reach on ${computerName}`,
   });
-  const serverMetadata = (base) => ({
-    issuer: base,
-    authorization_endpoint: `${base}/oauth/authorize`,
-    token_endpoint: `${base}/oauth/token`,
-    registration_endpoint: `${base}/oauth/register`,
+  const serverMetadata = (base, connector) => ({
+    issuer: `${base}/mcp/${connector}`,
+    authorization_endpoint: `${base}/mcp/${connector}/oauth/authorize`,
+    token_endpoint: `${base}/mcp/${connector}/oauth/token`,
+    registration_endpoint: `${base}/mcp/${connector}/oauth/register`,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code", "refresh_token"],
@@ -233,9 +256,10 @@ export function createHostedMcp({
     scopes_supported: [SCOPE],
   });
 
-  // Registration (RFC 7591): any client may register while the door is open;
-  // it gets an id, and a secret only if it asked to keep one. Bounded.
-  async function register(req, res) {
+  // Registration (RFC 7591): at an address whose invitation waits; the client
+  // gets an id bound to that address, and a secret only if it asked to keep
+  // one. Bounded.
+  async function register(req, res, connector) {
     const body = parseJson(await readBody(req, OAUTH_BODY_LIMIT));
     if (!plain(body)) throw failure(400, "invalid_client_metadata");
     const uris = body.redirect_uris;
@@ -258,7 +282,7 @@ export function createHostedMcp({
     if (Object.keys(clients).length >= MAX_CLIENTS) throw failure(429);
     const id = token();
     const secret = method === "none" ? null : token();
-    clients[id] = { name, redirectUris: uris, authMethod: method, ...(secret ? { secretHash: sha(secret) } : {}), createdAt: current, usedAt: current };
+    clients[id] = { name, redirectUris: uris, authMethod: method, connector: sha(connector), ...(secret ? { secretHash: sha(secret) } : {}), createdAt: current, usedAt: current };
     saveClients(clients);
     json(res, 201, {
       client_id: id, client_id_issued_at: Math.floor(current / 1000), client_name: name, redirect_uris: uris,
@@ -278,11 +302,11 @@ export function createHostedMcp({
   // answers on the phone (core.mjs claimHostedInvitation), and the page
   // shows the code to match. A registration or return address that doesn't
   // match gets an error page, never a redirect.
-  function authorize(res, base, url) {
+  function authorize(res, base, url, connector) {
     const query = url.searchParams;
     const clientId = query.get("client_id") || "", redirect = query.get("redirect_uri") || "";
     const client = loadClients()[clientId];
-    if (!client || !client.redirectUris.some((registered) => sameRedirect(registered, redirect)))
+    if (!client || (client.connector && client.connector !== sha(connector)) || !client.redirectUris.some((registered) => sameRedirect(registered, redirect)))
       return render(res, 400, { title: "This connection request isn't valid.", body: "<p>The agent's registration or return address doesn't match. Start again from the agent.</p>" });
     const state = query.get("state") || "";
     const back = (params) => withParams(redirect, { ...params, state });
@@ -294,23 +318,23 @@ export function createHostedMcp({
     const binding = token();
     let claim;
     try {
-      claim = auth.claimHostedInvitation(binding, { name: client.name, clientId });
+      claim = auth.claimHostedInvitation(binding, { name: client.name, clientId, connector });
     } catch (error) {
       if (error?.status === 404)
-        return render(res, 404, { title: "Nothing is waiting for this connection.", body: `<p>In Reach on your phone, invite a hosted agent first (Invite → Agent → Connects: Hosted), then connect <b>${escape(client.name)}</b> again.</p>` });
+        return render(res, 404, { title: "Nothing is waiting at this address.", body: `<p>Its invitation was used or has ended. In Reach on your phone, invite a hosted agent again (Invite → Agent → Connects: Hosted) and give <b>${escape(client.name)}</b> its new address.</p>` });
       if (error?.status === 429)
         return render(res, 429, { title: "Another connection is waiting.", body: "<p>Finish or decline it in Reach, then try again.</p>" });
       throw error;
     }
     sweep();
     const id = token();
-    pending.set(id, { id, clientId, redirect, state, challenge, binding, agentId: claim.clientId, requestId: claim.requestId, requestSecret: claim.requestSecret, until: now() + PENDING_MS });
+    pending.set(id, { id, connector, clientId, redirect, state, challenge, binding, agentId: claim.clientId, requestId: claim.requestId, requestSecret: claim.requestSecret, until: now() + PENDING_MS });
     try { claimed({ ...claim, hosted: true }); } catch { /* the owner is told by the list too */ }
     render(res, 200, {
       title: "Approve in Reach",
       body: `<p><b>${escape(client.name)}</b> wants to use <b>${escape(computerName)}</b> through Reach. On your phone, open Reach → Needs you and approve the connection with this code.</p>`,
       code: claim.verificationCode,
-      script: poll(`${base}/oauth/authorize/${id}/status`),
+      script: poll(`${base}/mcp/${connector}/oauth/authorize/${id}/status`),
     });
   }
   const redirectTo = (res, location) => {
@@ -318,10 +342,10 @@ export function createHostedMcp({
     res.end();
   };
   // The page asks: pending, or approved (the code, once) or not.
-  function statusOf(res, id) {
+  function statusOf(res, connector, id) {
     sweep();
     const entry = pending.get(id);
-    if (!entry) return json(res, 200, { status: "expired" }, { "Cache-Control": "no-store" });
+    if (!entry || entry.connector !== connector) return json(res, 200, { status: "expired" }, { "Cache-Control": "no-store" });
     const state = auth.list().find((client) => client.id === entry.agentId)?.status;
     const back = (params) => withParams(entry.redirect, { ...params, state: entry.state });
     if (state === "pending") return json(res, 200, { status: "pending" }, { "Cache-Control": "no-store" });
@@ -336,7 +360,7 @@ export function createHostedMcp({
   // The token endpoint: a code (once, with its PKCE verifier, within its
   // minutes) collects the credential the owner's approval made; a refresh
   // token trades for the next pair (core.mjs refreshHosted).
-  async function tokens(req, res) {
+  async function tokens(req, res, connector) {
     const raw = await readBody(req, OAUTH_BODY_LIMIT);
     const type = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
     const params = type === "application/json" ? parseJson(raw) : Object.fromEntries(new URLSearchParams(raw.toString("utf8")));
@@ -356,6 +380,7 @@ export function createHostedMcp({
       if (!entry || !(entry.codeUntil > now())) throw failure(400, "invalid_grant");
       // A code is spent by its first use, whatever comes of it.
       pending.delete(entry.id);
+      if (entry.connector !== connector) throw failure(400, "invalid_grant");
       if (!client || entry.clientId !== clientId || !authenticated(client, secret)) throw failure(401, "invalid_client");
       if (params.redirect_uri !== undefined && params.redirect_uri !== entry.redirect) throw failure(400, "invalid_grant");
       if (typeof params.code_verifier !== "string" || !/^[A-Za-z0-9._~-]{43,128}$/.test(params.code_verifier) ||
@@ -374,7 +399,7 @@ export function createHostedMcp({
     }
     if (params.grant_type === "refresh_token") {
       if (client && !authenticated(client, secret)) throw failure(401, "invalid_client");
-      const refreshed = auth.refreshHosted(params.refresh_token, { clientId: typeof clientId === "string" ? clientId : undefined });
+      const refreshed = auth.refreshHosted(params.refresh_token, { clientId: typeof clientId === "string" ? clientId : undefined, connector });
       if (!refreshed) throw failure(400, "invalid_grant");
       if (client) touch(clients, clientId);
       return json(res, 200, {
@@ -405,8 +430,8 @@ export function createHostedMcp({
     try { error = JSON.parse(text); } catch { /* plain text */ }
     throw agentRequestError(response.status, error);
   };
-  const unauthorized = (res, base) => json(res, 401, { error: "invalid_token", error_description: "Connect to Reach first." }, {
-    "WWW-Authenticate": `Bearer realm="Reach", resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+  const unauthorized = (res, base, connector) => json(res, 401, { error: "invalid_token", error_description: "Connect to Reach first." }, {
+    "WWW-Authenticate": `Bearer realm="Reach", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp/${connector}"`,
     "Cache-Control": "no-store",
   });
   async function answer(message, client, api, accessOf) {
@@ -446,7 +471,7 @@ export function createHostedMcp({
   }
   // MCP over HTTP (the Streamable HTTP transport, answered as JSON): one
   // message or a batch per POST, a notification gets 202, no stream opens.
-  async function mcp(req, res, base) {
+  async function mcp(req, res, base, connector) {
     const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || "")?.[1];
     const parts = auth.splitHostedToken(bearer);
     const known = !!parts && auth.hostedKeys().has(parts[0]);
@@ -457,8 +482,9 @@ export function createHostedMcp({
       return res.end(JSON.stringify({ error: req.method === "GET" ? "Reach's MCP endpoint takes POST messages and opens no event stream." : MESSAGES[405] }));
     }
     const client = parts ? auth.verifyFunnel(parts[1], parts[0]) : null;
-    if (!client || client.hosted !== true || client.kind !== "agent" || client.policy?.browser !== true || client.browserBinding !== parts[0])
-      return unauthorized(res, base);
+    if (!client || client.hosted !== true || client.kind !== "agent" || client.policy?.browser !== true || client.browserBinding !== parts[0] ||
+        client.connectorHash !== sha(connector))
+      return unauthorized(res, base, connector);
     if (!available()) throw failure(503);
     if (!/^application\/json(?:\s*;.*)?$/i.test(req.headers["content-type"] || "") || req.headers["content-encoding"]) throw failure(415);
     const body = parseJson(await readBody(req, MCP_BODY_LIMIT));
@@ -487,42 +513,22 @@ export function createHostedMcp({
     const host = requestHost(req);
     if (!hosts.has(host)) throw failure(421);
     const base = `https://${host}`;
-    if (pathname === "/mcp") return mcp(req, res, base);
-    if (req.method === "GET" && ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(pathname)) {
-      strangerGate(req);
-      return json(res, 200, resourceMetadata(base), { "Cache-Control": "no-store" });
-    }
-    if (req.method === "GET" && ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp", "/.well-known/openid-configuration"].includes(pathname)) {
-      strangerGate(req);
-      return json(res, 200, serverMetadata(base), { "Cache-Control": "no-store" });
-    }
-    if (pathname === "/oauth/register") {
-      if (req.method !== "POST") throw failure(405);
-      strangerGate(req);
-      hold(res, "strangers");
-      return register(req, res);
-    }
-    if (pathname === "/oauth/authorize") {
-      if (req.method !== "GET") throw failure(405);
-      strangerGate(req);
-      return authorize(res, base, new URL(req.url, base));
-    }
-    const status = /^\/oauth\/authorize\/([A-Za-z0-9_-]{43})\/status$/.exec(pathname);
-    if (status) {
-      if (req.method !== "GET") throw failure(405);
-      strangerGate(req);
-      return statusOf(res, status[1]);
-    }
-    if (pathname === "/oauth/token") {
-      if (req.method !== "POST") throw failure(405);
-      strangerGate(req);
-      hold(res, "strangers");
-      return tokens(req, res);
-    }
-    throw failure(404);
+    const route = routeOf(pathname);
+    if (!route) throw failure(404);
+    const { kind, connector } = route;
+    if (kind === "mcp") return mcp(req, res, base, connector);
+    const method = { resource: "GET", server: "GET", register: "POST", authorize: "GET", status: "GET", token: "POST" }[kind];
+    if (req.method !== method) throw failure(405);
+    strangerGate(req);
+    if (kind === "resource") return json(res, 200, resourceMetadata(base, connector), { "Cache-Control": "no-store" });
+    if (kind === "server") return json(res, 200, serverMetadata(base, connector), { "Cache-Control": "no-store" });
+    if (kind === "register") { hold(res, "strangers"); return register(req, res, connector); }
+    if (kind === "authorize") return authorize(res, base, new URL(req.url, base), connector);
+    if (kind === "status") return statusOf(res, connector, route.pending);
+    hold(res, "strangers");
+    return tokens(req, res, connector);
   };
-  const mine = (pathname) => pathname === "/mcp" || pathname.startsWith("/oauth/") ||
-    pathname.startsWith("/.well-known/oauth-") || pathname === "/.well-known/openid-configuration";
+  const mine = (pathname) => routeOf(pathname) !== null;
   return {
     // Answers its own paths; false for anything else.
     handle(req, res) {
@@ -534,27 +540,25 @@ export function createHostedMcp({
       void run(req, res, pathname).catch((error) => rejection(req, res, error));
       return true;
     },
-    // The public door's rule for this endpoint when nothing else opens it
-    // (index.mjs listenPrivate): a bearer token whose connection id Reach
-    // knows, and the token and discovery endpoints while any hosted agent
-    // has access or ended lately (its refreshes, and a proper 401 for an
-    // ended one). Nothing is parsed to decide.
+    // The public door's rule for these paths when nothing else opens it
+    // (index.mjs listenPrivate): only an address Reach gave out, checked by
+    // its hash before anything is read. Registration and the authorize page
+    // only while that address's invitation waits; the endpoint, discovery and
+    // the token endpoint while its agent has access or ended lately (its
+    // refreshes, and a proper 401 for an ended one); the page of an
+    // authorization under way, while it is.
     admits(req) {
-      const pathname = String(req.url || "").split("?")[0];
-      let keys;
-      try { keys = auth.hostedKeys(); } catch { return false; }
-      if (pathname === "/mcp") {
-        const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || "")?.[1];
-        const parts = auth.splitHostedToken(bearer);
-        return !!parts && keys.has(parts[0]);
-      }
-      // The page of an authorization under way asks how the owner answered:
-      // a declined one has nothing else keeping the door open for it.
-      const status = /^\/oauth\/authorize\/([A-Za-z0-9_-]{43})\/status$/.exec(pathname);
-      if (status) return req.method === "GET" && pending.has(status[1]);
-      if (!keys.size) return false;
-      return (req.method === "POST" && pathname === "/oauth/token") ||
-        (req.method === "GET" && (pathname.startsWith("/.well-known/oauth-") || pathname === "/.well-known/openid-configuration"));
+      const route = routeOf(String(req.url || "").split("?")[0]);
+      if (!route) return false;
+      let known;
+      try { known = auth.hostedConnectors().get(sha(route.connector)); } catch { return false; }
+      if (!known) return false;
+      if (route.kind === "register") return req.method === "POST" && known.waiting;
+      if (route.kind === "authorize") return req.method === "GET" && known.waiting;
+      if (route.kind === "status") return req.method === "GET" && pending.get(route.pending)?.connector === route.connector;
+      if (route.kind === "token") return req.method === "POST";
+      if (route.kind === "mcp") return true;
+      return req.method === "GET";
     },
     close() { pending.clear(); },
   };
