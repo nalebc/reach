@@ -60,7 +60,7 @@ import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
 import { ContinuedIn, MoveHint, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
-import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, type RelayStarted } from "./Relays";
+import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, armedAutoContinue, type RelayStarted } from "./Relays";
 import { HelperBadge, TeamStrip, teamHelping, teamLedBy, teamToolLabel } from "./Teams";
 import MascotTyping from "./MascotTyping";
 import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
@@ -2593,6 +2593,10 @@ export default function AgentSessionView({
     for (const r of relays) byId.set(r.id, r);
     return [...byId.values()];
   }, [relays, ownRelays]);
+  // Auto-continue on for this chat: a small sign by its name, "On" in its
+  // menu (Relays.tsx). One turned off here is off at once, before the list says.
+  const [offRelays, setOffRelays] = useState<string[]>([]);
+  const autoOn = armedAutoContinue(shownRelays.filter((r) => !offRelays.includes(r.id)), initial);
   // The team this chat leads, or works in as a helper (Teams.tsx).
   const ledTeam = teamLedBy(teams, initial);
   const helping = ledTeam ? null : teamHelping(teams, initial);
@@ -2752,6 +2756,11 @@ export default function AgentSessionView({
                 [projectName(info.cwd), whereLabel(info)].filter(Boolean),
               ),
             ].join(" · ")}
+            {autoOn && (
+              <span className="as-auto-on" role="img" aria-label="Auto-continue on" title="Auto-continue on">
+                <RefreshCw size={11} aria-hidden />
+              </span>
+            )}
           </small>
         </button>
         <span className="as-bar-pill">
@@ -2843,13 +2852,14 @@ export default function AgentSessionView({
             />
             {!continuing && (
               <>
-                {(info.agent === "claude" || info.agent === "codex") && !info.movedFrom && (
+                {(info.agent === "claude" || info.agent === "codex") && (!info.movedFrom || autoOn) && (
                   <button className="relay-menu-item" role="menuitem" onClick={() => {
                     setDetails(false);
                     setRelaySheet({ mode: "auto-continue" });
                   }}>
                     <RefreshCw size={18} />
                     <span className="move-item-text"><span>Auto-continue</span></span>
+                    {autoOn && <small className="relay-menu-value">On</small>}
                   </button>
                 )}
                 {/* Its work goes on to another agent (Relays.tsx). */}
@@ -3795,8 +3805,13 @@ export default function AgentSessionView({
         />
       )}
       {relaySheet?.mode === "auto-continue" && (
-        <AutoContinueSheet peer={peer} session={info} health={health}
-          onClose={() => setRelaySheet(null)} onStarted={relayStarted} />
+        <AutoContinueSheet peer={peer} session={info} health={health} on={autoOn}
+          onClose={() => setRelaySheet(null)} onStarted={relayStarted}
+          onOff={(r) => {
+            setOffRelays((ids) => [...ids, r.id]);
+            setRelaySheet(null);
+            onRelaysChanged?.();
+          }} />
       )}
       {relaySheet?.mode === "relay" && (
         <RelaySheet

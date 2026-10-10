@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Info, Loader2, Plus, SearchCheck, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Info, Loader2, Plus, RefreshCw, SearchCheck, Workflow, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import ChatSheet from "./ChatSheet";
@@ -90,6 +90,18 @@ export const relaysOf = (relays: Relay[], here: ChatRef, now = Date.now()) =>
       (["waiting", "sending"].includes(r.state) || now - r.updatedAt < 60 * 60 * 1000),
   );
 
+// Auto-continue that's on and waiting for a limit: a small sign by the chat's
+// name and "On" in its menu, never a row above the box (Oct 9: "it should
+// not show a big thing like this"). Out of usage, continuing or stopped, it
+// shows as a row again: then it's doing something.
+export const armedAutoContinue = (relays: Relay[], here: ChatRef) =>
+  relays.find(
+    (r) => r.trigger === "usage" && r.state === "waiting" && !r.holding && r.chain.some((c) => c.agent === here.agent && c.id === here.id),
+  ) || null;
+// Turned off by you (relays.mjs cancel): nothing to tell.
+const quietRelay = (r: Relay) =>
+  r.trigger === "usage" && ((r.state === "waiting" && !r.holding) || (r.state === "stopped" && r.problem === "Cancelled."));
+
 // Above the message box: each relay this chat is part of, with the way to
 // the chat it's in now, and Cancel while it waits.
 export function RelayStrip({
@@ -110,7 +122,7 @@ export function RelayStrip({
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
   const [gone, setGone] = useState<string[]>([]);
-  const mine = relaysOf(relays, here).filter((r) => !gone.includes(r.id));
+  const mine = relaysOf(relays, here).filter((r) => !gone.includes(r.id) && !quietRelay(r));
   if (!mine.length) return null;
   const cancel = async (r: Relay) => {
     setBusy(r.id);
@@ -554,9 +566,12 @@ export function SecondOpinionButton({ onClick, labelled = false }: { onClick: ()
 }
 
 // Uses the same persisted, cancellable watch as a relay, with a usage-only trigger.
-export function AutoContinueSheet({ peer, session, health, onClose, onStarted }: {
+export function AutoContinueSheet({ peer, session, health, on = null, onClose, onStarted, onOff }: {
   peer: Peer; session: AgentSession; health: AgentHealth[];
+  // On already (armedAutoContinue): where it goes, and Turn off.
+  on?: Relay | null;
   onClose: () => void; onStarted: (started: RelayStarted) => void;
+  onOff?: (relay: Relay) => void;
 }) {
   const storageKey = `reach-continue-priority:${peer.id}`;
   const [order, setOrder] = useState<string[]>(() => {
@@ -595,6 +610,30 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
       setBusy(false);
     }
   };
+  if (on) {
+    const turnOff = async () => {
+      setBusy(true);
+      setProblem("");
+      try {
+        await cancelRelay(peer, on.id);
+        onOff?.(on);
+      } catch (e) {
+        setProblem((e as Error).message);
+        setBusy(false);
+      }
+    };
+    const until = new Date(on.createdAt + 24 * 60 * 60 * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+      <div className="continue-on">
+        <RefreshCw size={18} aria-hidden />
+        <span><strong>On</strong><small>{(on.priority || []).map(agentLabel).join(" → ")} · until {until}</small></span>
+      </div>
+      {problem && <p className="relay-problem" role="alert">{problem}</p>}
+      <button className="relay-go" disabled={busy} onClick={() => void turnOff()}>
+        {busy ? <Loader2 size={16} className="spin" /> : "Turn off"}
+      </button>
+    </ChatSheet>;
+  }
   return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
     <p className="relay-say">When usage runs out, continue with the first free provider, with the conversation history. If none is free, it waits: the first one back takes the work, this one included. If several are free, this order decides.</p>
     <ol className="continue-priority" aria-label="Provider priority">
@@ -613,7 +652,7 @@ export function AutoContinueSheet({ peer, session, health, onClose, onStarted }:
         </li>;
       })}
     </ol>
-    <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Cancel above the message box. Your order is remembered on this device.</p>
+    <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Turn it off from the chat's menu. Your order is remembered on this device.</p>
     {!ready && <p className="relay-problem">Select another provider Reach can continue in.</p>}
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>

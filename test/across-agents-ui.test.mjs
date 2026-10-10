@@ -1002,15 +1002,32 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   assert.equal(mac.sent.length, 0);
   await click(button("Move Claude Code up"));
   await click(button("Enable auto-continue"));
-  await dom.waitFor(() => $(".relay-strip"));
+  // On: a small sign by the chat's name, no row above the box.
+  await dom.waitFor(() => $(".as-auto-on"));
+  assert.equal($(".relay-strip"), null);
   assert.deepEqual(mac.sent[0], { route: "/api/sessions/relays", body: {
     from: { agent: "codex", id: CODEX }, priority: ["claude", "codex", "gemini", "openclaw"], trigger: "usage",
   } });
-  assert.match($(".relay-strip").textContent, /Auto-continue: Codex → Claude Code → Gemini CLI → OpenClaw/);
   assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex", "gemini", "openclaw"]);
-  await click(button("Cancel handoff"));
-  await dom.waitFor(() => !$(".relay-row"));
+  // The menu says On; its sheet says where it goes and turns it off.
+  await click(button("More"));
+  const item = await dom.waitFor(() => $$(".relay-menu-item").find(b => b.textContent.includes("Auto-continue")));
+  assert.equal(item.querySelector(".relay-menu-value").textContent, "On");
+  await click(item);
+  const on = await dom.waitFor(() => $(".continue-on"));
+  assert.match(on.textContent, /^OnCodex → Claude Code → Gemini CLI → OpenClaw · until /);
+  await click(button("Turn off"));
+  await dom.waitFor(() => !$(".as-auto-on"));
   assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
+  assert.equal($(".relay-strip"), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("auto-continue shows as a row only once it acts: out of usage and waiting for a provider", async () => {
+  await open(codexSession(), both(), { relays: [relayOf({ trigger: "usage", priority: ["codex", "claude"], holding: true })] });
+  const row = await dom.waitFor(() => $(".relay-row"));
+  assert.match(row.textContent, /Out of usage. Waiting for the first free provider: Codex, Claude Code./);
+  assert.equal($(".as-auto-on"), null);
   assert.deepEqual(dom.errors, []);
 });
 

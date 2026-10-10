@@ -414,6 +414,11 @@
 .continue-priority small { opacity: .65; margin-top: 3px; }
 .continue-priority button { display: grid; place-items: center; min-width: 40px; min-height: 40px; }
 .continue-priority button:disabled { opacity: .3; }
+/* Auto-continue on: where it goes, in one row. */
+.continue-on { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
+.continue-on > svg { flex: none; color: var(--reach-mint); }
+.continue-on strong, .continue-on small { display: block; }
+.continue-on small { opacity: .65; margin-top: 3px; }
 
 /* Plain, always-visible choices for a handoff; extra steps are optional. */
 .handoff-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 13px; color: var(--reach-ink); }
