@@ -1,19 +1,21 @@
 // Agents' saved tools drive Chrome or Safari with Apple Events
 // (tool-browser-driver.mjs), which needs two things the owner turns on once:
 // macOS Automation (Reach's Terminal may control the browser) and the
-// browser's "Allow JavaScript from Apple Events". Reach can't grant either:
+// browser's own "Allow JavaScript from Apple Events". Reach grants neither:
 // it reads where each stands, shows macOS's own prompt on the Mac when asked
 // to, and opens the right System Settings page. The owner clicks there.
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fail } from "./core.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
 import { TOOL_BROWSERS } from "./tool-protocol.mjs";
 
 const APPS = { Chrome: "/Applications/Google Chrome.app", Safari: "/Applications/Safari.app" };
 const STATES = new Map([[0, "allowed"], [-1743, "off"], [-1744, "ask"], [-600, "closed"]]);
-// The browser's own switch: never flipped by Reach (it lets anything allowed
-// to automate the browser run scripts in every open tab).
+// Where each browser's own switch is. Never flipped by Reach: on, anything
+// macOS lets control the browser can run scripts in its tabs.
 export const JAVASCRIPT_SETTING = {
   Chrome: "In Chrome: View → Developer → Allow JavaScript from Apple Events.",
   Safari: "In Safari: Settings → Advanced → Show features for web developers, then Develop → Allow JavaScript from Apple Events.",
@@ -47,8 +49,31 @@ const openPane = () => new Promise((resolve) => {
   child.on("error", () => resolve(false));
   child.on("close", (code) => resolve(code === 0));
 });
+// A closed browser, launched hidden and in the background: macOS can only
+// say whether Reach may control a browser that runs.
+const launchHidden = (app) => new Promise((resolve) => {
+  const child = spawn("/usr/bin/open", ["-g", "-j", "-a", app], { stdio: "ignore" });
+  child.on("error", () => resolve(false));
+  child.on("close", (code) => setTimeout(() => resolve(code === 0), 1500));
+});
+// A browser's own setting, read through the system, never written: null
+// when unset, the text when set, an error when it can't be read.
+const readDefault = (domain, key) => new Promise((resolve, reject) => {
+  execFile("/usr/bin/defaults", ["read", domain, key], { timeout: 5000 }, (error, stdout, stderr) => {
+    if (!error) return resolve(String(stdout).trim());
+    if (/does not exist/.test(String(stderr))) return resolve(null);
+    reject(error);
+  });
+});
 
-export function createToolSetup({ config, run = helperRun(config), open = openPane, exists = fs.existsSync, platform = process.platform } = {}) {
+const NEEDED_MS = 7 * 86400_000;
+export function createToolSetup({
+  config, run = helperRun(config), open = openPane, launch = launchHidden, defaults = readDefault,
+  exists = fs.existsSync, home = os.homedir(), platform = process.platform, now = Date.now,
+} = {}) {
+  // Which browsers an agent's tool needed and couldn't have, lately: the
+  // owner is shown those, not a setup chore for every browser installed.
+  const needs = new Map();
   const browsers = () => Object.entries(TOOL_BROWSERS).filter(([id]) => exists(APPS[id]));
   const state = (answer) => (answer?.asking ? "asking" : STATES.get(answer?.status) || "unknown");
   const browser = (id) => {
@@ -56,20 +81,52 @@ export function createToolSetup({ config, run = helperRun(config), open = openPa
     if (!found) throw fail(404, "Choose Chrome or Safari, installed on this Mac.");
     return found;
   };
+  // The browser's own switch, where the browser keeps it: Chrome's Local
+  // State (browser.allow_javascript_apple_events, absent until first turned
+  // on), Safari's defaults (AllowJavaScriptFromAppleEvents). A browser never
+  // run has nothing on: off. Unreadable: unknown, never claimed on.
+  const javascript = async (id) => {
+    try {
+      if (id === "Chrome") {
+        const file = path.join(home, "Library", "Application Support", "Google", "Chrome", "Local State");
+        if (!exists(file)) return "off";
+        return JSON.parse(fs.readFileSync(file, "utf8"))?.browser?.allow_javascript_apple_events === true ? "on" : "off";
+      }
+      if (id === "Safari") {
+        const value = await defaults("com.apple.Safari", "AllowJavaScriptFromAppleEvents");
+        return value === null ? "off" : ["1", "true", "yes"].includes(value.toLowerCase()) ? "on" : "off";
+      }
+    } catch { /* said as unknown */ }
+    return "unknown";
+  };
+  const entry = (id, automation, js) => ({ id, automation, javascript: js, ready: automation === "allowed" && js === "on",
+    needed: now() - (needs.get(id) || 0) < NEEDED_MS, where: JAVASCRIPT_SETTING[id] });
   return {
+    needed(id) { if (Object.hasOwn(APPS, id)) needs.set(id, now()); },
     async status() {
       if (platform !== "darwin") return { available: false, browsers: [] };
       const list = [];
-      for (const [id, bundle] of browsers())
-        list.push({ id, automation: state(await run("check", bundle)), javascript: JAVASCRIPT_SETTING[id] });
+      try {
+        for (const [id, bundle] of browsers())
+          list.push(entry(id, state(await run("check", bundle)), await javascript(id)));
+      } catch (error) {
+        // The check itself can't run yet (no Command Line Tools): the
+        // browsers are still listed, with what's missing, not hidden.
+        if (error.status !== 503) throw error;
+        const listed = [];
+        for (const [id] of browsers()) listed.push(entry(id, "unknown", await javascript(id)));
+        return { available: true, browsers: listed, problem: error.message };
+      }
       return { available: true, browsers: list };
     },
-    // macOS's own prompt on the Mac, if it hasn't asked yet; turned off
-    // before, the Automation settings open there instead.
+    // macOS's own prompt on the Mac, if it hasn't asked yet (a closed browser
+    // is launched hidden first); turned off before, the Automation settings
+    // open there instead.
     async ask(id) {
       if (platform !== "darwin") throw fail(404, "Saved tools need macOS.");
       const [name, bundle] = browser(id);
-      const automation = state(await run("ask", bundle));
+      let automation = state(await run("ask", bundle));
+      if (automation === "closed" && (await launch(APPS[name]))) automation = state(await run("ask", bundle));
       if (automation === "off") return { id: name, automation, settings: await open() };
       return { id: name, automation };
     },

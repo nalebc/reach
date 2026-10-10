@@ -1,41 +1,74 @@
-import { useCallback, useEffect, useState } from "react";
-import { Wrench } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ChevronRight, Wrench } from "lucide-react";
 import { request, type Peer } from "./api";
+import ScreenPopup from "./ScreenPopup";
+import "./tool-setup.css";
 
-// Agents' saved tools run on the Mac, in your own Chrome or Safari, with no
-// round trips: macOS has to let Reach control that browser, and the browser
-// has to allow JavaScript from Apple Events. Reach shows where each stands,
-// asks macOS for you, and opens the right settings; you click on the Mac.
+// Agents' saved tools (Gmail, Walmart…) run on the Mac, in your own Chrome
+// or Safari, with no round trips: macOS has to let Reach control that
+// browser, and the browser has to allow JavaScript from Apple Events. One
+// row once an agent's tool needed a browser that isn't set up, nothing
+// otherwise. The sheet shows both switches as they are; you turn them on
+// at the Mac.
 type Automation = "allowed" | "ask" | "off" | "closed" | "asking" | "unknown";
-type Setup = {
-  available: boolean;
-  browsers: { id: string; automation: Automation; javascript: string }[];
+type Browser = {
+  id: string;
+  automation: Automation;
+  javascript: "on" | "off" | "unknown";
+  ready: boolean;
+  // An agent's tool asked for this browser lately.
+  needed: boolean;
+  where: string;
 };
-const WORDS: Record<Automation, string> = {
-  allowed: "Reach may control it",
+type Setup = { available: boolean; browsers: Browser[]; problem?: string };
+const AUTOMATION: Record<Automation, string> = {
+  allowed: "On",
   ask: "Not asked yet",
-  off: "Turned off for Reach",
-  closed: "Open it on the Mac, then check",
-  asking: "Answer on the Mac",
+  closed: "Not asked yet",
+  asking: "Answer the prompt on the Mac",
+  off: "Off in System Settings",
   unknown: "Couldn't check",
 };
+const POLL_MS = 3000;
 
-export default function ToolBrowserSetup({ peer }: { peer: Peer }) {
+export default function ToolBrowserSetup({
+  peer,
+  toast,
+}: {
+  peer: Peer;
+  toast?: (message: string) => void;
+}) {
   const [setup, setSetup] = useState<Setup | null>(null);
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const wasNeeded = useRef(false);
   const load = useCallback(async () => {
     try {
-      setSetup(await request<Setup>(peer, "/api/agents/tool-setup"));
+      const next = await request<Setup>(peer, "/api/agents/tool-setup");
+      setSetup(next);
       setError("");
+      const needed = next.available && next.browsers.some((browser) => browser.needed && !browser.ready);
+      if (wasNeeded.current && !needed) {
+        setOpen(false);
+        toast?.("Browser tools are ready.");
+      }
+      wasNeeded.current = needed;
     } catch (e) {
       setSetup(null);
       setError((e as Error).message);
     }
-  }, [peer]);
+  }, [peer, toast]);
   useEffect(() => {
     void load();
   }, [load]);
+  // While the sheet is open, the Mac is looked at again every few seconds:
+  // a switch turned on there shows here without a tap.
+  useEffect(() => {
+    if (!open) return;
+    const timer = setInterval(() => void load(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [open, load]);
   const act = async (browser: string, action: "ask" | "settings") => {
     setBusy(browser);
     try {
@@ -50,62 +83,101 @@ export default function ToolBrowserSetup({ peer }: { peer: Peer }) {
       setBusy("");
     }
   };
-  if (!setup?.available || !setup.browsers.length) return null;
+  const browsers = setup?.available ? setup.browsers : [];
+  const needed = browsers.filter((browser) => browser.needed && !browser.ready);
+  if (!needed.length) return null;
+  const summary = `An agent's tool needs ${needed.map((browser) => browser.id).join(" and ")}`;
   return (
-    <section className="service-access" aria-label="Saved tools on this Mac">
-      <h3>
-        <Wrench size={17} /> Saved tools on this Mac
-      </h3>
-      <p>
-        Agents' saved tools run right on the Mac, in your own browser. Each
-        browser needs two switches, turned on once by you.
-      </p>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
+    <>
+      <button
+        type="button"
+        className="ag-agent-head ts-row"
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
+      >
+        <span className="ts-icon" aria-hidden="true">
+          <Wrench size={20} />
+        </span>
+        <span className="ag-agent-title">
+          <strong>Browser tools</strong>
+          <small>{summary}</small>
+        </span>
+        <span className="ts-cta">
+          Set up <ChevronRight size={16} aria-hidden="true" />
+        </span>
+      </button>
+      {open && (
+        <ScreenPopup title="Browser tools" onClose={() => setOpen(false)}>
+          <p className="ag-quiet">
+            Agents' ready-made tasks run in your own browser on the Mac. Two
+            switches per browser, turned on once, by you.
+          </p>
+          {(error || setup?.problem) && (
+            <p role="alert" className="error">
+              {error || setup?.problem}
+            </p>
+          )}
+          {browsers.map((browser) => (
+            <section key={browser.id} className="ts-browser" aria-label={browser.id}>
+              <h4>
+                {browser.id}
+                {browser.ready && <span className="ts-ready">Ready</span>}
+              </h4>
+              <div className="ts-step">
+                <span className={`ts-mark${browser.automation === "allowed" ? " is-on" : ""}`} aria-hidden="true">
+                  {browser.automation === "allowed" ? <Check size={14} /> : "1"}
+                </span>
+                <span className="ts-words">
+                  <strong>macOS lets Reach control {browser.id}</strong>
+                  <small>{AUTOMATION[browser.automation]}</small>
+                </span>
+                {browser.automation === "off" ? (
+                  <button
+                    type="button"
+                    className="ag-secondary ag-small"
+                    disabled={!!busy}
+                    onClick={() => void act(browser.id, "settings")}
+                  >
+                    Open settings on the Mac
+                  </button>
+                ) : browser.automation !== "allowed" ? (
+                  <button
+                    type="button"
+                    className="ag-secondary ag-small"
+                    disabled={!!busy}
+                    onClick={() => void act(browser.id, "ask")}
+                  >
+                    Ask on the Mac
+                  </button>
+                ) : null}
+              </div>
+              <div className="ts-step">
+                <span className={`ts-mark${browser.javascript === "on" ? " is-on" : ""}`} aria-hidden="true">
+                  {browser.javascript === "on" ? <Check size={14} /> : "2"}
+                </span>
+                <span className="ts-words">
+                  <strong>Allow JavaScript from Apple Events</strong>
+                  <small>{browser.javascript === "on" ? "On" : browser.where}</small>
+                </span>
+                {browser.javascript !== "on" && (
+                  <button
+                    type="button"
+                    className="ag-secondary ag-small"
+                    disabled={!!busy}
+                    onClick={() => void load()}
+                  >
+                    Check
+                  </button>
+                )}
+              </div>
+            </section>
+          ))}
+          <p className="ag-quiet">
+            Once on, any app macOS lets control a browser can run scripts in
+            its tabs, signed-in ones included.
+          </p>
+        </ScreenPopup>
       )}
-      {setup.browsers.map((browser) => (
-        <article key={browser.id} className="service-card">
-          <strong>
-            {browser.id} · {WORDS[browser.automation]}
-          </strong>
-          <p>{browser.javascript}</p>
-          <div className="service-actions">
-            {browser.automation === "ask" && (
-              <button
-                className="ag-secondary ag-small"
-                disabled={!!busy}
-                onClick={() => void act(browser.id, "ask")}
-              >
-                Ask on the Mac
-              </button>
-            )}
-            {(browser.automation === "off" || browser.automation === "unknown") && (
-              <button
-                className="ag-secondary ag-small"
-                disabled={!!busy}
-                onClick={() => void act(browser.id, "settings")}
-              >
-                Open settings on the Mac
-              </button>
-            )}
-            {browser.automation !== "allowed" && (
-              <button
-                className="ag-secondary ag-small"
-                disabled={!!busy}
-                onClick={() => void load()}
-              >
-                Check again
-              </button>
-            )}
-          </div>
-        </article>
-      ))}
-      <p className="service-muted">
-        Allowing JavaScript from Apple Events lets any app you allow to control
-        that browser run scripts in its tabs, including signed-in ones.
-      </p>
-    </section>
+    </>
   );
 }

@@ -55,6 +55,9 @@ export function createAgentTools(
     driver = createToolBrowserDriver(),
     record = () => {},
     hosts = () => [],
+    // A tool that couldn't run until the owner sets its browser up: told,
+    // so Reach can show the owner just that (tool-setup.mjs).
+    onSetupRequired = () => {},
     now = Date.now,
     wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     waitMs = 8000,
@@ -1069,6 +1072,7 @@ export function createAgentTools(
               ? "needs_owner"
               : "stopped";
         entry.code = error.code || error.kind || "stopped";
+        if (entry.code === "setup_required") onSetupRequired(input.browser);
         results.set(key, {
           protocol: TOOL_PROTOCOL,
           id: definition.id,

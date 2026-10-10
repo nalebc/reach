@@ -684,7 +684,7 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       <ErrorLine error={historyError} />
       <AgentShortcuts peer={peer} toast={toast} />
       <ServiceAccessPanel peer={peer} />
-      <ToolBrowserSetup peer={peer} />
+      <ToolBrowserSetup peer={peer} toast={toast} />
       {stopSnapshot && (
         <div
           className="ba-stop-confirm ag-confirm"

@@ -879,7 +879,12 @@ export async function createReach(overrides = {}) {
     screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record,
   }) : null);
   const agentShortcuts = createAgentShortcuts({ dataDir: config.dataDir, desktop: agentDesktop, record });
+  // Saved tools on this Mac: where macOS Automation and the browser's own
+  // setting stand, macOS's prompt on request, the settings page opened.
+  // Shown to the owner only once a tool needed it (routes below).
+  const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
   const agentTools = createAgentTools(config, { desktop: agentDesktop, record, hosts: () => reachAddresses(config),
+    onSetupRequired: (browser) => toolSetup.needed(browser),
     ...(overrides.browserToolOptions || {}) });
   const agentServices = createAgentServices({ record, notify,
     connectors: createServiceConnectors(agentTools),
@@ -1935,10 +1940,7 @@ export async function createReach(overrides = {}) {
     for (const nudge of presenceNudges) nudge();
     res.json(result);
   });
-  // Saved tools on this Mac: where macOS Automation and the browser's own
-  // setting stand, macOS's prompt on request, the settings page opened.
   // Your own devices only; the clicks that grant it are yours, on the Mac.
-  const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
   const toolSetupOwner = (req) => {
     const client = req.reauthorize();
     if (client.kind !== "device" || !client.scopes.includes("admin"))
