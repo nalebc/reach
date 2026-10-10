@@ -149,11 +149,12 @@ test("the chat's ⋯ menu has one Continue in… row; it lists the apps with the
   assert.equal(offer(menu).length, 0);
   assert.doesNotMatch(menu.textContent, /Open in the/);
   assert.equal(menu.querySelector(".agent-logo"), null);
-  assert.equal(menu.querySelector(".move-continue").textContent, "Continue in…");
+  assert.equal(menu.querySelector(".move-continue").textContent, "Continue now in…");
   const item = await continueIn();
   // The menu is the apps now, with a way back.
-  assert.equal(menu.querySelector(".move-section-back").textContent, "Continue in");
+  assert.equal(menu.querySelector(".move-section-back").textContent, "Continue now in");
   assert.equal(menu.querySelector(".relay-menu-item"), null);
+  assert.equal(menu.querySelector(".as-menu-section"), null, "no group name over the apps");
   assert.ok(item.querySelector(".agent-logo"), "with the app's logo");
   assert.equal(item.textContent, "Codex");
   await click(item);
@@ -389,10 +390,10 @@ test("holding a chat shows its menu (Open, New chat in its folder, Continue in�
   const menu = $(".chat-popover");
   assert.ok(menu, "menu shows");
   assert.match(menu.querySelector(".chat-popover-head").textContent, /Sign up/);
-  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue in…", "Archive"]);
-  // Continue in… turns the menu into the apps, with a way back.
+  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue now in…", "Archive"]);
+  // Continue now in… turns the menu into the apps, with a way back.
   await click($(".chat-popover .move-continue"));
-  assert.deepEqual(menuRows(), ["Continue in", "Codex"]);
+  assert.deepEqual(menuRows(), ["Continue now in", "Codex"]);
   await click($(".chat-popover .move-section-back"));
   await click($$(".chat-popover .move-item").find((b) => b.textContent.includes("New chat in app")));
   assert.deepEqual(news, ["/work/app"]);

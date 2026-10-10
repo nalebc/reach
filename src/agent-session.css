@@ -1328,6 +1328,12 @@ button.as-mode:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A group's name over its rows ("Another agent"), as ChatGPT's menus do. */
+.as-menu-section {
+  padding: 6px 10px 2px;
+  color: var(--as-muted);
+  font-size: 12px;
+}
 .as-scroll {
   padding: 20px clamp(16px, 4vw, 32px);
   gap: 20px;

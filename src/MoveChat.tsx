@@ -211,7 +211,8 @@ export function MoveOffer({
   );
 }
 
-// In a chat's menu (its ⋯, or held on the list): one "Continue in…" row;
+// In a chat's menu (its ⋯, or held on the list): one "Continue now in…" row
+// (now, against the menu's "When this finishes…" and "If usage runs out");
 // a tap turns the menu into the apps found on the Mac, each with its logo
 // (moveChoices). One tap on an app says what happens, the next one moves it;
 // an app that can't take the chat shows, greyed, with why.
@@ -263,7 +264,7 @@ export function MoveItems({
       <button role="menuitem" className="move-item move-continue" onClick={onOpen}>
         <ArrowLeftRight size={18} />
         <span className="move-item-text">
-          <span>Continue in…</span>
+          <span>Continue now in…</span>
         </span>
         <ChevronRight size={16} />
       </button>
@@ -273,7 +274,7 @@ export function MoveItems({
       <button role="menuitem" className="move-item move-section-back" disabled={busy} onClick={onBack}>
         <ChevronLeft size={16} />
         <span className="move-item-text">
-          <span>Continue in</span>
+          <span>Continue now in</span>
         </span>
       </button>
       {choices.map(({ to, name, blocked }) => {

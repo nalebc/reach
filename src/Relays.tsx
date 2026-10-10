@@ -366,6 +366,7 @@ export function RelaySheet({
   sessions,
   cwd,
   item,
+  finish = false,
   postTo,
   health,
   logos,
@@ -380,6 +381,9 @@ export function RelaySheet({
   cwd?: string;
   // From one reply further up: it goes on now, from that reply.
   item?: string;
+  // "When this finishes…" (the chat's menu, the chip above the box): only
+  // when this turn ends; now is Continue now in… or a reply's own Hand off.
+  finish?: boolean;
   // As SecondOpinionSheet's: the app the last answer can be posted on.
   postTo?: string;
   health: AgentHealth[];
@@ -394,7 +398,7 @@ export function RelaySheet({
   const [steps, setSteps] = useState<RelayStep[]>(first ? [{ kind: "build", agent: first }] : []);
   const [to, setTo] = useState<AgentSession | null>(null);
   const [note, setNote] = useState("");
-  const [when, setWhen] = useState<"now" | "next">(item ? "now" : working || !hasReply ? "next" : "now");
+  const [when, setWhen] = useState<"now" | "next">(item ? "now" : finish || working || !hasReply ? "next" : "now");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   // Chats a reply can go to: Codex and Claude Code chats, newest first.
@@ -432,9 +436,9 @@ export function RelaySheet({
     }
   };
   return (
-    <ChatSheet title="Hand off" className="relay-sheet reach-native" onClose={onClose}>
-      <p className="relay-hint">Share this reply and its context with another agent.</p>
-      <p className="relay-when-line">{item ? "Uses the selected reply" : working ? `When ${agentLabel(from)} finishes` : hasReply ? `${agentLabel(from)}’s reply` : `When ${agentLabel(from)} next replies`}</p>
+    <ChatSheet title={finish ? "When this finishes" : "Hand off"} className="relay-sheet reach-native" onClose={onClose}>
+      <p className="relay-hint">{finish ? "Its reply and context go to another agent." : "Share this reply and its context with another agent."}</p>
+      <p className="relay-when-line">{item ? "Uses the selected reply" : working ? `When ${agentLabel(from)} finishes` : finish ? `When ${agentLabel(from)} next finishes` : hasReply ? `${agentLabel(from)}’s reply` : `When ${agentLabel(from)} next replies`}</p>
       {agents.length ? (
         <>
           <label className="handoff-field">
@@ -523,7 +527,7 @@ export function RelaySheet({
               </button>}
             </details>
           )}
-          {!working && hasReply && !item && (
+          {!working && hasReply && !item && !finish && (
             <div className="relay-when" role="radiogroup" aria-label="When">
               <button role="radio" aria-checked={when === "now"} disabled={busy} onClick={() => setWhen("now")}>
                 Now — latest reply
@@ -542,7 +546,7 @@ export function RelaySheet({
           )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={!ready || busy} onClick={() => void go()}>
-            {busy ? <Loader2 size={16} className="spin" /> : item || (when === "now" && !working && hasReply) ? "Hand off now" : "Hand off after reply"}
+            {busy ? <Loader2 size={16} className="spin" /> : finish ? "Hand off when it finishes" : item || (when === "now" && !working && hasReply) ? "Hand off now" : "Hand off after reply"}
           </button>
         </>
       ) : (
@@ -652,7 +656,8 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     }
   };
   const until = on && new Date(on.createdAt + 24 * 60 * 60 * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
-  return <ChatSheet title="Auto-continue" className="relay-sheet reach-native" onClose={onClose}>
+  // Named as its row in the chat's menu: by when it acts.
+  return <ChatSheet title="If usage runs out" className="relay-sheet reach-native" onClose={onClose}>
     {on ? (
       <div className="continue-on">
         <RefreshCw size={18} aria-hidden />
@@ -682,7 +687,7 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     {!on ? (
       <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
-        {busy ? <Loader2 size={16} className="spin" /> : "Enable auto-continue"}
+        {busy ? <Loader2 size={16} className="spin" /> : "Turn on"}
       </button>
     ) : (
       <>

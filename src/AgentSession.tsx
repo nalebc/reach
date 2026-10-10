@@ -2582,7 +2582,8 @@ export default function AgentSessionView({
   }, [details]);
   // A second opinion on a reply, or a relay for when this chat's agent
   // finishes (Relays.tsx). One just set up shows at once, before the list has it.
-  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay" | "auto-continue" }>(null);
+  // finish: from the menu or the chip, it waits for this turn to end (no "now").
+  const [relaySheet, setRelaySheet] = useState<null | { mode: "opinion"; item?: string } | { mode: "relay"; finish?: boolean } | { mode: "auto-continue" }>(null);
   const [ownRelays, setOwnRelays] = useState<Relay[]>([]);
   const shownRelays = useMemo(() => {
     const byId = new Map(ownRelays.map((r) => [r.id, r]));
@@ -2777,7 +2778,7 @@ export default function AgentSessionView({
               <skin.compose size={19} />
             </button>
           )}
-          {/* The chat's menu (details, "Continue in…"): a plain ⋯, still. */}
+          {/* The chat's menu (details, "Continue now in…"): a plain ⋯, still. */}
           <button
             className="as-icon"
             aria-label="More"
@@ -2831,6 +2832,9 @@ export default function AgentSessionView({
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>}
+            {/* Passing the work to another agent, each row named by when
+                (Oct 9: "Hand off and continue in are confusing"). */}
+            {!continuing && <div className="as-menu-section" role="presentation">Another agent</div>}
             {/* Continue this chat in the other app. */}
             <MoveItems
               peer={peer}
@@ -2848,30 +2852,31 @@ export default function AgentSessionView({
             />
             {!continuing && (
               <>
+                {/* Its work goes on to another agent once this turn ends (Relays.tsx). */}
+                <button
+                  className="relay-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setDetails(false);
+                    setRelaySheet({ mode: "relay", finish: true });
+                  }}
+                >
+                  <Workflow size={18} />
+                  <span className="move-item-text">
+                    <span>When this finishes…</span>
+                  </span>
+                  <ChevronRight size={16} />
+                </button>
                 {(info.agent === "claude" || info.agent === "codex") && (!info.movedFrom || autoOn) && (
                   <button className="relay-menu-item" role="menuitem" onClick={() => {
                     setDetails(false);
                     setRelaySheet({ mode: "auto-continue" });
                   }}>
                     <RefreshCw size={18} />
-                    <span className="move-item-text"><span>Auto-continue</span></span>
+                    <span className="move-item-text"><span>If usage runs out</span></span>
                     {autoOn && <small className="relay-menu-value">On</small>}
                   </button>
                 )}
-                {/* Its work goes on to another agent (Relays.tsx). */}
-                <button
-                  className="relay-menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setDetails(false);
-                    setRelaySheet({ mode: "relay" });
-                  }}
-                >
-                  <Workflow size={18} />
-                  <span className="move-item-text">
-                    <span>Hand off</span>
-                  </span>
-                </button>
                 {!!lastReply && (
                   <button
                     className="relay-menu-item"
@@ -3503,8 +3508,8 @@ export default function AgentSessionView({
         {working &&
           (agent === "codex" || agent === "claude") &&
           !shownRelays.some((r) => r.state === "waiting" && r.chain.at(-1)?.agent === agent && r.chain.at(-1)?.id === initial.id) && (
-            <button className="relay-when-chip" aria-label="Hand off when done" onClick={() => setRelaySheet({ mode: "relay" })}>
-              <Workflow size={14} /> When done, hand off…
+            <button className="relay-when-chip" aria-label="When this finishes" onClick={() => setRelaySheet({ mode: "relay", finish: true })}>
+              <Workflow size={14} /> When this finishes…
             </button>
           )}
         {/* The team this chat leads (Teams.tsx). */}
@@ -3814,6 +3819,7 @@ export default function AgentSessionView({
           session={info}
           working={working}
           hasReply={!!lastReply}
+          finish={relaySheet.finish}
           sessions={everyone}
           health={health}
           logos={logos}
