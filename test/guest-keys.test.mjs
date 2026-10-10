@@ -462,7 +462,10 @@ test(
     reach.auth.decideAgentAdmission(a.claim.requestId, "approve");
     const joined = reach.auth.pollAgentAdmission(a.claim.requestId, a.claim.requestSecret, { nodeId: "nAgentA", userId: "", tagged: true, validUntil: Date.now() + 60000 });
     assert.ok(joined.token);
-    const left = await call("/api/device/access", "100.64.0.20", joined.token, "DELETE");
+    // It trades its credential (audit M6), then leaves with the new one.
+    const traded = await call("/api/device/rotate", "100.64.0.20", joined.token, "POST", {});
+    assert.equal(traded.status, 200, JSON.stringify(traded.json));
+    const left = await call("/api/device/access", "100.64.0.20", traded.json.token, "DELETE");
     assert.equal(left.status, 200, JSON.stringify(left.json));
     assert.ok(await until("nAgentA"), "its device left the tailnet");
     assert.ok(!reach.auth.list().some((c) => c.id === a.grant.clientId), "its access ended first");

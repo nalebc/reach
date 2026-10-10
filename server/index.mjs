@@ -322,6 +322,15 @@ export async function createReach(overrides = {}) {
         .catch((e) => console.log(`Reach: ${e.message}`)),
       tidyFace(),
     ]);
+  // An agent's replaced credential used again: a copy of it is in use
+  // somewhere. Its access has ended (core.mjs); everything it had open ends,
+  // its device leaves, and you hear why.
+  auth.onCredentialReuse((client) => {
+    endSession(client.id);
+    void releaseGuest(client);
+    record("security", `${client.name || "An agent"}'s access ended: a copy of its credential was used`);
+    notify({ category: "access", title: `${client.name || "An agent"}'s access ended`, body: "Its credential was used from two places, so a copy exists. Invite it again if this was expected.", tag: `agent-reuse-${client.id}` });
+  });
   // Whatever way an invited client's access ends, its device leaves your
   // tailnet: by the node it signed in with, read before it was revoked.
   const releaseGuest = (client) =>
@@ -1686,6 +1695,11 @@ export async function createReach(overrides = {}) {
       host: loadJson(hostFile, null),
       ...(paused && { paused: true }),
     });
+  });
+  // An agent on its own invited device trades its credential for a new one
+  // (security audit M6; scripts/agent-remote.mjs).
+  app.post("/api/device/rotate", (req, res) => {
+    res.json(auth.rotateCredential(req.headers.authorization?.replace(/^Bearer /, ""), req.reachIdentity));
   });
   // A guest or agent ends its own access (`agent.mjs leave`): everything it
   // had open ends, and an invited device leaves your tailnet.

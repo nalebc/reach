@@ -120,6 +120,8 @@ export function presetRouteAllowed(client, method, route) {
   const has = (scope) => client.scopes.includes(scope);
   const read = ["GET", "HEAD"].includes(method);
   if (method === "DELETE" && route === "/device/access") return true;
+  // Trading its credential for a new one (core.mjs rotateCredential).
+  if (method === "POST" && route === "/device/rotate") return true;
   if (read && ["/device", "/browser"].includes(route)) return has("browser:read");
   // Discovery/requesting is available to every admitted preset. Execution also
   // requires separate, owner-approved service consent in agent-services.mjs.

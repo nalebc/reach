@@ -622,6 +622,29 @@ function pick(home, wanted) {
 const readCredential = (conn) =>
   JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
 
+// Hourly while it works, an agent on its own tailnet device trades its
+// credential for a new one (server/core.mjs rotateCredential). A copy of this
+// folder then stops working, and using it ends the access on the computer
+// (security audit M6). Only the process holding the connection does this;
+// the others go through it. The new credential is saved before its first
+// use, which is when the computer switches to it.
+const ROTATE_EVERY_MS = 3600_000;
+const rotations = new WeakMap();
+export function rotateIfDue(conn, credential, call, { now = Date.now } = {}) {
+  if (credential.via !== "tailnet") return Promise.resolve();
+  const last = credential.rotatedAt || Date.parse(credential.joinedAt || "") || 0;
+  if (now() - last < ROTATE_EVERY_MS) return Promise.resolve();
+  if (!rotations.has(credential))
+    rotations.set(credential, (async () => {
+      const fresh = await call("/api/device/rotate", "POST", {});
+      if (typeof fresh?.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(fresh.token)) return;
+      const next = { ...credential, token: fresh.token, rotatedAt: now() };
+      writePrivate(path.join(conn, "credential.json"), JSON.stringify(next, null, 2));
+      Object.assign(credential, next);
+    })().finally(() => rotations.delete(credential)));
+  return rotations.get(credential);
+}
+
 // A computer's API, however this agent reaches it.
 async function open(home, name, allowLocal) {
   const conn = path.join(home, name);
@@ -648,12 +671,12 @@ async function open(home, name, allowLocal) {
     for (let i = 0; i < 120; i++) {
       if (lock(conn)) {
         // Hold it: share it at once (callers wait for it with us).
-        const api = async (...args) =>
-          tailnetApi(
-            await connectTailnet(where),
-            credential.origin,
-            credential.token,
-          )(...args);
+        const api = async (...args) => {
+          const node = await connectTailnet(where);
+          // A trade that fails leaves the current credential as it was.
+          await rotateIfDue(conn, credential, tailnetApi(node, credential.origin, credential.token, { timeoutMs: 15000 })).catch(() => {});
+          return tailnetApi(node, credential.origin, credential.token)(...args);
+        };
         if (!shared) {
           shareNode(conn, api);
           connectTailnet(where).catch(() => {}); // start joining now

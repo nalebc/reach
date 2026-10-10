@@ -24,6 +24,7 @@ export function browserRouteAllowed(client, method, route) {
   // Preset invitations have their own complete allowlist (agent-presets.mjs).
   if (client.policy.preset !== undefined) return presetRouteAllowed(client, method, route);
   if (method === "DELETE" && route === "/device/access") return true;
+  if (method === "POST" && route === "/device/rotate") return true;
   if (client.policy.screen === "apps" && client.scopes.includes("browser:read")) {
     if (["GET", "HEAD"].includes(method) && ["/browser/apps", "/browser/apps/windows", "/browser/apps/screen"].includes(route)) return true;
     if (method === "POST" && client.scopes.includes("browser:request") && route === "/browser/apps/requests") return true;
