@@ -610,9 +610,12 @@ func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
   if done.wait(timeout: .now() + 8) == .timedOut { try refuse("The app is taking too long to open.", "retry") }
   if failure != nil { try refuse("The app couldn't be opened.", "unavailable") }
   lastPosted = Date()
-  // "Opened" means in front: the agent's next click or key goes there.
-  // macOS may hold a background helper's activation back, so ask once more
-  // through Accessibility, and wait for it to land before answering.
+  return ["ok": true, "app": name, "bundle": bundleId, "front": waitFront(bundleId, opened)]
+}
+// "Opened" means in front: the agent's next click or key goes there. macOS
+// may hold a background helper's activation back, so ask once more through
+// Accessibility, and wait for it to land before answering.
+func waitFront(_ bundleId: String, _ opened: NSRunningApplication?) -> Bool {
   let front = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleId }
   let deadline = Date().addingTimeInterval(1.5)
   var nudged = false
@@ -623,7 +626,33 @@ func open(_ path: String, _ rules: Rules) throws -> [String: Any] {
     }
     RunLoop.current.run(until: Date().addingTimeInterval(0.05))
   }
-  return ["ok": true, "app": name, "bundle": bundleId, "front": front()]
+  return front()
+}
+// A website in the owner's own browser (their cookies and sign-ins): the
+// default browser for web links, or a chosen one. Reach's own pages and the
+// pages that show saved passwords stay closed, as when typing an address.
+func openURL(_ text: String, _ browserPath: String, _ rules: Rules) throws -> [String: Any] {
+  if rules.mode == "view" { try refuse("This agent can only look.") }
+  guard text.utf8.count <= 2048, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+    !(url.host ?? "").isEmpty else { try refuse("Give a web address that starts with https://.", "invalid") }
+  if let reason = urlReason(text, rules) { try refuse(reason) }
+  let appURL = browserPath.isEmpty ? NSWorkspace.shared.urlForApplication(toOpen: url) : URL(fileURLWithPath: browserPath)
+  guard let appURL, appURL.path.hasSuffix(".app"), let bundle = Bundle(url: appURL), let bundleId = bundle.bundleIdentifier else {
+    try refuse("There is no browser to open it in.", "unavailable")
+  }
+  let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ""
+  guard isBrowser(bundleId) else { try refuse("Open websites in a web browser.", "invalid") }
+  if let reason = appReason(bundleId, name, canonical(appURL), rules) { try refuse(reason) }
+  let configuration = NSWorkspace.OpenConfiguration()
+  configuration.activates = true
+  let done = DispatchSemaphore(value: 0)
+  var failure: Error?
+  var opened: NSRunningApplication?
+  NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: configuration) { app, error in opened = app; failure = error; done.signal() }
+  if done.wait(timeout: .now() + 8) == .timedOut { try refuse("The browser is taking too long to open.", "retry") }
+  if failure != nil { try refuse("The website couldn't be opened.", "unavailable") }
+  lastPosted = Date()
+  return ["ok": true, "app": name, "bundle": bundleId, "front": waitFront(bundleId, opened)]
 }
 // What is in front right now: for the owner's "using X" line and for the
 // server's check of typed text (a terminal takes commands).
@@ -832,6 +861,9 @@ func rules(from request: [String: Any]) -> Rules {
           out(try open(request["app"] as? String ?? "", rules))
         case "front":
           out(front(rules))
+        case "open-url":
+          guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
+          out(try openURL(request["url"] as? String ?? "", request["app"] as? String ?? "", rules))
         case "elements":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           out(try elements(rules))

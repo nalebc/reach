@@ -725,7 +725,7 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
           <AgentAvatar name="+" size={56} />
           <h3>No agents yet</h3>
           <p>
-            Invite Muse or another agent. Pick what it may do, Full control
+            Invite an agent. Pick what it may do, Full control
             to Read only, and approve it when it connects.
           </p>
           <button className="ag-primary" onClick={invite}>

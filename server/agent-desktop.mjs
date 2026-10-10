@@ -36,6 +36,28 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
   return [...addresses];
 }
 
+// The front window as one readable text (reach_describe_screen): its app and
+// title, then what is there in reading order, each control inline as
+// [n] Role "name" (= what a field holds), clickable by its number.
+export function describeScreen({ app = "", title = "", snapshot = "", items = [], texts = [], truncated = false } = {}) {
+  const control = (item) => `[${item.n}] ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+    (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+  const entries = [
+    ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
+    ...texts.map((line) => ({ x: line.x, mid: line.y + line.h / 2, line: line.heading ? `# ${line.text}` : line.text })),
+  ].sort((a, b) => Math.abs(a.mid - b.mid) < 0.006 ? a.x - b.x : a.mid - b.mid);
+  const rows = [];
+  for (const entry of entries) {
+    const last = rows.at(-1);
+    if (last && Math.abs(entry.mid - last.mid) < 0.006) last.parts.push(entry.line);
+    else rows.push({ mid: entry.mid, parts: [entry.line] });
+  }
+  const head = [`${app}${title ? ` — ${title}` : ""}`,
+    snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : "", ""];
+  const body = rows.map((row) => row.parts.join("   ")).join("\n");
+  return (head.join("\n") + body + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
+}
+
 export function normalizeAction(value) {
   if (!plain(value) || typeof value.type !== "string") throw fail(400, "Choose one action: click, move, drag, scroll, type or key.");
   const keys = Object.keys(value);
@@ -486,6 +508,27 @@ export function createAgentDesktop(config, {
       checkState(client, authorize, "browser:open", state);
       take(latest);
       const result = answer(await dispatchInput(latest, state, { op: "open", app: appPath }, authorize, "browser:open"));
+      checkState(client, authorize, "browser:open", state);
+      extend(latest);
+      observe(latest);
+      note(latest, "open", result);
+      return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
+    },
+    /** A website in the owner's own browser (default for web links, or one chosen), within the preset. */
+    async openUrl(client, url, browserPath, authorize) {
+      const latest = live(client, authorize, "browser:open");
+      let parsed;
+      try { parsed = new URL(url); } catch { parsed = null; }
+      if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
+        throw fail(400, "Give a web address that starts with https://.");
+      if (browserPath !== undefined && (typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
+        throw fail(400, "Choose the browser by its path on this Mac.");
+      const reason = typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
+      if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
+      const state = await session(latest);
+      checkState(client, authorize, "browser:open", state);
+      take(latest);
+      const result = answer(await dispatchInput(latest, state, { op: "open-url", url, ...(browserPath ? { app: browserPath } : {}) }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
       observe(latest);

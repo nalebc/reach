@@ -128,10 +128,10 @@ export function presetRouteAllowed(client, method, route) {
   if (read && fileReads.includes(route)) return has("files:read") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/files/change") return has("browser:write") && policy.roots.length > 0;
   if (read && ["/browser/desktop/screen", "/browser/desktop/front"].includes(route)) return has("browser:screen");
-  if (read && route === "/browser/desktop/elements") return has("browser:control");
+  if (read && ["/browser/desktop/elements", "/browser/desktop/describe"].includes(route)) return has("browser:control");
   if (method === "POST" && route === "/browser/desktop/input") return has("browser:control");
   if (read && route === "/browser/desktop/apps") return has("browser:open");
-  if (method === "POST" && route === "/browser/desktop/open") return has("browser:open");
+  if (method === "POST" && ["/browser/desktop/open", "/browser/desktop/open-url"].includes(route)) return has("browser:open");
   if (method === "POST" && route === "/browser/shell") return has("browser:shell");
   if (read && route === "/browser/shell/history") return has("browser:shell");
   if (["full", "apps"].includes(policy.preset) && has("browser:control") && has("browser:open") && has("browser:screen")) {

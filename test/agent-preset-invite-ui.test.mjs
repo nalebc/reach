@@ -39,6 +39,7 @@ function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllow
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [] });
     if (route === "/api/files") return reply({ items: [] });
+    if (route === "/api/guests/key") return reply({ key: "tskey-auth-k1", hostname: "rf-ab12-agent" });
     return reply({ error: "Unexpected request" }, 404);
   };
   return calls;
@@ -66,7 +67,7 @@ test("one preset is the whole form: Full control creates with nothing else", asy
   await choose(c, "Full control");
   assert.match(c.textContent, /commands can read sensitive files or change Reach/);
   assert.match(c.textContent, /guardrails, not a sandbox/);
-  assert.match(c.textContent, /Touching the Mac pauses input/);
+  assert.match(c.textContent, /Pause or end it anytime in Settings → Agents/);
   assert.match(c.textContent, /gets full control of this Mac for 30 minutes/);
   assert.equal(button(c, "Create invite link").disabled, false);
   await click(button(c, "Create invite link"));
@@ -183,6 +184,29 @@ test("without the Mac's screen helpers, only Files can be created, and the form 
   for (const title of ["Full control", "Apps", "Read only"]) assert.equal(c.querySelector(`[aria-label="Access preset"] input[aria-label="${title}"]`).disabled, true, title);
   assert.equal(c.querySelector('[aria-label="Access preset"] input[aria-label="Files"]').disabled, false);
   assert.match(c.textContent, /Screen presets need this Mac's Screen Recording and Accessibility/);
+});
+
+test("Tools: the same preset over Tailscale, one command, and Reach's tools for the agent", async () => {
+  const calls = mock({ standingAllowed: true });
+  const { c, made } = await open();
+  await choose(c, "Full control");
+  assert.ok(button(c, "Always"), "a page agent may stay");
+  await click(button(c, "Tools"));
+  assert.equal(button(c, "Always"), undefined, "a tools agent's key is single-use: no Always");
+  assert.match(c.textContent, /runs one command, then uses Reach's tools/);
+  await click(button(c, "Create invite link"));
+  await dom.waitFor(() => made());
+  assert.equal(issued(calls).transport, "tailnet");
+  assert.equal(issued(calls).preset, "full");
+  const key = calls.find(([, route]) => route === "/api/guests/key")[2];
+  assert.deepEqual(key.clientIds, ["muse"], "a key for this agent only");
+  const text = message(c);
+  assert.match(text, /^Connect to this Mac with one command on your computer/);
+  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs https:\/\/mac\.tail\.ts\.net\/agent\.mjs && node ~\/\.reach-agent\/agent\.mjs join 'https:\/\/mac\.tail\.ts\.net\/agent#k=tskey-auth-k1&h=rf-ab12-agent&i=/);
+  assert.match(text, /Start with reach_describe_screen/);
+  assert.match(text, /node ~\/\.reach-agent\/agent\.mjs mcp as an MCP server/);
+  assert.match(text, /"secret":true/);
+  assert.doesNotMatch(text, /window\.reach|Sign in:/);
 });
 
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));

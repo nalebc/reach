@@ -22,6 +22,10 @@ function stand() {
       return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
     },
     open: async (client, app, authorize) => { authorize(); log.push(["open", client.id, app]); return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" }; },
+    openUrl: async (client, url, browser, authorize) => { authorize(); log.push(["open-url", client.id, url, browser]); return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" }; },
+    elements: async (client, authorize) => { authorize(); return { snapshot: "s1", app: "Google Chrome", title: "Uber Eats", truncated: false,
+      items: [{ n: 1, role: "TextField", name: "Search", value: "diapers", x: 0.3, y: 0.1, w: 0.2, h: 0.02 }, { n: 2, role: "Button", name: "Add to cart", x: 0.5, y: 0.5, w: 0.05, h: 0.02 }],
+      texts: [{ text: "Pampers Swaddlers", heading: true, x: 0.1, y: 0.5, w: 0.2, h: 0.02 }, { text: "$34.99", x: 0.1, y: 0.53, w: 0.05, h: 0.02 }] }; },
     activity: () => ({ holder: busy ? { clientId: busy, name: "Muse" } : null, agents: busy ? { [busy]: { at: 1, kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" } } : {}, paused: [...paused] }),
     setPaused: (id, value) => { if (value) paused.add(id); else paused.delete(id); return paused.has(id); },
   };
@@ -93,6 +97,29 @@ test("screen, input, open and the app list follow the preset", privateIngressTes
   assert.equal((await grok.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "" } })).status, 403);
   const owner = await f.call("/api/agents/browser-terminal-history");
   assert.ok(owner.body.some((item) => item.action.type === "shell" && item.action.command === "sudo ls" && item.status === "blocked"));
+});
+
+test("agents open apps by name and websites in the owner's browser, and read the screen as text", privateIngressTest, async (t) => {
+  const { extras, log } = stand();
+  const f = await presetFixture(t, { desktopExtras: extras });
+  const full = await f.join({ preset: "full", hidden: [{ id: messages.id }] });
+  const byName = await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "google chrome" } });
+  assert.equal(byName.status, 200, JSON.stringify(byName.body));
+  assert.deepEqual(log.at(-1), ["open", full.joined.clientId, chrome.id]);
+  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "1Password" } })).status, 404, "protected apps have no name to open");
+  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "Messages" } })).status, 404, "hidden apps neither");
+  const site = await full.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://www.ubereats.com", browser: "Google Chrome" } });
+  assert.equal(site.status, 200, JSON.stringify(site.body));
+  assert.deepEqual(log.at(-1), ["open-url", full.joined.clientId, "https://www.ubereats.com", chrome.id]);
+  assert.equal((await full.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://x.test", extra: 1 } })).status, 400);
+  const described = await full.as("/api/browser/desktop/describe");
+  assert.equal(described.status, 200);
+  assert.match(described.body.screenText, /^Google Chrome — Uber Eats/);
+  assert.match(described.body.screenText, /\[1\] TextField "Search" = "diapers"/);
+  assert.match(described.body.screenText, /# Pampers Swaddlers {3}\[2\] Button "Add to cart"/, "text and controls share their row, left to right");
+  const readonly = await f.join({ preset: "readonly" });
+  assert.equal((await readonly.as("/api/browser/desktop/describe")).status, 403, "describing is for agents that may act");
+  assert.equal((await readonly.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://x.test" } })).status, 403);
 });
 
 test("file changes: Full control writes directly inside shared folders, never into private files; Read only cannot", privateIngressTest, async (t) => {

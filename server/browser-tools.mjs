@@ -60,12 +60,14 @@ function presetTools(access) {
     definition("reach_front", "What is in front", "The app and window in front, whether it takes commands (a terminal) or a password, why it is closed to you if it is, and which agent holds the Mac if another does.", object(), {}),
   );
   if (access.control) tools.push(
-    definition("reach_elements", "Numbered elements", "What can be clicked in the front window, from the Mac's accessibility tree: {snapshot, app, items: [{n, role, name, x, y, w, h}]} (fractions of the screen). Click one exactly with reach_act {type: \"element\", snapshot, n}; prefer it over x/y for small targets. Look again after the screen changes.", object(), {}),
-    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner is using the Mac or controlling it from their phone; wait), retry (focus moved; look again). Take a screenshot after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
+    definition("reach_describe_screen", "Describe the screen", "Start here: the front window as text, from the Mac's accessibility tree. Its app and title, the text a person reads there in reading order, and every button, link and field inline as [n] Role \"name\". Click one with reach_act {type: \"element\", snapshot, n}; no screenshot needed. Describe again after the screen changes. Pictures, maps and games have no text: use reach_screenshot for those.", object(), {}),
+    definition("reach_elements", "Numbered elements", "The same as reach_describe_screen, as data: {snapshot, app, title, items: [{n, role, name, value, x, y, w, h}], texts: [{text, heading, x, y, w, h}]} (fractions of the screen). Click one exactly with reach_act {type: \"element\", snapshot, n}.", object(), {}),
+    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach: prefer {type: \"element\", snapshot, n} from reach_describe_screen. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner paused you or is controlling the Mac; wait), retry (focus moved; describe again). Describe the screen again after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
   );
   if (access.open) tools.push(
     definition("reach_desktop_apps", "Apps you may use", "The apps this session may open or bring forward, with whether each is running.", object(), {}),
-    definition("reach_open_app", "Open an app", "Open or bring forward one of those apps by its path, then take a screenshot.", object({ app: string(4096) }, ["app"]), { app: access.apps?.[0]?.id || "/Applications/Safari.app" }),
+    definition("reach_open_app", "Open an app", "Open or bring forward one of those apps by its name (\"Calculator\") or path. Answers once it is in front; then describe the screen.", object({ app: string(4096) }, ["app"]), { app: access.apps?.[0]?.name || "Calculator" }),
+    definition("reach_open_url", "Open a website", "Open a web address in the owner's own browser, with their sign-ins and cookies: the default browser, or browser by name (\"Google Chrome\"). Answers once it is in front; then describe the screen. Reach's own pages and saved-password pages stay closed.", object({ url: string(2048), browser: string(4096) }, ["url"]), { url: "https://www.ubereats.com" }),
   );
   if (access.control && access.open && access.screen) tools.push(
     definition("reach_tools", "Find deterministic tools", "Check here before browser tasks. Returns the named built-in and agent-created tools, their exact reach.tool.v1 definitions and allowed browsers. Search by task name.", object({ query: string(160) }), { query: "Gmail" }),
@@ -266,6 +268,8 @@ export function browserToolRequest(name, args, access) {
     case "reach_screenshot": return get(`/api/browser/desktop/screen?${new URLSearchParams({ maxWidth: String(input.maxWidth ?? 2560) })}`, "image");
     case "reach_front": return get("/api/browser/desktop/front");
     case "reach_elements": return get("/api/browser/desktop/elements");
+    case "reach_describe_screen": return get("/api/browser/desktop/describe");
+    case "reach_open_url": return { route: "/api/browser/desktop/open-url", method: "POST", body: { url: input.url, ...(input.browser ? { browser: input.browser } : {}) }, response: "json" };
     case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };
     case "reach_desktop_apps": return get("/api/browser/desktop/apps");
     case "reach_open_app": return { route: "/api/browser/desktop/open", method: "POST", body: { app: input.app }, response: "json" };

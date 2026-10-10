@@ -15,6 +15,7 @@ import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-comm
 import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
 import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
 import { savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
+import { describeScreen } from "./agent-desktop.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
@@ -605,6 +606,15 @@ export function browserAccessRoutes(
     needDesktop();
     await answer(res, () => desktop.elements(client, () => presetClient(req, "browser:control")));
   });
+  // The front window as text, controls numbered inline (reach_describe_screen).
+  app.get("/api/browser/desktop/describe", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    await answer(res, async () => {
+      const found = await desktop.elements(client, () => presetClient(req, "browser:control"));
+      return { app: found.app, title: found.title, snapshot: found.snapshot, truncated: found.truncated, screenText: describeScreen(found) };
+    });
+  });
   app.post("/api/browser/desktop/input", async (req, res) => {
     const client = presetClient(req, "browser:control");
     needDesktop();
@@ -615,23 +625,51 @@ export function browserAccessRoutes(
   app.get("/api/browser/desktop/apps", async (req, res) => {
     const client = presetClient(req, "browser:open");
     needDesktop();
-    await answer(res, async () => {
-      const catalog = await desktop.catalog(() => presetClient(req, "browser:open"));
-      const latest = presetClient(req, "browser:open");
-      const hidden = latest.policy.hidden || [];
-      const apps = latest.policy.preset === "apps"
-        ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
-        : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
-          .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
-      return { apps };
-    });
+    await answer(res, async () => ({ apps: await permittedApps(client, () => presetClient(req, "browser:open")) }));
   });
+  // The apps this session may open: the chosen ones (Apps), or every app but
+  // the protected and hidden ones (Full).
+  const permittedApps = async (client, authorize) => {
+    const catalog = await desktop.catalog(authorize);
+    const latest = authorize();
+    const hidden = latest.policy.hidden || [];
+    return latest.policy.preset === "apps"
+      ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
+      : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
+        .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
+  };
+  // An app by its name ("Calculator") as well as its path: one of those.
+  const appByName = async (client, name, authorize) => {
+    const wanted = name.trim().toLowerCase().replace(/\.app$/, "");
+    const apps = await permittedApps(client, authorize);
+    const exact = apps.filter((app) => app.name.toLowerCase() === wanted);
+    const matches = exact.length ? exact : apps.filter((app) => app.name.toLowerCase().startsWith(wanted));
+    if (matches.length === 1) return matches[0].id;
+    if (!matches.length) throw fail(404, `No app named "${name.slice(0, 80)}" that this session may open. reach_desktop_apps lists them.`);
+    throw fail(409, `Several apps match "${name.slice(0, 80)}": ${matches.slice(0, 6).map((app) => app.name).join(", ")}. Use one's full name.`);
+  };
   app.post("/api/browser/desktop/open", async (req, res) => {
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "app")) throw fail(400, "Choose one app by its path.");
-    await answer(res, () => (shortcuts || desktop).open(client, body.app, () => presetClient(req, "browser:open")));
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "app") || typeof body.app !== "string" || !body.app.trim() || body.app.length > 4096)
+      throw fail(400, "Choose one app by its name or path.");
+    const authorize = () => presetClient(req, "browser:open");
+    const target = body.app.startsWith("/") ? body.app : await appByName(client, body.app, authorize);
+    await answer(res, () => (shortcuts || desktop).open(client, target, authorize));
+  });
+  // A website in the owner's own browser, with their sign-ins (reach_open_url).
+  app.post("/api/browser/desktop/open-url", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser"].includes(key)) || typeof body.url !== "string")
+      throw fail(400, "Give a web address, and optionally a browser.");
+    const authorize = () => presetClient(req, "browser:open");
+    const browser = body.browser === undefined ? undefined
+      : typeof body.browser === "string" && body.browser.startsWith("/") ? body.browser
+        : await appByName(client, String(body.browser || ""), authorize);
+    await answer(res, () => desktop.openUrl(client, body.url, browser, authorize));
   });
   // The shell (Full control): one command, as the owner, checked against the
   // deny list and logged. Not confined: Full control is full control.

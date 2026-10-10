@@ -905,7 +905,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     : `tailnet:${client.tailscale?.nodeId || "unbound"}`;
   // An agent's one link, after its first opening. Approved by the owner: from
   // its own browser it refreshes the session (a lost answer, a rotated token);
-  // from another browser (Muse's browser reset, a new tab, another machine)
+  // from another browser (the agent's browser reset, a new tab, another machine)
   // opening it moves the access there and the browser it used is cut off. An
   // automatic reconnect never moves it (423): only opening the link does, so
   // two open browsers can't take it back and forth. Not approved yet: the

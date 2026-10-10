@@ -100,7 +100,7 @@ function permittedPath(method, value) {
         "/api/browser/apps", "/api/browser/apps/windows", "/api/browser/apps/screen",
         // Preset sessions (agent-presets.mjs): the screen, what is in front,
         // the apps it may open, its command history.
-        "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/elements", "/api/browser/desktop/apps", "/api/browser/shell/history",
+        "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/elements", "/api/browser/desktop/describe", "/api/browser/desktop/apps", "/api/browser/shell/history",
         "/api/browser/shortcuts",
         "/api/browser/tools", "/api/browser/tools/protocol",
         "/api/browser/services",
@@ -116,7 +116,7 @@ function permittedPath(method, value) {
     (method === "POST" &&
       ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
         // Preset sessions: one input action, opening an app, one command, one file change.
-        "/api/browser/desktop/input", "/api/browser/desktop/open", "/api/browser/shell", "/api/browser/files/change",
+        "/api/browser/desktop/input", "/api/browser/desktop/open", "/api/browser/desktop/open-url", "/api/browser/shell", "/api/browser/files/change",
         "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
         "/api/browser/tools/define", "/api/browser/tools/run",
         "/api/browser/services/request", "/api/browser/services/run"].includes(route)) ||

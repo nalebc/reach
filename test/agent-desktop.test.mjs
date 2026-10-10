@@ -31,6 +31,7 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
         if (request.op === "shot") return { ok: true, jpeg, width: 100, height: 60, hidden: 2 };
         if (request.op === "act") return actAnswer(request.action);
         if (request.op === "open") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
+        if (request.op === "open-url") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
         if (request.op === "browser-check") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" };
         if (request.op === "catalog") return { ok: true, apps: [{ ...chrome, running: true }, { id: "/Applications/1Password.app", name: "1Password", bundleId: "com.1password.1password", running: false }] };
         return { error: "unknown", kind: "invalid" };
@@ -196,6 +197,20 @@ test("numbered elements need control, come back clean, and a label click goes to
   assert.deepEqual(w.helpers.at(-1).requests.find((request) => request.op === "act").action, { type: "element", snapshot: "ab12cd34", n: 1 });
   for (const bad of [{ type: "element", snapshot: "../x", n: 1 }, { type: "element", snapshot: "ab", n: 0 }, { type: "element", snapshot: "ab", n: 1, x: 0.5 }])
     await rejects(() => w.desktop.act(full, bad, authorize(full)), 400);
+});
+
+test("websites open in the owner's browser; Reach's own pages and non-web addresses never reach the Mac", async () => {
+  const w = world();
+  const full = w.make("muse", "full");
+  const opened = await w.desktop.openUrl(full, "https://www.ubereats.com/", undefined, authorize(full));
+  assert.deepEqual(opened, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" });
+  for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "chrome://password-manager/passwords", "https://x.test/\nmore", "not a url"])
+    await rejects(() => w.desktop.openUrl(full, bad, undefined, authorize(full)), 400);
+  await rejects(() => w.desktop.openUrl(full, "https://mac.tail1.ts.net/", undefined, authorize(full)), 403, /Reach|closed/i, "blocked");
+  const sent = w.helpers[0].requests.filter((request) => request.op === "open-url");
+  assert.deepEqual(sent.map((request) => request.url), ["https://www.ubereats.com/"], "refused addresses never reach the Mac");
+  const ro = w.make("ro", "readonly");
+  await rejects(() => w.desktop.openUrl(ro, "https://x.test", undefined, authorize(ro)), 403);
 });
 
 test("requests arriving during a capture share it instead of queueing more", async () => {

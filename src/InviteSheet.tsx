@@ -898,7 +898,7 @@ export function InviteSheet({
             </div>
             <p className="ag-quiet">
               {kind === "browser"
-                ? "For ChatGPT agent, Muse, and other browser agents. No install needed."
+                ? "For agents that work in a web browser. No install needed."
                 : "For Claude Code or Codex on a computer you control."}
             </p>
           </div>

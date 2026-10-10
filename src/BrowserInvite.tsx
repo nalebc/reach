@@ -22,6 +22,7 @@ import { Share as NativeShare } from "@capacitor/share";
 import { isNative } from "./native";
 import { shareCancelled } from "./sharing";
 import { request, type Device, type Peer } from "./api";
+import { guestLinkUrl } from "./start-flow";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import {
   AccessRow,
@@ -34,8 +35,8 @@ import {
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
-// Inviting an agent that works from a browser (Muse, ChatGPT agent, a Grok
-// bot). One choice: a preset. Everything the agent may do follows from it;
+// Inviting any agent: one that opens a web page, or one that runs Reach's
+// tools (command line or MCP). One choice: a preset. Everything the agent may do follows from it;
 // what stays protected never changes (server/agent-guard.mjs).
 export type Preset = "full" | "apps" | "files" | "readonly";
 export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
@@ -83,7 +84,14 @@ type Issued = {
   hidden: string[];
   everything: boolean;
   always?: boolean;
+  // Tools: the agent runs this once on its own computer, then calls Reach's
+  // tools (command line or MCP) over the owner's Tailscale network.
+  command?: string;
 };
+// What a tools agent runs, once: Reach for agents from this computer's start
+// page, then joining with its link (as Command line invites do).
+export const toolsCommand = (start: string, link: string) =>
+  `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs join '${link}'`;
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
 
@@ -101,7 +109,7 @@ const listWords = (items: string[]) =>
 
 // What the agent reads: its preset, what stays closed, how to behave with
 // other agents and the owner. Describes the issued invitation, never later edits.
-export const museMessage = (link: string, issued: Issued) => {
+export const agentInviteMessage = (link: string, issued: Issued) => {
   const folders =
     issued.folders.slice(0, 3).map(quote).join(", ") +
     (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
@@ -117,15 +125,24 @@ export const museMessage = (link: string, issued: Issued) => {
     files: `Preset: Files. You ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
     readonly: `Preset: Read only. You look: screenshots, files in ${where}, shared terminal output. You can't click, type or change anything.`,
   }[issued.preset];
+  const tools = !!issued.command;
+  const signIn = tools
+    ? 'For password fields and sign-ins, type from your own vault with reach_act {"type":"type","text":…,"secret":true}: the value is never echoed.'
+    : "For password fields and sign-ins, fill from your own vault with Sign in: the value stays hidden.";
   const protectedWords =
     issued.preset === "files"
       ? " Reach's own files and the owner's secret files stay closed."
       : issued.preset === "full"
-        ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Stay out of password apps, Reach and Tailscale, and security prompts. For password fields and sign-ins, fill from your own vault with Sign in: the value stays hidden.${hidden}`
+        ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Stay out of password apps, Reach and Tailscale, and security prompts. ${signIn}${hidden}`
         : ` Reach filters known protected windows and blocks password fields and password apps, Reach and Tailscale, and security prompts. Ask the owner to sign in. These UI guards do not sandbox commands run through a chosen terminal or IDE.${hidden}`;
-  const sharing = ["full", "apps"].includes(issued.preset)
-    ? " Use the live Screen as a person would: click, type and scroll on it, and click a numbered label to hit an exact element. Your user's request is your permission; ask your user before paying, sending a message or deleting something. One agent acts on the Mac at a time: busy or paused means wait, then retry."
-    : "";
+  const rules = " Your user's request is your permission; ask your user before paying, sending a message or deleting something. One agent acts on the Mac at a time: busy or paused means wait, then retry.";
+  const sharing = !["full", "apps"].includes(issued.preset)
+    ? ""
+    : tools
+      ? " Start with reach_describe_screen: the screen as text, every button, link and field numbered; press one with reach_act {\"action\":{\"type\":\"element\",\"snapshot\":…,\"n\":…}}. Open apps and websites (in the owner's own browser) with reach_open_app and reach_open_url." + rules
+      : " Use the live Screen as a person would: click, type and scroll on it, and click a numbered label to hit an exact element." + rules;
+  if (tools)
+    return `Connect to this Mac with one command on your computer (Node.js 22 or later); the owner matches your connection code once:\n\n${issued.command}\n\nThen list your tools with node ~/.reach-agent/agent.mjs tools and run one with node ~/.reach-agent/agent.mjs call TOOL '{json}', or add node ~/.reach-agent/agent.mjs mcp as an MCP server. ${grant}${protectedWords}${sharing} Never invite anyone, delegate access, or share this command or your credentials.`;
   const opening = issued.always
     ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: open it again in any browser and you are back, with nothing to approve."
     : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, open it again in any browser and you are back, with nothing to approve.";
@@ -210,6 +227,9 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
   const [name, setName] = useState(() => inviteName());
   const [preset, setPreset] = useState<Preset | null>(null);
   const [minutes, setMinutes] = useState(30);
+  // Page: the agent opens a web page with the live screen (browser agents).
+  // Tools: it runs one command and calls Reach's tools over Tailscale.
+  const [connect, setConnect] = useState<"page" | "tools">("page");
   const [apps, setApps] = useState<string[]>([]);
   const [folders, setFolders] = useState<PickedFolder[]>([]);
   const [write, setWrite] = useState(false);
@@ -230,6 +250,9 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
     message: string;
     always: boolean;
     unpublished: boolean;
+    // Tools without a one-time Tailscale key: its computer must already be on
+    // the owner's tailnet (no invite keys set up here).
+    unkeyed?: boolean;
   } | null>(null);
   const doneHeading = useRef<HTMLHeadingElement>(null);
   const alive = useRef(true);
@@ -327,7 +350,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         signal: controller.signal,
         body: JSON.stringify({
           name: name.trim(),
-          transport: "funnel",
+          transport: connect === "tools" ? "tailnet" : "funnel",
           preset,
           ...(minutes === ALWAYS
             ? { standing: true }
@@ -349,6 +372,49 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
       };
       if (!alive.current || controller.signal.aborted)
         throw Error("Invitation creation was cancelled.");
+      const issuedTo = {
+        preset,
+        apps: chosenApps.map((app) => app.name),
+        folders: folders.map((folder) => folder.full || folder.label),
+        write: preset === "files" && write,
+        hidden: hiddenApps.map((app) => app.name),
+        everything,
+        always: minutes === ALWAYS,
+      };
+      if (connect === "tools") {
+        // As a Command line invite: a one-time Tailscale key for its
+        // computer, made for this agent only (none set up: it must already
+        // be on the tailnet), and Reach for agents from the start page.
+        const start = `https://${new URL(peer.url).hostname}`;
+        const key = await request<{ key: string; hostname: string }>(peer, "/api/guests/key", {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({
+            ttlSeconds: minutes * 60,
+            keySeconds: Math.max(60, Math.round((result.joinBy - Date.now()) / 1000)),
+            clientIds: [result.clientId],
+          }),
+        }).catch(() => null);
+        const link = guestLinkUrl(start, {
+          key: key?.key || "",
+          hostname: key?.hostname || "",
+          invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
+        }, "/agent");
+        const command = toolsCommand(start, link);
+        setMade({
+          link: command,
+          name: name.trim(),
+          access: PRESET_WORDS[preset].title,
+          expiresAt: result.expiresAt,
+          joinBy: result.joinBy,
+          always: false,
+          unpublished: false,
+          unkeyed: !key,
+          message: agentInviteMessage(link, { ...issuedTo, command }),
+        });
+        onCreated(created, link);
+        return;
+      }
       const url = new URL(result.url);
       if (
         url.protocol !== "https:" ||
@@ -369,15 +435,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
         joinBy: result.joinBy,
         always: minutes === ALWAYS,
         unpublished: result.publicName === "missing",
-        message: museMessage(link, {
-          preset,
-          apps: chosenApps.map((app) => app.name),
-          folders: folders.map((folder) => folder.full || folder.label),
-          write: preset === "files" && write,
-          hidden: hiddenApps.map((app) => app.name),
-          everything,
-          always: minutes === ALWAYS,
-        }),
+        message: agentInviteMessage(link, issuedTo),
       });
       onCreated(created, link);
     } catch (e) {
@@ -431,7 +489,8 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           ? "1 hour"
           : `${minutes} minutes`;
   const dayAllowed = (options?.maxFunnelSeconds ?? 3600) >= 86400;
-  const alwaysAllowed = options?.standingAllowed === true;
+  // Always is for page agents only: a tools agent's key is single-use.
+  const alwaysAllowed = connect === "page" && options?.standingAllowed === true;
   const summary = !preset
     ? ""
     : `${name.trim()} gets ${
@@ -693,7 +752,7 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
             )}
             {
               {
-                full: "Only invite an agent you trust with your account. Its commands can read sensitive files or change Reach. Screen protections are guardrails, not a sandbox. Anything already signed in is available. Touching the Mac pauses input.",
+                full: "Only invite an agent you trust with your account. Its commands can read sensitive files or change Reach. Screen protections are guardrails, not a sandbox. Anything already signed in is available. Pause or end it anytime in Settings → Agents.",
                 apps: "Only these apps appear on its screen and take its clicks. Reach filters known protected windows and blocks password fields. A selected terminal or IDE can still run commands as you.",
                 files: write
                   ? "Changes land in your real folders at once. Reach's own files and your secret files stay closed."
@@ -704,6 +763,27 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
             }
           </p>
         )}
+
+        <div className="ag-invite-section">
+          <h3 className="ag-invite-label">How does it connect?</h3>
+          <Segments
+            label="How the agent connects"
+            value={connect}
+            onChange={(next) => {
+              setConnect(next);
+              if (next === "tools" && minutes === ALWAYS) setMinutes(60);
+            }}
+            options={[
+              { value: "page", label: "Page" },
+              { value: "tools", label: "Tools" },
+            ]}
+          />
+          <p className="ag-quiet">
+            {connect === "page"
+              ? "It opens a web page with your live screen."
+              : "It runs one command, then uses Reach's tools: describe the screen, click, type, open apps and websites, files and commands. Over your Tailscale network; works as an MCP server."}
+          </p>
+        </div>
 
         <div className="ag-invite-section ag-invite-duration">
           <h3 className="ag-invite-label">
@@ -829,6 +909,13 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
               <Share2 size={17} /> Share…
             </button>
           </div>
+          {made.unkeyed && (
+            <p className="ag-note is-warn" role="status">
+              No Tailscale invite key: the agent's computer must already be on
+              your Tailscale network. Run ./reach invites on this Mac to let
+              any computer join with the command.
+            </p>
+          )}
           {made.unpublished && (
             <p className="ag-note is-warn" role="status">
               Agents can’t open this link yet: Tailscale hasn’t published its
