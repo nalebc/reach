@@ -15,7 +15,7 @@ import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-comm
 import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
 import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
 import { savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
-import { describeScreen } from "./agent-desktop.mjs";
+import { describeScreen, normalizeAction } from "./agent-desktop.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
@@ -644,12 +644,81 @@ export function browserAccessRoutes(
       return { app: found.app, title: found.title, snapshot: found.snapshot, truncated: found.truncated, screenText: describeScreen(found) };
     });
   });
+  // One action, or several in order (actions), each checked on the Mac
+  // exactly as when sent alone; a batch stops at the first one refused and
+  // says why. With describe, the screen as text comes back in the same
+  // answer: act and see in one round trip, no screenshot.
+  const BATCH = { actions: 10, text: 2000, wait: 2000, waits: 6000, ms: 20000 };
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   app.post("/api/browser/desktop/input", async (req, res) => {
     const client = presetClient(req, "browser:control");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "action")) throw fail(400, "Send one action.");
-    await answer(res, () => (shortcuts || desktop).act(client, body.action, () => presetClient(req, "browser:control")));
+    const keys = isPlainRecord(body) ? Object.keys(body) : [];
+    if (!isPlainRecord(body) || keys.includes("action") === keys.includes("actions") ||
+        keys.some((key) => !["action", "actions", "describe"].includes(key)) || (body.describe !== undefined && body.describe !== true))
+      throw fail(400, "Send one action, or actions: a list of up to 10.");
+    const authorize = () => presetClient(req, "browser:control");
+    const act = (action) => (shortcuts || desktop).act(client, action, authorize);
+    if (keys.includes("action") && !body.describe) return answer(res, () => act(body.action));
+    const list = keys.includes("action") ? [body.action] : body.actions;
+    if (!Array.isArray(list) || !list.length || list.length > BATCH.actions)
+      throw fail(400, "Send one action, or actions: a list of up to 10.");
+    let typed = 0, waited = 0;
+    for (const item of list) {
+      if (isPlainRecord(item) && item.type === "wait") {
+        if (Object.keys(item).some((key) => !["type", "ms"].includes(key)) || !Number.isInteger(item.ms) || item.ms < 50 || item.ms > BATCH.wait)
+          throw fail(400, "A wait takes ms, from 50 to 2000.");
+        waited += item.ms;
+      } else {
+        // Every action is checked before any runs: a bad one never leaves
+        // half a batch done.
+        normalizeAction(item);
+        if (typeof item.text === "string") typed += item.text.length;
+      }
+    }
+    if (waited > BATCH.waits) throw fail(400, "Wait at most 6 seconds in one batch.");
+    if (typed > BATCH.text) throw fail(400, "Type at most 2000 characters in one batch.");
+    await answer(res, async () => {
+      const started = Date.now(), results = [];
+      let stopped = null;
+      for (const [index, item] of list.entries()) {
+        if (Date.now() - started > BATCH.ms) {
+          stopped = { index, error: "The rest didn't run in time. Describe the screen, then send what's left.", kind: "retry" };
+          break;
+        }
+        if (item?.type === "wait") {
+          authorize();
+          await pause(item.ms);
+          results.push({ waited: item.ms });
+          continue;
+        }
+        try {
+          results.push(await act(item));
+        } catch (error) {
+          // A refusal (blocked, busy, paused, retry) stops the batch and is
+          // said; access that ended, or a failure, ends the request.
+          const { status, ...details } = agentErrorDetails(error);
+          if (!status || !details.kind || status === 401 || status >= 500) throw error;
+          stopped = { index, ...details };
+          break;
+        }
+      }
+      const reply = { ok: !stopped, done: results.length, results, ...(stopped ? { stopped } : {}) };
+      if (body.describe) {
+        // What the last action changed has a moment to draw.
+        await pause(300);
+        try {
+          const found = await desktop.elements(client, authorize);
+          reply.screen = { snapshot: found.snapshot, app: found.app, title: found.title, truncated: found.truncated, text: describeScreen(found) };
+        } catch (error) {
+          const { status, ...details } = agentErrorDetails(error);
+          if (!status || status === 401 || (status >= 500 && !details.helperReason)) throw error;
+          reply.screen = { error: details.error, ...(details.kind ? { kind: details.kind } : {}) };
+        }
+      }
+      return reply;
+    });
   });
   app.get("/api/browser/desktop/apps", async (req, res) => {
     const client = presetClient(req, "browser:open");

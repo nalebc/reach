@@ -212,3 +212,48 @@ test("desktop helper failures preserve 503 and bounded diagnostics across every 
   }
   assert.equal(calls, routes.length, "no native mutation retries");
 });
+
+// Muse's feedback, Oct 10: round trips are the cost. A batch runs several
+// actions in one request, each checked as if sent alone, stopping at the
+// first refused; describe brings the screen as text back in the same answer.
+test("a batch of actions in one request, stopping at the first refused, with the screen as text after", privateIngressTest, async (t) => {
+  const { extras, log } = stand();
+  const f = await presetFixture(t, { desktopExtras: extras });
+  const full = await f.join({ preset: "full" });
+  const input = (body) => full.as("/api/browser/desktop/input", { method: "POST", body });
+  const id = full.created.clientId;
+  const batch = await input({ actions: [{ type: "element", snapshot: "s1", n: 1 }, { type: "type", text: "diapers" }, { type: "wait", ms: 50 }, { type: "key", key: "enter" }], describe: true });
+  assert.equal(batch.status, 200, JSON.stringify(batch.body));
+  assert.equal(batch.body.ok, true);
+  assert.equal(batch.body.done, 4);
+  assert.deepEqual(log.filter(([op]) => op === "act").map(([, who, action]) => [who, action.type]), [[id, "element"], [id, "type"], [id, "key"]]);
+  assert.equal(batch.body.screen.snapshot, "s1");
+  assert.match(batch.body.screen.text, /\[2\] Button "Add to cart"/);
+  // One action, then see: one request.
+  const seen = await input({ action: { type: "element", snapshot: "s1", n: 2 }, describe: true });
+  assert.equal(seen.body.ok, true);
+  assert.match(seen.body.screen.text, /Pampers Swaddlers/);
+  // Another agent holds the Mac: the batch stops at once and says who.
+  const other = await f.join({ preset: "full", name: "Grok" });
+  const stopped = await other.as("/api/browser/desktop/input", { method: "POST", body: { actions: [{ type: "key", key: "enter" }, { type: "type", text: "never typed" }] } });
+  assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
+  assert.equal(stopped.body.ok, false);
+  assert.equal(stopped.body.done, 0);
+  assert.deepEqual([stopped.body.stopped.index, stopped.body.stopped.kind, stopped.body.stopped.holder], [0, "busy", "Muse"]);
+  assert.ok(!log.some(([, , action]) => action?.text === "never typed"), "nothing after the refusal ran");
+  // Checked before any runs: a bad action anywhere leaves nothing half done.
+  const before = log.length;
+  for (const body of [
+    { actions: [{ type: "key", key: "enter" }, { type: "click", x: 2, y: 0.5 }] },
+    { actions: [{ type: "wait", ms: 5000 }] },
+    { actions: [{ type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }] },
+    { actions: Array.from({ length: 11 }, () => ({ type: "key", key: "enter" })) },
+    { actions: [{ type: "type", text: "x".repeat(1500) }, { type: "type", text: "y".repeat(600) }] },
+    { action: { type: "key", key: "enter" }, actions: [{ type: "key", key: "enter" }] },
+    { actions: [{ type: "key", key: "enter" }], describe: false },
+  ]) assert.equal((await input(body)).status, 400, JSON.stringify(body).slice(0, 80));
+  assert.equal(log.length, before, "nothing ran");
+  // One action alone answers as before.
+  const single = await input({ action: { type: "key", key: "enter" } });
+  assert.equal(single.body.app, "Google Chrome");
+});

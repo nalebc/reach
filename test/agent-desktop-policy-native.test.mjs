@@ -217,6 +217,15 @@ for key in ["v", "a", "x", "c", "z", "delete", "backspace", "forwarddelete", "sp
   check(!secureKeyAllowed(key, false), "secure field refuses content key " + key)
   check(!secureKeyAllowed(key, true), "secure field refuses Command content key " + key)
 }
+// A numbered control's click reaches it, or nothing (1 window, 10 its
+// button, 11 the button's label; 2 a dialog over it, 20 the dialog's button).
+let parents: [Int: Int] = [11: 10, 10: 1, 20: 2, 2: 1]
+let up: (Int) -> Int? = { parents[$0] }
+check(sameControl(10, 10, parent: up, equal: ==), "the control itself")
+check(sameControl(11, 10, parent: up, equal: ==), "the control's own label")
+check(sameControl(1, 10, parent: up, equal: ==), "the window that holds it, nothing over it")
+check(!sameControl(20, 10, parent: up, equal: ==), "a dialog's button covering it")
+check(!sameControl(2, 10, parent: up, equal: ==), "a dialog covering it")
 print("OK")
 `;
     await fs.writeFile(path.join(directory, "policy.swift"), "import Foundation\nimport Security\n" + policy + "\n" + identity);

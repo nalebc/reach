@@ -159,6 +159,18 @@ func pointerIdentityKnown(_ bundleId: String, _ name: String, _ path: String, _ 
 func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
   !command && ["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"].contains(name)
 }
+// Whether a click at a numbered control's center reaches that control: what
+// is under the point is the control, inside it, or holds it. A dialog or
+// menu that has covered it since the agent looked is none of those, so a
+// click meant for the control never lands on it (batched actions included).
+func sameControl<T>(_ hit: T, _ target: T, parent: (T) -> T?, equal: (T, T) -> Bool) -> Bool {
+  func chain(_ start: T) -> [T] {
+    var out = [start]
+    while out.count < 40, let up = parent(out[out.count - 1]) { out.append(up) }
+    return out
+  }
+  return chain(hit).contains { equal($0, target) } || chain(target).contains { equal($0, hit) }
+}
 // END PURE DESKTOP POLICY
 
 // BEGIN PURE DESKTOP TEXT
@@ -463,6 +475,11 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     guard let rect = frameOf(list[n - 1]), rect.width > 0, rect.height > 0 else { try refuse("That element is gone. Look again.", "retry") }
     let visible = rect.intersection(display)
     guard !visible.isNull, visible.width >= 1, visible.height >= 1 else { try refuse("That element is out of view. Scroll to it first.", "retry") }
+    var hit: AXUIElement?
+    if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(visible.midX), Float(visible.midY), &hit) == .success, let hit,
+       !sameControl(hit, list[n - 1], parent: { elementAttr($0, kAXParentAttribute) }, equal: { CFEqual($0, $1) }) {
+      try refuse("Something now covers that control. Describe the screen again.", "retry")
+    }
     var click: [String: Any] = ["type": "click", "x": Double((visible.midX - display.minX) / display.width), "y": Double((visible.midY - display.minY) / display.height)]
     if let button = action["button"] { click["button"] = button }
     if let count = action["count"] { click["count"] = count }

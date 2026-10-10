@@ -43,6 +43,8 @@ const desktopActions = [
   // Mac: no screenshot, no coordinates (agent-desktop.mjs normalizeAction).
   object({ type: kinds("element"), snapshot: { ...string(40), pattern: "^[A-Za-z0-9-]{1,40}$", description: "The snapshot from reach_describe_screen or reach_elements." }, n: { ...integer(1, 500), description: "The control's [number] there." }, button: kinds(["left", "right"]), count: integer(1, 3) }, ["type", "snapshot", "n"]),
 ];
+// A pause between batched actions, for a page or menu to appear.
+const waitAction = object({ type: kinds("wait"), ms: { ...integer(50, 2000), description: "Milliseconds, up to 2000." } }, ["type", "ms"]);
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends. Your user's request is your permission: act without asking at each step, but ask your user before paying, sending a message or deleting something. Sign in with reach_act type + secret from your vault; read emailed codes in Gmail or Mail on the Mac.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
@@ -65,7 +67,7 @@ function presetTools(access) {
   if (access.control) tools.push(
     definition("reach_describe_screen", "Describe the screen", "Start here: the front window as text, from the Mac's accessibility tree. Its app and title, the text a person reads there in reading order, and every button, link and field inline as [n] Role \"name\". Click one with reach_act {type: \"element\", snapshot, n}; no screenshot needed. Describe again after the screen changes. Pictures, maps and games have no text: use reach_screenshot for those.", object(), {}),
     definition("reach_elements", "Numbered elements", "The same as reach_describe_screen, as data: {snapshot, app, title, items: [{n, role, name, value, x, y, w, h}], texts: [{text, heading, x, y, w, h}]} (fractions of the screen). Click one exactly with reach_act {type: \"element\", snapshot, n}.", object(), {}),
-    definition("reach_act", "Act on the screen", "One mouse or keyboard action, checked against exactly what it would reach: prefer {type: \"element\", snapshot, n} from reach_describe_screen. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner paused you or is controlling the Mac; wait), retry (focus moved; describe again). Describe the screen again after acting.", object({ action: { oneOf: desktopActions } }, ["action"]), { action: { type: "click", x: 0.5, y: 0.5 } }),
+    definition("reach_act", "Act on the screen", "Act on the Mac: one action, or actions: up to 10 in order (they stop at the first one refused). Prefer {type: \"element\", snapshot, n} from reach_describe_screen, then type and key: for example [element 3, type \"diapers\", key enter]. Add {type: \"wait\", ms} where a page has to load. Add describe: true to get the screen as text back in the same call, with a fresh snapshot: act and see in one step, no screenshot. Each action is checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner paused you or is controlling the Mac; wait), retry (the screen changed; describe again).", object({ action: { oneOf: desktopActions }, actions: { type: "array", minItems: 1, maxItems: 10, items: { oneOf: [...desktopActions, waitAction] } }, describe: { type: "boolean", enum: [true], description: "Return the screen as text after acting." } }), { actions: [{ type: "element", snapshot: "SNAPSHOT", n: 3 }, { type: "type", text: "diapers" }, { type: "key", key: "enter" }], describe: true }),
   );
   if (access.open) tools.push(
     definition("reach_desktop_apps", "Apps you may use", "The apps this session may open or bring forward, with whether each is running.", object(), {}),
@@ -273,7 +275,9 @@ export function browserToolRequest(name, args, access) {
     case "reach_elements": return get("/api/browser/desktop/elements");
     case "reach_describe_screen": return get("/api/browser/desktop/describe");
     case "reach_open_url": return { route: "/api/browser/desktop/open-url", method: "POST", body: { url: input.url, ...(input.browser ? { browser: input.browser } : {}) }, response: "json" };
-    case "reach_act": return { route: "/api/browser/desktop/input", method: "POST", body: { action: input.action }, response: "json" };
+    case "reach_act":
+      if (("action" in input) === ("actions" in input)) invalid("Send action, or actions: a list of up to 10.");
+      return { route: "/api/browser/desktop/input", method: "POST", body: { ...("action" in input ? { action: input.action } : { actions: input.actions }), ...(input.describe ? { describe: true } : {}) }, response: "json" };
     case "reach_desktop_apps": return get("/api/browser/desktop/apps");
     case "reach_open_app": return { route: "/api/browser/desktop/open", method: "POST", body: { app: input.app }, response: "json" };
     case "reach_change_file": return { route: "/api/browser/files/change", method: "POST", body: input, response: "json" };

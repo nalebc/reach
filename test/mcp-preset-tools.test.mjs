@@ -85,3 +85,15 @@ test("reach_act presses a described control by number; coordinates still work", 
   await callTool(async (route, method, body) => { sent.push([method, route, body]); return { ok: true }; }, "reach_act", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }, full);
   assert.deepEqual(sent, [["POST", "/api/browser/desktop/input", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }]]);
 });
+
+test("reach_act sends a batch and describe in one request; one form at a time", async () => {
+  const { browserToolRequest } = await import("../server/browser-tools.mjs");
+  const full = access("full");
+  const actions = [{ type: "element", snapshot: "ab12cd34", n: 3 }, { type: "type", text: "diapers" }, { type: "wait", ms: 400 }, { type: "key", key: "enter" }];
+  assert.deepEqual(browserToolRequest("reach_act", { actions, describe: true }, full),
+    { route: "/api/browser/desktop/input", method: "POST", body: { actions, describe: true }, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_act", { action: actions[0], describe: true }, full).body, { action: actions[0], describe: true });
+  for (const args of [{}, { action: actions[0], actions }, { actions: [] }, { actions: Array.from({ length: 11 }, () => actions[3]) },
+    { action: { type: "wait", ms: 400 } }, { actions: [{ type: "wait", ms: 5000 }] }, { actions, describe: false }])
+    assert.throws(() => browserToolRequest("reach_act", args, full), /Invalid tool arguments/, JSON.stringify(args).slice(0, 60));
+});
