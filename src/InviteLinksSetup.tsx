@@ -242,7 +242,7 @@ function ManualSetup({
     },
     {
       title: "Create Reach’s key",
-      text: "Trust credentials → OAuth: Write for Auth Keys and Devices, tag reach-guest.",
+      text: "Trust credentials → OAuth: Write for Auth Keys and Devices, Read for Policy File, tag reach-guest.",
       action: (
         <a
           className="ivt-primary small"

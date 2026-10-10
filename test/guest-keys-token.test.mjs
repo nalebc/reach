@@ -41,8 +41,10 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, eta
         : reply(401, { message: "invalid client" });
     }
     if (auth.startsWith("Bearer oauth-")) {
-      // Reach's own client: the setup check (devices, a short key).
+      // Reach's own client: the setup check (devices, a short key), and the
+      // policy as JSON before each invite key (guests reach only Reach).
       if (route === "/tailnet/-/devices") return reply(200, { devices: [] });
+      if (route === "/tailnet/-/acl" && method === "GET") return reply(200, parsePolicy(api.policy));
       if (route === "/tailnet/-/keys" && method === "POST")
         return reply(200, { id: `a${++api.authKeys}`, key: `tskey-auth-a${api.authKeys}-x` });
       if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") { api.deletedAuthKeys.push(route.split("/").pop()); return reply(200, {}); }
@@ -118,7 +120,7 @@ test("one token: rules added (comments kept), Reach's own limited client saved, 
   assert.deepEqual(api.clients[0].body, {
     keyType: "client",
     description: "Reach invite links",
-    scopes: ["auth_keys", "devices:core"],
+    scopes: ["auth_keys", "devices:core", "policy_file:read"],
     tags: [GUEST_TAG],
   });
   assert.equal(keys.configured(), true);
@@ -437,4 +439,43 @@ test("person invitation issuance requires an owner device before creating local 
   ]) assert.equal((await f.post(other.token, body, route)).status, 403);
   assert.equal(f.api.calls.length, 0);
   assert.equal(f.reach.auth.list().filter(c => c.kind === "guest").length, 0);
+});
+
+// Security audit M7: guests reach only Reach, checked before invite keys are
+// made, not only at setup. An open or unreadable policy makes no key.
+test("an invite key is made only while the policy keeps guests to Reach, checked again later", async (t) => {
+  let clock = Date.now();
+  const api = fakeTailscale({
+    policy: `{"tagOwners":{"${GUEST_TAG}":["autogroup:admin"]},"grants":[{"src":["${GUEST_TAG}"],"dst":["100.64.0.5"],"ip":["tcp:8443"]}]}`,
+  });
+  const keys = createGuestKeys({ dataDir: setupDir(t), self: "fixture", request: api.request, now: () => clock });
+  await keys.setupFromAccessToken({ accessToken: TOKEN, ...where });
+  await keys.assertIsolated(where);
+  // Someone opens the policy to everyone: within ten minutes the next key is refused.
+  api.policy = `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}`;
+  clock += 600_001;
+  await assert.rejects(keys.assertIsolated(where), (e) => e.status === 409 && /not isolated: grants\[0\]/.test(e.message));
+  // A broad rule naming the guest tag is open too.
+  api.policy = `{"grants":[{"src":["${GUEST_TAG}"],"dst":["*"],"ip":["*"]}]}`;
+  await assert.rejects(keys.assertIsolated(where), /not isolated/);
+  // Unreadable (a key set up without policy read access) is never isolated.
+  api.policy = "not json";
+  await assert.rejects(keys.assertIsolated(where), (e) => e.status === 409 && /couldn't read your Tailscale policy/.test(e.message));
+  await assert.rejects(keys.assertIsolated({ addresses: [], port: 8443 }), /address isn't known/);
+});
+
+test("from the phone: an open policy makes no invite key", routeTest, async (t) => {
+  const api = fakeTailscale({ policy: `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}` });
+  api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+  const f = await routeFixture(t, { api });
+  fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
+    version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+  }), { mode: 0o600 });
+  for (const [route, body] of [["/api/guests/key", { ttlSeconds: 600 }], ["/api/guests", { name: "Visitor", ttlSeconds: 600, roots: [0], key: true }]]) {
+    const refused = await f.post(f.phone.token, body, route);
+    assert.equal(refused.status, 409, refused.text);
+    assert.match(refused.json.error, /not isolated/);
+  }
+  assert.equal(api.authKeys, 0, "no key minted");
+  assert.equal(f.reach.auth.list().filter((c) => c.kind === "guest").length, 0, "no guest left behind");
 });

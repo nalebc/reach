@@ -1781,6 +1781,21 @@ export async function createReach(overrides = {}) {
       throw fail(403, "Only a paired owner device can create or set up invitations.");
     return client;
   };
+  // Where guests may go: Reach's port on your Reach computers.
+  const guestReach = async () => {
+    const st = await readStatus();
+    const peers = Object.values(st?.Peer || {});
+    const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
+    return {
+      addresses: [
+        v4(st?.Self),
+        ...(fleet?.links() || []).map((l) =>
+          v4(peers.find((p) => p.ID === l.nodeId)),
+        ),
+      ].filter(Boolean),
+      port: Number(new URL(config.publicOrigin).port || 443),
+    };
+  };
   app.post("/api/guests/keys", async (req, res) => {
     const authorize = () => invitationOwner(req);
     authorize();
@@ -1789,20 +1804,11 @@ export async function createReach(overrides = {}) {
     // The easy way: one access token (used once, never kept). Reach adds its
     // rules to the tailnet policy and makes its own limited key.
     if (req.body?.accessToken) {
-      const st = await readStatus();
-      const peers = Object.values(st?.Peer || {});
-      const v4 = (n) => n?.TailscaleIPs?.find((ip) => ip.includes("."));
       const result = await guestKeys.setupFromAccessToken({
         accessToken: req.body?.accessToken,
         authorize,
         narrowDefaultWildcard: req.body?.narrowDefaultWildcard === true,
-        addresses: [
-          v4(st?.Self),
-          ...(fleet?.links() || []).map((l) =>
-            v4(peers.find((p) => p.ID === l.nodeId)),
-          ),
-        ].filter(Boolean),
-        port: Number(new URL(config.publicOrigin).port || 443),
+        ...(await guestReach()),
       });
       return res.json({
         configured: true,
@@ -1844,6 +1850,7 @@ export async function createReach(overrides = {}) {
         .filter((c) => c.kind === "guest" || c.policy?.invite)
         .map((c) => c.id),
     );
+    await guestKeys.assertIsolated(await guestReach(), authorize);
     const key = await guestKeys.createInvite({
       ttlSeconds: ttl,
       keySeconds,
@@ -1901,6 +1908,7 @@ export async function createReach(overrides = {}) {
             409,
             "Set up invite keys first: run ./reach invites on this computer.",
           );
+        await guestKeys.assertIsolated(await guestReach(), authorize);
         key = await guestKeys.createInvite({
           ttlSeconds: req.body?.ttlSeconds,
           clientIds: [grant.clientId],

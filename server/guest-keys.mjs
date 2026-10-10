@@ -1,7 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { atomicJson, loadJson, fail, hash } from "./core.mjs";
-import { addGuestRules } from "./tailnet-policy.mjs";
+import { addGuestRules, guestPolicyRisks } from "./tailnet-policy.mjs";
 
 // Invite keys: each invitation carries a one-time Tailscale key, so the guest
 // just opens the link: their browser joins your tailnet as a tag:reach-guest
@@ -10,8 +10,9 @@ import { addGuestRules } from "./tailnet-policy.mjs";
 // minutes, in case Reach was off at that moment).
 //
 // Needs a Tailscale OAuth client limited to tag:reach-guest, with the
-// `auth_keys` and `devices:core` scopes, saved by `./reach invites` (mode
-// 0600, never sent to any phone or browser).
+// `auth_keys` and `devices:core` scopes and `policy_file:read` (to check,
+// before each key, that guests still reach only Reach), saved by
+// `./reach invites` (mode 0600, never sent to any phone or browser).
 
 export const GUEST_TAG = "tag:reach-guest";
 // The policy lines for your tailnet: the guest tag, and a rule that lets
@@ -334,7 +335,7 @@ export function createGuestKeys({
       body: {
         keyType: "client",
         description: "Reach invite links",
-        scopes: ["auth_keys", "devices:core"],
+        scopes: ["auth_keys", "devices:core", "policy_file:read"],
         tags: [GUEST_TAG],
       },
     });
@@ -356,6 +357,31 @@ export function createGuestKeys({
       throw error;
     }
     return { added: plan.added, allowAll: plan.allowAll };
+  }
+
+  // Guest devices reach Reach's port and nothing else, or no key is made.
+  // Checked again before keys are made (at most every ten minutes), not only
+  // at setup: a policy edited since would let guests reach more (security
+  // audit M7). Unreadable or open: refused, and said why.
+  let isolatedAt = 0;
+  async function assertIsolated(where, authorize = () => {}) {
+    if (isolatedAt > now() - 600000) return;
+    if (!where?.addresses?.length || !Number.isInteger(where.port))
+      throw fail(409, "This computer's Tailscale address isn't known yet, so Reach can't check that guests reach only Reach. Try again in a moment.");
+    let policy;
+    try {
+      policy = await call("GET", "/tailnet/-/acl", undefined, undefined, authorize);
+    } catch (error) {
+      if (error?.status === 401 || error?.status === 403) throw error;
+      policy = null;
+    }
+    // Unreadable is never taken as isolated.
+    if (!policy || typeof policy !== "object" || Array.isArray(policy))
+      throw fail(409, "Reach couldn't read your Tailscale policy to check that guests reach only Reach, so no key was made. Set up invite links again (it now asks for read access to the policy).");
+    const risks = guestPolicyRisks(policy, { tag: GUEST_TAG, ...where });
+    if (risks.length)
+      throw fail(409, `Guest access is not isolated: ${risks.join(", ")} may let a guest reach more than Reach. Narrow those Tailscale rules (for example to autogroup:member), then invite again. No key was made.`);
+    isolatedAt = now();
   }
 
   // A key for one invitation; the guest's device will be named `hostname`.
@@ -497,6 +523,7 @@ export function createGuestKeys({
     setup,
     setupFromAccessToken,
     createInvite,
+    assertIsolated,
     noteDevices,
     revokeClient,
     reconcile,

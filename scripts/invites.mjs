@@ -121,8 +121,9 @@ ${allowAllWarning.replace(/^/gm, "   ")}
 2. Tailscale admin → Settings → Trust credentials
    (https://console.tailscale.com/admin/settings/trust-credentials):
    Credential → OAuth → choose Write for "Auth Keys" and for "Devices: Core"
-   (auth_keys, devices:core), add the tag ${GUEST_TAG}, then Generate credential.
-   Reach can then only make guest keys and remove guest devices.
+   (auth_keys, devices:core) and Read for "Policy File" (policy_file:read),
+   add the tag ${GUEST_TAG}, then Generate credential. Reach can then only
+   make guest keys, remove guest devices, and check that guests reach only Reach.
 
 3. Paste the client ID and secret below. They stay on this computer (owner-only
    file), and are never sent to a phone or browser.

@@ -78,7 +78,7 @@ test("token path: opens the token page, shows exactly what's added, then it's re
   assert.match(text, /Invite links are ready/);
   assert.doesNotMatch(text, /tskey-api-/, "the token is never printed");
   assert.ok(fs.existsSync(path.join(root, ".reach", "quick", "tailscale-oauth.json")));
-  assert.deepEqual(api.clients[0].scopes, ["auth_keys", "devices:core"]);
+  assert.deepEqual(api.clients[0].scopes, ["auth_keys", "devices:core", "policy_file:read"]);
 });
 
 test("cancel at the confirmation: policy untouched, nothing saved", async (t) => {
