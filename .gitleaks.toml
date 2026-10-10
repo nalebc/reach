@@ -1,0 +1,22 @@
+# Secret scanning for CI (.github/workflows/security.yml) and for a local run:
+#   gitleaks git . --config .gitleaks.toml --redact
+title = "Reach"
+
+[extend]
+useDefault = true
+
+# Tests are full of synthetic tokens, WebSocket keys and WebAuthn captures
+# that the heuristic rule mistakes for keys. Only that rule is relaxed, and
+# only under test/: every provider-specific rule (AWS, GitHub, Slack, OpenAI,
+# private keys and the rest) still applies there.
+[[allowlists]]
+description = "Heuristic key detection in test fixtures"
+targetRules = ["generic-api-key"]
+paths = ['''^test/''']
+
+# The scrubbing tests once spelled out token-shaped fixtures. They are now
+# assembled at run time, but the old spellings stay in the history. Nothing
+# in that file was ever a real credential.
+[[allowlists]]
+description = "Synthetic key shapes in the OpenClaw scrubbing tests"
+paths = ['''^test/openclaw-health\.test\.mjs$''']

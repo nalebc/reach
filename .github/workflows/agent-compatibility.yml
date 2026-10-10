@@ -30,13 +30,16 @@ jobs:
             package: "@openai/codex@latest"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] the report is for inspection, nothing here is published
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - name: Install published CLI in disposable runner
-        run: npm install --global "${{ matrix.package }}"
+        # The point is the CLI as published today, so it is deliberately unpinned.
+        run: npm install --global "${{ matrix.package }}" # zizmor: ignore[adhoc-packages]
       - name: Check CLI and protocol contracts without signing in
         run: node scripts/check-agent-compatibility.mjs "${{ matrix.agent }}" > agent-compatibility.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

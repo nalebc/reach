@@ -1,7 +1,12 @@
 name: Verify Reach
+# Every pull request and every push to main (or a release branch) builds,
+# tests and packages Reach on macOS, Linux and Windows. A branch without a
+# pull request is not verified: open one to get the checks.
 on:
   push:
+    branches: [main, "release/**"]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -10,29 +15,65 @@ concurrency:
 jobs:
   privacy:
     # Keep the release privacy gate independent from platform verification.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] no cache input: nothing is cached
         with:
           node-version: 22
       - run: node scripts/check-release.mjs
         env:
           REACH_PRIVATE_IDENTIFIERS: ${{ secrets.REACH_PRIVATE_IDENTIFIERS }}
+  workflows:
+    # The workflows themselves: syntax and expressions (actionlint), then the
+    # mistakes that turn a workflow into an attack surface, such as template
+    # injection or an unpinned action (zizmor).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          annotations: true
+          min-severity: low
+          persona: regular
   go-security:
-    runs-on: ubuntu-latest
+    # The browser networking helper: formatted, vetted and free of known
+    # vulnerabilities in its dependency graph for the wasm target it ships as.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
         with:
           go-version-file: tailnet/go.mod
           cache-dependency-path: tailnet/go.sum
+      - name: gofmt
+        working-directory: tailnet
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on: $unformatted" >&2
+            exit 1
+          fi
+      - name: go vet
+        working-directory: tailnet
+        run: go vet ./...
+        env:
+          GOOS: js
+          GOARCH: wasm
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: Check the browser networking dependency graph
         working-directory: tailnet
@@ -41,35 +82,47 @@ jobs:
           GOOS: js
           GOARCH: wasm
   audit:
-    # Advisory: a new upstream advisory must not block verifying Reach itself.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
         with:
           node-version: 22
           cache: npm
-      - run: npm audit --audit-level=moderate
+      - name: Known vulnerabilities in what Reach ships (blocking)
+        # The runtime dependencies are what users install. A high or critical
+        # advisory there must be dealt with before anything merges.
+        run: npm audit --omit=dev --audit-level=high
+      - name: Known vulnerabilities anywhere, including build tools (advisory)
+        # A new upstream advisory in a build tool must not block verifying
+        # Reach itself; it shows up here and in Dependabot.
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
   verify:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+        node: [22]
+        include:
+          # The newest Node release, on the cheapest runner.
+          - os: ubuntu-24.04
+            node: 24
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
         with:
           go-version-file: tailnet/go.mod
           cache-dependency-path: tailnet/go.sum
@@ -90,7 +143,7 @@ jobs:
       - run: npm run verify:package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: reach-${{ matrix.os }}
+          name: reach-${{ matrix.os }}-node${{ matrix.node }}
           path: |
             release/reach
             release/*.tgz
@@ -101,7 +154,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
         with:
           node-version: 22
           cache: npm

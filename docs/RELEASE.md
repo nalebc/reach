@@ -20,11 +20,20 @@ npm run verify:package
 
 The portable folder is `release/reach`. It includes startup scripts, source/build inputs, browser networking, the license, and documentation; it installs its dependencies on first launch. The npm artifact contains built assets and runtime code rather than the React source. Neither includes local Reach state, signing files, or `work/` scratch files.
 
-CI repeats the release checks on macOS, Linux and Windows and uploads each platform's portable folder and verified tarball as artifacts. A Go vulnerability check scans the browser networking dependency graph; `npm audit` runs as a separate advisory job that does not block verification. A separate unsigned simulator build compiles the iOS plugins. GitHub Actions are pinned to commit SHAs. CI configuration in a local checkout is not evidence that those remote jobs have passed: inspect the checks on the exact release commit.
+CI (`.github/workflows/ci.yml`) repeats the release checks on macOS, Linux and Windows for every pull request and every push to `main`, on Node 22 and, on Linux, Node 24, and uploads each platform's portable folder and verified tarball as artifacts. The same workflow runs the privacy check, lints the workflows themselves (actionlint and zizmor), formats, vets and runs `govulncheck` over the browser networking helper, and audits dependencies: a high or critical advisory in a runtime dependency blocks, anything else is advisory. A separate unsigned simulator build compiles the iOS plugins. `.github/workflows/security.yml` scans every commit for secrets with gitleaks (`.gitleaks.toml` lists the synthetic fixtures it may ignore), and, once the repository is public, runs CodeQL over the JavaScript, TypeScript and workflow code, reviews the dependencies a pull request adds, and publishes the OpenSSF Scorecard; weekly as well as on each change. GitHub Actions are pinned to commit SHAs. CI configuration in a local checkout is not evidence that those remote jobs have passed: inspect the checks on the exact release commit.
 
 ### Tag-driven release
 
 Publishing is done by `.github/workflows/release.yml`, not from a laptop. Set the version in `package.json`, date the matching `CHANGELOG.md` heading, commit, and push a tag `v<version>` (for example `v0.1.0`). The workflow refuses a tag that does not equal `v` plus the `package.json` version, and a changelog entry still marked unreleased. It then runs the sequence above on Ubuntu (`npm ci`, `check-release`, `build:release`, `npm test`, `package`, `verify:package`) and publishes the exact tarball that `verify:package` left in `release/` with `npm publish --provenance --access public`; nothing is rebuilt after verification. It writes `SHA256SUMS` for that tarball and for `reach-<version>-portable.tar.gz` (the `release/reach` folder), and creates the GitHub release for the tag with the tarball, the portable archive, the checksum file and the changelog section as notes. The repository needs an `NPM_TOKEN` secret with publish rights; `REACH_PRIVATE_IDENTIFIERS` is optional. Verify a download with `shasum -a 256 -c SHA256SUMS`.
+
+## Making the repository public
+
+Actions minutes on a private repository are paid; macOS runners count ten times and Windows twice. A public repository runs them free, and gains code scanning, Scorecard, rulesets, secret scanning and private vulnerability reporting. Before flipping the switch:
+
+1. Rewrite or confirm the history. `node scripts/check-release.mjs` must pass without an identity finding; it lists any commit whose author or committer is not an approved public identity. Rewriting history changes every later commit hash and needs a force push, so do it once, with every other clone discarded afterwards.
+2. Review `docs/media` and every file the privacy check cannot judge (images, recordings).
+3. After it is public, enable in Settings → Code security: secret scanning with push protection, private vulnerability reporting (SECURITY.md promises it) and Dependabot security updates; `security.yml` starts uploading CodeQL and Scorecard results on the next push.
+4. Add a ruleset for `main` that requires the `Verify Reach` checks and a pull request, with the maintainer allowed to bypass while the project has one maintainer.
 
 ## Native iOS verification
 

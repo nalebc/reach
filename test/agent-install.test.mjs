@@ -60,12 +60,15 @@ test("installer prerequisites are queried using the selected platform's shell", 
 
 test("PowerShell installer wrappers preserve success and failure without executing an installer", { skip: process.platform !== "win32" }, () => {
   const node = process.execPath.replaceAll("'", "''");
+  // Windows PowerShell 5.1 can take well over ten seconds to start on a busy
+  // hosted runner; a timeout here surfaced as a null status, not as a hang.
   for (const [plan, expected] of [
     [{ agent: "claude", command: "Write-Output 'synthetic success'" }, 0],
     [{ agent: "claude", command: "throw 'synthetic failure'" }, 1],
     [{ agent: "codex", command: `& '${node}' -e 'process.exit(23)'` }, 23],
   ]) {
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", installTerminalCommand(plan, "win32")], { encoding: "utf8", timeout: 10000, windowsHide: true });
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", installTerminalCommand(plan, "win32")], { encoding: "utf8", timeout: 60_000, windowsHide: true });
+    assert.ifError(result.error);
     assert.equal(result.status, expected, result.stderr);
   }
 });

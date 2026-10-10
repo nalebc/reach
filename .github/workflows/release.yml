@@ -18,15 +18,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      # No dependency caches on the publishing path: everything the tarball is
+      # built from comes straight from the registries, never from a cache
+      # another run could have written.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] no cache input: nothing is cached
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          cache: npm
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: tailnet/go.mod
-          cache-dependency-path: tailnet/go.sum
+          cache: false
       - name: The tag must be v plus the package.json version
         id: version
         run: |

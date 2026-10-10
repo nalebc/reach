@@ -17,6 +17,8 @@ npm run package
 npm run verify:package
 ```
 
+CI runs the same checks on macOS, Linux and Windows, lints the workflows, scans every commit for secrets and, on a public repository, runs CodeQL and dependency review; see [docs/RELEASE.md](docs/RELEASE.md). Test fixtures that look like credentials (API keys, tokens) must be assembled at run time, never spelled out in source: the privacy check and the secret scanners read the source.
+
 Add regression coverage for permission boundaries, protocol handling and behavioral changes. Do not remove a failing security test to make CI green. Record platform-specific checks and anything not tested. Changes to permissions must be enforced on the server, including revocation during asynchronous work.
 
 Describe the problem, resulting behavior, validation, and limitations in the pull request. Contributions are distributed under the project's MIT license; preserve attribution for third-party work. Be respectful and specific in discussions. Security reports follow [SECURITY.md](SECURITY.md), not public bug reports.
