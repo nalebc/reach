@@ -107,6 +107,41 @@ test("a message waiting in Claude Code's queue shows as waiting until Claude tak
   assert.deepEqual(parseClaudeTranscript([...start, q("enqueue", 3, { content: "zq9" })].join("\n")).items.map((i) => i.text), ["start a long job", "Working on it"]);
 });
 
+// Oct 9 (ca28bb90): "Messages are stuck, I can't delete, edit, re-arrange or
+// force send." A dequeue says nothing of which it took, and Claude Code took
+// "continue" 14 ms after it came, ahead of a background notice waiting six
+// minutes; read as the notice taken, "continue with all" (taken an hour
+// before) and each message after it showed as waiting, where nothing changes
+// them.
+test("a dequeue takes your message before a background notice, and the message it made says which", () => {
+  const q = (operation, s, extra = {}) => line({ type: "queue-operation", operation, timestamp: at(s), sessionId: ID, ...extra });
+  const user = (uuid, parentUuid, s, content) => line({ ...base, type: "user", uuid, parentUuid, timestamp: at(s), message: { role: "user", content } });
+  const start = [
+    user("u1", null, 1, "start a long job"),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "Working on it" }] } }),
+  ];
+  const waiting = (lines) => parseClaudeTranscript([...start, ...lines].join("\n")).waiting.map((w) => w.text);
+  const note = q("enqueue", 3, { content: "<task-notification>\n<task-id>b1</task-id>\n</task-notification>" });
+  // As it happened: yours taken first, then the next one, each at once.
+  assert.deepEqual(waiting([
+    note, q("enqueue", 4, { content: "continue" }), q("dequeue", 5), user("u2", "a1", 6, "continue"),
+    q("enqueue", 7, { content: "continue with all" }), q("dequeue", 8), user("u3", "u2", 9, "continue with all"),
+  ]), []);
+  // The message it made names another one waiting: that one was taken.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("dequeue", 5), user("u2", "a1", 6, "two")]), ["one"]);
+  // ...after the turn's own tool results too.
+  assert.deepEqual(waiting([
+    q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("dequeue", 5),
+    user("r1", "a1", 6, [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]), user("u2", "r1", 7, "two"),
+  ]), ["one"]);
+  // The same words twice: one taken, the other still waits.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "yes" }), q("enqueue", 4, { content: "yes" }), q("dequeue", 5), user("u2", "a1", 6, "yes")]), ["yes"]);
+  // Words that match none change nothing.
+  assert.deepEqual(waiting([q("enqueue", 3, { content: "one" }), q("enqueue", 4, { content: "two" }), q("dequeue", 5), user("u2", "a1", 6, "three")]), ["two"]);
+  // Only notices waiting: the oldest goes, as before.
+  assert.deepEqual(waiting([note, q("enqueue", 4, { content: "<task-notification>\n<task-id>b2</task-id>\n</task-notification>" }), q("dequeue", 5), q("enqueue", 6, { content: "mine" })]), ["mine"]);
+});
+
 // A call still running carries the key of its whole input (agent-asks.mjs
 // checks a re-asked permission against it), though most of it isn't kept.
 test("a running call carries the key of its whole input", () => {

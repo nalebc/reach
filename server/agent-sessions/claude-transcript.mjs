@@ -371,6 +371,15 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
   const queue = [];
   let enqueued = 0;
   const queueKey = (content) => `${textOf(content)}\u0000${Array.isArray(content) ? content.filter((b) => b?.type === "image").length : 0}`;
+  // A dequeue doesn't say which one it took, and Claude Code doesn't take the
+  // oldest: what you typed goes before a background task's notice (Oct 9,
+  // ca28bb90: "continue" was taken 14 ms after it came, ahead of a notice
+  // waiting 6 minutes; read as the notice taken, "continue with all" showed
+  // as waiting an hour after Claude took it, and so did each message after).
+  // The ones taken since your last message, so that message can say which.
+  let taken = [];
+  const notice = (q) => q.text?.includes("<task-notification>");
+  const words = (text) => visibleUserText(String(text ?? "")).trim();
   return {
     add(source, { offset } = {}) {
       let position = Number.isFinite(offset) ? offset : null;
@@ -398,7 +407,11 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
               key: content === null ? null : queueKey(content),
               at: e.timestamp ? Date.parse(e.timestamp) : undefined,
             });
-          else if (e.operation === "dequeue") queue.shift();
+          else if (e.operation === "dequeue") {
+            const yours = queue.findIndex((q) => !notice(q));
+            const index = yours >= 0 ? yours : 0;
+            if (queue.length) taken.push({ entry: queue.splice(index, 1)[0], index });
+          }
           // Folded into the turn running (absorbed_mid_turn) or taken out:
           // that one, by its words (one without words, the oldest without);
           // none matching takes nothing (never another one's words).
@@ -407,6 +420,27 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
             if (at >= 0) queue.splice(at, 1);
           } else if (e.operation === "popAll") queue.length = 0;
           // Any other: nothing taken (it keeps showing as waiting).
+        }
+        // The message a dequeue made: when it has the words of one still
+        // waiting and not of the one read as taken, that one was taken; the
+        // other goes back where it was. Words matching nothing change nothing.
+        if (e.type === "user" && !e.isMeta && !e.isSidechain && taken.length) {
+          const content = e.message?.content;
+          const blocks = Array.isArray(content) ? content : typeof content === "string" ? [{ type: "text", text: content }] : [];
+          if (!blocks.some((b) => b?.type === "tool_result")) {
+            const parts = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => words(b.text));
+            const said = new Set([words(parts.join("\n")), ...parts].filter(Boolean));
+            for (const text of said) {
+              if (taken.some((t) => words(t.entry.text) === text)) continue;
+              const at = queue.findIndex((q) => q.text !== null && words(q.text) === text);
+              const wrong = taken.findIndex((t) => !said.has(words(t.entry.text)));
+              if (at < 0 || wrong < 0) continue;
+              queue.splice(at, 1);
+              const [back] = taken.splice(wrong, 1);
+              queue.splice(Math.min(back.index, queue.length), 0, back.entry);
+            }
+            taken = [];
+          }
         }
         if (e.type === "custom-title" && e.customTitle) meta.title = e.customTitle;
         // The folder the session began in, never where a Bash `cd` left its
