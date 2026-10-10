@@ -285,6 +285,18 @@ test(
       /expired, was revoked, or has already been used/,
     );
     assert.equal(fs.existsSync(conn), false, "a failed join leaves nothing");
+
+    // An access whose time ran out: a new invitation joins over it, no
+    // leave needed (an agent invited again shouldn't be told it's connected).
+    fs.mkdirSync(conn, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(conn, "credential.json"), JSON.stringify({ version: 1, via: "direct", computer: "127", origin, token: "old", expiresAt: Date.now() - 1000 }), { mode: 0o600 });
+    const fresh = reach.auth.inviteAgent({ name: "Builder", ttlSeconds: 3600, folders: [{ root: 0, path: "acme" }] });
+    const rejoining = launch(["join", "--allow-local"], { env, input: `${origin}/agent#i=${encodeURIComponent(`${origin}~${fresh.invitation}`)}` });
+    t.after(() => rejoining.child.kill());
+    await waitUntil(() => /Connection code|Already connected/.test(rejoining.output().stderr));
+    assert.doesNotMatch(rejoining.output().stderr, /Already connected/, "the expired one is replaced");
+    assert.match(rejoining.output().stderr, /Connection code: \d{6}/);
+    rejoining.child.kill();
   },
 );
 

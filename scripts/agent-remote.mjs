@@ -775,7 +775,9 @@ export async function join(o) {
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, "") || "computer";
   const conn = path.join(home, name);
-  if (joinedAt(conn))
+  // A connection still good is kept; one whose access ended (its time ran
+  // out) is replaced by the new invitation, with no leave first.
+  if (joinedAt(conn) && !(readCredential(conn).expiresAt <= Date.now()))
     throw Error(
       `Already connected to ${name}. To join again: node ${quote(self())} leave --computer ${name}`,
     );
