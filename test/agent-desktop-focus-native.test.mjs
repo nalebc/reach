@@ -51,7 +51,13 @@ final class NSRunningApplication {
     processIdentifier = pid; bundleIdentifier = bundle; localizedName = name
     bundleURL = URL(fileURLWithPath: "/Applications/" + name + ".app")
   }
+  // Another running app (the one holding focus when it isn't the front one).
+  convenience init?(processIdentifier pid: pid_t) {
+    guard let other = otherApp, other.processIdentifier == pid else { return nil }
+    self.init(pid, other.bundleIdentifier ?? "", other.localizedName ?? "")
+  }
 }
+var otherApp: NSRunningApplication? = nil
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: NSRunningApplication? = nil }
 typealias AXUIElement = Int
 // Numbered labels (perform "element"): none in these keyboard cases.
@@ -75,7 +81,8 @@ func string(_ element: AXUIElement, _ name: String) -> String { appWindowTitle }
 func canonical(_ url: URL) -> String { url.path }
 func pidOf(_ element: AXUIElement) -> pid_t { focusedPid ?? 0 }
 func seen(_ element: AXUIElement) -> Seen {
-  let app = NSWorkspace.shared.frontmostApplication!
+  let front = NSWorkspace.shared.frontmostApplication!
+  let app = observedPid != front.processIdentifier && otherApp?.processIdentifier == observedPid ? otherApp! : front
   return Seen(bundle: app.bundleIdentifier ?? "", name: app.localizedName ?? "", path: app.bundleURL!.path,
     title: focusedTitle, url: focusedURL, secure: focusedSecure, role: focusedSecure ? "AXSecureTextField" : "AXTextField", pid: observedPid)
 }
@@ -108,6 +115,7 @@ func post(_ event: CGEvent?, pause: UInt32 = 0) { if event != nil { events += 1 
 var failures = [String]()
 func reset() {
   NSWorkspace.shared.frontmostApplication = NSRunningApplication(42)
+  otherApp = NSRunningApplication(99)
   focusedPid = 42; observedPid = 42; pidLookupSucceeded = true; focusedTitle = "Interaction Lab"; focusedURL = ""; focusedSecure = false; appWindowTitle = "Interaction Lab"; events = 0
 }
 func expect(_ label: String, _ action: [String:Any], _ status: String, _ rules: Rules = full) {
@@ -135,8 +143,16 @@ for action in [typing,key] {
   reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(0); focusedPid = 0; observedPid = 0
   expect(name + " unavailable app PID", action, "retry")
   unverified(name + " AX PID lookup failed with stale value", action) { pidLookupSucceeded = false }
-  unverified(name + " failed PID lookup during inspection", action) { observedPid = 0 }
-  unverified(name + " PID changed during inspection", action) { observedPid = 99 }
+  // A focus that changed while it was checked is looked at again, everywhere.
+  reset(); observedPid = 0; expect(name + " failed PID lookup during inspection", action, "retry")
+  reset(); observedPid = 99; expect(name + " PID changed during inspection", action, "retry")
+  // Keys go where focus is, even when that app isn't in front: it is judged.
+  reset(); focusedPid = 99; observedPid = 99; otherApp = NSRunningApplication(99, "com.1password.1password", "1Password")
+  expect(name + " focus in a protected app that isn't in front (Full)", action, "blocked")
+  reset(); focusedPid = 99; observedPid = 99; focusedSecure = true
+  expect(name + " a password field in an app that isn't in front (Full)", action, "blocked")
+  reset(); focusedPid = 99; observedPid = 99; focusedTitle = "Reach"
+  expect(name + " Reach holding focus without being in front (Full)", action, "blocked")
   reset(); focusedTitle = "Reach"
   expect(name + " same-PID protected title", action, "blocked")
   reset(); focusedURL = "http://localhost:8443/"
@@ -158,7 +174,7 @@ expect("selected app ordinary focus", key, "allowed", apps)
 reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.apple.Notes","Notes")
 expect("selected app policy still enforced", key, "blocked", apps)
 if !failures.isEmpty { print(failures.joined(separator:"\n")); exit(1) }
-print("OK 41 focus and keyboard dispatch cases")
+print("OK focus and keyboard dispatch cases")
 `;
     const program = "import Foundation\nimport CoreGraphics\nimport Darwin\nstruct Refusal: Error { let message:String; let kind:String }\nfunc refuse(_ message:String, _ kind:String = \"blocked\") throws -> Never { throw Refusal(message:message,kind:kind) }\n"
       + policy + "\n" + text + "\n" + seen + "\n" + stubs
@@ -173,7 +189,7 @@ print("OK 41 focus and keyboard dispatch cases")
     assert.equal(compiled.status, 0, compiled.stderr);
     const run = spawnSync(path.join(directory, "focus"), [], { encoding: "utf8", timeout: 30000 });
     assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
-    assert.equal(run.stdout.trim(), "OK 41 focus and keyboard dispatch cases");
+    assert.equal(run.stdout.trim(), "OK focus and keyboard dispatch cases");
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

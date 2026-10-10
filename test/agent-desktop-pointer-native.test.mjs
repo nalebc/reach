@@ -35,7 +35,7 @@ test("native pointer targets fail closed when only a compositor or no app is ide
     };
     const policy = extract("// BEGIN PURE DESKTOP POLICY", "// END PURE DESKTOP POLICY").split("\n").slice(1).join("\n");
     const seen = source.split("\n").find((line) => line.startsWith("struct Seen "));
-    const surfaces = source.split("\n").find((line) => line.startsWith("let systemSurfaces ="));
+    const surfaces = source.split("\n").filter((line) => /^let (systemSurfaces|systemGuardedWords|systemGuardedReason) =/.test(line)).join("\n");
     assert.ok(seen && surfaces);
     const full = nativeRules({ preset: "full", hidden: [{ id: "/System/Applications/Messages.app", bundleId: "com.apple.MobileSMS", name: "Messages" }] }, { hosts: ["localhost:8443"], titles: ["reach"], protectedPaths: [], home: "/Users/me" });
     const swift = (value) => JSON.stringify(value).replace(/\\u([0-9a-f]{4})/gi, "\\u{$1}");
@@ -59,7 +59,7 @@ apps.allowedApps = [["id": "/Applications/Safari.app", "bundleId": "com.apple.Sa
     const stubs = String.raw`
 let kCGNullWindowID: UInt32 = 0
 let kCGWindowBounds = "bounds", kCGWindowAlpha = "alpha", kCGWindowOwnerPID = "pid", kCGWindowOwnerName = "name", kCGWindowName = "title"
-let kAXTitleAttribute = "title"
+let kAXTitleAttribute = "title", kAXDescriptionAttribute = "description", kAXHelpAttribute = "help", kAXURLAttribute = "url"
 enum WindowOptions { case optionOnScreenOnly }
 var windows = [[String: Any]]()
 func CGWindowListCopyWindowInfo(_ options: [WindowOptions], _ id: UInt32) -> Any? { windows }
@@ -77,13 +77,17 @@ func appInfo(_ pid: pid_t) -> (String, String, String) {
   case 3: return ("com.apple.Safari", "Safari", "/Applications/Safari.app")
   case 4: return ("com.apple.MobileSMS", "Messages", "/System/Applications/Messages.app")
   case 5: return ("com.google.Chrome", "Chrome", "/Applications/Google Chrome.app")
+  case 6: return ("com.apple.controlcenter", "Control Center", "/System/Library/CoreServices/ControlCenter.app")
+  case 7: return ("com.apple.dock", "Dock", "/System/Library/CoreServices/Dock.app")
   default: return ("", "Window Server", "")
   }
 }
 func seen(_ element: AXUIElement) -> Seen { let (bundle,name,path) = appInfo(pid_t(element)); return Seen(bundle:bundle,name:name,path:path,title:axTitle,url:axURL,pid:pid_t(element)) }
-func string(_ element: AXUIElement, _ name: String) -> String { "" }
+var axLabel = "", axDockURL = ""
+func string(_ element: AXUIElement, _ name: String) -> String { name == "title" ? axLabel : name == "url" ? axDockURL : "" }
+func canonical(_ url: URL) -> String { url.path }
 func pidOf(_ element: AXUIElement) -> pid_t { pid_t(element) }
-final class NSRunningApplication { let processIdentifier: pid_t; let localizedName: String? = nil; init?(processIdentifier: pid_t) { self.processIdentifier = processIdentifier } }
+final class NSRunningApplication { let processIdentifier: pid_t; let localizedName: String? = nil; let bundleIdentifier: String? = nil; let bundleURL: URL? = nil; init?(processIdentifier: pid_t) { self.processIdentifier = processIdentifier } }
 final class NSWorkspace { static let shared = NSWorkspace(); let runningApplications = [NSRunningApplication]() }
 func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool { appHostsReach }
 func windowTitleReason(_ title: String, _ bundle: String, _ path: String, _ pid: pid_t, _ rules: Rules) -> String? { titleReason(title,bundle,rules) }
@@ -139,6 +143,15 @@ expect("recorded changed AX title", [window(1)], 3, full, "retry", "", recorded)
 axTitle = "Interaction Lab"
 expect("recorded protected CG never bypassed", [window(2)], 3, full, "blocked", "", recorded)
 expect("recorded protected AX never bypassed", [window(1)], 2, full, "blocked", "", recorded)
+// System surfaces in Full control: the connection Reach answers through and
+// apps the agent may not open stay closed, whichever surface is clicked.
+axTitle = ""; axLabel = "Wi-Fi"
+expect("Control Center's Wi-Fi switch", [window(6)], 6, full, "blocked")
+axLabel = "Activity Monitor"; axDockURL = "file:///System/Applications/Utilities/Activity%20Monitor.app/"
+expect("a Dock item that opens a protected app", [window(7)], 7, full, "blocked")
+axLabel = "Safari"; axDockURL = "file:///Applications/Safari.app/"
+expect("a Dock item that opens an ordinary app", [window(7)], 7, full, "allowed", "Dock")
+axLabel = ""; axDockURL = ""; axTitle = "Interaction Lab"
 if pointerIdentityKnown("com.apple.WindowServer", "Other", "/System/Library/WindowServer", 1) || pointerIdentityKnown("", "Window Server", "/System/Library/WindowServer", 1) || pointerIdentityKnown("com.apple.Safari", "Safari", "/Applications/Safari.app", 0) { print("FAILED: unknown identity"); exit(1) }
 print("OK")
 `;

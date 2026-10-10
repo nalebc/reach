@@ -286,6 +286,10 @@ func windowAt(_ point: CGPoint) -> Seen? {
 // The system's own surfaces: the Dock opens any app, Spotlight and Control
 // Center reach everywhere. Full control may use them (except where Reach is);
 // the Apps preset may not.
+// What the agent never switches from Control Center or the menu bar: the
+// network Reach answers through and who may reach this Mac.
+let systemGuardedWords = ["wi-fi", "wifi", "vpn", "network", "ethernet", "firewall", "sharing", "airplane"]
+let systemGuardedReason = "That control can cut Reach's connection or change who reaches this Mac. It stays with the owner."
 let systemSurfaces = ["com.apple.dock", "com.apple.spotlight", "com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.notificationcenterui", "com.apple.windowmanager"]
 func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? = nil) throws -> Seen {
   // Match the same identified observations that authorize the input. A
@@ -313,6 +317,21 @@ func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? 
       // A Dock item or menu of an app that hosts Reach (Reach's terminal, a Reach tab).
       let label = string(element, kAXTitleAttribute)
       if mentionsReach(label, rules) { try refuse(reachReason) }
+      let words = lower([label, string(element, kAXDescriptionAttribute), string(element, kAXHelpAttribute)].joined(separator: " "))
+      if mentionsReach(words, rules) { try refuse(reachReason) }
+      // Control Center and menu-bar controls that cut the connection Reach
+      // answers through, or change who can reach this Mac.
+      if systemGuardedWords.contains(where: { words.contains($0) }) { try refuse(systemGuardedReason) }
+      // A Dock item or Spotlight result opens an app: that app's own rules
+      // apply (protected, hidden, not chosen), as when opening it directly.
+      let url = string(element, kAXURLAttribute)
+      if url.hasPrefix("file://"), let target = URL(string: url), target.path.hasSuffix(".app") || target.path.hasSuffix(".app/"),
+        let bundle = Bundle(url: target) {
+        let appName = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ""
+        if let reason = appReason(bundle.bundleIdentifier ?? "", appName, canonical(target), rules) { try refuse(reason) }
+      }
+      if let app = NSWorkspace.shared.runningApplications.first(where: { !label.isEmpty && $0.localizedName == label }),
+        let reason = appReason(app.bundleIdentifier ?? "", app.localizedName ?? "", app.bundleURL.map(canonical) ?? "", rules) { try refuse(reason) }
       if rules.mode != "full", let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == label }), hostsReach(app, rules) { try refuse(reachReason) }
     } else {
       try check(s, rules)
@@ -353,15 +372,25 @@ func focus(_ rules: Rules, appOnly: Bool = false) throws -> Focus {
   // AppKit's foreground observation and Accessibility must identify the same
   // process. Never authorize global keys from a stale or unverifiable app.
   var focusedPid: pid_t = 0
+  // Keys go to the focused element, wherever it is. When Accessibility names
+  // one, it is judged (its app, window, page, password field), never only the
+  // app in front: a password manager's popup or a sign-in prompt can hold
+  // focus without being in front. Only an app that names no focused element
+  // at all (some Electron apps) falls back to the app in front, for
+  // shortcuts or in Full control.
   guard let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
-    AXUIElementGetPid(focused, &focusedPid) == .success, focusedPid == front.processIdentifier else {
+    AXUIElementGetPid(focused, &focusedPid) == .success, focusedPid > 0 else {
     if appOnly || rules.mode == "full" { return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules)) }
     try refuse("The focused app could not be verified. Look again before typing or pressing a key.", "retry")
   }
   let element = seen(focused)
-  guard element.pid == front.processIdentifier else {
-    if rules.mode == "full" { return Focus(app: front, element: s, terminalLike: terminalLikeApp(bundle, name, path, rules)) }
-    try refuse("The focused app changed while it was checked. Look again before typing or pressing a key.", "retry")
+  guard element.pid == focusedPid, focusedPid == front.processIdentifier else {
+    guard appOnly || rules.mode == "full", element.pid == focusedPid,
+      let owner = NSRunningApplication(processIdentifier: element.pid) else {
+      try refuse("The focused app changed while it was checked. Look again before typing or pressing a key.", "retry")
+    }
+    try check(element, rules)
+    return Focus(app: owner, element: element, terminalLike: terminalLikeApp(element.bundle, element.name, element.path, rules))
   }
   try check(element, rules)
   s = element; s.bundle = bundle; s.name = name; s.path = path
@@ -536,7 +565,12 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   let excluded = content.windows.filter { window in
     let app = window.owningApplication
     let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
-    return appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
+    // Mission Control, App Exposé and Launchpad draw every window's preview
+    // in the Dock's own full-screen layer: left out, so what is hidden stays
+    // hidden there too.
+    let dockOverlay = lower(app?.bundleIdentifier ?? "") == "com.apple.dock" && window.windowLayer > 0 &&
+      window.frame.width >= display.frame.width * 0.9 && window.frame.height >= display.frame.height * 0.9
+    return dockOverlay || appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
       windowTitleReason(window.title ?? "", app?.bundleIdentifier ?? "", path, app?.processID ?? 0, rules) != nil
   }
   var hidden = 0
