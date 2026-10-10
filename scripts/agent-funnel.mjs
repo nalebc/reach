@@ -39,7 +39,7 @@ export function agentKey(conn) {
 // addresses. A failure before the connection is made (no route, refused,
 // a name that doesn't resolve) is marked unreachable: the next address is
 // tried. Anything later isn't, so an action never runs twice.
-function httpsSend(endpoint, body, headers, timeoutMs) {
+export function httpsSend(endpoint, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {
     let connected = false;
     const unreachable = (error) => Object.assign(error, { unreachable: !connected });
@@ -65,7 +65,9 @@ function httpsSend(endpoint, body, headers, timeoutMs) {
 // identity), reached at the first of `endpoints` that answers: the computer's
 // private address when the agent is on the owner's tailnet, else its public
 // link. A minute after the private address failed, it's tried again.
-export function funnelGateway(audience, key, { send = httpsSend, now = Date.now, endpoints = [audience] } = {}) {
+// `retry`: true once when the private address became reachable (the agent's
+// own node came up): it's tried again at once, not a minute later.
+export function funnelGateway(audience, key, { send = httpsSend, now = Date.now, endpoints = [audience], retry = () => false } = {}) {
   let current = 0, failedAt = 0;
   const call = async (input, timeoutMs = 35000) => {
     const payload = JSON.stringify({ v: 1, audience, issuedAt: now(), nonce: crypto.randomBytes(24).toString("base64url"), ...input });
@@ -78,7 +80,7 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
       // Its key named up front: an agent with access has capacity kept for it.
       "Reach-Key": key.thumbprint,
     };
-    if (current > 0 && now() - failedAt > 60_000) current = 0;
+    if (current > 0 && (now() - failedAt > 60_000 || retry())) current = 0;
     for (;;) {
       const endpoint = endpoints[current];
       try {
@@ -106,8 +108,8 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
 // The agent's API, as tailnetApi gives it: (route, method, body) → result.
 // A session the computer ended while the access lasts (Reach restarted, the
 // owner reopened its link) comes back through the same key, once.
-export function funnelApi({ conn, credential, key = agentKey(conn),
-  gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean) }), save, reload }) {
+export function funnelApi({ conn, credential, key = agentKey(conn), gatewayOptions = {},
+  gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean), ...gatewayOptions }), save, reload }) {
   const reconnect = async () => {
     if (!credential.invitation) return false;
     const asked = await gateway.reconnect(credential.invitation);

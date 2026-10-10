@@ -5,7 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
-import { join } from "../scripts/agent-remote.mjs";
+import { hooks, join, open } from "../scripts/agent-remote.mjs";
 import { agentKey, funnelApi, funnelGateway } from "../scripts/agent-funnel.mjs";
 import { callTool } from "../scripts/mcp-server.mjs";
 
@@ -53,7 +53,7 @@ async function fixture(t) {
     req.end(body);
   });
   const invite = () => reach.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "files", folders: [{ root: 0, path: "work" }], write: true, ttlSeconds: 3600 });
-  return { reach, send, invite, root, sent, privately: (value) => { privateAnswers = value; } };
+  return { reach, send, invite, root, sent, socketPath, privately: (value) => { privateAnswers = value; } };
 }
 
 test("a terminal agent joins through the public link with no Tailscale key, then uses Reach's tools", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
@@ -178,45 +178,82 @@ test("through the gateway, an agent trades its credential and the new one works;
 
 // One Tools invite, the route chosen where the agent runs (Oct 10, Muse from
 // a sandbox that can't reach Tailscale's control plane): an invitation made
-// for the tailnet (an invite key) is opened through the public link instead
-// when Tailscale can't be joined from there, with the agent's own key and
-// the owner's code as for any public-link agent.
-test("a Tools invitation made for the tailnet opens through the public link when the agent can't reach Tailscale", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+// for the tailnet (an invite key) is opened through the public link at once,
+// with the agent's own key and the owner's code as for any public-link agent,
+// while the tailnet joins in the background. Nothing waits for it.
+const keyLink = (grant) => `${ORIGIN}/agent#k=tskey-auth-abc123def456&h=rg-ab12-abcdefghij&i=${encodeURIComponent(`${ORIGIN}:8443~${grant.invitation}`)}`;
+const quiet = async (work) => {
+  const out = [], err = [];
+  const stdout = process.stdout.write, stderr = process.stderr.write;
+  process.stdout.write = (chunk, ...rest) => (out.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
+  process.stderr.write = (chunk, ...rest) => (err.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
+  try { return { result: await work(), out: out.join(""), err: err.join("") }; }
+  finally { process.stdout.write = stdout; process.stderr.write = stderr; }
+};
+const approving = (t, f, grant) => {
+  const timer = setInterval(() => {
+    const waiting = f.reach.auth.listAgentAdmissions().find((entry) => entry.clientId === grant.clientId);
+    if (waiting) f.reach.auth.decideAgentAdmission(waiting.requestId, "approve");
+  }, 50);
+  t.after(() => clearInterval(timer));
+  return timer;
+};
+// A node as the agent's tailnet client offers it, reaching the computer's
+// private address (the fixture's tailnet source).
+const fakeNode = (f) => ({
+  used: 0,
+  fetch({ url, method, headers, body }) {
+    const node = this;
+    const response = new Promise((resolve, reject) => {
+      const pairs = {};
+      for (let index = 0; index < headers.length; index += 2) pairs[headers[index]] = headers[index + 1];
+      const target = new URL(url);
+      const req = http.request({ socketPath: f.socketPath, path: target.pathname, method, headers: { ...pairs, Host: "localhost", "X-Forwarded-Host": target.host, "X-Forwarded-For": "100.64.0.20" } }, (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          node.used++;
+          const bytes = Buffer.concat(chunks);
+          let given = false;
+          resolve({ status: res.statusCode, headers: Object.entries(res.headers).flat(), read: async () => { if (given) return null; given = true; return new Uint8Array(bytes); }, cancel() {} });
+        });
+      });
+      req.once("error", reject);
+      req.end(body ? Buffer.from(body) : undefined);
+    });
+    return { response, abort() {} };
+  },
+});
+const invitedForTailnet = (f) => f.reach.auth.inviteBrowser({ name: "Muse", transport: "tailnet", preset: "files", folders: [{ root: 0, path: "work" }], ttlSeconds: 3600 });
+test("a Tools invitation made for the tailnet is opened through the public link at once; the tailnet joins behind", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
   const f = await fixture(t);
-  const grant = f.reach.auth.inviteBrowser({ name: "Muse", transport: "tailnet", preset: "files", folders: [{ root: 0, path: "work" }], ttlSeconds: 3600 });
+  const grant = invitedForTailnet(f);
   const window = f.reach.funnelWindow();
   assert.equal(window.open, true, "its unopened invitation keeps the start page and the gateway up");
   assert.equal(window.reason, "invitation");
   const home = path.join(f.root, "muse-home");
   process.env.REACH_AGENT_HOME = home;
   t.after(() => { delete process.env.REACH_AGENT_HOME; });
-  // The link a Tools invite carries where invite keys are set up: a key for
-  // the tailnet, the computer's private address, no public-link mark.
-  const link = `${ORIGIN}/agent#k=tskey-auth-abc123def456&h=rg-ab12-abcdefghij&i=${encodeURIComponent(`${ORIGIN}:8443~${grant.invitation}`)}`;
-  const approve = setInterval(() => {
-    const waiting = f.reach.auth.listAgentAdmissions().find((entry) => entry.clientId === grant.clientId);
-    if (waiting) f.reach.auth.decideAgentAdmission(waiting.requestId, "approve");
-  }, 50);
-  t.after(() => clearInterval(approve));
-  const out = [], err = [];
-  const stdout = process.stdout.write, stderr = process.stderr.write;
-  process.stdout.write = (chunk, ...rest) => (out.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
-  process.stderr.write = (chunk, ...rest) => (err.push(String(chunk)), typeof rest.at(-1) === "function" && rest.at(-1)(), true);
+  const timer = approving(t, f, grant);
+  // Tailscale can't be reached from here: the join fails on its own time.
   let tried = 0;
-  try {
-    assert.equal(await join({ _: ["join", link], send: f.send, connect: async () => { tried++; throw Error("Couldn't join the tailnet (state: starting). Check this machine's internet connection."); } }), 0);
-  } finally { process.stdout.write = stdout; process.stderr.write = stderr; clearInterval(approve); }
-  assert.equal(tried, 1, "Tailscale was tried first");
-  assert.match(err.join(""), /joining the tailnet/);
-  assert.match(err.join(""), /public link instead/);
-  assert.match(out.join(""), /Connected to Fixture Mac \(through its public link\)/);
+  const { result, out, err } = await quiet(() => join({ _: ["join", keyLink(grant)], send: f.send,
+    connect: () => { tried++; return new Promise((_, reject) => setTimeout(() => reject(Error("Couldn't join the tailnet (state: starting). Check this machine's internet connection.")), 300)); } }));
+  clearInterval(timer);
+  assert.equal(result, 0);
+  assert.equal(tried, 1, "the tailnet join was started");
+  assert.match(out, /Connected to Fixture Mac \(through its public link\)/);
+  assert.match(err, /joining the owner's tailnet in the background/);
+  assert.match(err, /Couldn't join the tailnet.*the public link for now/s);
   const conn = path.join(home, "mac");
   const credential = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
   assert.equal(credential.via, "funnel");
   assert.equal(credential.origin, ORIGIN);
-  assert.equal(credential.private, `${ORIGIN}:8443`, "its private address is still tried first on every call");
+  assert.equal(credential.private, `${ORIGIN}:8443`);
   assert.equal(credential.invitation, grant.invitation, "its link reconnects it");
-  assert.equal(fs.existsSync(path.join(conn, "tailnet-state.json")), false, "nothing of the tailnet attempt is kept");
+  assert.equal(credential.tailnetKey, "tskey-auth-abc123def456", "the key is kept for the background join while it's good");
+  assert.ok(credential.tailnetKeyUntil > Date.now());
+  assert.equal(credential.tailnet, undefined);
   // On the Mac: a public-link agent from here on, its link kept for its key.
   const record = f.reach.auth.list().find((c) => c.id === grant.clientId);
   assert.equal(record.browserTransport, "funnel");
@@ -228,4 +265,50 @@ test("a Tools invitation made for the tailnet opens through the public link when
   assert.match(JSON.stringify(await callTool(api, "reach_list_files", { root: 0, path: "" }, await api("/api/browser"))), /brief\.txt/);
   // The same invitation can't be opened over the tailnet any more.
   assert.throws(() => f.reach.auth.redeemGuest(grant.invitation, { nodeId: "n1", userId: "", tagged: true, validUntil: Date.now() + 60_000 }), { status: 401 });
+});
+
+test("once the agent's node is up, calls move to the computer's private address through it; the public link while it's down", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const grant = invitedForTailnet(f);
+  const home = path.join(f.root, "muse-home");
+  process.env.REACH_AGENT_HOME = home;
+  t.after(() => { delete process.env.REACH_AGENT_HOME; });
+  const node = fakeNode(f);
+  // The join: the node comes up while the owner answers.
+  const timer = approving(t, f, grant);
+  const { result, err } = await quiet(() => join({ _: ["join", keyLink(grant)], send: f.send, connect: async () => node }));
+  clearInterval(timer);
+  assert.equal(result, 0);
+  assert.match(err, /on the owner's tailnet too/);
+  const conn = path.join(home, "mac");
+  const credential = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
+  assert.equal(credential.tailnet, "joined");
+  assert.equal(credential.tailnetKey, undefined, "the key is spent");
+  // Later, the agent's MCP server: the node is brought up in the background;
+  // the first call goes through the public link, the next ones through the node.
+  const real = { ...hooks };
+  t.after(() => Object.assign(hooks, real));
+  hooks.send = f.send;
+  let release;
+  hooks.connectTailnet = () => new Promise((resolve) => { release = () => resolve(node); });
+  const opened = await open(home, "mac", false, { tailnet: true });
+  f.sent.length = 0;
+  assert.ok((await opened.api("/api/browser")).roots, "the public link, before the node is up");
+  assert.deepEqual(f.sent, [`${ORIGIN}:8443`, ORIGIN], "the private address on the host's own network first, then the public link");
+  assert.equal(node.used, 0);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  f.sent.length = 0;
+  assert.ok((await opened.api("/api/browser")).roots);
+  assert.equal(node.used, 1, "through the node, at once");
+  assert.deepEqual(f.sent, [], "nothing on the host's own network");
+  assert.ok((await opened.api("/api/browser")).roots);
+  assert.equal(node.used, 2);
+  // A one-off command (no MCP server holding the folder) stays on the public
+  // link rather than starting a node of its own.
+  const once = await open(home, "mac", false);
+  f.sent.length = 0;
+  assert.ok((await once.api("/api/browser")).roots);
+  assert.equal(node.used, 2);
+  assert.deepEqual(f.sent, [`${ORIGIN}:8443`, ORIGIN]);
 });
