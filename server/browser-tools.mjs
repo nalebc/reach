@@ -39,6 +39,9 @@ const desktopActions = [
   object({ type: kinds("scroll"), x: fraction, y: fraction, dx: { type: "number", minimum: -2000, maximum: 2000 }, dy: { type: "number", minimum: -2000, maximum: 2000, description: "Positive scrolls down." } }, ["type", "x", "y"]),
   object({ type: kinds("type"), text: { ...string(2000), description: "Typed into the focused field." }, secret: { type: "boolean", const: true, description: "Set for a username, email or password from your vault: it goes into the focused field (password fields included, never a terminal) and is never echoed, logged or saved. Plain text never goes into a password field." } }, ["type", "text"]),
   object({ type: kinds("key"), key: { ...string(16), description: "A key name: enter, tab, escape, backspace, delete, space, up, down, left, right, home, end, pageup, pagedown, f1-f11, a-z, 0-9 or punctuation." }, modifiers: { type: "array", minItems: 0, maxItems: 4, items: kinds(["cmd", "shift", "option", "control"]) } }, ["type", "key"]),
+  // A control from reach_describe_screen, pressed at its live center on the
+  // Mac: no screenshot, no coordinates (agent-desktop.mjs normalizeAction).
+  object({ type: kinds("element"), snapshot: { ...string(40), pattern: "^[A-Za-z0-9-]{1,40}$", description: "The snapshot from reach_describe_screen or reach_elements." }, n: { ...integer(1, 500), description: "The control's [number] there." }, button: kinds(["left", "right"]), count: integer(1, 3) }, ["type", "snapshot", "n"]),
 ];
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;

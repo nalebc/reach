@@ -60,3 +60,28 @@ test("Command line tools refuse dot and empty ids before any request", async () 
   await callTool(api, "reach_get_job", { id: "job/1" });
   assert.deepEqual(asked, ["GET /api/jobs/job%2F1"]);
 });
+
+// The fast path, read and act with no pictures: a control from
+// reach_describe_screen is pressed by its number on every connection
+// (MCP over Tailscale or the public link, and the agent page's tools).
+test("reach_act presses a described control by number; coordinates still work", async () => {
+  const { browserToolRequest } = await import("../server/browser-tools.mjs");
+  const full = access("full");
+  for (const action of [
+    { type: "element", snapshot: "ab12cd34", n: 7 },
+    { type: "element", snapshot: "ab12cd34", n: 7, button: "right", count: 2 },
+    { type: "click", x: 0.5, y: 0.5 },
+  ]) assert.deepEqual(browserToolRequest("reach_act", { action }, full),
+    { route: "/api/browser/desktop/input", method: "POST", body: { action }, response: "json" });
+  for (const action of [
+    { type: "element", snapshot: "../x", n: 1 },
+    { type: "element", snapshot: "ab12cd34", n: 0 },
+    { type: "element", snapshot: "ab12cd34", n: 1, x: 0.5 },
+    { type: "element", n: 1 },
+  ]) assert.throws(() => browserToolRequest("reach_act", { action }, full), /supported actions/, JSON.stringify(action));
+  // Through the agent's own runtime, as Muse calls it.
+  const { callTool } = await import("../scripts/mcp-server.mjs");
+  const sent = [];
+  await callTool(async (route, method, body) => { sent.push([method, route, body]); return { ok: true }; }, "reach_act", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }, full);
+  assert.deepEqual(sent, [["POST", "/api/browser/desktop/input", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }]]);
+});
