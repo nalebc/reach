@@ -362,7 +362,9 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
         signal: controller.signal,
         body: JSON.stringify({
           name: name.trim(),
-          transport: connect === "tools" ? "tailnet" : "funnel",
+          // Tools over Tailscale where this Mac makes invite keys; else,
+          // like Page, through the public link (from anywhere, no key).
+          transport: connect === "tools" && keyPeer?.id === peer.id ? "tailnet" : "funnel",
           preset,
           ...(minutes === ALWAYS
             ? { standing: true }
@@ -393,10 +395,36 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
         everything,
         always: minutes === ALWAYS,
       };
+      if (connect === "tools" && keyPeer?.id !== peer.id) {
+        // No invite links here: one command that joins through the public
+        // link, every request signed by the agent's own key
+        // (scripts/agent-funnel.mjs). Works from any terminal.
+        const origin = new URL(result.url).origin;
+        const link = guestLinkUrl(origin, {
+          key: "",
+          hostname: "",
+          invites: [{ origin, secret: result.invitation }],
+          funnel: true,
+        }, "/agent");
+        const command = toolsCommand(origin, link, result.runtime);
+        setMade({
+          link: command,
+          name: name.trim(),
+          access: PRESET_WORDS[preset].title,
+          expiresAt: result.expiresAt,
+          joinBy: result.joinBy,
+          always: minutes === ALWAYS,
+          unpublished: result.publicName === "missing",
+          unkeyed: false,
+          message: agentInviteMessage(link, { ...issuedTo, command }),
+        });
+        onCreated(created, link);
+        return;
+      }
       if (connect === "tools") {
         // As a Command line invite: a one-time Tailscale key for its
-        // computer, made for this agent only (none set up: it must already
-        // be on the tailnet), and Reach for agents from the start page.
+        // computer, made for this agent only, and Reach for agents from the
+        // start page.
         const start = `https://${new URL(peer.url).hostname}`;
         const key = await request<{ key: string; hostname: string }>(peer, "/api/guests/key", {
           method: "POST",
@@ -802,13 +830,13 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
               ? "For an agent with only a browser: a web page with your live screen. Slower."
               : "Fastest. It runs one command in its terminal, then uses Reach's tools: the screen as text, click, type, open apps and websites, files and commands. Over your Tailscale network; works as an MCP server."}
           </p>
-          {connect === "tools" && !keyPeer && (
-            <p className="ag-note is-warn" role="status">
-              An agent outside your Tailscale network (a cloud terminal) needs
-              invite links to join.{" "}
+          {connect === "tools" && keyPeer?.id !== peer.id && (
+            <p className="ag-quiet">
+              Through your public link, from any terminal.{" "}
               <button type="button" className="ag-link" onClick={onSetup}>
                 Set up invite links
-              </button>
+              </button>{" "}
+              to keep it on your Tailscale network.
             </p>
           )}
         </div>

@@ -247,4 +247,20 @@ test("Tools is the default; without invite links, setting them up is one tap", a
   assert.equal(button(c, "Set up invite links"), undefined, "a page agent needs no invite key");
 });
 
+// No invite links on this Mac: Tools goes through the public link, from any
+// terminal, with no Tailscale key (scripts/agent-funnel.mjs).
+test("Tools without invite links: one command through the public link, no key asked", async () => {
+  const calls = mock({ standingAllowed: true });
+  const { c, made } = await open({ connect: "default", keyPeer: null });
+  assert.match(c.textContent, /Through your public link, from any terminal/);
+  await choose(c, "Read only");
+  await click(button(c, "Create invite link"));
+  await dom.waitFor(() => made());
+  assert.equal(issued(calls).transport, "funnel");
+  assert.equal(calls.find(([, route]) => route === "/api/guests/key"), undefined, "no Tailscale key");
+  const text = message(c);
+  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs https:\/\/mac\.tail\.ts\.net\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#i=[^']+&t=funnel' \| node ~\/\.reach-agent\/agent\.mjs join/);
+  assert.doesNotMatch(text, /No Tailscale invite key/);
+});
+
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));

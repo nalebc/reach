@@ -25,6 +25,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { callTool, serveMcp, toolsFor } from "./mcp-server.mjs";
 import { createAgentClient, isScreenImageRoute } from "./agent-client.mjs";
+import { agentKey, funnelApi, funnelGateway } from "./agent-funnel.mjs";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const tailnetHost = (u) =>
@@ -35,6 +36,7 @@ const loopback = (u) =>
 
 // An agent link: <start>/agent#k=<one-time key>&h=<device name>&i=<computer>~<invitation>
 // (the guest link's format on its own path, so a browser never redeems it).
+// t=funnel: no key; the agent joins through the computer's public link.
 export function parseAgentLink(text, { allowLocal = false } = {}) {
   let link;
   try {
@@ -61,11 +63,15 @@ export function parseAgentLink(text, { allowLocal = false } = {}) {
   });
   if (invites.length !== 1)
     throw Error("This agent link is incomplete. Copy the whole link again.");
+  const funnel = params.get("t") === "funnel";
+  if (funnel && invites[0].origin !== link.origin)
+    throw Error("This agent link is incomplete. Copy the whole link again.");
   const key = params.get("k") || "";
   const hostname = params.get("h") || "";
   return {
     start: link.origin,
     ...invites[0],
+    ...(funnel ? { funnel: true } : {}),
     key: /^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(key) ? key : "",
     hostname: /^rg-[a-z0-9]{4}-[a-z0-9]{10}$/.test(hostname) ? hostname : "",
   };
@@ -660,6 +666,12 @@ async function open(home, name, allowLocal) {
       credential,
       api: directApi(credential.origin, credential.token, allowLocal),
     };
+  // Through the computer's public link, signed by this agent's own key.
+  if (credential.via === "funnel")
+    return {
+      credential,
+      api: funnelApi({ conn, credential, save: (next) => writePrivate(path.join(conn, "credential.json"), JSON.stringify(next, null, 2)) }),
+    };
   // Hold the node, or use the one another process holds.
   const where = {
     home,
@@ -750,16 +762,27 @@ export async function join(o) {
   fs.mkdirSync(conn, { recursive: true, mode: 0o700 });
   if (!lock(conn)) throw Error(`Another join to ${name} is running.`);
   // What a join cut short left behind (its invitation is spent or unused).
-  for (const file of ["credential.json", "tailnet-state.json", "agent.sock"])
+  for (const file of ["credential.json", "tailnet-state.json", "agent.sock", "key.pem"])
     fs.rmSync(path.join(conn, file), { force: true });
   // Somewhere safe to keep the credential, before the invitation is used.
   const credentialFile = path.join(conn, "credential.json");
   writePrivate(credentialFile, "{}");
   fs.rmSync(credentialFile);
   try {
-    const direct = await reachableDirect(link.origin);
+    const funnel = link.funnel === true;
+    const direct = !funnel && (await reachableDirect(link.origin));
     let admissionApi;
-    if (direct)
+    if (funnel) {
+      // No Tailscale key: the computer's public link, every request signed
+      // by this agent's own key (scripts/agent-funnel.mjs).
+      const gateway = funnelGateway(link.origin, agentKey(conn), o.send ? { send: o.send } : {});
+      admissionApi = async (route, _method, body) => {
+        const status = /^\/api\/invitations\/claims\/([a-f0-9-]{36})\/status$/.exec(route);
+        const answer = status ? await gateway.status(status[1], body.secret) : await gateway.claim(body.invitation);
+        if (answer.status >= 400) throw agentRequestError(answer.status, answer.json);
+        return answer.json;
+      };
+    } else if (direct)
       admissionApi = (route, _method, body) => admissionDirect(link.origin, route, body);
     else {
       if (!link.key)
@@ -776,12 +799,14 @@ export async function join(o) {
       throw Error("That invitation isn't for an agent.");
     const credential = {
       version: 1,
-      via: direct ? "direct" : "tailnet",
+      via: funnel ? "funnel" : direct ? "direct" : "tailnet",
       computer: joined.device?.name || name,
       start: link.start,
       origin: link.origin,
       hostname: link.hostname,
       token: joined.token,
+      // Its link: the same key reconnects through it when a session ends.
+      ...(funnel ? { invitation: link.secret } : {}),
       clientId: joined.clientId,
       scopes: joined.scopes,
       expiresAt: joined.expiresAt,
@@ -793,7 +818,7 @@ export async function join(o) {
     const server = several ? `reach-${name}` : "reach";
     process.stdout.write(
       [
-        `Connected to ${credential.computer}${direct ? " (direct, through Tailscale on this machine)" : ""}.`,
+        `Connected to ${credential.computer}${direct ? " (direct, through Tailscale on this machine)" : funnel ? " (through its public link)" : ""}.`,
         `Access: ${joined.scopes.filter((s) => s !== "device").join(", ")}, until ${new Date(joined.expiresAt).toLocaleString()}.`,
         "",
         "Add it to your agent (once):",
@@ -896,6 +921,8 @@ export async function main(argv = process.argv.slice(2)) {
       } catch {}
     } else if (credential.via === "direct")
       await end(() => directApi(credential.origin, credential.token, o.allowLocal));
+    else if (credential.via === "funnel")
+      await end(() => funnelApi({ conn, credential }));
     fs.rmSync(conn, { recursive: true, force: true });
     process.stdout.write(`Left ${credential.computer}.\n`);
     return 0;

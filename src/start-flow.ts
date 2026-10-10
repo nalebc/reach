@@ -144,6 +144,8 @@ export type GuestLink = {
   key: string;
   hostname: string;
   invites: { origin: string; secret: string }[];
+  // An agent joining through the computer's public link (no Tailscale key).
+  funnel?: boolean;
 };
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 export function parseGuestLink(hash: string, fallbackOrigin = ""): GuestLink {
@@ -191,6 +193,7 @@ export function guestLinkUrl(
   if (link.key) params.set("k", link.key);
   if (link.hostname) params.set("h", link.hostname);
   for (const x of link.invites) params.append("i", `${x.origin}~${x.secret}`);
+  if (link.funnel) params.set("t", "funnel");
   return `${start}${path}#${params.toString()}`;
 }
 

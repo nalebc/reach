@@ -193,7 +193,8 @@ export function browserAccessRoutes(
     // reported so the owner knows why the agent can't open it.
     const name = url && publicName ? await publicName(new URL(url).hostname).catch(() => "unknown") : null;
     record("agent", `Invited ${input.name} through a browser`);
-    const runtime = url ? undefined : agentRuntime();
+    // Tools agents (over Tailscale or the public link) pin their runtime.
+    const runtime = agentRuntime();
     res.status(201).json({ ...grant, ...(url ? { url, transport: "funnel" } : {}), ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime ? { runtime } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing
