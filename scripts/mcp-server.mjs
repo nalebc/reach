@@ -25,6 +25,9 @@ const BROWSER_TOOL_SCOPES = {
 // Tools that change the Mac, and the ones whose changes can't be undone.
 const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell"]);
 const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
+// The protocol revisions Reach speaks: a client's own when it's one of them,
+// else the newest, and the client decides.
+const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 
 const location = {
   root: {
@@ -389,12 +392,17 @@ export function serveMcp({
       let result;
       if (r.method === "initialize")
         result = {
-          protocolVersion: "2024-11-05",
+          protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name, version: "0.1.0" },
           ...(scopes?.includes("browser:control") ? { instructions: `${SAVED_TOOLS_HINT} Chrome and Safari use the same protocol as the built-ins. Definitions contain only fixed steps and result checks. No arbitrary script or passwords. Supply a fresh UUID requestId for a new run; after a lost response use reach_tool_operation or retry the SAME requestId. An uncertain or stopped run reports partial progress: inspect the browser before continuing. Definition creation immediately adds a named tool to the list.` } : {}),
         };
       else if (r.method === "ping") result = {};
+      // Not offered, so an orderly client never asks; one that asks anyway
+      // gets empty lists, not errors in its log.
+      else if (r.method === "resources/list") result = { resources: [] };
+      else if (r.method === "resources/templates/list") result = { resourceTemplates: [] };
+      else if (r.method === "prompts/list") result = { prompts: [] };
       else if (r.method === "tools/list") {
         currentScopes = (liveScopes && (await api("/api/device")).access?.scopes) || scopes || [];
         const access = currentScopes.includes("browser:read") ? await api("/api/browser") : undefined;

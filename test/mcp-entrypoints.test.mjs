@@ -312,3 +312,23 @@ test("preset remote CLI and stdio MCP discover apps, open the browser, and deliv
   assert.deepEqual(responses[0].result.content[0], { type: "image", data: jpeg.toString("base64"), mimeType: "image/jpeg" });
   assert.equal(nativeCalls.at(-1)[0], "screen");
 });
+
+// Any MCP client (Oct 10): the server speaks the client's protocol revision
+// when it's one Reach knows, else the newest; lists it doesn't offer come
+// back empty rather than as errors.
+test("MCP speaks the client's protocol revision and answers unoffered lists with empty lists", async (t) => {
+  const f = await fixture(t);
+  const agent = await f.mcp(await f.join());
+  const modern = await agent.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "modern", version: "1" } });
+  assert.equal(modern.result.protocolVersion, "2025-06-18");
+  assert.deepEqual(modern.result.capabilities, { tools: { listChanged: true } });
+  const old = await agent.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "old", version: "1" } });
+  assert.equal(old.result.protocolVersion, "2024-11-05");
+  const future = await agent.request("initialize", { protocolVersion: "2031-01-01", capabilities: {}, clientInfo: { name: "future", version: "1" } });
+  assert.equal(future.result.protocolVersion, "2025-06-18", "the newest Reach speaks; the client decides");
+  for (const [method, key] of [["resources/list", "resources"], ["resources/templates/list", "resourceTemplates"], ["prompts/list", "prompts"]])
+    assert.deepEqual((await agent.request(method, {})).result, { [key]: [] }, method);
+  assert.equal((await agent.request("nothing/here", {})).error.code, -32601);
+  const list = await agent.request("tools/list");
+  for (const tool of list.result.tools) assert.equal(tool.inputSchema?.type, "object", tool.name);
+});

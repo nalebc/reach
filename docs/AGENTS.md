@@ -41,6 +41,8 @@ See [Browser agent tools](BROWSER_AGENT_TOOLS.md) for preset details and [API.md
 
 ## MCP configuration
 
+An agent invited from the phone (the one-command join in [the guide](GUIDE.md)) needs no token here: its join output prints the `claude mcp add`, `codex mcp add` and `gemini mcp add` lines, and `node ~/.reach-agent/agent.mjs config` prints the `mcpServers` JSON for Claude Desktop, Cursor, Windsurf, VS Code (under `servers`) or Gemini CLI's settings. The server speaks MCP 2024-11-05, 2025-03-26 and 2025-06-18 over stdio and offers tools only. The rest of this section is the scoped-credential adapter for an agent with a token of its own.
+
 For a scoped command-line agent on an existing tailnet connection, run the adapter on the agent's machine. Use your client's stdio MCP configuration format. Typical JSON:
 
 ```json

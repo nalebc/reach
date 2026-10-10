@@ -192,6 +192,13 @@ test(
       ),
     );
     assert.match(joined.stdout, /codex mcp add reach -- node /);
+    assert.match(joined.stdout, /gemini mcp add -s user reach node /);
+    assert.match(joined.stdout, /Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node \S+ config\n/);
+    // Its MCP settings for any other client: JSON alone on stdout.
+    const config = await run(["config", "--allow-local"], { env });
+    assert.equal(config.code, 0, config.stderr);
+    assert.deepEqual(JSON.parse(config.stdout), { mcpServers: { reach: { command: "node", args: [runtime, "mcp", "--allow-local"] } } });
+    assert.match(config.stderr, /claude_desktop_config\.json/);
     const conn = path.join(env.REACH_AGENT_HOME, "127");
     const credentialFile = path.join(conn, "credential.json");
     if (process.platform !== "win32") assert.equal(fs.statSync(env.REACH_AGENT_HOME).mode & 0o777, 0o700);

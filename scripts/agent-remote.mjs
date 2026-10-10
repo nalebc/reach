@@ -871,7 +871,8 @@ export async function join(o) {
         "Add it to your agent (once):",
         `  Claude Code:  claude mcp add --scope user ${server} -- ${run}`,
         `  Codex:        codex mcp add ${server} -- ${run}`,
-        `  Other MCP clients: command "node", args ${JSON.stringify([self(), "mcp", ...(several ? ["--computer", name] : [])])}`,
+        `  Gemini CLI:   gemini mcp add -s user ${server} ${run}`,
+        `  Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node ${quote(self())} config${several ? ` --computer ${name}` : ""}`,
         "",
       ].join("\n"),
     );
@@ -887,7 +888,7 @@ export async function main(argv = process.argv.slice(2)) {
   const verb = o._[0];
   if (!verb || ["help", "--help", "-h"].includes(verb)) {
     process.stdout.write(
-      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
+      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  config                its MCP settings as JSON (Claude Desktop, Cursor, Windsurf, VS Code, Gemini)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
     );
     return 0;
   }
@@ -928,6 +929,23 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   const name = pick(home, o.computer);
+  // Its MCP server as the JSON most clients' settings take: on stdout alone,
+  // where to paste it on stderr.
+  if (verb === "config") {
+    const several = connections(home).length > 1;
+    const args = [self(), "mcp", ...(several ? ["--computer", name] : []), ...(o.allowLocal ? ["--allow-local"] : [])];
+    process.stdout.write(JSON.stringify({ mcpServers: { [several ? `reach-${name}` : "reach"]: { command: "node", args } } }, null, 2) + "\n");
+    process.stderr.write([
+      "Paste it into your client's MCP settings, then restart the client:",
+      "  Claude Desktop  ~/Library/Application Support/Claude/claude_desktop_config.json  (Windows: %APPDATA%\\Claude\\claude_desktop_config.json)",
+      "  Cursor          ~/.cursor/mcp.json",
+      "  Windsurf        ~/.codeium/windsurf/mcp_config.json",
+      "  VS Code         .vscode/mcp.json, with \"servers\" in place of \"mcpServers\"",
+      "  Gemini CLI      ~/.gemini/settings.json",
+      "",
+    ].join("\n"));
+    return 0;
+  }
   if (verb === "mcp") {
     // Nothing but JSON-RPC on stdout.
     for (const k of ["log", "info", "debug", "warn"])
