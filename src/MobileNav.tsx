@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { Ellipsis } from "lucide-react";
 import "./mobile-nav.css";
 
 export type NavItem = {
@@ -58,7 +58,7 @@ export default function MobileNav({
         aria-expanded={moreOpen}
         onClick={onMore}
       >
-        <MoreHorizontal size={20} />
+        <Ellipsis size={20} />
         <span>More</span>
       </button>
     </nav>

@@ -12,9 +12,15 @@ import {
   Clipboard,
   Copy,
   ShieldCheck,
-  MoreHorizontal,
-  Command,
+  Ellipsis,
   ClipboardPaste,
+  ChevronRight,
+  AppWindow,
+  Hand,
+  MousePointerClick,
+  Move,
+  Unplug,
+  Activity,
 } from "lucide-react";
 import { pasteFromPhone } from "./phone-paste";
 import { Device, Peer, post, request } from "./api";
@@ -40,6 +46,7 @@ import { PausedCover } from "./PauseControl";
 import { controlIn, isPausedMessage, pausedIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
+import "./settings-list.css";
 import "./screen-bar.css";
 import { MacPasswordField } from "./NeedsYou";
 type Display = {
@@ -112,7 +119,6 @@ export default function Screen({
   const [displays, setDisplays] = useState<Display[]>([]),
     [display, setDisplay] = useState("primary"),
     [quality] = useState("auto"),
-    [compatibility, setCompatibility] = useState(false),
     [revision, setRevision] = useState(0);
   const [mode, setMode] = useState("direct"),
     [drag, setDrag] = useState(false),
@@ -120,7 +126,7 @@ export default function Screen({
     [feedback, setFeedback] = useState("");
   const [clipboard, setClipboard] = useState(""),
     [clipboardBusy, setClipboardBusy] = useState(false);
-  const [panel, setPanel] = useState<"clipboard" | "more" | "actions" | null>(
+  const [panel, setPanel] = useState<"clipboard" | "more" | "apps" | "connection" | null>(
     null,
   );
   const [helperBusy, setHelperBusy] = useState(false);
@@ -185,7 +191,9 @@ export default function Screen({
     display,
     quality,
     revision,
-    compatibility,
+    // Real video; the hook falls back to still images by itself when this
+    // phone can't decode it.
+    false,
   );
   const input = useDesktopInput(
     peer,
@@ -200,6 +208,9 @@ export default function Screen({
     live &&
     visible &&
     Date.now() - stream.updated < 10000;
+  // The Mac sends a frame only when something on screen moves: 0 a second
+  // means a still screen, so it reads "Still", with the most it would send.
+  const frameRate = `${stream.fps ? `${stream.fps} fps` : "Still"}${stream.cap ? ` · up to ${stream.cap}` : ""}`;
   const send = async (action: DesktopAction) => {
     if (!usable && action.type !== "release")
       throw Error("Wait for a fresh screen and enable control.");
@@ -803,7 +814,7 @@ export default function Screen({
               />
             )}
           {/* Every control in one small bar floating at the bottom center:
-              Control, keyboard, paste, shortcuts, options, close. */}
+              Control, keyboard, paste, fullscreen, and one menu (keys, apps, options). */}
           <div className="simple-screen-dock screen-bar-dock">
             {(feedback || (control && !input.ready)) && (
               <span className="simple-screen-caption" role="status">
@@ -862,21 +873,6 @@ export default function Screen({
                   <ClipboardPaste size={18} />
                 </button>
               )}
-              {!typing &&
-                !paused &&
-                (control || (canControl && device.capabilities.apps)) && (
-                  <button
-                    aria-label="Shortcuts"
-                    aria-haspopup="dialog"
-                    disabled={control && (!usable || helperBusy)}
-                    onClick={() => {
-                      clearTyping();
-                      setPanel("actions");
-                    }}
-                  >
-                    <Command size={18} />
-                  </button>
-                )}
               <button
                 aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                 aria-pressed={fullscreen}
@@ -892,7 +888,7 @@ export default function Screen({
                   setPanel("more");
                 }}
               >
-                <MoreHorizontal size={20} />
+                <Ellipsis size={20} />
               </button>
               {!live && !paused && (
                 <button className="screen-bar-text" onClick={reconnect}>
@@ -906,52 +902,240 @@ export default function Screen({
               title={
                 panel === "clipboard"
                   ? "Clipboard"
-                  : panel === "actions"
-                    ? "Shortcuts"
-                    : "Screen options"
+                  : panel === "apps"
+                    ? `Open on ${device.name}`
+                    : panel === "connection"
+                      ? "Connection"
+                      : "Screen options"
               }
+              className="gs-sheet screen-menu"
               onClose={() => setPanel(null)}
             >
-              {panel === "actions" && control && appContext.app && (
-                <AppCommandList
-                  app={appContext.app}
-                  picks={contextActions}
-                  all={allCommands(device.platform, appContext.items)}
-                  disabled={!usable || helperBusy}
-                  run={runContext}
-                />
-              )}
-              {panel === "actions" && control && (
-                <button
-                  className="button secondary"
-                  aria-label="Open phone keyboard"
-                  disabled={!usable}
-                  onClick={openKeyboard}
-                >
-                  <Keyboard size={17} /> Keyboard
+              {panel !== "more" && (
+                <button className="gs-back" onClick={() => setPanel("more")}>
+                  <ChevronRight size={18} /> Back
                 </button>
               )}
-              {panel === "actions" && control && (
-                <ScreenActions
-                  platform={device.platform}
-                  disabled={!usable || helperBusy}
-                  run={(helper) => void runHelper(helper)}
+              {/* One menu, as ChatGPT lays one out: the keys and commands
+                  first, then short grouped lists, little text. */}
+              {panel === "more" && (
+                <>
+                  {control && appContext.app && (
+                    <AppCommandList
+                      app={appContext.app}
+                      picks={contextActions}
+                      all={allCommands(device.platform, appContext.items)}
+                      disabled={!usable || helperBusy}
+                      run={runContext}
+                    />
+                  )}
+                  {control && (
+                    <ScreenActions
+                      platform={device.platform}
+                      disabled={!usable || helperBusy}
+                      run={(helper) => void runHelper(helper)}
+                    />
+                  )}
+                  {(control || (canControl && device.capabilities.apps)) && (
+                    <div className="gs-group">
+                      {control && (
+                        <button
+                          className="gs-row"
+                          disabled={!usable || clipboardBusy}
+                          onClick={() => {
+                            setPanel(null);
+                            void copySelectedText();
+                          }}
+                        >
+                          <Copy />
+                          <span className="gs-label">Copy selected text</span>
+                        </button>
+                      )}
+                      {control && (
+                        <button className="gs-row" onClick={() => setPanel("clipboard")}>
+                          <Clipboard />
+                          <span className="gs-label">Clipboard</span>
+                          <ChevronRight className="gs-chevron" size={18} />
+                        </button>
+                      )}
+                      {canControl && device.capabilities.apps && (
+                        <button className="gs-row" onClick={() => setPanel("apps")}>
+                          <AppWindow />
+                          <span className="gs-label">Open an app</span>
+                          <ChevronRight className="gs-chevron" size={18} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {(canControl || displays.length > 1) && (
+                    <div className="gs-group">
+                      {canControl && (
+                        <label className="gs-row">
+                          <Hand />
+                          <span className="gs-label">Touch</span>
+                          <select
+                            className="gs-select"
+                            aria-label="Touch mode"
+                            value={mode}
+                            onChange={(e) => {
+                              void input.send({ type: "release" }).catch(() => {});
+                              setDrag(false);
+                              setMode(e.target.value);
+                            }}
+                          >
+                            <option value="trackpad">Trackpad</option>
+                            <option value="direct">Direct</option>
+                            <option value="pan">Pan & zoom</option>
+                          </select>
+                        </label>
+                      )}
+                      {canControl && (
+                        <label className="gs-row">
+                          <MousePointerClick />
+                          <span className="gs-label">Tap</span>
+                          <select
+                            className="gs-select"
+                            aria-label="Tap action"
+                            value={clickMode}
+                            onChange={(e) => setClickMode(e.target.value)}
+                          >
+                            <option value="left">Click</option>
+                            <option value="right">Right-click</option>
+                            <option value="double">Double-click</option>
+                          </select>
+                        </label>
+                      )}
+                      {canControl && (
+                        <button
+                          className="gs-row"
+                          disabled={!usable || mode === "pan"}
+                          aria-pressed={drag}
+                          onClick={() => {
+                            void input.send({ type: "release" }).catch(() => {});
+                            setDrag(!drag);
+                          }}
+                        >
+                          <Move />
+                          <span className="gs-label">Drag</span>
+                          <span className="gs-value">{drag ? "On · touch and move" : "Off"}</span>
+                        </button>
+                      )}
+                      {canControl && (
+                        <button
+                          className="gs-row"
+                          disabled={!usable}
+                          onClick={() => void action({ type: "release" })}
+                        >
+                          <Unplug />
+                          <span className="gs-label">Release mouse</span>
+                        </button>
+                      )}
+                      {displays.length > 1 && (
+                        <label className="gs-row">
+                          <Monitor />
+                          <span className="gs-label">Display</span>
+                          <select
+                            className="gs-select"
+                            aria-label="Display"
+                            value={display}
+                            onChange={(e) => {
+                              release();
+                              setDisplay(e.target.value);
+                              setFeedback("");
+                            }}
+                          >
+                            <option value="primary">Main display</option>
+                            {displays.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  <div className="gs-group">
+                    <button
+                      className="gs-row"
+                      onClick={() => {
+                        if (live) {
+                          release();
+                          setLive(false);
+                        } else reconnect();
+                        setPanel(null);
+                      }}
+                    >
+                      {live ? <Pause /> : <Play />}
+                      <span className="gs-label">{live ? "Pause" : "Resume"}</span>
+                    </button>
+                    <button className="gs-row" onClick={reconnect}>
+                      <RefreshCw />
+                      <span className="gs-label">Reconnect</span>
+                    </button>
+                    <button className="gs-row" onClick={() => setPanel("connection")}>
+                      <Activity />
+                      <span className="gs-label">Connection</span>
+                      <span className="gs-value">{frameRate}</span>
+                      <ChevronRight className="gs-chevron" size={18} />
+                    </button>
+                  </div>
+                </>
+              )}
+              {panel === "apps" && (
+                <QuickLauncher
+                  peer={peer}
+                  onDone={(name) => {
+                    setPanel(null);
+                    setFeedback(`${name} opened`);
+                  }}
                 />
               )}
-              {panel === "actions" &&
-                canControl &&
-                device.capabilities.apps && (
-                  <section className="screen-open-shortcuts">
-                    {control && <h3>Open on {device.name}</h3>}
-                    <QuickLauncher
-                      peer={peer}
-                      onDone={(name) => {
-                        setPanel(null);
-                        setFeedback(`${name} opened`);
-                      }}
-                    />
-                  </section>
-                )}
+              {panel === "connection" && (
+                <>
+                  <div className="gs-group">
+                    <div className="gs-row">
+                      <span className="gs-label">Frames</span>
+                      <span className="gs-value">{frameRate}</span>
+                    </div>
+                    <div className="gs-row">
+                      <span className="gs-label">Data</span>
+                      <span className="gs-value">{stream.mbps} Mbps</span>
+                    </div>
+                    {!!stream.latency && (
+                      <div className="gs-row">
+                        <span className="gs-label">Link</span>
+                        <span className="gs-value">{stream.latency} ms</span>
+                      </div>
+                    )}
+                    {usable && (
+                      <div className="gs-row">
+                        <span className="gs-label">Input</span>
+                        <span className="gs-value">{input.latency} ms</span>
+                      </div>
+                    )}
+                  </div>
+                  {stream.fallbackReason && <p className="gs-foot">{stream.fallbackReason}</p>}
+                  {owner && (
+                    <>
+                      <div className="gs-group gs-end">
+                        <button
+                          className="gs-row gs-danger"
+                          onClick={() => void toggleViewing(false)}
+                        >
+                          <ShieldCheck />
+                          <span className="gs-label">Turn off screen access</span>
+                        </button>
+                      </div>
+                      <p className="gs-foot">
+                        {device.platform === "darwin"
+                          ? "Needs Screen Recording to view and Accessibility to control, in System Settings → Privacy & Security."
+                          : "Keep Windows signed in and unlocked. Secure desktops can't be controlled."}
+                      </p>
+                    </>
+                  )}
+                </>
+              )}
               {panel === "clipboard" && <ErrorLine error={error} />}
               {panel === "clipboard" && control && (
                 <>
@@ -1010,176 +1194,6 @@ export default function Screen({
                       </button>
                     </div>
                   </div>
-                </>
-              )}
-              {panel === "more" && (
-                <>
-                  <p className="screen-popup-hint">
-                    Pinch to zoom. Hold and move over text to select it, then
-                    tap Copy selected text. Keys and app commands are in
-                    Shortcuts.
-                  </p>
-                  {control && (
-                    <div className="screen-key-row">
-                      <button
-                        className="button secondary small"
-                        disabled={!usable || clipboardBusy}
-                        onClick={() => {
-                          setPanel(null);
-                          void copySelectedText();
-                        }}
-                      >
-                        <Copy size={16} /> Copy selected text
-                      </button>
-                      <button
-                        className="button secondary small"
-                        onClick={() => setPanel("clipboard")}
-                      >
-                        <Clipboard size={16} /> Clipboard transfers
-                      </button>
-                    </div>
-                  )}
-                  {displays.length > 1 && (
-                    <label className="screen-option">
-                      Display
-                      <select
-                        aria-label="Display"
-                        value={display}
-                        onChange={(e) => {
-                          release();
-                          setDisplay(e.target.value);
-                          setFeedback("");
-                        }}
-                      >
-                        <option value="primary">Main display</option>
-                        {displays.map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  {canControl && (
-                    <>
-                      <div className="remote-touch-controls">
-                        <label>
-                          Touch mode
-                          <select
-                            aria-label="Touch mode"
-                            value={mode}
-                            onChange={(e) => {
-                              void input
-                                .send({ type: "release" })
-                                .catch(() => {});
-                              setDrag(false);
-                              setMode(e.target.value);
-                            }}
-                          >
-                            <option value="trackpad">Trackpad</option>
-                            <option value="direct">Direct touch</option>
-                            <option value="pan">Pan & zoom</option>
-                          </select>
-                        </label>
-                        <label>
-                          Tap action
-                          <select
-                            aria-label="Tap action"
-                            value={clickMode}
-                            onChange={(e) => setClickMode(e.target.value)}
-                          >
-                            <option value="left">Click</option>
-                            <option value="right">Right-click</option>
-                            <option value="double">Double-click</option>
-                          </select>
-                        </label>
-                        <button
-                          className={`button ${drag ? "primary" : "secondary"} small`}
-                          disabled={!usable || mode === "pan"}
-                          aria-pressed={drag}
-                          onClick={() => {
-                            void input
-                              .send({ type: "release" })
-                              .catch(() => {});
-                            setDrag(!drag);
-                          }}
-                        >
-                          {drag ? "Drag armed · touch and move" : "Drag"}
-                        </button>
-                        <button
-                          className="button secondary small"
-                          disabled={!usable}
-                          onClick={() => void action({ type: "release" })}
-                        >
-                          Release mouse
-                        </button>
-                      </div>{" "}
-                    </>
-                  )}
-                  <div className="screen-option-actions">
-                    <button
-                      className="button secondary small"
-                      onClick={() => {
-                        if (live) {
-                          release();
-                          setLive(false);
-                        } else reconnect();
-                        setPanel(null);
-                      }}
-                    >
-                      {live ? <Pause size={15} /> : <Play size={15} />}{" "}
-                      {live ? "Pause" : "Resume"}
-                    </button>
-                    <button
-                      className="button secondary small"
-                      onClick={reconnect}
-                    >
-                      <RefreshCw size={15} />
-                      Reconnect
-                    </button>
-                  </div>
-                  <details className="screen-diagnostics">
-                    <summary>Connection details</summary>
-                    <p>
-                      {stream.format === "h264"
-                        ? "Video"
-                        : "Compatibility video"}{" "}
-                      · {stream.fps} fps · {stream.mbps} Mbps
-                      {stream.latency ? ` · ${stream.latency} ms link` : ""}
-                      {usable ? ` · ${input.latency} ms input` : ""}. Quality
-                      adjusts automatically.
-                    </p>
-                    {stream.fallbackReason && <p>{stream.fallbackReason}</p>}
-                    <label className="check-label">
-                      <input
-                        type="checkbox"
-                        checked={compatibility}
-                        onChange={(e) => {
-                          release();
-                          setCompatibility(e.target.checked);
-                        }}
-                      />
-                      Use compatibility video
-                    </label>
-                  </details>
-                  {owner && (
-                    <details className="screen-diagnostics">
-                      <summary>Permissions</summary>
-                      <p>
-                        {device.platform === "darwin"
-                          ? "Allow Screen Recording for viewing, and Accessibility for control, in macOS System Settings → Privacy & Security."
-                          : "Keep Windows signed in and unlocked. Secure desktops cannot be controlled."}{" "}
-                        Control stops when you leave or access expires.
-                      </p>
-                      <button
-                        className="button secondary small"
-                        onClick={() => void toggleViewing(false)}
-                      >
-                        <ShieldCheck size={15} />
-                        Turn off screen access
-                      </button>
-                    </details>
-                  )}
                 </>
               )}
             </ScreenPopup>

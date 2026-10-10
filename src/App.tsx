@@ -27,7 +27,7 @@ import {
   useRef,
 } from "react";
 import {
-  LayoutGrid,
+  House,
   UserRoundPlus,
   Command,
   Settings,
@@ -41,7 +41,9 @@ import {
   Info,
   ScanLine,
   Bot,
-  MessagesSquare,
+  MessageCircle,
+  SquareTerminal,
+  ScreenShare,
 } from "lucide-react";
 import {
   isNative,
@@ -118,13 +120,13 @@ const TerminalView = lazy(() =>
   loadSessions().then((m) => ({ default: m.TerminalView })),
 );
 const pages = [
-  { id: "overview", name: "Home", icon: LayoutGrid },
+  { id: "overview", name: "Home", icon: House },
   // Every Codex and Claude Code session on the computer.
-  { id: "sessions", name: "Chat", icon: MessagesSquare },
+  { id: "sessions", name: "Chat", icon: MessageCircle },
   { id: "files", name: "Files", icon: Folder },
   { id: "apps", name: "Apps", icon: AppWindow },
-  { id: "terminal", name: "Terminals", icon: Terminal },
-  { id: "screen", name: "Screen", icon: Monitor },
+  { id: "terminal", name: "Terminals", icon: SquareTerminal },
+  { id: "screen", name: "Screen", icon: ScreenShare },
   { id: "invite", name: "Invite someone", icon: UserRoundPlus },
 ];
 // Bottom bar on phones; everything else is under More.

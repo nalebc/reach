@@ -34,6 +34,9 @@ export function useRemoteScreen(
     cause: "",
     format: "",
     fps: 0,
+    // The most frames a second the computer sends (it sends none while
+    // nothing on screen moves, so `fps` is 0 on a still screen).
+    cap: 0,
     mbps: 0,
     updated: 0,
     width: 0,
@@ -167,6 +170,7 @@ export function useRemoteScreen(
         cause: "",
         format: "",
         fps: 0,
+        cap: 0,
         mbps: 0,
         updated: 0,
         width: 0,
@@ -408,7 +412,7 @@ export function useRemoteScreen(
             wireFormat = message.format;
             targetCap = Number(message.fps) || 0;
             setSelectedDisplay(message.display);
-            setState((s) => ({ ...s, format: wireFormat }));
+            setState((s) => ({ ...s, format: wireFormat, cap: targetCap }));
           }
           if (message.type === "quality") {
             const latency = Math.max(0, Number(message.ackLatency) || 0);

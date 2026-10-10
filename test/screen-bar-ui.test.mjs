@@ -42,7 +42,7 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
     React.createElement(Screen, { peer, device, changes: '{"control":"a"}', toast: () => {}, onChanged: () => {}, onClose: () => {} }),
   );
   const bar = await dom.waitFor(() => $('[role="toolbar"][aria-label="Screen controls"]'));
-  assert.deepEqual(names(bar), ["Control", "Shortcuts", "Enter fullscreen", "Screen options"]);
+  assert.deepEqual(names(bar), ["Control", "Enter fullscreen", "Screen options"]);
   // Icons, no words; no buttons at the top or in a second bar.
   for (const b of bar.querySelectorAll("button")) assert.equal(b.textContent.trim(), "", `${b.getAttribute("aria-label")} is an icon`);
   assert.equal($(".simple-screen-toolbar button"), null);
@@ -51,8 +51,16 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
   // Controlling: the same bar, with the keyboard and paste.
   bar.querySelector('[aria-label="Control"]').click();
   await dom.waitFor(() => bar.querySelector('[aria-label="Stop"]'));
-  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Shortcuts", "Enter fullscreen", "Screen options"]);
+  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Enter fullscreen", "Screen options"]);
   assert.equal(bar.querySelector('[aria-label="Stop"]').getAttribute("aria-pressed"), "true");
+  // Shortcuts and options are one menu: keys on top, then short lists.
+  bar.querySelector('[aria-label="Screen options"]').click();
+  const menu = await dom.waitFor(() => $('dialog[aria-label="Screen options"]'));
+  assert.ok(menu.querySelector(".screen-helper-action"), "keys in the menu");
+  for (const row of ["Copy selected text", "Clipboard", "Touch", "Pause", "Connection"])
+    assert.ok([...menu.querySelectorAll(".gs-row")].some((r) => r.textContent.startsWith(row)), row);
+  menu.querySelector('[aria-label="Close panel"]').click();
+  await dom.waitFor(() => !$("dialog[open]"));
   // Fullscreen is directly reachable and keeps the same screen/control mount.
   bar.querySelector('[aria-label="Enter fullscreen"]').click();
   await dom.waitFor(() => $(".screen-expanded.screen-immersive"));

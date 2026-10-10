@@ -106,3 +106,66 @@
   font-weight: 600;
   opacity: 0.75;
 }
+
+/* The bar's one menu (···): keys as small tiles on top, then Settings'
+   grouped lists (settings-list.css), as ChatGPT lays a menu out. */
+.screen-menu .screen-popup-body > .gs-group + .gs-group {
+  margin-top: 14px;
+}
+.screen-menu .screen-action-groups,
+.screen-menu .app-commands {
+  margin-bottom: 14px;
+}
+.screen-menu .screen-action-groups h3,
+.screen-menu .app-commands h3 {
+  margin: 0 4px 8px;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: var(--muted, #93a096);
+}
+.screen-menu .screen-helper-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.screen-menu .screen-helper-action {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-height: 72px;
+  padding: 10px 6px;
+  border: 0;
+  border-radius: 16px;
+  background: #161e1a;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  color: #eef4ef;
+  font-size: 12.5px;
+  text-align: center;
+}
+.screen-menu .screen-helper-action:active:not(:disabled) {
+  background: #1e2823;
+}
+.screen-menu .screen-helper-action small {
+  display: none;
+}
+.screen-menu .screen-more-toggle {
+  display: block;
+  margin: 6px auto 0;
+}
+/* A row's choice sits where its value would: plain text, no box. */
+.gs-row .gs-select {
+  flex: 0 1 auto;
+  max-width: 55%;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--muted, #93a096);
+  font: inherit;
+  text-align: right;
+  text-align-last: right;
+  appearance: none;
+  -webkit-appearance: none;
+}
+button.gs-row[aria-pressed="true"] .gs-value {
+  color: var(--lime, #b9efd4);
+}
+.screen-menu .gs-back {
+  margin-top: -6px;
+}
