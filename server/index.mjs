@@ -57,6 +57,7 @@ import {
   validLeafName,
   hash,
   sameHash,
+  isPlainRecord,
   ALL_SCOPES,
   AGENT_SCOPES,
   GUEST_BLOCKED_ROUTES,
@@ -129,6 +130,7 @@ import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
 import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
+import { createToolSetup } from "./tool-setup.mjs";
 import { createBrowserApprovals, browserRequestActions } from "./browser-approvals.mjs";
 import { runTerminalCommand } from "./restricted-terminal.mjs";
 import { runBrowserMutation } from "./browser-mutations.mjs";
@@ -1931,6 +1933,29 @@ export async function createReach(overrides = {}) {
       if (client && client.browserTransport !== "funnel") void releaseGuest(client);
     }
     for (const nudge of presenceNudges) nudge();
+    res.json(result);
+  });
+  // Saved tools on this Mac: where macOS Automation and the browser's own
+  // setting stand, macOS's prompt on request, the settings page opened.
+  // Your own devices only; the clicks that grant it are yours, on the Mac.
+  const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
+  const toolSetupOwner = (req) => {
+    const client = req.reauthorize();
+    if (client.kind !== "device" || !client.scopes.includes("admin"))
+      throw fail(403, "Only your own devices set up saved tools.");
+  };
+  app.get("/api/agents/tool-setup", async (req, res) => {
+    toolSetupOwner(req);
+    res.json(await toolSetup.status());
+  });
+  app.post("/api/agents/tool-setup", async (req, res) => {
+    toolSetupOwner(req);
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["browser", "action"].includes(key)) ||
+        typeof body.browser !== "string" || !["ask", "settings"].includes(body.action))
+      throw fail(400, "Choose a browser, and ask or settings.");
+    const result = await toolSetup[body.action](body.browser);
+    record("agent", body.action === "ask" ? `Asked macOS to let saved tools use ${result.id}` : `Opened Automation settings for ${result.id}`);
     res.json(result);
   });
   app.post("/api/agents/invitations", (req, res) => {

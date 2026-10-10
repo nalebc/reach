@@ -10,7 +10,7 @@ const script = fileURLToPath(
 // Native stderr and page exceptions may contain URLs, fields or local paths.
 // Keep only protocol codes and fixed guidance across this trust boundary.
 const ERRORS = {
-  setup_required: [503, "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings."],
+  setup_required: [503, "The owner needs to enable Allow JavaScript from Apple Events in this browser and allow Reach's Terminal to control it in macOS Automation settings. In Reach: Agents → Saved tools on this Mac."],
   unavailable: [503, "The browser helper could not start or stay connected. Inspect the browser before continuing."],
   browser_changed: [409, "The browser command failed or its target changed. Inspect the browser before continuing."],
   browser_window_required: [503, "The owner needs to open a browser window in the intended profile before running this tool."],
