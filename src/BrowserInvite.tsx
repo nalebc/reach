@@ -231,14 +231,16 @@ export default function BrowserInvite(props: Props) {
     />
   );
 }
-function BrowserInviteForm({ peer, device, onCreated }: Props) {
+function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props) {
   const formId = useId();
   const [name, setName] = useState(() => inviteName());
   const [preset, setPreset] = useState<Preset | null>(null);
   const [minutes, setMinutes] = useState(30);
-  // Page: the agent opens a web page with the live screen (browser agents).
-  // Tools: it runs one command and calls Reach's tools over Tailscale.
-  const [connect, setConnect] = useState<"page" | "tools">("page");
+  // Tools (first, and the default): the agent runs one command in its
+  // terminal and calls Reach's tools over Tailscale: the screen as text, an
+  // action per call, no pictures to load. Page: a web page with the live
+  // screen, for agents with only a browser (slower).
+  const [connect, setConnect] = useState<"page" | "tools">("tools");
   const [apps, setApps] = useState<string[]>([]);
   const [folders, setFolders] = useState<PickedFolder[]>([]);
   const [write, setWrite] = useState(false);
@@ -789,20 +791,26 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           <Segments
             label="How the agent connects"
             value={connect}
-            onChange={(next) => {
-              setConnect(next);
-              if (next === "tools" && minutes === ALWAYS) setMinutes(60);
-            }}
+            onChange={setConnect}
             options={[
-              { value: "page", label: "Page" },
               { value: "tools", label: "Tools" },
+              { value: "page", label: "Page" },
             ]}
           />
           <p className="ag-quiet">
             {connect === "page"
-              ? "It opens a web page with your live screen."
-              : "It runs one command, then uses Reach's tools: describe the screen, click, type, open apps and websites, files and commands. Over your Tailscale network; works as an MCP server."}
+              ? "For an agent with only a browser: a web page with your live screen. Slower."
+              : "Fastest. It runs one command in its terminal, then uses Reach's tools: the screen as text, click, type, open apps and websites, files and commands. Over your Tailscale network; works as an MCP server."}
           </p>
+          {connect === "tools" && !keyPeer && (
+            <p className="ag-note is-warn" role="status">
+              An agent outside your Tailscale network (a cloud terminal) needs
+              invite links to join.{" "}
+              <button type="button" className="ag-link" onClick={onSetup}>
+                Set up invite links
+              </button>
+            </p>
+          )}
         </div>
 
         <div className="ag-invite-section ag-invite-duration">
@@ -938,8 +946,11 @@ function BrowserInviteForm({ peer, device, onCreated }: Props) {
           {made.unkeyed && (
             <p className="ag-note is-warn" role="status">
               No Tailscale invite key: the agent's computer must already be on
-              your Tailscale network. Run ./reach invites on this Mac to let
-              any computer join with the command.
+              your Tailscale network.{" "}
+              <button type="button" className="ag-link" onClick={onSetup}>
+                Set up invite links
+              </button>{" "}
+              to let any computer join with the command.
             </p>
           )}
           {made.unpublished && (

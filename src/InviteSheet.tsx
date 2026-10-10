@@ -918,7 +918,8 @@ export function InviteSheet({
             then need their own rules).
           </p>
         )}
-        {keyed === false && kind !== "browser" && (
+        {/* Agents too: a Tools agent outside your tailnet joins with a key. */}
+        {keyed === false && (
           <InviteLinksSetup
             peer={peer}
             policy={policy}

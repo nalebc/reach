@@ -44,13 +44,15 @@ function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllow
   };
   return calls;
 }
-const open = async (options) => {
+// Tools is the default; these page tests pick Page first unless told not to.
+const open = async ({ connect = "page", keyPeer = peer, onSetup = () => {} } = {}) => {
   let made;
-  const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer: peer, onSetup() {}, onCreated: (...args) => { made = args; } }));
+  const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer, onSetup, onCreated: (...args) => { made = args; } }));
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[aria-label="Access preset"]'));
   await dom.waitFor(() => c.querySelector('[aria-label="Access duration"]'));
-  return { c, made: () => made, ...options };
+  if (connect === "page") await click(button(c, "Page"));
+  return { c, made: () => made };
 };
 const issued = (calls) => calls.find(([, route]) => route === "/api/agents/browser-invitations")?.[2];
 const message = (c) => c.querySelector('textarea[aria-label="AI browser invitation message"]').value;
@@ -193,7 +195,7 @@ test("Tools: the same preset over Tailscale, one command, and Reach's tools for 
   assert.ok(button(c, "Always"), "a page agent may stay");
   await click(button(c, "Tools"));
   assert.equal(button(c, "Always"), undefined, "without invite keys here, no Always over Tools");
-  assert.match(c.textContent, /runs one command, then uses Reach's tools/);
+  assert.match(c.textContent, /runs one command in its terminal, then uses Reach's tools/);
   await click(button(c, "Create invite link"));
   await dom.waitFor(() => made());
   assert.equal(issued(calls).transport, "tailnet");
@@ -227,6 +229,22 @@ test("Tools with invite keys: Always is offered, sent with no end time, the devi
   const key = calls.find(([, route]) => route === "/api/guests/key")[2];
   assert.equal(key.ttlSeconds, undefined, "the Mac keeps the device as long as the access lasts");
   assert.deepEqual(key.clientIds, ["muse"]);
+});
+
+// The fast way first: Tools (one command in the agent's terminal), with
+// invite links one tap away when this Mac has none.
+test("Tools is the default; without invite links, setting them up is one tap", async () => {
+  mock({ standingAllowed: true });
+  let setup = 0;
+  const { c } = await open({ connect: "default", keyPeer: null, onSetup: () => setup++ });
+  const picked = c.querySelector('[aria-label="How the agent connects"] [aria-checked="true"], [aria-label="How the agent connects"] [aria-pressed="true"], [aria-label="How the agent connects"] input:checked');
+  assert.match(picked?.getAttribute("aria-label") || picked?.textContent || picked?.value || "", /Tools|tools/);
+  assert.match(c.textContent, /Fastest\. It runs one command in its terminal/);
+  await click(button(c, "Set up invite links"));
+  assert.equal(setup, 1);
+  await click(button(c, "Page"));
+  assert.match(c.textContent, /Slower/);
+  assert.equal(button(c, "Set up invite links"), undefined, "a page agent needs no invite key");
 });
 
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));
