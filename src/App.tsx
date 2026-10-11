@@ -92,6 +92,7 @@ import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
 import { BrandCourier, ReachScene } from "./ReachIdentity";
 import MascotIntro from "./MascotIntro";
 import MoreSheet from "./MoreSheet";
+import WaitingComputerSheet, { type WaitingComputer } from "./WaitingComputer";
 import MobileNav from "./MobileNav";
 import { MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
@@ -182,6 +183,7 @@ function ReachWorkspace() {
       root: number;
     } | null>(null),
     [mobileMenu, setMobileMenu] = useState(false),
+    [waitingSheet, setWaitingSheet] = useState<WaitingComputer | null>(null),
     [pairLink, setPairLink] = useState<PairLink | null>(null),
     [requests, setRequests] = useState<AgentRequest[]>([]),
     [deferred, setDeferred] = useState<string[]>([]);
@@ -782,11 +784,7 @@ function ReachWorkspace() {
           choose={choose}
           pair={() => setPairing(true)}
           waiting={waitingComputers}
-          onWaiting={(c) =>
-            toast(
-              `Link ${c.name}: type "link ${new URL(c.origin).hostname.split(".")[0]}" in Reach on ${peer.name}, and "link ${new URL(peer.url).hostname.split(".")[0]}" in Reach on ${c.name}.`,
-            )
-          }
+          onWaiting={setWaitingSheet}
         />
         <main key={peer?.id} className={`main-content page-${page}`}>
           <ScreenBoundary
@@ -1072,7 +1070,19 @@ function ReachWorkspace() {
             setMobileMenu(false);
             setPairing(true);
           }}
+          waiting={waitingComputers}
+          onWaiting={(c) => {
+            setMobileMenu(false);
+            setWaitingSheet(c);
+          }}
           onClose={() => setMobileMenu(false)}
+        />
+      )}
+      {waitingSheet && peer && (
+        <WaitingComputerSheet
+          computer={waitingSheet}
+          here={peer}
+          onClose={() => setWaitingSheet(null)}
         />
       )}
       {pairing && (

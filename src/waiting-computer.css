@@ -1,0 +1,65 @@
+/* Another of your computers, not linked yet (WaitingComputer.tsx): one pill
+   to open it, then the two link commands in small type. */
+.waiting-computer-state {
+  margin: 2px 0 16px;
+  color: #8fa69f;
+  font-size: 14px;
+}
+.waiting-computer-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  border-radius: 999px;
+  background: var(--lime);
+  color: #0d1a14;
+  font-weight: 600;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.waiting-computer-open:active {
+  filter: brightness(0.92);
+}
+.waiting-computer-link {
+  margin-top: 22px;
+  color: #8fa69f;
+  font-size: 13px;
+}
+.waiting-computer-link h3 {
+  margin: 0 0 4px;
+  color: #eef4ef;
+  font-size: 14px;
+  font-weight: 600;
+}
+.waiting-computer-link p {
+  margin: 0 0 10px;
+}
+.waiting-computer-link dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+  margin: 0;
+  align-items: center;
+}
+.waiting-computer-link dt {
+  overflow: hidden;
+  max-width: 40vw;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.waiting-computer-link dd {
+  margin: 0;
+  min-width: 0;
+}
+.waiting-computer-link code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.07);
+  color: #eef4ef;
+  user-select: all;
+  -webkit-user-select: all;
+}

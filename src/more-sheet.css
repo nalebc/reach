@@ -223,3 +223,12 @@
 .screen-popup:focus {
   outline: none;
 }
+/* Another of your computers, not linked yet: listed, quieter, opens its sheet. */
+.more-row-waiting .more-row-label {
+  color: #b7c7c0;
+}
+.more-row-note {
+  margin-left: auto;
+  color: #8fa69f;
+  font-size: 12px;
+}

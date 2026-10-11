@@ -16,6 +16,7 @@ import { BrandCourier } from "./ReachIdentity";
 import { AppIcon, ComputerIcon } from "./AppIcon";
 import { platform, type Device, type Peer } from "./api";
 import type { FleetConnections } from "./useFleetConnections";
+import type { WaitingComputer } from "./WaitingComputer";
 import "./more-sheet.css";
 
 // Everything not in the bottom bar, as ChatGPT lays out its settings: the
@@ -37,6 +38,8 @@ export default function MoreSheet({
   peers,
   active,
   connections,
+  waiting = [],
+  onWaiting,
   onNavigate,
   onChoose,
   onAdd,
@@ -53,6 +56,9 @@ export default function MoreSheet({
   peers: Peer[];
   active: string;
   connections: FleetConnections;
+  // Your other Reach computers this one sees but isn't linked with.
+  waiting?: WaitingComputer[];
+  onWaiting?: (computer: WaitingComputer) => void;
   onNavigate: (page: string) => void;
   onChoose: (id: string) => void;
   onAdd: () => void;
@@ -129,6 +135,17 @@ export default function MoreSheet({
                 </button>
               );
             })}
+            {waiting.map((c) => (
+              <button
+                key={c.origin}
+                className="more-row more-row-waiting"
+                onClick={() => onWaiting?.(c)}
+              >
+                <ComputerIcon size="small" />
+                <span className="more-row-label">{c.name}</span>
+                <small className="more-row-note">{c.linked ? "Joining" : "Not linked"}</small>
+              </button>
+            ))}
             <button className="more-row" onClick={onAdd}>
               <AppIcon size="small">
                 <Plus size={20} />
