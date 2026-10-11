@@ -86,7 +86,7 @@
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "typescript": "^5.9.2",
+    "typescript": "^7.0.2",
     "vite": "^6.4.1"
   },
   "overrides": {
