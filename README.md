@@ -13,11 +13,11 @@
   <img src="https://img.shields.io/badge/macOS-primary-c4ebd3?style=flat-square&logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/node-%E2%89%A522-c4ebd3?style=flat-square&logo=node.js&logoColor=white" alt="Node 22 or newer">
   <img src="https://img.shields.io/badge/network-Tailscale-c4ebd3?style=flat-square&logo=tailscale&logoColor=white" alt="Runs on Tailscale">
-  <img src="https://img.shields.io/badge/agents-MCP-c4ebd3?style=flat-square" alt="MCP">
+  <img src="https://img.shields.io/badge/agents-CLI%20%2B%20MCP-c4ebd3?style=flat-square" alt="CLI and MCP">
 </p>
 
 <p align="center">
-  <a href="#give-an-agent-your-mac-over-mcp">Agents over MCP</a> ·
+  <a href="#give-agents-control-of-your-mac-with-cli-and-mcp">Agents: CLI &amp; MCP</a> ·
   <a href="#control-your-mac-from-your-phone">Control your Mac</a> ·
   <a href="#move-chats-between-claude-and-codex">Move chats</a> ·
   <a href="#quick-start">Quick start</a> ·
@@ -25,9 +25,9 @@
   <a href="docs/GUIDE.md">Full guide</a>
 </p>
 
-Give AI agents access to your **Mac apps, browser, files and terminals through scoped MCP tools**. You choose what they can do. Reach connects them securely through Tailscale.
+Give AI agents control of your **Mac apps, browser, files and terminals through CLI tools and MCP**. You choose what they can do, with scoped access secured by Tailscale.
 
-Bring **Claude, Codex, Grok, Muse, Dots or another agent**. Connect through MCP, Reach's command-line client or its browser interface, depending on what your agent supports.
+Bring **Claude, Codex, Grok, Muse, Dots or another agent**. Connect through Reach's CLI, MCP or its browser interface, depending on what your agent supports.
 
 Control the same Mac from your phone with a sharp picture and smooth, real-time control at up to **60 fps**. Reply to your coding agents and **move chats between Claude Code and Codex with their history**. Free and open source, running on your Mac.
 
@@ -39,21 +39,21 @@ Control the same Mac from your phone with a sharp picture and smooth, real-time 
 
 ## Highlights
 
-- **Agents control native Mac apps.** Open apps, switch windows, click, type and use menus through MCP. Grant Full control or limit access to selected apps, folders or read-only actions.
+- **CLI tools and MCP to control your Mac.** Agents can open native apps, switch windows, click, type and use menus. Grant Full control or limit access to selected apps, folders or read-only actions.
 - **Smooth control from your phone.** High-quality screen sharing at up to 60 fps, with touch, trackpad, zoom and your phone's keyboard.
 - **Chats that move with you.** Continue a Claude Code chat in Codex or the other way around. Read and reply to chats, send files and answer approvals from your phone.
 - **Secure connections through Tailscale.** Use your private tailnet or an authenticated Funnel link. Reach's agent client automatically switches to the private route when it becomes reachable.
 - **Files and terminals, wherever you are.** Browse, share and upload files, run commands, and return to your Mac's open terminals.
 
-## Give an agent your Mac over MCP
+## Give agents control of your Mac with CLI and MCP
 
-Your agent can work on your actual laptop: native Mac apps, your signed-in browser, files and shell. Every tool call is checked against the access you grant, which you can pause or revoke from your phone.
+Your agent can work on your actual laptop: native Mac apps, your signed-in browser, files and shell. Use the tools directly from the command line or through MCP, with the same permissions. Every tool call is checked against the access you grant, which you can pause or revoke from your phone.
 
 1. On your phone, tap **Invite** on Home and choose **An agent**. Name it, pick a preset and how long it gets, keep **Connects: Tools**, then tap **Copy invite**.
 2. Paste the invite into the agent. It runs one command in its terminal, on any computer with Node.js 22+.
 3. Match the code it shows with the one on your phone under **Needs you**, and approve.
 
-The join command prints the MCP setup instructions for your agent. Once connected, ask it to open an app and fill a form, find a document, or run a project's tests. See the [MCP setup guide](docs/AGENTS.md) and [full tool reference](docs/BROWSER_AGENT_TOOLS.md).
+Once approved, the agent can list and call tools from the CLI; the join command also prints its MCP setup instructions. Ask it to open an app and fill a form, find a document, or run a project's tests. See the [agent setup guide](docs/AGENTS.md) and [full tool reference](docs/BROWSER_AGENT_TOOLS.md).
 
 Each agent gets one **preset**:
 
@@ -125,7 +125,7 @@ On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach c
 
 ## Security
 
-- **Every new device needs your approval**, on the Mac or with Face ID once you've set it up. The QR code holds only an address, never a credential.
+- **You control who connects.** Reach supports device approval and temporary pairing codes. The normal connection QR contains only an address; pairing QRs include a one-use code. Optional passkey sign-in is implemented, but Face ID on a real iPhone still needs testing.
 - **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. When you use the Mac yourself, agent input pauses.
 - **Guardrails** keep agents' clicks and typing away from Reach and Tailscale, password managers and password fields, `sudo` and security prompts, and System Settings' security panes.
 - **Full control is your account, not a sandbox.** Its shell runs as you. Give it only to agents you trust, and use **Apps** or **Files** for everything else.
