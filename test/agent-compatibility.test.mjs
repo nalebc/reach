@@ -465,6 +465,8 @@ test("Codex's session service socket must be yours, in a folder no one else writ
   const { default: path } = await import("node:path");
   const dir = fs.mkdtempSync("/tmp/reach-codex-sock-");
   const file = path.join(dir, "s");
+  // What Reach connects to: the socket where its links end (/tmp is /private/tmp).
+  const real = path.join(fs.realpathSync(dir), "s");
   const server = net.createServer();
   await new Promise((r) => server.listen(file, r));
   try {
@@ -478,6 +480,32 @@ test("Codex's session service socket must be yours, in a folder no one else writ
     fs.writeFileSync(path.join(dir, "plain"), "");
     await assert.rejects(ownSocket(path.join(dir, "plain")), /isn't one Reach can trust/, "not a socket");
     await assert.rejects(ownSocket(path.join(dir, "missing")), /isn't one Reach can trust/);
+    // Codex since Oct 11: a link in ~/.codex to the socket in /tmp.
+    const links = fs.mkdtempSync("/tmp/reach-codex-link-");
+    fs.chmodSync(links, 0o700);
+    try {
+      fs.symlinkSync(file, path.join(links, "control.sock"));
+      assert.equal(await ownSocket(path.join(links, "control.sock")), real, "the socket the link ends at");
+      fs.symlinkSync(path.join(dir, "plain"), path.join(links, "plain"));
+      await assert.rejects(ownSocket(path.join(links, "plain")), /isn't one Reach can trust/, "a link to a file");
+      fs.chmodSync(dir, 0o777);
+      await assert.rejects(ownSocket(path.join(links, "control.sock")), /isn't one Reach can trust/, "a socket in a folder anyone writes");
+      fs.chmodSync(dir, 0o700);
+      fs.chmodSync(links, 0o777);
+      await assert.rejects(ownSocket(path.join(links, "control.sock")), /isn't one Reach can trust/, "a link in a folder anyone writes");
+      fs.chmodSync(links, 0o700);
+      fs.symlinkSync("loop", path.join(links, "loop"));
+      await assert.rejects(ownSocket(path.join(links, "loop")), /isn't one Reach can trust here: it is behind too many links/, "a loop");
+      // A folder on the way that is itself a link, held to the folder rule where it ends.
+      fs.symlinkSync(dir, path.join(links, "folder"));
+      assert.equal(await ownSocket(path.join(links, "folder", "s")), real, "a linked folder");
+      // The socket's own mode proves nothing; its owner and folder do.
+      fs.chmodSync(file, 0o777);
+      assert.equal(await ownSocket(file), real, "an open socket in a private folder");
+      await assert.rejects(ownSocket(path.join(dir, "plain")), /it isn't a socket/, "says why");
+    } finally {
+      fs.rmSync(links, { recursive: true, force: true });
+    }
   } finally {
     server.close();
     fs.rmSync(dir, { recursive: true, force: true });

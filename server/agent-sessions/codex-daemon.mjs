@@ -7,6 +7,7 @@ import WebSocket from "ws";
 import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { computerWord } from "../computer-word.mjs";
+import { trustedSocket } from "./trusted-socket.mjs";
 
 const exec = promisify(execFile);
 
@@ -94,15 +95,14 @@ export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
   });
 }
 
-// A socket only you could have put there: yours, in a folder that's yours
-// or that no one else can write to (or sticky, as /tmp is).
-export async function ownSocket(file, { uid = process.getuid?.(), platform = process.platform } = {}) {
-  if (platform === "win32" || uid === undefined) return;
-  const refused = () => Object.assign(new Error("Codex's session service isn't one Reach can trust here."), { status: 503 });
-  const [entry, folder] = await Promise.all([fs.promises.lstat(file), fs.promises.lstat(path.dirname(file))]).catch(() => { throw refused(); });
-  if (!entry.isSocket() || entry.uid !== uid || !folder.isDirectory()) throw refused();
-  if (folder.uid !== uid && folder.uid !== 0) throw refused();
-  if (folder.mode & 0o022 && !(folder.mode & 0o1000)) throw refused();
+// The session service's socket, held to Reach's rule for Codex sockets
+// (trusted-socket.mjs); the socket to connect to, or why it isn't trusted.
+export async function ownSocket(file, options) {
+  try {
+    return await trustedSocket(file, options);
+  } catch (e) {
+    throw Object.assign(new Error(`Codex's session service isn't one Reach can trust here: ${e.because || "it couldn't be checked"}.`), { status: 503 });
+  }
 }
 export function createCodexDaemon({
   locate = findCodexExecutable,
@@ -180,8 +180,7 @@ export function createCodexDaemon({
     });
     const status = JSON.parse(stdout.trim().split("\n").pop());
     if (!status.socketPath) throw new Error("Codex did not report its session service.");
-    await checkSocket(status.socketPath);
-    return status.socketPath;
+    return (await checkSocket(status.socketPath)) || status.socketPath;
   }
   async function open() {
     const path = await socketPath();

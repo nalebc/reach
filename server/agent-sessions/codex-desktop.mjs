@@ -3,9 +3,9 @@
 // composer and app-server together. Never take its writer lock or replay a
 // settings request after an uncertain response.
 import net from "node:net";
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { trustedSocket } from "./trusted-socket.mjs";
 import { randomUUID } from "node:crypto";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,23 +41,8 @@ export function createCodexDesktop({
     : path.join(home, "ipc", "ipc.sock"),
   connect = net.connect,
   timeoutMs = 8000,
-  checkEndpoint = async () => {
-    if (process.platform === "win32") return;
-    const [socket, directory] = await Promise.all([
-      fs.lstat(endpoint),
-      fs.lstat(path.dirname(endpoint)),
-    ]);
-    const uid = process.getuid?.();
-    if (
-      !socket.isSocket() ||
-      socket.uid !== uid ||
-      !directory.isDirectory() ||
-      directory.uid !== uid ||
-      socket.mode & 0o022 ||
-      directory.mode & 0o022
-    )
-      throw settingsUnavailable();
-  },
+  // The socket to connect to (Reach's rule for Codex sockets, trusted-socket.mjs).
+  checkEndpoint = () => trustedSocket(endpoint),
 } = {}) {
   // One request to the app that owns the chat (found by asking): it's
   // written once and never replayed; with no clear answer after it's written,
@@ -68,8 +53,9 @@ export function createCodexDesktop({
   // chat none of them may hold.
   const ask = async (conversationId, { method, version, params, check, work, discover = true, unavailable = settingsUnavailable, uncertain = settingsUncertain }) => {
     if (!UUID.test(conversationId)) throw unavailable();
+    let at;
     try {
-      await checkEndpoint();
+      at = (await checkEndpoint()) || endpoint;
     } catch {
       throw unavailable();
     }
@@ -144,7 +130,7 @@ export function createCodexDesktop({
           end(unavailable());
         }, timeoutMs);
         try {
-          socket = connect(endpoint);
+          socket = connect(at);
         } catch {
           clearTimeout(timer);
           reject(unavailable());

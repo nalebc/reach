@@ -2,9 +2,9 @@
 // Reach announces only threads its own engine has actually resumed. The
 // desktop follows their native history and sends composer actions to Reach.
 import net from "node:net";
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { trustedSocket } from "./trusted-socket.mjs";
 import { randomUUID } from "node:crypto";
 import { visibleUserText } from "./message-text.mjs";
 
@@ -230,23 +230,8 @@ export function createCodexOwner({
   connect = net.connect,
   gapMs = 100,
   reconnectMs = 1000,
-  checkEndpoint = async () => {
-    if (process.platform === "win32") return;
-    const [socket, directory] = await Promise.all([
-      fs.lstat(endpoint),
-      fs.lstat(path.dirname(endpoint)),
-    ]);
-    const uid = process.getuid?.();
-    if (
-      !socket.isSocket() ||
-      socket.uid !== uid ||
-      !directory.isDirectory() ||
-      directory.uid !== uid ||
-      socket.mode & 0o022 ||
-      directory.mode & 0o022
-    )
-      throw Error("Codex IPC is unavailable.");
-  },
+  // The socket to connect to (Reach's rule for Codex sockets, trusted-socket.mjs).
+  checkEndpoint = () => trustedSocket(endpoint),
 } = {}) {
   const owned = new Map(),
     ownerships = new Map(),
@@ -477,9 +462,9 @@ export function createCodexOwner({
     if (!enabled || closed || clientId) return;
     if (opening) return opening;
     opening = (async () => {
-      await checkEndpoint();
+      const at = (await checkEndpoint()) || endpoint;
       if (closed || !owned.size) return;
-      const ws = connect(endpoint);
+      const ws = connect(at);
       socket = ws;
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
