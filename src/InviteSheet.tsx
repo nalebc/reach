@@ -295,6 +295,9 @@ export function InviteSheet({
   const [policy, setPolicy] = useState<unknown>(null);
   // The one-time setup: a slim line until you open it.
   const [setupOpen, setSetupOpen] = useState(false);
+  // Why this computer can't make invite keys at all (a Windows Reach): said
+  // instead of a setup that can't work there.
+  const [noKeys, setNoKeys] = useState("");
   // Set up, but the tailnet policy lets every device reach everything.
   const [openPolicy, setOpenPolicy] = useState(false);
   // Links made here, by invitation (a computer never keeps them).
@@ -325,11 +328,16 @@ export function InviteSheet({
     void (async () => {
       for (const p of [peer, ...peers.filter((x) => x.id !== peer.id)]) {
         try {
-          const r = await request<{ configured: boolean; policy: unknown }>(
-            p,
-            "/api/guests/keys",
-          );
-          if (live && p.id === peer.id) setPolicy(r.policy);
+          const r = await request<{
+            configured: boolean;
+            available?: boolean;
+            why?: string;
+            policy: unknown;
+          }>(p, "/api/guests/keys");
+          if (live && p.id === peer.id) {
+            setPolicy(r.policy);
+            setNoKeys(r.available === false ? r.why || "Invite links aren’t available on this computer." : "");
+          }
           if (r.configured) {
             if (live) {
               setKeyPeer(p);
@@ -650,7 +658,10 @@ computers.includes(p.id) && !devices[p.id]
         {/* People and Command line agents need it to join from outside your
             tailnet; Tools and Web page agents don't (the public link), so
             for them it shows only when asked for. */}
-        {keyed === false && (kind !== "browser" || setupOpen) && (
+        {keyed === false && noKeys && (kind !== "browser" || setupOpen) && (
+          <p className="ivt-quiet ivt-no-keys">{noKeys}</p>
+        )}
+        {keyed === false && !noKeys && (kind !== "browser" || setupOpen) && (
           <InviteLinksSetup
             peer={peer}
             policy={policy}
@@ -988,17 +999,20 @@ computers.includes(p.id) && !devices[p.id]
                 {!madeLink.keyed && !onTailnet && (
                   <div className="ivt-tailscale">
                     <p>{made.guest} would need Tailscale for this link.</p>
-                    <button
-                      type="button"
-                      className="ivt-primary small"
-                      onClick={() => {
-                        setSetupOpen(true);
-                        window.scrollTo({ top: 0, behavior: "smooth" });
-                      }}
-                    >
-                      Set up invite links
-                    </button>
-                    <details className="ivt-fallback">
+                    {!noKeys && (
+                      <button
+                        type="button"
+                        className="ivt-primary small"
+                        onClick={() => {
+                          setSetupOpen(true);
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                      >
+                        Set up invite links
+                      </button>
+                    )}
+                    {/* No invite keys here: Tailscale sharing is the way. */}
+                    <details className="ivt-fallback" open={!!noKeys || undefined}>
                       <summary>They already use Tailscale</summary>
                       <p>
                         Share this computer with them in Tailscale, then paste

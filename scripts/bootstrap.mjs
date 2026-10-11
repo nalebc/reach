@@ -524,6 +524,10 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     // What really runs (any folder, any way), not only the background service.
     const hosts = othersRunning();
     console.log(statusText(hosts, { command, started: startTimes(hosts.map((h) => h.pid)) }));
+  } else if (options.command === "status") {
+    // Windows: no ps; the Reach this folder runs, from its own status file.
+    const { windowsHost, windowsStatusText } = await import("./instances.mjs");
+    console.log(windowsStatusText(windowsHost(state), { command }));
   } else if (options.command === "cli") {
     if (packaged) console.log("reach is already a command in every Terminal (installed with npm).");
     else {

@@ -39,6 +39,7 @@ import {
   tailscaleVersions,
 } from "./tailscale.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
+import { watchStopRequest } from "./instances.mjs";
 import { pageOpener } from "./tailscale-connect.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { setStartInfo } from "../server/delivery.mjs";
@@ -122,7 +123,7 @@ export async function launch(options, root) {
   const done = new Promise((resolve) => {
     finish = resolve;
   });
-  let log, monitor, approvalMonitor, recovery, power;
+  let log, monitor, approvalMonitor, recovery, power, stopWatch;
   let publicLink, publicMonitor, linkMonitor;
   let startUrl = "";
   const forgetStatus = () => {
@@ -147,6 +148,7 @@ export async function launch(options, root) {
     }, 5000);
     deadline.unref();
     stopPromise = (async () => {
+      stopWatch?.();
       input?.close();
       clearInterval(monitor);
       clearInterval(approvalMonitor);
@@ -224,6 +226,8 @@ export async function launch(options, root) {
     });
     atomicJson(statusFile, {
       pid: process.pid,
+      // When it started (Windows' status says it; there's no ps to ask).
+      startedAt: Date.now(),
       instance: reach.instance,
       localUrl,
       origin: privateOrigin || localUrl,
@@ -232,6 +236,9 @@ export async function launch(options, root) {
       service: !!options.service,
       tailscaleApproval: !!preferences,
     });
+    // Windows: `stop` asks through a file, as there are no signals to ask with.
+    if (process.platform === "win32")
+      stopWatch = watchStopRequest(privateDir, { stop: () => void stop() });
     let origin = localUrl;
     if (privateOrigin) {
       origin = privateOrigin;

@@ -205,3 +205,89 @@ test("the commands: stop and restart, with --yes; --yes means nothing to other c
   assert.throws(() => parseOptions(["status", "--yes"]), /Unknown option: --yes/);
   assert.throws(() => parseOptions(["stop", "--folder", "/x"]), /does not accept setup options/);
 });
+
+// First-run matrix H20: Windows has no ps and no signals to ask with. The
+// Reach running from this folder is the one its status file names; it's asked
+// through a file it watches, and stops as Ctrl+C stops it, terminals and all.
+// Only a Reach that doesn't is ended, with its whole process tree.
+function windowsReach(t, { exits = true } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-stop-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const state = path.join(root, ".reach");
+  fs.mkdirSync(state, { recursive: true });
+  let running = true;
+  const said = [];
+  const asked = [];
+  const killed = [];
+  const requests = [];
+  const deps = {
+    platform: "win32",
+    // Never this computer's real processes or service, whatever the code.
+    table: () => [],
+    launchctl: () => "",
+    kill: () => {
+      throw Object.assign(Error("no such process"), { code: "ESRCH" });
+    },
+    print: (line) => said.push(line),
+    ask: async (q) => (asked.push(q), "y"),
+    wait: async () => {
+      // The running Reach, watching for the request (launch.mjs).
+      const file = path.join(state, "stop-request.json");
+      if (fs.existsSync(file)) {
+        requests.push(JSON.parse(fs.readFileSync(file, "utf8")).pid);
+        if (exits) running = false;
+      }
+    },
+    state: () => state,
+    interactive: true,
+    windows: {
+      // The Reach this folder runs (instances.mjs windowsHost reads it from
+      // its status file; tested there).
+      host: { pid: 4242, origin: "https://pc.t.ts.net:8443" },
+      alive: (pid) => pid === 4242 && running,
+      taskkill: (pid) => {
+        killed.push(pid);
+        running = false;
+      },
+      graceMs: 50,
+    },
+  };
+  return { root, state, deps, said, asked, killed, requests };
+}
+
+test("Windows stop: asked first, then asked through its file; it stops itself, nothing is killed", async (t) => {
+  const w = windowsReach(t);
+  const result = await stopReach(w.root, w.deps);
+  assert.deepEqual(w.asked, ["Stop Reach? Any terminals open in it close too. [y/N] "]);
+  assert.deepEqual(w.requests, [4242], "the request names the Reach it's for");
+  assert.deepEqual(w.killed, []);
+  assert.deepEqual(w.said, ["Stopped Reach."]);
+  assert.equal(result.stopped, 1);
+  assert.equal(fs.existsSync(path.join(w.state, "stop-request.json")), false, "no request left behind");
+});
+
+test("Windows stop: a Reach that doesn't stop is ended with its process tree; no terminal to ask in needs --yes", async (t) => {
+  const hung = windowsReach(t, { exits: false });
+  await stopReach(hung.root, hung.deps);
+  assert.deepEqual(hung.killed, [4242]);
+  assert.deepEqual(hung.said, ["Stopped Reach."]);
+  const unattended = windowsReach(t);
+  await assert.rejects(stopReach(unattended.root, { ...unattended.deps, interactive: false }), /Run again with --yes/);
+  assert.deepEqual(unattended.requests, [], "nothing asked of Reach");
+  await stopReach(unattended.root, { ...unattended.deps, interactive: false, yes: true });
+  assert.deepEqual(unattended.requests, [4242]);
+  const declined = windowsReach(t);
+  const result = await stopReach(declined.root, { ...declined.deps, ask: async () => "n" });
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(declined.said, ["Nothing was stopped."]);
+});
+
+test("Windows stop: nothing running from this folder says so; a restart starts quietly", async (t) => {
+  const w = windowsReach(t);
+  const none = { ...w.deps, windows: { ...w.deps.windows, host: null } };
+  assert.equal((await stopReach(w.root, none)).stopped, 0);
+  assert.deepEqual(w.said, ["Reach isn't running from this folder."]);
+  w.said.length = 0;
+  await stopReach(w.root, { ...none, restarting: true });
+  assert.deepEqual(w.said, []);
+});

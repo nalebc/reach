@@ -119,3 +119,42 @@ test("a Reach started with a relative script path (npm run go) is found through 
   const found = reachHosts(table, { self: 1, cwdOf: (pid) => (pid === 700 ? "/Users/me/reach" : "") });
   assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, "/Users/me/reach"]]);
 });
+
+// First-run matrix H20: Windows has no ps. `status` names the Reach this
+// folder runs from its own status file, while that process lives, and the
+// running Reach stops when `stop` leaves it a request (no signals there).
+test("Windows status: from the status file, only while its process lives", async () => {
+  const { windowsHost, windowsStatusText } = await import("../scripts/instances.mjs");
+  const status = { pid: 4242, startedAt: Date.parse("2026-10-10T09:05:00"), origin: "https://pc.t.ts.net:8443" };
+  const read = () => JSON.stringify(status);
+  const host = windowsHost("/state", { read, alive: (pid) => pid === 4242 });
+  assert.equal(host.pid, 4242);
+  const text = windowsStatusText(host, { command: ".\\reach.cmd", now: Date.parse("2026-10-10T12:00:00") });
+  assert.match(text, /^Reach: running in a terminal \(process 4242\), since [^\n]*9:05[^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443$/);
+  // A status file a stopped (or force-ended) Reach left: not running.
+  assert.equal(windowsHost("/state", { read, alive: () => false }), null);
+  assert.equal(windowsHost("/state", { read: () => { throw Object.assign(Error("gone"), { code: "ENOENT" }); } }), null);
+  assert.equal(windowsHost("/state", { read: () => "{\"pid\":\"x\"}", alive: () => true }), null);
+  assert.equal(windowsStatusText(null, { command: ".\\reach.cmd" }), "Reach isn't running from this folder. Start it with .\\reach.cmd.");
+});
+
+test("Windows: a running Reach stops on a request for it, and only for it", async (t) => {
+  const fs = await import("node:fs");
+  const { watchStopRequest, stopRequestFile } = await import("../scripts/instances.mjs");
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-watch-"));
+  t.after(() => fs.rmSync(state, { recursive: true, force: true }));
+  let stops = 0;
+  const unwatch = watchStopRequest(state, { pid: 77, stop: () => stops++, every: 10 });
+  t.after(unwatch);
+  // An earlier Reach's request, not this one's.
+  fs.writeFileSync(stopRequestFile(state), JSON.stringify({ pid: 76 }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(stops, 0);
+  fs.writeFileSync(stopRequestFile(state), JSON.stringify({ pid: 77 }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(stops, 1);
+  assert.equal(fs.existsSync(stopRequestFile(state)), false, "taken, so it's acted on once");
+  fs.writeFileSync(stopRequestFile(state), JSON.stringify({ pid: 77 }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(stops, 1, "it stopped watching once it was stopping");
+});

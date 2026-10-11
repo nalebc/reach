@@ -283,6 +283,13 @@ export async function createReach(overrides = {}) {
   originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
+  // Invite keys need phones approved by your Tailscale account: not on a
+  // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
+  // before this computer is set up. Said the same way wherever it's asked.
+  const noInviteKeys =
+    (overrides.platform || process.platform) === "win32"
+      ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
+      : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
     ? createGuestKeys({
         dataDir: config.dataDir,
@@ -2032,7 +2039,11 @@ export async function createReach(overrides = {}) {
           port: Number(new URL(config.publicOrigin).port || 443),
         });
     } catch {}
-    res.json({ configured: !!guestKeys?.configured(), policy });
+    res.json({
+      configured: !!guestKeys?.configured(),
+      ...(guestKeys ? {} : { available: false, why: noInviteKeys }),
+      policy,
+    });
   });
   // One-time setup from your phone: the credential is checked with Tailscale
   // and kept on this computer only; it's never sent back.
@@ -2090,7 +2101,7 @@ export async function createReach(overrides = {}) {
     const authorize = () => invitationOwner(req);
     authorize();
     if (!guestKeys)
-      throw fail(404, "Invite links need Tailscale device approval here.");
+      throw fail(404, noInviteKeys);
     // The easy way: one access token (used once, never kept). Reach adds its
     // rules to the tailnet policy and makes its own limited key.
     if (req.body?.accessToken) {
@@ -2122,7 +2133,9 @@ export async function createReach(overrides = {}) {
     if (!guestKeys?.configured())
       throw fail(
         409,
-        `Set up invite keys first: run ${command} invites on this computer.`,
+        guestKeys
+          ? `Set up invite keys first: run ${command} invites on this computer.`
+          : noInviteKeys,
       );
     const invited = new Map(
       auth
@@ -2249,7 +2262,9 @@ export async function createReach(overrides = {}) {
         if (!guestKeys?.configured())
           throw fail(
             409,
-            `Set up invite keys first: run ${command} invites on this computer.`,
+            guestKeys
+              ? `Set up invite keys first: run ${command} invites on this computer.`
+              : noInviteKeys,
           );
         await guestKeys.assertIsolated(await guestReach(), authorize);
         key = await guestKeys.createInvite({
@@ -2504,6 +2519,9 @@ export async function createReach(overrides = {}) {
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
     prepareFunnel: async () => {
+      // A Windows Reach has no public link (no Funnel without the socket).
+      if (!prepareFunnel && (overrides.platform || process.platform) === "win32")
+        throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
       await prepareFunnel();

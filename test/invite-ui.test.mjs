@@ -37,7 +37,8 @@ const RUNTIME = "ab".repeat(32);
 const KEY = { key: "tskey-auth-kTEST123456-abcdef", hostname: "rg-ab12-k3m9x2p7qa" };
 
 // `keyed`: true, false, or the hosts holding the invite-link credential.
-function computers({ keyed = true, failOn = "", guests = [], policyBlock = false } = {}) {
+// `unavailable`: why this computer can make no invite keys (a Windows Reach).
+function computers({ keyed = true, failOn = "", guests = [], policyBlock = false, unavailable = "" } = {}) {
   const log = [];
   let n = 0;
   const holders = new Set(keyed === true ? ["mac-a", "mac-b"] : keyed === false ? [] : keyed);
@@ -64,6 +65,7 @@ function computers({ keyed = true, failOn = "", guests = [], policyBlock = false
     if (u.pathname === "/api/guests/keys")
       return reply(200, {
         configured: holders.has(host),
+        ...(unavailable ? { available: false, why: unavailable } : {}),
         policy: { tagOwners: { "tag:reach-guest": ["autogroup:admin"] }, grants: [{ src: ["tag:reach-guest"], dst: ["100.64.0.1"], ip: ["tcp:8443"] }] },
       });
     if (u.pathname === "/api/clients") return reply(200, { current: "me", clients: guests });
@@ -287,6 +289,29 @@ test("without invite keys: one slim line, never in the way; Tailscale sharing on
   assert.equal(c.querySelector(".ivt-setup"), null);
   assert.ok(c.querySelector(".ivt-setup-line"));
   // The fallback: they already use Tailscale.
+  await click(toggle(c, "They’re already on my Tailscale"));
+  assert.equal(parseGuestLink(new URL(link(c)).hash).key, "");
+  await view.unmount();
+});
+
+// First-run matrix T26: a Windows Reach can't make invite keys. The sheet
+// says why instead of a setup that can't work, and Tailscale sharing (the
+// way that does) is open from the start.
+test("a computer that can't make invite links: says why, no setup, Tailscale sharing open", async () => {
+  const why = "Invite links for people and agents without Tailscale aren't available on Windows yet.";
+  const log = computers({ keyed: false, unavailable: why });
+  const view = await render();
+  const c = view.container;
+  await settle(40);
+  assert.equal(c.querySelector(".ivt-setup-line"), null, "no setup to start");
+  assert.equal(c.querySelector(".ivt-no-keys").textContent, why);
+  await name(c, "Lee");
+  await click(inviteButton(c));
+  await settle(80);
+  assert.match(c.querySelector(".ivt-tailscale").textContent, /Lee would need Tailscale for this link/);
+  assert.ok(![...c.querySelectorAll(".ivt-tailscale button")].some((b) => b.textContent === "Set up invite links"));
+  assert.equal(c.querySelector(".ivt-fallback").open, true, "Tailscale sharing, already open");
+  assert.ok(!posts(log).some(([, p]) => p === "/api/guests/key" || p === "/api/guests/keys"), "no key asked for");
   await click(toggle(c, "They’re already on my Tailscale"));
   assert.equal(parseGuestLink(new URL(link(c)).hash).key, "");
   await view.unmount();

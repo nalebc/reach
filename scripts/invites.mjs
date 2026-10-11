@@ -7,7 +7,7 @@ import {
   GUEST_TAG,
 } from "../server/guest-keys.mjs";
 import { tailscaleJson } from "./tailscale.mjs";
-import { readPreferences } from "./configure.mjs";
+import { accountApproval, readPreferences } from "./configure.mjs";
 import { terminalPrompts } from "./prompts.mjs";
 import { stateDir, command } from "./home.mjs";
 
@@ -23,6 +23,11 @@ export const KEYS_PAGE = "https://login.tailscale.com/admin/settings/keys";
 export async function setupInvites(root, deps = {}) {
   const print = deps.print || console.log;
   const dataDir = process.env.REACH_DATA || path.join(stateDir(root), "quick");
+  // Invite keys need phones approved by your Tailscale account (configure.mjs).
+  if (!accountApproval(deps.platform))
+    throw Error(
+      "Invite links for people and agents without Tailscale aren't available on Windows yet: they need phones approved by your Tailscale account, and on Windows they join with a pairing code. People already on your Tailscale can still be invited from your phone.",
+    );
   const preferences = readPreferences(root);
   if (!preferences)
     throw Error(`Run Reach once first (${command}), then set up invites.`);

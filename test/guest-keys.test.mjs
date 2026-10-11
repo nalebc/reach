@@ -6,6 +6,7 @@ import path from "node:path";
 import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { command } from "../scripts/home.mjs";
 
 // Invite keys against a fake Tailscale API: keys are single-use, tagged and
 // lasting; guest devices are removed when their invitation ends or is
@@ -264,7 +265,8 @@ test("POST /api/guests with key: one link, no orphan invitation when keys aren't
   const before = reach.auth.list().length;
   await assert.rejects(
     reach.guestKeys.createInvite({ ttlSeconds: 600 }),
-    /run \.\/reach invites/,
+    // .\reach.cmd on Windows (scripts/home.mjs).
+    new RegExp(`run ${command.replace(/[.\\]/g, "\\$&")} invites`),
   );
   await reach.guestKeys.setup({
     clientId: "id",
@@ -476,3 +478,40 @@ test(
     assert.ok(await until("nAgentB"), "a declined agent's device leaves too");
   },
 );
+
+// First-run matrix T26: a Windows Reach approves phones by pairing code, so it
+// can't make invite keys; wherever the phone asks, it hears why, not a setup
+// step that can't work there.
+test("a Windows computer says why invite links aren't available, wherever it's asked", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keys-win-"));
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, "private"),
+    port: 0,
+    platform: "win32",
+    tailscaleStatus: async () => ({ Self: {}, Peer: {} }),
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  t.after(async () => {
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const phone = reach.auth.issue("iPhone", ALL_SCOPES, "device");
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const call = async (route, body) => {
+    const r = await fetch(url + route, {
+      method: body ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${phone.token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: r.status, json: await r.json() };
+  };
+  const why = "Invite links for people and agents without Tailscale aren't available on Windows yet.";
+  const keys = await call("/api/guests/keys");
+  assert.equal(keys.status, 200);
+  assert.deepEqual([keys.json.configured, keys.json.available, keys.json.why], [false, false, why]);
+  const setup = await call("/api/guests/keys", { accessToken: "tskey-api-x" });
+  assert.deepEqual([setup.status, setup.json.error], [404, why]);
+  const key = await call("/api/guests/key", { ttlSeconds: 600, clientIds: [] });
+  assert.deepEqual([key.status, key.json.error], [409, why], "not told to run invites, which can't work here");
+});

@@ -623,6 +623,13 @@
   text-align: left;
   cursor: pointer;
 }
+/* Where invite links can't be set up (a Windows Reach): the slim line, said. */
+.ivt-no-keys {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ivt-line);
+  border-radius: 12px;
+}
 .ivt-setup-line strong {
   display: inline-flex;
   align-items: center;

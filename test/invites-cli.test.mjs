@@ -61,6 +61,7 @@ test("token path: opens the token page, shows exactly what's added, then it's re
   const asked = [];
   const opened = [];
   await setupInvites(root, {
+    platform: "darwin",
     print: (m) => out.push(m),
     select: async ({ message, choices }) => (asked.push(message), choices[0].value),
     ask: async () => "",
@@ -91,6 +92,7 @@ test("cancel at the confirmation: policy untouched, nothing saved, and setup goe
   // matrix I4), where it used to pause the whole setup.
   assert.deepEqual(
     await setupInvites(root, {
+      platform: "darwin",
       print: (m) => out.push(m),
       select: async ({ message, choices }) =>
         message === "Add these?" ? "no" : choices[0].value,
@@ -117,6 +119,7 @@ test("a new tailnet's default policy: narrowed to your members once you say yes,
   const out = [];
   const asked = [];
   const result = await setupInvites(root, {
+    platform: "darwin",
     print: (m) => out.push(m),
     select: async ({ message, choices }) => (asked.push(message), choices[0].value),
     ask: async () => "",
@@ -138,6 +141,7 @@ test("a new tailnet's default policy, left as it is: nothing changed, invite lin
   const before = `{"grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]}`;
   const api = fakeApi(before);
   const result = await setupInvites(root, {
+    platform: "darwin",
     print: () => {},
     select: async ({ message, choices }) => (message === "Change the default rule?" ? "no" : choices[0].value),
     ask: async () => "",
@@ -149,4 +153,23 @@ test("a new tailnet's default policy, left as it is: nothing changed, invite lin
   assert.deepEqual(result, { ready: false });
   assert.equal(api.policy, before);
   assert.equal(api.clients.length, 0);
+});
+
+// First-run matrix T26: a Windows Reach approves phones by pairing code, so it
+// can't make invite keys; `.\reach.cmd invites` says so before anything else.
+test("Windows: invites say why they aren't available, and touch nothing", async (t) => {
+  const root = computer(t);
+  const api = fakeApi({ grants: [] });
+  await assert.rejects(
+    setupInvites(root, {
+      platform: "win32",
+      status: async () => assert.fail("no Tailscale call on Windows"),
+      select: async () => assert.fail("no question on Windows"),
+      ask: async () => assert.fail("no question on Windows"),
+      print() {},
+      request: api.request,
+    }),
+    /^Error: Invite links for people and agents without Tailscale aren't available on Windows yet: .*pairing code/,
+  );
+  assert.deepEqual(api.clients, []);
 });

@@ -16,7 +16,7 @@ import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // The processes and every Reach among them (instances.mjs): one Reach per
 // computer, so stop and restart reach it whichever folder it came from.
-import { processTable, reachHosts, stateOf } from "./instances.mjs";
+import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost } from "./instances.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -79,8 +79,11 @@ export async function stopReach(
     termMs = 5000,
     state = stateOf,
     handoffRoute = handoffPersistentRoute,
+    windows = {},
   } = {},
 ) {
+  if (platform === "win32")
+    return stopWindows(root, { yes, restarting, interactive, print, ask, wait, state, ...windows });
   const hosts = findReach(null, table(), self);
   const service = platform === "darwin" ? serviceState(root, { run: launchctl, home, uid }) : { loaded: false, ours: false };
   // Reach's one background service, whichever folder installed it.
@@ -163,6 +166,67 @@ export async function stopReach(
     print("The background service stopped; it starts again at your next sign-in, or with ./reach restart.");
   if (stopped) print(`Stopped ${stopped === 1 ? "Reach" : `${stopped} Reaches`}${terminals.length ? ` and ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} in it` : ""}.`);
   return { stopped, service: serviceRunning, terminals: terminals.length, serviceInstalled: !!service.ours };
+}
+
+// Windows: no ps, no signals. The Reach running from this folder (its status
+// file) is asked through a file it watches (launch.mjs), and stops as Ctrl+C
+// stops it, terminals and all. Only if it doesn't is its process tree ended.
+async function stopWindows(
+  root,
+  {
+    yes,
+    restarting,
+    interactive,
+    print,
+    ask,
+    wait,
+    state,
+    host = windowsHost(state(root)),
+    alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return error.code === "EPERM";
+      }
+    },
+    taskkill = (pid) =>
+      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }),
+    graceMs = 15000,
+  },
+) {
+  if (!host) {
+    if (!restarting) print("Reach isn't running from this folder.");
+    return { stopped: 0, service: false, terminals: 0, serviceInstalled: false };
+  }
+  // Which terminals are open isn't known from here: asked about every time.
+  if (!yes) {
+    if (!interactive)
+      throw Error("Reach's terminals, if any are open, close with it. Run again with --yes to close them too.");
+    const answer = await ask(`${restarting ? "Restart" : "Stop"} Reach? Any terminals open in it close too. [y/N] `);
+    if (!/^y(es)?$/i.test(String(answer).trim())) {
+      print("Nothing was stopped.");
+      return { cancelled: true, stopped: 0, service: false, terminals: 0 };
+    }
+  }
+  const file = stopRequestFile(state(root));
+  fs.writeFileSync(file, JSON.stringify({ pid: host.pid, at: Date.now() }), { mode: 0o600 });
+  const gone = async (ms) => {
+    for (const until = Date.now() + ms; alive(host.pid) && Date.now() < until; ) await wait(200);
+    return !alive(host.pid);
+  };
+  try {
+    if (!(await gone(graceMs))) {
+      try {
+        taskkill(host.pid);
+      } catch {}
+      if (!(await gone(3000))) throw Error(`Reach (process ${host.pid}) did not stop.`);
+    }
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+  print("Stopped Reach.");
+  return { stopped: 1, service: false, terminals: 0, serviceInstalled: false };
 }
 
 // The background service started again (stopped earlier, still installed).

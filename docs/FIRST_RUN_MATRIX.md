@@ -22,6 +22,8 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | V | The real interface in a browser at 390 px and 320 px, using the demo fixture (`node scripts/demo/start.mjs`) | screenshots |
 | M | Physical phones and other computers | recorded below |
 
+**Windows paths run on this Mac too.** `test/helpers/as-windows.mjs`, preloaded into a child Reach, makes its `process.platform` say win32. Reach's own Windows branches run for real, through the real launcher. Windows itself (its console, `explorer.exe`, `taskkill`) is M8's.
+
 **Clean-machine tests never trust `PATH`.** Detection goes through the login shell (`$SHELL -lc`) and fixed `/Applications/...` paths, so a test that only empties `PATH` still finds Claude or Codex on a developer's Mac. `test/helpers/clean-machine.mjs` injects every detector instead.
 
 ## How the first connection works
@@ -62,6 +64,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | H15 | Setup done before the install | "Finishing the first install: <part>…", then Reach starts | U | `first-start` | fixed, passed Oct 10 |
 | H16 | The install fails during setup (no internet, no compiler) | Setup finishes and is saved; the install's fix is said after it | U | `first-start` | fixed, passed Oct 10 |
 | H17 | Ctrl+C during setup while installing | "Paused"; npm and the Go build stop; the next `./reach` installs again and resumes setup | U | `first-start` | fixed, passed Oct 10 (bootstrap's wiring: manual, M6) |
+| H20 | Windows: `.\reach.cmd status`, `stop`, `restart` | `status` names the Reach this folder runs (process, since when, its link) from its own status file, while that process lives. `stop` asks first (any terminals in it close too; no terminal to ask in needs `--yes`), then asks Reach through a file it watches, and Reach stops as Ctrl+C stops it. Only a Reach that doesn't is ended with its process tree (`taskkill /T /F`). `restart` does the same, then starts here | U, P | `stop`, `instances`, `windows-commands` | fixed, passed Oct 10 (Windows paths on this Mac; `taskkill` and a real Windows console: M8) |
 
 ## T. Tailscale on the computer
 
@@ -89,9 +92,10 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | T20 | Windows: switched off | Offers `tailscale up`. If that's refused: the taskbar icon, with the app opened so the icon is there | U | `tailscale-connect` | fixed, passed Oct 10 |
 | T21 | Windows: the Tailscale CLI isn't on Reach's PATH (installed while Reach waited) | Found at `%ProgramFiles%\Tailscale\tailscale.exe`, looked up again on every check. Pages open with `explorer.exe`, not `start` (a cmd built-in that cuts links at `&`) | U | `tailscale-connect` | fixed, passed Oct 10 |
 | T22 | Windows: MagicDNS or HTTPS certificates off | Opens the DNS page and waits; the wait names `.\reach.cmd` | U | `setup` | fixed, passed Oct 10 |
-| T23 | Windows: how phones are approved | With the pairing code. Tailscale-account approval needs Serve to reach Reach through a Unix socket, which Windows lacks. `.\reach.cmd configure` says so; `approve` points to the code and `pair`. Kept on Oct 10, the owner's call | U, P | `setup`, `launcher` (P10) | fixed, passed Oct 10 |
+| T23 | Windows: how phones are approved | With the pairing code. Tailscale-account approval needs Serve to reach Reach through a Unix socket, which Windows lacks. `.\reach.cmd configure` says so; `approve` points to the code and `pair`. Kept on Oct 10, the owner's call | U, P | `setup`, `launcher` (P10), `windows-commands` (Tailscale mode) | fixed, passed Oct 10 |
 | T24 | Windows, no terminal | Says what's missing, opens nothing | U | `tailscale-connect` | passed Oct 10 |
 | T25 | Windows: `.\reach.cmd link` | Refused with why (linking needs Tailscale-account approval), before reading anything | U | `fleet` | fixed, passed Oct 10 |
+| T26 | Windows: invite links for people and agents without Tailscale | Not available (no invite keys without account approval, no public link without the socket). The phone's Invite sheet says so in one line instead of a setup that can't work, and opens Tailscale sharing. The server says the same wherever it's asked; `.\reach.cmd invites` refuses before asking anything | S, D, U | `guest-keys`, `invite-ui`, `invites-cli` | fixed, passed Oct 10 |
 
 ## I. Invite links setup (optional step 3)
 
@@ -211,7 +215,7 @@ Record the commit, host OS, Tailscale version, phone and browser, and the result
 | M5 | Desktop browser on the tailnet: no Home Screen prompt, and no nudge on the app connection | not tested |
 | M6 | A fresh macOS user account with nothing installed, Tailscale included:<br>1. `./reach` from `~/reach`. The Tailscale question comes within seconds, while the install runs (H14).<br>2. Ctrl+C at a menu, then `./reach` again (H17).<br>3. `./reach` from `~/Documents/reach`.<br>4. Background mode from each.<br>Record the times `setup.log` gives. | not tested |
 | M7 | Ubuntu host, first run:<br>1. `./reach` without build tools, then with them (H13).<br>2. Tailscale missing, installed, not running, signed out, switched off, on without the operator (T1, T2, T5, T6).<br>3. MagicDNS or HTTPS off (T10).<br>4. A full start: the QR shows the one address and a pairing window opens.<br>5. A phone with the Tailscale app, then one without.<br>6. Files and terminals; no Screen. | partial, Oct 10 (Ubuntu 24.04 in a container; see Results). Steps 1–3 and 6 passed after fixes. Steps 4–5 not tested: they need a real tailnet and a phone |
-| M8 | A fresh Windows 11 user without Tailscale:<br>1. `.\reach.cmd` in PowerShell. The arrow-key menus work.<br>2. The Windows download page opens. After installing, Reach continues without a restart.<br>3. The sign-in page opens. If HTTPS is off, the DNS page opens.<br>4. The pairing code shows. A phone with the Tailscale app pairs with it. | not tested |
+| M8 | A fresh Windows 11 user without Tailscale:<br>1. `.\reach.cmd` in PowerShell. The arrow-key menus work.<br>2. The Windows download page opens. After installing, Reach continues without a restart.<br>3. The sign-in page opens. If HTTPS is off, the DNS page opens.<br>4. The pairing code shows. A phone with the Tailscale app pairs with it.<br>5. In a second PowerShell: `.\reach.cmd status`, then `.\reach.cmd stop`. Reach stops itself, its terminals too. | not tested |
 
 ## Results
 
@@ -283,7 +287,7 @@ A third full run (after the second round) met another session's unfinished chang
 
 Before this pass, `.\reach.cmd` on Windows skipped the guided setup and the Tailscale walk-through. A missing or signed-out Tailscale ended Reach with one line: "Tailscale is unavailable" or "Open Tailscale and sign in".
 
-**Found by a test written first, run, and seen to fail.** The tests ran against the code before this pass, with only the new exports stubbed so the files could load. 8 of the 9 new tests failed there (and T25's, added after, against its old message). T24 passed: it guards what already worked. Then fixed, and all of them passed:
+**Found by a test written first, run, and seen to fail.** The tests ran against the code before this pass, with only the new exports stubbed so the files could load. 8 of the 9 new tests failed there. The tests for T25, T26 and H20, added after, failed against the code before them too (1, 3 and 5). T24 passed: it guards what already worked. Then fixed, and all of them passed:
 
 | Row | Found | Fixed in |
 | --- | --- | --- |
@@ -293,6 +297,8 @@ Before this pass, `.\reach.cmd` on Windows skipped the guided setup and the Tail
 | T19 | Pages never opened on Windows (`open` and `xdg-open` only) | `scripts/tailscale-connect.mjs` (`pageOpener`), `scripts/setup.mjs`, `scripts/launch.mjs` |
 | H19 | `./reach` printed on Windows by setup's wait, `pair`, `approve`, `configure`, `link`, `update` and the service banner, and shown on phones by device approval and invite keys | those files, `server/index.mjs` and `server/guest-keys.mjs`, through `command` |
 | T25 | `.\reach.cmd link` on Windows said "Start Reach on this computer first", which could never work there | `scripts/link.mjs` |
+| T26 | On a Windows computer the phone offered "Set up invite links", which then failed with "Invite links need Tailscale device approval here." Making a key said "run invites", and `invites` said "Run Reach once first": neither could work | `server/index.mjs`, `src/InviteSheet.tsx`, `src/invite-sheet.css`, `scripts/invites.mjs` |
+| H20 | On Windows, `status` said "currently support macOS", and `stop` and `restart` looked for Reach with `/bin/ps`, which Windows doesn't have | `scripts/instances.mjs`, `scripts/stop.mjs`, `scripts/launch.mjs` (the watcher, `startedAt`), `scripts/bootstrap.mjs` |
 
 The real console still needs M8: the menus in PowerShell, `explorer.exe` opening the page, and the Tailscale app's file name (`tailscale-ipn.exe`).
 
@@ -331,6 +337,6 @@ Interface changes (`src/`, `index.html`) reach phones as soon as they're saved. 
 
 ### Known limits (not fixed in this pass)
 
-Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people without the Tailscale app need the public start page, which needs the same socket: setup doesn't offer them on Windows, and the phone's Invite sheet on a Windows host is unchecked. Validation on a real Windows host (M8) is separate work. On Ubuntu, the full start and the phones are still to check (M7). A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
+Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people and agents without Tailscale need the same, so a Windows computer says they aren't available (T26). People already on your Tailscale can still be invited. On Windows, `status` and `stop` see only the Reach running from the same folder (H20). Validation on a real Windows host (M8) is separate work. On Ubuntu, the full start and the phones are still to check (M7). A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
 
 This Mac's `dist/` still holds its earlier builds until the next full build prunes them (`./reach` start, or `npm run build`).

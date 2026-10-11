@@ -195,6 +195,50 @@ export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.r
   }
 }
 
+// Windows has no ps. The Reach running from this folder is the one its own
+// status file names (written as it starts, removed as it stops), while that
+// process lives. A Reach from another folder isn't seen.
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
+export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive } = {}) {
+  let host = null;
+  try {
+    host = JSON.parse(read(path.join(state, "host-status.json")));
+  } catch {}
+  return Number.isInteger(host?.pid) && host.pid > 0 && alive(host.pid) ? host : null;
+}
+export function windowsStatusText(host, { command = "reach", now } = {}) {
+  if (!host) return `Reach isn't running from this folder. Start it with ${command}.`;
+  const since = clock(host.startedAt, now);
+  const url = host.link || host.origin;
+  return [`Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`, ...(url ? [`Link: ${url}`] : [])].join("\n");
+}
+// Windows has no signals to ask with (Node ends a process there outright):
+// `stop` leaves this file, and the running Reach stops as Ctrl+C stops it.
+export const stopRequestFile = (state) => path.join(state, "stop-request.json");
+export function watchStopRequest(state, { pid = process.pid, stop, every = 1000, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
+  const file = stopRequestFile(state);
+  const timer = setInterval(() => {
+    let request = null;
+    try {
+      request = read(file);
+    } catch {}
+    // Meant for another (an earlier) Reach: not this one's to act on.
+    if (request?.pid !== pid) return;
+    fs.rmSync(file, { force: true });
+    clearInterval(timer);
+    stop();
+  }, every);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
 export function describe(host, { started, now, dir } = {}) {
   const since = clock(started, now);
   return `${whereItRuns(host)}${since ? `, since ${since}` : ""}, from ${home(host.root, dir)}`;

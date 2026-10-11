@@ -107,6 +107,9 @@ export const tailnetPreload = (statePath) =>
     const state = JSON.parse(fs.readFileSync(STATE, "utf8"));
     if (url.hostname !== state.host) return realFetch(input, init);
     const target = state.serve?.Web?.[state.host + ":" + (url.port || 443)]?.Handlers?.["/"]?.Proxy;
+    // A Windows Reach's route: its local address (no Unix socket there).
+    if (target?.startsWith("http://127.0.0.1:"))
+      return realFetch(target + url.pathname + url.search, { ...init, headers: { ...init.headers, Host: url.host, "X-Forwarded-For": "100.64.0.10" } });
     if (!target?.startsWith("unix:")) throw new TypeError("fetch failed");
     return new Promise((resolve, reject) => {
       const req = http.request(
@@ -123,7 +126,7 @@ export const tailnetPreload = (statePath) =>
   };
   const spawn = cp.spawn;
   cp.spawn = function (command, args, options) {
-    if (["open", "/usr/bin/open", "caffeinate", "/usr/bin/caffeinate"].includes(command))
+    if (["open", "/usr/bin/open", "caffeinate", "/usr/bin/caffeinate", "explorer.exe"].includes(command))
       return spawn.call(this, process.execPath, ["-e", "setTimeout(() => {}, 10)"], { stdio: "ignore" });
     return spawn.apply(this, arguments);
   };
