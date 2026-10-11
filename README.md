@@ -5,7 +5,7 @@
 <h1 align="center">Reach</h1>
 
 <p align="center">
-  <strong>Your Mac, from your phone. And for your agents.</strong>
+  <strong>Your Mac, for you and your agents. Wherever you are.</strong>
 </p>
 
 <p align="center">
@@ -17,14 +17,19 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
   <a href="#give-an-agent-your-mac-over-mcp">Agents over MCP</a> ·
-  <a href="#how-it-works">How it works</a> ·
+  <a href="#control-your-mac-from-your-phone">Control your Mac</a> ·
+  <a href="#move-chats-between-claude-and-codex">Move chats</a> ·
+  <a href="#quick-start">Quick start</a> ·
   <a href="#security">Security</a> ·
   <a href="docs/GUIDE.md">Full guide</a>
 </p>
 
-Reach runs on your Mac and puts the whole computer in your pocket: its live screen, its files, its terminals and your Codex and Claude chats. Invite an AI agent and it gets the same Mac as a set of MCP tools, browser included. Everything travels over your own Tailscale network. There's no Reach account, no hosted backend and nothing to install on your phone.
+Give AI agents access to your **Mac apps, browser, files and terminals through scoped MCP tools**. You choose what they can do. Reach connects them securely through Tailscale.
+
+Bring **Claude, Codex, Grok, Muse, Dots or another agent**. Connect through MCP, Reach's command-line client or its browser interface, depending on what your agent supports.
+
+Control the same Mac from your phone with a sharp picture and smooth, real-time control at up to **60 fps**. Reply to your coding agents and **move chats between Claude Code and Codex with their history**. Free and open source, running on your Mac.
 
 <p align="center">
   <a href="docs/media/reach-demo.mp4"><img src="docs/media/reach-demo.gif" alt="Reach on a phone: live screen, inviting an agent over MCP, approving it, chats and files" width="760"></a>
@@ -34,15 +39,65 @@ Reach runs on your Mac and puts the whole computer in your pocket: its live scre
 
 ## Highlights
 
-- **Full control of your Mac, in real time.** Hardware H.264 (ScreenCaptureKit + VideoToolbox) at up to 60 fps, with touch, trackpad, pinch-zoom and your phone's keyboard. With the Tailscale app, the stream goes straight from Mac to phone over WireGuard, with no Reach server in between.
-- **Agents drive your browser over MCP.** Invite Claude Code, Codex or any MCP client with one command. It uses your real Chrome or Safari, already signed in: it opens a page, reads the screen as text, presses buttons by name, fills a form in one call and waits for the result.
-- **Fast for agents too.** Agents read the screen as text instead of uploading screenshots, send up to 10 actions per call and get the new screen in the same reply.
-- **Private by default, thanks to Tailscale.** Your devices reach Reach at a private `*.ts.net` address. No Tailscale app on the phone? The start page runs Tailscale inside the browser.
-- **Your coding agents in your pocket.** Read and reply to Codex, Claude Code and OpenClaw chats, and answer Codex and Claude approvals, from the phone.
-- **Files and terminals.** Browse, preview, share and upload files. Open real shells, or pick up the Terminal and iTerm2 tabs already open on the Mac.
-- **Invite, approve, done.** Give a person or an agent a link with a time limit. Approve it on your phone, and end it from there whenever you want.
+- **Agents control native Mac apps.** Open apps, switch windows, click, type and use menus through MCP. Grant Full control or limit access to selected apps, folders or read-only actions.
+- **Smooth control from your phone.** High-quality screen sharing at up to 60 fps, with touch, trackpad, zoom and your phone's keyboard.
+- **Chats that move with you.** Continue a Claude Code chat in Codex or the other way around. Read and reply to chats, send files and answer approvals from your phone.
+- **Secure connections through Tailscale.** Use your private tailnet or an authenticated Funnel link. Reach's agent client automatically switches to the private route when it becomes reachable.
+- **Files and terminals, wherever you are.** Browse, share and upload files, run commands, and return to your Mac's open terminals.
+
+## Give an agent your Mac over MCP
+
+Your agent can work on your actual laptop: native Mac apps, your signed-in browser, files and shell. Every tool call is checked against the access you grant, which you can pause or revoke from your phone.
+
+1. On your phone, tap **Invite** on Home and choose **An agent**. Name it, pick a preset and how long it gets, keep **Connects: Tools**, then tap **Copy invite**.
+2. Paste the invite into the agent. It runs one command in its terminal, on any computer with Node.js 22+.
+3. Match the code it shows with the one on your phone under **Needs you**, and approve.
+
+The join command prints the MCP setup instructions for your agent. Once connected, ask it to open an app and fill a form, find a document, or run a project's tests. See the [MCP setup guide](docs/AGENTS.md) and [full tool reference](docs/BROWSER_AGENT_TOOLS.md).
+
+Each agent gets one **preset**:
+
+| Preset           | The agent can                                            |
+| ---------------- | -------------------------------------------------------- |
+| **Full control** | Use the screen, apps, browser, files and a shell, as you |
+| **Apps**         | See and use only the apps you pick                       |
+| **Files**        | Read, or read and edit, only the folders you pick        |
+| **Read only**    | Watch the screen and read shared files                   |
+
+### Private tailnet or public Funnel
+
+Agents with Tailscale support, including **Muse**, can join your private tailnet. Agents outside it can connect through an authenticated **Tailscale Funnel** link.
+
+Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service.
+
+For an agent working through a browser, choose **Connects: Web page**: it gets your live screen and permitted controls in a page. For a service that takes a hosted MCP connector (claude.ai, ChatGPT), choose **Connects: Hosted** and add the URL it gives you (new, still being tested). See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
+
+## Control your Mac from your phone
+
+Open Reach in your phone's browser for high-quality screen sharing and smooth, real-time control at up to **60 fps**, secured by Tailscale. Click, drag, zoom, switch displays and type with your phone's keyboard. Reach adjusts to your connection to keep control responsive.
+
+No phone app or Reach account needed. Use Tailscale on your phone or connect through Reach's browser sign-in.
+
+## Move chats between Claude and Codex
+
+Start a conversation in Claude Code, then hand it to Codex to continue—or move it back. Reach carries the conversation history into the destination chat so the next agent can pick up the work. For long chats, recent messages are preserved and older history is condensed to fit.
+
+From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send files, and answer Claude and Codex approval requests. Keep the conversation moving alongside your Mac's apps, live screen and terminals. Install and sign in to each coding agent on your Mac first.
 
 ## Quick start
+
+### Install the CLI
+
+Reach includes a `reach` command for use from any terminal. The npm package is **not published yet**; once the first release is available, install it with [Node.js 22 or newer](https://nodejs.org/) and run:
+
+```sh
+npm install --global @nalebc/reach
+reach
+```
+
+The npm package includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach` walks you through setup; `reach update` installs later releases.
+
+### Run from source (available now)
 
 You need a Mac and [Tailscale](https://tailscale.com/download). `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
@@ -64,78 +119,9 @@ No Tailscale app on the phone? Then the link only opens while pairing: for 15 mi
 ./reach setup     # change setup choices
 ```
 
+Already using a source checkout? Run `./reach cli` once to make `reach`, `reach status` and the other commands work from any terminal. Keep the checkout: this command links to it.
+
 On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Linux, Windows and npm installs are covered in the [full guide](docs/GUIDE.md#install).
-
-## Give an agent your Mac over MCP
-
-1. On your phone, tap **Invite** on Home and choose **An agent**. Name it, pick a preset and how long it gets, keep **Connects: Tools**, then tap **Copy invite**.
-2. Paste the invite into the agent. It runs one command in its terminal, on any computer with Node.js 22+.
-3. Match the code it shows with the one on your phone under **Needs you**, and approve.
-
-The agent's terminal then prints:
-
-```text
-Connected to Home Mac (through the owner's tailnet; its public link when that's away).
-Access: …, until ….
-
-Add it to your agent (once):
-  Claude Code:  claude mcp add --scope user reach -- node ~/.reach-agent/agent.mjs mcp
-  Codex:        codex mcp add reach -- node ~/.reach-agent/agent.mjs mcp
-  Gemini CLI:   gemini mcp add -s user reach node ~/.reach-agent/agent.mjs mcp
-  Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node ~/.reach-agent/agent.mjs config
-```
-
-Now just ask, for example: _"Open Gmail in Chrome and find my last Walmart receipt."_ With **Full control** or **Apps**, the agent gets tools like these:
-
-| Tool                    | What it does                                                          |
-| ----------------------- | --------------------------------------------------------------------- |
-| `reach_open_url`        | Opens a page in your own browser, with your sign-ins and cookies      |
-| `reach_describe_screen` | The front window as text: every button, link and field, numbered      |
-| `reach_press`           | Presses a button, link, tab or menu item by its name                  |
-| `reach_fill`            | Fills a form's fields by their labels, in one call                    |
-| `reach_wait_for`        | Waits until some text or a control appears, then returns the screen   |
-| `reach_act`             | Clicks, types, keys, scrolls, pastes and presses menu items, up to 10 actions per call |
-| `reach_find`            | Finds text or a control anywhere in the window and scrolls it into view |
-| `reach_windows`, `reach_focus_window` | Every open window and tab, and bringing the right one forward |
-| `reach_menus`           | The menu bar with its keyboard shortcuts; items press without the pointer |
-| `reach_read_page`       | The whole page, email or document as text, in pages                   |
-| `reach_open_file`       | Opens a shared file in its app, or shows it in the Finder             |
-| `reach_run_mac_shortcut` | Runs a Shortcuts-app shortcut you switched on for agents             |
-| `reach_screenshot`      | A picture of the screen, when text isn't enough                       |
-| `reach_tools`           | Saved browser tools (Gmail, Walmart, your own) that replay on the Mac |
-
-Each agent gets one **preset**:
-
-| Preset           | The agent can                                            |
-| ---------------- | -------------------------------------------------------- |
-| **Full control** | Use the screen, apps, browser, files and a shell, as you |
-| **Apps**         | See and use only the apps you pick                       |
-| **Files**        | Read, or read and edit, only the folders you pick        |
-| **Read only**    | Watch the screen and read shared files                   |
-
-For an agent that only has a browser (ChatGPT agent, Muse, a Grok bot), choose **Connects: Web page** instead: it gets your live screen in a page. For a hosted agent that takes a custom MCP connector (claude.ai, ChatGPT), choose **Connects: Hosted** and add the URL it gives you (new, still being tested). See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
-
-## How it works
-
-```text
-  Your phone (any browser)                          Your Mac
- ┌────────────────────────┐                      ┌────────────────────────────┐
- │ Reach web app          │◀── private :8443 ──▶ │ Reach (Node)               │
- │ (Tailscale app, or     │    Tailscale Serve   │  screen  ScreenCaptureKit  │
- │  Tailscale in the page)│                      │          → VideoToolbox    │
- └────────────────────────┘                      │  files · shells · chats    │
-                                                 │  MCP tools for agents      │
-  An AI agent (anywhere)                         │                            │
- ┌────────────────────────┐   your tailnet, or   │                            │
- │ Claude Code / Codex    │◀── public :443 ────▶ │                            │
- │ + Reach MCP server     │    while invited     └────────────────────────────┘
- └────────────────────────┘
-```
-
-- **Your devices** reach Reach through [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) on a private address only your tailnet can see. TLS ends on your Mac.
-- **A phone without the Tailscale app** signs in to Tailscale from the start page and joins your tailnet inside the browser (Tailscale compiled to WebAssembly).
-- **Agents** use your tailnet when they can. Otherwise they come through [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) on port 443, which Reach answers only while an invite, an agent session or a pairing window is open. Each agent request is signed with that agent's own key, and owner APIs are never reachable from the internet. Everything else gets "Not found".
-- **Nothing in the cloud is Reach's.** Tailscale provides the network; everything else runs on your Mac.
 
 ## Security
 
@@ -148,12 +134,12 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 
 ## Platforms
 
-| Host        | Status                                                               |
-| ----------- | -------------------------------------------------------------------- |
-| **macOS**   | Primary: screen, control, files, terminals, chats, agents            |
-| **Linux**   | Files, terminals and command-line agents; no screen or agent presets |
+| Host        | Status                                                                             |
+| ----------- | ---------------------------------------------------------------------------------- |
+| **macOS**   | Primary: screen, control, files, terminals, chats, agents                          |
+| **Linux**   | Files, terminals and command-line agents; no screen or agent presets               |
 | **Windows** | Experimental: guided setup, pairing code, files and terminals; no invite links yet |
-| **Phone**   | Safari on iPhone, Chrome on Android. No app needed                   |
+| **Phone**   | Safari on iPhone, Chrome on Android. No app needed                                 |
 
 ## Docs
 
