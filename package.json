@@ -87,7 +87,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "typescript": "^5.9.2",
-    "vite": "^6.4.1"
+    "vite": "^8.3.4"
   },
   "overrides": {
     "xcode": {
