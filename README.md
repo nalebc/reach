@@ -68,7 +68,7 @@ On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach c
 
 ## Give an agent your Mac over MCP
 
-1. On your phone, open **Invite someone → Agent**. Name the agent, pick a preset and how long it gets, keep **Connects: Tools**, then tap **Copy invite**.
+1. On your phone, tap **Invite** on Home and choose **An agent**. Name it, pick a preset and how long it gets, keep **Connects: Tools**, then tap **Copy invite**.
 2. Paste the invite into the agent. It runs one command in its terminal, on any computer with Node.js 22+.
 3. Match the code it shows with the one on your phone under **Needs you**, and approve.
 
@@ -76,10 +76,13 @@ The agent's terminal then prints:
 
 ```text
 Connected to Home Mac (through the owner's tailnet; its public link when that's away).
+Access: …, until ….
 
 Add it to your agent (once):
   Claude Code:  claude mcp add --scope user reach -- node ~/.reach-agent/agent.mjs mcp
   Codex:        codex mcp add reach -- node ~/.reach-agent/agent.mjs mcp
+  Gemini CLI:   gemini mcp add -s user reach node ~/.reach-agent/agent.mjs mcp
+  Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node ~/.reach-agent/agent.mjs config
 ```
 
 Now just ask, for example: _"Open Gmail in Chrome and find my last Walmart receipt."_ With **Full control** or **Apps**, the agent gets tools like these:
@@ -110,7 +113,7 @@ Each agent gets one **preset**:
 | **Files**        | Read, or read and edit, only the folders you pick        |
 | **Read only**    | Watch the screen and read shared files                   |
 
-For an agent that only has a browser (ChatGPT agent, Muse, a Grok bot), choose **Connects: Web page** instead: it gets your live screen in a page. See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
+For an agent that only has a browser (ChatGPT agent, Muse, a Grok bot), choose **Connects: Web page** instead: it gets your live screen in a page. For a hosted agent that takes a custom MCP connector (claude.ai, ChatGPT), choose **Connects: Hosted** and add the URL it gives you (new, still being tested). See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
 
 ## How it works
 
@@ -149,7 +152,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 | ----------- | -------------------------------------------------------------------- |
 | **macOS**   | Primary: screen, control, files, terminals, chats, agents            |
 | **Linux**   | Files, terminals and command-line agents; no screen or agent presets |
-| **Windows** | Experimental                                                         |
+| **Windows** | Experimental: guided setup, pairing code, files and terminals; no invite links yet |
 | **Phone**   | Safari on iPhone, Chrome on Android. No app needed                   |
 
 ## Docs
@@ -166,7 +169,7 @@ Early access (0.1.0). macOS comes first, and testing on physical phones is still
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Run tests with `npm test`.
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Run tests with `npm test`, or `npm run test:file -- test/x.test.mjs` for one file.
 
 ## License
 
