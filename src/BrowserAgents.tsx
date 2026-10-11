@@ -11,6 +11,7 @@ import {
 import { PRESET_WORDS } from "./BrowserInvite";
 import { type EditableAccess } from "./AccessEditor";
 import { request, type Device, type Peer } from "./api";
+import { requestDeadline } from "./request-deadline";
 import { AgentAdmissionReview, type AgentAdmission } from "./agent-admissions";
 import {
   BrowserApprovalReview,
@@ -76,11 +77,11 @@ const statusWords = (status: string) =>
     failed: "Failed",
   })[status] || status;
 
-// Replacing the peer also replaces every dialog, request, and captured stop list.
+// Replacing the computer or agent also replaces its activity and open reviews.
 export default function BrowserAgents(props: Props) {
   return (
     <BrowserAgentList
-      key={`${props.peer.id}:${props.peer.url}:${props.peer.token}`}
+      key={`${props.peer.id}:${props.peer.url}:${props.peer.token}:${props.focus || ""}`}
       {...props}
     />
   );
@@ -88,6 +89,7 @@ export default function BrowserAgents(props: Props) {
 function BrowserAgentList({ peer, toast, focus }: Props) {
   const [agents, setAgents] = useState<BrowserAgentSession[]>([]);
   const [records, setRecords] = useState<BrowserRequest[]>([]);
+  const [currentRequests, setCurrentRequests] = useState<BrowserRequest[]>([]);
   const [actions, setActions] = useState<AgentAction[]>([]);
   const [admissions, setAdmissions] = useState<AgentAdmission[]>([]);
   const [connectionReview, setConnectionReview] =
@@ -117,34 +119,39 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
     const refresh = async () => {
       if (reading || controller.signal.aborted) return;
       reading = true;
+      const deadline = requestDeadline(controller.signal);
       const results = await Promise.allSettled([
         request<{ agents: BrowserAgentSession[]; at: number }>(
           peer,
           "/api/browser/agents",
-          { signal: controller.signal },
+          { signal: deadline.signal },
         ),
         request<BrowserRequest[]>(peer, "/api/agents/browser-requests", {
-          signal: controller.signal,
+          signal: deadline.signal,
         }),
         request<BrowserRequest[]>(
           peer,
           "/api/agents/browser-terminal-history",
-          { signal: controller.signal },
+          { signal: deadline.signal },
         ),
         request<AgentAdmission[]>(peer, "/api/agents/admissions", {
-          signal: controller.signal,
+          signal: deadline.signal,
         }),
         // What this one agent did, newest first; an older Reach has no log.
         focus
-          ? request<{ actions: AgentAction[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: controller.signal })
+          ? request<{ actions: AgentAction[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: deadline.signal }).catch((failure) => {
+              if (failure?.status === 404) return { actions: [] as AgentAction[] };
+              throw failure;
+            })
           : Promise.resolve({ actions: [] as AgentAction[] }),
       ]);
+      deadline.dispose();
       if (!controller.signal.aborted) {
         const [sessions, requests, history, connections, did] = results;
         if (did.status === "fulfilled" && Array.isArray(did.value?.actions)) setActions(did.value.actions);
         if (
           sessions.status === "fulfilled" &&
-          Array.isArray(sessions.value.agents)
+          Array.isArray(sessions.value?.agents)
         ) {
           setAgents(sessions.value.agents);
           setError("");
@@ -180,20 +187,25 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
           (a, b) => b.createdAt - a.createdAt,
         );
         setRecords(nextRecords);
+        // Durable history may still say pending after the live request ended.
+        // Only a successful read of the live queue can offer or retain a review.
+        const nextRequests = requests.status === "fulfilled" && Array.isArray(requests.value)
+          ? requests.value : [];
+        setCurrentRequests(nextRequests);
         setReviewing((old) =>
           old
-            ? nextRecords.find(
+            ? nextRequests.find(
                 (item) => item.id === old.id && item.clientId === old.clientId,
               ) || null
             : null,
         );
         setHistoryError(
-          results
-            .slice(1)
-            .some(
-              (result) =>
-                result.status === "rejected" || !Array.isArray(result.value),
-            )
+          // Requests, history and admissions are arrays; the action log is
+          // an object containing an actions array, even when it is empty.
+          [requests, history, connections].some(
+            (result) =>
+              result.status === "rejected" || !Array.isArray(result.value),
+          ) || did.status === "rejected" || !Array.isArray(did.value?.actions)
             ? "Some activity or connection requests could not be loaded. Refresh to try again."
             : "",
         );
@@ -235,7 +247,7 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
     const active = activeSession(agent, now);
     const agentRecords = records.filter((record) => record.clientId === agent.id);
     const pending = active
-      ? agentRecords.filter((record) => pendingRecord(record, now))
+      ? currentRequests.filter((record) => record.clientId === agent.id && pendingRecord(record, now))
       : [];
     const admission = active
       ? admissions.find((item) => item.clientId === agent.id)

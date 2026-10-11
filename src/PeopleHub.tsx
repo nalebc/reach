@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronRight,
   Copy,
@@ -16,6 +16,7 @@ import {
 import { usePageVisible } from "./page-visible";
 import type { ConnectedDevice } from "./useFleetConnections";
 import { post, request, type Device, type Peer } from "./api";
+import { requestDeadline } from "./request-deadline";
 import { workspaceCapabilities } from "./capabilities";
 import { groupDevices } from "./device-groups";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
@@ -25,6 +26,7 @@ import AgentShortcuts from "./AgentShortcuts";
 import { ServiceAccessPanel } from "./service-access";
 import ToolBrowserSetup from "./ToolBrowserSetup";
 import AgentFaceIdSetting from "./AgentFaceId";
+import { ErrorLine } from "./ui";
 import AccessEditor, { accessSummary, appScopedAccess, canEditAccess } from "./AccessEditor";
 import {
   AGENT_LEVELS,
@@ -213,6 +215,9 @@ export default function PeopleHub({
   const [clients, setClients] = useState<Client[]>([]);
   const [current, setCurrent] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [loadErrors, setLoadErrors] = useState({ clients: "", sessions: "" });
+  const activeLoad = useRef<AbortController | null>(null);
+  const ending = useRef(false);
   const [now, setNow] = useState(Date.now);
   const [inviting, setInviting] = useState<Start | null>(start?.kind || null);
   // Browser agents as the Mac lists them: live state, and the ended ones.
@@ -242,26 +247,42 @@ export default function PeopleHub({
   useEffect(() => {
     if (start) setInviting(start.kind);
   }, [start?.at]);
-  const load = () =>
-    Promise.all([
-      request<{ clients: Client[]; current?: string }>(peer, "/api/clients")
-        .then((r) => {
-          setClients(Array.isArray(r?.clients) ? r.clients : []);
-          setCurrent(r?.current || "");
-          setNow(Date.now());
-        })
-        .catch(() => {}),
-      request<{ agents: BrowserAgentSession[] }>(peer, "/api/browser/agents")
-        .then((r) => Array.isArray(r?.agents) && setSessions(r.agents))
-        .catch(() => {}),
-    ]).finally(() => setLoaded(true));
+  const load = async (force = false) => {
+    // Polls never overlap. A change to access supersedes an older snapshot.
+    if (activeLoad.current && !force) return;
+    activeLoad.current?.abort();
+    const controller = new AbortController();
+    activeLoad.current = controller;
+    const deadline = requestDeadline(controller.signal);
+    const [access, live] = await Promise.allSettled([
+      request<{ clients: Client[]; current?: string }>(peer, "/api/clients", { signal: deadline.signal }),
+      request<{ agents: BrowserAgentSession[] }>(peer, "/api/browser/agents", { signal: deadline.signal }),
+    ]);
+    deadline.dispose();
+    if (controller.signal.aborted || activeLoad.current !== controller) return;
+    activeLoad.current = null;
+    const errors = { clients: "", sessions: "" };
+    if (access.status === "fulfilled" && Array.isArray(access.value?.clients)) {
+      setClients(access.value.clients);
+      setCurrent(access.value.current || "");
+    } else errors.clients = access.status === "rejected" ? access.reason.message : "The access list could not be loaded.";
+    if (live.status === "fulfilled" && Array.isArray(live.value?.agents)) setSessions(live.value.agents);
+    else errors.sessions = live.status === "rejected" ? live.reason.message : "Agent sessions could not be loaded.";
+    setLoadErrors(errors);
+    setNow(Date.now());
+    setLoaded(true);
+  };
   const visible = usePageVisible();
   useEffect(() => {
     // In the background, nothing is asked; back on screen, at once.
     if (!visible) return;
     void load();
-    const refresh = setInterval(load, 5000);
-    return () => clearInterval(refresh);
+    const refresh = setInterval(() => void load(), 5000);
+    return () => {
+      clearInterval(refresh);
+      activeLoad.current?.abort();
+      activeLoad.current = null;
+    };
   }, [peer.url, peer.token, visible]);
   // Counted on arrival, back on screen and when a sheet closes; their own
   // sheets keep them current while open.
@@ -309,18 +330,23 @@ export default function PeopleHub({
   const openedDevice = own.find((c) => c.id === openId);
 
   // Their invitation on this computer, and on your other computers it covers.
-  const sameInvitation = async (g: Guest) => {
+  const sameInvitation = async (g: Guest, unavailable?: string[]) => {
     const all = [{ peer, guest: g }];
     if (g.group)
       for (const p of peers) {
         if (p.id === peer.id) continue;
         try {
           const r = await request<{ clients: Guest[] }>(p, "/api/clients");
-          const twin = (r.clients || []).find(
-            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now(),
+          if (!Array.isArray(r?.clients)) throw Error("The access list could not be loaded.");
+          const twin = r.clients.find(
+            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now() && c.status !== "revoked",
           );
           if (twin) all.push({ peer: p, guest: twin });
-        } catch {}
+        } catch (failure) {
+          const message = `${p.name}: ${(failure as Error).message}`;
+          if (unavailable) unavailable.push(message);
+          else throw Error(message);
+        }
       }
     return all;
   };
@@ -378,7 +404,7 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const savePicked = async () => {
@@ -392,27 +418,33 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const end = async (g: Guest) => {
-    if (!confirm(`End ${g.name}’s access now?`)) return;
-    const ours = links[g.id]?.created;
-    if (ours)
-      await Promise.allSettled(
-        ours.map((c) =>
-          request(c.peer, `/api/clients/${c.clientId}`, { method: "DELETE" }),
-        ),
-      );
-    else
-      // The same invitation on your other computers ends too, as when it
-      // was made here (after a reload the link's record is gone).
-      for (const x of await sameInvitation(g))
-        await request(x.peer, `/api/clients/${x.guest.id}`, {
-          method: "DELETE",
-        }).catch(() => {});
-    setOpenId("");
-    void load();
+    if (busy || ending.current || !confirm(`End ${g.name}’s access now?`)) return;
+    ending.current = true;
+    setBusy(true);
+    setError("");
+    setChanged("");
+    const failures: string[] = [];
+    try {
+      const targets = links[g.id]?.created || (await sameInvitation(g, failures)).map((x) => ({ peer: x.peer, clientId: x.guest.id }));
+      // Revoke every reachable copy even if another computer is unavailable.
+      for (const target of targets) {
+        try {
+          await request(target.peer, `/api/clients/${encodeURIComponent(target.clientId)}`, { method: "DELETE" });
+        } catch (failure) {
+          failures.push(`${target.peer.name}: ${(failure as Error).message}`);
+        }
+      }
+      if (failures.length) setError(`Access may still be active on ${failures.join("; ")}`);
+      else setOpenId("");
+    } finally {
+      ending.current = false;
+      setBusy(false);
+      void load(true);
+    }
   };
   // One of your devices: every browser on it.
   const revoke = async (c: (typeof own)[number]) => {
@@ -421,7 +453,7 @@ export default function PeopleHub({
       for (const id of c.ids)
         await request(peer, `/api/clients/${id}`, { method: "DELETE" });
       setOpenId("");
-      void load();
+      void load(true);
     } catch (e) {
       toast((e as Error).message);
     }
@@ -519,7 +551,7 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const copy = async (text: string, what = "link") => {
@@ -616,7 +648,7 @@ export default function PeopleHub({
           onCreated={(id, made) => {
             rememberForm(id, made.link);
             setLinks((old) => ({ ...old, [id]: made }));
-            void load();
+            void load(true);
           }}
         />
       </ScreenPopup>
@@ -634,6 +666,9 @@ export default function PeopleHub({
           <Plus size={22} />
         </button>
       </header>
+
+      <ErrorLine error={[...new Set(Object.values(loadErrors))].filter(Boolean).join(" ")} />
+      {!opened && <ErrorLine error={error} />}
 
       {here.length > 0 && (
         <Group title="Here now">
@@ -663,7 +698,7 @@ export default function PeopleHub({
           so in a line, without another button. */}
       <Group title="Agents">
         {agents.map((c) => row(c))}
-        {loaded && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
+        {loaded && !loadErrors.clients && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
         {extras.shortcuts > 0 && extraRow("shortcuts", <Zap size={19} />, "Shortcuts", extras.shortcuts)}
         {extras.services > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
         {ended > 0 && extraRow("ended", <History size={19} />, "Ended", ended)}
@@ -781,7 +816,7 @@ export default function PeopleHub({
                 </button>
               )
             )}
-            <button className="gs-row gs-danger" aria-label={`End ${opened.name}’s access`} onClick={() => void end(opened)}>
+            <button className="gs-row gs-danger" aria-label={`End ${opened.name}’s access`} disabled={busy} onClick={() => void end(opened)}>
               <Trash2 size={20} />
               <span className="gs-label">Remove access</span>
             </button>
@@ -894,7 +929,7 @@ export default function PeopleHub({
             setEditing(null);
             if (removed) setOpenId("");
             setChanged(removed ? "" : "Access updated.");
-            void load();
+            void load(true);
           }}
         />
       )}

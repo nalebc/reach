@@ -35,24 +35,26 @@ const listed = (client, overrides = {}) => ({
   ...client, folders: client.policy?.roots || [], pendingApprovals: 0, activity: { state: "idle" },
   ...(client.policy?.preset ? { preset: client.policy.preset } : {}), ...overrides,
 });
-function mac({ clients = [], sessions = clients.filter((c) => c.policy?.browser).map((c) => listed(c)), shortcuts = [], services = [] } = {}) {
+function mac({ clients = [], sessions = (typeof clients === "function" ? clients() : clients).filter((c) => c.policy?.browser).map((c) => listed(c)), shortcuts = [], services = [], responses = {} } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     calls.push([init.method || "GET", route]);
-    if (route === "/api/clients") return reply({ current: "me", clients });
+    if (responses[route]) return responses[route](new URL(url), init);
+    if (route === "/api/clients") return reply({ current: "me", clients: typeof clients === "function" ? clients() : clients });
     if (route === "/api/browser/agents") return reply({ agents: typeof sessions === "function" ? sessions() : sessions, at: Date.now() });
     if (route === "/api/agents/shortcuts") return reply({ shortcuts, running: null });
     if (route === "/api/agents/services") return reply({ access: services });
     if (route === "/api/agents/tool-setup") return reply({ needed: [] });
     if (["/api/agents/browser-requests", "/api/agents/browser-terminal-history", "/api/agents/admissions"].includes(route)) return reply([]);
+    if (route === "/api/agents/actions") return reply({ actions: [] });
     if (route === "/api/guests/keys") return reply({ configured: false });
     return reply({});
   };
   return calls;
 }
-const render = async () => {
-  const view = await dom.render(React.createElement(PeopleHub, { peer, device }));
+const render = async (props = {}) => {
+  const view = await dom.render(React.createElement(PeopleHub, { peer, device, ...props }));
   views.add(view);
   await settle(60);
   return view;
@@ -60,6 +62,160 @@ const render = async () => {
 const rows = (c) => [...c.querySelectorAll(".gs-row")];
 const rowNamed = (c, name) => rows(c).find((r) => r.querySelector("strong, .gs-label")?.textContent.startsWith(name));
 const click = async (element) => { assert.ok(element); element.click(); await settle(40); };
+
+test("an unavailable access list reports the failure instead of claiming no agents exist", async () => {
+  mac({ responses: { "/api/clients": () => reply({ error: "Access list unavailable" }, 503) } });
+  const { container: c } = await render();
+  assert.match(c.textContent, /Access list unavailable/);
+  assert.doesNotMatch(c.textContent, /No agents yet/);
+});
+
+test("malformed access lists report an error instead of becoming an empty list", async () => {
+  mac({ responses: { "/api/clients": () => reply(null) } });
+  const { container: c } = await render();
+  assert.match(c.textContent, /could not be loaded/);
+  assert.doesNotMatch(c.textContent, /No agents yet/);
+});
+
+test("Remove access keeps the sheet open and reports a refused deletion", async () => {
+  const muse = browserAgent("muse-1");
+  mac({ clients: [muse], sessions: [listed(muse)], responses: {
+    "/api/clients/muse-1": () => reply({ error: "Could not remove this access" }, 503),
+  } });
+  const { container: c } = await render();
+  await click(c.querySelector(".ppl-row"));
+  dom.window.confirm = globalThis.confirm = () => true;
+  await click(c.querySelector('[aria-label="End Muse’s access"]'));
+  assert.equal(!!c.querySelector(".ppl-sheet"), true);
+  assert.match(c.textContent, /Could not remove this access/);
+});
+
+test("Remove access reports the computer that failed even after local removal succeeds", async () => {
+  const muse = browserAgent("muse-1", { group: "shared" });
+  const other = { ...peer, id: "other", name: "Other Mac", url: "https://other.tail.ts.net" };
+  let removed = false;
+  const calls = mac({ sessions: () => removed ? [] : [listed(muse)], responses: {
+    "/api/clients": (url) => reply({ clients: url.hostname.startsWith("other") ? [{ ...muse, id: "remote" }] : removed ? [] : [muse] }),
+    "/api/clients/muse-1": () => { removed = true; return reply({ ok: true }); },
+    "/api/clients/remote": () => reply({ error: "Connection lost" }, 503),
+  } });
+  const { container: c } = await render({ peers: [peer, other] });
+  await click(c.querySelector(".ppl-row"));
+  dom.window.confirm = globalThis.confirm = () => true;
+  await click(c.querySelector('[aria-label="End Muse’s access"]'));
+  assert.equal(removed, true);
+  assert.ok(calls.some(([method, route]) => method === "DELETE" && route === "/api/clients/remote"));
+  assert.match(c.textContent, /Other Mac.*Connection lost/);
+});
+
+test("Remove access still revokes locally when another computer cannot be checked, and names the failure", async () => {
+  const muse = browserAgent("muse-1", { group: "shared" });
+  const other = { ...peer, id: "other", name: "Other Mac", url: "https://other.tail.ts.net" };
+  const calls = mac({ clients: [muse], responses: {
+    "/api/clients": (url) => url.hostname.startsWith("other") ? reply({ error: "Offline" }, 503) : reply({ clients: [muse] }),
+    "/api/clients/muse-1": () => reply({ ok: true }),
+  } });
+  const { container: c } = await render({ peers: [peer, other] });
+  await click(c.querySelector(".ppl-row"));
+  dom.window.confirm = globalThis.confirm = () => true;
+  await click(c.querySelector('[aria-label="End Muse’s access"]'));
+  assert.ok(calls.some(([method, route]) => method === "DELETE" && route === "/api/clients/muse-1"));
+  assert.match(c.textContent, /Other Mac.*Offline/);
+});
+
+test("a delayed refresh cannot restore access after Remove access succeeds", async (t) => {
+  const polls = [], realInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 5000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  const muse = browserAgent("muse-1");
+  let removed = false, slow = false, release;
+  mac({ sessions: () => removed ? [] : [listed(muse)], responses: {
+    "/api/clients": () => slow && !removed
+      ? new Promise(resolve => { release = () => resolve(reply({ clients: [muse] })); })
+      : reply({ clients: removed ? [] : [muse] }),
+    "/api/clients/muse-1": () => { removed = true; return reply({ ok: true }); },
+  } });
+  t.after(() => release?.());
+  const { container: c } = await render();
+  await click(c.querySelector(".ppl-row"));
+  slow = true;
+  polls[0]();
+  await dom.waitFor(() => release);
+  dom.window.confirm = globalThis.confirm = () => true;
+  await click(c.querySelector('[aria-label="End Muse’s access"]'));
+  await dom.waitFor(() => !c.querySelector(".ppl-row"));
+  release();
+  await settle(40);
+  assert.equal(!!c.querySelector(".ppl-row"), false, "the old snapshot must be discarded");
+});
+
+test("a failed refresh preserves the last access list and clears its warning after recovery", async (t) => {
+  const polls = [], realInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 5000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  const muse = browserAgent("muse-1");
+  let failing = false;
+  mac({ responses: { "/api/clients": () => failing ? reply(null) : reply({ clients: [muse] }) } });
+  const { container: c } = await render();
+  failing = true;
+  polls[0]();
+  await dom.waitFor(() => /could not be loaded/.test(c.textContent));
+  assert.match(c.querySelector(".ppl-row").textContent, /Muse/);
+  failing = false;
+  polls[0]();
+  await dom.waitFor(() => !/could not be loaded/.test(c.textContent));
+  assert.match(c.querySelector(".ppl-row").textContent, /Muse/);
+});
+
+test("a stalled access-list request times out and a later refresh can recover", async (t) => {
+  const deadlines = [], polls = [];
+  const realTimeout = globalThis.setTimeout, realInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 35000) deadlines.push(callback);
+    return realTimeout(callback, ms, ...args);
+  });
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 5000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  mac({ responses: {
+    "/api/clients": (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }),
+  } });
+  const { container: c } = await render();
+  assert.equal(deadlines.length, 1);
+  deadlines[0]();
+  await dom.waitFor(() => /didn't answer in time/.test(c.textContent));
+  assert.doesNotMatch(c.textContent, /No agents yet/);
+  mac({ clients: [browserAgent("muse-1")] });
+  polls[0]();
+  await dom.waitFor(() => c.querySelector(".ppl-row"));
+  assert.doesNotMatch(c.textContent, /didn't answer in time/);
+});
+
+test("repeated Remove access taps send one deletion while the first is pending", async (t) => {
+  let release;
+  const muse = browserAgent("muse-1");
+  const calls = mac({ clients: [muse], responses: {
+    "/api/clients/muse-1": () => new Promise(resolve => { release = () => resolve(reply({ ok: true })); }),
+  } });
+  t.after(() => release?.());
+  const { container: c } = await render();
+  await click(c.querySelector(".ppl-row"));
+  dom.window.confirm = globalThis.confirm = () => true;
+  const remove = c.querySelector('[aria-label="End Muse’s access"]');
+  dom.update(() => { remove.click(); remove.click(); });
+  await dom.waitFor(() => release);
+  assert.equal(calls.filter(([method]) => method === "DELETE").length, 1);
+  assert.equal(remove.disabled, true);
+  release();
+  await dom.waitFor(() => !c.querySelector(".ppl-sheet"));
+});
 
 test("one Agents list: no Agent sessions row, no second Invite button, empty extras hidden", async () => {
   mac({ clients: [browserAgent("muse-1")] });

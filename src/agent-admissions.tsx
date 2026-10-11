@@ -10,6 +10,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { requestDeadline } from "./request-deadline";
 import {
   faceIdError,
   faceIdReady,
@@ -100,11 +101,12 @@ export function useAgentAdmissions(
     const refresh = async () => {
       if (fetching) return;
       fetching = true;
+      const deadline = requestDeadline(controller.signal);
       try {
         const result = await request<AgentAdmission[]>(
           peer,
           "/api/agents/admissions",
-          { signal: controller.signal },
+          { signal: deadline.signal },
         );
         if (controller.signal.aborted) return;
         const list = Array.isArray(result)
@@ -120,6 +122,7 @@ export function useAgentAdmissions(
           setOpened(null);
         }
       } finally {
+        deadline.dispose();
         fetching = false;
       }
     };
