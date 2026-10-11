@@ -472,14 +472,17 @@ test("reduced motion retains direct finger tracking and settles without an anima
   });
   try {
     const page = $(".chat-workspace");
+    // Past halfway, so it commits however long the release takes: a short
+    // drag counts as a flick only when lifted within 100 ms, which a slow
+    // runner missed.
     touch(page, "touchstart", [point(250)]);
-    touch(page, "touchmove", [point(120)]);
+    touch(page, "touchmove", [point(40)]);
     await settle();
     assert.equal(
       $(".chat-app-pages").style.getPropertyValue("--chat-page-x"),
-      "-130px",
+      "-210px",
     );
-    touch(page, "touchend", [], [point(120)]);
+    touch(page, "touchend", [], [point(40)]);
     assert.equal(selected(), "claude");
     assert.equal($(".chat-app-pages").dataset.motion, undefined);
   } finally {

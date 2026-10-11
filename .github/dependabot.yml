@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release waits a week before it's proposed: time for a bad or
+    # hijacked version to be pulled first.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       # One pull request a week for routine bumps; a major bump stays on its own.
@@ -13,6 +17,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release waits a week before it's proposed: time for a bad or
+    # hijacked version to be pulled first.
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -20,6 +28,10 @@ updates:
     directory: /tailnet
     schedule:
       interval: weekly
+    # A release waits a week before it's proposed: time for a bad or
+    # hijacked version to be pulled first.
+    cooldown:
+      default-days: 7
     groups:
       go-minor-and-patch:
         update-types: [minor, patch]

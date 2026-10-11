@@ -155,9 +155,15 @@ test("a folder that appears after Reach starts (an agent installed later) is wat
   watch.onChange((n) => news.push(n));
   try {
     fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
-    await new Promise((r) => setTimeout(r, 300));
-    fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
-    assert.ok(await until(() => news.some((n) => n.agent === "claude" && n.id === ID)), "Claude news");
+    // A transcript grows line by line: keep writing until the watch, which
+    // starts on its next retry and (on Linux) then reaches the new folder,
+    // reports it. A slow runner took longer than one fixed wait.
+    const heard = () => news.some((n) => n.agent === "claude" && n.id === ID);
+    for (const end = Date.now() + 5000; !heard() && Date.now() < end; ) {
+      fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
+      await until(heard, 250);
+    }
+    assert.ok(heard(), "Claude news");
   } finally {
     watch.close();
     fs.rmSync(root, { recursive: true, force: true });
