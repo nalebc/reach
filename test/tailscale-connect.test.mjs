@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
   ensureTailscale,
+  managesTailscale,
   tailscaleState,
   tailscaleProblem,
   pageOpener,
@@ -27,6 +28,7 @@ function fake(sequence, overrides = {}) {
     interactive: true,
     platform: "darwin",
     appInstalled: () => false,
+    canManage: async () => true,
     status: async () => {
       const next = sequence[Math.min(i++, sequence.length - 1)];
       if (next instanceof Error) throw next;
@@ -438,4 +440,87 @@ test("Windows without a terminal to ask in: says what's missing, opens nothing",
   const { deps, log } = fake([missing], { platform: "win32", interactive: false });
   await assert.rejects(ensureTailscale(deps), { message: tailscaleProblem("missing") });
   assert.deepEqual(log, []);
+});
+
+// First-run matrix M7 (Ubuntu 24.04, Tailscale 1.104.1, Oct 10). Tailscale
+// as it really answers a user who isn't root: refused, and the refused
+// command exits. Signed out, even its operator is refused; signed in, the
+// operator may switch it on and change its routes. It never comes on by
+// itself: after the third look, the owner runs the command Reach printed.
+function ubuntu(state) {
+  const host = { state, operator: false, looks: 0, calls: [] };
+  const fixes = {
+    // `sudo tailscale up --operator=$USER`: signed in, and the user manages it.
+    NeedsLogin: () => Object.assign(host, { state: "Running", operator: true }),
+    // `sudo tailscale set --operator=$USER`
+    Stopped: () => (host.operator = true),
+    Running: () => (host.operator = true),
+  };
+  const denied = () =>
+    Object.assign(Error("Command failed: tailscale up"), {
+      stderr: "Access denied: prefs write access denied\n\nUse 'sudo tailscale up'.\nTo not require root, use 'sudo tailscale set --operator=$USER' once.\n",
+    });
+  const { deps, log } = fake([], {
+    platform: "linux",
+    status: async () => ({ BackendState: host.state }),
+    canManage: async () => host.operator,
+    login: (onUrl) => {
+      host.calls.push("login");
+      onUrl(null, "denied"); // "Access denied: profiles access denied", operator or not
+      return () => {};
+    },
+    turnOn: async () => {
+      host.calls.push("up");
+      if (!host.operator || host.state !== "Stopped") throw denied();
+      host.state = "Running";
+    },
+    sleep: async () => {
+      if (++host.looks === 3) fixes[state]();
+      // A Reach that doesn't look again would wait out its 15 minutes.
+      if (host.looks > 20) throw Error("Reach was still waiting 20 looks after the owner's command ran");
+    },
+  });
+  const said = (pattern) => log.filter(([k, l]) => k === "print" && pattern.test(l)).length;
+  return { host, deps, log, said };
+}
+
+test("Linux, signed out: root's first sign-in, keeping the user as operator, is the one command; then Reach goes on", async () => {
+  const { host, deps, said } = ubuntu("NeedsLogin");
+  assert.deepEqual(await ensureTailscale(deps), { BackendState: "Running" });
+  assert.equal(said(/sudo tailscale up --operator=\$USER/), 1, "the command, once");
+  // `set --operator` alone can't help a signed-out computer.
+  assert.equal(said(/tailscale set --operator/), 0);
+  assert.deepEqual(host.calls, ["login"], "a refused sign-in isn't retried: it can't succeed as this user");
+});
+
+test("Linux, switched off: `tailscale up` refused until the operator command runs, then on, without asking twice", async () => {
+  const { host, deps, log, said } = ubuntu("Stopped");
+  assert.deepEqual(await ensureTailscale(deps), { BackendState: "Running" });
+  assert.deepEqual(log.filter(([k]) => k === "select"), [["select", "Turn Tailscale on?"]]);
+  assert.ok(host.calls.filter((c) => c === "up").length > 1, "tried again after the refusal");
+  assert.equal(said(/sudo tailscale set --operator=\$USER/), 1, "the command, once");
+});
+
+test("Linux, already on (sudo tailscale up) but not this user's to change: the operator command before setup goes on", async () => {
+  const { deps, log, said } = ubuntu("Running");
+  assert.deepEqual(await ensureTailscale(deps), { BackendState: "Running" });
+  assert.equal(said(/sudo tailscale set --operator=\$USER/), 1);
+  assert.deepEqual(log.at(-1), ["print", "Reach: Tailscale is connected."]);
+  // Without a terminal (no one to wait with): the same command, and stop.
+  const background = ubuntu("Running");
+  await assert.rejects(ensureTailscale({ ...background.deps, interactive: false }), {
+    message: tailscaleProblem("operator"),
+  });
+  assert.match(tailscaleProblem("operator"), /sudo tailscale set --operator=\$USER/);
+});
+
+test("Linux: the operator is read from Tailscale's prefs, which leave it out while unset", () => {
+  // As `tailscale debug prefs` printed them on Ubuntu 24.04 (Tailscale 1.104.1).
+  const prefs = { ControlURL: "https://controlplane.tailscale.com", RouteAll: false, WantRunning: true, LoggedOut: false, Hostname: "" };
+  assert.equal(managesTailscale(prefs, "ubuntu"), false, "no operator: the field isn't there");
+  assert.equal(managesTailscale({ ...prefs, OperatorUser: "ubuntu" }, "ubuntu"), true);
+  assert.equal(managesTailscale({ ...prefs, OperatorUser: "someone" }, "ubuntu"), false);
+  // Prefs it can't read: not held up here; Tailscale's own refusal says it.
+  assert.equal(managesTailscale({ Config: {} }, "ubuntu"), true);
+  assert.equal(managesTailscale(null, "ubuntu"), true);
 });

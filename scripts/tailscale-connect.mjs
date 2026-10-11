@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -54,6 +55,10 @@ const DENIED = /access denied|use 'sudo tailscale|must be root|operator/i;
 const OPERATOR = "On Linux, let your user manage Tailscale once: sudo tailscale set --operator=$USER\nReach continues as soon as that's done.";
 const WINDOWS_SERVICE =
   "If it still isn't running, start its service from a terminal opened as administrator: net start Tailscale\nReach continues as soon as it runs.";
+// Signed out, even the operator is refused, and the operator setting isn't
+// kept (Ubuntu 24.04, Tailscale 1.104): the first sign-in is root's, and the
+// same command keeps your user as its operator from then on.
+const SIGN_IN_AS_ROOT = "On Linux, Tailscale's first sign-in is root's. Sign in once, keeping your user as its manager:\n  sudo tailscale up --operator=$USER\nIt prints the sign-in link. Reach continues as soon as you've signed in.";
 // Switching it on where its own button is.
 const SWITCH_ON = {
   darwin: "Switch Tailscale on from its menu bar icon. Reach continues once it's on.",
@@ -69,9 +74,22 @@ const MESSAGES = {
     "Your tailnet admin has to approve this computer before it can connect.",
   off: "Tailscale is switched off on this computer.",
   starting: "Tailscale is starting…",
+  operator:
+    "Tailscale is on, but it takes changes only from root, and Reach adds your phone's link to it.",
 };
+// Linux: whether Tailscale takes changes (Reach's Serve route) from this
+// user, read from `tailscale debug prefs` without changing anything: the
+// operator only (root never asks). OperatorUser is left out while unset;
+// WantRunning is always there. Prefs it can't read: Tailscale's own refusal
+// says it later.
+export function managesTailscale(prefs, user) {
+  if (!prefs || typeof prefs !== "object" || !("WantRunning" in prefs)) return true;
+  return prefs.OperatorUser === user;
+}
 export const tailscaleProblem = (state) =>
-  `${MESSAGES[state] || "Tailscale is unavailable."} Run Reach in a terminal to set it up.`;
+  state === "operator"
+    ? `${MESSAGES.operator} Let your user manage it once: sudo tailscale set --operator=$USER, then start Reach again.`
+    : `${MESSAGES[state] || "Tailscale is unavailable."} Run Reach in a terminal to set it up.`;
 
 function defaults() {
   const run = (file, args, timeout = 5000) =>
@@ -95,6 +113,15 @@ function defaults() {
         : platform === "win32" && fs.existsSync(windowsApp()),
     status: async () =>
       JSON.parse((await run(tailscaleCli(), ["status", "--json"])).stdout),
+    canManage: async () => {
+      if (platform !== "linux" || process.getuid?.() === 0) return true;
+      try {
+        const prefs = JSON.parse((await run(tailscaleCli(), ["debug", "prefs"])).stdout);
+        return managesTailscale(prefs, os.userInfo().username);
+      } catch {
+        return true;
+      }
+    },
     open: (target) => run(...pageOpener(platform, target)).catch(() => {}),
     // The Windows app keeps running after it opens: started on its own.
     openApp: async () => {
@@ -134,7 +161,11 @@ export async function ensureTailscale(deps = {}) {
   const read = async () => {
     try {
       const status = await d.status();
-      return { status, state: tailscaleState({ status }) };
+      const state = tailscaleState({ status });
+      // Signed in with sudo (Tailscale's own Linux steps), not as this user.
+      if (state === "running" && !(await d.canManage()))
+        return { status, state: "operator" };
+      return { status, state };
     } catch (error) {
       return {
         state: tailscaleState({ error, appInstalled: d.appInstalled() }),
@@ -153,7 +184,35 @@ export async function ensureTailscale(deps = {}) {
     opened.add(target);
     void d.open(target);
   };
-  let announced, stopLogin, triedApp, triedOn;
+  let announced, stopLogin, triedApp, triedOn, upRefused;
+  const sayOnce = (text) => {
+    if (!opened.has(text)) d.print(text);
+    opened.add(text);
+  };
+  const operator = () => sayOnce(OPERATOR);
+  const onLogin = (url, problem) => {
+    if (problem === "denied") return sayOnce(SIGN_IN_AS_ROOT);
+    if (opened.has(url)) return;
+    d.print(`If it doesn't open, visit: ${url}`);
+    openOnce(url);
+  };
+  const turnOn = async () => {
+    try {
+      await d.turnOn();
+      upRefused = false;
+    } catch (error) {
+      const refused = d.platform === "linux" && DENIED.test(`${error?.stderr || ""} ${error?.message || ""}`);
+      // Refused until the operator command runs: tried again on the next look,
+      // said once.
+      if (refused && upRefused) return;
+      upRefused = refused;
+      if (refused) return operator();
+      d.print(SWITCH_ON[d.platform] || SWITCH_ON.darwin);
+      // Its switch is in its app: open it (Windows shows no icon until then).
+      if ((d.platform === "darwin" || d.platform === "win32") && d.appInstalled())
+        await d.openApp();
+    }
+  };
   try {
     while (state !== "running") {
       if (Date.now() > deadline)
@@ -209,16 +268,9 @@ export async function ensureTailscale(deps = {}) {
             );
         } else if (state === "signed-out") {
           d.print("Reach: opening the Tailscale sign-in page in your browser…");
-          stopLogin ||= d.login((url, problem) => {
-            if (problem === "denied") {
-              if (!opened.has("operator")) d.print(OPERATOR);
-              opened.add("operator");
-              return;
-            }
-            if (opened.has(url)) return;
-            d.print(`If it doesn't open, visit: ${url}`);
-            openOnce(url);
-          });
+          stopLogin ||= d.login(onLogin);
+        } else if (state === "operator") {
+          operator();
         } else if (state === "needs-approval") {
           openOnce(MACHINES);
           d.print(
@@ -237,20 +289,9 @@ export async function ensureTailscale(deps = {}) {
             throw Error(
               "Reach needs Tailscale switched on. Rerun Reach when it is.",
             );
-          try {
-            await d.turnOn();
-          } catch (error) {
-            d.print(
-              d.platform === "linux" && DENIED.test(`${error?.stderr || ""} ${error?.message || ""}`)
-                ? OPERATOR
-                : SWITCH_ON[d.platform] || SWITCH_ON.darwin,
-            );
-            // Its switch is in its app: open it (Windows shows no icon until then).
-            if ((d.platform === "darwin" || d.platform === "win32") && d.appInstalled())
-              await d.openApp();
-          }
+          await turnOn();
         }
-      }
+      } else if (state === "off" && upRefused) await turnOn();
       await d.sleep(1500);
       ({ status, state } = await read());
     }
